@@ -389,12 +389,52 @@ func bundleAttempt(t *testing.T, s *Store, issue string) (pod, outcome string) {
 	return pod, outcome
 }
 
+// refusedBundle is one row of workspace_bundles_refused: a bundle the take refused for its
+// repository and moved out of the issue's one row, read back whole.
+type refusedBundle struct {
+	release            int64
+	repo, head         string
+	sourcePod, refused string
+	bundle             []byte
+	at                 time.Time
+}
+
+// refusedBundles is every bundle the store keeps of issue after refusing it for its repository,
+// oldest refusal first. A row whose size_bytes is not its bundle's length fails the test, since
+// the move is meant to carry the row as it was.
+func refusedBundles(t *testing.T, s *Store, issue string) []refusedBundle {
+	t.Helper()
+	rows, err := s.Pool().Query(context.Background(), `select release_id, repo, head, source_pod_uid, refused_pod_uid, bundle, size_bytes, at
+		from workspace_bundles_refused where issue = $1 order by id`, issue)
+	if err != nil {
+		t.Fatalf("read the refused bundles of %s: %v", issue, err)
+	}
+	defer rows.Close()
+	var kept []refusedBundle
+	for rows.Next() {
+		var r refusedBundle
+		var size int
+		if err := rows.Scan(&r.release, &r.repo, &r.head, &r.sourcePod, &r.refused, &r.bundle, &size, &r.at); err != nil {
+			t.Fatalf("read a refused bundle of %s: %v", issue, err)
+		}
+		if size != len(r.bundle) {
+			t.Fatalf("the refused bundle of %s of release %d records %d bytes and holds %d", issue, r.release, size, len(r.bundle))
+		}
+		kept = append(kept, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("read the refused bundles of %s: %v", issue, err)
+	}
+	return kept
+}
+
 // INFRA-3136 R3: a correction of the issue's repository in Dispatch moves the issue to another
 // clone, and the work a release saved before it is work of the repository the issue has left.
 // The pod asking is a clone of the repository the issue is on now, which holds none of the saved
 // commits' bases, so the bundle is refused however new that pod is. The refusal is the bundle's
-// one attempt and the row stays: the work is in the database alone, and the daemon writes on the
-// issue where it is (internal/daemon's bundleRepositoryMessage).
+// one attempt, and the bundle moves whole to workspace_bundles_refused: the work is in the
+// database alone, and the daemon writes on the issue where it is (internal/daemon's
+// bundleRepositoryMessage).
 func TestABundleOfARepositoryTheIssueHasLeftIsRefusedAndKept(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -426,17 +466,102 @@ func TestABundleOfARepositoryTheIssueHasLeftIsRefusedAndKept(t *testing.T) {
 		t.Fatalf("the refusal reads the save as %s at %s of %s, want %s at %s of %s: the message on the issue names all three",
 			refused.Repo, refused.Head, refused.At, savedRepo, saved.Head, at)
 	}
-	if pod, outcome := bundleAttempt(t, s, "INFRA-945"); pod != "pod-of-the-new-repository" || outcome != "refused_repository" {
-		t.Fatalf("the row records the attempt as %q by %s, want refused_repository by the pod that asked", outcome, pod)
+	kept := refusedBundles(t, s, "INFRA-945")
+	if len(kept) != 1 {
+		t.Fatalf("the store keeps %d refused bundles of the issue, want the one refused", len(kept))
+	}
+	if got := kept[0]; got.release != 11 || got.repo != savedRepo || got.head != saved.Head || got.sourcePod != releasedPodUID ||
+		got.refused != "pod-of-the-new-repository" || !got.at.Equal(at) || !bytes.Equal(got.bundle, saved.Bundle) {
+		t.Fatalf("the refused bundle is kept as release %d of %s at %s off %s, refused to %s, saved %s, %d bytes; want the row as it was saved, refused to the pod that asked",
+			got.release, got.repo, got.head, got.sourcePod, got.refused, got.at, len(got.bundle))
 	}
 	// The attempt is spent: every pod after it is answered nothing at all.
 	if got, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-after-an-eviction", at.Add(time.Hour)); err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after the refusal was answered %q (%v, %v); want nothing: the refusal was the bundle's one attempt", got.Bundle, take, err)
 	}
-	// The row stays, whole, for a person to carry the work out of the database.
-	if size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	// The issue's one row is free for the next release's save: the refused work is not in it.
+	if size, held, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || held {
+		t.Fatalf("after the refusal the issue's row holds %d bytes (held=%t, %v), want none: the refused bundle moved out", size, held, err)
 	}
+}
+
+// The issue was told that the daemon keeps the refused work, so nothing a later release of the
+// issue does may reach it. The issue's one row in workspace_bundles is what every release writes:
+// the release of the issue's next pod saves its own work over that row, or deletes the row when it
+// has nothing unpushed (daemon's outbox.bundleIssueWorkspace), and the end of the issue's work
+// deletes it too (dropReleasedWork). A refused bundle left in that row was lost to the first of
+// these. A second refusal of the same issue — Dispatch moves it back to the repository it left,
+// and the next pod refuses the work of the repository between — is a row of its own beside the
+// first, and the first is still not sent to that pod, although that pod is a clone of its
+// repository again.
+func TestARefusedBundleOutlivesEveryLaterSaveAndDeleteOfTheIssuesBundle(t *testing.T) {
+	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
+	refused := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the old repository"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: at, PodUID: releasedPodUID}
+	// refuse saves the work of release 11 out of a pod of acme/widgets, moves the issue to
+	// zeta/tools as a correction does, and has the pod of zeta/tools refuse it.
+	refuse := func(t *testing.T, s *Store) {
+		t.Helper()
+		ctx := context.Background()
+		if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, savedRepo, refused); err != nil {
+			t.Fatal(err)
+		}
+		recordIssueOn(t, s, "INFRA-945", "zeta/tools")
+		if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-of-zeta-tools", at.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleRefusedRepository {
+			t.Fatalf("the pod of zeta/tools was answered %v (%v), want the bundle refused for its repository", take, err)
+		}
+	}
+	// stillKept fails unless the bytes of the refused work are somewhere in the store: the issue's
+	// row or the refused table, whichever holds them. Where they are is the other tests' to say;
+	// this one says only that no later save or delete of the issue's bundle took them.
+	stillKept := func(t *testing.T, s *Store) {
+		t.Helper()
+		var kept bool
+		if err := s.Pool().QueryRow(context.Background(), `select exists (
+			select 1 from workspace_bundles where issue = $1 and bundle = $2
+			union all select 1 from workspace_bundles_refused where issue = $1 and bundle = $2)`,
+			"INFRA-945", refused.Bundle).Scan(&kept); err != nil || !kept {
+			t.Fatalf("the refused work of release 11 is in the store = %t (%v), want it kept", kept, err)
+		}
+	}
+
+	t.Run("the next release saves work of its own", func(t *testing.T) {
+		ctx := context.Background()
+		s := migratedStore(t)
+		refuse(t, s)
+		own := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of zeta/tools"),
+			Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9", At: at.Add(time.Hour), PodUID: "pod-of-zeta-tools"}
+		if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, "zeta/tools", own); err != nil {
+			t.Fatal(err)
+		}
+		stillKept(t, s)
+
+		// Dispatch moves the issue back to acme/widgets. The pod after that is refused the work
+		// of zeta/tools, which is kept beside the first, and is sent neither.
+		recordIssueOn(t, s, "INFRA-945", savedRepo)
+		got, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-of-acme-widgets-again", at.Add(2*time.Hour))
+		if err != nil || take != runtime.WorkspaceBundleRefusedRepository || len(got.Bundle) != 0 {
+			t.Fatalf("the pod of acme/widgets again was answered %v with %d bytes (%v), want the work of zeta/tools refused and nothing sent", take, len(got.Bundle), err)
+		}
+		if got, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-after-it", at.Add(3*time.Hour)); err != nil || take != runtime.WorkspaceBundleNone {
+			t.Fatalf("the pod after it was answered %q (%v, %v), want nothing: a refused bundle is never offered again", got.Bundle, take, err)
+		}
+		kept := refusedBundles(t, s, "INFRA-945")
+		if len(kept) != 2 || kept[1].release != 12 || kept[1].repo != "zeta/tools" || !bytes.Equal(kept[1].bundle, own.Bundle) {
+			t.Fatalf("the store keeps %d refused bundles of the issue, want the two refusals, the second the work of zeta/tools", len(kept))
+		}
+		if kept[0].release != 11 || !bytes.Equal(kept[0].bundle, refused.Bundle) {
+			t.Fatalf("the first refused bundle is release %d with %d bytes, want the work of release 11 kept as it was", kept[0].release, len(kept[0].bundle))
+		}
+	})
+	t.Run("the next release saves nothing", func(t *testing.T) {
+		s := migratedStore(t)
+		refuse(t, s)
+		if err := s.DeleteWorkspaceBundle(context.Background(), "INFRA-945"); err != nil {
+			t.Fatal(err)
+		}
+		stillKept(t, s)
+	})
 }
 
 // The repository refusal reads two names and refuses on the difference alone. A bundle of the
@@ -477,11 +602,11 @@ func TestABundleOfTheIssuesOwnRepositoryIsStillSent(t *testing.T) {
 }
 
 // A bundle refused for its repository holds the issue's pod for nothing, and the idle rule reads
-// that here: no pod of the issue will ever be a clone of the repository the work is of, so no
-// restore can ever be recorded and a hold would never end
-// (workflow.IdleHoldBundleUnrestored). A bundle refused as older is the opposite: its work could
-// still be carried back by hand, and a release that overwrote it would take the only copy, so
-// that row goes on holding the pod.
+// that here: the refusal moved it out of workspace_bundles, where no release can write over it,
+// and no restore is ever recorded for it, so a hold would never end
+// (workflow.IdleHoldBundleUnrestored). A bundle refused as older is the opposite: it is still the
+// issue's one row, its work could still be carried back by hand, and a release that overwrote it
+// would take the only copy, so that row goes on holding the pod.
 func TestABundleRefusedForItsRepositoryHoldsNoPod(t *testing.T) {
 	at := time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC)
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the released work"),
@@ -491,16 +616,15 @@ func TestABundleRefusedForItsRepositoryHoldsNoPod(t *testing.T) {
 		repo     string
 		created  time.Time
 		want     runtime.WorkspaceBundleTake
-		outcome  string
 		holdsPod bool
 	}{
 		{
 			name: "refused for the repository the issue has left", repo: savedRepo, created: at.Add(time.Minute),
-			want: runtime.WorkspaceBundleRefusedRepository, outcome: "refused_repository", holdsPod: false,
+			want: runtime.WorkspaceBundleRefusedRepository, holdsPod: false,
 		},
 		{
 			name: "refused as no newer than the save", repo: "zeta/tools", created: at.Add(-time.Minute),
-			want: runtime.WorkspaceBundleRefusedOlder, outcome: "refused_older", holdsPod: true,
+			want: runtime.WorkspaceBundleRefusedOlder, holdsPod: true,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -515,9 +639,6 @@ func TestABundleRefusedForItsRepositoryHoldsNoPod(t *testing.T) {
 			if _, take, err := s.TakeWorkspaceBundleForRestore(ctx, "INFRA-945", "pod-replacement", tc.created); err != nil || take != tc.want {
 				t.Fatalf("the pod was answered %v (%v), want %v", take, err, tc.want)
 			}
-			if _, outcome := bundleAttempt(t, s, "INFRA-945"); outcome != tc.outcome {
-				t.Fatalf("the row records the attempt as %q, want %q", outcome, tc.outcome)
-			}
 			var held bool
 			if err := s.Tx(ctx, func(tx pgx.Tx) error {
 				var err error
@@ -527,11 +648,21 @@ func TestABundleRefusedForItsRepositoryHoldsNoPod(t *testing.T) {
 				t.Fatal(err)
 			}
 			if held != tc.holdsPod {
-				t.Fatalf("the refused row holds the issue's pod = %t, want %t", held, tc.holdsPod)
+				t.Fatalf("the refused bundle holds the issue's pod = %t, want %t", held, tc.holdsPod)
 			}
-			// The bytes stay either way: a refusal records the attempt and keeps the work.
-			if size, stored, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !stored || size != len(saved.Bundle) {
-				t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept", size, stored, err, len(saved.Bundle))
+			// The bytes stay either way: the refusal as older leaves them in the issue's row, with
+			// the attempt recorded on it, and the refusal for the repository moves them.
+			if tc.holdsPod {
+				if _, outcome := bundleAttempt(t, s, "INFRA-945"); outcome != "refused_older" {
+					t.Fatalf("the row records the attempt as %q, want refused_older", outcome)
+				}
+				if size, stored, err := s.WorkspaceBundleSize(ctx, "INFRA-945"); err != nil || !stored || size != len(saved.Bundle) {
+					t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept", size, stored, err, len(saved.Bundle))
+				}
+				return
+			}
+			if kept := refusedBundles(t, s, "INFRA-945"); len(kept) != 1 || !bytes.Equal(kept[0].bundle, saved.Bundle) {
+				t.Fatalf("the store keeps %d refused bundles of the issue, want the one saved, whole", len(kept))
 			}
 		})
 	}

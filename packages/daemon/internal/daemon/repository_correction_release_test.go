@@ -178,3 +178,67 @@ func TestRepositoryCorrectionLabelsTheSavedBundleWithThePodsOwnRepository(t *tes
 		t.Fatalf("the refusal names %q as the repository the work is of, want %q", bundle.Repo, rig.issue.Repo)
 	}
 }
+
+// The refused work outlives the issue's next release. The message on the issue says the daemon
+// keeps that work (bundleRepositoryMessage), and the release of the issue's new pod writes the
+// issue's one bundle row: it saves that pod's own unpushed work over the row, or deletes the row
+// when the pod has nothing unpushed (outbox.bundleIssueWorkspace). A refused bundle left in that
+// row was lost to either, so the refusal moves it to a table of its own
+// (store.TakeWorkspaceBundleForRestore), and this reads it there after each.
+//
+// The refused bundle is an earlier release's, saved out of a pod of acme/widgets. The rig's pod
+// is the issue's new pod, a clone of zeta/tools after the correction, and its own start is what
+// refused that bundle.
+func TestRepositoryCorrectionKeepsTheRefusedBundleThroughTheNextRelease(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		own  []byte
+	}{
+		{name: "the next release saves work of its own", own: []byte("PACK the work of zeta/tools")},
+		{name: "the next release saves nothing", own: nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newIdleRig(t)
+			ctx := context.Background()
+			rig.earlierReleasesBundle(t)
+			refused := idleRigEarlierBundle(rig.issue.Key, time.Now())
+			rig.corrects(t, correctedRepo, correctedBranch)
+			rig.podBuiltFrom(correctedRepo)
+			if _, outcome, err := rig.st.TakeWorkspaceBundleForRestore(ctx, rig.issue.Key, releasedPodUID, time.Now().UTC()); err != nil ||
+				outcome != runtime.WorkspaceBundleRefusedRepository {
+				t.Fatalf("the new pod of %s was answered %v (%v), want the earlier bundle refused for its repository", correctedRepo, outcome, err)
+			}
+
+			// The new pod goes idle and is released in its turn.
+			rig.rt.mu.Lock()
+			rig.rt.bundle = runtime.WorkspaceBundle{Bundle: tc.own, Head: "0a8f0aee63b13682fefe975ba0cc51da6f2ba9e9",
+				At: time.Now().UTC(), PodUID: releasedPodUID}
+			rig.rt.mu.Unlock()
+			rig.w.releaseIdlePod(ctx, rig.issue.Key)
+			if !rig.marked(t) {
+				t.Fatalf("the pass marked no release of the new pod, holds = %+v: a refused bundle holds no pod", rig.records(t).Holds)
+			}
+			rig.drain(t)
+			if size, held := rig.savedBundleBytes(t); held != (len(tc.own) > 0) || size != len(tc.own) {
+				t.Fatalf("after the next release the issue's row holds %d bytes (held=%t), want the %d that release saved", size, held, len(tc.own))
+			}
+
+			// The refused work is still in the store, wherever it is kept: no save or delete of
+			// the issue's bundle took it.
+			var kept bool
+			if err := rig.pool.QueryRow(ctx, `select exists (
+				select 1 from workspace_bundles where issue = $1 and bundle = $2
+				union all select 1 from workspace_bundles_refused where issue = $1 and bundle = $2)`,
+				rig.issue.Key, refused.Bundle).Scan(&kept); err != nil || !kept {
+				t.Fatalf("the refused work of release %d is in the store after the next release = %t (%v), want it kept, as the message on the issue says",
+					idleRigEarlierRelease, kept, err)
+			}
+			// And it is where the message on the issue says it is.
+			var row []byte
+			if err := rig.pool.QueryRow(ctx, `select bundle from workspace_bundles_refused where issue = $1 and release_id = $2`,
+				rig.issue.Key, idleRigEarlierRelease).Scan(&row); err != nil || string(row) != string(refused.Bundle) {
+				t.Fatalf("the refused bundle of release %d reads %q (%v), want the %q kept", idleRigEarlierRelease, row, err, refused.Bundle)
+			}
+		})
+	}
+}

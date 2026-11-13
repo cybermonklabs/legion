@@ -260,10 +260,12 @@ type WorkspaceBundler interface {
 //
 // WorkspaceBundleRefusedRepository is that one attempt spent for the other reason: the bundle is
 // of a repository the issue has left, which Dispatch corrected and the daemon's record followed.
-// Every pod of the issue from now on is a clone of another repository, so the saved commits have
-// no bases there and no pod can ever restore them. The work stays in the database, the daemon
-// writes on the issue where it is, and the row holds no pod: a hold for work nothing can restore
-// would never end.
+// The issue's pods are now clones of another repository, so the saved commits have no bases
+// there. The store moves the bundle out of the issue's one row and into a table of its own
+// (workspace_bundles_refused), where no later release of the issue overwrites or deletes it and
+// no pod is ever sent it, even after Dispatch moves the issue back. The daemon writes on the
+// issue where the work is, and the bundle holds no pod: a hold for work nothing restores would
+// never end.
 type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceBundle, WorkspaceBundleTake, error)
 
 // WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one

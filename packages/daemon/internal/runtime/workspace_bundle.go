@@ -83,10 +83,11 @@ const (
 	// WorkspaceBundleRefusedRepository: the bundle is of a repository the issue has left, as
 	// Dispatch corrected it and the record followed (record.Store.CorrectIssueRepository), and
 	// nothing is sent to this pod or to any pod after it. The pod's workspace is a clone of the
-	// issue's repository now, which holds none of the saved commits' bases, so the bundle can
-	// never be applied there. The refusal is the bundle's one attempt. The work stays in the
-	// database and the daemon writes on the issue where it is, since nothing can put it back
-	// (internal/daemon's bundleRepositoryMessage); it holds no pod, because a hold for work no
-	// pod can ever restore would never end (workflow.IdleHoldBundleUnrestored).
+	// issue's repository now, which holds none of the saved commits' bases, so the bundle cannot
+	// be applied there. The refusal is the bundle's one attempt, and the store moves the bundle to
+	// workspace_bundles_refused as it records it, where the issue's later releases neither
+	// overwrite nor delete it. The daemon writes on the issue where it is, since nothing puts it
+	// back (internal/daemon's bundleRepositoryMessage); it holds no pod, because a hold for work no
+	// pod restores would never end (workflow.IdleHoldBundleUnrestored).
 	WorkspaceBundleRefusedRepository
 )

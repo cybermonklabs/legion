@@ -1156,8 +1156,14 @@ Every role in the pod is asked to push its work and to answer the update round, 
 pod replacement.
 The issue's branch, its pull request and any rescue branch that replacement pushes are on the
 repository the issue left, and the daemon's message about the rescue branches names it.
-Work a release saved as a bundle of that repository is restored into no pod: it stays in the
-daemon's database, holds back the release of no pod, and the daemon writes on the issue where it is.
+Work a release saved as a bundle of that repository is restored into no pod, even if Dispatch
+later moves the issue back. The daemon moves it to the `workspace_bundles_refused` table, where no
+later release of the issue writes over it or deletes it and nothing holds back the release of a
+pod for it, and writes on the issue the issue key and `release_id` of the row that keeps it. Its
+`bundle` column is a git bundle, which an operator reads out with
+`psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles_refused where issue = '<KEY>' and release_id = <release>" | base64 -d > <KEY>.bundle`
+and unbundles into a clone of the repository the row's `repo` names. The daemon never deletes the
+row; delete it once the work is carried out.
 A deployment on `runtime: tmux` reaches none of that: a pane is in no pod, so nothing is replaced
 and no update round is opened, and each pane works the repository the issue left until its next
 launch, which provisions it a workspace of the new repository on the daemon's host.

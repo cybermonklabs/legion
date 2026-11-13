@@ -2128,17 +2128,14 @@ The claim's held delivery carries that wait in `pending_task_deliveries.resume`,
 
 Store migration 20261112012123_issue_repository_correction adds the four `issues` columns the repository keys are read from — `repo_before`, `repo_corrected_at`, `repo_change_pending` and `repo_change_reason` — and `workspace_bundles.repo`, the repository a saved workspace bundle's work is of.
 Every row already there takes each column's default, and nothing is backfilled.
-The same migration widens the check on a bundle's restore attempt to a third outcome, `refused_repository`, which the daemon records for a bundle of a repository the issue has left.
+The same migration widens the check on a bundle's restore attempt to a third outcome, `refused_repository`, which the daemon records for a bundle of a repository the issue has left, and creates `workspace_bundles_refused`, the table the daemon moves each such bundle to in the transaction that refuses it.
 Store migration 20261112215432_delivery_resume adds `pending_task_deliveries.resume`, null for every delivery but a resume task's.
 
 To roll this release back, re-pin the earlier image (contract 86 at the base this release was written on).
 There is no `legion.yaml` key to put back and no column to drop:
 the earlier release names every column it reads and writes, so it boots with the six in place, reads none of them and writes none of them.
-Going back costs four things, and each of the first two holds or loses work unless you act before the earlier image is pinned.
-
-- A bundle this release refused for its repository holds its issue's pod for ever.
-  The earlier release's idle rule counts every bundle row of an issue, where this one skips a refused row, and such a row is never deleted and never taken again, so it reads there as work no pod restored (`workflow.IdleHoldBundleUnrestored`).
-  Take the work of every such bundle off the database and delete those rows (`delete from workspace_bundles where attempt_outcome = 'refused_repository'`).
+It never reads `workspace_bundles_refused` either, so a bundle this release refused for its repository stays in that table through the roll back, and no row of `workspace_bundles` is a refused one that its idle rule could hold a pod for.
+Going back costs three things, and the first loses work unless you act before the earlier image is pinned.
 
 - A resume task this release queued and has not sent reaches its architect with no text, or not at all.
   The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it refuses an outbox start that carries `awaiting` and retries that row on its backoff until this release runs again: the answered root's architect is not resumed.
@@ -4581,13 +4578,17 @@ A bundle above 40 MiB, or a save that fails, stops the release, and the daemon r
 Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
 The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
-A bundle of a repository the issue has left is refused before the pod's age is read at all, because every pod of the issue from now on is a clone of another repository, which holds none of the saved commits' bases.
+A bundle of a repository the issue has left is refused before the pod's age is read at all, because the issue's pods are clones of another repository now, which holds none of the saved commits' bases.
 That pod is otherwise sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
 A restore that fails, and a refusal for the pod's age, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
-The refusal for the repository keeps the work the same way and holds no pod, since no pod of the issue could ever restore it and the hold would never end.
-The daemon writes on that issue instead, naming the repository the work is of, the commit the saved working copy sat on, each bookmark that pointed into the work, when the release saved it, and that the work stays in the daemon's database.
+The refusal for the repository keeps the work in another way and holds no pod.
+In the transaction that records it, the daemon moves the bundle out of `workspace_bundles`, which holds one row per issue, into `workspace_bundles_refused`, which holds one row per refusal under an `id` of its own.
+There the issue's next release cannot write its own save over the work or delete it when it saves nothing, and the end of the issue's work does not delete it either.
+The daemon never sends such a bundle to a pod, even after Dispatch moves the issue back to that repository, and never deletes the row: it is the operator's to delete once the work is carried out.
+The daemon writes on that issue instead, naming the repository the work is of, the commit the saved working copy sat on, each bookmark that pointed into the work, when the release saved it, and the table, issue and `release_id` of the row that keeps it.
 The row's `bundle` column is a git bundle, so an operator reads it out with `psql '<postgres_dsn>' -XAt -c "select encode(bundle, 'base64') from workspace_bundles where issue = '<KEY>'" | base64 -d > <KEY>.bundle`, checks it with `git bundle list-heads <KEY>.bundle`, and unbundles it into any clone of the repository, where the row's `head` is the working copy's commit and `bookmarks` maps each bookmark to its commit.
-A bundle stays through a linger and a park, and goes when its issue is done or its tree closes.
+A bundle refused for its repository is read the same way from `workspace_bundles_refused`, by the issue and the release the message names: `select encode(bundle, 'base64') from workspace_bundles_refused where issue = '<KEY>' and release_id = <release>`, unbundled into a clone of the repository its `repo` column names.
+A bundle in `workspace_bundles` stays through a linger and a park, and goes when its issue is done or its tree closes.
 A release of a pod no claim owns neither takes a bundle nor deletes one, so a bundle an earlier release of the same issue saved stays where it is, and the issue's next pod is offered it as before.
 The `bundle_unrestored` hold does not keep such a pod either, since that release saves no bundle over the one the database holds.
 Nothing else of the disk is kept: `$TMPDIR` and its contents, every ignored file, every file jj does not snapshot (above its `snapshot.max-new-file-size`), each role's home with the Oh My Pi state and `local://` files under it, a test Postgres with its databases, and the workspace's CodeGraph index all go with the pod.

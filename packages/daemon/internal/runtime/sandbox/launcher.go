@@ -360,10 +360,11 @@ const bundleRestoreBound = 2 * time.Minute
 // pushing from the workspace its own fetch provisioned. A bundle of a repository the issue has
 // left is spent on a refusal of its own, whatever the pod's age: this pod's workspace is a
 // clone of the issue's repository now, which holds none of the saved commits' bases
-// (runtime.WorkspaceBundleRefusedRepository). It is the one refusal this hop logs nothing of:
-// the daemon logs it where it writes it on the issue, with whether that write landed
-// (internal/daemon's tellBundleRepositoryRefused), and a second line here would say the same
-// thing to the same reader, the operator reading this daemon's log.
+// (runtime.WorkspaceBundleRefusedRepository). The store keeps that work in a table of its own,
+// which holds no pod. It is the one refusal this hop logs nothing of: the daemon logs it where it
+// writes it on the issue, with whether that write landed (internal/daemon's
+// tellBundleRepositoryRefused), and a second line here would say the same thing to the same
+// reader, the operator reading this daemon's log.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return

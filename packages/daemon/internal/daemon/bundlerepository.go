@@ -20,15 +20,15 @@ import (
 // what it was not sent, and the pod still starts on what its own fetch provisioned.
 //
 // The issue is told once per bundle row, not once per pod that asks. The refusal is the bundle's
-// one restore attempt and the store records it in the same statement that answers it, so the
-// next pod of the issue is answered runtime.WorkspaceBundleNone and reaches no message at all.
+// one restore attempt, and the store records it and moves the row to workspace_bundles_refused in
+// the transaction that answers it, so the next pod of the issue is answered
+// runtime.WorkspaceBundleNone and reaches no message at all.
 //
 // It is this wrapper and not the launcher's that logs the refusal, and the launcher logs none:
-// only a person can act on it — the work is a bundle of commits of the old repository, no pod
-// of the issue is a clone of that repository any more, and nothing in the daemon can ever put
-// the work back — and this is the one place that knows whether the message landed. A log line
-// reaches an operator who reads the daemon's logs. The message reaches the agent that did the
-// work.
+// only a person can act on it — the work is a bundle of commits of the old repository, and
+// nothing in the daemon ever puts a refused bundle back — and this is the one place that knows
+// whether the message landed. A log line reaches an operator who reads the daemon's logs. The
+// message reaches the agent that did the work.
 //
 // write is never nil: every daemon builds this over the plan's own write (plan.writeOnIssue), a
 // method value that answers an error in a deployment with no workflow, which has no outbox to
@@ -46,29 +46,32 @@ func tellBundleRepositoryRefused(take runtime.SavedWorkspaceBundle,
 		if err != nil || outcome != runtime.WorkspaceBundleRefusedRepository {
 			return bundle, outcome, err
 		}
-		if err := write(ctx, issue, bundleRepositoryMessage(bundle)); err != nil {
+		if err := write(ctx, issue, bundleRepositoryMessage(issue, bundle)); err != nil {
 			if ctx.Err() == nil {
-				log.Error("supervise: write on the issue that its saved workspace bundle is of the repository it has left; the work stays in the database and nothing tells the issue again",
-					"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At, "error", err)
+				log.Error("supervise: write on the issue that its saved workspace bundle is of the repository it has left; the work is kept in workspace_bundles_refused and nothing tells the issue again",
+					"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At, "release", bundle.Release, "error", err)
 			}
 			return bundle, outcome, nil
 		}
-		log.Warn("supervise: the saved workspace bundle of this issue is of the repository it has left, so no pod restores it; the issue is told and the work stays in the daemon's database",
+		log.Warn("supervise: the saved workspace bundle of this issue is of the repository it has left, so no pod restores it; the issue is told and the work is kept in workspace_bundles_refused",
 			"issue", issue, "pod", podUID, "bundleRepository", bundle.Repo, "head", bundle.Head, "saved", bundle.At, "release", bundle.Release)
 		return bundle, outcome, nil
 	}
 }
 
-// bundleRepositoryMessage is what the issue is told when the daemon refuses to restore its saved
+// bundleRepositoryMessage is what issue is told when the daemon refuses to restore its saved
 // work: the repository the work is of, the commit the saved working copy sat on, each bookmark
-// that pointed into the work, the moment the release saved it, and that the work stays in the
-// daemon's database. Another agent reads it, so it follows ASD-STE100.
+// that pointed into the work, the moment the release saved it, and where the daemon keeps the
+// work — the table the refusal moved it to (store.Store.TakeWorkspaceBundleForRestore) and the
+// issue and release that find its row there, which is what an operator asked for the work reads.
+// Another agent reads it, so it follows ASD-STE100.
 //
 // It names the old repository and not the new one on purpose. The work is in the old
 // repository's history, and a reader sent to the new repository would look for commits that are
 // not there. The moment of the save is the reader's other handle on the work: it says how much
-// of the issue's work the bundle can hold.
-func bundleRepositoryMessage(b runtime.WorkspaceBundle) string {
+// of the issue's work the bundle can hold. It says nothing of the issue's pods to come: Dispatch
+// can move the issue back, and a refused bundle is not restored then either.
+func bundleRepositoryMessage(issue string, b runtime.WorkspaceBundle) string {
 	var lines []string
 	for _, name := range slices.Sorted(maps.Keys(b.Bookmarks)) {
 		lines = append(lines, fmt.Sprintf("- %s at commit `%s`", codeSpan(name), b.Bookmarks[name]))
@@ -79,12 +82,12 @@ func bundleRepositoryMessage(b runtime.WorkspaceBundle) string {
 	}
 	return fmt.Sprintf(`The daemon did not restore the saved work of this issue.
 
-A release of this issue's pod saved the work that no remote had. The daemon saved that work at %s. The work is of the repository `+"`%s`"+`. This issue is on a different repository now. The daemon does not put work of the old repository into a clone of the new repository. Each new pod of this issue is a clone of the new repository.
+A release of this issue's pod saved the work that no remote had. The daemon saved that work at %s. The work is of the repository `+"`%s`"+`. This issue is on a different repository now. The daemon does not put work of one repository into a clone of a different repository.
 
 The saved work has the head commit `+"`%s`"+`. %s
 
-The daemon keeps the saved work in its database. The daemon sends it to no pod. Ask an operator for the work if you need it.`,
-		b.At.UTC().Format(time.RFC3339), b.Repo, b.Head, bookmarks)
+The daemon keeps the saved work in its database, in the table `+"`workspace_bundles_refused`"+`. The row has the issue `+"`%s`"+` and the release_id `+"`%d`"+`. The `+"`bundle`"+` column of that row is a git bundle. The daemon does not send this work to a pod, and the daemon does not delete it. Ask an operator for the work if you need it.`,
+		b.At.UTC().Format(time.RFC3339), b.Repo, b.Head, bookmarks, issue, b.Release)
 }
 
 // codeSpan is name inside a Markdown code span that name itself cannot break. A bookmark name

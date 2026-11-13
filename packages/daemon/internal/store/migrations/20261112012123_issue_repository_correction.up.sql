@@ -38,23 +38,33 @@
 -- (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository). A row written
 -- before this release holds the default and refuses nothing.
 --
+-- workspace_bundles_refused keeps the bundles the restore refused for their repository, one row
+-- per refusal under an id of its own, so two refusals of one issue are two rows. The take moves
+-- the row there in the transaction that refuses it (store.TakeWorkspaceBundleForRestore). Left
+-- in workspace_bundles, the row would be gone at the issue's next release: that release saves
+-- its own work over the issue's one row, or deletes the row when it saves nothing (daemon's
+-- bundleIssueWorkspace), and the end of the issue's work deletes it too (daemon's
+-- dropReleasedWork). The issue is told that the daemon keeps this work, so no such path may reach
+-- it. The row keeps what the workspace_bundles row held, with refused_pod_uid and refused_at for
+-- the pod the refusal answered and when. Nothing in the daemon reads this table again, changes a
+-- row of it or deletes one: it is an operator's, who finds a row by the issue and the release the
+-- message on the issue names, and deletes it once the work is carried out.
+--
 -- An older daemon binary on this schema writes none of the five columns and reads none of them:
 -- its issue reads and its bundle writes name the columns it knows, and the new ones take their
--- defaults. It still carries the write-once guard, so it refuses a corrected repository as it
--- always did, and a correction this release applied stands under it with repo_before and
--- repo_corrected_at untouched for the roll forward. One statement goes with that roll back,
--- though: before an earlier image is pinned again, the work of every bundle this release refused
--- for its repository is taken off the database and the rows are deleted (delete from
--- workspace_bundles where attempt_outcome = 'refused_repository'), because the earlier release's
--- idle rule counts every row of an issue where this one skips a refused row, and such a row is
--- never deleted and never taken again, so it reads there as work no pod restored and holds that
--- issue's pod for ever (workflow.IdleHoldBundleUnrestored).
+-- defaults. It never reads workspace_bundles_refused, so the refused work stays there for an
+-- operator through a roll back, and no row of workspace_bundles is a refused one for its idle
+-- rule to count. It still carries the write-once guard, so it refuses a corrected repository as
+-- it always did, and a correction this release applied stands under it with repo_before and
+-- repo_corrected_at untouched for the roll forward.
 --
 -- `refused_repository` is the third thing one restore attempt can do, beside the `sent` and the
 -- `refused_older` the attempt column was written with (20261103214558_workspace_bundle_pod_binding):
--- the row's repo is a repository the issue has left, so nothing is sent and the row stays. The
--- daemon never restores such a bundle. Its commits are of another repository's history, and the
--- new clone holds none of their bases, so an apply there would either fail or push work of one
+-- the row's repo is a repository the issue has left, so nothing is sent. The take records the
+-- attempt with this word and then moves the row, both in one transaction, so no committed row of
+-- workspace_bundles holds it; the row moved keeps the attempt as refused_pod_uid and refused_at.
+-- The daemon never restores such a bundle. Its commits are of another repository's history, and
+-- the new clone holds none of their bases, so an apply there would either fail or push work of one
 -- repository into another. The constraint is dropped and written again with the word beside the
 -- two, which this migration may do because it adds the repo column the refusal reads: no
 -- deployment holds a row with the new outcome, and an older daemon binary writes neither it nor
@@ -71,3 +81,18 @@ alter table workspace_bundles
   add constraint workspace_bundles_attempt_outcome
     check (case when attempt_pod_uid is null then attempt_outcome is null
                 else attempt_outcome in ('sent', 'refused_older', 'refused_repository') end);
+create table workspace_bundles_refused (
+  id              bigserial   primary key,
+  issue           text        not null,
+  release_id      bigint      not null,
+  source_pod_uid  text        not null,
+  repo            text        not null,
+  bundle          bytea       not null,
+  size_bytes      bigint      not null,
+  at              timestamptz not null,
+  head            text        not null,
+  tips            jsonb       not null,
+  bookmarks       jsonb       not null,
+  refused_pod_uid text        not null,
+  refused_at      timestamptz not null
+);

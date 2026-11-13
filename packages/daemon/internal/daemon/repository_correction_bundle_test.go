@@ -15,13 +15,14 @@ import (
 
 // INFRA-3136 R3: the work a release saved out of a pod is work of the repository the issue was
 // on then. A correction of that repository in Dispatch moves the issue to another clone, and the
-// store refuses the bundle to every pod of it (store.TakeWorkspaceBundleForRestore). Nothing in
-// the daemon can ever put that work back, so the daemon says so where the work is asked for: a
-// message on the Dispatch issue, naming the repository the work is of, the commit the saved
-// working copy sat on, the bookmarks that pointed into it and the moment of the save.
+// store refuses the bundle to every pod of it (store.TakeWorkspaceBundleForRestore) and moves it
+// to workspace_bundles_refused. Nothing in the daemon puts that work back, so the daemon says so
+// where the work is asked for: a message on the Dispatch issue, naming the repository the work is
+// of, the commit the saved working copy sat on, the bookmarks that pointed into it, the moment of
+// the save, and the table, issue and release of the row that keeps it.
 //
-// It is said once per bundle row. The refusal is the bundle's one restore attempt and the store
-// records it as it answers, so the pod after it is answered nothing and reaches no message.
+// It is said once per bundle row. The refusal is the bundle's one attempt and the store records
+// it as it answers, so the pod after it is answered nothing and reaches no message.
 func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -88,7 +89,7 @@ func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 		"legion/LEGION-208",
 		"dffe88ae2f793e13436cef3921adc988433fbd4e",
 		at.Format(time.RFC3339),
-		"The daemon keeps the saved work in its database.",
+		"in the table `workspace_bundles_refused`. The row has the issue `LEGION-208` and the release_id `11`.",
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the message on the issue does not name %q:\n%s", want, body)
@@ -98,9 +99,11 @@ func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 		t.Errorf("the message names the repository the issue is on now, which holds none of this work:\n%s", body)
 	}
 
-	// The work itself stays in the daemon's database, which is what the message says of it.
-	if size, held, err := st.WorkspaceBundleSize(ctx, issue.Key); err != nil || !held || size != len(saved.Bundle) {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
+	// The work itself is in the row the message names, which is what an operator reads.
+	var kept []byte
+	if err := pool.QueryRow(ctx, `select bundle from workspace_bundles_refused where issue = $1 and release_id = $2`,
+		issue.Key, 11).Scan(&kept); err != nil || string(kept) != string(saved.Bundle) {
+		t.Fatalf("the row the message names holds %q (%v), want the %d bytes saved", kept, err, len(saved.Bundle))
 	}
 }
 
@@ -161,7 +164,7 @@ func TestRepositoryCorrectionWritesNothingOnTheOtherBundleOutcomes(t *testing.T)
 func TestTheBundleMessageHoldsAnOddBookmarkNameWhole(t *testing.T) {
 	const commit = "dffe88ae2f793e13436cef3921adc988433fbd4e"
 	message := func(name string) string {
-		return bundleRepositoryMessage(runtime.WorkspaceBundle{
+		return bundleRepositoryMessage("LEGION-208", runtime.WorkspaceBundle{
 			Repo: "acme/widgets", Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 			Bookmarks: map[string]string{name: commit},
 			At:        time.Date(2026, 11, 2, 9, 30, 0, 0, time.UTC),

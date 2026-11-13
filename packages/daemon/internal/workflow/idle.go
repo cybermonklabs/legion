@@ -206,10 +206,10 @@ type IdleDecision struct {
 //     restore is confirmed, a second release would take a bundle of a workspace that never had
 //     that work and store it over the one that does. A bundle the store refused because it is
 //     of a repository the issue has left waits for nothing and holds nothing
-//     (runtime.WorkspaceBundleRefusedRepository): every pod of the issue from now on is a clone
-//     of another repository, so no pod can ever restore that work and the hold would hold the
-//     issue's pod for ever. The work stays in the daemon's database and the daemon writes on
-//     the issue where it is (store's workspaceBundleUnrestored);
+//     (runtime.WorkspaceBundleRefusedRepository): the refusal moves it to a table of its own,
+//     where no release of the issue overwrites or deletes it and no pod is ever sent it, so a
+//     hold for it would never end. The daemon writes on the issue where the work is (store's
+//     workspaceBundleUnrestored);
 //
 //   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
 //     has come waits only for its slot and qualifies, and the children of a root that waits on a
