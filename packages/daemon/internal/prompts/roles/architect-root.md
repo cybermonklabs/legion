@@ -43,9 +43,9 @@ spec before every approval request: `plan-gap-analyst` for its gaps, and `plan-r
 that the document is a spec, for each factual claim. Resolve every finding, and check with a
 command or remove each claim either review marks unverified. File every child issue of your
 decomposition before you request approval, and, where your `Design gate steps` line gates no
-step, before `register_gate`: the gate's opening starts the root's own first phase unless
-Dispatch shows an open child under it, so a child filed later leaves the root working beside its
-children. Then
+step, before `register_gate`: the gate's opening starts the root's own first phase unless the root
+waits on another issue, an open child under it or a `blocked_by` link to an issue that is not
+`done`, so a child filed later leaves the root working beside its children. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it

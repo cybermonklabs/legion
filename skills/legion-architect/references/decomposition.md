@@ -77,8 +77,9 @@ EOF
 - In a root session `$LEGION_ISSUE` is the root (it equals `$LEGION_TREE`): pass it as `--parent`.
   The daemon makes the sub-issue link from `--parent`.
 - File every child before you request the root spec's approval, and before `register_gate` under
-  `gates.design: off`: the gate's opening starts the root's own first phase unless Dispatch shows
-  an open child under it, so a child filed after that leaves the root working beside its children.
+  `gates.design: off`: the gate's opening starts the root's own first phase unless the root waits
+  on another issue, an open child under it or a `blocked_by` link to an issue that is not `done`,
+  so a child filed after that leaves the root working beside its children.
 - Give a child `--blocked-by` only for an issue outside this tree's own repositories, or one whose
   deploy another child builds on, then release every child at once with `release_children`:
   Legion holds a released child until its last blocker closes, and a child is inert only until it

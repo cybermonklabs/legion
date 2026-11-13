@@ -877,7 +877,7 @@ A tree is live while its lifecycle is open and it does not linger, or while its 
 its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
 
 **Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
-So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that has no open child.
+So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that waits on no other issue, neither an open child nor an unfinished `blocked_by` link.
 `sign_off` and `close_root` are refused while an issue beneath is still in the workflow (`SIGNOFF_CHILD_IN_WORKFLOW`, naming each one), and `release_children` and `rerun_child` refuse a child whose ancestor is in `retro` or `merging` (`CHILD_UNDER_ACCEPTED_PARENT`, naming the ancestor);
 a person's own move of such a child to `todo` is recorded and held at `admitted` until that ancestor closes, with a `child-status` notice that says so.
 One issue beneath is left out of the `sign_off` refusal, the `close_root` refusal and a merged issue's wait for the issues beneath it: one the daemon itself holds at `admitted` under that same accepted ancestor, since otherwise that hold and those three deadlock.
@@ -1001,7 +1001,7 @@ The daemon sees a same-project blocker close as a live event, and a close of a b
 Two waits count: Dispatch shows the issue blocked by an issue that is not `done`, and the issue's own first phase waits on an open child under it.
 Three started issues keep their slot although a wait names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never opened, whose architect is writing the design, since releasing it would take the slot of the one issue of the tree that is working; and a root that arrived from another tree carrying the row it held there, which the waiting line judges by its queued-root rule, the one that starts a root carrying a run whatever its links say, so a release here would be undone by the promotion of the same pass.
 Nothing of the work stops: no claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
-The worker at work goes on, but the start of the issue's next phase waits until the issue holds a slot again.
+The worker at work goes on, but every start of a phase worker of the issue, its next phase's or a restart of its current one, waits until the issue holds a slot again.
 The state names such an issue under `admission.waiting` and under `admission.blocked`, never under `admission.active`, which is how a reader tells it from an issue a person parked, which is in none of the three.
 A person's `todo` on a started child re-enters it at `admitted` inside its live tree, where it holds the slot it took, unless a wait of the two above takes that slot back.
 Work already under way is never stopped, and no link undoes its admission, though a wait gives its slot back as above; those are the two exemptions:
@@ -1122,7 +1122,7 @@ A later version of a step's document closes that step until someone approves the
 register_gate takes the step the document is for, and refuses a call that names none where the deployment gates more than one step (`GATE_STEP_REQUIRED`, 400), a step the deployment does not gate (`GATE_STEP_NOT_CONFIGURED`, 409) and a document that is not that step's document of that issue (`GATE_STEP_DOCUMENT_MISMATCH`, 409).
 It reads the issue's Dispatch event sequence, then the document's approval, and refuses a version above the latest one Dispatch shows (`VERSION_NOT_IN_DISPATCH`), since no person's review could open a gate on a version Dispatch never wrote;
 the gate is registered at the newer of the caller's version and Dispatch's.
-A registration Dispatch already shows approved at its latest version opens the gate at registration, and the root starts planning at its next slot, once no open child stands under it;
+A registration Dispatch already shows approved at its latest version opens the gate at registration, and the root starts planning once it waits on no other issue, neither an open child under it nor an unfinished `blocked_by` link;
 one Dispatch shows changes requested at its latest version closes it with the architect told.
 A registration that finds the gate of its document already open at that version tells the architect nothing again.
 A registration older than the gate's newest version changes nothing but still queues the gate seed at the gate's version, and one whose read of Dispatch began before the review the gate already holds at that version is the older reader

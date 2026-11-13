@@ -1672,7 +1672,8 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				// The root's tree already runs: only a reason it may not resume in its own
 				// session holds it here (its label gone, a foreign Dispatch claim), which
 				// releaseUnslotted takes out of the workflow on this same pass. Its links hold
-				// nothing here: a root waiting on a person keeps its row through a wait (blockers.waitsOf).
+				// nothing here: a root waiting on a person keeps its row through a wait
+				// (blockers.waitsOf).
 				reason, err := workflow.Unresumable(ctx, a.store, tx, issue)
 				if err != nil {
 					return admitted, released, fmt.Errorf("check whether answered root %s can resume: %w", issue.Key, err)

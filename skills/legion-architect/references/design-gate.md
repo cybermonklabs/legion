@@ -155,13 +155,15 @@ once for each of them, each on that step's own document. Under `Design gate step
 the spec and register it with `register_gate` at its current version, with no `step` and no
 approval step: do not request approval and do not wait for `design-approved`; the gate opens at
 registration. File every child of your decomposition before that registration, since the gate's
-opening starts the root's own first phase unless Dispatch shows an open child under it.
+opening starts the root's own first phase unless the root waits on another issue, an open child
+under it or a `blocked_by` link to an issue that is not `done`.
 
 ## The armed gate
 
 Run this exact sequence for each gated step, before the tree's work starts, with every child of
 your decomposition filed before step 4, since the gate's opening starts the root's own first
-phase unless Dispatch shows an open child under it. One approval request covers the `criteria`
+phase unless the root waits on another issue, an open child under it or a `blocked_by` link to an
+issue that is not `done`. One approval request covers the `criteria`
 and the `spec` step together (step 4), and each of them is registered on its own document
 (step 5); the `decisions` step is a request of its own.
 

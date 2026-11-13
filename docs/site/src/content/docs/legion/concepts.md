@@ -184,8 +184,8 @@ A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
 questions until the issue closes, and giving a slot back for a wait stops nothing either — no
 claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
-The worker at work goes on, but the start of the issue's next phase waits until the issue
-holds a slot again.
+The worker at work goes on, but every start of a phase worker of the issue, its next phase's or a
+restart of its current one, waits until the issue holds a slot again.
 `legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
 never under `admission.active`, which is how you tell it from an issue a person parked, which is
 in none of the three.
