@@ -61,19 +61,21 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
 // in waiting at once, the one overlap the contract states. Three more are the running tree's
-// ordinary shapes, and they are what the disjointness of the lists turns on: each is a root
-// holding one of the cap's slots in this state, so a root whose design gate is shut, one whose
-// children go first and one an unfinished link holds each stand in active with no word against
-// them. A held list built from the ladder alone, rather than from the issues the slots
-// and the line leave behind, would give all three a word and claim the daemon runs nothing of a
-// tree it is running.
+// ordinary shapes, and they are what the disjointness of the lists turns on, each in the state
+// the admission pass leaves it in: a root whose design gate is shut holds its slot and stands in
+// active, and a root whose children go first and one an unfinished link holds have each given
+// their slot back for that wait (admit.releaseSlotsForWaits) and stand in waiting, with no word
+// against any of them. A held list built from the ladder alone, rather than from the issues the
+// slots and the line leave behind, would give all three a word and claim the daemon runs nothing
+// of a tree it is running.
 //
-// admission.blocked is read as well: it keeps its own rows and its overlaps with all three lists,
-// so the child a link holds keeps its row there while it stands in held, and the root whose links
-// its promotion reads keeps its row there while it stands in waiting.
+// admission.blocked is read as well: it keeps its own rows and its overlaps with the lists, so
+// the child a link holds keeps its row there while it stands in held, and the two roots that gave
+// their slot back for a wait keep theirs there while they stand in waiting.
 func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	opened := projectedAt.Add(-time.Hour)
 	answeredAt := projectedAt.Add(-30 * time.Minute)
+	releasedAt := projectedAt.Add(-45 * time.Minute)
 
 	// A tree a person closed and a tree a person parked. Neither root is in the workflow, so
 	// neither is a candidate for a word of its own, and each holds its member where it stands.
@@ -99,20 +101,24 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	// gate, and a member of its tree.
 	gatedRoot := treeRoot("LEGION-160", "todo", phase.Admitted)
 	gatedMember := treeMember("LEGION-161", "LEGION-160", "LEGION-160", "todo", phase.Admitted)
-	// A running tree under an open gate: its root holds a slot and waits for the one open child
-	// Dispatch shows under it, and its members carry three of the words. The issue in merging is
+	// A running tree under an open gate: its root waits for the one open child Dispatch shows
+	// under it, so the admission pass has taken its slot back for that wait and marked it
+	// (admit.releaseSlotsForWaits, record.Issue.ReleasedForWaitAt), and its members carry three of
+	// the words. The issue in merging is
 	// an ancestor the daemon has accepted (record.Accepted) and holds its slot, nothing of the
 	// issue under it starts before that close, the issue at work that holds no row is the one the pass names nowhere,
 	// and the issue at work that holds one is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
+	openRoot.ReleasedForWaitAt = &releasedAt
 	blockedChild := treeMember("LEGION-171", "LEGION-170", "LEGION-170", "todo", phase.Admitted)
 	merging := treeMember("LEGION-172", "LEGION-170", "LEGION-170", "needs_review", phase.Merging)
 	beneathMerging := treeMember("LEGION-173", "LEGION-170", "LEGION-172", "todo", phase.Admitted)
 	unplaced := treeMember("LEGION-174", "LEGION-170", "LEGION-170", "in_progress", phase.Implementing)
 	slotHolder := treeMember("LEGION-175", "LEGION-170", "LEGION-170", "in_progress", phase.Implementing)
-	// A second running tree, whose root an unfinished Dispatch link names and whose member waits
-	// for a child nobody has released.
+	// A second running tree, whose root an unfinished Dispatch link names, so the pass has taken
+	// its slot back for that wait as well, and whose member waits for a child nobody has released.
 	linkedRoot := treeRoot("LEGION-180", "todo", phase.Admitted)
+	linkedRoot.ReleasedForWaitAt = &releasedAt
 	parentOfOpen := treeMember("LEGION-181", "LEGION-180", "LEGION-180", "todo", phase.Admitted)
 	// A root a person answered, which waits in the line on the slot its wait kept.
 	answeredRoot := treeRoot("LEGION-190", "in_progress", phase.AwaitingPerson)
@@ -126,9 +132,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		slots: []record.Slot{
 			{Issue: "LEGION-150", Index: 0, AdmittedAt: projectedAt},
 			{Issue: "LEGION-160", Index: 1, AdmittedAt: projectedAt},
-			{Issue: "LEGION-170", Index: 2, AdmittedAt: projectedAt},
 			{Issue: "LEGION-175", Index: 3, AdmittedAt: projectedAt},
-			{Issue: "LEGION-180", Index: 4, AdmittedAt: projectedAt},
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: projectedAt},
 			{Issue: "LEGION-172", Index: 6, AdmittedAt: projectedAt},
 		},
@@ -176,14 +180,15 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 
 	// LEGION-172, the accepted ancestor in merging, holds the last slot row.
-	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-175", "LEGION-180", "LEGION-190", "LEGION-172"}
+	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-175", "LEGION-190", "LEGION-172"}
 	if !reflect.DeepEqual(got.Admission.Active, wantActive) {
-		t.Fatalf("admission.active = %#v, want %#v: every issue holding a slot row, the three roots a hold keeps out of the line among them",
+		t.Fatalf("admission.active = %#v, want %#v: every issue holding a slot row, the roots a hold keeps out of the line among them, and neither root that gave its slot back for a wait",
 			got.Admission.Active, wantActive)
 	}
-	// The root whose gate opened and the root a person answered are the work that came back,
-	// oldest first; the root waiting for its tree to be opened starts after them.
-	wantWaiting := []string{"LEGION-180", "LEGION-190", "LEGION-130"}
+	// The two roots that gave their slot back for a wait and the root a person answered are the
+	// work that came back, oldest first; the root waiting for its tree to be opened starts after
+	// them.
+	wantWaiting := []string{"LEGION-170", "LEGION-180", "LEGION-190", "LEGION-130"}
 	if !reflect.DeepEqual(got.Admission.Waiting, wantWaiting) {
 		t.Fatalf("admission.waiting = %#v, want %#v", got.Admission.Waiting, wantWaiting)
 	}
@@ -211,8 +216,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	}
 	// The one overlap the contract states: an issue holding a slot whose work came back waits in
 	// the line for its next turn and is promoted without taking a second row.
-	if want := []string{"LEGION-180", "LEGION-190"}; !reflect.DeepEqual(both, want) {
-		t.Fatalf("the issues standing in active and in waiting = %#v, want %#v: the root whose gate opened and the root a person answered",
+	if want := []string{"LEGION-190"}; !reflect.DeepEqual(both, want) {
+		t.Fatalf("the issues standing in active and in waiting = %#v, want %#v: the root a person answered",
 			both, want)
 	}
 
@@ -231,13 +236,14 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		}
 	}
 
-	// admission.blocked keeps its rows and its overlaps with all three lists: the child a link
-	// holds stands in held, the root whose links its promotion reads stands in waiting, and the
-	// root whose own first phase waits for its open child stands in active.
+	// admission.blocked keeps its rows and its overlaps with the lists: the child a link holds
+	// stands in held, and the root whose own first phase waits for its open child and the root an
+	// unfinished link names stand in waiting, having given their slot back for that wait.
 	wantBlocked := []api.BlockedIssue{
 		{Issue: "LEGION-130", BlockedBy: []string{"LEGION-903"}},
 		{Issue: "LEGION-170", BlockedBy: []string{"LEGION-171"}},
 		{Issue: "LEGION-171", BlockedBy: []string{"LEGION-900"}},
+		{Issue: "LEGION-180", BlockedBy: []string{"LEGION-901"}},
 		{Issue: "LEGION-181", BlockedBy: []string{"LEGION-182"}},
 	}
 	if !reflect.DeepEqual(got.Admission.Blocked, wantBlocked) {

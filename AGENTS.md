@@ -1004,7 +1004,7 @@ Nothing of the work stops: no claim is suspended, no session ends, no phase move
 The worker at work goes on, but the start of the issue's next phase waits until the issue holds a slot again.
 The state names such an issue under `admission.waiting` and under `admission.blocked`, never under `admission.active`, which is how a reader tells it from an issue a person parked, which is in none of the three.
 A person's `todo` on a started child re-enters it at `admitted` inside its live tree, where it holds the slot it took, unless a wait of the two above takes that slot back.
-Work already under way is never stopped, and its admission is never re-checked, and those are the two exemptions:
+Work already under way is never stopped, and no link undoes its admission, though a wait gives its slot back as above; those are the two exemptions:
 an issue that carries a run into a tree of its own is admitted whatever its links say, and so is a tree that ran, taken back after it finished and lingered, which starts again at its person's `todo`;
 a blocker added to a running tree's issue starts nothing over and stops nothing: the worker at work goes on, the issue gives its slot back unless it is one of the three roots above, and the start of its next phase waits until it holds a slot again.
 Two backstops catch a close no event brought:
@@ -1065,7 +1065,7 @@ so does a session's reply that hands the last item still with the person back to
 A session's answer or resolution of any other ask, and a person's act Dispatch recorded before the wait began, which the architect read before it handed the turn back, answer nothing.
 An answered root goes into the waiting line's first part, among the issues whose work came back, oldest first by the moment its work came back, and so behind every issue of that part that came back before it, a root's own first phase included, whatever its Dispatch links say (its tree already runs), and its promotion resumes the same architect session with a task naming what answered it, how the spec stands, what is still with the person and what waits on the architect;
 the resume takes no further slot, since an answered root holds the one it took when the daemon started it, so it resumes however full the cap is, whether or not its design gate has ever opened;
-the root's own first phase then stands among the issues whose work came back, oldest first, by the moment its design gate opened, and starts on the row the root already holds unless an open child still stands under it, which gives that row back as the Admission paragraph says, while a child it releases holds none and waits in the line by the Dispatch rank of its tree's root;
+the root's own first phase then stands among the issues whose work came back, oldest first, by the moment its design gate opened, and starts on the row the root already holds unless it waits on another issue, an open child under it or a `blocked_by` link to an issue that is not `done`, which gives that row back as the Admission paragraph says, while a child it releases holds none and waits in the line by the Dispatch rank of its tree's root;
 an approval that answered it is told by that task, with no `design-approved` notice beside it.
 Its tree stays live while it waits, so its children do not become orphans;
 no child of it starts while it waits, even once its design gate is open, and they start with its resume, each once.
