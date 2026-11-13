@@ -65,7 +65,7 @@ func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
 }
 
 // A root architect that holds only the daemon's own delivery of a relaunch's sentence, not yet
-// taken, owes no work: that delivery carries no run, phase or assignment and names no person's
+// taken, owes no work: that delivery carries no run, phase or entry and names no person's
 // decision, and the architect stays live through the wait to read it. So it holds neither the
 // root's wait on a person nor the telling of a person's act after the hand-back, where a task the
 // architect has not taken holds both (owed).

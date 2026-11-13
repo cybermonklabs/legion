@@ -520,19 +520,27 @@ type RequestDeliver struct {
 	// Generation is the issue generation the task belongs to, and is what a completion reported
 	// for it is attributed to. An operator's own task names none.
 	Generation uint64
-	// Assignment is the task the issue's current phase hands the role, which the workflow minted
-	// for the start that queued this delivery (record.SuperviseRequest.Assignment). A completion is
-	// held to it as well as to the run, since every phase entry of one run carries that run. A task
-	// of no assignment — an operator's own, a resume, a production check's look — names none, and
-	// leaves the assignment the claim is serving alone.
-	Assignment string
+	// Entry is the phase entry the task is of, as the transition raised it on the role's phases
+	// row for the start that queued this delivery (record.SuperviseRequest.Entry). A completion
+	// is held to it as well as to the run, since every phase entry of one run carries that run. A
+	// task of no entry — an operator's own, and every start of no entry
+	// (record.SuperviseRequest.Entry, which lists them) — names none, and leaves the entry the
+	// claim is serving alone. It is also what decides a repeat: a request whose entry the claim
+	// has already been queued a task of (Claim.GivenEntry) queues nothing (queue).
+	Entry int64
+	// ResendEntry marks a request that hands the role the work of the entry its phases row
+	// already names (record.SuperviseRequest.ResendEntry, set by the held phase's retry): the
+	// entry test above would decline it, so queue decides such a request by its outbox row
+	// alone.
+	ResendEntry bool
 	// CheckLook is the look of a closed issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
 	CheckLook CheckLook
 	// Row is the outbox row the task comes from (a workflow start), 0 for a task of no row (an
-	// operator's own, the controller's start message). A row the claim already queued a task from
-	// (Claim.DeliveredRows) queues nothing: its task was given once.
+	// operator's own, the controller's start message). It decides a repeat of a request that
+	// carries no entry: such a row the claim already queued a task from (Claim.DeliveredRows)
+	// queues nothing, its task having been given once.
 	Row int64
 	// Kept is what the task names of what its tree is owed, as the row recorded it
 	// (record.KeptDecisions, encoded JSON), carried onto the delivery and persisted with it, which
@@ -1723,7 +1731,7 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 // run after its admission (rpc-prompt-results.ts), so the session's next turn is that prompt's;
 // the Claude Code bridge takes one prompt at a time too (internal/claudebridge's Busy and
 // promptRun). Without it, a start after the five-second wait confirmed nothing: the worker's
-// completion in that turn was refused for the task's assignment, and the task was sent again as
+// completion in that turn was refused as the earlier task's, and the task was sent again as
 // the turn ended (dispatch://INFRA-3276).
 // A start taken this way that was in fact another input's turn is corrected by the prompt's own
 // result when it comes back not invoked: the task goes back to waiting and that turn's end sends

@@ -231,7 +231,7 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 
 // A root architect relaunched holding nothing — its goal-red-team reading started, its turn
 // ended, its process gone — is given a delivery of the daemon's own that carries the sentence
-// alone, with no phase, no run and no assignment, and is sent it at once. Its catch-up opens with
+// alone, with no phase, no run and no entry, and is sent it at once. Its catch-up opens with
 // the same sentence.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testing.T) {
 	rig := newRootArchitectRig(t)
@@ -249,8 +249,8 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 	sentence := supervise.RelaunchSentence(ended)
 	held := rig.claim().Pending
 	if held == nil || !strings.HasPrefix(held.ID, relaunchDeliveryPrefix) || held.Task != sentence ||
-		held.Phase != "" || held.Generation != 0 || held.Assignment != "" {
-		t.Fatalf("the relaunched architect holds %+v, want the daemon's own delivery of the sentence, of no phase, run or assignment", held)
+		held.Phase != "" || held.Generation != 0 || held.Entry != 0 {
+		t.Fatalf("the relaunched architect holds %+v, want the daemon's own delivery of the sentence, of no phase, run or entry", held)
 	}
 	if sent := rig.lastPrompt(); sent.DeliveryID != held.ID || sent.Message != sentence {
 		t.Fatalf("the relaunched architect was sent %+v, want the sentence alone under %s", sent, held.ID)

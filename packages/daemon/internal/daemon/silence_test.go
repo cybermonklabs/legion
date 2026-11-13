@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -37,28 +38,39 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// silenceAssignment is what the issue's phase row already names for the role that works its
-// phase: the assignment the worker was last started under, and the one the repair hands it again
-// rather than minting a second (workflow's ResumeSlottedWorker).
-const silenceAssignment = "A1"
+// silenceEntry is the phase entry the issue's phase row already names for the role that works its
+// phase, and silenceEntryTask the work that entry was raised with: the entry the worker was last
+// given the work of, so a silent worker of these cases is level with its row and the repair
+// sends it the phase's resume task rather than that entry's work (workflow's repairSilence).
+const (
+	silenceEntry     int64 = 2
+	silenceEntryTask       = "Implement LEGION-207 again: the tester failed the round before."
+)
 
 // silentWorker is the worker these tests are about: a registered worker of the issue's pod, on
 // this daemon's contract, that has retired a confirmed task of the issue's one run — which is
-// every phase worker that has been given its phase's work and taken it.
+// every phase worker that has been given its phase's work and taken it — and was given the work
+// of silenceEntry.
 func silentWorker(role claim.Role) podUpdateRole {
 	worker := readyWorker(role)
 	worker.serving = 1
+	worker.given = silenceEntry
 	return worker
 }
 
-// assigns records the phase row of role with the assignment the issue's phase already gave it,
-// as the start that put the worker to work wrote it (workflow's assign). The repair reads that
-// row and nothing else to decide whether it can send a task at all.
-func (r *podUpdateRig) assigns(role claim.Role, assignment string) {
+// assigns records the phase row of role naming entry, the phase entry the issue's phase already
+// gave it, with the work of that entry, as the start that put the worker to work wrote it
+// (workflow's enter). The repair weighs the claim against that row to decide which work it sends
+// (workflow.OwedEntry); an entry of 0 is a row no transition raised, which names no work.
+func (r *podUpdateRig) assigns(role claim.Role, entry int64) {
 	r.t.Helper()
 	token := r.tokens[role]
+	row := record.PhaseRow{Issue: podUpdateIssue, Role: role, Claim: token, Entry: entry}
+	if entry > 0 {
+		row.EntryTask, row.EntryRaisedAt = silenceEntryTask, podUpdateStart
+	}
 	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.PutPhase(r.ctx, tx, record.PhaseRow{Issue: podUpdateIssue, Role: role, Claim: token, Assignment: assignment})
+		return r.records.PutPhase(r.ctx, tx, row)
 	}); err != nil {
 		r.t.Fatalf("record the phase row of the %s: %v", role, err)
 	}
@@ -206,19 +218,19 @@ func (r *podUpdateRig) drain() *outboxPublisher {
 }
 
 // aSilentPhaseWorker is the fixture every case below starts from: the issue's implementer, which
-// works the phase the issue stands in, with the assignment its phase row already names. beside
+// works the phase the issue stands in, level with the entry its phase row already names. beside
 // is every other role claim of the same issue the case holds, which is how a case stands a
 // worker the sweep must leave alone next to the one it must find.
 func aSilentPhaseWorker(t *testing.T, beside ...podUpdateRole) *podUpdateRig {
 	t.Helper()
 	rig := newPodUpdateRig(t, append([]podUpdateRole{silentWorker(claim.RoleImplementer)}, beside...)...)
-	rig.assigns(claim.RoleImplementer, silenceAssignment)
+	rig.assigns(claim.RoleImplementer, silenceEntry)
 	return rig
 }
 
 // assertPromptedWithItsPhasesTask waits for the task the repair sent to reach the worker's
-// connection and holds it to the task the record builds for the issue, with the assignment the
-// phase row names on the row that carried it.
+// connection and holds it to the task the record builds for the issue, the phase's resume task a
+// claim level with the entry its phase row names is sent, on the row that carried it.
 func assertPromptedWithItsPhasesTask(t *testing.T, rig *podUpdateRig, conn *fake.Conn, before int) {
 	t.Helper()
 	want := workflow.ResumePhaseTask(rig.issue())
@@ -316,7 +328,7 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	rig.sweepForSilence()
 
 	want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: worker, Generation: 1,
-		Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), Assignment: silenceAssignment, NeedsSlot: true}}
+		Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), ResumeTask: true, NeedsSlot: true}}
 	if got := rig.starts(); len(got) != 1 || got[0] != want[0] {
 		t.Fatalf("the supervise rows of %s = %+v, want %+v: the worker comes back on one start row carrying its phase's resume task",
 			podUpdateIssue, got, want)
@@ -402,7 +414,7 @@ func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 	}
 	for _, part := range []string{podUpdateIssue, string(worker), string(phase.Implementing),
 		last.Format(time.RFC3339), (podUpdateSilence + time.Minute).String(),
-		"wrote the start row that sends the phase's task again, under the assignment " + silenceAssignment} {
+		fmt.Sprintf("wrote the start row that sends the phase's task again, on phase entry %d its phase row names", silenceEntry)} {
 		if !strings.Contains(notice.Reason, part) {
 			t.Errorf("the notice's reason %q names no %q, which its architect needs to act on it", notice.Reason, part)
 		}
@@ -424,16 +436,16 @@ func TestSilentPhaseWorkerIsToldToItsArchitect(t *testing.T) {
 	}
 }
 
-// A phase row that names no assignment is resumed under none, as admission's own repair of a
-// slotted worker resumes one, and a silence whose repair the store refused is told to nobody at
+// A phase row that names no entry is resumed at none, as every start of a claim level with its
+// row is, and a silence whose repair the store refused is told to nobody at
 // all. The notice, the start row and the mark that the fact was applied commit together, so a
 // notice saying the start row was written is a notice whose start row is there, and a repair
 // that failed leaves the fact unapplied for the next sweep to read again (workflow's
 // workerSilent).
 func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
-	t.Run("the phase row names no assignment", func(t *testing.T) {
+	t.Run("the phase row names no entry", func(t *testing.T) {
 		rig := newPodUpdateRig(t, silentWorker(claim.RoleImplementer))
-		rig.assigns(claim.RoleImplementer, "")
+		rig.assigns(claim.RoleImplementer, 0)
 		rig.goesQuiet(claim.RoleImplementer)
 
 		rig.sweepForSilence()
@@ -445,13 +457,13 @@ func TestSilentPhaseWorkerWhoseRepairTheRecordShapesOrRefuses(t *testing.T) {
 		if !strings.Contains(notices[0].Reason, "wrote the start row that sends the phase's task again") {
 			t.Errorf("the notice's reason %q does not say the daemon wrote the start row", notices[0].Reason)
 		}
-		if strings.Contains(notices[0].Reason, "under the assignment") {
-			t.Errorf("the notice's reason %q names an assignment the phase row does not hold", notices[0].Reason)
+		if strings.Contains(notices[0].Reason, "phase entry") {
+			t.Errorf("the notice's reason %q names an entry the phase row does not hold", notices[0].Reason)
 		}
 		want := []record.SuperviseRequest{{Op: "start", Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1,
-			Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), NeedsSlot: true}}
+			Phase: phase.Implementing, Task: workflow.ResumePhaseTask(rig.issue()), ResumeTask: true, NeedsSlot: true}}
 		if got := rig.starts(); len(got) != 1 || got[0] != want[0] {
-			t.Fatalf("the supervise rows of %s = %+v, want %+v: a row naming no assignment is resumed under none",
+			t.Fatalf("the supervise rows of %s = %+v, want %+v: a row naming no entry is resumed at none",
 				podUpdateIssue, got, want)
 		}
 	})
@@ -609,7 +621,7 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 				if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
 					return workflow.StartOrOwe(r.ctx, tx, r.records, podUpdateIssue, record.SuperviseRequest{Op: "start",
 						Tree: podUpdateIssue, Role: claim.RoleImplementer, Generation: 1, Phase: phase.Implementing,
-						Task: workflow.ResumePhaseTask(issue), Assignment: silenceAssignment}, r.clock.Now())
+						Task: workflow.ResumePhaseTask(issue), ResumeTask: true}, r.clock.Now())
 				}); err != nil {
 					r.t.Fatalf("queue the start that is already on its way: %v", err)
 				}
@@ -660,7 +672,7 @@ func TestSilentPhaseWorkerExits(t *testing.T) {
 			if quiet == "" {
 				quiet = roles[0].role
 			}
-			rig.assigns(quiet, silenceAssignment)
+			rig.assigns(quiet, silenceEntry)
 			if tc.set != nil {
 				tc.set(rig)
 			}
@@ -755,6 +767,9 @@ func (r *podUpdateRig) refusesTheStartRow() {
 // refusedStart is the error the staged store answers that write with.
 var refusedStart = errors.New("the store refused the start row")
 
+// refusingStartStore refuses every supervise row, through both writes one can take: EnqueueStart,
+// which a start of a phase worker is written through (workflow.StartOrOwe), and Enqueue, which
+// writes every other.
 type refusingStartStore struct {
 	record.Store
 }
@@ -764,6 +779,13 @@ func (s refusingStartStore) Enqueue(ctx context.Context, tx pgx.Tx, row record.O
 		return refusedStart
 	}
 	return s.Store.Enqueue(ctx, tx, row)
+}
+
+func (s refusingStartStore) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if row.Kind == record.OutboxKindSupervise {
+		return refusedStart
+	}
+	return s.Store.EnqueueStart(ctx, tx, row)
 }
 
 // podUpdateBackground is the longer bound the sweep reads a worker's own report of background
@@ -966,7 +988,7 @@ func TestWorkerBackgroundOfAMergedRootsMergerTellsNobody(t *testing.T) {
 	worker := claim.RoleMerger
 	rig := newPodUpdateRig(t, silentWorker(worker))
 	rig.s.cfg.WorkerBackground = podUpdateBackground
-	rig.assigns(worker, silenceAssignment)
+	rig.assigns(worker, silenceEntry)
 	rig.movesTo(phase.Merging)
 	rig.recordsItsPullRequest(record.PullRequestMerged)
 	rig.goesQuiet(worker)
@@ -994,7 +1016,7 @@ func TestWorkerBackgroundOfARoleWhoseCompletionWasAcceptedTellsNobody(t *testing
 	worker := claim.RoleImplementer
 	if err := pgx.BeginFunc(rig.ctx, rig.pool, func(tx pgx.Tx) error {
 		return rig.records.PutPhase(rig.ctx, tx, record.PhaseRow{Issue: podUpdateIssue, Role: worker, Claim: rig.tokens[worker],
-			Assignment: silenceAssignment, CompletedAt: rig.clock.Now()})
+			Entry: silenceEntry, EntryTask: silenceEntryTask, EntryRaisedAt: podUpdateStart, CompletedAt: rig.clock.Now()})
 	}); err != nil {
 		t.Fatalf("record the completion of the %s: %v", worker, err)
 	}

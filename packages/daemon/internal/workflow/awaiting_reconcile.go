@@ -430,7 +430,7 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // still queued for it, no claim yet, a claim still starting, or a task it has not confirmed.
 //
 // The daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch) is no work it was
-// given: it carries no run, phase or assignment and names no person's decision, only the sentence
+// given: it carries no run, phase or entry and names no person's decision, only the sentence
 // of what the relaunch ended, which the architect reads whether or not the root waits — entering
 // the wait leaves the architect running. So it holds neither the wait nor the telling of a
 // person's act, which would otherwise wait behind that sentence for as long as the agent's own

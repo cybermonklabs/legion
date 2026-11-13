@@ -54,48 +54,48 @@ func TestATaskQueuedBeforeReadyIsDeliveredOnceAtReady(t *testing.T) {
 	h.wantBudgets(Budgets{})
 }
 
-// The assignment a confirmed task's retire leaves on the claim, durably, beside the run: the
-// worker goes on working that assignment in whatever turn comes next — one an Envoy notice starts,
-// with no delivery behind it — and the completion it reports there is still that assignment's. A
-// later task that carries no assignment, a resume or a production check's look, moves the run on
-// and leaves the assignment alone, so a resumed worker's in-flight completion is never refused.
-func TestARetiredTasksAssignmentStaysOnTheClaimAndAResumeLeavesIt(t *testing.T) {
+// The phase entry a confirmed task's retire leaves on the claim, durably, beside the run: the
+// worker goes on working that entry in whatever turn comes next — one an Envoy notice starts,
+// with no delivery behind it — and the completion it reports there is still that entry's. A
+// later task that carries no entry, a resume or a production check's look, moves the run on
+// and leaves the entry alone, so a resumed worker's in-flight completion is never refused.
+func TestARetiredTasksEntryStaysOnTheClaimAndAResumeLeavesIt(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
-	h.must(RequestDeliver{Claim: testToken, Task: "test it", Generation: 7, Assignment: "A1"})
-	if p := h.pending(); p.Assignment != "A1" {
-		t.Fatalf("the queued delivery carries assignment %q, want the start's A1", p.Assignment)
+	h.must(RequestDeliver{Claim: testToken, Task: "test it", Generation: 7, Entry: 1})
+	if p := h.pending(); p.Entry != 1 {
+		t.Fatalf("the queued delivery carries entry %d, want the start's 1", p.Entry)
 	}
-	if stored, ok := h.store.delivery(testToken); !ok || stored.Assignment != "A1" {
-		t.Fatalf("the stored delivery is %+v, want it to carry A1: a restart reads the assignment back", stored)
+	if stored, ok := h.store.delivery(testToken); !ok || stored.Entry != 1 {
+		t.Fatalf("the stored delivery is %+v, want it to carry entry 1: a restart reads the entry back", stored)
 	}
 	h.must(StreamTurnStart{Claim: testToken})
-	if got := h.claim().ServingAssignment(); got != "A1" {
-		t.Fatalf("during the task's turn the claim serves assignment %q, want A1", got)
+	if got := h.claim().ServingEntry(); got != 1 {
+		t.Fatalf("during the task's turn the claim serves entry %d, want 1", got)
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
-	if stored := h.store.load(testToken); stored.ServingAssignmentID != "A1" || stored.ServingGeneration != 7 {
-		t.Fatalf("after the turn the stored claim serves assignment %q of run %d, want A1 of 7",
-			stored.ServingAssignmentID, stored.ServingGeneration)
+	if stored := h.store.load(testToken); stored.ServedEntry != 1 || stored.ServingGeneration != 7 {
+		t.Fatalf("after the turn the stored claim serves entry %d of run %d, want 1 of 7",
+			stored.ServedEntry, stored.ServingGeneration)
 	}
-	if got := h.claim().ServingAssignment(); got != "A1" {
-		t.Fatalf("after the turn the claim serves assignment %q, want A1: its next turn's completion is still this assignment's", got)
+	if got := h.claim().ServingEntry(); got != 1 {
+		t.Fatalf("after the turn the claim serves entry %d, want 1: its next turn's completion is still this entry's", got)
 	}
 
 	h.must(RequestDeliver{Claim: testToken, Task: "resume the phase", Generation: 8})
 	h.must(StreamTurnStart{Claim: testToken})
-	if got := h.claim().ServingAssignment(); got != "A1" {
-		t.Fatalf("during the resume's turn the claim serves assignment %q, want the A1 it was given: a resume hands out none", got)
+	if got := h.claim().ServingEntry(); got != 1 {
+		t.Fatalf("during the resume's turn the claim serves entry %d, want the 1 it was given: a resume hands out none", got)
 	}
 	h.must(StreamTurnEnd{Claim: testToken})
-	if stored := h.store.load(testToken); stored.ServingAssignmentID != "A1" || stored.ServingGeneration != 8 {
-		t.Fatalf("after the resume the stored claim serves assignment %q of run %d, want A1 of 8",
-			stored.ServingAssignmentID, stored.ServingGeneration)
+	if stored := h.store.load(testToken); stored.ServedEntry != 1 || stored.ServingGeneration != 8 {
+		t.Fatalf("after the resume the stored claim serves entry %d of run %d, want 1 of 8",
+			stored.ServedEntry, stored.ServingGeneration)
 	}
 }
 
 // The production check look a confirmed task's retire leaves on the claim, durably, beside the
-// run and the assignment: the checking agent goes on working that look in whatever turn comes
+// run and the entry: the checking agent goes on working that look in whatever turn comes
 // next, and the completion it reports there is still a report on that look (api/handoff.go). A
 // task of a phase takes it back, since a worker in the workflow again reports its phase.
 func TestARetiredLooksTaskLeavesItsLookOnTheClaimAndAPhaseTaskTakesItBack(t *testing.T) {
@@ -122,7 +122,7 @@ func TestARetiredLooksTaskLeavesItsLookOnTheClaimAndAPhaseTaskTakesItBack(t *tes
 		t.Fatalf("after the turn the claim serves look %+v, want %+v: its next turn's report is still this look's", got, look)
 	}
 
-	h.must(RequestDeliver{Claim: testToken, Task: "Continue Workflow. Issue: LEGION-209. Phase: testing.", Generation: 8, Phase: phase.Testing, Assignment: "A2"})
+	h.must(RequestDeliver{Claim: testToken, Task: "Continue Workflow. Issue: LEGION-209. Phase: testing.", Generation: 8, Phase: phase.Testing, Entry: 2})
 	h.must(StreamTurnStart{Claim: testToken})
 	if got := h.claim().ServingCheck(); got != (CheckLook{}) {
 		t.Fatalf("during the phase task's turn the claim serves look %+v, want none: its completion is the phase's", got)

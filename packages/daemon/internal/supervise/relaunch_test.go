@@ -100,7 +100,7 @@ func TestARelaunchSentenceGoesInFrontOfAPendingTask(t *testing.T) {
 }
 
 // A claim that holds nothing when its new process is ready is given a delivery of the daemon's own
-// that carries the sentence alone: no phase, no run, no assignment, an id the busy answer's
+// that carries the sentence alone: no phase, no run, no entry, an id the busy answer's
 // take-back keeps the prefix of (rotateTaskID). The acknowledgement tells nothing; the turn that
 // takes it does, and its retirement leaves the run the claim was serving where it was.
 func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
@@ -122,8 +122,8 @@ func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
 		t.Fatalf("the death recorded %+v, want an untold record of the subagent alone", ended)
 	}
 	p := h.pending()
-	if !relaunchTask(p.ID) || p.Phase != "" || p.Generation != 0 || p.Assignment != "" || p.Task != RelaunchSentence(ended) {
-		t.Fatalf("the relaunched claim holds %+v, want the daemon's own delivery of the relaunch's sentence, of no phase, run or assignment", p)
+	if !relaunchTask(p.ID) || p.Phase != "" || p.Generation != 0 || p.Entry != 0 || p.Task != RelaunchSentence(ended) {
+		t.Fatalf("the relaunched claim holds %+v, want the daemon's own delivery of the relaunch's sentence, of no phase, run or entry", p)
 	}
 	sent := h.wantPrompts(2)[1]
 	if sent.DeliveryID != p.ID || sent.Message != RelaunchSentence(ended) {

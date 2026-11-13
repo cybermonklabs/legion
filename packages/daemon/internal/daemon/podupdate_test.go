@@ -85,7 +85,9 @@ var podUpdateStart = time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
 // records one the rest of the issue has left behind; suspendedBy is who suspended a claim seeded
 // suspended; serving is the issue generation of the last confirmed task this claim retired, zero
 // for a claim that has retired none, which is what says which run of the issue its worker is on
-// (supervise.Claim.ServingRun, which the silence sweep reads).
+// (supervise.Claim.ServingRun, which the silence sweep reads); given is the phase entry the claim
+// was last given work of (supervise.Claim.GivenEntry), which a start weighs against the entry its
+// role's phases row names (workflow.OwedEntry).
 type podUpdateRole struct {
 	role        claim.Role
 	state       supervise.ClaimState
@@ -99,6 +101,7 @@ type podUpdateRole struct {
 	pod         string
 	suspendedBy supervise.SuspendSource
 	serving     uint64
+	given       int64
 }
 
 // readyWorker is the ordinary case: a registered worker of the issue's pod, on this daemon's
@@ -145,7 +148,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		c := supervise.Claim{
 			Token: token, Project: podUpdateProject, Tree: podUpdateIssue, Issue: podUpdateIssue, Role: role.role,
 			Generation: 1, State: role.state, PluginContract: role.contract, SuspendedBy: role.suspendedBy,
-			ServingGeneration: role.serving,
+			ServingGeneration: role.serving, GivenEntry: role.given,
 		}
 		if role.session {
 			c.Session = "ses_" + string(role.role)

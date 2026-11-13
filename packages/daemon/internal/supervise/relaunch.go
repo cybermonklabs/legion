@@ -139,7 +139,7 @@ func relaunchTaskID() string { return relaunchTaskPrefix + rand.Text() }
 func relaunchTask(id string) bool { return strings.HasPrefix(id, relaunchTaskPrefix) }
 
 // Relaunch is whether d is the daemon's own delivery of a relaunch's record (queueRelaunch): no
-// work of the claim's — no phase, no run, no assignment — only the sentence of what the last
+// work of the claim's — no phase, no run, no entry — only the sentence of what the last
 // let-go of its process ended. A reader that asks whether a claim still owes work it was given
 // reads such a delivery as none (workflow's owed), as a death's charge does (chargeDeath).
 func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
@@ -151,7 +151,7 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // (dispatch://INFRA-3276 R3). A claim that holds a delivery needs none: its task carries the
 // sentence in front of it (Delivery.message).
 //
-// The delivery has no phase, no run, no assignment and no look, so nothing holds it back
+// The delivery has no phase, no run, no entry and no look, so nothing holds it back
 // (phaseHolds, asksRoot), no working copy is adopted for it (adopts), and its confirmation and
 // retirement leave what the claim is serving alone and end no phase (serving, settle). Its id is
 // relaunchTaskID's. The record is told when a turn confirms a prompt of it (confirm), as a task's

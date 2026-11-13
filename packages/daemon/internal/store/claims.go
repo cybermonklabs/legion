@@ -37,7 +37,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
-	c.serving_assignment, c.serving_check_look, c.serving_check_opened_at,
+	c.given_entry, c.served_entry, c.serving_check_look, c.serving_check_opened_at,
 	c.agent_secrets_enrollment, c.agent_secrets_enrollment_incarnation, c.suspended_by,
 	c.plugin_contract, c.plugin_relaunch_for, c.delivered_rows,
 	c.last_turn_start, c.last_turn_end,
@@ -48,7 +48,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
 	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
-	d.delivery_id, d.task, d.phase, d.generation, d.assignment, d.check_look, d.check_opened_at,
+	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
 	d.kept_decisions, d.provider_error_retries, d.provider_error_note
@@ -254,9 +254,9 @@ func (s *Store) ClaimActivity(ctx context.Context, token claim.Token, generation
 // <> 'retired'` on the update — so a second write of a claim that is already retired leaves the
 // stop's own moment untouched. What reads it is admit's stopOutlivedStart, against the write
 // mark of a start row the issue owes: outbox rows take their numbers from that same sequence,
-// through the column's own default on every insert and explicitly in
-// record.Store.ReplaceOwedStart's rewrite of a start (and ReplaceOutboxPayload's of a
-// ready_merge row), so one sequence numbers both sides.
+// through the column's own default on every insert — the start written in place of one an
+// issue already owed among them (record.Store.EnqueueStart) — so one sequence numbers both
+// sides.
 //
 // An upsert of a claim already in the table evaluates its insert's case too, since the row to
 // insert is built before the conflict is found, so a write of a retired claim takes a number
@@ -331,7 +331,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 	_, err := db.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, tree_epoch,
 		session, session_file, locator, state, failure, launch_failures, deaths, prompt_failures, prompt_retires,
 		boot_token_hash, capability_hash, uncertain_streak, last_start_row,
-		serving_generation, serving_assignment, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
+		serving_generation, given_entry, served_entry, agent_secrets_enrollment, agent_secrets_enrollment_incarnation, suspended_by,
 		plugin_contract, plugin_relaunch_for, delivered_rows,
 		last_turn_start, last_turn_end,
 		last_death_cause, last_start_failure, last_ready, turn_outcomes, abandoned_session,
@@ -342,6 +342,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
+		$55,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -357,7 +358,8 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		retired_at_write_mark = case when excluded.state = 'retired' and claims.state <> 'retired'
 			then nextval('outbox_write_mark_seq') else claims.retired_at_write_mark end,
 		serving_generation = excluded.serving_generation,
-		serving_assignment = excluded.serving_assignment,
+		given_entry = excluded.given_entry,
+		served_entry = excluded.served_entry,
 		agent_secrets_enrollment = excluded.agent_secrets_enrollment,
 		agent_secrets_enrollment_incarnation = excluded.agent_secrets_enrollment_incarnation,
 		suspended_by = excluded.suspended_by,
@@ -410,7 +412,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
 		c.Session, c.SessionFile, locator, string(c.State), c.Failure,
 		c.Budgets.LaunchFailures, c.Budgets.Deaths, c.Budgets.PromptFailures, c.Budgets.PromptRetires,
-		c.BootTokenHash, c.CapabilityHash, c.UncertainStreak, c.LastStartRow, int64(c.ServingGeneration), c.ServingAssignmentID,
+		c.BootTokenHash, c.CapabilityHash, c.UncertainStreak, c.LastStartRow, int64(c.ServingGeneration), c.GivenEntry, c.ServedEntry,
 		enrollmentID, enrollmentIncarnation, string(c.SuspendedBy),
 		c.PluginContract, c.PluginRelaunchFor, delivered,
 		instant(c.LastTurnStart), instant(c.LastTurnEnd),
@@ -605,7 +607,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		}
 	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
-		phase, generation, assignment, check_look, check_opened_at, queued_at, delivered_at, marked_by,
+		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
 		provider_error_retries, provider_error_note)
@@ -613,7 +615,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		coalesce($19::jsonb, '{}'::jsonb), $20, $21)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
-		assignment = excluded.assignment, check_look = excluded.check_look,
+		entry = excluded.entry, check_look = excluded.check_look,
 		check_opened_at = excluded.check_opened_at, queued_at = excluded.queued_at,
 		delivered_at = excluded.delivered_at, marked_by = excluded.marked_by, confirmed_at = excluded.confirmed_at,
 		interrupted = excluded.interrupted, prompted = excluded.prompted,
@@ -622,7 +624,7 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
 		provider_error_note = excluded.provider_error_note`,
-		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Assignment,
+		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
@@ -713,7 +715,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		markedBy                    *string
 		deliveryPhase               *string
 		deliveryGeneration          *int64
-		deliveryAssignment          *string
+		deliveryEntry               *int64
 		deliveryCheckLook           *int
 		deliveryCheckOpened         *time.Time
 		servingGeneration           int64
@@ -746,7 +748,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.SessionFile, &locator, &state, &c.Failure, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
-		&c.LastStartRow, &servingGeneration, &c.ServingAssignmentID, &servingCheckLook, &servingCheckOpened,
+		&c.LastStartRow, &servingGeneration, &c.GivenEntry, &c.ServedEntry, &servingCheckLook, &servingCheckOpened,
 		&enrollmentID, &enrollmentIC, &by,
 		&c.PluginContract, &c.PluginRelaunchFor, &c.DeliveredRows,
 		&turnStart, &turnEnd,
@@ -757,7 +759,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
-		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryAssignment, &deliveryCheckLook, &deliveryCheckOpened,
+		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -829,7 +831,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			Task:        *task,
 			Phase:       phase.Phase(*deliveryPhase),
 			Generation:  uint64(orZeroInt(deliveryGeneration)),
-			Assignment:  *deliveryAssignment,
+			Entry:       orZeroInt(deliveryEntry),
 			CheckLook:   supervise.CheckLook{Look: *deliveryCheckLook, OpenedAt: orZero(deliveryCheckOpened)},
 			QueuedAt:    *queuedAt,
 			DeliveredAt: orZero(delivered),
