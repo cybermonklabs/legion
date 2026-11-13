@@ -60,6 +60,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/wake"
 	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/redact"
 )
@@ -327,9 +328,15 @@ func main() {
 		secretStore, credentials = secrets.AWS{Client: sm, KMS: kms.NewFromConfig(awsCfg), KeyARN: cfg.SecretsKMSKey}, "aws-sdk"
 	}
 	slog.Info("secret store", "store", cfg.SecretsStore, "credentials", credentials)
+	// The one registry every metric this process serves is built on, and the one the metrics
+	// port serves (BROKER_METRICS_LISTEN_ADDR). The policy's store-read counter is built on it
+	// here, before the loader that counts through it takes the first load, so the boot's own
+	// reads are counted with every read after them.
+	registry := metrics.New()
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
-	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest}
+	loader := policy.Loader{Store: secretStore, Prefix: cfg.SecretsPrefix, Services: serviceNames(cfg), ServiceAccounts: cfg.ServiceAccountSecrets, AirlockDigest: rules.Digest,
+		StoreReads: policy.NewStoreReads(registry)}
 	// One key source per issuer, read by everything that needs that issuer's keys: the verifiers
 	// discoverVerifiers builds and, for the cluster's issuer and Google's, the RFC 8693 exchange
 	// below, which resolves a subject token's own key through the same *oidc.Keys. So the boot
@@ -401,6 +408,8 @@ func main() {
 		// airlock: without a rules file no name is ever held back, so there is nothing for a
 		// proxy to carry and no port to bind.
 		ListenAirlock: airlockListen(cfg),
+		// The metrics port, bound by the same boot after the other two, on every deployment.
+		ListenMetrics: listenTCP(cfg.MetricsListenAddr),
 		ListenWait:    rereadListenWait,
 		Catchup:       func(serving context.Context, current *policy.Current) error { return current.Refresh(serving) },
 		Log:           slog.Default(),
@@ -429,6 +438,9 @@ func main() {
 	if started.AirlockListener != nil {
 		slog.Info("airlock proxy listening", "addr", started.AirlockListener.Addr().String())
 	}
+	// Logged as the API's line is, once its bind has succeeded, so a rig that starts many brokers
+	// on port 0 reads each one's own metrics address from its own log.
+	slog.Info("broker metrics listening", "addr", started.MetricsListener.Addr().String())
 
 	lease, sweep := time.Duration(cfg.LeaseSeconds)*time.Second, time.Duration(cfg.SweepSeconds)*time.Second
 	enr := &enroll.Service{
@@ -641,6 +653,16 @@ func main() {
 		})
 		airlockProxy.Store(proxy)
 	}
+	// The metrics port's own server, on the socket the boot bound: the scrape of the registry
+	// every metric above is built on, and nothing else (metricsHandler). Its timeouts are the
+	// API's, since a scraper is a caller like any other to the server.
+	metricsServer := &http.Server{
+		Handler:           metricsHandler(registry),
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       2 * time.Minute,
+	}
 	// From here a second signal belongs to the drain below rather than to the watchdog's exit:
 	// the socket is bound and srv.Serve is about to take it, so there are requests to finish and
 	// a drain whose job is finishing them. Closing serveStarted before srv.Serve starts is what
@@ -670,6 +692,12 @@ func main() {
 			}
 		}()
 	}
+	go func() {
+		if err := metricsServer.Serve(started.MetricsListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("broker: metrics serve", "error", err)
+			stopNotify()
+		}
+	}()
 
 	<-ctx.Done()
 	// nil when this deployment has no airlock, which is what brokerStop reads as "there is no
@@ -680,7 +708,7 @@ func main() {
 	}
 	stop(context.Background(), brokerStop{
 		Drain: drain, DrainNow: drainNow, Draining: draining.Store,
-		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown,
+		Shutdown: srv.Shutdown, ShutdownAirlock: airlockShutdown, ShutdownMetrics: metricsServer.Shutdown,
 		EndServing: started.EndServing, CloseStore: st.Close,
 		Log: slog.Default(),
 	})
@@ -966,6 +994,16 @@ func airlockListen(cfg config.Config) func() (net.Listener, error) {
 		return nil
 	}
 	return listenTCP(cfg.AirlockListenAddr)
+}
+
+// metricsHandler is what the metrics port serves: registry's scrape at GET /metrics in the
+// Prometheus text format, and nothing else - every other path is 404 and any other method there
+// is 405 - so a scraper reaches no route of the API through it, and no caller of the API reaches
+// the scrape (the API's mux registers no /metrics).
+func metricsHandler(registry *metrics.Registry) http.Handler {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", registry.Handler())
+	return mux
 }
 
 // airlockCACertificatePEM is the certificate every airlock release hands a command: the

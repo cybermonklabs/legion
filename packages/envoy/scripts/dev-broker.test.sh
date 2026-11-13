@@ -11,7 +11,8 @@
 # real). The broker stub logs the JSON "broker listening" line, addr 127.0.0.1:<its own PID>,
 # exactly like the real cmd/broker does once it binds — using its own PID as a stand-in for the
 # kernel-assigned port a real Listen would report, since two concurrently running stub processes
-# always have distinct PIDs.
+# always have distinct PIDs — and then its "broker metrics listening" line, addr
+# 127.0.0.1:2<its own PID>, for the metrics port bound beside it.
 #
 # Runs two instances of dev-broker.sh concurrently — the actual scenario
 # BROKER_LISTEN_ADDR=127.0.0.1:0 exists to make safe — each with its own docker/curl call-log
@@ -28,12 +29,14 @@
 # issuer on exit; (g) that same issuer serves the code flow for the broker's own sign-in
 # client and signs the approver in, the broker's BROKER_SIGNIN_* naming that issuer, client,
 # domain and a 0600 secret file in the run's workdir, and the banner names the broker's own
-# approval page; and (h) each instance registers its one service under both halves a service
+# approval page; (h) each instance registers its one service under both halves a service
 # needs - BROKER_SERVICE_LOGINS for the account that logs in as it and BROKER_SERVICES for the
 # account its pods run as - and its banner says how to take the secret that service owns, with
 # the pod uid its own issuer bound, exports that uid and that service name for a check script
 # to enrol the same session by, and runs its --github-token example's curl in a shell of its
-# own, so the child expands the name the grant gave it.
+# own, so the child expands the name the grant gave it; and (i) each instance's broker binds its
+# metrics on a port the kernel picks (BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0), and its banner
+# prints the metrics address that broker logged.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
@@ -114,12 +117,13 @@ chmod +x "${fake_bin_dir}/psql"
 
 # --- Fake go: "go build -o <path> ./cmd/<pkg>" installs a stub executable at <path> instead of
 # compiling. The client stubs are never run by dev-broker.sh (it only prints their directory); the
-# broker stub logs the issuer, the callers and the sign-in client it was configured with, then the
-# JSON "broker listening" line with its addr field, exactly like the real cmd/broker does once it
-# binds — using its own PID as a stand-in for the kernel-assigned port a real Listen would
-# report, since two concurrently running stub processes always have distinct PIDs — and then
-# stays alive as the backgrounded "server" process dev-broker.sh waits on and kills during
-# cleanup. The dev-oidc-issuer stub writes each --token's file, logs the --code-flow client, the
+# broker stub logs the issuer, the callers, the sign-in client and the metrics address it was
+# configured with, then the JSON "broker listening" line with its addr field, exactly like the
+# real cmd/broker does once it binds — using its own PID as a stand-in for the kernel-assigned
+# port a real Listen would report, since two concurrently running stub processes always have
+# distinct PIDs — and the "broker metrics listening" line after it, 2<PID> standing in for that
+# port, and then stays alive as the backgrounded "server" process dev-broker.sh waits on and kills
+# during cleanup. The dev-oidc-issuer stub writes each --token's file, logs the --code-flow client, the
 # mode of the secret file it would read and the --sign-in-as person, then logs "issuer listening
 # url=..." as the real one does, its own PID standing in for its port the same way, and stays
 # alive until cleanup kills it. ---
@@ -230,7 +234,9 @@ if [[ $# -ne 0 ]]; then
 fi
 echo "fake broker: issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} service-logins=${BROKER_SERVICE_LOGINS:-} services=${BROKER_SERVICES:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-}" >&2
 echo "fake broker: sign-in issuer=${BROKER_SIGNIN_ISSUER:-} client=${BROKER_SIGNIN_CLIENT_ID:-} secret-file=${BROKER_SIGNIN_CLIENT_SECRET_FILE:-} domain=${BROKER_SIGNIN_DOMAIN:-}" >&2
+echo "fake broker: metrics-listen=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
+printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
 exec sleep 999999
 BROKER
     ;;
@@ -386,6 +392,19 @@ assert_instance_isolated() {
     exit 1
   fi
   printf 'PASS: %s exports the exact port its own broker logged as bound (%s)\n' "$label" "$bound"
+  # The metrics port: bound on a port the kernel picks, since a fixed 13382 is a port only one of
+  # the two concurrent instances could hold, and named in the banner as the address the broker
+  # logged for it, which is the one a reader scrapes.
+  local metrics
+  metrics="$(grep -o '"message":"broker metrics listening","addr":"127\.0\.0\.1:[0-9]\+"' "$log_file" | head -n1 | sed -E 's/.*"addr":"([^"]+)"$/\1/' || true)"
+  if [[ -z "$metrics" ]] || ! grep -qF "fake broker: metrics-listen=127.0.0.1:0" "$log_file" \
+    || ! grep -qF "export DEV_BROKER_METRICS_URL=http://${metrics}/metrics" "$log_file" \
+    || ! grep -qE "^  metrics: +http://${metrics//./\\.}/metrics " "$log_file"; then
+    cat "$log_file" >&2
+    echo "FAIL: $label does not start its broker with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0 and print the metrics address it logged (${metrics:-none logged})" >&2
+    exit 1
+  fi
+  printf 'PASS: %s binds its broker'"'"'s metrics on a port the kernel picks and prints the address it logged (%s)\n' "$label" "$metrics"
   if ! grep -q "database: *postgres://[^ ]*/${db}[? ]" "$log_file"; then
     cat "$log_file" >&2
     echo "FAIL: $label's broker database URL does not name its own database ($db)" >&2

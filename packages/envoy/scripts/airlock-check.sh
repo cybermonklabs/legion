@@ -312,8 +312,8 @@ start_extra_broker() { # <name> <VAR=value>...
 	shift
 	local log="$WORK_DIR/broker-$name.log"
 	: >"$log"
-	# Two ports the system picks, so this one never collides with the broker it was copied from.
-	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" "$@"
+	# Three ports the system picks, so this one never collides with the broker it was copied from.
+	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
 	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")
@@ -1336,8 +1336,9 @@ k7_dotfiles() {
 }
 
 # k7_broker starts the one broker this check's steps run through: a broker like the stack's,
-# whose environment comes from the running one, with the rules file, the two listening addresses
-# and the public URL replaced.
+# whose environment comes from the running one, with the rules file, the three listening addresses
+# and the public URL replaced; the metrics port is one the system picks, since nothing here
+# scrapes it and the stack's own brokers hold theirs.
 k7_broker() {
 	local d="$WORK_DIR/k7" api proxy
 	api="$(python3 -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1]); s.close()')"
@@ -1349,7 +1350,8 @@ k7_broker() {
 		BROKER_LISTEN_ADDR="127.0.0.1:$api" \
 		BROKER_PUBLIC_URL="$K7_API_URL" \
 		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:$proxy" \
-		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL"
+		BROKER_AIRLOCK_PROXY_URL="$K7_PROXY_URL" \
+		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	: >"$d/broker.log"
 	"${BROKER_ENV[@]}" "$BROKER_BIN" >"$d/broker.log" 2>&1 &
 	local started=$!
@@ -1609,7 +1611,7 @@ check_k7() {
 
 # k8a_start_broker starts a broker on one rules file and answers 0 when it refused to start for
 # that file, leaving why in K8A_WHY. Its environment is the running stack broker's own, with the
-# rules file and the two addresses replaced, so that what it refuses on is the rules file and
+# rules file and the three addresses replaced, so that what it refuses on is the rules file and
 # not a setting this function left out. It runs in the foreground under timeout, because what it
 # is here to see is a broker that never comes up.
 k8a_start_broker() { # <rules file> <label>
@@ -1618,7 +1620,8 @@ k8a_start_broker() { # <rules file> <label>
 		BROKER_PUBLIC_URL="http://127.0.0.1:0" \
 		BROKER_LISTEN_ADDR="127.0.0.1:0" \
 		BROKER_AIRLOCK_RULES_FILE="$1" \
-		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0"
+		BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" \
+		BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0"
 	"${BROKER_ENV[@]}" timeout 25 "$BROKER_BIN" >"$log" 2>&1
 	local status=$?
 	K8A_WHY="$(grep -m1 'fatal' "$log" | tr '\n' ' ')"

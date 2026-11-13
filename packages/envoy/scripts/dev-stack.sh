@@ -475,8 +475,10 @@ echo "dev-stack: dev-oidc-issuer $ISSUER_URL" >&2
 # signs in — and one the fleet's service owns, which this stack's machine reads and no person's
 # session does. BROKER_LISTEN_ADDR and BROKER_PUBLIC_URL are port 0: cmd/broker reads a public URL
 # whose port is 0 as "derive it from whatever address I bind", and the real one is read from its
-# own listening line below. BROKER_DRAIN_SECONDS=0 turns off the five-second drain that exists to
-# outlast a Kubernetes EndpointSlice propagation nothing here has. BROKER_ACCESS_TOKEN_SECONDS is
+# own listening line below. BROKER_METRICS_LISTEN_ADDR is port 0 too, so two stacks on one machine
+# never contend for the metrics port's fixed default. BROKER_DRAIN_SECONDS=0 turns off the
+# five-second drain that exists to outlast a Kubernetes EndpointSlice propagation nothing here
+# has. BROKER_ACCESS_TOKEN_SECONDS is
 # the caller's when it names one, else the broker's own default: a walk that must see a client
 # renew an access token sets it to a few seconds rather than waiting out the quarter hour (the
 # broker's floor is 1, and at 1 an answer's expires_in truncates to 0, which every client
@@ -500,6 +502,7 @@ env -i PATH="$PATH" \
   BROKER_ACCESS_TOKEN_SECONDS="${BROKER_ACCESS_TOKEN_SECONDS:-900}" \
   BROKER_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_PUBLIC_URL="http://127.0.0.1:0" \
+  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_MACHINE_LOGIN_URL="$DISPATCH_URL/credentials/machine" \
   BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
   BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \

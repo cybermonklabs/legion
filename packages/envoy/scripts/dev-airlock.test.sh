@@ -23,7 +23,8 @@
 # that the judge's four human-tier secrets are in the rules and the store as they must be for it
 # to decide two of them, leave the third and refuse the administrator's fourth; that the banner
 # exports the three stands' records, the route a check sets the model's answer at, and the two
-# issues the Dispatch stand holds;
+# issues the Dispatch stand holds; that every broker, dev-broker.sh's own included, binds its
+# metrics on a port the system picks;
 # that one front stands over the two API ports and one over the two proxy ports, and that both
 # brokers name those fronts as their public and proxy URLs; that --keep-values, --no-kind,
 # --idle-seconds and --judge-skip-checks reach the brokers' environment and --one-broker starts
@@ -155,19 +156,20 @@ ISSUER
     ;;
   */broker)
     # Logs the whole of what it was configured with, the model judge's settings included, then
-    # the two JSON lines the stack reads its addresses from, as the real broker writes them: the
+    # the JSON lines the stack reads its addresses from, as the real broker writes them: the
     # API port always, the proxy port only with a rules file, exactly as the real broker binds a
-    # proxy port only for a deployment that has one.
+    # proxy port only for a deployment that has one, and the metrics port always, after both.
     cat >"$out" <<'BROKER'
 #!/usr/bin/env bash
 printf '%s\n' "$$" >>"${DEV_AIRLOCK_TEST_PIDS:?}"
-echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_FAKE_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-}" >&2
+echo "fake broker: pid=$$ db=${BROKER_DATABASE_URL:-} public=${BROKER_PUBLIC_URL:-} services=${BROKER_SERVICES:-} logins=${BROKER_SERVICE_LOGINS:-} fake_secrets=${BROKER_FAKE_SECRETS_FILE:-} azure_secret=${BROKER_AZURE_LOGIN_SECRET:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 echo "fake broker airlock: pid=$$ rules=${BROKER_AIRLOCK_RULES_FILE:-} proxy_url=${BROKER_AIRLOCK_PROXY_URL:-} ca_cert=${BROKER_AIRLOCK_CA_CERT_FILE:-} ca_key=${BROKER_AIRLOCK_CA_KEY_FILE:-} listen=${BROKER_AIRLOCK_LISTEN_ADDR:-} idle=${BROKER_AIRLOCK_IDLE_SECONDS:-} keep_values=${BROKER_AIRLOCK_TEST_KEEP_VALUES:-} no_kind=${BROKER_AIRLOCK_TEST_NO_KIND:-} github=${BROKER_AIRLOCK_TEST_GITHUB_API_BASE:-} google=${BROKER_AIRLOCK_TEST_GOOGLE_TOKEN_URL:-} upstream_ca=${BROKER_AIRLOCK_TEST_UPSTREAM_CA_FILE:-} dial_allow=[${BROKER_AIRLOCK_TEST_DIAL_ALLOW:-}] resolve=[${BROKER_AIRLOCK_TEST_RESOLVE:-}]" >&2
 echo "fake broker judge: pid=$$ model_url=${BROKER_JUDGE_MODEL_URL:-} model=${BROKER_JUDGE_MODEL:-} protocol=${BROKER_JUDGE_MODEL_PROTOCOL:-} audience=${BROKER_JUDGE_MODEL_AUDIENCE:-} dispatch=${BROKER_JUDGE_DISPATCH_URL:-} token_file=${BROKER_JUDGE_DISPATCH_TOKEN_FILE:-} skip_checks=${BROKER_JUDGE_TEST_SKIP_CHECKS:-} metadata_host=${GCE_METADATA_HOST:-}" >&2
 printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker listening","addr":"127.0.0.1:%s"}\n' "$$" >&2
 if [[ -n "${BROKER_AIRLOCK_RULES_FILE:-}" ]]; then
   printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"airlock proxy listening","addr":"127.0.0.1:1%s"}\n' "$$" >&2
 fi
+printf '{"time":"2026-01-01T00:00:00Z","severity":"INFO","message":"broker metrics listening","addr":"127.0.0.1:2%s"}\n' "$$" >&2
 exec sleep 999999
 BROKER
     ;;
@@ -476,6 +478,22 @@ if [[ "${airlock_dbs[0]}" != *"/dev_airlock_"* ]]; then
 fi
 printf 'PASS: both brokers read one database of this run'"'"'s own (%s) and answer as one public URL (%s)\n' \
   "${airlock_dbs[0]}" "$api_front_url"
+
+# Every broker the run starts, dev-broker.sh's own and the airlock's two, binds its metrics on a
+# port the system picks: three brokers on one machine, and the fixed default is a port only one of
+# them could hold.
+if [[ "${#broker_lines[@]}" -ne 3 ]]; then
+  printf '%s\n' "${broker_lines[@]}" >&2
+  echo "FAIL: ${#broker_lines[@]} broker(s) were started; want dev-broker.sh's own and the airlock's two" >&2
+  exit 1
+fi
+for line in "${broker_lines[@]}"; do
+  if [[ "$line" != *" metrics=127.0.0.1:0" ]]; then
+    echo "FAIL: a broker was started without BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0: $line" >&2
+    exit 1
+  fi
+done
+printf 'PASS: all three brokers bind their metrics on a port the system picks\n'
 
 # The two fronts: each bound before the brokers and given its backends afterwards, through the
 # file it rereads. Each front's backends file must hold both brokers' own ports.

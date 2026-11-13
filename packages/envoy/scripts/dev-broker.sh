@@ -63,7 +63,8 @@
 # no page to fill in, so a browser on this machine approves a secret request on that page.
 #
 # Each invocation creates and drops its own isolated Postgres database (named from this run's own
-# WORK_DIR, below) and binds an OS-assigned ephemeral port (BROKER_LISTEN_ADDR=127.0.0.1:0), so two
+# WORK_DIR, below) and binds OS-assigned ephemeral ports for its API and its metrics
+# (BROKER_LISTEN_ADDR and BROKER_METRICS_LISTEN_ADDR of 127.0.0.1:0), so two
 # agent sessions each running their own dev broker stack never see each other's enrollments,
 # requests or grants. The database lives in the shared dispatch-pg container, which
 # dev-postgres.sh creates, starts or reuses, and refuses when it runs an image other than that
@@ -71,7 +72,9 @@
 # (postgres://<user>@<host>:<port>/<database>, a role that may create databases), on that server
 # through psql, with no Docker at all. cmd/broker binds before it reports anything and
 # logs the address it actually bound; this script waits for that line and reads the real port from
-# it, so a curl success can only ever mean this instance's own broker answered. The broker is
+# it, so a curl success can only ever mean this instance's own broker answered. It reads the
+# metrics port from the broker's "broker metrics listening" line the same way, and prints it in
+# the banner. The broker is
 # started with BROKER_DRAIN_SECONDS=0 so this stack's cleanup stays instant: the default
 # five-second drain exists to outlast a Kubernetes EndpointSlice propagation nothing here has, so
 # here it would be pure delay on every Ctrl-C and every restart.
@@ -412,6 +415,7 @@ BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \
 BROKER_FAKE_SECRETS_FILE="$FAKE_SECRETS_FILE" \
 BROKER_DRAIN_SECONDS=0 \
 BROKER_LISTEN_ADDR="$LISTEN_ADDR" \
+BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
 BROKER_K8S_OIDC_ISSUER="$ISSUER_URL" \
 BROKER_K8S_OIDC_AUDIENCE="$BROKER_AUDIENCE" \
 BROKER_API_ACCOUNTS="dispatch=$API_ACCOUNT listener=$LISTENER_ACCOUNT" \
@@ -437,29 +441,42 @@ die_if_broker_exited() {
   fi
 }
 
-# --- Wait for the broker's own "broker listening" log line: only once Listen has
-# actually succeeded does the broker report an address, so this can only ever name this
-# instance's own listener, never a different, already-running one. The broker logs one JSON
-# object per line, and the address is that line's addr field; a line still being written parses
-# as nothing, so half an address is never read as the whole one. ---
-BOUND_ADDR=""
-for _ in $(seq 1 30); do
-  die_if_broker_exited
-  # `|| true`: under this script's own set -o pipefail, jq failing on a log it cannot read yet
-  # must not trip this script's own errexit and abort before the loop ever gets to sleep and
-  # retry; no line yet is the normal case on every iteration before the broker has bound.
-  BOUND_ADDR="$(jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$BROKER_LOG" 2>/dev/null || true)"
-  if [ -n "$BOUND_ADDR" ]; then
-    break
-  fi
-  sleep 0.5
-done
-if [ -z "$BOUND_ADDR" ]; then
+# --- Wait for one of the broker's own "... listening" log lines and set LOGGED_ADDR to the
+# address it names: only once a bind has actually succeeded does the broker report an address, so
+# this can only ever name this instance's own socket, never a different, already-running one. The
+# broker logs one JSON object per line, and the address is that line's addr field; a line still
+# being written parses as nothing, so half an address is never read as the whole one. It sets a
+# variable rather than printing, since die_if_broker_exited's exit has to end this script and
+# not a command substitution's subshell. ---
+LOGGED_ADDR=""
+await_logged_addr() { # <message>
+  LOGGED_ADDR=""
+  for _ in $(seq 1 30); do
+    die_if_broker_exited
+    # `|| true`: under this script's own set -o pipefail, jq failing on a log it cannot read yet
+    # must not trip this script's own errexit and abort before the loop ever gets to sleep and
+    # retry; no line yet is the normal case on every iteration before the broker has bound.
+    LOGGED_ADDR="$(jq -Rnr --arg message "$1" '[inputs | fromjson? | select(.message == $message) | .addr][0] // empty' "$BROKER_LOG" 2>/dev/null || true)"
+    if [ -n "$LOGGED_ADDR" ]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+if ! await_logged_addr 'broker listening'; then
   echo "dev-broker: broker never logged its bound address within 15s" >&2
   exit 1
 fi
+BOUND_ADDR="$LOGGED_ADDR"
 PUBLIC_URL="http://${BOUND_ADDR}"
 LISTEN_ADDR="$BOUND_ADDR"
+# The metrics port, bound by the same boot after the API's and logged just after it.
+if ! await_logged_addr 'broker metrics listening'; then
+  echo "dev-broker: broker never logged its metrics address within 15s" >&2
+  exit 1
+fi
+METRICS_URL="http://${LOGGED_ADDR}/metrics"
 
 ready=false
 for _ in $(seq 1 30); do
@@ -502,6 +519,7 @@ dev-broker: ready.
   export AGENT_SECRETS_MACHINE_FILE=$WORK_DIR/machine.json
   export AGENT_SECRETS_STATE_FILE=$WORK_DIR/sessions.json
   export DEV_BROKER_DIR=$WORK_DIR
+  export DEV_BROKER_METRICS_URL=$METRICS_URL
   export DEV_BROKER_POD_UID=$POD_UID
   export DEV_BROKER_SERVICE=$SERVICE
   export DEV_BROKER_GITHUB_URL=$GITHUB_URL
@@ -517,6 +535,7 @@ dev-broker: ready.
   fake secrets file:   $FAKE_SECRETS_FILE  (each secret's tags and value, for confirming a released grant)
   approver login:      $APPROVER_LOGIN (whom the issuer signs in to approve a secret, and whom devrelay names deciding a machine login)
   database:            $DISPLAY_URL  (this instance's own; created and dropped by this script)
+  metrics:             $METRICS_URL  (GET: the broker's Prometheus metrics, on a port of its own, BROKER_METRICS_LISTEN_ADDR)
   token issuer:        $ISSUER_URL  (dev-oidc-issuer, logging to $ISSUER_LOG)
   sign-in:             $ISSUER_URL  (the broker's client $SIGNIN_CLIENT_ID, hd $SIGNIN_DOMAIN; secret in $SIGNIN_SECRET_FILE)
   caller token:        $ACCOUNT_TOKEN_FILE  ($API_ACCOUNT, the caller "dispatch")

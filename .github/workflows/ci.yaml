@@ -440,6 +440,8 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/id/*'
               - 'packages/envoy/internal/logtest/*'
+              # internal/broker/policy counts its store reads on a counter of this package.
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pgmigrate/*'
               - 'packages/envoy/internal/ratelimit/*'
@@ -1724,6 +1726,7 @@ jobs:
               - 'packages/envoy/internal/googleidentity/*'
               - 'packages/envoy/internal/logging/*'
               - 'packages/envoy/internal/logtest/*'
+              - 'packages/envoy/internal/metrics/*'
               - 'packages/envoy/internal/oidc/**'
               - 'packages/envoy/internal/pglisten/*'
               - 'packages/envoy/internal/pgmigrate/*'

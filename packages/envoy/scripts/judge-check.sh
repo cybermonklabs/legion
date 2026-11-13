@@ -329,8 +329,8 @@ start_extra_broker() { # <name> <VAR=value>...
 	shift
 	local log="$WORK_DIR/broker-$name.log"
 	: >"$log"
-	# Two ports the system picks, so this one never collides with the broker it was copied from.
-	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" "$@"
+	# Three ports the system picks, so this one never collides with the broker it was copied from.
+	broker_env BROKER_LISTEN_ADDR="127.0.0.1:0" BROKER_AIRLOCK_LISTEN_ADDR="127.0.0.1:0" BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" "$@"
 	"${BROKER_ENV[@]}" "${EXTRA_BROKER_BIN:-$BROKER_BIN}" >"$log" 2>&1 &
 	local pid=$!
 	EXTRA_BROKER_PIDS+=("$pid")

@@ -47,6 +47,13 @@ const DefaultGoogleOIDCIssuer = "https://accounts.google.com"
 type Config struct {
 	// BROKER_LISTEN_ADDR: the host:port the broker listens on.
 	ListenAddr string
+	// BROKER_METRICS_LISTEN_ADDR: the address the broker's metrics port binds, default
+	// 127.0.0.1:13382, which answers GET /metrics in the Prometheus text format and nothing else.
+	// It is a port of its own rather than a route of the API's, so that who may scrape a pod is
+	// the deployment's to decide apart from who may call the broker: the API's address is the one
+	// the load balancer sends every caller to. It is a third port of the same process, bound and
+	// drained with the API's, and a pod that cannot bind it refuses to start.
+	MetricsListenAddr string
 	// BROKER_DATABASE_URL: the Postgres connection URL, the one variable that says which database
 	// the broker uses and how it signs in. Required. The broker applies its own migrations at
 	// startup. A URL that names a user and no password (neither in the URL nor from PGPASSWORD or a
@@ -1234,6 +1241,7 @@ func Load(getenv func(string) string) (Config, error) {
 	}
 	cfg := Config{
 		ListenAddr:                orDefault(getenv("BROKER_LISTEN_ADDR"), "127.0.0.1:13380"),
+		MetricsListenAddr:         orDefault(getenv("BROKER_METRICS_LISTEN_ADDR"), "127.0.0.1:13382"),
 		DatabaseURL:               getenv("BROKER_DATABASE_URL"),
 		PublicURL:                 getenv("BROKER_PUBLIC_URL"),
 		MachineLoginURL:           strings.TrimSpace(getenv("BROKER_MACHINE_LOGIN_URL")),

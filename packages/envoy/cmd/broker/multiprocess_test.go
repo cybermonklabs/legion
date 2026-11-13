@@ -59,7 +59,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
 	"github.com/sjawhar/envoy/internal/brokerclient"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
@@ -120,35 +119,25 @@ func writeFakeSecrets(t *testing.T, path, owner string) {
 	}
 }
 
-// writeFakeSecretsWithNoOwner writes the fixture secret with its owner tag taken off, which the
-// policy refuses as owner-tag-missing and logs policy.RefusedMessage for on EVERY read of it.
-// That line is the only observable a row has for "this process read the store": the broker logs
-// nothing for a read it is happy with, and no route reports what a pod has read. A row that
-// counts store reads therefore stages the fixture this way first and counts the lines after.
-func writeFakeSecretsWithNoOwner(t *testing.T, path string) {
+// storeReads is how many times a process has read the secret store since it started: the
+// read="list" and read="describe" samples of broker_policy_store_reads_total on its own metrics
+// port, the one its "broker metrics listening" line names. That counter is the observable for
+// "this process read the store", where the broker logs no line for a read whose secrets it
+// serves. A row takes it before and after what it drives; the difference is the reads that drove.
+func storeReads(t *testing.T, process *brokerProcess) int {
 	t.Helper()
-	content := `{"secrets": [
-		{"name": "` + testSecretsPrefix + multiprocessSecretSlug + `", "kms_key_id": "` + testSecretsKMSKeyARN + `", "tags": {"tier": "agent"}, "value": "` + multiprocessSecretValue + `"}
-	]}`
-	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
-		t.Fatalf("write the fake secrets file %s: %v", path, err)
-	}
-}
-
-// storeReads is how many times a process has read the fixture secret out of the store since it
-// started, counted from the refusal line writeFakeSecretsWithNoOwner's tags make it log on each
-// read. A row takes it before and after what it drives; the difference is the reads that drove.
-func storeReads(process *brokerProcess) int {
-	return strings.Count(process.Log(), policy.RefusedMessage)
+	reads := scrapeMetric(t, process.MetricsAddr(t), "broker_policy_store_reads_total")
+	return int(reads[`read="list"`] + reads[`read="describe"`])
 }
 
 // storeReadsPerPod is storeReads for every process of the fleet, index-matched with
 // fleet.Processes, read in one pass so that the counts a row does its arithmetic on are of one
 // moment rather than of as many moments as there are pods.
-func storeReadsPerPod(fleet *brokerFleet) []int {
+func storeReadsPerPod(t *testing.T, fleet *brokerFleet) []int {
+	t.Helper()
 	reads := make([]int, len(fleet.Processes))
 	for i, process := range fleet.Processes {
-		reads[i] = storeReads(process)
+		reads[i] = storeReads(t, process)
 	}
 	return reads
 }
@@ -1116,7 +1105,6 @@ func TestTwoBrokers(t *testing.T) {
 		)
 		stopping := startBrokerFleet(t, binary, []time.Duration{0, drain})
 		serving, draining := stopping.Processes[0], stopping.Processes[1]
-		writeFakeSecretsWithNoOwner(t, stopping.FakeSecretsFile)
 
 		signalled := draining.Terminate(t)
 		for {
@@ -1135,16 +1123,16 @@ func TestTwoBrokers(t *testing.T) {
 				draining.Addr, status, body)
 		}
 
-		before := [2]int{storeReads(serving), storeReads(draining)}
+		before := [2]int{storeReads(t, serving), storeReads(t, draining)}
 		status, body := stopping.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
 		if status != http.StatusOK {
 			t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 200 that fans out",
 				multiprocessSecret, stopping.Clients[0].Addr, status, body)
 		}
 		rereadAt := time.Now()
-		for storeReads(draining) == before[1] {
+		for storeReads(t, draining) == before[1] {
 			if time.Since(rereadAt) > fanOutWithin {
-				if storeReads(serving) == before[0] {
+				if storeReads(t, serving) == before[0] {
 					t.Fatalf("%s after the reread, the process that served it (%s) had not read the store either; the row cannot say what the draining pod missed when the call itself did nothing",
 						fanOutWithin, stopping.Clients[0].Addr)
 				}
@@ -1208,8 +1196,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 			t.Run(fmt.Sprintf("%dPods", replicas), func(t *testing.T) {
 				fleet := startBrokerFleet(t, binary, make([]time.Duration, replicas), fastSweep)
 				every := awaitFleetRereadRate(t, fleet)
-				writeFakeSecretsWithNoOwner(t, fleet.FakeSecretsFile)
-				before := storeReadsPerPod(fleet)
+				before := storeReadsPerPod(t, fleet)
 
 				status, body := fleet.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
 				if status != http.StatusOK {
@@ -1223,7 +1210,7 @@ func TestABrokerFleetDerivesItsRereadRate(t *testing.T) {
 				// fail the assertion below and say the sizing was wrong when it was right.
 				var after []int
 				for {
-					after = storeReadsPerPod(fleet)
+					after = storeReadsPerPod(t, fleet)
 					if readEverywhere(before, after) {
 						break
 					}

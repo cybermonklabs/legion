@@ -42,9 +42,12 @@ const (
 	theCatchUpReturned         = "the catch-up policy load returned"
 	theBind                    = "the bind"
 	theAirlockBind             = "the airlock proxy port's bind"
+	theMetricsBind             = "the metrics port's bind"
 	theShutdownBegan           = "the shutdown began"
 	theShutdownReturned        = "the shutdown returned"
 	theAirlockShutdownReturned = "the airlock proxy's shutdown returned"
+	theMetricsShutdownBegan    = "the metrics port's shutdown began"
+	theMetricsShutdownReturned = "the metrics port's shutdown returned"
 	theServingEnded            = "the serving context ended"
 	theStoreClosed             = "the store closed"
 )
@@ -524,6 +527,144 @@ func TestStopDrainsTheAirlockBesideTheAPI(t *testing.T) {
 	})
 	if !ran.has(theAirlockShutdownReturned) {
 		t.Fatalf("the stop ran %s; it never drained the airlock's proxy port, so every tunnel it held is cut by the kubelet rather than closed", &ran)
+	}
+	order := ran.order()
+	if len(order) == 0 || order[len(order)-1] != theServingEnded {
+		t.Fatalf("the stop ran %s; want both shutdowns before %s", &ran, theServingEnded)
+	}
+}
+
+// TestBootBindsTheMetricsPortAfterTheOtherTwoAndInsideTheBoot pins where the third socket is
+// taken: inside the boot, so a pod that cannot take its metrics port fails its boot rather than
+// serving callers nobody can watch it serve, and after the API's and the airlock's, since
+// nothing a caller is answered depends on it.
+//
+// The named revert: bind the metrics port in main, after boot has returned.
+func TestBootBindsTheMetricsPortAfterTheOtherTwoAndInsideTheBoot(t *testing.T) {
+	var ran steps
+	bind := func(step string) func() (net.Listener, error) {
+		return func() (net.Listener, error) {
+			ran.record(step)
+			return net.Listen("tcp", "127.0.0.1:0")
+		}
+	}
+	started, err := boot(t.Context(), brokerBoot{
+		LoadPolicy: func(context.Context) (*policy.Current, error) {
+			ran.record(theFirstLoad)
+			return nil, nil
+		},
+		StartListener: func(_ context.Context, _ *policy.Current, onConnected func()) { onConnected() },
+		Listen:        bind(theBind),
+		ListenAirlock: bind(theAirlockBind),
+		ListenMetrics: bind(theMetricsBind),
+		ListenWait:    bootListenWait,
+		Catchup: func(context.Context, *policy.Current) error {
+			ran.record(theCatchUpReturned)
+			return nil
+		},
+		Log: orderingLog(),
+	})
+	if err != nil {
+		t.Fatalf("boot: %v", err)
+	}
+	if started.Serving == nil {
+		t.Fatal("boot answered no serving context: it returned early, and nothing below is about the order of a finished boot")
+	}
+	t.Cleanup(started.EndServing)
+	defer started.Listener.Close()
+	defer started.AirlockListener.Close()
+	if started.MetricsListener == nil {
+		t.Fatal("the boot answered no metrics listener, so there is no metrics port for main to serve")
+	}
+	defer started.MetricsListener.Close()
+
+	want := []string{theFirstLoad, theCatchUpReturned, theBind, theAirlockBind, theMetricsBind}
+	if !ran.is(want...) {
+		t.Fatalf("the boot ran %s; want %s", &ran, strings.Join(want, " -> "))
+	}
+}
+
+// TestBootRefusesWhenTheMetricsPortCannotBeBound is the other half of that: a metrics port the
+// pod cannot take is a boot that fails, and both sockets bound before it go with it, the API's
+// and the airlock's, since a refused boot must leave no address held for the process started in
+// its place.
+//
+// The named revert: leave the airlock's socket open when the metrics bind fails.
+func TestBootRefusesWhenTheMetricsPortCannotBeBound(t *testing.T) {
+	var bound []net.Listener
+	bind := func() (net.Listener, error) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			bound = append(bound, listener)
+		}
+		return listener, err
+	}
+	refusal := errors.New("the metrics port is already held")
+	started, err := boot(t.Context(), brokerBoot{
+		LoadPolicy:    func(context.Context) (*policy.Current, error) { return nil, nil },
+		StartListener: func(_ context.Context, _ *policy.Current, onConnected func()) { onConnected() },
+		Listen:        bind,
+		ListenAirlock: bind,
+		ListenMetrics: func() (net.Listener, error) { return nil, refusal },
+		ListenWait:    bootListenWait,
+		Catchup:       func(context.Context, *policy.Current) error { return nil },
+		Log:           orderingLog(),
+	})
+	if !errors.Is(err, refusal) {
+		t.Fatalf("boot with an unbindable metrics port = %v; want the bind's own refusal", err)
+	}
+	if started.Serving != nil || started.Listener != nil || started.AirlockListener != nil || started.MetricsListener != nil {
+		t.Fatalf("the refused boot answered %+v; want nothing to serve and nothing to stop", started)
+	}
+	if len(bound) != 2 {
+		t.Fatalf("the boot bound %d sockets before the metrics port; want the API's and the airlock's, or this row says nothing about what it left behind", len(bound))
+	}
+	for i, port := range []string{"the API's", "the airlock's"} {
+		if err := bound[i].Close(); err == nil {
+			t.Errorf("the refused boot left %s socket open: the pod that replaces this one finds the address held", port)
+		}
+	}
+}
+
+// TestStopDrainsTheMetricsPortBesideTheAPI pins the metrics port's drain: it closes out of the
+// one shutdown budget beside the API rather than after it, and before the work that outlived the
+// drain stops. The API's fake shutdown here returns only once the metrics port's has begun, so a
+// stop that drained the two one after the other is caught by the hang guard rather than read as
+// an order.
+//
+// The named revert: drop ShutdownMetrics from stop, or call it after Shutdown has returned.
+func TestStopDrainsTheMetricsPortBesideTheAPI(t *testing.T) {
+	var ran steps
+	metricsBegan := make(chan struct{})
+	stop(t.Context(), brokerStop{
+		Drain:    stopDrain,
+		DrainNow: make(chan struct{}),
+		Draining: func(bool) {},
+		Shutdown: func(context.Context) error {
+			ran.record(theShutdownBegan)
+			select {
+			case <-metricsBegan:
+			case <-time.After(bootListenWait):
+				t.Errorf("the API's shutdown waited %s and the metrics port's never began beside it: a stop that drains the ports one after another hands the second whatever the first left of the budget", bootListenWait)
+			}
+			ran.record(theShutdownReturned)
+			return nil
+		},
+		ShutdownMetrics: func(context.Context) error {
+			ran.record(theMetricsShutdownBegan)
+			close(metricsBegan)
+			if ran.has(theServingEnded) {
+				t.Error("the stop ended the serving context before the metrics port had drained")
+			}
+			ran.record(theMetricsShutdownReturned)
+			return nil
+		},
+		EndServing: func() { ran.record(theServingEnded) },
+		CloseStore: func() {},
+		Log:        orderingLog(),
+	})
+	if !ran.has(theMetricsShutdownReturned) {
+		t.Fatalf("the stop ran %s; it never drained the metrics port", &ran)
 	}
 	order := ran.order()
 	if len(order) == 0 || order[len(order)-1] != theServingEnded {

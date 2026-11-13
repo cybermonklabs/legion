@@ -233,6 +233,8 @@ curl -sf -o /dev/null "$issuer_url/.well-known/openid-configuration" || {
 # The broker is a test fixture: it inherits no BROKER_* setting from the shell that starts
 # Playwright, and no home directory. BROKER_DRAIN_SECONDS=0 stops it at once, with no load
 # balancer to drain from. BROKER_MACHINE_LOGIN_URL is the harness Dispatch's machine-login page.
+# BROKER_METRICS_LISTEN_ADDR is a port the kernel picks, since each stack of the harness runs a
+# broker of its own and nothing here scrapes it.
 mapfile -t inherited < <(compgen -e)
 for name in "${inherited[@]}"; do
   case "$name" in
@@ -243,6 +245,7 @@ exec env \
   BROKER_DATABASE_URL="$broker_database_url" \
   BROKER_LISTEN_ADDR="127.0.0.1:$broker_port" \
   BROKER_PUBLIC_URL="http://127.0.0.1:$broker_port" \
+  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_MACHINE_LOGIN_URL="http://127.0.0.1:$e2e_port/credentials/machine" \
   BROKER_SECRETS_PREFIX="$secrets_prefix" \
   BROKER_SECRETS_KMS_KEY_ARN="$secrets_kms_key_arn" \

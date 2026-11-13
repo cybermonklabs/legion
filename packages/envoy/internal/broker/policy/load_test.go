@@ -3,6 +3,9 @@ package policy_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -17,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -696,6 +700,68 @@ func TestLoadOneMakesNoCallForAnIDPastSecretsManagersNameLimit(t *testing.T) {
 	}
 	if lk, err := loader.LoadOne(ctx, atLimit+"C"); !errors.Is(err, policy.ErrNameInvalid) || count.Calls.Load() != 1 {
 		t.Fatalf("LoadOne(a name whose id is 513 characters) = %+v, %v after %d DescribeSecret calls; want ErrNameInvalid with no further call", lk, err, count.Calls.Load())
+	}
+}
+
+// storeReadSamples is every sample of broker_policy_store_reads_total the registry serves, one
+// per line in the order the scrape writes them.
+func storeReadSamples(t *testing.T, registry *metrics.Registry) string {
+	t.Helper()
+	recorder := httptest.NewRecorder()
+	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	var samples strings.Builder
+	for line := range strings.Lines(recorder.Body.String()) {
+		if strings.HasPrefix(line, "broker_policy_store_reads_total{") {
+			samples.WriteString(line)
+		}
+	}
+	return samples.String()
+}
+
+// TestLoadCountsEachStoreReadByWhatItRead pins broker_policy_store_reads_total, the observable
+// for "this pod read the store": each List a Load makes is one read="list", each Describe a
+// LoadOne makes is one read="describe" whatever it found (served or absent), a List the store
+// fails is counted all the same, since it was asked of the store, and a name no secret can carry
+// makes no call and counts nothing.
+func TestLoadCountsEachStoreReadByWhatItRead(t *testing.T) {
+	store := &failingSecrets{Local: secrets.NewLocal(policytest.Secret("SERVED", owner, policy.TierAgent, "v"))}
+	registry := metrics.New()
+	loader := policy.Loader{Store: policytest.StoreThrough(store.Local, store), Prefix: policytest.Prefix, StoreReads: policy.NewStoreReads(registry)}
+	ctx := context.Background()
+
+	for _, step := range []struct {
+		name string
+		read func() error
+		want string
+	}{
+		{"a whole-namespace load", func() error { _, err := loader.Load(ctx); return err },
+			`broker_policy_store_reads_total{read="list"} 1` + "\n"},
+		{"a reread of a secret the store serves", func() error { _, err := loader.LoadOne(ctx, "SERVED"); return err },
+			`broker_policy_store_reads_total{read="describe"} 1` + "\n" + `broker_policy_store_reads_total{read="list"} 1` + "\n"},
+		{"a reread of a name the store does not hold", func() error { _, err := loader.LoadOne(ctx, "MISSING"); return err },
+			`broker_policy_store_reads_total{read="describe"} 2` + "\n" + `broker_policy_store_reads_total{read="list"} 1` + "\n"},
+		{"a name no secret can carry", func() error {
+			if _, err := loader.LoadOne(ctx, "serv-ed"); !errors.Is(err, policy.ErrNameInvalid) {
+				return fmt.Errorf("LoadOne(serv-ed) = %v, want ErrNameInvalid", err)
+			}
+			return nil
+		}, `broker_policy_store_reads_total{read="describe"} 2` + "\n" + `broker_policy_store_reads_total{read="list"} 1` + "\n"},
+		{"a load the store fails", func() error {
+			store.mu.Lock()
+			store.failing = true
+			store.mu.Unlock()
+			if _, err := loader.Load(ctx); err == nil {
+				return errors.New("Load with the store failing = nil error, want the List's failure")
+			}
+			return nil
+		}, `broker_policy_store_reads_total{read="describe"} 2` + "\n" + `broker_policy_store_reads_total{read="list"} 2` + "\n"},
+	} {
+		if err := step.read(); err != nil {
+			t.Fatalf("%s: %v", step.name, err)
+		}
+		if got := storeReadSamples(t, registry); got != step.want {
+			t.Fatalf("after %s the counter reads\n%s\nwant\n%s", step.name, got, step.want)
+		}
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"maps"
 	"math/big"
 	"net"
@@ -24,6 +25,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -415,8 +417,8 @@ type brokerOptions struct {
 
 // brokerProcess is a broker binary a test started and is driving: cmdtest's process — its whole
 // log, its SIGTERM and the code it exited with, as cmd/dispatch's and cmd/listener's own
-// shutdown rows drive theirs — plus the one thing that is the broker's alone, the address it
-// logged that it bound.
+// shutdown rows drive theirs — plus what is the broker's alone, the addresses it logged that it
+// bound.
 type brokerProcess struct {
 	*cmdtest.Process
 	// Addr is the address its "broker listening" line named, and Boot its log up to that line.
@@ -424,11 +426,18 @@ type brokerProcess struct {
 	// NoWaitForListening was asked for.
 	Addr string
 	Boot string
+	// metricsAddr is what MetricsAddr read, once it has.
+	metricsAddr string
 }
 
-// startBroker starts the broker binary with productionEnv and options.Env, waits for its
-// "broker listening" line unless options.NoWaitForListening says not to, and stops it with
-// SIGTERM when t ends, killing it if it has not gone within stopTimeout.
+// metricsListenEnv is the metrics port every broker startBroker starts binds: one the kernel
+// picks, since a package's rows run many brokers at once and the default 127.0.0.1:13382 is a
+// port only one of them could hold. It comes before options.Env, so a row may name another.
+const metricsListenEnv = "BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
+
+// startBroker starts the broker binary with productionEnv, metricsListenEnv and options.Env,
+// waits for its "broker listening" line unless options.NoWaitForListening says not to, and stops
+// it with SIGTERM when t ends, killing it if it has not gone within stopTimeout.
 func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 	t.Helper()
 	binary := options.Binary
@@ -436,7 +445,7 @@ func startBroker(t *testing.T, options brokerOptions) *brokerProcess {
 		binary = buildBroker(t)
 	}
 	cmd := exec.Command(binary)
-	cmd.Env = append(append(os.Environ(), productionEnv(t)...), options.Env...)
+	cmd.Env = append(append(append(os.Environ(), productionEnv(t)...), metricsListenEnv), options.Env...)
 	p := &brokerProcess{Process: cmdtest.Start(t, "broker", cmd)}
 	// Cleanups run last-registered-first, so this one — registered after cmdtest.Start's own —
 	// asks the broker to stop and waits its whole stop budget out before cmdtest's cleanup kills
@@ -497,6 +506,62 @@ func (p *brokerProcess) AwaitRecord(t *testing.T, message string, fields map[str
 		t.Fatalf("the broker never logged a %q line carrying %v:\n%s", message, fields, p.Log())
 	}
 	return found[0]
+}
+
+// MetricsAddr answers the address the broker's "broker metrics listening" line names, waiting for
+// that line as AwaitRecord does the first time it is asked and answering what it read after that.
+// It is how a test finds a broker's own metrics port when every broker it starts binds one the
+// kernel picks (metricsListenEnv).
+func (p *brokerProcess) MetricsAddr(t *testing.T) string {
+	t.Helper()
+	if p.metricsAddr == "" {
+		addr, _ := p.AwaitRecord(t, "broker metrics listening", nil)["addr"].(string)
+		if addr == "" {
+			t.Fatalf("the broker's %q line names no addr:\n%s", "broker metrics listening", p.Log())
+		}
+		p.metricsAddr = addr
+	}
+	return p.metricsAddr
+}
+
+// scrapeMetric GETs /metrics at addr, a broker's metrics port, and answers each sample of metric
+// by the label text between its braces - `read="list"` for the sample
+// broker_policy_store_reads_total{read="list"}, "" for a sample with no labels - as the
+// Prometheus text format writes it. It fails t unless the port answers 200.
+func scrapeMetric(t *testing.T, addr, metric string) map[string]float64 {
+	t.Helper()
+	resp, err := http.Get("http://" + addr + "/metrics")
+	if err != nil {
+		t.Fatalf("GET http://%s/metrics: %v", addr, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET http://%s/metrics = %d, %v; want 200:\n%s", addr, resp.StatusCode, err, body)
+	}
+	samples := map[string]float64{}
+	for line := range strings.Lines(string(body)) {
+		line = strings.TrimSuffix(line, "\n")
+		// The value is the line's last field: a label value may hold a space, never a line's end.
+		cut := strings.LastIndexByte(line, ' ')
+		if strings.HasPrefix(line, "#") || cut < 0 {
+			continue
+		}
+		series, labels := line[:cut], ""
+		if series != metric {
+			inner, ok := strings.CutPrefix(series, metric+"{")
+			if !ok || !strings.HasSuffix(inner, "}") {
+				continue
+			}
+			labels = strings.TrimSuffix(inner, "}")
+		}
+		value, err := strconv.ParseFloat(line[cut+1:], 64)
+		if err != nil {
+			t.Fatalf("the scrape at %s holds a %s sample whose value is no number: %q", addr, metric, line)
+		}
+		samples[labels] = value
+	}
+	return samples
 }
 
 // listeningPoll is how often AwaitListening looks for the broker's listening line. The line is
@@ -773,6 +838,66 @@ func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 			if addr, _ := record["addr"].(string); addr == "" {
 				t.Errorf("the %q line carries no addr field: %s", want.message, line)
 			}
+		}
+	}
+}
+
+// TestTheBrokerServesItsMetricsOnAPortOfItsOwn drives the REAL compiled binary and reads its
+// metrics where a deployment scrapes them. GET /metrics on the address its "broker metrics
+// listening" line names - a port of its own on 127.0.0.1, which the kernel picked
+// (metricsListenEnv), and never the API's - answers the Prometheus text format, and its
+// broker_policy_store_reads_total holds the boot's whole-namespace loads; one reread through the
+// API is one more read="describe" there and no list. That port answers nothing else, and the
+// API's address answers GET /metrics 404, so no caller of the API reaches the scrape.
+func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
+	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
+	metricsAddr := broker.MetricsAddr(t)
+	host, port, err := net.SplitHostPort(metricsAddr)
+	if err != nil || host != "127.0.0.1" || port == "0" || metricsAddr == broker.Addr {
+		t.Fatalf("the broker logged its metrics port as %q (%v); want a port of its own on 127.0.0.1, apart from the API's %s", metricsAddr, err, broker.Addr)
+	}
+
+	reads := scrapeMetric(t, metricsAddr, "broker_policy_store_reads_total")
+	// The first load, and the catch-up once the reread listener's LISTEN is in place.
+	if reads[`read="list"`] < 1 {
+		t.Fatalf("after its boot the broker counts %v store reads; want its boot's whole-namespace loads as read=\"list\"", reads)
+	}
+	reread, err := http.Post("http://"+broker.Addr+"/v1/secrets/SERVICE_KEY/reread", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread: %v", err)
+	}
+	reread.Body.Close()
+	if reread.StatusCode != http.StatusOK {
+		t.Fatalf("POST /v1/secrets/SERVICE_KEY/reread = %d; want 200", reread.StatusCode)
+	}
+	after := scrapeMetric(t, metricsAddr, "broker_policy_store_reads_total")
+	if after[`read="describe"`] != reads[`read="describe"`]+1 || after[`read="list"`] != reads[`read="list"`] {
+		t.Fatalf("one reread moved the store reads from %v to %v; want one more read=\"describe\" and no more read=\"list\"", reads, after)
+	}
+
+	for _, row := range []struct {
+		name, method, url string
+		status            int
+	}{
+		{"the scrape", http.MethodGet, "http://" + metricsAddr + "/metrics", http.StatusOK},
+		{"another path on the metrics port", http.MethodGet, "http://" + metricsAddr + "/healthz", http.StatusNotFound},
+		{"another method on the metrics port", http.MethodPost, "http://" + metricsAddr + "/metrics", http.StatusMethodNotAllowed},
+		{"the scrape on the API's port", http.MethodGet, "http://" + broker.Addr + "/metrics", http.StatusNotFound},
+	} {
+		req, err := http.NewRequest(row.method, row.url, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %s %s: %v", row.name, row.method, row.url, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != row.status {
+			t.Errorf("%s: %s %s = %d; want %d", row.name, row.method, row.url, resp.StatusCode, row.status)
+		}
+		if row.status == http.StatusOK && !strings.HasPrefix(resp.Header.Get("Content-Type"), "text/plain; version=0.0.4") {
+			t.Errorf("%s: Content-Type %q; want the Prometheus text format's text/plain; version=0.0.4", row.name, resp.Header.Get("Content-Type"))
 		}
 	}
 }

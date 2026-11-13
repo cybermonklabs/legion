@@ -568,9 +568,9 @@ API_FRONT_URL="$(jq -r .url "$API_FRONT_JSON")"
 PROXY_FRONT_URL="$(jq -r .url "$PROXY_FRONT_JSON")"
 
 # --- The brokers. Both read one database, one rules file and one fake store, and each binds an
-# API port and a proxy port the system picks (BROKER_*_LISTEN_ADDR of port 0), so two of them
-# never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default exists
-# to outlast a Kubernetes EndpointSlice propagation nothing here has.
+# API port, a proxy port and a metrics port the system picks (BROKER_*_LISTEN_ADDR of port 0), so
+# two of them never collide. BROKER_DRAIN_SECONDS=0 as dev-broker.sh does: the five-second default
+# exists to outlast a Kubernetes EndpointSlice propagation nothing here has.
 #
 # Each also gets the model judge: the six BROKER_JUDGE_* settings, which are all-or-none, and
 # GCE_METADATA_HOST. The credential the judge presents to its model endpoint is the broker's
@@ -584,6 +584,7 @@ start_broker() {
   BROKER_DATABASE_URL="$POSTGRES_URL" \
   BROKER_PUBLIC_URL="$API_FRONT_URL" \
   BROKER_LISTEN_ADDR="127.0.0.1:0" \
+  BROKER_METRICS_LISTEN_ADDR="127.0.0.1:0" \
   BROKER_MACHINE_LOGIN_URL="http://127.0.0.1/credentials/machine" \
   BROKER_SECRETS_PREFIX="$SECRETS_PREFIX" \
   BROKER_SECRETS_KMS_KEY_ARN="$SECRETS_KMS_KEY_ARN" \

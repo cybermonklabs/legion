@@ -37,6 +37,10 @@ type brokerBoot struct {
 	// no rules file and so has no airlock. In production: net.Listen("tcp",
 	// cfg.AirlockListenAddr).
 	ListenAirlock func() (net.Listener, error)
+	// ListenMetrics binds the metrics port, which serves GET /metrics alone. In production:
+	// net.Listen("tcp", cfg.MetricsListenAddr), which main always sets; a row of
+	// ordering_test.go about another step leaves it nil, and the boot then binds no metrics port.
+	ListenMetrics func() (net.Listener, error)
 	// ListenWait bounds how long the bind waits for that first LISTEN. In production:
 	// rereadListenWait, whose own comment says what the bound is for and what reaching it costs.
 	ListenWait time.Duration
@@ -66,6 +70,9 @@ type booted struct {
 	// AirlockListener is the airlock proxy port's bound socket, nil when there is no airlock.
 	// Nothing is serving it yet either.
 	AirlockListener net.Listener
+	// MetricsListener is the metrics port's bound socket, nil only for a boot given no
+	// ListenMetrics. Nothing is serving it yet either.
+	MetricsListener net.Listener
 }
 
 // boot takes the broker from its first policy load to a bound socket, in the one order that
@@ -200,7 +207,25 @@ func boot(ctx context.Context, b brokerBoot) (booted, error) {
 			return booted{}, err
 		}
 	}
-	return booted{Serving: serving, EndServing: endServing, Policy: current, Listener: listener, AirlockListener: airlockListener}, nil
+	// The metrics port, bound last and inside the boot for the reason the proxy port is: what it
+	// serves is how this pod is watched from outside it, so a pod that cannot bind it - an
+	// address another process holds - fails its boot rather than serving callers nobody can
+	// watch it serve. Last, because nothing a caller is answered depends on it, and a refused
+	// boot closes every socket it bound before.
+	var metricsListener net.Listener
+	if b.ListenMetrics != nil {
+		metricsListener, err = b.ListenMetrics()
+		if err != nil {
+			listener.Close()
+			if airlockListener != nil {
+				airlockListener.Close()
+			}
+			endServing()
+			return booted{}, err
+		}
+	}
+	return booted{Serving: serving, EndServing: endServing, Policy: current, Listener: listener,
+		AirlockListener: airlockListener, MetricsListener: metricsListener}, nil
 }
 
 // listenTCP is brokerBoot.Listen in production: the bind on addr, which boot runs synchronously,
@@ -234,6 +259,9 @@ type brokerStop struct {
 	// ShutdownAirlock drains the airlock's proxy port, and is nil for a deployment with no
 	// airlock. In production: airlockproxy.Server.Shutdown.
 	ShutdownAirlock func(ctx context.Context) error
+	// ShutdownMetrics drains the metrics port, and is nil only where boot bound none. In
+	// production: the metrics server's Shutdown.
+	ShutdownMetrics func(ctx context.Context) error
 	// EndServing ends the work that outlived the drain. In production: booted.EndServing.
 	EndServing func()
 	// CloseStore releases the database pools. In production: store.Store.Close.
@@ -276,22 +304,23 @@ func stop(ctx context.Context, s brokerStop) {
 	s.Log.Info("broker shutting down")
 	shutdownCtx, cancel := context.WithTimeout(ctx, shutdownTimeout)
 	defer cancel()
-	// Both ports drain out of the one budget, and beside each other rather than one after the
-	// other: a command streaming an answer through the proxy and a caller waiting on the API
+	// Every port drains out of the one budget, and beside the others rather than one after
+	// another: a command streaming an answer through the proxy and a caller waiting on the API
 	// are each owed the whole of the shutdown's allowance, and a sequence would hand the second
 	// of them whatever the first left. The proxy's own drain closes every tunnel it still
-	// holds, which http.Server.Shutdown does not.
-	airlockDrained := make(chan error, 1)
-	if s.ShutdownAirlock != nil {
-		go func() { airlockDrained <- s.ShutdownAirlock(shutdownCtx) }()
-	} else {
-		airlockDrained <- nil
-	}
+	// holds, which http.Server.Shutdown does not. The metrics port goes on answering scrapes
+	// through the drain above, as the API does, so a draining pod is still watched, and closes
+	// with the other two.
+	airlockDrained := drainBeside(shutdownCtx, s.ShutdownAirlock)
+	metricsDrained := drainBeside(shutdownCtx, s.ShutdownMetrics)
 	if err := s.Shutdown(shutdownCtx); err != nil {
 		s.Log.Warn("broker: shutdown", "error", err)
 	}
 	if err := <-airlockDrained; err != nil {
 		s.Log.Warn("broker: airlock proxy shutdown", "error", err)
+	}
+	if err := <-metricsDrained; err != nil {
+		s.Log.Warn("broker: metrics shutdown", "error", err)
 	}
 	// Shutdown has returned, either having answered the last request or having spent the 60
 	// seconds above, so the work kept alive through the drain has nothing left to serve: this is
@@ -309,4 +338,17 @@ func stop(ctx context.Context, s brokerStop) {
 	// whose health checks is a goroutine of its own.
 	s.EndServing()
 	s.CloseStore()
+}
+
+// drainBeside runs shutdown on ctx on a goroutine of its own and answers the channel its error
+// arrives on, so that stop drains a port beside the API rather than after it. A nil shutdown, a
+// port this process does not have, answers nil at once.
+func drainBeside(ctx context.Context, shutdown func(context.Context) error) <-chan error {
+	drained := make(chan error, 1)
+	if shutdown == nil {
+		drained <- nil
+		return drained
+	}
+	go func() { drained <- shutdown(ctx) }()
+	return drained
 }

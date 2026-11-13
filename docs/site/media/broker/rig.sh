@@ -207,6 +207,7 @@ start_process broker setsid env -i PATH="$PATH" \
   BROKER_DATABASE_URL="$broker_database_url" \
   BROKER_LISTEN_ADDR=127.0.0.1:0 \
   BROKER_PUBLIC_URL=http://127.0.0.1:0 \
+  BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0 \
   BROKER_MACHINE_LOGIN_URL="$dispatch_url/credentials/machine" \
   BROKER_K8S_OIDC_ISSUER="$issuer_url" \
   BROKER_K8S_OIDC_AUDIENCE="$broker_audience" \

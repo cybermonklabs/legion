@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/metrics"
 )
 
 // RefusedMessage opens the one line logged, at ERROR on every load (Load for every secret, LoadOne
@@ -139,11 +140,19 @@ type Loader struct {
 	// do not name. In production: the loaded rules' Rules.Digest. A nil field is "" for every
 	// secret, which is a deployment with no rules file.
 	AirlockDigest func(name string) string
+	// StoreReads counts each call this loader makes to the store's metadata, in
+	// broker_policy_store_reads_total (NewStoreReads): read=list for the List a Load takes,
+	// read=describe for the Describe a LoadOne takes. Each is counted as it is made, so a call
+	// the store fails is counted too: it was asked of the store all the same. In production:
+	// NewStoreReads on the registry the metrics port serves. A nil counter counts nothing, which
+	// is every Loader a test builds that is not about the count.
+	StoreReads *metrics.Counter
 }
 
 // Load reads the namespace into a Set, logging one RefusedMessage line for each secret it refuses.
 // A failed store call fails the whole load.
 func (l Loader) Load(ctx context.Context) (*Set, error) {
+	l.StoreReads.Inc(readList)
 	listings, err := l.Store.List(ctx, l.Prefix)
 	if err != nil {
 		return nil, err
@@ -206,6 +215,7 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	if err != nil {
 		return Lookup{}, err
 	}
+	l.StoreReads.Inc(readDescribe)
 	ls, err := l.Store.Describe(ctx, id)
 	switch {
 	case errors.Is(err, secrets.ErrNotFound):

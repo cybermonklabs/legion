@@ -22,7 +22,8 @@
 # to make safe — and asserts that: (a) every process of a run is started and the port the banner
 # names for it is the one that process reported; (b) the Dispatch port keeper's held port is what
 # the broker's machine-login URL and Dispatch's own server URL name, which is why a keeper is
-# there at all; (c) "dev-stack: ready." is printed exactly once, with the export block after it;
+# there at all, and the broker binds its metrics on a port the kernel picks; (c) "dev-stack:
+# ready." is printed exactly once, with the export block after it;
 # (d) the two instances mint different database names, different ports and different work
 # directories, and neither names the other's; (e) the one trap stops every process it started and
 # drops exactly the two databases it created, on a normal exit, on INT, on a SIGTERM to its whole
@@ -232,7 +233,7 @@ ISSUER
       cat >"$target" <<'BROKER'
 #!/usr/bin/env bash
 echo "fake broker: database=${BROKER_DATABASE_URL:-} issuer=${BROKER_K8S_OIDC_ISSUER:-} callers=${BROKER_API_ACCOUNTS:-}" >&2
-echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-}" >&2
+echo "fake broker: machine-login=${BROKER_MACHINE_LOGIN_URL:-} sign-in-client=${BROKER_SIGNIN_CLIENT_ID:-} exchange=${BROKER_EXCHANGE_ACCOUNTS:-} metrics=${BROKER_METRICS_LISTEN_ADDR:-}" >&2
 BROKER
       if [[ -n "${DEV_STACK_TEST_BROKER_FAILS:-}" ]]; then
         cat >>"$target" <<'REFUSES'
@@ -415,6 +416,10 @@ assert_instance_ready() {
     fail "$label: Dispatch's server URL does not name the kept port $kept_port"
   grep -q 'listen-fd=3' "${work_dir}/logs/dispatch.log" ||
     fail "$label: Dispatch was not given the keeper's socket (DISPATCH_LISTEN_FD)"
+  # The broker's metrics port is one the kernel picks, since the fixed default is a port only one
+  # of two stacks on a machine could hold.
+  grep -q 'metrics=127\.0\.0\.1:0$' "${work_dir}/logs/broker.log" ||
+    fail "$label: the broker was not started with BROKER_METRICS_LISTEN_ADDR=127.0.0.1:0"
 
   # (c) One "ready." line, and the exports after it, each naming the port its own process reported.
   local ready_lines
