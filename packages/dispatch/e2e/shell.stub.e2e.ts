@@ -17,7 +17,14 @@ import { expect, type Route } from "@playwright/test";
 
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { createIssue, createProject } from "./api";
-import { missEntryChunk, pageAssetPath, tabReloads } from "./shell";
+import {
+  failAssetWhen,
+  holdAsset,
+  missEntryChunk,
+  pageAssetPath,
+  shellLoads,
+  tabReloads,
+} from "./shell";
 import { stubbed } from "./stub/stub-test";
 
 const test = stubbed(async () => {
@@ -199,6 +206,122 @@ test("an entry chunk's reloads and a page chunk's share the tab's three @pr", as
   // drawn above, so a fifth document request would already be out; four frames of margin.
   await sleep(250);
   expect(counts).toEqual({ documents: 4, entryRequests: 4 });
+});
+
+// A chunk the shell starts once the page has drawn and nobody is waiting on: the search bar's,
+// which comes down before any key opens the bar (`web/src/features/search/SearchPaletteHost.tsx`,
+// `prefetchChunk`). Its failure says only that the download has not happened yet, so it reloads
+// nothing and spends nothing of the tab's budget (`web/src/features/shell/DeploymentResilience.tsx`).
+// The download is failed once the margin's and the preview layer's chunks are in: a failure while
+// a render waits on a chunk of its own is that reader's, and reloads whatever chunk it was.
+test("a chunk the shell only prefetched reloads nothing when it fails @pr", async ({
+  baseURL,
+  page,
+  scene: _recording,
+}) => {
+  const counts = await missEntryChunk(page, () => false, baseURL ?? "");
+  const load = shellLoads(page);
+  const failed = await failAssetWhen(
+    page,
+    /\/assets\/SearchPalette-[^/]+\.js$/u,
+    () => load().settled
+  );
+
+  await page.goto("/agents");
+  await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+  await expect.poll(failed).toBeGreaterThan(0);
+  // A reload the failure started would already be out; four frames of margin for it.
+  await sleep(250);
+  expect(counts).toEqual({ documents: 1, entryRequests: 1 });
+  expect(await tabReloads(page)).toBeNull();
+});
+
+// The same prefetch, failing in one of the module preload links Vite inserts for it: the bar's
+// chunk imports the shortcut sheet's, which no page has asked for yet. `web/index.html`'s inline
+// script leaves such a link to the bundle while the bundle's recovery runs
+// (`__dispatchChunkRecovery`), and the bundle knows it for a prefetch; the inline script alone
+// would reload for it as for an asset the document itself names.
+test("a module preload that fails for a chunk the shell only prefetched is left to the bundle and reloads nothing @pr", async ({
+  baseURL,
+  page,
+  scene: _recording,
+}) => {
+  const counts = await missEntryChunk(page, () => false, baseURL ?? "");
+  const load = shellLoads(page);
+  const failed = await failAssetWhen(
+    page,
+    /\/assets\/ShortcutHelp-[^/]+\.js$/u,
+    () => load().settled
+  );
+
+  await page.goto("/agents");
+  await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+  await expect.poll(failed).toBeGreaterThan(0);
+  // A reload the failure started would already be out; four frames of margin for it.
+  await sleep(250);
+  expect(counts).toEqual({ documents: 1, entryRequests: 1 });
+  expect(await tabReloads(page)).toBeNull();
+});
+
+// A route chunk the entry never prefetches - the broadcasts page's - failing while a prefetch of
+// another chunk is out: the Inbox peek's, which this address starts after its first paint and
+// this row holds on the wire. The reader is waiting on the route, so its failure reloads from the
+// tab's three and then shows the failed download, as the issue page's does above. A route chunk
+// started outside `renderChunk` would be read as that prefetch's and reload nothing
+// (`web/src/features/shell/DeploymentResilience.tsx`).
+test("a route chunk nothing prefetched reloads for its failure while another chunk's prefetch is out @pr", async ({
+  baseURL,
+  page,
+  scene: _recording,
+}) => {
+  const counts = await missEntryChunk(page, () => false, baseURL ?? "");
+  const load = shellLoads(page);
+  await holdAsset(page, /\/assets\/inbox-chunk-[^/]+\.js$/u);
+  await failAssetWhen(page, /\/assets\/BroadcastsPage-[^/]+\.js$/u, async () => {
+    const current = load();
+    await Promise.all([current.settled, current.peekAsked]);
+  });
+
+  await page.goto("/agents/broadcasts", { waitUntil: "commit" });
+  await expect.poll(() => counts.documents).toBe(4);
+  await expect(page.getByTestId("error-boundary")).toContainText(
+    "Failed to fetch dynamically imported module"
+  );
+  // The recovery's reload starts from the failed-asset handler of the load whose boundary is
+  // drawn above, so a fifth document request would already be out; four frames of margin.
+  await sleep(250);
+  expect(counts).toEqual({ documents: 4, entryRequests: 4 });
+});
+
+// A host's chunk, opened by the reader: the search bar's prefetch failed with nobody waiting, as
+// in the row above it, and `$mod+k` then asks for the same chunk under `renderChunk`
+// (`web/src/features/search/SearchPaletteHost.tsx`). The reader is waiting on that ask, so its
+// failure reloads, although the Inbox peek's prefetch is still out beside it.
+test("a bar whose prefetch failed reloads for its chunk when the reader opens it, while another prefetch is out @pr", async ({
+  baseURL,
+  page,
+  scene: _recording,
+}) => {
+  const counts = await missEntryChunk(page, () => false, baseURL ?? "");
+  const load = shellLoads(page);
+  await holdAsset(page, /\/assets\/inbox-chunk-[^/]+\.js$/u);
+  const failed = await failAssetWhen(page, /\/assets\/SearchPalette-[^/]+\.js$/u, async () => {
+    const current = load();
+    await Promise.all([current.settled, current.peekAsked]);
+  });
+
+  await page.goto("/agents");
+  await expect(page.getByRole("heading", { level: 1, name: "Agents" })).toBeVisible();
+  await expect.poll(failed).toBeGreaterThan(0);
+  // The prefetch's failure reloaded nothing; four frames of margin for a reload it started.
+  await sleep(250);
+  expect(counts.documents).toBe(1);
+
+  await page.keyboard.press("ControlOrMeta+k");
+  await expect.poll(() => counts.documents).toBe(2);
+  // Read across the reload: a read made while the old document is being left has no page to
+  // run in, and is asked again.
+  await expect.poll(() => tabReloads(page).catch(() => null)).toHaveLength(1);
 });
 
 // The main stylesheet is linked after the inline recovery script, so one a server that never built

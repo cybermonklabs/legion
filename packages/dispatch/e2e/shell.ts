@@ -6,6 +6,8 @@
  *  server's own 404, which the stubbed layer's file server does not give (it answers an
  *  unknown path with `index.html`, as the SPA fallback).
  */
+import { setTimeout as sleep } from "node:timers/promises";
+
 import type { Page } from "@playwright/test";
 
 /** The path of the asset the page at `origin` names in `pattern`'s first group. */
@@ -87,4 +89,71 @@ export async function failBuildScript(page: Page): Promise<void> {
     script.src = "/assets/index-missing.js";
     document.head.append(script);
   });
+}
+
+/** One document load of a page, as the rows about a prefetched chunk read it. */
+export interface ShellLoad {
+  /** Settles once the two chunks the shell renders on every page and waits on - the margin's and
+   *  the reference-preview layer's - have come down, and a moment more for their imports to
+   *  settle. A chunk failure while one of them is out is a failure a reader is waiting behind,
+   *  whatever chunk it is (`web/src/features/shell/DeploymentResilience.tsx`), so a row about a
+   *  chunk nobody waits on fails its chunk only after this. */
+  readonly settled: Promise<void>;
+  /** Settles once the Inbox peek's prefetch has gone out (`web/src/features/inbox/InboxHost.tsx`,
+   *  `usePeekChunkAfterFirstPaint`), which a page the landing reads as the Inbox starts after its
+   *  first paint. */
+  readonly peekAsked: Promise<void>;
+}
+
+function shellLoad() {
+  const margin = Promise.withResolvers<void>();
+  const preview = Promise.withResolvers<void>();
+  const peek = Promise.withResolvers<void>();
+  const settled = (async () => {
+    await Promise.all([margin.promise, preview.promise]);
+    // A chunk's response is in before the import it answers has settled and before
+    // `renderChunk`'s count of it has dropped; twelve frames is that settling with room to spare.
+    await sleep(200);
+  })();
+  return { load: { peekAsked: peek.promise, settled }, margin, peek, preview };
+}
+
+/** The current document load of `page`, a new one from each navigation of its main frame. */
+export function shellLoads(page: Page): () => ShellLoad {
+  let current = shellLoad();
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame()) {
+      current = shellLoad();
+    } else if (/\/assets\/inbox-chunk-[^/]+\.js$/u.test(new URL(request.url()).pathname)) {
+      current.peek.resolve();
+    }
+  });
+  page.on("requestfinished", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (/\/assets\/Margin-[^/]+\.js$/u.test(path)) current.margin.resolve();
+    if (/\/assets\/RefPreview-[^/]+\.js$/u.test(path)) current.preview.resolve();
+  });
+  return () => current.load;
+}
+
+/** Holds every request for the asset at `pattern` on the wire for the rest of the row: a
+ *  download that is out and never answers. */
+export async function holdAsset(page: Page, pattern: RegExp): Promise<void> {
+  await page.route(pattern, () => undefined);
+}
+
+/** Fails every request for the asset at `pattern`, each once `ready` has settled for the load it
+ *  belongs to, and returns how many it failed. */
+export async function failAssetWhen(
+  page: Page,
+  pattern: RegExp,
+  ready: () => Promise<unknown>
+): Promise<() => number> {
+  let failed = 0;
+  await page.route(pattern, async (route) => {
+    await ready();
+    await route.abort();
+    failed += 1;
+  });
+  return () => failed;
 }

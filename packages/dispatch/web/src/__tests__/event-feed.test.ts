@@ -1533,3 +1533,60 @@ test("a claim that moves while the Inbox is in flight sends that issue's later c
     getInbox.mockRestore();
   }
 });
+
+// The landing carries the first page's Inbox rows in its own answer and seeds them under the
+// Inbox's key (`api/queries.ts`, `seedShell`), so that page reads `/inbox` not at all: when the
+// feed's first events arrive no Inbox read is in flight, and a card that mounts after them mounts
+// from the seeded body, which was composed before them. The marker is what sends that card to
+// the ask endpoint, and a marker set only while a read is in flight is never set here.
+test("an event over a landed Inbox body, with no read of it in flight, marks the threads that body names until a newer Inbox lands", async () => {
+  const onIssue = issueAsk({ id: "ask-1" });
+  const edited = issueAsk({
+    id: "ask-2",
+    issue: { assignee: "alice", key: "CORE-2", title: "Edited" },
+    issue_key: "CORE-2",
+  });
+  const elsewhere = issueAsk({
+    id: "ask-3",
+    issue: { assignee: "alice", key: "CORE-3", title: "Other" },
+    issue_key: "CORE-3",
+  });
+  const rows = [onIssue, edited, elsewhere];
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const inboxKey = inboxQuery().queryKey;
+  client.setQueryData(inboxKey, rows);
+  expect(client.getQueryState(inboxKey)?.fetchStatus).toBe("idle");
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue(rows);
+
+  try {
+    const claimed = event("issue.claimed", {
+      claim: { actor: { id: "session-now", kind: "session" }, at: "2026-09-24T06:00:00Z" },
+      key: "CORE-1",
+      reason: "claimed",
+    });
+    markAskThreadsSeededByAnOlderInbox(
+      client,
+      eventRefreshTargets(claimed, "alice"),
+      askThreadsIssue(claimed)
+    );
+    const askEdited = event("ask.edited", { anchor: null, id: "ask-2" });
+    markAskThreadsSeededByAnOlderInbox(
+      client,
+      eventRefreshTargets(askEdited, "alice"),
+      askThreadsIssue(askEdited)
+    );
+    // The claim marks every thread on its issue, the edit its own ask's, and the third ask, on
+    // an issue neither event moved, keeps the row it was listed with.
+    expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(true);
+    expect(hasPendingAskThreadInvalidation(client, edited)).toBe(true);
+    expect(hasPendingAskThreadInvalidation(client, elsewhere)).toBe(false);
+
+    // An Inbox read made after both events is composed after them, and clears both marks.
+    await client.fetchQuery({ ...inboxQuery(), staleTime: 0 });
+    expect(getInbox).toHaveBeenCalledTimes(1);
+    expect(hasPendingAskThreadInvalidation(client, onIssue)).toBe(false);
+    expect(hasPendingAskThreadInvalidation(client, edited)).toBe(false);
+  } finally {
+    getInbox.mockRestore();
+  }
+});
