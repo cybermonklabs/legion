@@ -822,3 +822,78 @@ test("a deleted comment offers no Edit and no reply, and its live reply keeps Ed
     deletedReply.unmount();
   }
 });
+
+// A collapsed card folds its byline away, so the root's ` · edited` sits beside the preview: an
+// edited root carries it, a root nobody edited does not, and a deleted root reads as deleted.
+test("a collapsed card marks an edited root beside its preview, and a standing root carries no mark", async () => {
+  const editedRoot = comment("root-1", "Root comment", "2026-09-10T00:00:00Z", {
+    edited_at: "2026-09-10T00:04:00Z",
+  });
+  const edited = renderCard(thread({ root: { comment: editedRoot, kind: "comment" } }), {
+    expanded: false,
+  });
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    await within(card).findByText("Root comment");
+    expect(card).toHaveTextContent("Root comment · edited");
+  } finally {
+    edited.unmount();
+  }
+
+  const standing = renderCard(thread(), { expanded: false });
+  try {
+    const card = screen.getByTestId("margin-comment-root-1");
+    await within(card).findByText("Root comment");
+    expect(card).not.toHaveTextContent("edited");
+  } finally {
+    standing.unmount();
+  }
+});
+
+// The quote of a passage prints the post it is a passage of, so that post's edit is marked in
+// the quote as on the post's own byline.
+test("a margin reply's quote of a passage of an edited post marks the post as edited", async () => {
+  const bob = { id: "bob", kind: "user" } as const;
+  const passage = {
+    block_id: "b2",
+    node: "comment/reply-1#b2",
+    ref: "dispatch://CORE-1/comment/reply-1#b-b2",
+    removed: false,
+    text: "Beta.",
+  };
+  const editedReply = comment("reply-1", "Alpha.\n\nBeta.", "2026-09-10T00:01:00Z", {
+    anchor: null,
+    author: bob,
+    edited_at: "2026-09-10T00:01:30Z",
+    reply_to: root.id,
+  });
+  const toEdited = comment("reply-2", "Yes to that.", "2026-09-10T00:02:00Z", {
+    anchor: null,
+    reply_block: passage,
+    reply_to: root.id,
+  });
+  const toStanding = comment("reply-3", "And that?", "2026-09-10T00:03:00Z", {
+    anchor: null,
+    author: bob,
+    reply_block: { ...passage, block_id: "b1", node: `comment/${root.id}#b1`, text: "Root." },
+    reply_to: root.id,
+  });
+  const view = renderCard(thread({ replies: [editedReply, toEdited, toStanding] }));
+
+  try {
+    const row = async (body: string) => {
+      const element = (await screen.findByText(body)).closest("li");
+      if (element === null) throw new Error(`${body} has no reply row`);
+      return element;
+    };
+    const yes = await row("Yes to that.");
+    await waitFor(() =>
+      expect(yes).toHaveTextContent("Replying to bob's passage · edited — Beta.")
+    );
+    const other = await row("And that?");
+    await waitFor(() => expect(other).toHaveTextContent("Replying to alice's passage — Root."));
+    expect(other).not.toHaveTextContent("edited");
+  } finally {
+    view.unmount();
+  }
+});

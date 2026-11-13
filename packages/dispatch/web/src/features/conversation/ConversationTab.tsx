@@ -264,6 +264,7 @@ function ConversationReply({
         author: parent?.author,
         block: reply.reply_block,
         deleted: postDeletion(parent),
+        edited: parent?.edited_at,
         excerpt: parent?.body ?? "",
         excerptTree: parent?.body_tree,
         to:

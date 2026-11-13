@@ -36,7 +36,7 @@ import type { SaveCommentEdit } from "../conversation/send-request";
 import { AgentName } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { EditedMark, PostBody, PostPreview } from "../refs/PostBody";
-import { postDeletion } from "../refs/post-marks";
+import { type PostDeletion, postDeletion } from "../refs/post-marks";
 import { buildIssuePath, buildProjectPath, itemRoute } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
@@ -140,6 +140,38 @@ export interface ThreadCardProps {
   /** The comment whose edit save is in flight; owned with the shared editor state. */
   savingCommentEditId: string | undefined;
   onEditingChange(id: string | undefined): void;
+}
+
+/** The collapsed card's preview of its root, and beside it the ` · edited` the expanded card's
+ *  byline carries: a collapsed card draws no byline, so the mark sits after the text it marks,
+ *  outside the clamp that would cut it. */
+function CollapsedRootPreview({
+  className = "",
+  comment,
+  deleted,
+  lines,
+}: {
+  className?: string;
+  comment: ThreadComment;
+  deleted: PostDeletion | null;
+  lines: 1 | 2;
+}): ReactNode {
+  return (
+    <span className={`flex min-w-0 items-baseline gap-1 ${className}`}>
+      <PostPreview
+        className="min-w-0 flex-1"
+        deleted={deleted}
+        lines={lines}
+        links="live"
+        markdown={comment.body}
+        source={textSourceOf("comment", comment.id)}
+        tree={comment.body_tree}
+      />
+      <span className={`shrink-0 text-xs ${textMutedOnSurfaceMuted}`}>
+        <EditedMark at={comment.edited_at} deleted={deleted} />
+      </span>
+    </span>
+  );
 }
 
 function CommentBody({
@@ -488,8 +520,8 @@ export function ThreadCard({
             {shown.length === 0 ? null : (
               <ol aria-label="Replies" className={`mt-3 space-y-2 border-t pt-3 ${borderDefault}`}>
                 {shown.map((reply) => {
-                  // The quoted post, read once: its author names the quote and its deletion
-                  // marks it.
+                  // The quoted post, read once: its author names the quote, and its deletion and
+                  // its edit mark it.
                   const quoted =
                     reply.reply_block == null
                       ? undefined
@@ -513,6 +545,7 @@ export function ThreadCard({
                               block={reply.reply_block}
                               className="mb-2"
                               deleted={postDeletion(quoted)}
+                              edited={quoted?.edited_at}
                               excerpt=""
                             />
                           )}
@@ -563,14 +596,11 @@ export function ThreadCard({
                     <SuggestionDiff clamp quote={root.anchor.quote} suggestion={rootSuggestion} />
                   </span>
                   {root.body === "Suggested replacement." ? null : (
-                    <PostPreview
+                    <CollapsedRootPreview
                       className={`mt-2 text-xs ${textSecondaryOnSurface}`}
+                      comment={root}
                       deleted={rootDeleted}
                       lines={1}
-                      links="live"
-                      markdown={root.body}
-                      source={textSourceOf("comment", root.id)}
-                      tree={root.body_tree}
                     />
                   )}
                 </>
@@ -583,14 +613,7 @@ export function ThreadCard({
                       {root.anchor.quote}
                     </blockquote>
                   )}
-                  <PostPreview
-                    deleted={rootDeleted}
-                    lines={2}
-                    links="live"
-                    markdown={root.body}
-                    source={textSourceOf("comment", root.id)}
-                    tree={root.body_tree}
-                  />
+                  <CollapsedRootPreview comment={root} deleted={rootDeleted} lines={2} />
                   <Unfurl body={root.body} source={textSourceOf("comment", root.id)} />
                 </>
               )}

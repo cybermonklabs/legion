@@ -426,3 +426,36 @@ test("a reply row whose comment was deleted reads as deleted and gives no part o
     listMyAnswers.mockRestore();
   }
 });
+
+test("a reply row whose comment was edited says so on its label, and one nobody edited does not", async () => {
+  const reply = (id: string, editedAt: string | undefined): MyAnswerRow => ({
+    ask_id: id,
+    ask_kind: "question",
+    ask_state: "open",
+    at: "2026-10-08T02:00:00Z",
+    current: false,
+    edited_at: null,
+    kind: "reply",
+    owner: { issue: { key: "CORE-1", title: "Release train" } },
+    question: "Which colour?",
+    ref: `/issues/CORE-1/asks/${id}`,
+    reply: { body: "Blue.", edited_at: editedAt, id: `comment-${id}` },
+  });
+  const listMyAnswers = spyOn(api, "listMyAnswers").mockResolvedValue(
+    page([reply("ask-2", "2026-10-08T02:30:00Z"), reply("ask-3", undefined)])
+  );
+  const { view } = renderPage();
+
+  try {
+    await waitFor(() => {
+      const edited = view.container.querySelector('[data-answer-row="ask-2"]');
+      expect(edited?.textContent).toContain("Replied · edited: Blue.");
+    });
+    const standing = view.container.querySelector('[data-answer-row="ask-3"]');
+    expect(standing?.textContent).toContain("Replied: Blue.");
+    expect(standing?.textContent).not.toContain("edited");
+  } finally {
+    view.unmount();
+    listMyAnswers.mockRestore();
+  }
+});

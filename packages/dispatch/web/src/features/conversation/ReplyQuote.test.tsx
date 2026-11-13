@@ -91,3 +91,18 @@ test("a quote of a deleted parent says so in place of the parent's text", async 
     view.unmount();
   }
 });
+
+test("a quote of an edited parent says so after its author, and a parent nobody edited does not", async () => {
+  await expectQuote(
+    { author: planner, edited: "2026-09-09T02:00:00Z", excerpt: "Alpha." },
+    "Replying to Planner · edited — Alpha."
+  );
+  await expectQuote(
+    { author: planner, block: passage, edited: "2026-09-09T02:00:00Z", excerpt: "" },
+    "Replying to Planner's passage · edited — Beta."
+  );
+  await expectQuote(
+    { author: planner, edited: null, excerpt: "Alpha." },
+    "Replying to Planner — Alpha."
+  );
+});

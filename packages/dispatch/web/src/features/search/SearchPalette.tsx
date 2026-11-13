@@ -36,6 +36,7 @@ import {
 } from "../../theme/classes";
 import { statusText } from "../project/board-model";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
+import { EditedMark } from "../refs/PostBody";
 import { referenceTriggerProps } from "../refs/RefPreview";
 import {
   buildIssuePath,
@@ -249,6 +250,11 @@ function ResultOption({
         {result.artifact === undefined ? null : (
           <span className="truncate">{result.artifact.name}</span>
         )}
+        {/* A comment or a message its author edited says so, as its byline does; a deleted post
+            no longer matches a search, so a hit carries no delete mark. */}
+        <span className="shrink-0">
+          <EditedMark at={result.edited_at} />
+        </span>
       </div>
       <MarkdownPreview
         className={`mt-1 text-sm ${muted ? textMutedOnSelectedCard : textPrimaryOnSurface}`}

@@ -339,6 +339,71 @@ test("blocks of one comment citing the node are rows under that comment, labelle
   expect(messageSource.getByText("The message cites dispatch://CORE-1.")).toBeTruthy();
 });
 
+// A citing comment or message carries its post's marks, as every read of the post does: a
+// deleted one has no excerpt left and its row prints the deleted line, an edited one carries
+// ` · edited` beside its time, and one that stands carries neither.
+test("a row of a deleted citing post reads as deleted, an edited one says so, and a standing one neither", async () => {
+  const postEdge = (
+    kind: "comment" | "message",
+    id: string,
+    marks: Partial<GraphEdge["node"]>,
+    excerpt?: string
+  ): GraphEdge => ({
+    created_at: createdAt,
+    direction: "in",
+    ...(excerpt === undefined ? {} : { excerpt: { text: excerpt } }),
+    kind: "mentions",
+    node: {
+      ...graphNodeFields(),
+      id,
+      issue_key: "OPS-1",
+      kind,
+      project: "OPS",
+      ref: `dispatch://OPS-1/${kind}/${id}`,
+      ...marks,
+    },
+    source_seq: 11,
+  });
+  const { getReferences, view } = renderPanel({
+    edges: [
+      postEdge("comment", "11111111-1111-4111-8111-111111111111", {
+        deleted_at: "2026-10-20T11:00:00Z",
+        deleted_by: { id: "alice", kind: "user" },
+      }),
+      postEdge(
+        "message",
+        "33333333-3333-4333-8333-333333333333",
+        { edited_at: "2026-10-20T10:30:00Z" },
+        "The message cites dispatch://CORE-1."
+      ),
+      postEdge("comment", "44444444-4444-4444-8444-444444444444", {}, "A comment cites it."),
+    ],
+    node: {
+      ...graphNodeFields(),
+      id: "CORE-1",
+      issue_key: "CORE-1",
+      kind: "issue",
+      ref: "dispatch://CORE-1",
+    },
+  });
+  restore = () => {
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const panel = await screen.findByRole("region", { name: "Referenced by" });
+  await within(panel).findByText("A comment cites it.");
+  const sources = [...panel.querySelectorAll<HTMLElement>(":scope > ul > li")];
+  expect(sources).toHaveLength(3);
+  const [deleted, edited, standing] = sources as [HTMLElement, HTMLElement, HTMLElement];
+  expect(deleted.querySelector("[data-post-deleted]")?.textContent).toContain("Deleted by alice");
+  expect(deleted.textContent).not.toContain("edited");
+  expect(edited.textContent).toContain("· edited");
+  expect(edited.querySelector("[data-post-deleted]")).toBeNull();
+  expect(standing.textContent).not.toContain("edited");
+  expect(standing.querySelector("[data-post-deleted]")).toBeNull();
+});
+
 test("parts of one ask citing the node are rows under that ask, named as the ask rather than as an artifact", async () => {
   const ask = "22222222-2222-4222-8222-222222222222";
   const { getReferences, view } = renderPanel({

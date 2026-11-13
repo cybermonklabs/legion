@@ -92,11 +92,12 @@ export function ReplyTurn({
   markRef?: DwellRef;
   onReply?: () => void;
   /** The parent the reply quotes: its author, its body, the block of it the reply answers (its
-   *  `reply_block`), and its turn's path. */
+   *  `reply_block`), its deletion and its edit, and its turn's path. */
   quote?: {
     readonly author: Actor | undefined;
     readonly block?: ReplyBlockWithTrees | null;
     readonly deleted?: PostDeletion | null;
+    readonly edited?: string | null;
     readonly excerpt: string;
     readonly excerptTree?: DisplayTree;
     readonly to?: string;
@@ -135,6 +136,7 @@ export function ReplyTurn({
             block={quote.block}
             className="mb-1"
             deleted={quote.deleted}
+            edited={quote.edited}
             excerpt={quote.excerpt}
             excerptTree={quote.excerptTree}
             to={quote.to}

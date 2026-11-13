@@ -4613,6 +4613,44 @@ test("the Agents page marks an edited message and reads a deleted one as deleted
   }
 });
 
+// A reply's quote prints its parent, so a parent its author edited carries ` · edited` in the
+// quote as on its own byline, and a parent nobody edited carries none.
+test("the Agents page marks a reply's quote of an edited parent, and not of a standing one", async () => {
+  const user = userEvent.setup();
+  const root = message("Can this ship?", {
+    edited_at: "2026-09-14T00:30:00Z",
+    issue_key: "CORE-1",
+  });
+  const answer = message("Yes, it can.", {
+    author: { id: "planner-session", kind: "session" },
+    created_at: "2026-09-14T01:00:00Z",
+    id: "reply-1",
+    in_reply_to: "message-1",
+    issue_key: "CORE-1",
+  });
+  const thanks = message("Thanks.", {
+    created_at: "2026-09-14T01:10:00Z",
+    id: "reply-2",
+    in_reply_to: "reply-1",
+    issue_key: "CORE-1",
+  });
+  const page = renderAgents({ messages: [{ message: root, replies: [answer, thanks] }] });
+
+  try {
+    const planner = card(await screen.findByRole("region", { name: "Agents" }), "Planner");
+    await expand(user, planner, "Planner");
+    const turn = (id: string) => planner.querySelector(`[data-turn="message:${id}"]`);
+    await waitFor(() =>
+      expect(turn("reply-1")?.textContent).toContain("· edited — Can this ship?")
+    );
+    await waitFor(() => expect(turn("reply-2")?.textContent).toContain("— Yes, it can."));
+    expect(turn("reply-2")?.textContent).not.toContain("edited");
+  } finally {
+    page.view.unmount();
+    page.restore();
+  }
+});
+
 /** A long list of listed sessions, every one Idle and named in order, so the page's order is the
  *  fixture's own and what the window drew can be read off it. */
 function manySessions(count: number): Agent[] {

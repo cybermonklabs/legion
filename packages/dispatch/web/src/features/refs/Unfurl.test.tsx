@@ -646,3 +646,56 @@ test("Unfurl says a referenced comment was deleted and gives no part of its body
     view.unmount();
   }
 });
+
+// A card for a post prints the post, so an edited one carries ` · edited` after its title, as
+// its byline does, and one nobody edited carries none. A deleted one has no title left: the
+// deleted line is its title, and the card never falls back to the reference the body wrote.
+test("Unfurl marks an edited comment, and a deleted one's title is the deleted line, not the body's words", async () => {
+  const read = (overrides: Partial<CommentRead["comment"]>): CommentRead => ({
+    comment: {
+      id: "comment-1",
+      issue_key: "CORE-1",
+      author: { id: "alice", kind: "user" },
+      body: "Looks good.",
+      anchor: null,
+      reply_to: null,
+      ask_id: null,
+      turn: null,
+      resolved: false,
+      resolved_by: null,
+      resolved_at: null,
+      edited_at: null,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      ...commentDeliveryFields(),
+      ...overrides,
+    },
+    replies: [],
+  });
+  const card = async (overrides: Partial<CommentRead["comment"]>, settled: string) => {
+    const getComment = spyOn(api, "getComment").mockResolvedValue(read(overrides));
+    const view = renderUnfurl("dispatch://CORE-1/comment/comment-1");
+    try {
+      const link = await waitFor(() => {
+        const found = view.container.querySelector("a");
+        if (found?.textContent?.includes(settled) !== true) throw new Error("not read yet");
+        return found;
+      });
+      return link.textContent;
+    } finally {
+      view.unmount();
+      getComment.mockRestore();
+    }
+  };
+
+  expect(await card({ edited_at: "2026-09-09T01:00:00Z" }, "Looks good.")).toBe(
+    "Looks good. · edited"
+  );
+  expect(await card({}, "Looks good.")).toBe("Looks good.");
+  const deleted = await card(
+    { body: "", deleted_at: "2026-09-09T02:00:00Z", deleted_by: { id: "alice", kind: "user" } },
+    "Deleted by alice"
+  );
+  expect(deleted).not.toContain("dispatch://");
+  expect(deleted).not.toContain("edited");
+});

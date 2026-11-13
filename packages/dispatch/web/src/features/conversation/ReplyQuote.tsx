@@ -4,7 +4,7 @@ import type { Actor, DisplayTree, ReplyBlockWithTrees } from "../../api/types";
 import { linkHoverText, secondaryButtonBorder, textMutedOnCanvas } from "../../theme/classes";
 import { AgentName } from "../refs/AgentName";
 import { MarkdownPreview } from "../refs/MarkdownPreview";
-import { DeletedBody } from "../refs/PostBody";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
 import type { PostDeletion } from "../refs/post-marks";
 
 // The phone stylesheet makes every link an inline-flex 44 px tap target, which does not truncate
@@ -35,6 +35,9 @@ export function passageItem<T extends { readonly id: string }>(
  *  deleted the parent, the quote says that instead of either, since a delete gives no part of
  *  the body to any read that quotes it.
  *
+ *  A parent its author edited carries ` · edited` after its author's name, as its own byline
+ *  does (`edited`); without a loaded parent there is no author and no edit to mark.
+ *
  *  The author is drawn by `AgentName`, whose name links to the agent, so it sits outside the
  *  quote's link, which holds the rest: the body, or with no author the whole line. */
 export function ReplyQuote({
@@ -42,6 +45,7 @@ export function ReplyQuote({
   block,
   className = "",
   deleted = null,
+  edited,
   excerpt,
   excerptTree,
   to,
@@ -52,6 +56,9 @@ export function ReplyQuote({
   className?: string;
   /** The parent's deletion, where the host read one; null for a parent nobody deleted. */
   deleted?: PostDeletion | null;
+  /** When the parent's author last replaced its body, where the host read the parent; null or
+   *  absent for a parent nobody edited. */
+  edited?: string | null;
   /** The quoted parent's body as its author wrote it (Markdown); `""` when none is known. */
   excerpt: string;
   /** The reading Go made of `excerpt`, which the quote draws; absent where the caller holds no
@@ -91,6 +98,7 @@ export function ReplyQuote({
         <span className="min-w-0 truncate">
           Replying to <AgentName actor={author} inline />
           {passage ? "'s passage" : ""}
+          <EditedMark at={edited} deleted={deleted} />
           {quoted === null ? "" : " "}
         </span>
       )}

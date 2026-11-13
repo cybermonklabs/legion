@@ -235,6 +235,36 @@ test("says how many matches a query has when the page holds fewer", async () => 
   }
 });
 
+// A comment or a message hit prints the post, so one its author edited says so beside its kind,
+// as its byline does; one nobody edited carries no mark.
+test("an edited post's hit carries the edited mark, and a post nobody edited does not", async () => {
+  const user = userOnFakeClock();
+  const edited: SearchResult = {
+    edited_at: "2026-10-01T00:00:00Z",
+    href: "/issues/LEGION-2/comments/comment-3",
+    id: "comment-3",
+    kind: "comment",
+    owner: { key: "LEGION-2", kind: "issue", status: "todo", title: "Navigation instruments" },
+    rank: 2,
+    snippet: "The <mark>astrolabe</mark> was recalibrated.",
+  };
+  const standing = results[2] as SearchResult;
+  const search = spyOn(api, "search").mockResolvedValue(searchAnswer([edited, standing]));
+  const view = renderPalette();
+
+  try {
+    await searchFor(user, "astrolabe");
+    const option = (result: SearchResult) => document.getElementById(optionId(result));
+    await waitFor(() => expect(option(edited)?.textContent).toContain("comment · edited"));
+    expect(option(standing)?.textContent).toContain("comment");
+    expect(option(standing)?.textContent).not.toContain("edited");
+  } finally {
+    search.mockRestore();
+    view.unmount();
+    view.queryClient.clear();
+  }
+});
+
 test("renders document-owned results under the document and opens their discussion", async () => {
   const user = userOnFakeClock();
   const search = spyOn(api, "search").mockResolvedValue(

@@ -11,6 +11,8 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { blockFragment, isBlockItemKind } from "./block-reference";
+import { DeletedBody, EditedMark } from "./PostBody";
+import { postDeletion } from "./post-marks";
 import { referenceTriggerProps } from "./RefPreview";
 import { referencesQuery } from "./reference-target";
 import type { DispatchReferenceRoute } from "./routes";
@@ -278,6 +280,9 @@ export function ReferencedBy({
                   // On a document's read, the block of the document the edge meets: one source
                   // citing two of its blocks is two rows, each naming and keyed by its block.
                   const cited = referencePath(edge.block?.ref);
+                  // A citing comment or message, or a block of one, carries its post's marks: a
+                  // deleted one has no excerpt left, and the deleted line takes its place.
+                  const deleted = postDeletion(edge.node);
                   return (
                     <li
                       key={`${edge.node.kind}:${edge.node.id}:${edge.kind}:${edge.direction}:${edge.block?.id ?? ""}`}
@@ -302,6 +307,7 @@ export function ReferencedBy({
                             <Timestamp at={edge.created_at} />
                           </Link>
                         )}
+                        <EditedMark at={edge.node.edited_at} deleted={deleted} />
                         {cited === undefined ? null : (
                           <>
                             <span aria-hidden="true">·</span>
@@ -315,7 +321,11 @@ export function ReferencedBy({
                           </>
                         )}
                       </div>
-                      {edge.excerpt === undefined ? null : <Excerpt text={edge.excerpt.text} />}
+                      {deleted !== null ? (
+                        <DeletedBody className="mt-1 block text-sm" deleted={deleted} />
+                      ) : edge.excerpt === undefined ? null : (
+                        <Excerpt text={edge.excerpt.text} />
+                      )}
                     </li>
                   );
                 })}

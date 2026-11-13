@@ -253,6 +253,7 @@ function AgentExchangeReply({
               author: parent.author,
               block: reply.reply_block,
               deleted: postDeletion(parent),
+              edited: parent.edited_at,
               excerpt: parent.body,
               ...(parent.issue_key === null
                 ? {}

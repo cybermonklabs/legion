@@ -384,6 +384,72 @@ test.each([
   }
 });
 
+// A reference to a post, or to a block of one, answers the post's marks beside its text: the
+// time its author edited it, and its deletion. A block of a post that stands reads its node
+// alone and carries the marks the node carries; a block of a deleted post answers 404 in words
+// that end `: this message is deleted` and carries none, so the post's own read gives the mark.
+test("a reference answers the edit and the deletion of the post it names, or whose block it names", async () => {
+  const reads = spyReads();
+  reads.getMessage.mockResolvedValue({
+    message: {
+      body: "",
+      deleted_at: "2026-09-09T03:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+    },
+  } as never);
+  const standing = blockRead("Beta as written.");
+  reads.getReferences.mockImplementation((reference) =>
+    reference.includes("/message/")
+      ? Promise.reject(
+          new ApiError(404, {
+            code: "NOT_FOUND",
+            error: 'no block "b1" in message m-1: this message is deleted',
+          })
+        )
+      : Promise.resolve({
+          ...standing,
+          node: { ...standing.node, edited_at: "2026-09-09T02:00:00Z" },
+        })
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(QueryClientProvider, { client: queryClient }, children);
+  const edited = renderHook(
+    () =>
+      useReferenceTarget(
+        { block: { id: "b2" }, id: "c-1", key: "CORE-1", kind: "comment" },
+        { text: false }
+      ),
+    { wrapper }
+  );
+  const deleted = renderHook(
+    () =>
+      useReferenceTarget(
+        { block: { id: "b1" }, id: "m-1", key: "CORE-1", kind: "message" },
+        { text: false }
+      ),
+    { wrapper }
+  );
+  try {
+    await waitFor(() => expect(edited.result.current.title).toBe("Beta as written."));
+    expect(edited.result.current.edited).toBe("2026-09-09T02:00:00Z");
+    expect(edited.result.current.deleted).toBeNull();
+
+    await waitFor(() =>
+      expect(deleted.result.current.deleted).toEqual({
+        at: "2026-09-09T03:00:00Z",
+        by: { id: "alice", kind: "user" },
+      })
+    );
+    expect(deleted.result.current.edited).toBeNull();
+    expect(reads.getMessage).toHaveBeenCalledWith("CORE-1", "m-1");
+    expect(reads.getComment).not.toHaveBeenCalled();
+  } finally {
+    deleted.unmount();
+    edited.unmount();
+  }
+});
+
 test("watchPicturePath reports an image's latest version and follows its summary as it changes", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const summary = (kind: "image" | "doc", latest: number): IssueReferenceSummary => ({

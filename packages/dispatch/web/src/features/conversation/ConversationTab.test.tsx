@@ -2508,3 +2508,32 @@ test("a deleted reply its author had edited reads as deleted, with no edited mar
     stub.restore();
   }
 });
+
+// The quote under a reply prints its parent, so a parent its author edited carries ` · edited`
+// there too, as its own byline does; a parent nobody edited does not.
+test("a reply's quote of an edited parent marks the parent as edited, and of a standing one does not", async () => {
+  const reply = (id: string, parent: string) =>
+    message(id, { body: `Answer ${id}.`, created_at: "2026-09-09T02:00:00Z", in_reply_to: parent });
+  const stub = stubLists({
+    messages: [
+      thread(message("message-1", { body: "Alpha.", edited_at: "2026-09-09T01:00:00Z" }), [
+        reply("message-2", "message-1"),
+      ]),
+      thread(message("message-3", { body: "Gamma." }), [reply("message-4", "message-3")]),
+    ],
+  });
+  const view = render(tab({ "CORE-1": issueState() }, true, newQueryClient()));
+  const turn = (id: string) => view.container.querySelector(`[data-turn="message:${id}"]`);
+
+  try {
+    await waitFor(() =>
+      expect(turn("message-2")?.textContent).toContain("Replying to alice · edited — Alpha.")
+    );
+    await waitFor(() =>
+      expect(turn("message-4")?.textContent).toContain("Replying to alice — Gamma.")
+    );
+  } finally {
+    view.unmount();
+    stub.restore();
+  }
+});
