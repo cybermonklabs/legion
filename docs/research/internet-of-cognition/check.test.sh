@@ -564,6 +564,18 @@ for form in "echo \$[2+3]" "X=\$[0]"; do
     case_result "arithmetic written as \$[ ] is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
 done
 
+# 39. The classifier admits a $ expansion only in the forms the rows use: a parameter,
+# $NAME or ${NAME}, a one-character special parameter such as $?, a command substitution
+# and a literal $. Any other $ form is refused by name, so a spelling nobody named lands on
+# a refusal: here a parameter with a default, ${X:-y}. The honest form beside it, the same
+# parameter as ${X}, is read and passes.
+dir="$(fresh dollar-default-refused)"
+plant_behaviour "$dir" "X=once; printf 'ran %s\\n' \"\${X:-y}\"" '{"contains":"ran once"}'
+case_result "a \$ form the classifier does not list is refused: \${X:-y}" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh dollar-parameter-admitted)"
+plant_behaviour "$dir" "X=once; printf 'ran %s\\n' \"\${X}\"" '{"contains":"ran once"}'
+honest_result "a parameter written as \${X} is admitted and passes" replay-command "$(fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

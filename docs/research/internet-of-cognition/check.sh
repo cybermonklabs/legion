@@ -439,8 +439,12 @@ prepare_env() {
 #     output redirections (14);
 #   - a pipeline (363), and a list joined by ;, && or || or an unquoted newline (88);
 #   - a group { list; } (28), a subshell ( list ) (2), and a for loop (12);
-#   - a command substitution $(...) in a word (11), whose code is admitted by the same
+#   - a command substitution $(...) in a word (13), whose code is admitted by the same
 #     list;
+#   - as a $ expansion: a parameter, $NAME or ${NAME} (362), the special parameter $?
+#     (6), a command substitution (13), and a $ that starts no expansion, which the shell
+#     leaves as it stands (2); every other $ form is refused by name, $[ ], $(( )), $' ',
+#     $" " and ${ } holding anything but a name among them, such as ${X:-y};
 #   - as a command word: a program named by a bare word, which is wrapped in a function of
 #     that name that records its status; one of the five program variables (38), whose
 #     shim records it; xargs running a program named by a bare word (4), whose own status
@@ -454,7 +458,8 @@ prepare_env() {
 # or stdbuf running a program, find -exec, an input redirection, a here-document, a
 # background &, process substitution <( ) and >( ), whose code runs beside the row and
 # ends after it is read, arithmetic (( )) and $(( )), and IOC_EXPECT_STATUS written as a
-# statement of its own. A row that needs a new form adds it here and to the classifier,
+# statement of its own, and declare, local, typeset and readonly, which a wrapping function
+# would make local to it. A row that needs a new form adds it here and to the classifier,
 # with a case of check.test.sh, in the same commit.
 #
 # What the evaluator refuses in an admitted row, read after it runs:
@@ -854,6 +859,70 @@ def substitutions(text):
         i += 1
     return out
 
+NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+SPECIAL = "?$!#@*-0123456789"
+
+def dollar_forms(text):
+    # Each $ the shell expands in text, outside single quotes, as (form, spelling):
+    # "parameter" for $NAME and ${NAME}, "special" for $? and the other one-character
+    # parameters, "command" for $( ), "literal" for a $ that starts no expansion, which the
+    # shell leaves as it is, and every other form as "refused": $(( )), $[ ], $' ', $" "
+    # and ${ } with anything inside but a name, ${NAME:-x}, ${#NAME} and ${!NAME} among them.
+    out, i, single, double = [], 0, False, False
+    while i < len(text):
+        c = text[i]
+        if single:
+            if c == "\x27":
+                single = False
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "\x27" and not double:
+            single = True
+            i += 1
+            continue
+        if c == "\x22":
+            double = not double
+            i += 1
+            continue
+        if c != "$":
+            i += 1
+            continue
+        nxt = text[i + 1:i + 2]
+        if text.startswith("$((", i):
+            out.append(("refused", "$(( ))"))
+            i += 3
+        elif nxt == "(":
+            out.append(("command", "$( )"))
+            i += 2
+        elif nxt == "{":
+            j = text.find("}", i)
+            body = text[i + 2:j] if j > 0 else text[i + 2:]
+            if NAME_RE.fullmatch(body) or (len(body) == 1 and body in SPECIAL):
+                out.append(("parameter", "${NAME}"))
+            else:
+                out.append(("refused", "${" + body + "}"))
+            i = j + 1 if j > 0 else len(text)
+        elif nxt and NAME_RE.match(nxt):
+            out.append(("parameter", "$NAME"))
+            i += 1 + NAME_RE.match(text, i + 1).end() - (i + 1)
+        elif nxt and nxt in SPECIAL:
+            out.append(("special", "$" + nxt))
+            i += 2
+        elif nxt in ("[", "\x27", "\x22") and not (double and nxt == "\x22"):
+            # $[ ] is arithmetic, and $' ' and $" " are quoting forms; none is admitted.
+            out.append(("refused", "$" + nxt))
+            i += 2
+        else:
+            # A $ before any other character starts no expansion, and the shell leaves it
+            # as it stands, as in a sed pattern's "$/".
+            out.append(("literal", "$"))
+            i += 1
+    return out
+
+
 def without_substitutions(text):
     # The text with each substitution replaced by the marker, inside the word it stands in.
     pieces, last = [], 0
@@ -1223,7 +1292,8 @@ CONDITIONS = {"true"}
 REFUSED_WORDS = {"eval", "exec", "command", "builtin", "source", ".", "time", "function", "coproc",
                  "alias", "trap", "exit", "return", "if", "then", "elif", "else", "fi", "while",
                  "until", "case", "esac", "select", "!", "[[", "((", "do", "done", "in",
-                 "timeout", "nice", "nohup", "sudo", "stdbuf", "test", "[", "false", "read"}
+                 "timeout", "nice", "nohup", "sudo", "stdbuf", "test", "[", "false", "read",
+                 "declare", "local", "typeset", "readonly"}
 
 def classify_word(words):
     # The class of a simple command's command word: ("program", name), ("variable",
@@ -1299,6 +1369,11 @@ def classify(command, depth=0):
     # ("admitted", programs, stages) or ("refused", reason) for one command.
     if depth > 3:
         return ("refused", "a command nested too deep")
+    # Every $ form of the command is read first, quotes respected: only a parameter, a
+    # one-character special parameter, a command substitution and a literal $ are admitted.
+    for form, spelling in dollar_forms(command):
+        if form == "refused":
+            return ("refused", "the expansion " + spelling + ", a $ form the evaluator does not admit")
     inner_programs = []
     for start, _, code in substitutions(command):
         # Process substitution runs its code beside the row, so a failure in it lands
