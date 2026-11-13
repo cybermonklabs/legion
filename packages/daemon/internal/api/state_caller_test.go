@@ -217,7 +217,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		refresh bool
 		// held is whether the caller is served `admission.held`, the issues the record holds in
 		// the workflow that stand in neither `active` nor `waiting`, the list heldContract added
-		// at 94, so a pod at 94 or above is served the key and a pod still running an older
+		// at 98, so a pod at 98 or above is served the key and a pod still running an older
 		// plugin is not.
 		held bool
 	}{
@@ -288,7 +288,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// with the `waitingLine` key itself for a caller this far back
 			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
 			// sentence contract 87 added (withoutLeakCheckCause), and with `admission.held` gone,
-			// the list contract 94 added (withoutHeld, held_test.go holds that half). Every row
+			// the list contract 98 added (withoutHeld, held_test.go holds that half). Every row
 			// that reaches here is below all of them, so those fourteen strips take their keys
 			// whatever the row is.
 			var want, got map[string]any

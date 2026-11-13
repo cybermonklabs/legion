@@ -111,7 +111,7 @@ func TestTheStateServedToAPodBeforeTheHeldContractLeavesTheNextCallersStateWhole
 // heldContract is the contract whose entry in version.go added the key, and this daemon's own
 // contract is never below it: a caller at this contract is served the list.
 func TestTheHeldContractIsTheContractThatAddedTheKey(t *testing.T) {
-	const addedHeld = 94
+	const addedHeld = 98
 	if heldContract != addedHeld {
 		t.Fatalf("heldContract = %d, want %d, the contract whose entry in version.go added `admission.held`",
 			heldContract, addedHeld)

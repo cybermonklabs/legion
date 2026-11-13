@@ -1269,7 +1269,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.
 //
-// 94: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 // record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
 // the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
 // eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
@@ -1281,14 +1281,14 @@ package api
 // `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
 // refuses a value it does not name rather than stripping it like an unknown key, so a word added
 // to the ladder later bumps this number again. The key itself is written on every body, empty
-// rather than null, and a caller from a pod whose claims record a contract below 94 is served the
+// rather than null, and a caller from a pod whose claims record a contract below 98 is served the
 // admission block without it (api's stateFor, withoutHeld), as a caller below 87 is served every
 // claim view without `leakCheckCause`, one below 85 every issue without its rendered answer and
 // every member of the waiting line without that contract's own fields, one below 75 the body
 // without the nine keys of the decided record and its contract mark, one below 73 without
 // `claimsToRefresh`, one below 62 the workers without their counts of the moves back and one
 // below 51 the admission block without its trees; the fourteen strips compose, and every reader
-// from 94 on takes the key as optional for exactly those stripped bodies. No other key of the
+// from 98 on takes the key as optional for exactly those stripped bodies. No other key of the
 // wire moves: no list above it changes, though `why.reason` now follows the held word for some
 // issues in `admission.blocked` and `unlisted` alike, for every caller at 85 or above (the
 // sentence table of `internal/projection/why.go` is the one statement of which), which moves no
@@ -1297,11 +1297,12 @@ package api
 // built), so the body costs no further read of the store.
 // (The base declares 87, main's #3939 entry right above this one, landed by
 // cybermonklabs/legion#3939 (INFRA-3219). Read from `const DaemonAPIVersion` at
-// refs/pull/<n>/head over the GitHub API for each of the 139 open pull requests of this
-// repository at 2026-11-13T03:37Z, the open heads declare 88 through 93 and 95 (#3575), and none
-// but this one declares 94, so 94 stays: it is above the base and no other open head declares
-// it. It declared 76 when this pull request opened,
-// then 78, then 86, each renumbered when another change took the number first; 86 was read at
+// refs/pull/<n>/head over the GitHub API for each of the 138 open pull requests of this
+// repository at 2026-11-13T04:59Z, the highest number an open head declares is 97 (#3575), above
+// 96 (#2731 and #3677), so this change takes 98: the lowest number above the base and above every
+// open head, which no open head can land first. It declared 76 when this pull request opened,
+// then 78 and 86, each renumbered when another change took the number first, then 94, which it
+// left for 98 because an open head declared a higher number that could land first; 86 was read at
 // 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
 // already declared it, merged at 18:19Z. Taking the number above every open head rather than
 // above the base alone is what leaves no open head able to land the same number first. That
@@ -1311,4 +1312,4 @@ package api
 // at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 94
+const DaemonAPIVersion = 98

@@ -114,8 +114,8 @@ var (
 // from 75 to 84 those nine too, and no issue's answer, no field of the line beside its place and
 // its length, no claim view's `leakCheckCause` and no held list; a pod at 85 or 86 the answers
 // and the line's own fields too, and still neither the cause nor the held list; a pod from 87 to
-// 93 the claim views' `leakCheckCause` too, and still no held list; a pod below 46 none of the
-// fourteen; and a pod at 94, this daemon's declared contract, a pod whose claims record no
+// 97 the claim views' `leakCheckCause` too, and still no held list; a pod below 46 none of the
+// fourteen; and a pod at 98, this daemon's declared contract, a pod whose claims record no
 // contract and a caller in no pod — the operator's `legion state`, whose memory line reads the
 // draws, whose queue line reads the wakes and whose tool-call line reads the step records — are
 // served all of them.
@@ -180,8 +180,8 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// older pod is not.
 		leak bool
 		// held is whether the caller is served `admission.held`, the issues the record holds in
-		// the workflow that stand in neither `active` nor `waiting` (heldContract, 94), so a pod
-		// at 94 or above is served the list and every older pod is not.
+		// the workflow that stand in neither `active` nor `waiting` (heldContract, 98), so a pod
+		// at 98 or above is served the list and every older pod is not.
 		held bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -239,7 +239,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// each issue's answer and the line's own fields are served too, and the leak check's
 		// cause and the held list are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true},
-		// The band from 87 to 93, from leakCheckCauseContract to below heldContract, the last
+		// The band from 87 to 97, from leakCheckCauseContract to below heldContract, the last
 		// band under the declared contract: the claim views' `leakCheckCause` is served too, and
 		// the held list is the one key held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true},

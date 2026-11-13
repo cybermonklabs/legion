@@ -792,10 +792,10 @@ const memoryContract = 49
 const treeContract = 51
 
 // heldContract is the daemon contract that added `admission.held` to the state (version.go's
-// 94), the issues the daemon's record holds in the workflow that stand in neither `active` nor
+// 98), the issues the daemon's record holds in the workflow that stand in neither `active` nor
 // `waiting`, each with the one word for why: a plugin before it reads the state with a strict
 // schema that knows no such key and refuses the whole body for it, empty as surely as filled.
-const heldContract = 94
+const heldContract = 98
 
 // wakesWaitingContract is the daemon contract that added `wakesWaiting` to the state (version.go's
 // 53): a plugin before it reads the state with a strict schema that knows no such key and refuses
