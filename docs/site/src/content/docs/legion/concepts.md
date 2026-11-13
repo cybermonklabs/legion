@@ -514,9 +514,9 @@ phase and its worker starts again at the same generation, in the same pod and at
 in the admission line. Where the pull request's head is red, the issue goes on to implementing
 instead, and a held review whose round is already decided goes where that decision sends it; the
 board then shows the phase the issue ends in. Starting the worker's claim in a fresh session
-does the same at the cost of that session. Parking the root and admitting it again runs the
-whole tree over as a new generation, which is the move for a tree that must start from its
-architect.
+does the same at the cost of that session. The restart, `backlog` and then `todo` in the same
+turn, runs the whole tree over as a new generation, which is the move for a tree that must start
+from its architect.
 
 A launch failure that is charged is spaced from the next try by a backoff: 2 s after the first,
 doubling after each further one, each wait drawn between half its step and the whole of it. A

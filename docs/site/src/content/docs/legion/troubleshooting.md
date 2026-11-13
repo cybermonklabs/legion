@@ -544,18 +544,19 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
 to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
 architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
-and the controller is woken to re-admit the tree. What brings the architect back depends on where
-its tree stands:
+and the controller is woken: it restarts the tree when it finds no cause or the cause is gone, and
+otherwise asks the person whether to park it. What brings the architect back depends on where its
+tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will
   wake` line names the architect under `failed, retry`. Retry it, as
   [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
   relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
   generation and phase it stands at.
-- **Its root is parked or lingers,** the controller's park for a re-admission included: leave the
-  claim as it is. The tree's re-admission retries it at a new generation; a retry by hand would run
-  it outside the admission cap, and it would be sent no catch-up. To re-admit the tree by hand, park
-  the root and admit it again:
+- **Its root is parked or lingers,** the controller's restart (`backlog`, then `todo` in the same
+  turn) included: leave the claim as it is. The tree's re-admission retries it at a new generation;
+  a retry by hand would run it outside the admission cap, and it would be sent no catch-up. To
+  restart the tree by hand, write the same pair:
 
   ```sh
   legion status <KEY> backlog --config legion.yaml --operator-token-file operator-token
