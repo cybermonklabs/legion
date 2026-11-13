@@ -120,6 +120,9 @@ type workflowRuntime struct {
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
+	// entrySweep is tickEntrySweep's period, zero being entrySweepInterval; a test shortens it
+	// so it waits out its own period rather than the daemon's minute.
+	entrySweep time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
 	// observe.
@@ -441,6 +444,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The project's `memory` block decides what each tree admission opens is drawn: a project the
 	// file names no entry for is the zero block, which is off.
 	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
+	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
+	// config.Config.WorkerBackground).
+	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -992,6 +999,63 @@ func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, paylo
 	return nil
 }
 
+// sweptFact is one fact a sweep of supervision read and the id it is applied under. It is held
+// here, beside the two that use it, because the sweep that mints them and applySweepFacts are
+// both this package's (silence.go's tellSilentPhaseWorkers).
+type sweptFact struct {
+	ID   string
+	Fact intake.Fact
+}
+
+// applySweepFacts applies each fact of one sweep of supervision that this daemon has not
+// applied already, and is the whole of what supervision is given of the workflow for that
+// (supervision.applySweepFacts), as enqueueOutbox above is the whole of what it is given of the
+// outbox. Every such fact is read off the supervisor's claims, so all of them are applied under
+// the source a claim's own terminal facts take (terminalSource); their ids share none of its
+// ids, and processed_events is keyed on the pair. Each fact is applied on its own, as every
+// fact applies, and the first error is returned once every other fact of the batch has had its
+// turn: one silence the store refused is no reason to leave the rest of the sweep unapplied.
+//
+// Which ids are applied already is read first, in one query outside the fact lock
+// (intake.Applied), and that read is the point of taking the batch rather than one fact at a
+// time. A sweep runs every minute over every claim, and a claim that is silent and stays silent
+// mints the same id at every sweep for ever, since the id is the claim token and a last step
+// that does not move. The reading this work was filed for found hundreds of claims with a last
+// step more than an hour old (dispatch://INFRA-3163), and without this read the pass would open
+// a transaction for each of them every minute on the one advisory lock every fact of the daemon
+// takes (intake.ApplyFact), each one only to be told the fact was applied already.
+//
+// A failure of that read takes the whole sweep down with it, no fact of it applied, so it is
+// logged here in the register the failure of one apply below is logged in: its caller discards
+// the error (tellSilentPhaseWorkers) on the strength of every failure being logged where it
+// failed, and a sweep that vanished without a line would make that false.
+func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact) error {
+	ids := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		ids = append(ids, fact.ID)
+	}
+	applied, err := intake.Applied(ctx, w.pool, terminalSource, ids)
+	if err != nil {
+		w.log.Warn("the workflow could not read which facts of a sweep of supervision are applied already; none of the sweep is applied and it is read again at the next sweep",
+			"facts", len(facts), "error", err)
+		return err
+	}
+	var first error
+	for _, fact := range facts {
+		if applied[fact.ID] {
+			continue
+		}
+		if _, err := intake.ApplyFact(ctx, w.pool, terminalSource, fact.ID, fact.Fact, w.handlers...); err != nil {
+			w.log.Warn("the workflow could not apply a fact a sweep of supervision read; it is read again at the next sweep",
+				"id", fact.ID, "error", err)
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
 // attach gives the workflow what only supervision has: the outbox, built on its supervisor and
 // its runtime, and the deployment's budget limits, which a failed claim's fact carries to the
 // workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
@@ -1008,6 +1072,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.limits = supervision.supervisor.deps.Limits
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
+	supervision.applySweepFacts = w.applySweepFacts
 	w.attachIdleRelease(supervision)
 }
 
@@ -1215,6 +1280,10 @@ func (w *workflowRuntime) run(ctx context.Context) error {
 	})
 	group.Go(func() error {
 		w.tickController(running)
+		return nil
+	})
+	group.Go(func() error {
+		w.tickEntrySweep(running)
 		return nil
 	})
 	group.Go(func() error {
@@ -1495,6 +1564,82 @@ func (w *workflowRuntime) tickController(ctx context.Context) {
 			w.applyControllerTick(ctx, at)
 		}
 	}
+}
+
+// entrySweepInterval is how often the daemon converges the phase entries with no fact of its
+// project arriving (tickEntrySweep). The difference a sweep closes is a role waiting for work
+// its record already names, so a minute is short enough that no worker waits long for it, and
+// each run is one admission read of the project's issues, slots and line facts, which the same
+// pass already makes on every fact.
+const entrySweepInterval = time.Minute
+
+// entrySweepPeriod is the period tickEntrySweep runs at: override, the runtime's own entrySweep
+// that a test shortens, where one is set, and entrySweepInterval where none is, which is what
+// the shipped binary runs. It is a function of its own so a test reads the period a daemon with
+// no override sweeps at, and not the constant alone.
+func entrySweepPeriod(override time.Duration) time.Duration {
+	if override > 0 {
+		return override
+	}
+	return entrySweepInterval
+}
+
+// tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
+// or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
+// row names is sent that entry's work even where nothing else happens in the project: an
+// admission pass runs on a fact, and a quiet project raises none. Each run's event id is its own
+// — the word, the project, this boot and the run's time — since processed_events is shared by
+// every project's daemon. A failed apply is logged, and the next run tries again, as
+// applyControllerTick does.
+func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
+	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case at := <-ticker.C:
+			w.applyEntrySweep(ctx, at)
+		}
+	}
+}
+
+// applyEntrySweep applies one sweep, when one is owed. The fact itself reads nothing before it:
+// every handler decides inside the fact's own transaction, and what the sweep judges is the
+// daemon's own record. What runs before it is the gate — the very selection the sweep's pass
+// makes, asked as the one question this package has of it (admit's OwesEntryWork, over the
+// selection admit's resumeSlottedWorkers sends the work of), in a read-only transaction of its
+// own and outside the fact lock, asking whether any role of this project is owed the work of
+// the entry its phases row names. The fact takes the one lock every fact takes and writes a row
+// of processed_events, which nothing prunes, so the daemon asks before it applies one; and it
+// asks the question only one piece of code answers, so no gate of its own can disagree with the
+// pass and apply a fact a minute for work that pass would never do. A read that fails applies
+// nothing and is logged: the next run asks again.
+func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
+	owed, err := w.owesEntryWork(ctx)
+	if err != nil {
+		w.log.Warn("read whether any role is owed the work of its phase entry failed", "error", err)
+		return
+	}
+	if !owed {
+		return
+	}
+	eventID := fmt.Sprintf("entry-sweep:%s:%s:%d", w.dispatchProject, w.bootID, at.UnixNano())
+	if _, err := intake.ApplyFact(ctx, w.pool, "entry-sweep", eventID, intake.EntrySweep{}, w.handlers...); err != nil {
+		w.log.Warn("apply the entry sweep failed", "error", err)
+	}
+}
+
+// owesEntryWork is the sweep's gate read, in one short read-only transaction: admission's own
+// answer to whether any role of the project is owed the work of the entry its phases row names,
+// decided over the project exactly as the pass the fact would make decides it.
+func (w *workflowRuntime) owesEntryWork(ctx context.Context) (bool, error) {
+	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	return w.admission.OwesEntryWork(ctx, tx)
 }
 
 // promoteAfterHoldClears applies one synthetic DispatchConsumerPosition fact, its event id never

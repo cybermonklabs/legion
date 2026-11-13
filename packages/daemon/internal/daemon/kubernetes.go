@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/bootprobe"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -182,7 +183,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	if err != nil {
 		return err
 	}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.installed, o.githubAPI)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -498,9 +499,11 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
-// one — per-claim pods, or issue pods on one tree volume — remains.
+// one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
+// root ("" is https://api.github.com), which the shared public leak check is read under
+// (leakCheckSource).
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, installed *appauth.Installed, githubAPI string) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
@@ -513,6 +516,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// bundle is sent or that pod is refused as no newer than the save, and nothing is
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
+		// The shared public leak check each pod's launcher is pushed before any role of the pod
+		// starts, read with the implement App's read-only token for its repository alone; a daemon
+		// with no Apps reads none, and the runtime refuses the start of a role whose launcher names
+		// a tag with the cause that says so.
+		opts.LeakCheck = leakCheckSource(apps, githubAPI)
 		if apps != nil {
 			installations, ok := apps.(appauth.OwnerInstallations)
 			if !ok {
@@ -591,4 +599,50 @@ func (t *implementTokens) Token(ctx context.Context, repo ghrepo.Repository) (st
 		return "", err
 	}
 	return lease.Token, nil
+}
+
+// leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
+// (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
+// https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
+// of the pod starts (sandbox.Options.LeakCheck). Where apps drops an owner's leases
+// (appauth.Forgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so the next
+// read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
+// the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
+// nil reads the daemon as holding no credential.
+func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
+	if apps == nil {
+		return nil
+	}
+	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	if forgetter, ok := apps.(appauth.Forgetter); ok {
+		source.Forget = func() { forgetter.Forget(appauth.Implement, leakguard.CheckRepository.Owner()) }
+	}
+	return source
+}
+
+// leakCheckToken mints the token the shared public leak check is read with: the implement App's
+// read lease on the check's owner (appauth.Tokens.ReadToken, whose four read permissions are all a
+// tarball read needs). No request names a repository any longer (INFRA-2543), so the lease reaches
+// every repository that owner's installation holds and the reading permissions are the whole of
+// what keeps it from writing. It mints nothing else: an installation the account has not granted
+// those permissions is refused, with no wider token in its place, since the owner's own write
+// token would add only what a tarball read never uses.
+//
+// The error's text is the cause sentence's own words after leakguard.RefusalPrefix
+// (leakguard.Source.Token): GitHub refusing the reading permissions (appauth.NarrowingRefused) is
+// told from every other failed mint, since the two are fixed in different places — what the
+// account grants the App's installation, and the App's configuration or its installation on the
+// owner.
+func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner())
+		switch {
+		case err == nil:
+			return lease.Token, nil
+		case appauth.NarrowingRefused(err):
+			return "", fmt.Errorf("GitHub refused the daemon's implement App the reading permissions on %s, and the daemon reads %s with no wider token: %w", leakguard.CheckRepository.Owner(), leakguard.CheckSlug, err)
+		default:
+			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", leakguard.CheckSlug, err)
+		}
+	}
 }

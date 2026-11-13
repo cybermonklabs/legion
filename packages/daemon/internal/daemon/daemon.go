@@ -161,6 +161,10 @@ type overrides struct {
 	// that came due (workflowRuntime.idleTick, both ticks); zero is the production minute. A test
 	// of release and wake shortens it, so it waits out its own period rather than the daemon's.
 	idleTick time.Duration
+	// entrySweep is how often the daemon converges the phase entries with no fact arriving
+	// (workflowRuntime.entrySweep); zero is the production minute, entrySweepInterval. A test of
+	// the sweep shortens it, so it waits out its own period rather than the daemon's.
+	entrySweep time.Duration
 	// gate stands in for the plugin gate when runtime is replaced: nil is none, since a replaced
 	// runtime launches no Oh My Pi to gate. With the tmux runtime, the gate is always the real one.
 	gate func(ctx context.Context) error
@@ -171,7 +175,8 @@ type overrides struct {
 	// production daemon always mints through appauth.New.
 	workflowTokens appauth.Tokens
 	// githubAPI is the GitHub REST root a workflow integration test points the workflow at (its
-	// required-checks reads and its issue branches' creates); empty, in production, is
+	// required-checks reads and its issue branches' creates) and the Kubernetes runtime's read of
+	// the shared public leak check at (sandboxRuntime); empty, in production, is
 	// https://api.github.com.
 	githubAPI string
 	// listen takes the API listener for cfg's bind and port; nil binds them with net.Listen. Run's
@@ -327,7 +332,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		var cancelAfterMint context.CancelFunc
 		boot, cancelAfterMint = context.WithTimeout(context.WithoutCancel(ctx), bootTimeout)
 		defer cancelAfterMint()
-		workflow.controllerFirstWake, workflow.idleTick = o.controllerFirstWake, o.idleTick
+		workflow.controllerFirstWake, workflow.idleTick, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.entrySweep
 		plan.identity = workflow.identity
 		plan.repository = workflow.issueRepository
 		plan.ensureWorkspace = workflow.ensureWorkspace
@@ -1241,6 +1246,16 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// applySweepFacts applies the facts a sweep of supervision read, through the workflow's own
+	// handlers (workflowRuntime.applySweepFacts); nil in a deployment with no workflow, which
+	// records no issue a fact could be about. It is the whole of what the silence sweep needs of
+	// the workflow (tellSilentPhaseWorkers): the sweep filters on the live claims, and every
+	// decision about a silence is the handler's, inside the fact's own
+	// transaction (workflow.(*Engine).workerSilent). The facts of one sweep go in one call so the
+	// ids it minted can be read against what this daemon has applied in one query rather than one
+	// transaction each. The workflow sets it where it attaches, before supervision restores or
+	// launches any claim, as it sets enqueue above.
+	applySweepFacts func(ctx context.Context, facts []sweptFact) error
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
@@ -2108,10 +2123,12 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 // the claims the daemon has not retired, once it has idled past the grace, re-posts StalePlugin
 // for every live claim whose contract still differs — the retry a relaunch the boot pass
 // (refreshStalePlugins) could not complete needs — carries every update round a step
-// (reconcilePodUpdates), and ends the turn of every claim whose agent has stopped stepping
-// (backstopStalledTurns). All three ride the sweep because it is the one periodic pass that
+// (reconcilePodUpdates), ends the turn of every claim whose agent has stopped stepping
+// (backstopStalledTurns), and tells the workflow of every phase worker that nothing will prompt
+// (tellSilentPhaseWorkers). All four ride the sweep because it is the one periodic pass that
 // already reads every claim, rather than running a timer of their own; its minute is far below
-// the smallest backstop bound a configuration can hold.
+// the smallest backstop bound a configuration can hold, and far below the floor under
+// `worker_silence_minutes`.
 func (s *supervision) reconcileOrphans(ctx context.Context) {
 	ticker := time.NewTicker(s.plan.orphanSweep)
 	defer ticker.Stop()
@@ -2134,6 +2151,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
+		s.tellSilentPhaseWorkers(ctx, claims)
 	}
 }
 
@@ -2200,11 +2218,6 @@ func (s *supervision) stop() {
 		s.wg.Wait()
 	})
 }
-
-// phaseRole is the role that works a phase (workflow.RoleFor), which the operator's retry of a
-// held phase checks (api.Options.RoleFor). It is named at package level because serve's own
-// workflow parameter hides the package there.
-var phaseRole = workflow.RoleFor
 
 // serve runs the API on the listener the daemon already took until ctx is done or the server
 // fails, and returns once it is closed: one goroutine serves, the other shuts down, and the
@@ -2285,7 +2298,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 		PrepareRepository:  prepare,
 		RepositoryUnread:   unread,
 		AwaitRecovery:      await,
-		RoleFor:            phaseRole,
+		RoleFor:            phase.RoleFor,
 		Record:             records,
 		Dispatch:           client,
 		Tokens:             tokens,
@@ -2463,6 +2476,19 @@ func (s projectRecords) own(all []record.Issue) []record.Issue {
 
 func (s projectRecords) Enqueue(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
 	if err := s.Store.Enqueue(ctx, tx, row); err != nil {
+		return err
+	}
+	s.wakeOnCommit(ctx, row)
+	return nil
+}
+
+// EnqueueStart wakes the row's lane as Enqueue does: a phase worker's start is written through
+// this statement since the start became a row of its own (workflow.StartOrOwe,
+// record.Store.EnqueueStart), so without the wake here the worker whose phase has just been
+// handed its work would wait for the lane's next sweep, up to one outbox lease after its
+// transition committed.
+func (s projectRecords) EnqueueStart(ctx context.Context, tx pgx.Tx, row record.OutboxRow) error {
+	if err := s.Store.EnqueueStart(ctx, tx, row); err != nil {
 		return err
 	}
 	s.wakeOnCommit(ctx, row)

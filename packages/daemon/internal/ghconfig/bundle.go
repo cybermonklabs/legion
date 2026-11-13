@@ -84,16 +84,14 @@ func RepositoryName(repo string) string {
 // RepositoryDir is the directory of the bundle under root whose token reaches owner's repository
 // repo: the repository's own, `<owner>/<repo>`, whose token reaches that one repository, where
 // the bundle holds it; the owner's own, `<owner>`, where it holds that; and "" where it holds
-// neither, which each caller answers in its own way. It normalizes the repository's name
+// neither, which the caller answers in its own way. It normalizes the repository's name
 // (RepositoryName), so a caller may hand it the name as it was given it, and a repo no bundle
 // directory could be named for (IsDirName) is one the bundle holds none for, so the owner's is
 // answered rather than nothing.
 //
 // It is the one place that choice is made. `legion git-credential` answers git's request from it
 // and refuses a miss (cmd/legion's repositoryGHConfigDir, which `legion gh` picks a call's
-// directory with too), and internal/leakguard's install reads the check's repository with it and
-// leaves GH_CONFIG_DIR as the environment has it on a miss (fetchGh): the two differ on a miss
-// alone, which is why that answer is the caller's and not this function's.
+// directory with too). What a miss means is that caller's to decide, not this function's.
 func RepositoryDir(root, owner, repo string) string {
 	if name := owner + "/" + RepositoryName(repo); repo != "" && IsDirName(name) {
 		if dir := Dir(root, name); isDirectory(dir) {

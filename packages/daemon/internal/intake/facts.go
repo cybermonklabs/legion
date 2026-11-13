@@ -484,6 +484,23 @@ type ControllerTick struct {
 
 func (ControllerTick) isFact() {}
 
+// EntrySweep is the daemon's periodic convergence of the phase entries, applied as a synthetic
+// fact every entrySweepInterval by the workflow runtime's own ticker (internal/daemon's
+// tickEntrySweep) and never decoded from an event. Admission is the only handler that acts on
+// it: it reads the project's issues, its slots and its line facts as its promote path does and
+// sends every role whose claim is behind the entry its phases row names that entry's work
+// (admit.Admission.convergeEntries).
+//
+// It carries nothing, because the difference it closes is one the record already holds and the
+// handler reads the whole project. What it is for is the running: an admission pass runs on a
+// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
+// the outbox fenced out — would otherwise leave a role behind its entry until something else
+// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
+// record a transition is in the middle of writing.
+type EntrySweep struct{}
+
+func (EntrySweep) isFact() {}
+
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
 	Repo    string
@@ -1177,6 +1194,37 @@ type PodBackstopDue struct {
 
 func (PodBackstopDue) isFact() {}
 
+// WorkerSilent is one claim the daemon's minute sweep read as a silent phase worker: up and
+// between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
+// and its session's report explaining none of that quiet. The sweep applies it from the live
+// claims, never from an event, and its handler decides in the fact's own transaction
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+type WorkerSilent struct {
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	LastStep   time.Time
+	Bound      time.Duration
+}
+
+func (WorkerSilent) isFact() {}
+
+// WorkerBackgroundStalled is one claim the daemon's minute sweep read as a phase worker waiting
+// on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
+// Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
+// an event, and its handler tells the architect and sends nothing (internal/daemon's
+// workerBackgroundEventID says what its id is).
+type WorkerBackgroundStalled struct {
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	ReportedAt time.Time
+	Kinds      []string
+	Bound      time.Duration
+}
+
+func (WorkerBackgroundStalled) isFact() {}
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)
@@ -1184,9 +1232,14 @@ type Handler interface {
 
 // Result carries a refusal that is durable: handlers finish and the transaction commits. Duplicate
 // reports that the event id was already processed, so no handler ran and nothing changed.
+//
+// Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
+// sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
+// id stays the same, and writes nothing where it sets it.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
+	Unspent   bool
 }
 
 type commitHooksKey struct{}
@@ -1316,13 +1369,16 @@ func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, 
 		if result.Refusal == nil && candidate.Refusal != nil {
 			result.Refusal = candidate.Refusal
 		}
+		result.Unspent = result.Unspent || candidate.Unspent
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —
 	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
-	// applies instead of being answered as one already received. It is this fact alone: an
-	// unmarked refusal of any other fact would make a refused handoff apply on its next delivery,
-	// which those refusals exist to stop (dispatch://INFRA-714/spec R12).
-	if _, report := fact.(CheckReport); report && result.Refusal != nil {
+	// applies instead of being answered as one already received. Beside it, a handler leaves a
+	// fact unmarked only where the refusal's cause can clear without changing the fact's id
+	// (Result.Unspent). An unmarked refusal of any other fact would make a refused handoff apply
+	// on its next delivery, which those refusals exist to stop (dispatch://INFRA-714/spec R12).
+	_, report := fact.(CheckReport)
+	if (report && result.Refusal != nil) || result.Unspent {
 		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
 			return Result{}, err
 		}
@@ -1337,8 +1393,8 @@ func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, 
 
 // Applied is which of eventIDs from source ApplyFact has already applied, read in one query and
 // outside the fact lock. A fact's processed_events row commits with the fact, and only a refused
-// production check report removes its own (ApplyFact), so an id read here as applied is one
-// ApplyFact would only take the lock to skip. A caller that
+// production check report or a fact a handler left unspent removes its own (ApplyFact), so an id
+// read here as applied is one ApplyFact would only take the lock to skip. A caller that
 // replays many facts it has most likely applied before (the boot's terminal replay) applies only
 // the rest: the duplicates cost one read between them, not a transaction each queued on the lock
 // behind every live fact.

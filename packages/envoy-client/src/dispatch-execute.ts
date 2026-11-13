@@ -29,6 +29,7 @@ export type {
   DocumentTargetContext,
 } from "./dispatch-commands/document-targets";
 export { readDocumentBlocks, resolveIssueDocumentId } from "./dispatch-commands/document-targets";
+export { goBlankPattern } from "./dispatch-commands/documents";
 export { dispatchRefFromUrl } from "./dispatch-commands/refs";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
 export { checkDispatchCall, dispatchServerUrls };
