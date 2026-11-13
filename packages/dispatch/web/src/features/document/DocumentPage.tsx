@@ -1,5 +1,5 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { type ReactNode, useCallback, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -19,6 +19,7 @@ import {
   parseProjectPath,
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
+import { contentDrawn } from "../shell/content-drawn";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
@@ -72,6 +73,16 @@ export function DocumentPage(): ReactNode {
       ? "Document · Dispatch"
       : `${artifact.data.name} · ${project} · Dispatch`
   );
+  // The shell's code that draws no part of a document waits on this landing until the document
+  // draws (`features/shell/content-drawn.ts`). A page whose read failed, or whose artifact is a
+  // file, draws none, and would otherwise hold that code until the reader's first key or click.
+  const drawsNoDocument =
+    documentRoute === undefined ||
+    artifact.isError ||
+    (artifact.isSuccess && artifact.data?.kind !== "doc");
+  useEffect(() => {
+    if (drawsNoDocument) contentDrawn();
+  }, [drawsNoDocument]);
 
   if (documentRoute === undefined) {
     return null;

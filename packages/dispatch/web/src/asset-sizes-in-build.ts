@@ -23,9 +23,12 @@ export const MAX_ASSET_BYTES = 8 * 1024 * 1024;
  * THIS BUDGET REFUSED THIS BRANCH'S OWN BUILD when it was written, on purpose: the entry was
  * 1,028,690 bytes then, and a budget written only once the number already fits is a budget
  * nobody has seen refuse anything. The shell was split after it (R13 of the same spec), and
- * `bun run build:web` at this head writes an entry of 491,264 bytes (the one
+ * `bun run build:web` at this head writes an entry of 494,716 bytes (the one
  * `web/dist/assets/index-*.js` that `dist/index.html` names, measured 2026-11-13), which leaves
- * 8,736 bytes of room under this budget. No hash is recorded with it: that hash carries the
+ * 5,284 bytes of room under this budget. The split itself wrote 491,264; the 3,452 bytes since
+ * are what lets an issue page wait for its document rather than fetch beside it: the loaders of
+ * the issue page's tab chunks (`features/issue/tab-chunks.ts`) and the shell's hold on its
+ * extras (`features/shell/content-drawn.ts`). No hash is recorded with it: that hash carries the
  * build id, which falls back to the clock (`__DISPATCH_BUILD__`, `web/vite.config.ts`), so two
  * builds of one tree write the same bytes under two names. A change that adds to what every
  * page parses spends that room and then

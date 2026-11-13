@@ -45,8 +45,8 @@ export const lazyPieces = {
   "ask-card":
     "the ask card (features/doc/AskBlockCard.tsx): the read-only card the shell gives every " +
     "text body for a decision block in it (features/doc/TextAskCardHost.tsx), and the card a " +
-    "document's own ask block draws (features/doc/ProofDocument.tsx), which is what a walked " +
-    "document page loads it as",
+    "document's own decision block draws (features/doc/AskBlockCardHost.tsx), which is what a " +
+    "walked document page that holds a decision block loads it as",
   "create-issue":
     "the Create issue dialog (features/issue/CreateIssueDialogHost.tsx), which `c` opens",
   echarts: "the delivery timeline's chart, echarts (features/delivery/Timeline.tsx)",
@@ -60,6 +60,9 @@ export const lazyPieces = {
   inbox:
     "the Inbox list, its cards and the peek drawer (features/inbox/inbox-chunk.ts), which the " +
     "entry starts where the Inbox is the page and the drawer loads anywhere else",
+  "issue-tab":
+    "an issue tab's panel other than the Spec's (features/issue/tab-chunks.ts), each a chunk " +
+    "fetched when its tab first opens",
   "markdown-worker":
     "the Markdown parse worker (features/refs/markdown-parse.worker.ts), which a body longer " +
     "than markdownWorkerThreshold is parsed in rather than on the page's own thread " +

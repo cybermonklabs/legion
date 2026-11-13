@@ -1,5 +1,6 @@
 import { lazy, type ReactNode, Suspense, useEffect, useState } from "react";
 
+import { useContentDrawn } from "../shell/content-drawn";
 import { renderChunk } from "../shell/DeploymentResilience";
 
 /**
@@ -13,11 +14,12 @@ import { renderChunk } from "../shell/DeploymentResilience";
  * show.
  *
  * What a reader loses by its being late: nothing they can point at. The layer is asked for in
- * the shell's first effect, which React runs on the commit that draws the page, so the download
- * is started beside the page's own and is in long before a hand reaches a reference. A page
- * that shows references pulls the same chunk through its own code anyway - every reference
- * trigger is `referenceTriggerProps` of this module (`RefPreview.tsx`) - so for those pages this
- * is the same download moved off the first parse rather than a download added.
+ * the shell's first effect, which React runs on the commit that draws the page - or, on a
+ * landing whose page draws a live document, on the commit after that document's first block
+ * (`features/shell/content-drawn.ts`) - and the download is in long before a hand reaches a
+ * reference. A link names its target with `referenceTriggerProps` (`reference-trigger.ts`), a
+ * module of its own, so a page that draws references pulls no byte of the card until this layer
+ * asks for it.
  */
 // Under `renderChunk`, like every chunk a render waits on: this layer is what draws the card a
 // reader is pointing at, so a download that fails must spend one of the tab's recovery reloads
@@ -29,11 +31,14 @@ const RefPreviewHost = lazy(() =>
 export function RefPreviewLayer(): ReactNode {
   // The state, and not a bare render, is what holds the import until the page is on the screen:
   // an effect runs after the commit it belongs to, so the first paint of a landing carries no
-  // request for this chunk and the second render of the shell asks for it.
+  // request for this chunk and the second render of the shell asks for it. On a landing whose
+  // page draws a live document, the page is on the screen only once the document's first block
+  // is, which is long after the shell's first paint (`features/shell/content-drawn.ts`).
+  const drawn = useContentDrawn();
   const [wanted, setWanted] = useState(false);
   useEffect(() => {
-    setWanted(true);
-  }, []);
+    if (drawn) setWanted(true);
+  }, [drawn]);
   if (!wanted) {
     return null;
   }

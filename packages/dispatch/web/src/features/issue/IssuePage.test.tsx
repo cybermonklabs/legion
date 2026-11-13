@@ -1573,7 +1573,9 @@ test("IssuePage renders an image artifact in the Artifacts tab", async () => {
 
   try {
     await screen.findByRole("tab", { name: "Artifacts 2", selected: true });
-    expect(screen.getByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
+    // The Artifacts panel is a chunk of its own (`tab-chunks.ts`), so it draws once that
+    // import has resolved, after the tab itself.
+    expect(await screen.findByRole("img", { name: "diagram.png version 1" })).not.toBeNull();
     expect(screen.getByTestId("artifact-header").className).toContain("ring-2");
   } finally {
     view.unmount();

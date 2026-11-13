@@ -1,4 +1,5 @@
-import { blockPointersProblem } from '@legion/contracts';
+// The subpath and not the package root, for the reason `block-pointers.ts` gives.
+import { blockPointersProblem } from '@legion/contracts/dispatch-block-ref';
 import type { Node as ProseMirrorNode, NodeType } from '@milkdown/kit/prose/model';
 import type { EditorState, Transaction } from '@milkdown/kit/prose/state';
 

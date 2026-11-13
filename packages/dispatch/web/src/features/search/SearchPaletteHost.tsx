@@ -21,6 +21,14 @@ import { prefetchChunk, renderChunk } from "../shell/DeploymentResilience";
  * highlighted row shows whole" catches at 1440x300. Held in state, the bar is in the module
  * cache before the first keystroke and mounts in the same commit the keystroke makes, exactly
  * as it did when the entry carried it.
+ *
+ * For the same reason the bar is not held until a document draws, as the margin and the
+ * reference-preview layer are (`features/shell/content-drawn.ts`): a reader who presses
+ * `$mod+k` on an issue page before its document has drawn would meet a bar that is not yet in
+ * the module cache, and it would open with its row half out of view. The same row caught that
+ * when the hold took the bar too. So the bar's 28,952 bytes (its chunk and the shortcut sheet's
+ * and the ask hit status's it imports) still come down before an issue page's first block,
+ * after the shell's first paint; that is the price of a bar that opens whole on the first key.
  */
 type Palette = ComponentType<{ onClose: () => void; open: boolean }>;
 

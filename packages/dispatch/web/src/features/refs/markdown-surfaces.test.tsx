@@ -36,8 +36,9 @@ import { searchAnswer } from "../search/search-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import fixtures from "./__fixtures__/display-trees.json";
 import { warmMarkdownRenderer } from "./markdown-engine";
-import { closeRefPreview, RefPreviewHost, referenceTriggerProps } from "./RefPreview";
+import { closeRefPreview, RefPreviewHost } from "./RefPreview";
 import { REF_PREVIEW_OPEN_DELAY_MS } from "./ref-preview-timing";
+import { referenceTriggerProps } from "./reference-trigger";
 import { Unfurl } from "./Unfurl";
 
 /** One marked snippet of the display-tree fixture, by name: the reading the server made of

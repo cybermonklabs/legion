@@ -13,7 +13,9 @@ export interface EventRefreshMap {
  *
  * The map is about 13,000 bytes of that chunk and no first paint reads one byte of it: a page
  * draws from its landing read, and the feed is opened in an effect, on the commit that drew the
- * page. So the feed starts this download at that moment, and every event it receives is read
+ * page. So the feed starts this download at that moment - or, on a landing whose page draws a
+ * live document, once that document's first block is in the page, which is long after the
+ * shell's first paint (`features/shell/content-drawn.ts`) - and every event it receives is read
  * once the download is in: the feed keeps the event in the log itself, at once, and the
  * refreshes an event asks for are chained onto this one promise, in the order the events
  * arrived (`api/event-feed.ts`).

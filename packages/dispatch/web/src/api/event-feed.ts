@@ -6,6 +6,7 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
+import { whenContentDrawn } from "../features/shell/content-drawn";
 
 import { loadEventRefresh } from "./event-refresh-load";
 import { liveSocketFor } from "./live-socket";
@@ -246,10 +247,11 @@ export function useEventFeed({
     // Record when each query's fetches begin from now on, so the scheduler's one-a-second rule
     // holds for the first batch after the page's own loads too.
     trackQueryFetches(queryClient);
-    // The map from an event to the queries it changes, started with the feed and awaited by
-    // each event below. One promise for the life of this subscription, so the events are read
-    // in order (`event-refresh-load.ts`).
-    const refreshMap = loadEventRefresh();
+    // The map from an event to the queries it changes, started with the feed - or, on a landing
+    // whose page draws a live document, once that document has drawn (`whenContentDrawn`) - and
+    // awaited by each event below. One promise for the life of this subscription, so the events
+    // are read in order (`event-refresh-load.ts`).
+    const refreshMap = whenContentDrawn().then(loadEventRefresh);
 
     const scheduleFlush = () => {
       if (flush !== undefined) {

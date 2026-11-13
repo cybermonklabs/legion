@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
-
+import { HOLD_LIMIT_MS } from "../web/src/features/shell/content-drawn";
 import {
   createComment,
   createIssue,
@@ -730,6 +730,44 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
     await page.getByRole("tab", { name: "Spec" }).click();
     await expect(documentEditor(page)).toContainText("Use SQLite");
     expect((await transportChunks()).length).toBeGreaterThan(0);
+  } finally {
+    await alice.close();
+  }
+});
+
+// SLOW(>=2s): the row waits out the shell's hold on purpose. A document whose transport never
+// connects neither draws nor fails, so nothing but `HOLD_LIMIT_MS` ends the hold on the margin,
+// the search bar, the preview layer and the event map (`web/src/features/shell/content-drawn.ts`);
+// the row proves the page gets its margin and its live refresh all the same, with no key or
+// click from the reader, since either would end the hold by itself.
+test("a document that never connects still gets the page its margin and its live refresh", async ({
+  browser,
+}) => {
+  await createProject({ key: "HOLD", name: "Held" });
+  const issue = await createIssue({
+    project: "HOLD",
+    spec: "# Held\n\nThis document never connects.\n",
+    title: "Before the event",
+  });
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    // Holding every document socket: the editor never syncs, so it is never built.
+    await documentTransport(page, { holding: true });
+    await page.goto(`/issues/${issue.key}`);
+    await expect(page.getByRole("heading", { level: 1, name: "Before the event" })).toBeVisible();
+
+    // An event the feed takes while the hold is on: kept, and refreshed once the hold ends.
+    await patchIssue(issue.key, { title: "After the event" });
+    const pastTheLimit = { timeout: HOLD_LIMIT_MS + 10_000 };
+    await expect(page.getByRole("heading", { level: 1, name: "After the event" })).toBeVisible(
+      pastTheLimit
+    );
+    await expect(page.getByRole("complementary", { name: "Review margin" })).toBeVisible(
+      pastTheLimit
+    );
+    await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
   } finally {
     await alice.close();
   }

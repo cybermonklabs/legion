@@ -149,7 +149,18 @@ export function useMarginSheet(): MarginSheetModel {
     if (sheetThreadKey !== undefined) store.discard(marginReplySendKey(sheetThreadKey));
   }, [sheetReplySendingNow, sheetThreadKey, store]);
   const marginRef = useRef<HTMLElement>(null);
-  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
+  // The margin is the issue page's second reader of `["issue", key]`, and it can mount after the
+  // page has already given that read up: on a landing that draws a live document the shell
+  // mounts the margin only once the hold on it ends (`features/shell/content-drawn.ts`), and an
+  // issue that answers 404 ends it after the read's retries are spent. A mount with the default
+  // `retryOnMount` would ask once more for an issue the page already says is missing
+  // (`e2e/nav.stub.e2e.ts`, which counts the read and its two retries and no fourth). The page's
+  // own reader, mounted with the page, is the one that retries.
+  const issue = useQuery({
+    ...issueQuery(issueKey),
+    enabled: issueKey !== undefined,
+    retryOnMount: false,
+  });
   const viewer = useQuery(whoAmIQuery());
   const visibleArtifact =
     documentRoute === undefined

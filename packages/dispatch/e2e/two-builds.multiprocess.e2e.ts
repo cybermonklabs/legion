@@ -139,6 +139,10 @@ const shown = {
   spec: "Both builds serve every page.",
 };
 
+/** The decision block the handbook holds, which the document page draws with its ask card. */
+const handbookDecisionId = "first-build";
+const handbookDecision = `:::ask{#${handbookDecisionId} urgency="med" multiple="false"}\nWhich build serves first?\n\n- A\n- B\n:::\n`;
+
 /** The list the issue message carries under its diagram, drawn from the tree the server read the
  *  message into: a stored text is parsed nowhere, however long it is
  *  (features/refs/markdown-engine.ts), and the walk's point here is that the whole of it is drawn
@@ -234,7 +238,7 @@ async function seedEveryRoute(): Promise<Seeded> {
     name: "rollout-notes.md",
   });
   const document = await createProjectDocument("CORE", {
-    content: `# Handbook\n\n${shown.document}\n`,
+    content: `# Handbook\n\n${shown.document}\n\n${handbookDecision}`,
     name: "handbook.md",
   });
   const broadcast = await createBroadcast({
@@ -443,9 +447,7 @@ function visits(seed: Seeded): readonly Visit[] {
     },
     { route: "/issues/:key/*", shows: (page) => [issueHeading(page, shown.issue)], url: issue },
     {
-      // The ask card is a chunk of its own now, which the document's node view imports and the
-      // shell hands to every text body for a decision block in it (`web/src/features/doc`).
-      loads: ["editor", "ask-card"],
+      loads: ["editor"],
       route: "/issues/:key/*",
       shows: (page) => openDocument(page, shown.spec),
       url: `${issue}/spec`,
@@ -478,6 +480,45 @@ function visits(seed: Seeded): readonly Visit[] {
       route: "/issues/:key/*",
       shows: (page) => [page.getByTestId(`artifact-${seed.issueArtifact}`)],
       url: `${issue}/artifacts`,
+    },
+    // Every tab but the Spec draws from a chunk of its own (`web/src/features/issue/tab-chunks.ts`),
+    // so each tab the walk has no other visit for is opened here: the chunk it loads is one no
+    // other address asks for. A tab with no document of its own draws its empty state.
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [page.locator("#issue-decisions-panel").getByText("No open questions.")],
+      url: `${issue}/decisions`,
+    },
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("#issue-collaborators-panel")
+          .getByRole("region", { name: /^(People|Collaborators empty state)$/u }),
+      ],
+      url: `${issue}/collaborators`,
+    },
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("#issue-verification-panel")
+          .locator('[data-testid="verification-empty"], [data-testid="verification-tab"]'),
+      ],
+      url: `${issue}/verification`,
+    },
+    {
+      loads: ["issue-tab"],
+      route: "/issues/:key/*",
+      shows: (page) => [
+        page
+          .locator("#issue-plan-panel")
+          .locator('[data-testid="plan-empty"], [data-testid="plan-tab"]'),
+      ],
+      url: `${issue}/plan`,
     },
     {
       loads: ["editor"],
@@ -521,9 +562,19 @@ function visits(seed: Seeded): readonly Visit[] {
       url: "/projects/CORE/documents",
     },
     {
-      loads: ["editor"],
+      // The handbook holds a decision block, so its editor reports one and the document's own
+      // ask card comes down (`web/src/features/doc/AskBlockCardHost.tsx`): no other page of the
+      // walk holds one, and the card loads for nothing else.
+      loads: ["editor", "ask-card"],
       route: "/projects/:key/documents/:slug",
-      shows: (page) => openDocument(page, shown.document),
+      shows: (page) => [
+        ...openDocument(page, shown.document),
+        // The urgency pill is the card's own: the editor's node view draws the block, and the
+        // card portals its header, pill and all, into the block's slot.
+        documentEditor(page).locator(
+          `[data-dispatch-ask-block="${handbookDecisionId}"] [data-dispatch-ask-pill]`
+        ),
+      ],
       url: `/projects/CORE/documents/${seed.document}`,
     },
     {

@@ -2,7 +2,9 @@ import { decodeBlockId } from "@legion/contracts/dispatch-block-ref";
 import { isIdPrefix } from "@legion/contracts/dispatch-text-rules";
 import { queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  lazy,
   type ReactNode,
+  Suspense,
   useCallback,
   useContext,
   useEffect,
@@ -50,13 +52,13 @@ import {
   documentRoute,
 } from "../refs/routes";
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
-import { importWhenOnline } from "../shell/DeploymentResilience";
+import { contentDrawn } from "../shell/content-drawn";
+import { importWhenOnline, renderChunk } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { AskBlockCard } from "./AskBlockCard";
+import { AskBlockCardHost } from "./AskBlockCardHost";
 import type { AnchoredBlockHost } from "./ask-block";
-import { ChangeView } from "./ChangeView";
 import type { ConnectionState, DocumentConnection } from "./connection";
 import { colorForLogin } from "./connection";
 import { DocumentReferences, useReferenceClick } from "./document-references";
@@ -80,7 +82,21 @@ import { DocumentRuntime } from "./runtime";
 import { loadBlockSchema } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
 import type { AskBlockHost } from "./typed-block-drawing";
-import { VersionView } from "./VersionView";
+
+// A past version of the document, and its changes against the live text: each drawn only on an
+// address that names a version (`version`), which is the reader's own choice - the version
+// picker, or a link to one. Imported statically, they put the word-diff library and the past
+// version's own editor into what every document page fetched before its live editor drew:
+// 8,863 bytes of `ChangeView` and `diff`, with `VersionView` and the change marks in this
+// chunk, on a cold `/issues/CORE-1` in the R13 reading of dispatch://INFRA-1109. Under
+// `renderChunk`, like every chunk a render waits on: a reader who asked for the version is
+// waiting for it (`features/shell/DeploymentResilience.tsx`).
+const ChangeView = lazy(() =>
+  renderChunk(() => import("./ChangeView").then((module) => ({ default: module.ChangeView })))
+);
+const VersionView = lazy(() =>
+  renderChunk(() => import("./VersionView").then((module) => ({ default: module.VersionView })))
+);
 
 /** The one block of `root` whose id starts with `prefix`, or undefined where none does or two
  *  or more do (`uniquePrefixMatch`). The editor's own rendered blocks are the answer, the same
@@ -672,6 +688,9 @@ export function ProofDocument({
       failed = true;
       setConnection("failed");
       setLoadError(error instanceof Error ? error.message : String(error));
+      // A document that cannot draw ends the shell's wait for it
+      // (`features/shell/content-drawn.ts`).
+      contentDrawn();
     };
     const teardown = () => {
       disposeEditorBindings?.();
@@ -821,6 +840,7 @@ export function ProofDocument({
           if (block !== undefined) {
             setConnection("failed");
             setAdmission(block);
+            contentDrawn();
             readmitRef.current = () => {
               readmitRef.current = undefined;
               refusals = 0;
@@ -959,6 +979,10 @@ export function ProofDocument({
                   editorRef.current = handle;
                   setEditorHandle(handle);
                   disposeEditorBindings = bindEditor(handle, connection);
+                  // The editor is built on a synced document, so its blocks are in the page now:
+                  // the shell's code that draws no part of them may come down
+                  // (`features/shell/content-drawn.ts`).
+                  contentDrawn();
                 })
                 .catch(reportLoadFailure);
             },
@@ -972,6 +996,8 @@ export function ProofDocument({
 
     return () => {
       mounted = false;
+      // A document that leaves the page before it drew is no longer what the reader waits for.
+      contentDrawn();
       window.clearTimeout(refusalTimer);
       readmitRef.current = undefined;
       teardown();
@@ -1175,7 +1201,7 @@ export function ProofDocument({
         {askBlockHosts.map((host) => {
           const blockId = String(host.node.attrs.blockId);
           return (
-            <AskBlockCard
+            <AskBlockCardHost
               ask={blockAsks.find((candidate) => candidate.block_id === blockId)}
               host={host}
               inBody={false}
@@ -1245,18 +1271,22 @@ export function ProofDocument({
       ) : versionMarkdown === undefined ? (
         <p>Loading version…</p>
       ) : showDiff ? (
-        <ChangeView after={liveMarkdown} before={versionMarkdown} />
+        <Suspense fallback={<p>Loading version…</p>}>
+          <ChangeView after={liveMarkdown} before={versionMarkdown} />
+        </Suspense>
       ) : (
         <div data-testid="version-view">
-          <VersionView
-            artifactId={artifact.id}
-            asks={blockAsks}
-            blockSchema={blockSchema}
-            createdAt={versions.find((item) => item.number === version)?.created_at}
-            highlight={highlight}
-            owner={owner.kind === "document" ? owner : undefined}
-            version={version}
-          />
+          <Suspense fallback={<p>Loading version…</p>}>
+            <VersionView
+              artifactId={artifact.id}
+              asks={blockAsks}
+              blockSchema={blockSchema}
+              createdAt={versions.find((item) => item.number === version)?.created_at}
+              highlight={highlight}
+              owner={owner.kind === "document" ? owner : undefined}
+              version={version}
+            />
+          </Suspense>
         </div>
       )}
     </section>

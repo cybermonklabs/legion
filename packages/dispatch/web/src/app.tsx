@@ -17,6 +17,7 @@ import { InboxDrawerHost, InboxHost, loadInboxChunk } from "./features/inbox/Inb
 import { useInboxCount } from "./features/inbox/useInboxCount";
 import { CreateIssueDialogHost } from "./features/issue/CreateIssueDialogHost";
 import { ISSUE_TAB_LABELS } from "./features/issue/issue-tab-list";
+import { issueTabChunk } from "./features/issue/tab-chunks";
 import { MarginColumn } from "./features/margin/MarginColumn";
 import { MarginProvider } from "./features/margin/margin-context";
 import { DEFAULT_MARGIN_WIDTH } from "./features/margin/margin-width";
@@ -42,6 +43,7 @@ import {
 } from "./features/refs/routes";
 import { useRecordRecents } from "./features/search/recents";
 import { SearchPaletteHost } from "./features/search/SearchPaletteHost";
+import { holdUntilContentDraws } from "./features/shell/content-drawn";
 import { prefetchChunk, renderChunk } from "./features/shell/DeploymentResilience";
 import { ErrorBoundary } from "./features/shell/ErrorBoundary";
 import { KeymapProvider } from "./features/shell/KeymapProvider";
@@ -203,12 +205,25 @@ export function preloadRouteChunk(pathname: string): void {
       // The tab decides the document chunks, not the issue: see `issueDrawsDocument`. The parse
       // answers for every address this arm is reached by, since that is the arm's own test.
       const route = parseIssuePath(pathname);
-      if (route !== undefined && issueDrawsDocument(route)) prefetchChunk(loadDocumentChunks);
+      if (route !== undefined && issueDrawsDocument(route)) {
+        prefetchChunk(loadDocumentChunks);
+        // The page's content is its document, so the shell's code that draws none of it waits
+        // for the document to draw (`features/shell/content-drawn.ts`).
+        holdUntilContentDraws();
+      }
+      // Every tab but the Spec draws from a chunk of its own (`features/issue/tab-chunks.ts`).
+      // A landing on such a tab starts that chunk here, beside the landing read, for the same
+      // reason the page's chunk is started here: else it would come down only once the page
+      // has rendered, a wave after the reads that needed no chunk. A Spec landing starts none.
+      const tabChunk =
+        route === undefined ? undefined : issueTabChunk(issueTabForRoute(route, undefined));
+      if (tabChunk !== undefined) prefetchChunk(tabChunk);
       break;
     }
     case "document":
       prefetchChunk(loadDocumentPage);
       prefetchChunk(loadDocumentChunks);
+      holdUntilContentDraws();
       break;
     case "board":
       prefetchChunk(loadProjectPage);
