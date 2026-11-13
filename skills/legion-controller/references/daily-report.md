@@ -71,6 +71,12 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own
   merge) or its link is taken off (by a person or the tree's architect), and a children-first wait
   ends when the last open child leaves the workflow, so take nothing for them.
+- **What nothing starts.** Each issue in `admission.held`, grouped by its `reason`, with the
+  issues `heldBy` names: each group's count and its issues. Say for each
+  group what ends the hold, from the table in
+  `skill://legion-controller/references/admission.md`, so a reader sees whose act the work waits
+  on. An issue whose `reason` is `unclassified` goes in the report with its `phase` and its
+  `status`: the daemon could give it no word, and a person reads it.
 - **Phase workers nothing will prompt.** Each entry of the tick's `silent` list, with the role whose
   claim is silent and how long it has been quiet (`skill://legion-controller/references/wakes.md`).
   That list arrives on the tick wake alone and is in no `read_state` field, so the report names the
