@@ -259,10 +259,11 @@ A probe contract that fits these answers:
 Every pod of a machine id reads and writes the same records, so a pod that takes over, or a standby answering `/v1`, answers as the active pod would:
 
 - **Delivery ledger** (`internal/dedupe`, `delivery.<durable>.<32 hex of sha256(dedupe key)>.<session>` in `envoy_listener`):
-  these ask it, and nothing else does — a role-lane forward, the kept lane's drain of a role's stored copies (`keptRoleForwardAttempt`), a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, which it reports `delivery_failed`, the delivery of a message a session reads on its own NATS subscription, and the publish route's confirmation of a send the recipient answered.
+  these ask it, and nothing else does — a role-lane forward, the kept lane's drain of a role's stored copies (`keptRoleForwardAttempt`), a fan-out refusal, an unplaceable agent delivery's give-up, an agent-subject delivery whose route to the session failed, which it reports `delivery_failed`, and the publish route's confirmation of a send the recipient answered.
+  No session receives from a plain NATS subscription any more (main's #2603 removed that path), so no copy is read off the bus outside this listener and nothing asks the ledger for one.
   Before any of them, a pod records the pair attempted, and once it lands, delivered:
   a pair another pod delivered is not delivered again, and a refusal or a give-up another pod reported is not reported twice.
-  That failed route's ask is no best-effort one: while the ledger cannot answer, the message is NAKed and the failure retried every 30 s.
+  That failed route's ask holds the message: while the ledger cannot answer, the message is NAKed and the failure retried every 30 s.
   The relay of a session's own consumer asks it for nothing ("When a session can see a message twice" below).
   A pod skips a pair as `listener attempt-dedupe skip` only for an attempt it holds itself:
   one whose forward may still be running (less than 35 s old and not settled), or one a delivery kept (`dedupe.Ledger.Keep`:
@@ -273,13 +274,6 @@ Every pod of a machine id reads and writes the same records, so a pod that takes
   An attempt by a pod that still holds or renews a lease, or by a live pod's role lane, less than 35 s old (`deliveryHandlingLimit` and `ledgerTakeoverMargin`) is retried later on the durable lane;
   an older one is taken over, since its writer died.
   A ledger that cannot be read NAKs the durable message for a retry; the role lane then delivers without it and logs `delivery ledger unavailable`.
-
-  - **A copy the session reads itself.**
-    A session that holds its own NATS subscription takes the message off the bus, and this listener hands it to nobody.
-    Its record is worth writing, so that one event published on several of the session's topics counts one delivery rather than several, but it is never worth holding the message for:
-    the ask is best-effort, and a ledger that cannot answer leaves the copy counted `skipped`, with no record, no exception and no retry.
-    Nothing of such a copy reaches anyone through this listener, so once-delivery holds whichever way the ledger answers.
-    The agent-subject path and the fan-out both follow this rule.
 
   - **When a session can see a message twice.**
     The listener delivers a stored message to a session through that session's own consumer, relayed as a frame, and the consumer's ack floor
