@@ -652,21 +652,24 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // contract that added the one rendered answer an issue that is not working now carries and the
 // waiting line's own fields beside it, is served every issue without `why` and every member of
 // the line with its `place` and its `length` alone (withoutWhyAndLineFields), which is the body
-// waitingLineContract's own schema describes; and a caller below heldContract, the contract
-// that named the issues the daemon's record holds in the workflow and queues nowhere, is served
-// it without `admission.held` (withoutHeld).
-// The thirteen compose: each is applied when the state carries something of its own, so a
+// waitingLineContract's own schema describes; a caller below leakCheckCauseContract, the
+// contract that added the sentence a claim's launch was refused with because the shared public
+// leak check could not be installed, is served every claim view without `leakCheckCause`
+// (withoutLeakCheckCause); and a caller below heldContract, the contract that named the issues
+// the daemon's record holds in the workflow and queues nowhere, is served it without
+// `admission.held` (withoutHeld).
+// The fourteen compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the twenty-five keys, the line's own fields being fields of a view such a
+// carrying none of the twenty-six keys, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all twenty-five keys as
+// retired entry under `strandedClaims`. Every later reader takes all twenty-six keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
 // `gatedSteps`, `waitingLine` and `why`, the workers' counts of the moves back, the claim
-// views' `step`, each of the nine the decided record added and `contract` itself optional for
-// exactly these bodies. Any other caller — a pod at this contract, the operator's
-// `legion state`, a tmux pane — is served the state as this contract writes it.
+// views' `step` and `leakCheckCause`, each of the nine the decided record added and `contract`
+// itself optional for exactly these bodies. Any other caller — a pod at this contract, the
+// operator's `legion state`, a tmux pane — is served the state as this contract writes it.
 //
 // Each narrowing is written to the daemon's own log as it is applied, one line naming the
 // caller, the contract that caller's pod records, the contract this daemon declares and what
@@ -731,7 +734,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the thirteen narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the fourteen narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -743,7 +746,7 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the thirteen, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the fourteen, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
 // needs no reading of the rows before it. One pair does touch one key, and it is the reason
@@ -753,7 +756,7 @@ type stateNarrowing struct {
 // below both is served no `waitingLine` at all whichever runs first — the later one then finds
 // the key gone and does nothing — and a caller below only the higher one keeps the field with
 // its `place` and its `length`, which is what the lower row's own contract describes. A
-// fourteenth row that takes something out of a field an earlier row drops whole is sound on
+// fifteenth row that takes something out of a field an earlier row drops whole is sound on
 // those same terms; one that puts a key back, or reads what an earlier row left, is not, and
 // this table is the wrong shape for it. The order is kept beyond that so a reader of this
 // table and a reader of version.go walk the contracts the same way.
@@ -773,6 +776,7 @@ var stateNarrowings = []stateNarrowing{
 		"lingerUntil and ancestry, and the contract mark"},
 	{whyAndLineFieldsContract, carriesWhyAndLineFields, withoutWhyAndLineFields, "the issues' why and " +
 		"every field of the waiting line beside place and length"},
+	{leakCheckCauseContract, carriesLeakCheckCause, withoutLeakCheckCause, "the claim views' leakCheckCause"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
 }
 
@@ -878,6 +882,16 @@ const recordFieldsContract = 75
 // caller reading at all.
 const whyAndLineFieldsContract = 85
 
+// leakCheckCauseContract is the daemon contract that added each claim view's `leakCheckCause`,
+// the sentence the claim's latest launch try was refused with because the shared public leak
+// check could not be installed in the role's pod (version.go's 87, ClaimView.LeakCheckCause). A
+// plugin below it is served every claim view without the key: one built before
+// sjawhar/legion#2788 reads the state with a strict schema and would refuse the whole body for a
+// key it does not name, and one built after strips the key instead, so the strip is what keeps
+// the sentence from a caller that did not ask for it rather than what keeps such a caller
+// reading at all.
+const leakCheckCauseContract = 87
+
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
 	carries := func(v ClaimView) bool { return v.UpdateRound != "" || v.UpdateHead != "" }
@@ -908,8 +922,8 @@ func carriesMemory(state State) bool {
 // issue's `tree`. It carries `admission.trees` whatever the daemon holds, since the admission
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
-// is true of every state the route writes; it is asked beside the other twelve all the same,
-// because stateFor puts the same question to the thirteen and because a later contract that
+// is true of every state the route writes; it is asked beside the other thirteen all the same,
+// because stateFor puts the same question to the fourteen and because a later contract that
 // stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
@@ -918,8 +932,8 @@ func carriesTrees(State) bool { return true }
 // carries that key whatever the daemon holds, since the admission block writes it on every body,
 // empty rather than null (Admission.MarshalJSON), and the strict reader before the contract
 // refuses the empty key as surely as one naming an issue. So this is true of every state the
-// route writes; it is asked beside the other twelve all the same, because stateFor puts the
-// same question to the thirteen and because a later contract that stops writing `held` on every
+// route writes; it is asked beside the other thirteen all the same, because stateFor puts the
+// same question to the fourteen and because a later contract that stops writing `held` on every
 // body answers it here.
 func carriesHeld(State) bool { return true }
 
@@ -927,8 +941,8 @@ func carriesHeld(State) bool { return true }
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
-// every state the route writes; it is asked beside the other twelve all the same, because
-// stateFor puts the same question to the thirteen and because a later contract that stops
+// every state the route writes; it is asked beside the other thirteen all the same, because
+// stateFor puts the same question to the fourteen and because a later contract that stops
 // writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
@@ -937,8 +951,8 @@ func carriesWakesWaiting(State) bool { return true }
 // whatever the daemon holds, since the state writes the number on every body, 0 rather than
 // absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
 // is 0 as surely as when it names a number. So this is true of every state the route writes, as
-// carriesWakesWaiting is; it is asked beside the other twelve all the same, because stateFor
-// puts the same question to the thirteen and because a later contract that stops writing
+// carriesWakesWaiting is; it is asked beside the other thirteen all the same, because stateFor
+// puts the same question to the fourteen and because a later contract that stops writing
 // `claimsToRefresh` on every body answers it here.
 func carriesClaimsToRefresh(State) bool { return true }
 
@@ -957,17 +971,7 @@ func carriesGatedSteps(state State) bool {
 // it is written only where there is one, so this is asked of the state rather than answered
 // true, as carriesUpdateRounds and carriesMemory are.
 func carriesStallRecord(state State) bool {
-	for _, issue := range state.Issues {
-		if issue.Architect != nil && issue.Architect.Step != nil {
-			return true
-		}
-		for _, worker := range issue.Workers {
-			if worker.Claim.Step != nil {
-				return true
-			}
-		}
-	}
-	return false
+	return anyClaimView(state, func(view ClaimView) bool { return view.Step != nil })
 }
 
 // carriesRecordFields is whether state carries any key recordFieldsContract added: the
@@ -976,8 +980,8 @@ func carriesStallRecord(state State) bool {
 // `heldFrom`, `lingerUntil` or `ancestry`. It carries the mark whatever the daemon holds, since
 // stateFor writes it on every body before it narrows one (ContractView), and the strict reader
 // before the contract refuses that key as surely as the nine. So this is true of every state the
-// route puts the question to; it is asked beside the other twelve all the same, because
-// stateFor puts the same question to the thirteen and because a later contract that stops
+// route puts the question to; it is asked beside the other thirteen all the same, because
+// stateFor puts the same question to the fourteen and because a later contract that stops
 // writing the mark on every body answers it here, as carriesTrees answers for
 // `admission.trees`. The question the mark pre-empts is issueCarriesRecordFields, which that
 // contract would ask of every issue here and which the strip below reads one issue at a time.
@@ -1284,20 +1288,64 @@ func withoutRetiredStranded(state State) State {
 }
 
 // withoutStallRecord is state with no claim view carrying `step`, the one key stallRecordContract
-// added to this route; nothing else of that contract is on it. The issue maps are copied, so the
-// state the source answered is left as it was, as withoutUpdateRounds leaves it.
+// added to this route; nothing else of that contract is on it. The state the source answered is
+// left as it was (mapClaimViews), as withoutUpdateRounds leaves it.
 func withoutStallRecord(state State) State {
+	return mapClaimViews(state, func(view ClaimView) ClaimView {
+		view.Step = nil
+		return view
+	})
+}
+
+// carriesLeakCheckCause is whether any claim view of state carries the key
+// leakCheckCauseContract added: `leakCheckCause`, the sentence a launch try was refused with
+// because the shared public leak check could not be installed. Like the step record it is
+// written only where there is one, so this is asked of the state rather than answered true.
+func carriesLeakCheckCause(state State) bool {
+	return anyClaimView(state, func(view ClaimView) bool { return view.LeakCheckCause != "" })
+}
+
+// withoutLeakCheckCause is state with no claim view carrying `leakCheckCause`, the one key
+// leakCheckCauseContract added to this route; nothing else of that contract is on it. The state
+// the source answered is left as it was (mapClaimViews), as withoutStallRecord leaves it.
+func withoutLeakCheckCause(state State) State {
+	return mapClaimViews(state, func(view ClaimView) ClaimView {
+		view.LeakCheckCause = ""
+		return view
+	})
+}
+
+// anyClaimView is whether test holds of any claim view of state: an issue's architect, or the
+// claim of any of its workers.
+func anyClaimView(state State, test func(ClaimView) bool) bool {
+	for _, issue := range state.Issues {
+		if issue.Architect != nil && test(*issue.Architect) {
+			return true
+		}
+		for _, worker := range issue.Workers {
+			if test(worker.Claim) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// mapClaimViews is state with every claim view — each issue's architect and the claim of each of
+// its workers — replaced by what change makes of it. The issues map is rebuilt, and each
+// architect and Workers map copied before change sees it, so the state the source answered is
+// left as it was.
+func mapClaimViews(state State, change func(ClaimView) ClaimView) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		if issue.Architect != nil {
-			architect := *issue.Architect
-			architect.Step = nil
+			architect := change(*issue.Architect)
 			issue.Architect = &architect
 		}
 		if issue.Workers != nil {
 			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
 			for role, worker := range issue.Workers {
-				worker.Claim.Step = nil
+				worker.Claim = change(worker.Claim)
 				workers[role] = worker
 			}
 			issue.Workers = workers

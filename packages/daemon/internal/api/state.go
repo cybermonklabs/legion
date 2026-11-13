@@ -701,6 +701,14 @@ type ClaimView struct {
 	// escalation reads while that relaunch is still going on and `failure` is empty.
 	Failure      *ClaimFailureView      `json:"failure,omitempty"`
 	PendingCause supervise.FailureCause `json:"pendingCause,omitempty"`
+	// LeakCheckCause is the sentence the claim's latest launch try was refused with because the
+	// shared public leak check could not be installed in the role's pod
+	// (supervise.Claim.LeakCheckCause), and is absent when that try started its process or failed
+	// for another reason. It sits beside `failure` rather than in it: a claim that runs out of
+	// launches on it fails with `failure.detail` `launch failures ran out: <the error>` and the
+	// cause word the launch chooses, and this key says which check refused it, from the first
+	// refused try on.
+	LeakCheckCause string `json:"leakCheckCause,omitempty"`
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -812,8 +820,9 @@ func ClaimViewOf(c supervise.Claim) ClaimView {
 		// operator retired after it failed carries the record still, since nothing but the launch
 		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
 		// than on the claim's state for exactly that reason.
-		Failure:      FailureViewOf(c),
-		PendingCause: c.PendingCause,
+		Failure:        FailureViewOf(c),
+		PendingCause:   c.PendingCause,
+		LeakCheckCause: c.LeakCheckCause,
 	}
 }
 

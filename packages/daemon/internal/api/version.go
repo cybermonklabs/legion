@@ -1242,6 +1242,33 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
 // 94: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
 // record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
 // the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
@@ -1255,23 +1282,25 @@ package api
 // refuses a value it does not name rather than stripping it like an unknown key, so a word added
 // to the ladder later bumps this number again. The key itself is written on every body, empty
 // rather than null, and a caller from a pod whose claims record a contract below 94 is served the
-// admission block without it (api's stateFor, withoutHeld), as a caller below 85 is served every
-// issue without its rendered answer and every member of the waiting line without that contract's
-// own fields, one below 75 the body without the nine keys of the decided record and its contract
-// mark, one below 73 without `claimsToRefresh`, one below 62 the workers without their counts of
-// the moves back and one below 51 the admission block without its trees; the thirteen strips
-// compose, and every reader from 94 on takes the key as optional for exactly those stripped
-// bodies. No other key of the wire moves: no list above it changes, though `why.reason` now
-// follows the held word for some issues in `admission.blocked` and `unlisted` alike, for every
-// caller at 85 or above (the sentence table of `internal/projection/why.go` is the one statement
-// of which), which moves no contract, since the reason is free text. The rows are read from the
-// judgement the state already made (`blockers.JudgeLine`, which now answers the rows the pass
-// left behind beside the line it built), so the body costs no further read of the store.
-// (The base declares 86, the two entries right above this one, landed by cybermonklabs/legion#2539
-// (dispatch://INFRA-714). Read from `const DaemonAPIVersion` at refs/pull/<n>/head over the GitHub
-// API for each of the 143 open pull requests of this repository at 2026-11-12T23:15Z, the highest
-// number an open head declares is 93 (#3575, #3677 and #3937), so this change takes 94: the lowest
-// number above the base and above every open head. It declared 76 when this pull request opened,
+// admission block without it (api's stateFor, withoutHeld), as a caller below 87 is served every
+// claim view without `leakCheckCause`, one below 85 every issue without its rendered answer and
+// every member of the waiting line without that contract's own fields, one below 75 the body
+// without the nine keys of the decided record and its contract mark, one below 73 without
+// `claimsToRefresh`, one below 62 the workers without their counts of the moves back and one
+// below 51 the admission block without its trees; the fourteen strips compose, and every reader
+// from 94 on takes the key as optional for exactly those stripped bodies. No other key of the
+// wire moves: no list above it changes, though `why.reason` now follows the held word for some
+// issues in `admission.blocked` and `unlisted` alike, for every caller at 85 or above (the
+// sentence table of `internal/projection/why.go` is the one statement of which), which moves no
+// contract, since the reason is free text. The rows are read from the judgement the state already
+// made (`blockers.JudgeLine`, which now answers the rows the pass left behind beside the line it
+// built), so the body costs no further read of the store.
+// (The base declares 87, main's #3939 entry right above this one, landed by
+// cybermonklabs/legion#3939 (INFRA-3219). Read from `const DaemonAPIVersion` at
+// refs/pull/<n>/head over the GitHub API for each of the 139 open pull requests of this
+// repository at 2026-11-13T03:37Z, the open heads declare 88 through 93 and 95 (#3575), and none
+// but this one declares 94, so 94 stays: it is above the base and no other open head declares
+// it. It declared 76 when this pull request opened,
 // then 78, then 86, each renumbered when another change took the number first; 86 was read at
 // 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
 // already declared it, merged at 18:19Z. Taking the number above every open head rather than
