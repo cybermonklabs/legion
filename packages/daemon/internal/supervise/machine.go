@@ -351,9 +351,11 @@ type Claim struct {
 	// identity and its kind in one string. PodRoundPrefix and the pod's uid is the drift round of
 	// the pod the claim runs on, which every claim of that pod shares, and PluginRoundPrefix and
 	// the daemon's contract the per-claim round of a claim whose plugin is behind this daemon. A
-	// round ends when the process it waits for is replaced, and the daemon replaces nothing until
-	// every claim of the round has signalled, so no unpushed work dies with the disk the
-	// replacement deletes.
+	// round ends when the process it waits for is replaced. The daemon asks each role of the
+	// round and replaces the pod once every asked role has answered and no turn runs, or at the
+	// round's bound (pod_update_grace_minutes) whatever the roles answered, an operator's
+	// suspension excepted. The push check runs before every replacement, so work a role did not
+	// push goes to a rescue branch rather than dying with the disk the replacement deletes.
 	UpdateRound string
 	// UpdateReasons is what the round was opened for, as the daemon found the drift: the task's
 	// text and the operator's reading of why this pod is being replaced.
@@ -373,32 +375,6 @@ type Claim struct {
 	// UpdateToldAt is when this round was last reported to the operator's side, so one round is
 	// not reported again at every sweep that finds it open.
 	UpdateToldAt *time.Time
-	// UpdateAnsweredByTurnEnd is whether the answer this claim's UpdateSignalledAt records was
-	// given by the end of the turn the round's own task started (answerByTurnEnd) rather than by
-	// the worker's own ready_for_update call (podUpdateSignalled). Every answer is written with
-	// it — the call's write clears it in the same statement — so what the daemon reads is how
-	// the answer standing now was given.
-	//
-	// It is durable because the rule it decides outlives the daemon that recorded the answer. A
-	// worker that answers by its turn's end holds its plugin's own phase-stall reminder, which
-	// starts a turn of its own every quarter of an hour while the round waits, and the daemon
-	// cannot tell such a turn from an Envoy notice: the mark is what keeps those turns from
-	// taking the answer back at every one of them (takeBackSignal). Read from the claim's plugin
-	// contract instead, a worker at this daemon's contract whose `legion` tool has no
-	// ready_for_update operation lost its answer to its own reminder every fifteen minutes and
-	// its round never ended.
-	UpdateAnsweredByTurnEnd bool
-	// UpdateReaskedForPushCheck is whether this round has already asked this claim's worker
-	// again because the pod's shim could not run the daemon's push check
-	// (internal/daemon's checkUnpushed). A pod whose shim predates that check is guarded by the
-	// workers' answers alone, and a turn's end is the weakest of those answers, so each such
-	// claim is asked once more — with the call, or with a second turn — before the disk goes.
-	//
-	// Once only, which is what this mark is for: the second answer sets
-	// UpdateAnsweredByTurnEnd again, and a round that read that mark alone would refuse its own
-	// replacement at every attempt and never end. It goes with the round (clearUpdate), so the
-	// next round asks again once of its own.
-	UpdateReaskedForPushCheck bool
 	// UpdateLeftRound is the pod round this claim left, and "" when it has left none: the daemon
 	// started the claim's process again in another pod than the one that round was opened over
 	// (launchAfter).
@@ -409,8 +385,9 @@ type Claim struct {
 	// late answer from the process in the new pod counts for a round it took no part in.
 	// UpdateRound is left as it was when a claim leaves, so the claim is still a member of the
 	// round it left and the report of what that round's pod took with it still weighs the claim.
-	// Whether that claim had answered when it left is UpdateSignalledAt, which a claim that has
-	// left never changes (takeBackSignal). Only the round's end clears it (clearUpdate).
+	// Whether that claim had answered when it left is UpdateSignalledAt, which nothing writes
+	// once the claim has left (podUpdateSignalled refuses the answer). Only the round's end
+	// clears it (clearUpdate).
 	UpdateLeftRound string
 	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row, and 0
 	// for a claim whose last turn ended with none (promptResulted). At providerErrorRunTold the
@@ -533,9 +510,8 @@ func IsPluginRound(round string) bool { return strings.HasPrefix(round, PluginRo
 // LeftPodRound is whether this claim left the pod round named: that round's pod died and the
 // claim was started again in another one while the round was still recorded on it. The work the
 // round asks about went with the dead pod's disk, so the process now running takes no part in
-// that round at all — it cannot answer for that work, and no turn of it may withdraw an answer
-// given for it. The claim's part stands as the dead pod left it, answered or not, until the
-// round ends.
+// that round at all: it cannot answer for that work. The claim's part stands as the dead pod
+// left it, answered or not, until the round ends.
 //
 // It takes the round rather than reading the claim's own, because the two are not always the
 // same question and the difference decides whether a disk is deleted. A claim that left round X
@@ -1072,22 +1048,13 @@ type Machine struct {
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
 	staleRelaunch *string
-	// unseenTurn is the claim in a turn this daemon never saw begin: one an earlier daemon's
-	// process was already in, which this one learns of from the agent's own get_state answer
-	// (sendPending's askFirst branch, askTurnOver's streaming branch, and turnStarted where only
-	// askFirst confirmed the start) rather than from an agent_start it read. The daemon cannot
-	// say what such a turn has done, so a decision that rests on knowing refuses it: the end of a
-	// turn is a worker's answer to an update round only where the daemon saw the turn start
-	// (answerByTurnEnd). turnEnded clears it with the turn, and it is memory only, as askFirst
-	// is: a restart asks the agent again.
-	unseenTurn bool
 	// turnsDelivery is the delivery the turn now running is the turn of, as that turn's own start
 	// line named it, and "" for a turn that is no task's. It is set where the machine learns a
 	// turn started (startTurn, on each of the three paths into working), read where that turn ends
 	// (endTurn), and cleared with the turn, so the end line names what the start line named rather
-	// than what the claim is left holding. It is memory only, as askFirst and unseenTurn are: a
-	// daemon restarted mid-turn holds none, and the end line of that turn then names no delivery
-	// rather than guessing one, which is the safe answer — the empty value says "this turn names
+	// than what the claim is left holding. It is memory only, as askFirst is: a daemon restarted
+	// mid-turn holds none, and the end line of that turn then names no delivery rather than
+	// guessing one, which is the safe answer — the empty value says "this turn names
 	// no delivery" for both a turn that is no task's and a turn this daemon never saw begin, and
 	// both are lines a reader can trust.
 	turnsDelivery string
@@ -2681,7 +2648,6 @@ func (m *Machine) letGo() {
 	m.forgetSend()
 	m.held = nil
 	m.staleRelaunch = nil
-	m.unseenTurn = false
 	m.turnsDelivery = ""
 	m.compacting = nil
 	m.processGone, m.claim.DeathCharged = false, false
@@ -3164,8 +3130,6 @@ func claimOf(ev Event) claim.Token {
 	case PodUpdateEnded:
 		return ev.Claim
 	case PodUpdateSignalled:
-		return ev.Claim
-	case PodUpdateReask:
 		return ev.Claim
 	case RequestSpawn:
 		return ev.Claim

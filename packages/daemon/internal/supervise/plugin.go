@@ -12,25 +12,23 @@ import (
 // closed enum compiled into the plugin, and a Claude Code role's plugin is its image's own,
 // never installed. Such a claim is asked all the same, on its role's own Envoy topic
 // (internal/daemon's openPodUpdate), and the round over it ends at its bound whether or not it
-// answers, so its pod is replaced like any other. An ask an older daemon queued as a task is
-// answered by the end of the turn it starts (answerByTurnEnd), at any contract.
+// answers, so its pod is replaced like any other. The end of a turn is no answer, at any
+// contract: an ask an older daemon queued as a task is answered with the op or not at all.
 //
 // The stale-plugin lane reads it no longer. That lane asks its worker nothing: a stale claim is
 // relaunched onto this daemon's plugin at one paced wake (refreshPlugin, relaunchStale), which
 // keeps the pod and the disk, so what op a claim's plugin holds decides nothing there. What a
-// claim can answer is the pod round's question alone, and the two readers left each make a
-// decision of their own: internal/api serves a caller in a pod whose claims record a contract
-// below this one the state without the two update-round keys that contract added (stateFor,
-// withoutUpdateRounds), and internal/daemon's reaskedForPushCheck asks no second push check of a
-// worker that has no op to answer it with.
+// claim can answer is the pod round's question alone, and the one reader left makes a decision
+// of its own: internal/api serves a caller in a pod whose claims record a contract below this
+// one the state without the two update-round keys that contract added (stateFor,
+// withoutUpdateRounds).
 //
 // It lives here rather than beside DaemonAPIVersion because internal/api imports this package.
 // internal/api's own test pins it to the contract that brought the op, so an edit of this
 // constant alone cannot move it; a merge that renumbers this change moves that test's literal
 // and api/version.go's entry with it, which names this constant. Behind is the dangerous
 // direction: at 45, with the op at 46, a pod of the released plugin is served the two keys its
-// strict schema refuses and reads no state at all, and a worker with no op to call is asked a
-// second time for a push check it can only answer by ending another turn.
+// strict schema refuses and reads no state at all.
 const PodUpdateContract = 46
 
 // refreshPlugin is the claim's process found to speak a plugin contract this daemon does not: at
@@ -439,9 +437,9 @@ func (m *Machine) refreshOverturned() bool {
 // failed — so the rule is the install alone.
 //
 // What replaces such a claim's plugin is a new image, which the update round over its pod is
-// opened for: it is asked like every other worker and answers either with the op or by ending
-// the turn its task starts (answerByTurnEnd), and the round's replacement brings the image
-// (internal/daemon's refreshStalePlugins, which posts no relaunch for it either).
+// opened for: it is asked like every other worker, answers with the op or not at all, and the
+// round's replacement brings the image, at the latest at the round's bound (internal/daemon's
+// refreshStalePlugins, which posts no relaunch for it either).
 //
 // A registration that arrives while a launch the pacing holds waits over the process it comes
 // from relaunches nothing and is charged nothing. PluginRelaunchFor is written where the

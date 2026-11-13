@@ -1695,9 +1695,10 @@ func wantAnswered(t *testing.T, notice record.ControllerNotice, roles ...claim.R
 // The sweep decides the replacement from the claims as their machines hold them, never from the
 // snapshot the orphan sweep read at the start of the tick. Each earlier issue's replacement in
 // that tick can take a whole sweep interval, so after a fleet-wide roll that snapshot is minutes
-// old here. A turn that starts inside that window takes the worker's answer back in its machine
-// alone (takeBackSignal), and a sweep deciding from the snapshot would see neither the turn nor
-// the answer going: it would end that turn and delete the disk the turn's work is on.
+// old here. A turn that starts inside that window is in the machine alone, and a sweep deciding
+// from the snapshot would not see it: before the round's bound it would end that turn and delete
+// the disk the turn's work is on. The answer stands through that turn (dispatch://INFRA-2981 R9),
+// so the round waits for the turn to end, not for a second answer.
 func TestPodUpdateReadsTheClaimsAgainBeforeItReplacesThePod(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -1724,10 +1725,10 @@ func TestPodUpdateReadsTheClaimsAgainBeforeItReplacesThePod(t *testing.T) {
 		}
 	}
 	// Minutes later in that same tick, an Envoy notice starts a turn of the implementer's own,
-	// which takes its answer back — in the machine alone.
+	// which is in the machine alone. The answer stands through it.
 	rig.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
-	if c := rig.claimOf(claim.RoleImplementer); c.State != supervise.StateWorking || c.UpdateSignalledAt != nil {
-		t.Fatalf("the implementer after a turn of its own = %s answered=%t, want it working with its answer taken back",
+	if c := rig.claimOf(claim.RoleImplementer); c.State != supervise.StateWorking || c.UpdateSignalledAt == nil {
+		t.Fatalf("the implementer after a turn of its own = %s answered=%t, want it working with its answer standing",
 			c.State, c.UpdateSignalledAt != nil)
 	}
 
@@ -1737,7 +1738,7 @@ func TestPodUpdateReadsTheClaimsAgainBeforeItReplacesThePod(t *testing.T) {
 		t.Fatalf("ReplacePod called %d times from a snapshot the implementer's turn has outrun", len(calls))
 	}
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound {
-		t.Fatalf("the implementer's round = %q, want it still open: it must be asked again", c.UpdateRound)
+		t.Fatalf("the implementer's round = %q, want it still open: the round waits for its turn to end", c.UpdateRound)
 	}
 }
 
@@ -1948,12 +1949,13 @@ func TestPodUpdateAbortsTheReplacementForAClaimTheGroupNeverHeld(t *testing.T) {
 	rig.awaitReplacement(1, "once every worker of the issue answered")
 }
 
-// A turn that starts while the replacement waits is not cut. The Sandbox runtime takes the pod's
-// launch turn before it suspends anything, and that wait is a pod boot long: a round every
-// worker of which had answered when the call began is a round a worker can start a turn in while
-// it runs, and that turn takes the worker's answer back (takeBackSignal). The runtime asks the
-// daemon one statement before the write that ends every process in the pod, the daemon reads the
-// claims again there, and the replacement is refused rather than made.
+// A turn that starts while the replacement waits is not cut before the round's bound. The
+// Sandbox runtime takes the pod's launch turn before it suspends anything, and that wait is a pod
+// boot long: a round every worker of which had answered when the call began is a round a worker
+// can start a turn in while it runs. The runtime asks the daemon one statement before the write
+// that ends every process in the pod, the daemon reads the claims again there, and the
+// replacement is refused rather than made. The answer stands through that turn
+// (dispatch://INFRA-2981 R9), so the pod is replaced once the turn ends, with no second answer.
 func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -1970,8 +1972,8 @@ func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T
 	rig.signal(claim.RoleTester, "e4f5a6b")
 
 	// The runtime holds where it waits for the pod's launch turn, and an Envoy notice starts a
-	// turn of the implementer's own inside that wait, which takes its answer back. One hold only:
-	// the next call finds the pod as the sweep left it.
+	// turn of the implementer's own inside that wait. One hold only: the next call finds the pod
+	// as the sweep left it.
 	rig.rt.HoldReplacePod(func() {
 		rig.rt.HoldReplacePod(nil)
 		rig.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token})
@@ -1990,24 +1992,20 @@ func TestPodUpdateDoesNotCutATurnThatStartsWhileTheReplacementWaits(t *testing.T
 		t.Fatalf("the worker whose turn started inside the wait is %s, want it still %s: its turn was not this round's to cut",
 			cut.State, supervise.StateWorking)
 	}
-	if cut.UpdateRound != podUpdateRound || cut.UpdateSignalledAt != nil {
-		t.Fatalf("the worker after its own turn started = round %q answered=%t, want the round open and its answer taken back",
+	if cut.UpdateRound != podUpdateRound || cut.UpdateSignalledAt == nil {
+		t.Fatalf("the worker after its own turn started = round %q answered=%t, want the round open and its answer standing",
 			cut.UpdateRound, cut.UpdateSignalledAt != nil)
 	}
 
-	// The round carries on where it stood: the turn ends, the worker is asked again, and only its
-	// next answer replaces the pod.
+	// The round carries on where it stood: the turn ends, and the answer that stood through it
+	// replaces the pod at the next sweep, before the round's bound.
 	rig.handle(claim.RoleImplementer, supervise.StreamTurnEnd{Claim: token})
 	rig.tick()
 
-	if calls := rig.replacements(); len(calls) != 0 {
-		t.Fatalf("the pod was replaced %d times before the worker answered again", len(calls))
+	rig.awaitReplacement(1, "once the turn that started in the wait ended")
+	if now := rig.clock.Now(); !now.Before(podUpdateBound) {
+		t.Fatalf("the pod was replaced at %s, want it before the bound %s: every answer stood", now, podUpdateBound)
 	}
-
-	rig.signal(claim.RoleImplementer, "b2c3d4e")
-	rig.tick()
-
-	rig.awaitReplacement(1, "once the worker answered again")
 }
 
 // A Claude Code worker below the contract that introduced ready_for_update is never posted the
@@ -2157,9 +2155,9 @@ func TestPodUpdatePodlessNoticeMarksWhichWorkersAnswered(t *testing.T) {
 // claim: the orphan reaping, the stale-plugin posts and every later issue's round with it.
 //
 // What the sweep reads of such a claim is the machine's published view, and it reads it as not
-// having answered whatever that view says: the decision in flight can be the turn that takes the
-// answer back, and counting the answer would delete a disk under work that turn can still
-// commit. The cost is one sweep.
+// having answered whatever that view says: the decision in flight can be a turn starting that the
+// view does not show yet, and counting the answer would cut that turn before the round's bound
+// and delete a disk under work it can still commit. The cost is one sweep.
 func TestPodUpdateReadsAClaimMidRelaunchWithoutWaitingAndCountsItUnanswered(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)
@@ -2370,10 +2368,8 @@ func TestPodUpdateRefusesALateAnswerFromAClaimSuspendedAfterItLeftTheRound(t *te
 }
 
 // envoyTurn is a turn the daemon sent nothing for, started in the pod that replaced the round's
-// own: an Envoy notice delivered into the relaunched session, or a person's steer. A claim that
-// has left its round keeps its answer through such a turn (takeBackSignal), because the answer
-// was given in the pod the round is about and no turn of the pod that replaced it can move the
-// branch that pod held.
+// own: an Envoy notice delivered into the relaunched session, or a person's steer. An answer
+// stands for its round through such a turn, as through every turn (dispatch://INFRA-2981 R9).
 func (r *podUpdateRig) envoyTurn(role claim.Role) {
 	r.t.Helper()
 	r.handle(role, supervise.StreamTurnStart{Claim: r.tokens[role]})
@@ -2450,10 +2446,8 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 
 // Every worker answered, the pod went, and one of them takes a turn of its own in the pod that
 // replaced it. The issue is told nothing: what the round's pod took with it is read from the
-// round's own record of each member (UpdateLeftRound, and the answer a claim that has left never
-// loses), and that member had answered when it left. Read from "has not answered now", the turn
-// would have taken the answer back (takeBackSignal) and the issue would be told a worker lost
-// work that worker had pushed.
+// round's own record of each member (UpdateLeftRound, and the answer that stands for the round),
+// and that member had answered when it left.
 func TestPodUpdateTellsTheIssueNothingWhenAnAnsweredWorkerTakesATurnInTheNewPod(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
 	rig.drifts(podUpdateDrift)

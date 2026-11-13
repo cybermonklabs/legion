@@ -403,8 +403,9 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 }
 
 // answeredOpenRound is the hold an open update round puts on its claim: the round is open and
-// the worker has answered it (ready_for_update, or the turn's end of a worker that cannot call
-// it), so that worker has said its work is pushed and its process may be replaced at any moment.
+// the worker has answered it (ready_for_update), so that worker has said its work is pushed and
+// its process may be replaced at any moment. The answer stands for the round, whatever turn
+// starts after it, so the hold does too until the round ends (dispatch://INFRA-2981 R5, R9).
 // sendPending hands such a claim nothing, and NewMachine reads it through openRoundHoldsTask.
 func (c Claim) answeredOpenRound() bool {
 	return c.UpdateRound != "" && c.UpdateSignalledAt != nil
@@ -599,9 +600,6 @@ func (m *Machine) sendPending(ctx context.Context) error {
 		m.askFirst = false
 		if streaming, _ := m.streaming(ctx, conn); streaming {
 			m.claim.State = StateWorking
-			// The turn is the agent's own word, not an agent_start this daemon read, so nothing
-			// here knows what it has already done (Machine.unseenTurn).
-			m.unseenTurn = true
 			// The turn this claim is put in is logged before the write that records it, as
 			// turnStarted logs its own: a line written after the write would say nothing of the
 			// turn whose write failed.
@@ -728,13 +726,12 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 // that turn's end — and the worker would never receive that task at all.
 //
 // It asks what a send would have asked, and confirms nothing: no delivery is left to confirm, so
-// an agent the ask finds in a turn only moves the claim to working, with the turn marked one this
-// daemon never saw begin (Machine.unseenTurn), and the claim written. The ask is worth making
-// with nothing pending because the claim's state is the daemon's record of whether its agent is
-// busy, and the drop does not make that record current: discarded instead, the claim stays ready
-// while its agent works, and the task that follows the dropped one is prompted into a busy agent
-// and refused at every send until that turn ends. The turn is nobody's task's either way, and the
-// next task waits for it to end.
+// an agent the ask finds in a turn only moves the claim to working, and the claim is written.
+// The ask is worth making with nothing pending because the claim's state is the daemon's record
+// of whether its agent is busy, and the drop does not make that record current: discarded
+// instead, the claim stays ready while its agent works, and the task that follows the dropped one
+// is prompted into a busy agent and refused at every send until that turn ends. The turn is
+// nobody's task's either way, and the next task waits for it to end.
 //
 // An agent that cannot say, and a claim whose shim is not connected, are taken as not streaming:
 // the mark goes all the same, since it is the dropped delivery's, and the busy refusal is what a
@@ -761,7 +758,7 @@ func (m *Machine) answerAskFirstAfterDrop(ctx context.Context) error {
 		return nil
 	}
 	m.log.Info("supervise: the agent is in a turn of its own after its task was dropped", "claim", m.claim.Token)
-	m.claim.State, m.unseenTurn = StateWorking, true
+	m.claim.State = StateWorking
 	// The guard above has already established that the claim holds no delivery, so this turn is
 	// no task's and the line names none. It goes before the write, as the other two do.
 	m.startTurn("")

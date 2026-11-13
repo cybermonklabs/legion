@@ -1842,6 +1842,30 @@ The step costs an operator one statement with the daemon stopped, and it leaves 
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
+#### Rolling back the release whose update round ends at its bound
+
+This release's migration `20261113110610_drop_claim_update_answer_marks` takes the columns `update_answered_by_turn_end` and `update_reasked_for_push_check` off `claims`.
+This release reads neither column and writes neither column.
+It takes no turn's end as an answer, it takes no answer back, and it asks no worker a second time for a push check.
+Pull request cybermonklabs/legion#2792 added both columns in `store/migrations/20261105022045_claim_update_answer_marks.up.sql`.
+The commit it merged as, `c82087d74996`, is release `legion-v19.16.0`, so every release from `legion-v19.16.0` on carries the two columns.
+Each of those releases names both columns in its claim read (`claimSelect` in `packages/daemon/internal/store/claims.go`) and in its `PutClaim` insert and on-conflict update.
+So after this migration drops the columns, a release from `legion-v19.16.0` on fails every claim read and every claim write until the columns are back.
+That is every launch, turn and sweep that daemon makes.
+Run this with the daemon stopped, before you pin that image:
+
+```sql
+alter table claims add column if not exists update_answered_by_turn_end boolean not null default false;
+alter table claims add column if not exists update_reasked_for_push_check boolean not null default false;
+```
+
+Nothing else of #2792 must come back.
+Every claim row takes the default, `false`, in both columns.
+That daemon reads `false` as an answer that the `ready_for_update` call gave, and as a claim that no round asked a second time.
+So that daemon reads each answer that an open round holds as an answer of the call.
+A turn that daemon did not prompt then takes such an answer back, and that daemon asks the role again, as it does for every answer of the call.
+A rollback to a release before `legion-v19.16.0` needs no statement: `legion-v19.15.0` names neither column in `packages/daemon/internal/store/claims.go`.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:

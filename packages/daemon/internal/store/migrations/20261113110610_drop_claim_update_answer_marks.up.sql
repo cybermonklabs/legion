@@ -1,0 +1,27 @@
+-- 20261113110610_drop_claim_update_answer_marks.up.sql -- the two marks of how a claim answered
+-- its update round go, with the rules that read them (dispatch://INFRA-2981 R7, R9).
+--
+-- What this takes out: the columns claims.update_answered_by_turn_end and
+-- claims.update_reasked_for_push_check, which 20261105022045_claim_update_answer_marks.up.sql
+-- added. Nothing else of the table changes, and every row keeps all its other columns.
+--
+-- Why nothing writes them: the first said whether a claim's standing answer came from the end of
+-- the turn an update task started, and the second whether the round had already asked that claim
+-- again because the pod's shim could not run the push check. This release takes no turn's end as
+-- an answer: a role answers with ready_for_update or not at all. It takes no answer back either,
+-- whatever turn starts after it, because the push check runs immediately before every
+-- replacement and reads the disk as it is then. And it asks no role a second time: a round ends
+-- at its bound (pod_update_grace_minutes) whatever its roles answered, and a pod whose shim cannot
+-- run the push check is replaced unchecked, with the issue told so. So no rule of this release
+-- reads either mark, and no write of this release sets one.
+--
+-- There is no down file: migrations here are forward-only. A column usually stays unread rather
+-- than dropped (internal/store/claims.go, claimSelect), because the previous release's daemon
+-- reads its own claims table. This drop is the exception that rule allows, as
+-- 20261109060737_drop_awaiting_slot_notice.up.sql is: every release from legion-v19.16.0 on names
+-- both columns in its claim read and in its PutClaim, so pinning one of them after this migration
+-- fails every claim read and every claim write until the columns are back. The two statements
+-- that bring them back, and why nothing else need come with them, are in docs/kubernetes.md under
+-- their own heading.
+alter table claims drop column update_answered_by_turn_end;
+alter table claims drop column update_reasked_for_push_check;

@@ -8,6 +8,7 @@ package daemon
 // rig's held clock to the moment it decides at, and names that moment in what it asserts.
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"testing"
@@ -16,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -465,6 +467,47 @@ func TestPodUpdateBoundHoldsAPodWhosePushCheckFails(t *testing.T) {
 	}
 	if notices := rig.notices(); len(notices) != 1 {
 		t.Fatalf("the controller had been told %d times, want once per round", len(notices))
+	}
+}
+
+// At the bound, over a pod whose shim predates the push check (runtime.ErrRescueUnsupported) and
+// whose claims never answered: the check is asked, it cannot run, and that holds nothing. The pod
+// is replaced at the bound, the issue is told that nobody checked the pod's workspaces, and the
+// controller is told nothing, since nothing holds the round.
+//
+// The negative control is a hold on that answer: the round then waits for ever past its bound and
+// the replacement below never comes.
+func TestPodUpdateBoundReplacesAPodWhoseShimPredatesTheCheckAndSaysSo(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.rt.RescueWith(func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
+		return nil, fmt.Errorf("worker-stream: %w (its agent answered: Unknown command: rescue-unpushed)", runtime.ErrRescueUnsupported)
+	})
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.awaitRound(claim.RoleTester, podUpdateRound)
+	rig.clockAt(podUpdateBound.Add(-time.Minute))
+	rig.tick()
+	rig.tick()
+	if checks, calls := rig.rt.CallsOf("RescueUnpushed"), rig.replacements(); len(checks) != 0 || len(calls) != 0 {
+		t.Fatalf("at %s, a minute before the bound, the sweep ran %d push checks and %d replacements, want neither", rig.clock.Now(), len(checks), len(calls))
+	}
+
+	rig.clockAt(podUpdateBound)
+	rig.awaitReplacement(1, "at the bound, over a shim that cannot run the push check")
+	if checks := rig.rt.CallsOf("RescueUnpushed"); len(checks) == 0 {
+		t.Fatal("the pod was replaced at the bound with no push check asked of its shim")
+	}
+	messages := rig.messages()
+	if len(messages) != 1 || !strings.Contains(messages[0], "did not check the pod's workspaces") || !strings.Contains(messages[0], "predates the push check") {
+		t.Fatalf("the issue was told %q, want one message that nobody checked the pod's workspaces", messages)
+	}
+	if bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(bounded) != 1 {
+		t.Fatalf("the bounded end was logged %d times, want once: %+v", len(bounded), bounded)
+	}
+	if notices := rig.notices(); len(notices) != 0 {
+		t.Fatalf("the controller was told %+v, want nothing: a shim that cannot run the check holds nothing", notices)
 	}
 }
 

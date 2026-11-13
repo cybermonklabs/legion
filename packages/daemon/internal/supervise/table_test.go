@@ -157,7 +157,6 @@ func samples(t *testing.T) map[string][]Event {
 		"StalePlugin":          {StalePlugin{}},
 		"StallBackstop":        {StallBackstop{}},
 		"PodUpdateSignalled":   {PodUpdateSignalled{}},
-		"PodUpdateReask":       {PodUpdateReask{}},
 		"RequestSpawn":         {RequestSpawn{}},
 		"RequestRegister":      {RequestRegister{}},
 		"RequestReady":         {RequestReady{}},
@@ -316,8 +315,6 @@ func fenced(ev Event, c Claim) Event {
 		return PodUpdateOpen{Claim: c.Token, Round: PodRound("a-pod-uid"), Reasons: "image"}
 	case PodUpdateEnded:
 		return PodUpdateEnded{Claim: c.Token}
-	case PodUpdateReask:
-		return PodUpdateReask{Claim: c.Token, Round: PodRound("a-pod-uid")}
 	case RequestSpawn:
 		return RequestSpawn{Claim: c.Token}
 	case RequestRegister:
