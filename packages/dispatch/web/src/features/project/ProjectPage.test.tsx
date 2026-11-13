@@ -194,6 +194,28 @@ test("the bare project path opens on Architecture when the project has sources, 
   }
 });
 
+test("the bare project path with a query opens on Architecture without it when the project has sources", async () => {
+  const page = renderPage(
+    "/projects/CORE?label=frontend&q=core",
+    undefined,
+    "alice",
+    [],
+    [coreSource]
+  );
+  try {
+    // The filter parameters are the Issues tab's; the Architecture tab carries no query.
+    await waitFor(() =>
+      expect(screen.getByTestId("location").textContent).toBe("/projects/CORE/architecture")
+    );
+    expect(screen.getByRole("tab", { name: "Architecture" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+  } finally {
+    page.restore();
+  }
+});
+
 test("the bare project path opens on Issues with the filter parameters forwarded when there is no source, and the tab is absent", async () => {
   const page = renderPage("/projects/CORE?label=frontend&q=core");
   try {

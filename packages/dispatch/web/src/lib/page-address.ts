@@ -5,8 +5,8 @@ import type {
   PaginationState,
   SortingState,
 } from "@tanstack/react-table";
-import { useCallback, useMemo } from "react";
-import { useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { createElement, type ReactElement, useCallback, useMemo } from "react";
+import { Navigate, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 
 import { EVERYONE_FILTER_VALUE } from "../features/inbox/sections";
 import {
@@ -29,8 +29,9 @@ import {
  * do not reach for the address themselves. In the six features
  * `components/one-definition.test.ts` names in `ADDRESS_FEATURES` - `agents`, `artifacts`,
  * `delivery`, `inbox`, `project` and `search` - that test refuses `useSearchParams`,
- * `useLocation`, a hand-built `URLSearchParams`, `window.location` and `history.pushState` or
- * `history.replaceState`, so for those pages the address is read and
+ * `useLocation`, React Router's own `<Navigate>` (a page there redirects through
+ * `AddressRedirect`), a hand-built `URLSearchParams`, `window.location` and
+ * `history.pushState` or `history.replaceState`, so for those pages the address is read and
  * written here alone and there is one rule for how a parameter is read, how it is written, and
  * what happens to the browser's history when it changes. `features/architecture/` is outside
  * that list and still reads the router itself (`ArchitecturePage.tsx`'s own `useSearchParams`);
@@ -117,13 +118,38 @@ export function useAddressNavigate(): (path: string, options?: { replace?: boole
   );
 }
 
+/** Where `AddressRedirect` sends the page, and whether the page's own query goes with it. */
+export interface AddressRedirectProps {
+  /** Carry the page's query onto `to`, which is then a bare pathname: the bare project path
+   *  leaving for its Issues with the filters a link named. Without it `to` is the whole address
+   *  the page lands on, its query and hash exactly as the caller wrote them. */
+  readonly keepQuery?: boolean;
+  readonly to: string;
+}
+
+/**
+ * Leaving this address for another as the page renders, rather than from a handler: the bare
+ * project path opening on its Architecture or its Issues, a document address rewritten with the
+ * whole id a short one stood for. Like every other write here it replaces the history entry, so
+ * Back leaves for the page the reader came from instead of returning to an address that only
+ * sends them on again. It is React Router's `<Navigate>`, which no page of the six features
+ * draws for itself.
+ */
+export function AddressRedirect({ keepQuery = false, to }: AddressRedirectProps): ReactElement {
+  const { search } = usePageAddress();
+  return createElement(Navigate, {
+    replace: true,
+    to: keepQuery ? { pathname: to, search } : to,
+  });
+}
+
 /** A `URLSearchParams` of its own over `init`: the live one the router hands out is never
  *  mutated, so every read and write here works on a copy. */
 export function copyAddress(init?: string | URLSearchParams): URLSearchParams {
   return new URLSearchParams(init);
 }
 
-/** `location` with `name` set to `value`, as a path `<Navigate>` or a link can take: the
+/** `location` with `name` set to `value`, as a path `AddressRedirect` or a link can take: the
  *  pathname and the hash are kept exactly as they are, and every other parameter with them. */
 export function addressWithParam(location: PageAddress, name: string, value: string): string {
   const params = copyAddress(location.search);

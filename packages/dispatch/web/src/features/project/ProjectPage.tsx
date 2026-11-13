@@ -1,13 +1,13 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
-import { Link, Navigate, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { projectArchitectureSourcesQuery, projectsQuery, whoAmIQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { type TabDefinition, Tabs } from "../../components/Tabs";
-import { usePageAddress } from "../../lib/page-address";
+import { AddressRedirect, usePageAddress } from "../../lib/page-address";
 import {
   borderDefault,
   dangerText,
@@ -124,16 +124,13 @@ export function ProjectPage(): ReactNode {
     }
     if (hasSource) {
       return (
-        <Navigate replace to={buildProjectPath({ kind: "architecture", project: route.project })} />
+        <AddressRedirect to={buildProjectPath({ kind: "architecture", project: route.project })} />
       );
     }
     return (
-      <Navigate
-        replace
-        to={{
-          pathname: buildProjectPath({ kind: "issues", project: route.project }),
-          search: location.search,
-        }}
+      <AddressRedirect
+        keepQuery
+        to={buildProjectPath({ kind: "issues", project: route.project })}
       />
     );
   }

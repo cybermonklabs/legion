@@ -2,9 +2,11 @@ import { expect, test } from "bun:test";
 import { SEARCH_QUERY_MAX } from "@legion/contracts/dispatch-tools";
 import { act, renderHook } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
-import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import {
+  AddressRedirect,
+  type AddressRedirectProps,
   addressWithParam,
   buildInboxPath,
   capSearchQuery,
@@ -32,6 +34,29 @@ function renderAddress<T>(use: () => T, entries: readonly string[] = ["/page"]) 
   return renderHook(() => ({ back: useNavigate(), location: useLocation(), value: use() }), {
     wrapper: ({ children }: { children: ReactNode }) =>
       createElement(MemoryRouter, { initialEntries: [...entries] }, children),
+  });
+}
+
+/** `AddressRedirect` drawn on the bare project path and nowhere else, as `ProjectPage` draws it,
+ *  over a history with an entry beneath the page, so a test can see whether the move replaced
+ *  the page's entry or pushed one. */
+function renderRedirect(redirect: AddressRedirectProps, from: string) {
+  return renderHook(() => ({ back: useNavigate(), location: useLocation() }), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(
+        MemoryRouter,
+        { initialEntries: ["/elsewhere", from], initialIndex: 1 },
+        createElement(
+          Routes,
+          null,
+          createElement(Route, {
+            element: createElement(AddressRedirect, redirect),
+            path: "/projects/:key",
+          }),
+          createElement(Route, { element: null, path: "*" })
+        ),
+        children
+      ),
   });
 }
 
@@ -227,6 +252,48 @@ test("an address is rewritten with one parameter replaced, keeping the pathname 
       "1234abcd"
     )
   ).toBe("/projects/CORE/documents/spec?ask=1234abcd&version=2#b-1");
+});
+
+// The bare project path leaving for its Issues: what a link narrowed the page to goes with it.
+test("a redirect that keeps the query carries the page's query onto its path, replacing the entry", () => {
+  const hook = renderRedirect(
+    { keepQuery: true, to: "/projects/CORE/issues" },
+    "/projects/CORE?label=a&q=ship#top"
+  );
+  try {
+    expect(hook.result.current.location.pathname).toBe("/projects/CORE/issues");
+    expect(hook.result.current.location.search).toBe("?label=a&q=ship");
+    // The query alone goes with it, as the bare project path always carried it; the hash does not.
+    expect(hook.result.current.location.hash).toBe("");
+    // Back leaves for the page the reader came from, not the address that only sent them on.
+    act(() => hook.result.current.back(-1));
+    expect(hook.result.current.location.pathname).toBe("/elsewhere");
+  } finally {
+    hook.unmount();
+  }
+});
+
+// The Architecture tab carries no query, and a document address rewritten with a whole id is the
+// whole address already: either lands on exactly what the caller wrote.
+test.each([
+  ["/projects/CORE/architecture", "/projects/CORE/architecture", "", ""],
+  [
+    "/projects/CORE/documents/spec?ask=1234abcd#b-1",
+    "/projects/CORE/documents/spec",
+    "?ask=1234abcd",
+    "#b-1",
+  ],
+])("a redirect to %s lands on exactly that address, dropping the page's own query and hash", (to, pathname, search, hash) => {
+  const hook = renderRedirect({ to }, "/projects/CORE?label=a&q=ship#top");
+  try {
+    expect(hook.result.current.location.pathname).toBe(pathname);
+    expect(hook.result.current.location.search).toBe(search);
+    expect(hook.result.current.location.hash).toBe(hash);
+    act(() => hook.result.current.back(-1));
+    expect(hook.result.current.location.pathname).toBe("/elsewhere");
+  } finally {
+    hook.unmount();
+  }
 });
 
 test("inbox agent filters round-trip through the query string and ignore unknown sections", () => {

@@ -1,11 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import { Navigate } from "react-router-dom";
 
 import { api } from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type { Artifact, IDCandidate } from "../../api/types";
-import { addressWithParam, usePageAddress } from "../../lib/page-address";
+import { AddressRedirect, addressWithParam, usePageAddress } from "../../lib/page-address";
 import type { Highlight } from "../doc/highlight";
 import { type DocumentToolbar, ProofDocument } from "../doc/ProofDocument";
 import { ItemMatchList } from "../issue/ItemMatchList";
@@ -168,7 +167,7 @@ export function ArtifactDocument({
     <>
       {/* The replaced address adds no history entry, so Back still leaves the page the reader
           came from; the document stays mounted through it. */}
-      {landing.rewrite === undefined ? null : <Navigate replace to={landing.rewrite} />}
+      {landing.rewrite === undefined ? null : <AddressRedirect to={landing.rewrite} />}
       <ProofDocument
         artifact={artifact}
         highlight={highlight}
