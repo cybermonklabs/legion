@@ -838,6 +838,7 @@ var unknownIDRouteProbes = map[string]unknownIDRouteProbe{
 	"POST /api/v1/messages/{id}/deliveries/{attempt}/accept": {bearer: true},
 	"POST /api/v1/messages/{id}/reply":                       {body: map[string]any{"actor": sessionActor(), "attempt": 1, "body": "A reply."}, bearer: true},
 	"POST /api/v1/artifacts/{id}/rebuild":                    {body: map[string]any{}},
+	"PATCH /api/v1/artifacts/{id}":                           {body: map[string]any{"name": "Launch notes"}},
 	"POST /api/v1/artifacts/{id}/versions":                   {body: map[string]any{"summary": "A named version"}},
 	"POST /api/v1/artifacts/{id}/blocks/{block_id}/keep":     {body: map[string]any{"text_sha256": strings.Repeat("0", 64)}},
 	"PUT /api/v1/me/documents/{id}/read":                     {body: map[string]any{"version": 1}},
