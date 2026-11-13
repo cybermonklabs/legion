@@ -719,7 +719,7 @@ function prose(text: string): string {
     .map((line) =>
       line
         .replace(/^\s*(?:\/\/+|\/\*+|\*+(?!\/)|--|#+|<!--)?\s*\+?\s*["']?/, "")
-        .replace(/(?:\*\/|-->|["']\s*\+)\s*$/, "")
+        .replace(/(?:\*\/|--!?>|["']\s*\+)\s*$/, "")
     )
     .join("\n");
 }
