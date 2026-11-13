@@ -513,11 +513,11 @@ const OLD_RULE_ROOTS = [
   "docs/site/src",
 ];
 
-/** Tracked paths under the roots no reader is sent to for the rule: the recorded HTTP answers
- *  under `packages/dispatch/e2e/__recordings__`, each what a server answered when it was
- *  recorded. The changelogs, their `.changes` notes and `docs/solutions` are histories too, but no
- *  root holds them, so the listing never returns one. What git ignores (dependencies, build
- *  output, generated reference pages, test results) is never listed. */
+/** Listed paths under the roots, tracked or untracked, no reader is sent to for the rule: the
+ *  recorded HTTP answers under `packages/dispatch/e2e/__recordings__`, each what a server answered
+ *  when it was recorded. The changelogs, their `.changes` notes and `docs/solutions` are histories
+ *  too, but no root holds them, so the listing never returns one. What git ignores (dependencies,
+ *  build output, generated reference pages, test results) is never listed. */
 const OLD_RULE_LEFT_OUT = /(?:^|\/)__recordings__\//;
 
 /** Wordings of the two-step rule. `sentence` is false for a wording that is the two-step rule on
