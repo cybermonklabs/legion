@@ -51,7 +51,8 @@ type launchers struct {
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
 	// volume takes a cache trimmer's sweep report into the daemon's fact path
-	// (Options.VolumeReported). A launchers built without it reads the frame and drops it.
+	// (Options.VolumeReported). A launchers built without it reads the frame, logs that no
+	// receiver took it, and drops it (volumeReported).
 	volume runtime.VolumeReported
 	log    *slog.Logger
 }
@@ -627,13 +628,22 @@ func (d *launchers) volumeReported(s *launcherSession, report shimwire.LauncherV
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
 		return
 	}
-	if d.volume == nil || s.issue == "" {
+	if d.volume == nil {
+		// A runtime built with no receiver drops every report of every pod, and nothing else shows
+		// it: no architect is told and the trimmer goes on sweeping. So the drop is logged naming
+		// the line that sets the receiver.
+		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep and this runtime has no receiver for it, which is dropped; "+
+			"the daemon sets one in internal/daemon/kubernetes.go's sandboxRuntime (opts.VolumeReported = reports.report)",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode)
+		return
+	}
+	if s.issue == "" {
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()
 	if err := d.volume(ctx, s.issue, s.podUID, report); err != nil {
-		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep the daemon could not record, which is dropped; the trimmer's next report carries the same volume",
+		d.log.Warn("launcher volume: the pod's cache trimmer reported a sweep the daemon could not record, which is dropped",
 			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "trimmer", report.Trimmer, "episode", report.Episode, "error", err)
 	}
 }

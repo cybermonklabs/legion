@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -527,8 +528,8 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 //
 // reports is the holder the launchers' volume reports reach the workflow's fact path through
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
-// it has (plan.volumeReports). One that is never filled drops every report it is given, which
-// is a daemon with no workflow.
+// it has (plan.volumeReports). One that is never filled refuses every report it is given with
+// errVolumeReportsUnbound, which the launcher session logs.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
 	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string, reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
@@ -579,9 +580,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 // it, into the fact the workflow applies (intake.VolumeNearFull). It is the seam between the
 // Kubernetes runtime, which is built before the workflow opens, and the fact path, which exists
 // only after it: prepareSandbox makes one and hands it to the factory, and the boot fills it the
-// moment the workflow is open (plan.volumeReports, daemon.Run). A holder nobody filled —
-// a daemon with no workflow — drops every report it is given, which is what the Sandbox runtime
-// did with the frame before this change.
+// moment the workflow is open (plan.volumeReports, daemon.Run). A holder nobody filled refuses
+// every report with errVolumeReportsUnbound, which the launcher session logs with the report it
+// drops.
 //
 // It is filled once, in the boot's own goroutine, before the runtime is built and so before any
 // launcher can connect: there is nothing to lock, and nothing ever replaces what was filled.
@@ -589,6 +590,12 @@ type volumeTrimReports struct {
 	pool     *store.Pool
 	handlers []intake.Handler
 }
+
+// errVolumeReportsUnbound is what a holder the boot never filled answers every report with. Its
+// text names the line that fills it, since a log line is the only place the drop shows: no
+// architect is told, and the trimmer goes on sweeping.
+var errVolumeReportsUnbound = errors.New("the daemon's volume report holder was never bound to the workflow " +
+	"(daemon.go, plan.volumeReports.bind), so this report and every later one is dropped")
 
 // bind gives the holder the daemon's guarded pool (store.Pool) and the handlers a fact applies
 // through, which is what the workflow has and the factory does not.
@@ -613,9 +620,11 @@ func (v *volumeTrimReports) bind(pool *store.Pool, handlers []intake.Handler) {
 // unique across processes as well as within one.
 func (v *volumeTrimReports) report(ctx context.Context, issue, podUID string, report shimwire.LauncherVolumeReport) error {
 	if v.pool == nil || len(v.handlers) == 0 {
-		// A daemon with no workflow, which no Kubernetes deployment runs: there is no fact path
-		// to apply the report through, and the trimmer goes on holding the volume down.
-		return nil
+		// Nothing bound the holder to the workflow, so there is no fact path to apply the report
+		// through. That is a boot that skipped plan.volumeReports.bind, and every report of every
+		// pod meets it, so it is returned rather than swallowed: the launcher session logs it with
+		// the report it dropped (sandbox's volumeReported), which is what makes the drop findable.
+		return errVolumeReportsUnbound
 	}
 	fact := intake.VolumeNearFull{Issue: issue, PodUID: podUID, Report: record.VolumeNearFull{
 		Trimmer: report.Trimmer, Episode: report.Episode, RaisedBy: report.RaisedBy,

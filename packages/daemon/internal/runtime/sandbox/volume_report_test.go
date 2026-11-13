@@ -175,7 +175,7 @@ func TestAVolumeReportTheDaemonCannotRecordLeavesTheConnection(t *testing.T) {
 	}
 }
 
-// A runtime given no seam — a daemon with no workflow — reads the frame and drops it, and the
+// A runtime given no seam reads the frame, logs that no receiver took it, and drops it, and the
 // connection stays open all the same.
 func TestALauncherWithNoVolumeSeamStillServesTheReport(t *testing.T) {
 	launchers := testLaunchers()

@@ -39,16 +39,18 @@ import (
 // root it is told at the same line never to write to, and which of the two the code follows is
 // then a reading of the code rather than of the lists.
 const (
-	// renderedIssueVolumePaths is the floor the issue's check names for the set this test walks:
-	// the ten values the start environment writes under the volume — roleEnvironment's eight less
-	// XDG_CONFIG_HOME, which is under the pod's in-memory home and off the volume, plus the issue
-	// pod's two uv paths and PUBLIC_LEAK_CHECK, with LEGION_WORKSPACE dropped and the six gh
-	// variables left out because none is on the volume: GH_CONFIG_DIR and LEGION_GH_OWNERS_DIR
-	// point at /var/run/legion/gh, LEGION_GH_PATH at /usr/local/bin/gh, and GH_TOKEN,
-	// GITHUB_TOKEN and GH_HOST are empty — and the three mounts and constants beside them
-	// (issueVolumePaths). The set itself is derived from the renderer and never written out, so
-	// this number is only a floor: it exists because a derivation that broke and matched nothing
-	// would otherwise hold the two lists to an empty set and report agreement.
+	// renderedIssueVolumePaths is the floor the issue's check names for the set this test walks,
+	// read from the smaller of the two backends' sets. An Oh My Pi launch's start environment
+	// writes ten values under the volume — roleEnvironment's eight less XDG_CONFIG_HOME, which is
+	// under the pod's in-memory home and off the volume, plus the issue pod's two uv paths and
+	// PUBLIC_LEAK_CHECK, with LEGION_WORKSPACE dropped and the six gh variables left out because
+	// none is on the volume: GH_CONFIG_DIR and LEGION_GH_OWNERS_DIR point at /var/run/legion/gh,
+	// LEGION_GH_PATH at /usr/local/bin/gh, and GH_TOKEN, GITHUB_TOKEN and GH_HOST are empty. A
+	// Claude Code launch's writes those ten and CLAUDE_CONFIG_DIR, eleven. Beside either are the
+	// three mounts and constants (issueVolumePaths), so the sets are thirteen and fourteen. The
+	// set itself is derived from the renderer and never written out, so this number is only a
+	// floor: it exists because a derivation that broke and matched nothing would otherwise hold
+	// the two lists to an empty set and report agreement.
 	renderedIssueVolumePaths = 13
 	// newToolCache, newMount and newAgentCache are the three additions the negative controls make
 	// to a copy of what the renderer gave. Each is a path no list names, and each stands for the
@@ -64,8 +66,9 @@ const (
 // protected list. Both halves read the renderer rather than a list written beside it: a list here
 // would have to be edited by whoever adds a cache, which is the edit that gets forgotten. The
 // first half is read for each backend the role runs on (backendsRunning, reclaim_doc_test.go),
-// since each renders its own start environment; the second reads the one start wrapper, which
-// renders Claude Code's block whichever backend runs (renderedStartWrapper).
+// since each renders its own start environment; the second reads the start wrapper of a Claude
+// launch, since only a Claude launch renders Claude Code's block, the one install block that
+// writes under the cache home today (renderedStartWrapper).
 func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *testing.T) {
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
