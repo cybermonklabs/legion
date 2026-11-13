@@ -193,6 +193,8 @@ export function useTableRecovery(project: string, report: (text: string) => void
             case "taken":
               reject(new Error(`${row.label} was not made.`));
               return;
+            default:
+              event satisfies never;
           }
         });
         return promise;

@@ -67,6 +67,8 @@ export function useComposerSend(
           case "discarded":
           case "taken":
             return;
+          default:
+            kind satisfies never;
         }
       }),
     [id, store]
