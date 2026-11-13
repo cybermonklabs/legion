@@ -141,13 +141,9 @@ import { useInboxThreadRows } from "./useInboxThreadRows";
  *  stands open at a time, and so Escape is that popover's rather than the selection's. */
 type InboxPanel = InboxFilterField | "assignee" | "view";
 
-/** The chrome of the page's own controls - **Mark all read**, the needs-you control and
- *  **Clear filters** - so each keeps the row's 44 px line and nothing in the row can grow it. */
+/** The chrome of the page's own controls - **Mark all read** and the needs-you control - so
+ *  each keeps the row's 44 px line and nothing in the row can grow it. */
 const PAGE_CONTROL_CLASS = `rounded-lg border text-sm font-semibold whitespace-nowrap outline-none focus-visible:ring-2 ${controlPadding.comfortable} ${focusVisibleRing} ${borderDefault} ${surfaceMutedBg} ${textSecondaryOnCanvas}`;
-
-/** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
- *  the chips beside it rather than narrowing anything. It keeps the row's 44 px line. */
-const CLEAR_FILTERS_CLASS = `min-h-11 rounded-lg px-2 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas}`;
 
 /** One action of the selection bar, as the bar's own line draws it. */
 const BAR_ACTION_CLASS = `min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
@@ -1794,27 +1790,23 @@ export function Inbox({
             {token.label}
           </Chip>
         ))}
-        {/* Every narrowing off at once: the four fields, who the list is for, the agent and the
-            needs-you section. What the reader typed, the order, the banding and which of the two
-            lists is showing are not narrowings of this panel and stay exactly as they are. */}
-        <button
-          className={CLEAR_FILTERS_CLASS}
-          data-inbox-clear-filters=""
-          onClick={() =>
-            changeFilter({
-              ...filter,
-              agent: undefined,
-              assignees: undefined,
-              filters: undefined,
-              section: undefined,
-            })
-          }
-          type="button"
-        >
-          Clear filters
-        </button>
       </>
     );
+  // **Clear filters**, which the row draws at the end of the chips' line while there are chips:
+  // every narrowing off at once - the four fields, who the list is for, the agent and the
+  // needs-you section. What the reader typed, the order, the banding and which of the two lists
+  // is showing are not narrowings of this panel and stay exactly as they are.
+  const clearFilters =
+    chips === undefined
+      ? undefined
+      : () =>
+          changeFilter({
+            ...filter,
+            agent: undefined,
+            assignees: undefined,
+            filters: undefined,
+            section: undefined,
+          });
 
   // The number the blocked-on-you banner carried on this page, now a control of the row
   // (INFRA-3135, R7): the asks waiting on the reader plus the credential requests they may
@@ -2020,6 +2012,7 @@ export function Inbox({
       <ControlRow
         chips={chips}
         display={displayMenu}
+        onClear={clearFilters}
         search={
           <SearchBox
             className="w-full"

@@ -12,7 +12,6 @@ import { useAddressUpdate } from "../../lib/page-address";
 import {
   borderDefault,
   card,
-  focusVisibleRing,
   issueStatusScale,
   surfaceBg,
   surfaceMutedBg,
@@ -30,10 +29,6 @@ import {
   runningIssueStatuses,
   writeUrl,
 } from "./issues-table-model";
-
-/** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
- *  the chips beside it rather than narrowing anything. It keeps the row's touch target. */
-const CLEAR_FILTERS_CLASS = `min-h-11 rounded-lg px-2 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-2 md:min-h-8 ${focusVisibleRing} ${textSecondaryOnCanvas}`;
 
 /** The panel the row's one filter trigger opens: a column of chips, portalled over the page so
  *  opening it moves no row of the table beneath (INFRA-3135, R1). */
@@ -135,9 +130,10 @@ type ToolbarPanel = "flags" | "view";
 
 /**
  * The one row the List's controls sit in: the search box, the trigger over the three flags that
- * narrow no column of the table, the chips of the flags that are on with **Clear filters**, the
- * columns menu, and the display menu carrying the grouping (INFRA-3135, R1 and R3). Every
- * narrowing that is a column's own stays on that column's header, where `ColumnFilter` draws it.
+ * narrow no column of the table, the chips of the flags that are on, **Clear filters** (which
+ * the row draws), the columns menu, and the display menu carrying the grouping (INFRA-3135, R1
+ * and R3). Every narrowing that is a column's own stays on that column's header, where
+ * `ColumnFilter` draws it.
  */
 export function IssueTableToolbar({
   table,
@@ -166,9 +162,9 @@ export function IssueTableToolbar({
   // the write below takes out of the address.
   const narrowed = filters.length > 0 || search !== "" || flags.needsYou || flags.unread;
   const chips =
-    flagged.length === 0 && !narrowed ? undefined : (
-      <>
-        {flagged.map(({ label, off }) => (
+    flagged.length === 0
+      ? undefined
+      : flagged.map(({ label, off }) => (
           <Chip
             aria-label={`Remove ${label} filter`}
             key={label}
@@ -180,31 +176,20 @@ export function IssueTableToolbar({
           >
             {label}
           </Chip>
-        ))}
-        {narrowed ? (
-          <button
-            className={CLEAR_FILTERS_CLASS}
-            onClick={() =>
-              update((current) => {
-                const next = writeUrl(current, {
-                  ...readUrl(current),
-                  // Back to the view the table opens with, not to no filter at all: an empty
-                  // status pick asks the server for every closed issue in the project.
-                  filters: defaultView.filters,
-                  search: "",
-                  page: 0,
-                });
-                for (const flag of ["needs-you", "unread"]) next.delete(flag);
-                return next;
-              })
-            }
-            type="button"
-          >
-            Clear filters
-          </button>
-        ) : null}
-      </>
-    );
+        ));
+  const clearFilters = () =>
+    update((current) => {
+      const next = writeUrl(current, {
+        ...readUrl(current),
+        // Back to the view the table opens with, not to no filter at all: an empty status pick
+        // asks the server for every closed issue in the project.
+        filters: defaultView.filters,
+        search: "",
+        page: 0,
+      });
+      for (const flag of ["needs-you", "unread"]) next.delete(flag);
+      return next;
+    });
   return (
     <>
       <ControlRow
@@ -238,6 +223,7 @@ export function IssueTableToolbar({
             size="compact"
           />
         }
+        onClear={narrowed ? clearFilters : undefined}
         search={
           <SearchBox
             className="w-full"
@@ -248,6 +234,7 @@ export function IssueTableToolbar({
             value={search}
           />
         }
+        size="compact"
         trigger={
           <PanelTrigger
             count={flagged.length}

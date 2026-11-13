@@ -1,16 +1,37 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useCallback, useRef } from "react";
 
-import { scrollFadeTrailing } from "../theme/classes";
-import { CONTROL } from "./control-names";
+import {
+  borderDefault,
+  chipStripFade,
+  controlHoverBorder,
+  focusVisibleRing,
+  surfaceMutedBg,
+  textMutedOnSurfaceMuted,
+  textSecondaryOnCanvas,
+} from "../theme/classes";
+import { CONTROL, type ControlSize } from "./control-names";
 import { useTrailingScroll } from "./useTrailingScroll";
 
-/** One slot of the row: its own single line from `sm` up, which cannot wrap, so whatever a page
- *  puts in it grows sideways and never downward. Every slot but the search box keeps its width;
- *  the search box is the one that gives way where the window is narrow, as it does on every page
- *  today. Below `sm` a slot the page fills itself may wrap inside itself (`wraps`), because a
- *  phone is 390 px wide and a row of the page's own controls - the Artifacts tab's staged
- *  upload, say - runs past that edge otherwise, where the reader cannot reach it. A wrap that is
- *  there before any narrowing adds no height when a narrowing goes on, which is R1's rule. */
+/** **Clear filters**: the one control of the row that is not a box of its own, since it undoes
+ *  the chips rather than narrowing anything. It keeps the row's touch target; at the compact size
+ *  the row adds `md:min-h-8`, giving the target up only from `md`, where a mouse is. */
+const CLEAR_FILTERS_CLASS = `min-h-11 shrink-0 rounded-lg px-2 text-xs font-medium whitespace-nowrap outline-none focus-visible:ring-2 ${focusVisibleRing} ${textSecondaryOnCanvas}`;
+
+/** A scroll button of the chips line, laid over one end of the strip: a round 44 px control in
+ *  a resting chip's own fill, border and text, so it reads the same on whatever surface the row
+ *  is drawn on, centred in the line and above the strip, whose fade makes it a layer of its
+ *  own. The strip fades under it, so it sits over faded chips. At the compact size the row adds
+ *  `md:h-8 md:w-8`, so from `md` it is as tall as that line's 32 px chips, as Clear filters is. */
+const SCROLL_BUTTON_CLASS = `absolute inset-y-0 z-10 my-auto flex h-11 w-11 items-center justify-center rounded-full border text-lg ${borderDefault} ${surfaceMutedBg} ${textMutedOnSurfaceMuted} ${controlHoverBorder}`;
+
+/** One slot of the row's first line: its own single line from `sm` up, which cannot wrap, so
+ *  whatever a page puts in it grows sideways and never downward. Every slot but the search box
+ *  keeps its width; the search box is the one that gives way where the window is narrow, as it
+ *  does on every page today. Below `sm` a slot the page fills itself may wrap inside itself
+ *  (`wraps`), because a phone is 390 px wide and a row of the page's own controls - the
+ *  Artifacts tab's staged upload, say - runs past that edge otherwise, where the reader cannot
+ *  reach it. A wrap that is there before any narrowing adds no height when a narrowing goes on,
+ *  which is R1's rule. */
 function Slot({
   children,
   className,
@@ -29,89 +50,223 @@ function Slot({
   return <div className={className === undefined ? own : `${own} ${className}`}>{children}</div>;
 }
 
+/**
+ * Scrolls the chips strip one page towards `side`, never past a chip: the first chip on that
+ * side that is not wholly in the part of the strip the scroll buttons leave uncovered (its
+ * `scroll-padding`) is brought to the far end of that part, so each press shows at least that
+ * chip whole and no chip is stepped over. A chip wider than that whole part is brought in by its
+ * far end instead, so the next press moves on to the chip after it.
+ */
+function scrollPage(strip: HTMLElement, side: "left" | "right"): void {
+  const style = getComputedStyle(strip);
+  const box = strip.getBoundingClientRect();
+  const from = box.left + (Number.parseFloat(style.scrollPaddingLeft) || 0);
+  const to = box.right - (Number.parseFloat(style.scrollPaddingRight) || 0);
+  const chips = Array.from(strip.children, (chip) => chip.getBoundingClientRect());
+  let by: number;
+  if (side === "right") {
+    const next = chips.find((chip) => chip.right > to + 1);
+    if (next === undefined) by = strip.scrollWidth;
+    else if (next.left - from > 1) by = next.left - from;
+    else by = next.right - to;
+  } else {
+    const previous = chips.filter((chip) => chip.left < from - 1).at(-1);
+    if (previous === undefined) by = -strip.scrollWidth;
+    else if (previous.right - to < -1) by = previous.right - to;
+    else by = previous.left - from;
+  }
+  strip.scrollBy({ behavior: "smooth", left: by });
+}
+
 export interface ControlRowProps {
-  /** The chips of the narrowings that are on. They take ONE line, whatever their number: from `sm`
-   *  up inside the row's own line, and below it on one line of their own after the rest of the
-   *  row. A chip that does not fit is scrolled to, never wrapped onto a further line. */
+  /** The chips of the narrowings that are on. While there is any, they take ONE line of their
+   *  own under the row's first line, whatever their number - at most 52 px, a 44 px control and
+   *  the row's 8 px gap - and a chip that does not fit is scrolled to, never wrapped onto a
+   *  further line. With none the row is its first line alone. */
   readonly chips?: ReactNode;
   /** The page's own controls, such as the Inbox's **Mark all read**. */
   readonly children?: ReactNode;
   /** The caller's outer layout alone - where the row sits on the page, and what space it keeps
    *  from what is above and below it. The order inside it is the row's. */
   readonly className?: string;
-  /** The display menu, drawn at the right end of the row. */
+  /** The display menu, drawn at the right end of the row's first line. */
   readonly display?: ReactNode;
+  /** What **Clear filters** does: takes every narrowing the page counts off at once. The row
+   *  draws the button only while this is given - at the end of the chips line while there is a
+   *  chip, and right after the trigger while there is none (the project List's column filters
+   *  and search text draw no chip in the row). */
+  readonly onClear?: () => void;
   /** The page's search box, at the head of the row. */
   readonly search?: ReactNode;
+  /** How much room the row's own controls take (`ControlSize`): **Clear filters** and the two
+   *  scroll buttons. The page's controls carry their own size. */
+  readonly size?: ControlSize;
   /** The box that opens the page's filter panel - one `PanelTrigger`, never the panel itself. */
   readonly trigger?: ReactNode;
 }
 
 /**
- * The one row a page's controls sit in: its search box, the button that opens its filter panel,
- * the chips of the narrowings that are on, the page's own controls, and its display menu at the
- * right end - in that order, on every page, so a reader who learns one page's controls has
- * learned them all.
+ * The one row a page's controls sit in. Its first line holds the search box, the button that
+ * opens the filter panel, the page's own controls and the display menu at the right end - in
+ * that order, on every page, so a reader who learns one page's controls has learned them all.
+ * While a narrowing is on, a second line under it holds the chips of the narrowings that are on
+ * and **Clear filters**.
  *
  * The row is also where the height rule is kept: applying a narrowing, opening a panel, opening
  * the display menu or selecting rows must each leave the top of the list's first row where it
  * was, and the chips of the narrowings that are on may take one more line at most, 52 px, however
  * many narrowings are on. The whole arithmetic is these points:
  *
- * - from `sm` up the row is one flex line (`flex-nowrap`), so no slot is ever pushed under
- *   another; below `sm` it wraps, and that wrap is there before any narrowing;
- * - every slot but the chips lays its own nodes out in one line from `sm` up, so a slot handed
- *   more to draw grows sideways, never downward;
- * - the chips sit in one box that never wraps (`flex-nowrap`) and scrolls sideways when they do
- *   not fit (`overflow-x-auto`). From `sm` up that box shares the row's line with the search box
- *   (`flex-1 basis-0`), so the chips add no height at all there. Below `sm` it takes a whole line
- *   of its own and is placed after every other slot (`basis-full order-last`), so it adds that one
- *   line - a 44 px control and the row's 8 px gap, 52 px - and nothing else moves;
- * - a chip the box has scrolled away stays reachable: the Tab key reaches it and the browser
- *   scrolls it into view, a pointer or a finger scrolls the box, and every narrowing is also in
- *   the page's filter panel. The scroll bar is not drawn, because on a phone its height would be
- *   more than the one line the rule allows; the box keeps 2 px of room round each chip so a
- *   focused chip's ring is not cut off by the box's edge. While chips are scrolled away to the
- *   right, the box fades at that edge (`scrollFadeTrailing`), so the cut reads as a scroll.
+ * - the row is a column of its lines, 8 px apart (`gap-2`);
+ * - from `sm` up the first line is one flex line (`flex-nowrap`), so no slot is ever pushed
+ *   under another; below `sm` it wraps, and that wrap is there before any narrowing, since no
+ *   chip is in that line;
+ * - every slot of the first line lays its own nodes out in one line from `sm` up, so a slot
+ *   handed more to draw grows sideways, never downward;
+ * - the chips line is drawn only while there is a chip, and it never wraps: its tallest item is
+ *   one control, 44 px (32 px from `md` at the compact size), so it adds that line and the
+ *   row's 8 px gap - 52 px - and nothing else moves. The chips sit in one strip that scrolls
+ *   sideways when they do not fit (`overflow-x-auto`), and **Clear filters** sits after the
+ *   strip, outside it, so no number of chips scrolls it out of view.
  *
- * It draws its slots and nothing else. The panel a trigger opens is not in it (`AnchoredPanel`
- * portals to the body and is placed `fixed`, so it covers the page rather than taking room), and
- * neither is the selection bar (`SelectionBar` draws over the list for the same reason): either
- * one drawn in the row would move every row of the list beneath it.
+ * A chip the strip has scrolled away stays reachable, and is shown whole when it is reached:
+ *
+ * - the Tab key reaches it, and the strip scrolls a chip that takes the focus wholly into view,
+ *   clear of the fade and of the scroll button at either end (`scroll-padding`), so a reader
+ *   always sees which narrowing Enter takes off;
+ * - a pointer has a scroll button at each end of the strip, drawn only while a chip is out of
+ *   view on that side, which pages the strip one screen of chips that way. A mouse's plain
+ *   wheel scrolls the page, not the strip (Shift and the wheel, or a sideways wheel or swipe,
+ *   do scroll it), so the buttons are a pointer's way to every chip. They are laid over the
+ *   strip's two ends rather than beside it, so one appearing never narrows the strip and moves
+ *   the chips under the pointer, and they take no Tab stop, since Tab reaches every chip
+ *   already;
+ * - every narrowing is also in the page's filter panel.
+ *
+ * The scroll bar is not drawn, because on a phone its height would be more than the one line the
+ * rule allows; the strip keeps 2 px of room round each chip so a focused chip's ring is not cut
+ * off by its edge. While chips are out of view beyond either end, the strip fades over 48 px at
+ * that end (`chipStripFade`), so the cut reads as a scroll and the round button laid over that
+ * end sits over faded chips rather than over the opaque end of one.
+ *
+ * Beside its slots it draws **Clear filters** and the two scroll buttons, and nothing else. The
+ * panel a trigger opens is not in it (`AnchoredPanel` portals to the body and is placed `fixed`,
+ * so it covers the page rather than taking room), and neither is the selection bar
+ * (`SelectionBar` draws over the list for the same reason): either one drawn in the row would
+ * move every row of the list beneath it.
  */
 export function ControlRow({
   chips,
   children,
   className,
   display,
+  onClear,
   search,
+  size = "comfortable",
   trigger,
 }: ControlRowProps): ReactNode {
-  const [setChips, chipsScrollable] = useTrailingScroll();
-  // One line from `sm` up, which is where R1's two widths are; below it the row wraps, because
-  // a search box holding three characters beside a trigger is no search box. A wrap that is
-  // there before any narrowing adds no height when a narrowing goes on, which is the rule.
-  const own = "flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap";
+  const [measureStrip, more, scrolled] = useTrailingScroll();
+  const strip = useRef<HTMLDivElement | null>(null);
+  const setStrip = useCallback(
+    (node: HTMLDivElement | null) => {
+      strip.current = node;
+      measureStrip(node);
+    },
+    [measureStrip]
+  );
+  const chipsOn = chips !== undefined && chips !== null;
+  const clear =
+    onClear === undefined ? null : (
+      <button
+        className={size === "compact" ? `${CLEAR_FILTERS_CLASS} md:min-h-8` : CLEAR_FILTERS_CLASS}
+        onClick={onClear}
+        type="button"
+      >
+        Clear filters
+      </button>
+    );
+  const fade =
+    scrolled && more
+      ? chipStripFade.both
+      : scrolled
+        ? chipStripFade.leading
+        : more
+          ? chipStripFade.trailing
+          : "";
+  const scrollButton =
+    size === "compact" ? `${SCROLL_BUTTON_CLASS} md:h-8 md:w-8` : SCROLL_BUTTON_CLASS;
+  const own = "flex min-w-0 flex-col gap-2";
   return (
     <div
       className={className === undefined ? own : `${own} ${className}`}
       data-control={CONTROL.controlRow}
     >
-      <Slot gives>{search}</Slot>
-      <Slot>{trigger}</Slot>
-      {chips === undefined || chips === null ? null : (
-        // `[&>*]:shrink-0`: a strip that scrolls never squeezes a chip. A page's own chip that
-        // could shrink (the Inbox's agent chip is a link, not a `Chip`) would otherwise be drawn
-        // narrower than its text, and the next chip would sit over its end and take its clicks.
-        <div
-          className={`order-last -mx-0.5 -my-0.5 flex min-w-0 basis-full flex-nowrap items-center gap-2 overflow-x-auto px-0.5 py-0.5 [scrollbar-width:none] sm:order-none sm:flex-1 sm:basis-0 [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 ${chipsScrollable ? scrollFadeTrailing : ""}`}
-          ref={setChips}
-        >
-          {chips}
+      {/* One line from `sm` up, which is where R1's two widths are; below it the line wraps,
+          because a search box holding three characters beside a trigger is no search box. */}
+      <div className="flex min-w-0 flex-wrap items-start gap-2 sm:flex-nowrap">
+        <Slot gives>{search}</Slot>
+        <Slot>
+          {chipsOn || clear === null ? (
+            trigger
+          ) : (
+            <>
+              {trigger}
+              {clear}
+            </>
+          )}
+        </Slot>
+        <Slot wraps>{children}</Slot>
+        <Slot className="ml-auto">{display}</Slot>
+      </div>
+      {chipsOn ? (
+        <div className="flex min-w-0 flex-nowrap items-center gap-2">
+          <div className="relative flex min-w-0 flex-1">
+            {scrolled ? (
+              <button
+                aria-label="Scroll filters left"
+                className={`left-0 ${scrollButton}`}
+                onClick={() => {
+                  if (strip.current !== null) scrollPage(strip.current, "left");
+                }}
+                tabIndex={-1}
+                type="button"
+              >
+                <span aria-hidden="true">‹</span>
+              </button>
+            ) : null}
+            {/* `[&>*]:shrink-0`: a strip that scrolls never squeezes a chip. A page's own chip
+                that could shrink (the Inbox's agent chip is a link, not a `Chip`) would
+                otherwise be drawn narrower than its text, and the next chip would sit over its
+                end and take its clicks. `scroll-px-12` keeps a chip brought into view 48 px
+                from either end: past the 44 px button laid over that end, and the 48 px fade
+                under it. */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only scrolls to where the focus has already gone, a chip of the strip, so the strip needs no role of its own. */}
+            <div
+              className={`-mx-0.5 -my-0.5 flex min-w-0 flex-1 scroll-px-12 flex-nowrap items-center gap-2 overflow-x-auto px-0.5 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 ${fade}`}
+              onFocus={(event) =>
+                event.target.scrollIntoView({ block: "nearest", inline: "nearest" })
+              }
+              ref={setStrip}
+            >
+              {chips}
+            </div>
+            {more ? (
+              <button
+                aria-label="Scroll filters right"
+                className={`right-0 ${scrollButton}`}
+                onClick={() => {
+                  if (strip.current !== null) scrollPage(strip.current, "right");
+                }}
+                tabIndex={-1}
+                type="button"
+              >
+                <span aria-hidden="true">›</span>
+              </button>
+            ) : null}
+          </div>
+          {clear}
         </div>
-      )}
-      <Slot wraps>{children}</Slot>
-      <Slot className="ml-auto">{display}</Slot>
+      ) : null}
     </div>
   );
 }

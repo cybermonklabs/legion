@@ -467,6 +467,178 @@ test("Clear filters stays in view in the Inbox's row however many narrowings are
   expect(hidden, hidden.join("; ")).toEqual([]);
 });
 
+/** Which chips of the control row `row` a pointer reader sees whole, in the row's order: a chip
+ *  that no box above it and not the window cuts (`shownOf`, handed in as `measure`), and that
+ *  neither scroll button of the row covers, since each is laid over one end of the strip. */
+function chipsSeenWhole(row: Element, measure: string): boolean[] {
+  const shown = new Function(`return (${measure})`)() as typeof shownOf;
+  const buttons = [...row.querySelectorAll('button[aria-label^="Scroll filters"]')].map((button) =>
+    button.getBoundingClientRect()
+  );
+  return [...row.querySelectorAll('[data-control="chip"]')].map((chip) => {
+    const reading = shown(chip);
+    const covered = buttons.some(
+      (box) => box.left < reading.right - 1 && box.right > reading.left + 1
+    );
+    return reading.shown >= reading.width - 1 && !covered;
+  });
+}
+
+// SLOW(>=2s): twenty-two seeded questions, the row's chips paged through at five widths.
+test("a pointer reaches and removes every chip of the Inbox's row with the row's scroll buttons, at every width", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const row = controlRow(page.getByTestId("main-content"));
+  const chips = control(row, CONTROL.chip);
+  // The strip the chips scroll in is their own parent.
+  const strip = chips.first().locator("..");
+  const left = row.getByRole("button", { exact: true, name: "Scroll filters left" });
+  const right = row.getByRole("button", { exact: true, name: "Scroll filters right" });
+  const scrollLeft = () => strip.evaluate((node) => node.scrollLeft);
+  // Where the strip comes to rest: its `scrollLeft` unchanged over five frames, since a press
+  // scrolls it smoothly and a wheel may too.
+  const settled = () =>
+    strip.evaluate(
+      (node) =>
+        new Promise<number>((resolve) => {
+          let last = node.scrollLeft;
+          let still = 0;
+          const frame = () => {
+            still = node.scrollLeft === last ? still + 1 : 0;
+            last = node.scrollLeft;
+            if (still >= 5) resolve(last);
+            else requestAnimationFrame(frame);
+          };
+          requestAnimationFrame(frame);
+        })
+    );
+  // One press on Scroll filters right, waited out until the strip has moved and stopped.
+  const pressRight = async (where: string) => {
+    const from = await scrollLeft();
+    await right.click();
+    await expect
+      .poll(scrollLeft, {
+        message: `${where}: a press on Scroll filters right left the strip at ${from}px`,
+      })
+      .not.toBe(from);
+    return settled();
+  };
+  const readings: string[] = [];
+  for (const size of READING_WIDTHS) {
+    const where = `${size.width}x${size.height}`;
+    await page.setViewportSize(size);
+    await page.goto(NINE_NARROWINGS);
+    await expect(chips).toHaveCount(9);
+    expect(await scrollLeft(), `${where}: the strip does not open at its start`).toBe(0);
+    const seen = new Set<number>();
+    const look = async () => {
+      const whole = await row.evaluate(chipsSeenWhole, shownOf.toString());
+      for (const [index, shown] of whole.entries()) if (shown) seen.add(index);
+    };
+    await look();
+    const atStart = seen.size;
+    if (atStart === 9) {
+      // Every chip is shown whole at once: there is nothing for either button to page to.
+      await expect(
+        right,
+        `${where}: all 9 chips are shown whole, yet Scroll filters right is drawn`
+      ).toHaveCount(0);
+      await expect(
+        left,
+        `${where}: all 9 chips are shown whole, yet Scroll filters left is drawn`
+      ).toHaveCount(0);
+      readings.push(`${where}: all 9 chips shown whole at once, and neither scroll button drawn`);
+      continue;
+    }
+    await expect(
+      left,
+      `${where}: the strip is at its start, yet Scroll filters left is drawn`
+    ).toHaveCount(0);
+    const stops: number[] = [];
+    while (seen.size < 9) {
+      const before = seen.size;
+      await expect(
+        right,
+        `${where}: ${before} of 9 chips seen whole after ${stops.length} presses, and Scroll filters right is not drawn`
+      ).toBeVisible();
+      stops.push(Math.round(await pressRight(where)));
+      await look();
+      expect(
+        seen.size,
+        `${where}: press ${stops.length} on Scroll filters right (strip at ${stops.at(-1)}px) brought no more chip wholly into view: ${before} of 9 seen`
+      ).toBeGreaterThan(before);
+    }
+    await expect(
+      right,
+      `${where}: every chip was seen whole after ${stops.length} presses (strip at ${stops.at(-1)}px), yet Scroll filters right is still drawn`
+    ).toHaveCount(0);
+    await expect(
+      left,
+      `${where}: the strip is paged to its end (${stops.at(-1)}px), and Scroll filters left is not drawn`
+    ).toBeVisible();
+
+    // A mouse's plain wheel scrolls the page, not the strip; Shift and the wheel, and a sideways
+    // wheel, are the two wheel moves that scroll it, and each must.
+    const wheeled: number[] = [];
+    for (const [move, deltaX, deltaY, shift] of [
+      ["Shift and a vertical wheel", 0, 200, true],
+      ["a sideways wheel", 200, 0, false],
+    ] as const) {
+      await strip.evaluate((node) => {
+        node.scrollLeft = 0;
+      });
+      await settled();
+      const box = await strip.boundingBox();
+      if (box === null) throw new Error(`${where}: the strip has no box`);
+      await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+      if (shift) await page.keyboard.down("Shift");
+      await page.mouse.wheel(deltaX, deltaY);
+      if (shift) await page.keyboard.up("Shift");
+      await expect
+        .poll(scrollLeft, { message: `${where}: ${move} over the strip left it at 0px` })
+        .toBeGreaterThan(0);
+      wheeled.push(Math.round(await settled()));
+    }
+    readings.push(
+      `${where}: ${atStart} of 9 chips shown whole at the start; every chip seen whole after ${stops.length} presses on Scroll filters right (strip at ${stops.join(", ")}px); Shift and the wheel moved the strip 0 to ${wheeled[0]}px, a sideways wheel 0 to ${wheeled[1]}px`
+    );
+  }
+
+  // And the chip the pointer paged to is one it can take off, in place.
+  await page.setViewportSize({ height: 664, width: 390 });
+  await page.goto(NINE_NARROWINGS);
+  await expect(chips).toHaveCount(9);
+  let presses = 0;
+  while (!(await row.evaluate(chipsSeenWhole, shownOf.toString())).at(-1)) {
+    expect(
+      presses,
+      "390x664: nine presses on Scroll filters right never showed the last chip whole"
+    ).toBeLessThan(9);
+    await pressRight("390x664");
+    presses++;
+  }
+  const last = chips.last();
+  await expect(last).toHaveAttribute("aria-label", "Remove filter Project: CORE");
+  await last.click();
+  await expect(
+    chips,
+    "390x664: pressing the last chip did not leave 8 chips in the row"
+  ).toHaveCount(8);
+  const address = new URL(page.url());
+  expect(address.searchParams.has("project"), "390x664: the address kept ?project=").toBe(false);
+  expect(address.searchParams.get("priority"), "390x664: the press took the priorities").toBe(
+    "P0,P1,P2"
+  );
+  readings.push(
+    `390x664: the last chip shown whole after ${presses} presses, and pressed: 8 chips left`
+  );
+  await test.info().attach("the row's chips paged through by its scroll buttons", {
+    body: readings.join("\n"),
+    contentType: "text/plain",
+  });
+});
+
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
  *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
  *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of
@@ -1104,7 +1276,7 @@ test("the Inbox keeps every field, sort, grouping, view and clear it had", async
   await page.goto(
     "/?assignee=bob&type=question&priority=P0&urgency=blocking&project=CORE&section=needs-you&q=rule&sort=priority&group=type&show=dismissed"
   );
-  await page.locator("[data-inbox-clear-filters]").click();
+  await controlRow(main).getByRole("button", { exact: true, name: "Clear filters" }).click();
   const address = new URL(page.url());
   for (const gone of ["assignee", "type", "priority", "urgency", "project", "section", "agent"]) {
     expect(address.searchParams.has(gone), `Clear filters left ?${gone}=`).toBe(false);
