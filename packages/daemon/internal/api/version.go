@@ -1391,7 +1391,7 @@ package api
 // #3715 92, #3677 93 beside this change, #3708 94 and #3575 95; main carries no 93, so this change
 // keeps it. An eighth reading, at the forward merge of 2026-11-13T08:10Z over the 140 open pull
 // requests, found main at 94 (dispatch://INFRA-2800's entry above: #3677 landed at 94, not at the
-// 93 it held at the seventh), #3830 90, #3519 91, #3715 92, #3712 95, #2731 and #3573 96, #3708 98
+// 93 it held at the seventh), #3830 90, #3715 92, #3519 and #3712 95, #2731 and #3573 96, #3708 98
 // and #3575 99. For check-daemon-api-contract.sh a base above this change's number is the base
 // taking it, so this change takes 97, the lowest number above the base's that no other open head
 // declares. The entries above keep the numbers they were read at. Read the base's own number and
