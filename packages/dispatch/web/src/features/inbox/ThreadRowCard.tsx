@@ -96,7 +96,7 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       </div>
       {markRead.isError ? (
         <div className="mt-2">
-          <QueryError message={markRead.error.message} onRetry={() => markRead.mutate()} />
+          <QueryError message={markRead.error.message} onRetry={markRead.retry} />
         </div>
       ) : null}
     </div>

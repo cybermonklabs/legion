@@ -140,7 +140,7 @@ export function DocumentPage(): ReactNode {
         {unsubscribe.isError ? (
           <QueryError
             message="Could not unsubscribe this agent."
-            onRetry={() => unsubscribe.mutate(unsubscribe.variables as string)}
+            onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}
           />
         ) : null}

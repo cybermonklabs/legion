@@ -96,10 +96,13 @@ export function useCommentActionQueue<TContext = undefined>({
       start({ id, kind });
     },
   });
-  function start(input: CommentActionInput): boolean {
+  /** Makes `press` under the guard, with `input` the action in flight: a new press of `input`, or
+   *  the card's Retry of the newest press (`retry`), which goes under that press's key where the
+   *  reader stopped it. */
+  function start(input: CommentActionInput, press = () => action.mutate(input)): boolean {
     return actionGuard.guard(() => {
       inFlight.current = input;
-      action.mutate(input);
+      press();
     });
   }
 
@@ -121,7 +124,7 @@ export function useCommentActionQueue<TContext = undefined>({
     },
     pendingActionIds,
     retryItem: () => {
-      if (action.variables !== undefined) start(action.variables);
+      if (action.variables !== undefined) start(action.variables, action.retry);
     },
   };
 }

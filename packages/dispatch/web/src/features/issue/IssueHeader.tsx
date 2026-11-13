@@ -874,14 +874,14 @@ export function IssueHeader({
       {unsubscribe.isError ? (
         <QueryError
           message="Could not unsubscribe this agent."
-          onRetry={() => unsubscribe.mutate(unsubscribe.variables as string)}
+          onRetry={unsubscribe.retry}
           retrying={unsubscribe.isPending}
         />
       ) : null}
       {releaseClaim.isError ? (
         <QueryError
           message="Could not release this claim."
-          onRetry={() => releaseClaim.mutate()}
+          onRetry={releaseClaim.retry}
           retrying={releaseClaim.isPending}
         />
       ) : null}

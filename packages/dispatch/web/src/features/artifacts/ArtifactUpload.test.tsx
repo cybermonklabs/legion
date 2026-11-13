@@ -586,12 +586,12 @@ function fileSent(input: Parameters<typeof api.uploadArtifact>[1] | undefined): 
   return input !== undefined && "file" in input ? input.file : undefined;
 }
 
-// A press of another file is a press of its own, however alike the two read: the hook reaches a
-// stopped press only through the variables object that press was made with, and this press
-// builds its own - the two serialise alike, under one base token, and a `File` carries no field
-// `JSON.stringify` writes, so the text alone would make them one press. Sent under the stopped
-// press's key, the second file would be answered `422 KEY_REUSED` once the first press reached
-// Dispatch, and nothing of it would be stored.
+// A press of another file is a press of its own, however alike the two read: the row reaches a
+// stopped press only through the handle the hook gives for the press that sent the staged file,
+// and the hook never matches a press by what it carries - the two serialise alike, under one base
+// token, and a `File` carries no field `JSON.stringify` writes, so the text alone would make them
+// one press. Sent under the stopped press's key, the second file would be answered
+// `422 KEY_REUSED` once the first press reached Dispatch, and nothing of it would be stored.
 test("a press of another file after a stopped press goes under a key of its own", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -799,8 +799,8 @@ test("a draft's Retry with two presses stopped sends the file whose refusal it s
 // chart.png, so the hook holds a stopped press while the refusal on screen is another file's.
 // Taken for this refusal, that stopped press would send notes.md again and leave chart.png - the
 // file whose refusal is on screen - unsent. Nor does the Retry hand notes.md's key on: that key
-// belongs to the press the reader stopped, which nothing but that press, sent back as it stands,
-// reaches, so the same file pasted afresh goes out under a key of its own.
+// belongs to the press the reader stopped, which only a Retry of that press reaches, by its
+// handle, so the same file pasted afresh goes out under a key of its own.
 test("a draft's Retry after Dispatch's refusal sends that file and leaves the stopped press alone", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();

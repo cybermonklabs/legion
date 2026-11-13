@@ -364,8 +364,9 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
       }
       retryGuard.guard(() => {
         // The refusal on screen is the newest press's, which is not always the press the reader
-        // stopped last, so the press made again is the one that sent this very file; a refusal
-        // Dispatch decided has no stopped press of its own to make again.
+        // stopped last, so the press made again is the one that sent this very file, reached by
+        // the handle the hook gives for it; a refusal Dispatch decided has no stopped press of
+        // its own to make again.
         const again = retriesUnderItsKey(upload.error ?? undefined)
           ? upload.stopped((press) => press.file === last.file)
           : undefined;
@@ -376,7 +377,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
         // The very same press, base and all: nothing is read for it, so the write counts as
         // pending from here, as `send` counts one of its own.
         setPending((count) => count + 1);
-        upload.mutate(again);
+        upload.again(again);
       });
     },
   };
@@ -527,17 +528,17 @@ export function useArtifactUpload(
         // The press the reader stopped may have reached Dispatch, which answers its key with
         // what it did there - but only while the two send the same bytes, since the key covers
         // the whole body, the `precondition` field included (`bodyDigest` in the server's
-        // `api/request_keys.go`). So a press of the staged file asks the hook for the press that
-        // sent that very file and sends that press back as it stands: the hook reaches a stopped
-        // press through the object it was made with, and variables built here afresh, base and
-        // all, would be a press of its own. A press of another file finds no such press and is
-        // one of its own: it takes the base read when that file was chosen, or reads the token
-        // the document is at now.
+        // `api/request_keys.go`). So a press of the staged file a stopped press sent is this
+        // row's Retry of that press: it takes the handle the hook gives for the press that sent
+        // that very file and makes that press again as it stands (`again`), base and all, where a
+        // `mutate` would be a press of its own under a key of its own. A press of another file
+        // finds no such press and is one of its own: it takes the base read when that file was
+        // chosen, or reads the token the document is at now.
         const again = upload.stopped((press) => press.file === file);
         const chosen = chosenBase.current;
         chosenBase.current = undefined;
         if (again !== undefined) {
-          upload.mutate(again);
+          upload.again(again);
           return;
         }
         void send(file, chosen ?? captureUploadBase(owner, file, name));

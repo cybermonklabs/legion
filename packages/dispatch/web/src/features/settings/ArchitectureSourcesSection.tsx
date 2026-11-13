@@ -289,7 +289,7 @@ export function ArchitectureSourcesSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message="Couldn't delete the architecture source."
-                onRetry={() => deleteSource.mutate(deleteSource.variables)}
+                onRetry={deleteSource.retry}
                 retrying={deleteSource.isPending}
               />
             </div>
@@ -301,7 +301,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                   refreshSource.error,
                   "Couldn't refresh the architecture source."
                 )}
-                onRetry={() => refreshSource.mutate(refreshSource.variables)}
+                onRetry={refreshSource.retry}
                 retrying={refreshSource.isPending}
               />
             </div>

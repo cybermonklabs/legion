@@ -463,11 +463,7 @@ export function AgentTokensSection(): ReactNode {
         <div className="mt-4">
           <QueryError
             message="Couldn't create the agent token."
-            onRetry={() =>
-              createToken.mutate(
-                createToken.variables ?? { before: listedIds(), name, scopes: newScopes }
-              )
-            }
+            onRetry={createToken.retry}
             retrying={createToken.isPending}
           />
         </div>

@@ -156,14 +156,16 @@ export function SettingsPage(): ReactNode {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
   });
 
+  // The refusal on screen is the newest press of its write: a later press of either write that
+  // lands lets it go, and Retry waits while either is out. So Retry is that write's own
+  // (`retry`), which makes a press the reader stopped again under its key.
   const retry = () => {
     if (failedAction?.kind === "put") {
-      const { kind: _kind, message: _message, ...variables } = failedAction;
-      putMapping.mutate(variables);
+      putMapping.retry();
       return;
     }
     if (failedAction?.kind === "delete") {
-      deleteMapping.mutate(failedAction.repo);
+      deleteMapping.retry();
     }
   };
   const submit = (event: FormEvent<HTMLFormElement>) => {

@@ -63,9 +63,7 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
     failed: mutation.isError,
     pending: mutation.isPending,
     pendingUntil: mutation.isPending ? mutation.variables : undefined,
-    retry: () => {
-      if (mutation.variables !== undefined) mutation.mutate(mutation.variables);
-    },
+    retry: mutation.retry,
     submit: (until) => mutation.mutate(until),
   };
 }

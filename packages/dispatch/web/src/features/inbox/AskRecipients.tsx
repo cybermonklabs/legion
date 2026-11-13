@@ -428,7 +428,7 @@ export function AskRecipients({
         <div className="mt-2">
           <QueryError
             message="Could not unfollow."
-            onRetry={() => unfollow.mutate(unfollow.variables)}
+            onRetry={unfollow.retry}
             retrying={unfollow.isPending}
           />
         </div>
@@ -437,7 +437,7 @@ export function AskRecipients({
         <div className="mt-2">
           <QueryError
             message="Could not unsubscribe."
-            onRetry={() => unsubscribe.mutate(unsubscribe.variables)}
+            onRetry={unsubscribe.retry}
             retrying={unsubscribe.isPending}
           />
         </div>

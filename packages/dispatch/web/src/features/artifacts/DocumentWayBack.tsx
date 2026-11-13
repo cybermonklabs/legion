@@ -174,7 +174,9 @@ export function RemoveDocument({
   const remove = useKeyedWrite({
     inline: true,
     // The document's name is what the press is of, as the indicator names it; the route takes
-    // its id, so a retry of one press keeps that press's key (`sameVariables`).
+    // its id. A press of Remove while its refusal is on screen is the Retry of the press that
+    // refusal is about (`retry`): a removal the reader stopped is made again under its key, and
+    // Dispatch answers it with what it did there rather than refusing a document it removed.
     label: (name: string) => `Remove ${name}`,
     write: (_name: string, bounds) => api.deleteArtifact(artifact.id, bounds),
     onSettled: () => submitGuard.release(),
@@ -192,7 +194,9 @@ export function RemoveDocument({
       <RefusableButton
         busy={remove.isPending ? "Removing…" : undefined}
         look="secondary-compact"
-        onPress={() => submitGuard.guard(() => remove.mutate(artifact.name))}
+        onPress={() =>
+          submitGuard.guard(() => (remove.isError ? remove.retry() : remove.mutate(artifact.name)))
+        }
         refusal={refusal}
       >
         Remove

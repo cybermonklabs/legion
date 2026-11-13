@@ -164,11 +164,7 @@ export function AskReplyComposer({
       {submit.isError ? (
         <QueryError
           message="Could not post your reply."
-          onRetry={() => {
-            if (submit.variables !== undefined) {
-              submit.mutate(submit.variables);
-            }
-          }}
+          onRetry={submit.retry}
           retrying={submit.isPending}
         />
       ) : null}

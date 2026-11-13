@@ -20,7 +20,7 @@ import {
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
   settingsMonoInput,
@@ -267,10 +267,12 @@ type DefaultAssigneePick = { assignee: string | null };
 /** What a pick's save resolves to when a newer pick was waiting behind it: nothing was sent. */
 type DefaultAssigneeSuperseded = { superseded: true };
 
+/** One save as the mutation cache holds it: the press the keyed write made of a pick
+ *  (`KeyedPress`), the pick inside it. */
 type DefaultAssigneeSave = Mutation<
   ProjectDefaultAssignee | DefaultAssigneeSuperseded | null,
   Error,
-  DefaultAssigneePick
+  KeyedPress<DefaultAssigneePick>
 >;
 
 /** One project's default-assignee saves. The mutation scope runs a project's saves one at a time
@@ -318,7 +320,8 @@ function useDefaultAssigneeWrite(project: string): {
       const waiting = queryClient
         .getMutationCache()
         .findAll({ exact: true, mutationKey, status: "pending" });
-      if (waiting.at(-1)?.state.variables !== pick) {
+      const last = waiting.at(-1) as DefaultAssigneeSave | undefined;
+      if (last?.state.variables?.variables !== pick) {
         return { superseded: true };
       }
       return api.putProjectDefaultAssignee(project, { assignee: pick.assignee }, bounds);
@@ -367,7 +370,7 @@ function useDefaultAssigneeWrite(project: string): {
     filters: { exact: true, mutationKey },
     select: (save) => ({
       error: save.state.error,
-      pick: save.state.variables,
+      pick: save.state.variables?.variables,
       status: save.state.status,
     }),
   });
@@ -379,9 +382,18 @@ function useDefaultAssigneeWrite(project: string): {
     error: refused?.error ?? null,
     pending: pendingPicks.length > 0,
     retry: () => {
-      if (refused?.pick !== undefined) {
-        mutation.mutate({ assignee: refused.pick.assignee });
+      if (refused?.pick === undefined) {
+        return;
       }
+      // The Retry of the press the refusal is about: one this row made and the reader stopped is
+      // made again under its key (`again`). A refusal Dispatch decided, or a press of a row
+      // mounted before this one, is retried as a new pick under a key of its own.
+      const stopped = mutation.stopped((pick) => pick === refused.pick);
+      if (stopped !== undefined) {
+        mutation.again(stopped);
+        return;
+      }
+      mutation.mutate({ assignee: refused.pick.assignee });
     },
     shown: pendingPicks.at(-1)?.pick?.assignee,
     submit: (assignee) => mutation.mutate({ assignee }),

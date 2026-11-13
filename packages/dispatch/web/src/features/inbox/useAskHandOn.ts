@@ -87,9 +87,7 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     error: mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
-    retry: () => {
-      if (mutation.variables !== undefined) mutation.mutate(mutation.variables);
-    },
+    retry: mutation.retry,
     submit: (askedOf) => mutation.mutate(askedOf),
   };
 }

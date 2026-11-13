@@ -182,12 +182,12 @@ test("clicking Approve posts an approved review and refreshes the issue and inbo
   }
 });
 
-// The reviewer's case, and why a stopped press is reached only through the object it was made
-// with: Approve goes late and the reader stops it, a change request lands, and the reader
-// approves again. The second Approve is a second action, not the first one made again - a press
-// sent under the stopped press's key would be answered by Dispatch with what that press did, and
-// the approval the person meant now would be recorded nowhere, with the chip saying it was made.
-// So it goes out under a key of its own.
+// The reviewer's case, and why a press made anew never reaches a stopped press: Approve goes late
+// and the reader stops it, a change request lands, and the reader approves again. The second
+// Approve is a second action, not the first one made again - a press sent under the stopped
+// press's key would be answered by Dispatch with what that press did, and the approval the person
+// meant now would be recorded nowhere, with the chip saying it was made. So it goes out under a
+// key of its own, though it carries what the stopped press carried.
 test("approving again after a stopped approval and a change request goes under its own key", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();

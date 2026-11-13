@@ -1,8 +1,11 @@
 import { useCallback, useMemo, useRef } from "react";
 
-export interface RetryableMutation<Input> {
-  mutate: (input: Input) => void;
-  variables: Input | undefined;
+/** A write whose Retry the guard holds: a keyed write (`useKeyedWrite`), whose `retry` makes its
+ *  newest press again - under that press's key where the reader stopped it, which a `mutate` of
+ *  the same variables never reaches, since a `mutate` is always a press of its own. */
+export interface RetryableMutation {
+  retry: () => void;
+  variables: unknown;
 }
 
 export interface SubmitGuard {
@@ -18,8 +21,9 @@ export interface SubmitGuard {
    * while the first is still out (the broadcast queue, `features/agents/BroadcastSends.tsx`),
    * calls it on the next task. */
   release: () => void;
-  /** Repeats the mutation's latest input if a request is not already in flight. */
-  retryLast: <Input>(mutation: RetryableMutation<Input>) => boolean;
+  /** Retries the mutation's newest press (`retry`) if one was made and a request is not already
+   *  in flight. */
+  retryLast: (mutation: RetryableMutation) => boolean;
 }
 
 export function useSubmitGuard(): SubmitGuard {
@@ -37,11 +41,11 @@ export function useSubmitGuard(): SubmitGuard {
     inFlight.current = false;
   }, []);
   const retryLast = useCallback(
-    <Input>({ mutate, variables }: RetryableMutation<Input>): boolean => {
+    ({ retry, variables }: RetryableMutation): boolean => {
       if (variables === undefined) {
         return false;
       }
-      return guard(() => mutate(variables));
+      return guard(retry);
     },
     [guard]
   );

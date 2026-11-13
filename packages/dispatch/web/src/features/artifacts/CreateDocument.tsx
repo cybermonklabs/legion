@@ -18,6 +18,12 @@ import { TitleForm } from "./TitleForm";
  *  being read keeps its own (`CLOSED_ISSUE_UPLOAD_REFUSAL`). */
 export const CLOSED_ISSUE_DOCUMENT_REFUSAL = "This issue is closed. Reopen it to add a document.";
 
+/** What the form says of a create the reader stopped: Dispatch may have made it, and a press of
+ *  Create again is a new write, which Dispatch refuses where the first one made the document. */
+export function stoppedCreate(title: string): string {
+  return `Dispatch has not confirmed the document “${title}”. It may have been made: press Create again, and if it was, Dispatch says that title is taken and the list shows the document.`;
+}
+
 /** Who holds a new document: an issue, or a project. An agent's conversation holds files only. */
 export type DocumentOwner = { issue: string } | { project: string };
 
@@ -103,16 +109,20 @@ export function CreateDocument({
   };
   // The artifact that holds the title is named for what it is: the list holds the owner's images
   // and files beside its documents, and the write refuses their names too. A create the reader
-  // stopped is no verdict of Dispatch's: it may have reached it, and a press of Create again asks
-  // under the same key. The write is `inline`, so the shell lets go of it once stopped and this
-  // form is the only place the reader learns what became of it, in the stopped write's own words,
-  // which say what a retry of it does.
+  // stopped is no verdict of Dispatch's, and this form offers no Retry of it: a press of Create
+  // again is a press the person made anew, under a key of its own whatever title it carries
+  // (`useKeyedWrite`). Where the stopped create had reached Dispatch, that press names a document
+  // that exists now, and Dispatch refuses it - a write with no content makes no document - so the
+  // person reads that refusal here and the list shows the document. The write is `inline`, so
+  // the shell lets go of it once stopped and this form is the only place the reader learns what
+  // became of it. The stopped write's own words promise a Retry under its key, which this form
+  // does not make, so it says what pressing Create again does instead.
   const problem =
     takenBy !== undefined
       ? `${takenBy.kind === "doc" ? "A document" : "An artifact"} on ${"issue" in owner ? "this issue" : "this project"} already holds that title: ${takenBy.name}.`
       : create.isError
         ? create.error instanceof SendStoppedError
-          ? create.error.message
+          ? stoppedCreate(create.variables ?? "")
           : apiErrorMessage(create.error, "Could not create the document.")
         : undefined;
 
