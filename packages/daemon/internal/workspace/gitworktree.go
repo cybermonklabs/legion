@@ -593,11 +593,13 @@ func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, lo
 	// Before that first write the shared clone's .git and .git/worktrees are each refused when
 	// they are a symlink: git never creates either as one (gitWorktreeEntries refuses them too),
 	// and every directory and file below is made through them by path, so a link at either would
-	// have it all made wherever the link points. The comparison above already refuses a link that
-	// was there when it ran; this check is here, after jj ran, because jj's run is a window a role
-	// can swap either one in (TestRestoreGitWorktreeRefusesAGitDirectorySymlinkedAway). What it
-	// leaves open is a swap between this check and MkdirTemp, two syscalls, which no test can land
-	// in deterministically.
+	// have it all made wherever the link points. The comparison above refuses a link at
+	// .git/worktrees that was there when it ran, but never one at .git: both of its sides are
+	// resolved through .git, so a link there moves both alike. This check is what refuses a link at
+	// .git, whether it was there before the restore or swapped in while jj ran, a window a role can
+	// use (TestRestoreGitWorktreeRefusesAGitDirectorySymlinkedAway). What it leaves open runs from
+	// this check to the last open of the temporary entry by path — MkdirTemp, the chmod, the three
+	// creates, git read-tree and the rename — which no test can land in deterministically.
 	for _, path := range []string{cloneGit, worktrees} {
 		if info, err := os.Lstat(path); err == nil && info.Mode()&fs.ModeSymlink != 0 {
 			return fmt.Errorf("refusing to restore git worktree %s: %s is a symlink, which git never creates", target, path)
