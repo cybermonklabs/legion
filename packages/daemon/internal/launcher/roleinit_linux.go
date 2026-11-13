@@ -86,12 +86,25 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	if err := privateMounts(); err != nil {
 		return fmt.Errorf("hold this role's mounts to itself: %w", err)
 	}
-	// A generation that failed midway left its stage's empty stand-ins behind; their mounts went
-	// with its namespace, so nothing under the stage is a mount here.
+	// A generation that failed midway left its stage's empty stand-ins behind, whose mounts went
+	// with its namespace, so nothing under the stage is a mount here; every other generation left
+	// the stage itself, empty (carryOver).
 	if err := os.RemoveAll(stage); err != nil {
 		return fmt.Errorf("clear the role's stage: %w", err)
 	}
-	for _, dir := range []string{filepath.Join(homes, "upper"), work, filepath.Join(homes, "tmp"), filepath.Join(homes, "var-tmp"), stage} {
+	// The role's own directory of every path the list binds from under the role-homes directory
+	// (RoleCover.replaced), its temporary directories among them, so a path added to that list
+	// is given its directory here with no edit of this one.
+	dirs := []string{filepath.Join(homes, "upper"), work, stage}
+	for _, replaced := range cfg.replaced() {
+		if replaced.kind != roleBound {
+			continue
+		}
+		if own := replaced.from(role, homes); strings.HasPrefix(own, homes+string(filepath.Separator)) {
+			dirs = append(dirs, own)
+		}
+	}
+	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("make the role's own %s directory: %w", filepath.Base(dir), err)
 		}
@@ -120,7 +133,6 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	// home; its own temporary directories, on the pod's disk as a container filesystem is; its
 	// own small memory filesystems where the image has one for the whole container; its own
 	// pseudo-terminals and message queues; the covers; and its own /proc.
-	cleared := false
 	return eachReplaced(cfg.RoleCover, func(replaced roleReplacement, path string) error {
 		place := func(mount func() error) error {
 			if !replaced.carried {
@@ -154,14 +166,7 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 			// The covers are the last mounts made from under them: every role's directories go
 			// behind an empty filesystem, this role's launcher token with them, and so does the
 			// container's view of the home's volumes, which the role now sees at their own paths
-			// alone. The stage's stand-ins are cleared first, since the stage lives under the
-			// roles directory this hides.
-			if !cleared {
-				cleared = true
-				if err := os.RemoveAll(stage); err != nil {
-					return fmt.Errorf("clear the role's stage: %w", err)
-				}
-			}
+			// alone.
 			if err := mountTmpfs(path, "size=1m,mode=0755"); err != nil {
 				return fmt.Errorf("cover %s: %w", path, err)
 			}
@@ -416,6 +421,10 @@ func copyRegular(source, target string, perm fs.FileMode) error {
 // writes anywhere else under dir is its own: no sibling role and nothing in the container sees it.
 // The home is not carried this way (privateHome): an overlay's lower layer may have no mount under
 // it at all.
+//
+// The directory it holds the mounts aside in is its own, and it removes it once every stand-in in
+// it is let go of, so it leaves nothing on the stage whichever entry of the list comes after it:
+// the stage is under the roles directory, which a cover goes over (RoleCover.replaced).
 func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error {
 	root, carried, err := mountsUnder(dir)
 	if err != nil {
@@ -451,6 +460,9 @@ func carryOver(cfg RoleInitConfig, dir, stage string, place func() error) error 
 		if err := unix.Unmount(aside, unix.MNT_DETACH); err != nil {
 			return fmt.Errorf("let go of %s's stand-in: %w", mount, err)
 		}
+	}
+	if err := os.RemoveAll(held); err != nil {
+		return fmt.Errorf("clear the stand-ins of %s: %w", dir, err)
 	}
 	return nil
 }

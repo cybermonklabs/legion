@@ -116,15 +116,6 @@ func (c RoleCover) flags() []string {
 	return argv
 }
 
-// dirs is every directory the cover names, in the order the flags name them.
-func (c RoleCover) dirs() []string {
-	dirs := make([]string, 0, len(roleCoverFlags))
-	for _, named := range roleCoverFlags {
-		dirs = append(dirs, *named.at(&c))
-	}
-	return dirs
-}
-
 // validate refuses a cover a pod's layout never gives, naming the command it reached: a relative
 // directory, which neither namespace could mount over, and a home mounts directory at or under
 // the home, which would leave the overlay's lower layer carrying a mount.
@@ -269,6 +260,20 @@ func eachReplaced(cover RoleCover, replace func(roleReplacement, string) error) 
 	return nil
 }
 
+// requiredUnder is every path of the list (replaced) under root that the image must have: each
+// directory a layout rooted at root holds for a namespace of the cover's to be built over it, since
+// the walk refuses a required path it cannot find (eachReplaced). The probe lays its own out with
+// it (CheckRoleNamespaces), and so does a test that builds a layout of its own.
+func (c RoleCover) requiredUnder(root string) []string {
+	var paths []string
+	for _, replaced := range c.replaced() {
+		if !replaced.optional && strings.HasPrefix(replaced.path, root+string(filepath.Separator)) {
+			paths = append(paths, replaced.path)
+		}
+	}
+	return paths
+}
+
 // RoleInitConfig is `legion launcher role-init`'s resolved flags: the cover its namespace is built
 // over, the role whose namespaces this process is the init of and the generation it runs, the pipe
 // it writes the shim's own wait status to, and the shim argv it runs as its child.
@@ -363,12 +368,7 @@ func CheckRoleNamespaces(dir string, shim ...string) error {
 	// Every path of the probe's own layout a role's namespace replaces, which the image lays out
 	// for a role and dir holds for the probe: a path added to that list is made here too. The
 	// image's own paths, which lie outside dir, are the machine's.
-	var dirs []string
-	for _, replaced := range cfg.replaced() {
-		if !replaced.optional && strings.HasPrefix(replaced.path, dir+string(filepath.Separator)) {
-			dirs = append(dirs, replaced.path)
-		}
-	}
+	dirs := cfg.requiredUnder(dir)
 	for _, name := range []string{RoleGHDir, RolePrivateDir, RoleStateDir} {
 		dirs = append(dirs, filepath.Join(cfg.RolesDir, role, name))
 	}

@@ -118,10 +118,10 @@ type trimFixture struct {
 	// volumedelete.go): the pod's per-role root, the directory the roles container mounts the
 	// home's volumes under, the home and the fixed root. They sit under one directory of the
 	// case's own, where the pod has /var/run/legion/roles, /var/run/legion/home, /home/legion and
-	// /var/run/legion, so that one link can aim a sweep at every one of them at once
-	// (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles). A case of
-	// this file deletes in its own process and covers none of them, so each is an empty
-	// directory: the cases that drive the covers are volumedelete_test.go's.
+	// /var/run/legion, and a case that drives the covers lays the image's own paths out beside
+	// them (useRoleSystemRoot). A case of this file deletes in its own process and covers none of
+	// them, so each is an empty directory: the cases that drive the covers are
+	// volumedelete_test.go's.
 	coverRoot string
 	cover     RoleCover
 
@@ -180,15 +180,12 @@ func coverUnder(t *testing.T, root string) RoleCover {
 	t.Helper()
 	var cover RoleCover
 	for _, named := range roleCoverFlags {
-		*named.at(&cover) = filepath.Join(root, named.flag)
-	}
-	for _, dir := range cover.dirs() {
+		dir := filepath.Join(root, named.flag)
+		*named.at(&cover) = dir
 		mkdirFixture(t, dir)
 	}
-	for _, replaced := range cover.replaced() {
-		if !replaced.optional && strings.HasPrefix(replaced.path, root+string(filepath.Separator)) {
-			mkdirFixture(t, replaced.path)
-		}
+	for _, path := range cover.requiredUnder(root) {
+		mkdirFixture(t, path)
 	}
 	return cover
 }
