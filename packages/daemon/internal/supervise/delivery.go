@@ -309,13 +309,6 @@ func pendingID(p *Delivery) string {
 // replaces the owed one). The newer task takes its place: it is work for this claim, queued
 // since, and R2 has the newer of the two go.
 //
-// An update round's own ask (updateRoundOf) takes no task's place, taken or owed: that ask exists
-// to catch the worker between turns, with its work pushed, so it waits for the turn in flight to
-// end rather than taking its place, and its post is re-made at the next tick. askForUpdate holds
-// that question back while the claim holds a task at all, whichever task that is, and the reason
-// it does is written there (table.go); the refusal here is what answers an ask that reaches this
-// far. Only the work of the issue displaces work the worker has finished with.
-//
 // The replaced task's row ends as any other retirement ends it, and the question a restart armed
 // for that task is answered in the same step, which is the one path both places a task replaces
 // an owed one take (replaceOwedTask): the delete releases what that task held of a person's
@@ -354,13 +347,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		if (id != "" && pending.ID == id && pending.Task == task) || queued {
 			return nil
 		}
-		_, asksUpdate := updateRoundOf(id)
 		switch {
-		case asksUpdate:
-			if err := m.sendPending(ctx); err != nil {
-				return err
-			}
-			return &RefusedError{State: m.claim.State, Request: "deliver", Err: ErrDeliveryPending}
 		case pending.ConfirmedAt.IsZero():
 			owed, attempt := pending.ID, pending.ProviderErrorRetries
 			replaced, err := m.replaceOwedTask(ctx)

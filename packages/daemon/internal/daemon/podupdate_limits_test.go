@@ -683,27 +683,29 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 
 	asked := map[string]time.Time{}
-	for i, key := range keys {
+	for i := range keys {
 		if i > 0 {
 			rig.clock.advance(time.Minute)
 		}
 		rig.tick()
 		rig.awaitRounds(fmt.Sprintf("sweep %d at one round a minute", i+1), keys[:i+1]...)
-		opened := rig.claimOf(key, claim.RoleArchitect)
-		if opened.UpdateTaskedAt == nil {
-			t.Fatalf("%s holds the round with no ask recorded: %+v", key, opened)
+		// The sweep asks a round's roles at the tick after the one that opened it, once the
+		// claims record the round, and never again.
+		for _, prev := range keys[:i] {
+			c := rig.claimOf(prev, claim.RoleArchitect)
+			if c.UpdateTaskedAt == nil {
+				t.Fatalf("%s holds the round with no ask recorded a sweep after it opened: %+v", prev, c)
+			}
+			if at, ok := asked[prev]; ok && !c.UpdateTaskedAt.Equal(at) {
+				t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", prev, c.UpdateTaskedAt, at)
+			}
+			asked[prev] = *c.UpdateTaskedAt
 		}
-		asked[key] = *opened.UpdateTaskedAt
 	}
 
 	for _, key := range keys {
-		held := rig.claimOf(key, claim.RoleArchitect)
-		if held.UpdateRound != rig.round(key) {
+		if held := rig.claimOf(key, claim.RoleArchitect); held.UpdateRound != rig.round(key) {
 			t.Errorf("%s records round %q after the five sweeps, want its own open round: the limit ends none", key, held.UpdateRound)
-		}
-		if held.UpdateTaskedAt == nil || !held.UpdateTaskedAt.Equal(asked[key]) {
-			t.Errorf("%s was asked at %v, want the ask it was opened with at %v: the limit asks no open round again",
-				key, held.UpdateTaskedAt, asked[key])
 		}
 	}
 

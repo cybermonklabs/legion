@@ -5,14 +5,13 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// testUpdateRound is a pod round's identity, as the daemon's sweep writes it and as the update
-// task names it to the worker.
+// testUpdateRound is a pod round's identity, as the daemon's sweep writes it and as the round's
+// ask names it to the worker.
 const testUpdateRound = "pod:9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22"
 
 // readyForUpdate posts the worker's answer as its plugin does.
@@ -42,10 +41,7 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("ready: %v", err)
 	}
-	round := supervise.PodUpdateOpen{
-		Claim: token, Round: testUpdateRound, Reasons: "image",
-		Task: supervise.UpdateTask(testUpdateRound, "image", time.Now().Add(30*time.Minute)),
-	}
+	round := supervise.PodUpdateOpen{Claim: token, Round: testUpdateRound, Reasons: "image"}
 	if err := machine.Handle(h.ctx, round); err != nil {
 		t.Fatalf("open the update round: %v", err)
 	}
@@ -67,7 +63,10 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 	wantRefusal(t, h.readyForUpdate(foreign), http.StatusConflict,
 		"ready_for_update refused: the answer names an update round this claim is not in. "+
 			"It answers \""+foreign.Round+"\", and this claim is in \""+testUpdateRound+"\". "+
-			"Do not answer that round in this turn. End your turn. The daemon then sends you the task of that round. Answer it after you read that task")
+			"The daemon asks each role one time in each update round. "+
+			"The daemon sends that ask as a message on the role's own topic. "+
+			"Answer with the round that the newest such message names. "+
+			"If no such message names round \""+testUpdateRound+"\", the daemon has nothing to ask you now. End your turn")
 	if c := machine.Claim(); c.UpdateSignalledAt != nil || c.UpdateHead != "" {
 		t.Fatalf("claim after the answer for another round = %+v, want nothing of it recorded", c)
 	}
@@ -109,9 +108,7 @@ func TestReadyForUpdateForAPluginRoundThisBootEndedIsRefusedAndRecordsNothing(t 
 	}
 	// The round an earlier daemon opened over this claim, and the end this boot posts for it.
 	round := supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion)
-	if err := machine.Handle(h.ctx, supervise.PodUpdateOpen{
-		Claim: token, Round: round, Reasons: "plugin", Task: supervise.UpdateTask(round, "plugin", time.Now().Add(30*time.Minute)),
-	}); err != nil {
+	if err := machine.Handle(h.ctx, supervise.PodUpdateOpen{Claim: token, Round: round, Reasons: "plugin"}); err != nil {
 		t.Fatalf("open the plugin round: %v", err)
 	}
 	if err := machine.Handle(h.ctx, supervise.PodUpdateEnded{Claim: token, Round: round}); err != nil {

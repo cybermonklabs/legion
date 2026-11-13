@@ -410,10 +410,10 @@ type UpdateStalled struct {
 // pod round lists no `failed` claim, since it does not wait for one), and Answered for a claim
 // that has already answered this round.
 //
-// The contract the claim's plugin records is not here. A plugin with no ready_for_update op
-// answers by ending the turn its update task started (supervise's askForUpdate and turnEnded),
-// so such a claim is one the round is waiting on like any other, and the controller has nothing
-// of its own to do about it.
+// The contract the claim's plugin records is not here. A plugin with no ready_for_update op is
+// asked like any other, on its role's own topic (UpdateAsk), and the round ends at its bound
+// whether or not it answers, so such a claim is one the round is waiting on like any other, and
+// the controller has nothing of its own to do about it.
 //
 // Answered is what tells the controller which claims are its to prompt. Its playbook publishes
 // the update task to a claim that has not answered, and that publish starts a turn, which takes

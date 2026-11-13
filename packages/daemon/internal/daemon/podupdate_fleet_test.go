@@ -156,11 +156,10 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 	sup := newSupervisor(ctx, st, podUpdateProject, t.TempDir(), quietLogger())
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
-		Limits:          supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
-		Timeouts:        supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
-		PluginContract:  api.DaemonAPIVersion,
-		PodUpdateRetask: podUpdateRetask,
-		RefreshGate:     supervise.NewRefreshGate(0),
+		Limits:         supervise.Limits{LaunchFailures: 2, PromptFailures: 2, PromptRetires: 2},
+		Timeouts:       supervise.Timeouts{Boot: time.Second, RegistrationIntervals: 2, RPC: time.Second, Probe: time.Second, Stop: time.Second, LaunchBackoff: time.Millisecond},
+		PluginContract: api.DaemonAPIVersion,
+		RefreshGate:    supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
@@ -301,14 +300,14 @@ func (r *fleetRig) round(issue string) string {
 	return supervise.PodRound(r.pods[issue])
 }
 
-// awaitRound waits for the round of issue to be recorded on role's claim with the task it sends,
-// which the sweep's posts reach through each machine's own queue.
+// awaitRound waits for the round of issue to be recorded on role's claim, which the sweep's posts
+// reach through each machine's own queue. The sweep's ask goes at a later tick
+// (supervision.askRound), so this waits for no ask.
 func (r *fleetRig) awaitRound(issue string, role claim.Role) supervise.Claim {
 	r.t.Helper()
 	want := r.round(issue)
 	testwait.Eventually(r.t, fmt.Sprintf("%s's %s to hold the update round %s", issue, role, want), func() bool {
-		c := r.claimOf(issue, role)
-		return c.UpdateRound == want && c.UpdateTaskedAt != nil
+		return r.claimOf(issue, role).UpdateRound == want
 	})
 	return r.claimOf(issue, role)
 }
@@ -550,10 +549,10 @@ func TestPodUpdateReplacesEachIssuesPodOnlyAfterItsOwnWorkersAnswer(t *testing.T
 	} {
 		got := rig.awaitRound(c.issue, c.role)
 		if got.UpdateReasons != fleetDrift {
-			t.Errorf("%s's %s was tasked for %q, want the one template change %q", c.issue, c.role, got.UpdateReasons, fleetDrift)
+			t.Errorf("%s's %s was asked for %q, want the one template change %q", c.issue, c.role, got.UpdateReasons, fleetDrift)
 		}
-		if got.Pending == nil || !strings.HasPrefix(got.Pending.ID, "update:"+rig.round(c.issue)+":") {
-			t.Errorf("%s's %s holds %+v, want its own round's task", c.issue, c.role, got.Pending)
+		if got.Pending != nil {
+			t.Errorf("%s's %s holds %+v, want no task: the round's ask is a message on the role's topic", c.issue, c.role, got.Pending)
 		}
 	}
 	if a, b := rig.round(fleetIssueA), rig.round(fleetIssueB); a == b {

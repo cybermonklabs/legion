@@ -289,54 +289,13 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 	}
 }
 
-// An update round's question waits behind the task a provider error took back, as every other
-// task of the claim waits behind a task on it. The round costs the wait: the slot frees when a
-// turn of the owed task ends with no provider error, and the question goes then. Going first
-// would buy the round nothing in the outage that holds it up — the question needs a model turn
-// of its own, and the provider failing this claim's turns would fail that one the same way
-// (dispatch://INFRA-956 R2, askForUpdate).
-func TestAnUpdateRoundsQuestionWaitsBehindTheTaskTheLadderKept(t *testing.T) {
-	h := workingClaim(t)
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
-	owed := h.pending()
-
-	h.openUpdate(testRound, testReasons)
-
-	p := h.pending()
-	if p.ID != owed.ID || p.Task != owed.Task {
-		t.Fatalf("pending %+v, want the task the ladder kept, %s: the question waits behind it", p, owed.ID)
-	}
-	if p.ProviderErrorRetries != owed.ProviderErrorRetries {
-		t.Errorf("the owed task counts %d sends, want the %d its ladder had", p.ProviderErrorRetries, owed.ProviderErrorRetries)
-	}
-	// Holding the question back leaves the ask's own clock unset, so the round asks again at
-	// the next tick.
-	if tasked := h.claim().UpdateTaskedAt; tasked != nil {
-		t.Errorf("the round recorded an ask at %v, want none: the question was not asked", *tasked)
-	}
-	h.wantPrompts(1)
-
-	// The ladder's wait is over: the owed task goes, and the turn it starts ends with no
-	// provider error, which retires it and frees the slot.
-	if message := h.climbs(1, 30*time.Second); !strings.HasSuffix(message, providerErrorTaskText) {
-		t.Fatalf("the prompt the ladder sent is %q, want the task it kept", message)
-	}
-	h.mustQuiet(StreamTurnEnd{Claim: testToken})
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.pending().ID, AgentInvoked: true})
-
-	question := h.wantPrompts(3)[2]
-	if !asksRound(question.DeliveryID, testRound) {
-		t.Errorf("the prompt after the owed task's turn = %+v, want the round's question", question)
-	}
-}
-
-// A question of a round another round has replaced is dropped rather than sent again. The ask
-// carries the round it asked in its delivery id and keeps it across the take-back
-// (rotateTaskID), so the question whose turn ended in a provider error comes back naming a
-// round whose pod this daemon has already replaced: no session of this claim can answer it,
-// and the ladder's own send is where the claim reads that (sendPending). Sending it would cost
-// a model turn and leave the question of the round the claim is in now behind it; the drop
-// frees the slot, and the next tick asks that round.
+// A question of a round another round has replaced is dropped rather than sent again. The ask —
+// one an older daemon queued as a task — carries the round it asked in its delivery id and keeps
+// it across the take-back (rotateTaskID), so the question whose turn ended in a provider error
+// comes back naming a round whose pod this daemon has already replaced: no session of this claim
+// can answer it, and the ladder's own send is where the claim reads that (sendPending). Sending
+// it would cost a model turn and leave every later task of the claim behind it; the drop frees
+// the slot, and the sweep publishes the ask of the round the claim is in now to the role's topic.
 func TestAQuestionOfARoundAnotherReplacedIsDroppedRatherThanSentAgain(t *testing.T) {
 	h := newBareHarness(t)
 	c := queuedClaim()
@@ -346,6 +305,7 @@ func TestAQuestionOfARoundAnotherReplacedIsDroppedRatherThanSentAgain(t *testing
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
+	h.leftAsk(testRound)
 	h.must(StreamTurnStart{Claim: testToken})
 	later := PodRound(testOtherPod)
 	h.openUpdate(later, testReasons)
@@ -369,9 +329,9 @@ func TestAQuestionOfARoundAnotherReplacedIsDroppedRatherThanSentAgain(t *testing
 
 	h.openUpdate(later, testReasons)
 
-	question := h.wantPrompts(2)[1]
-	if !asksRound(question.DeliveryID, later) {
-		t.Errorf("the prompt after the drop = %+v, want the question of the round the claim is in, %s", question, later)
+	h.wantPrompts(1)
+	if p := h.claim().Pending; p != nil {
+		t.Errorf("pending after the sweep's next post = %+v, want nothing: the machine queues no ask of %s", *p, later)
 	}
 }
 
@@ -597,12 +557,12 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 	}
 }
 
-// What the claim keeps is its own work, not the round's question. A round's ask whose turn
-// ended in a provider error is a question the claim owes, waiting on the ladder; the stop
-// retires the claim and the round goes with it (clearUpdate), so nothing of this claim will
-// ever answer that question, and the retry's session would be handed it first — a worker asked
-// to push its work for a pod replacement that has already happened. It is retired with the
-// round (dropsUpdateTask).
+// What the claim keeps is its own work, not the round's question. A round's ask an older daemon
+// queued as a task, whose turn ended in a provider error, is a question the claim owes, waiting
+// on the ladder; the stop retires the claim and the round goes with it (clearUpdate), so nothing
+// of this claim will ever answer that question, and the retry's session would be handed it first
+// — a worker asked to push its work for a pod replacement that has already happened. It is
+// retired with the round (dropsUpdateTask).
 //
 // The stop is one write of the retired claim, carrying the delete of that question: the round
 // goes before the write rather than after it, so no store ever holds a retired claim that
@@ -616,6 +576,7 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
+	h.leftAsk(testRound)
 	h.must(StreamTurnStart{Claim: testToken})
 
 	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})

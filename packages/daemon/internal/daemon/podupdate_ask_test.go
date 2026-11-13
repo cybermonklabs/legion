@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -169,5 +170,68 @@ func TestPodUpdateAskKeepsItsRetryOnEveryOtherFailure(t *testing.T) {
 	}
 	if published := loggedLines(t, logs.String(), `"msg":"`+askPublishedLine+`"`); len(published) != 0 {
 		t.Fatalf("the failed asks logged %v, want no published line", published)
+	}
+}
+
+// wakeCountingTrees is the runner's tree store with every pod wake counted: TakePodWake is the
+// step that brings a released pod back for a delivery (wakeForDelivery), and every other call
+// goes to the store it wraps.
+type wakeCountingTrees struct {
+	outboxTrees
+	mu    sync.Mutex
+	takes int
+}
+
+func (w *wakeCountingTrees) TakePodWake(ctx context.Context, project, issue string, role claim.Role, kind string, at time.Time) (bool, error) {
+	w.mu.Lock()
+	w.takes++
+	w.mu.Unlock()
+	return w.outboxTrees.TakePodWake(ctx, project, issue, role, kind, at)
+}
+
+func (w *wakeCountingTrees) taken() int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.takes
+}
+
+// The ask wakes nothing (dispatch://INFRA-2981 R1). A role whose pod an idle release took holds
+// no live session, so its topic answers notify.ErrNoHolder and the row finishes there: no pod
+// wake is taken, no process is resumed, and the claim stays released. The round ends at its
+// bound whether or not that role answers. The negative control is c-one-channel's: an executor
+// that called wakeForDelivery first, as phaseEnded does, takes a wake and resumes the claim here.
+func TestPodUpdateAskWakesNoReleasedPod(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	rig.drain(t)
+	if got := rig.machine.Claim(); !got.Released() {
+		t.Fatalf("the claim after the release = %s by %s, want it released", got.State, got.SuspendedBy)
+	}
+	if err := rig.machine.Handle(ctx, supervise.PodUpdateOpen{Claim: rig.token, Round: askedRound, Reasons: "image"}); err != nil {
+		t.Fatalf("record the round on the released claim: %v", err)
+	}
+	trees := &wakeCountingTrees{outboxTrees: rig.runner.trees}
+	rig.runner.trees = trees
+	rig.runner.notices = &outboxPublisher{err: fmt.Errorf("publish to the implementer's topic: %w", notify.ErrNoHolder)}
+	resumes := len(rig.rt.CallsOf("Resume"))
+
+	row := mustOutboxRow(t, rig.issue.Key, record.UpdateAsk{Role: claim.RoleImplementer, Round: askedRound, Pod: askedPod, Text: askedText}, time.Now())
+	row.ID = 81
+	if err := rig.runner.execute(ctx, row); err != nil {
+		t.Fatalf("the ask to a released role = %v, want the row finished", err)
+	}
+
+	if n := trees.taken(); n != 0 {
+		t.Errorf("the ask took %d pod wakes, want none: a released pod is not brought back to be asked", n)
+	}
+	if n := len(rig.rt.CallsOf("Resume")) - resumes; n != 0 {
+		t.Errorf("the ask resumed %d processes, want none", n)
+	}
+	if got := rig.machine.Claim(); !got.Released() {
+		t.Errorf("the claim after the ask = %s by %s, want it still released", got.State, got.SuspendedBy)
+	}
+	if _, open, err := rig.st.OpenPodResume(ctx, "legion", rig.issue.Key, claim.RoleImplementer); err != nil || open {
+		t.Errorf("the role's open resume after the ask = %t, %v; want none", open, err)
 	}
 }

@@ -8,12 +8,12 @@ import (
 
 // PodUpdateContract is the daemon contract that introduced ready_for_update (api/version.go's
 // 46), the op a worker answers the update round over its pod with. A claim whose registration
-// declared a contract below it has no op to answer that round's task with: the op list is a
+// declared a contract below it has no op to answer that round's ask with: the op list is a
 // closed enum compiled into the plugin, and a Claude Code role's plugin is its image's own,
-// never installed. Such a claim is asked all the same, and the end of the turn its task starts
-// is its answer (askForUpdate, answerByTurnEnd) — as it is for every other claim that ends that
-// turn without calling, since a plugin at this contract can be built without the op too — so a
-// round over it completes and its pod is replaced like any other.
+// never installed. Such a claim is asked all the same, on its role's own Envoy topic
+// (internal/daemon's openPodUpdate), and the round over it ends at its bound whether or not it
+// answers, so its pod is replaced like any other. An ask an older daemon queued as a task is
+// answered by the end of the turn it starts (answerByTurnEnd), at any contract.
 //
 // The stale-plugin lane reads it no longer. That lane asks its worker nothing: a stale claim is
 // relaunched onto this daemon's plugin at one paced wake (refreshPlugin, relaunchStale), which

@@ -250,9 +250,8 @@ func (m *Machine) compactionLostProcess() {
 // compactStart takes the claim for a compaction: it is working until the compaction ends
 // (compactEnded), and that is the whole of how the rest of the daemon knows not to disturb it.
 // Working is the state every one of those readers already asks about — sendPending hands a claim
-// that is not ready or idle nothing, so the ladder's re-send and any newer task wait;
-// askForUpdate sends the task the claim holds rather than its own question; the idle rule holds
-// the pod (workflow's idleStateReleasable); a fresh session is refused in a turn (api's
+// that is not ready or idle nothing, so the ladder's re-send and any newer task wait; the idle
+// rule holds the pod (workflow's idleStateReleasable); a fresh session is refused in a turn (api's
 // freshSession); and this row is an ignore in working, so a second compaction is refused — and
 // the claim is in no turn, so nothing is lost by saying the agent is busy in the one word the
 // daemon already has for it.

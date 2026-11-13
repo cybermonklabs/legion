@@ -359,9 +359,10 @@ type Claim struct {
 	// text and the operator's reading of why this pod is being replaced.
 	UpdateReasons string
 	// UpdateOpenedAt is the round's own clock — when the round was opened on this claim — and
-	// UpdateTaskedAt each task send's, so a re-task of a worker that never answered never
-	// postpones the notice the round is measured from. UpdateSignalledAt is when the worker
-	// answered ready_for_update, nil until it has.
+	// UpdateTaskedAt is when the daemon's sweep enqueued the round's ask to this claim's role
+	// (record.UpdateAsk, Machine.PodUpdateAsked), nil until it has: the mark that makes the
+	// sweep publish one ask per claim per round. UpdateSignalledAt is when the worker answered
+	// ready_for_update, nil until it has.
 	UpdateOpenedAt    *time.Time
 	UpdateTaskedAt    *time.Time
 	UpdateSignalledAt *time.Time
@@ -815,8 +816,8 @@ type Deps struct {
 	// and never charged for its stale registration (staleRegistration): the relaunch would keep
 	// the pod, bring the same plugin back and charge the claim toward failed, and a failed claim
 	// cannot push its work. Such a claim is left running, and the update round over its pod is
-	// what carries it: it is asked like any other worker and answers by ending the turn the task
-	// starts (askForUpdate, answerByTurnEnd), and the replacement brings it up on a new image
+	// what carries it: its role is asked like any other, on its own Envoy topic
+	// (internal/daemon's openPodUpdate), and the replacement brings it up on a new image
 	// (internal/daemon's refreshStalePlugins).
 	NoPluginInstall func(c Claim) bool
 	// TaskConfirmed is told of each claim whose pending delivery a turn has just confirmed: the
@@ -855,11 +856,6 @@ type Deps struct {
 	// tells no one — a daemon with no workflow has no owner to tell. It is called inside the
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)
-	// PodUpdateRetask is how long after an update task was sent an update round asks a claim that
-	// has not answered again (openPodUpdate). The daemon sets none, since no legion.yaml key
-	// carries it any more. The re-task clock runs from each send (Claim.UpdateTaskedAt), so asking
-	// again never postpones the round's own clock. Zero takes defaultPodUpdateRetask.
-	PodUpdateRetask time.Duration
 	// ProviderErrorRunReached is told of a claim whose turns have ended in a provider error
 	// providerErrorRunTold times in a row, once per run, with the reason the project's controller
 	// is given: the model, and the HTTP status the provider answered where it answered one, in
@@ -899,19 +895,6 @@ func (d Deps) check() error {
 		}
 	}
 	return nil
-}
-
-// defaultPodUpdateRetask is the re-task bound a daemon that names none takes: an update round asks
-// a claim that has not answered again an hour after it last asked. It is a fallback rather than a
-// check, so a Deps built without the key still opens rounds that make progress.
-const defaultPodUpdateRetask = time.Hour
-
-// podUpdateRetask is Deps.PodUpdateRetask, or defaultPodUpdateRetask when it names none.
-func (d Deps) podUpdateRetask() time.Duration {
-	if d.PodUpdateRetask <= 0 {
-		return defaultPodUpdateRetask
-	}
-	return d.PodUpdateRetask
 }
 
 // defaultClaimWrite is the claim-write bound a Deps that names none takes, which in production is
@@ -1408,6 +1391,31 @@ func (m *Machine) PodUpdateTold(ctx context.Context, round string) (bool, error)
 	return true, nil
 }
 
+// PodUpdateAsked marks that the daemon's sweep enqueued this claim's ask of its open update round
+// (record.UpdateAsk), so the sweep publishes one ask per claim per round however many ticks find
+// the round open (internal/daemon's openPodUpdate). It is no event, as PodUpdateTold is none: the
+// sweep is what decides the ask goes, and the mark is bookkeeping of that decision.
+//
+// It stamps nothing and reports false when the claim is no longer in round — the round ended, or
+// another opened — or when this round's ask is already marked: both are decisions already taken,
+// not faults. A write the store refuses is returned with false, the stamp is taken back here, and
+// the sweep publishes the ask again at the next tick rather than lose it, as PodUpdateTold does
+// for the notice.
+func (m *Machine) PodUpdateAsked(ctx context.Context, round string) (bool, error) {
+	m.mu.Lock()
+	defer m.unlock()
+	if m.claim.UpdateRound != round || m.claim.UpdateTaskedAt != nil {
+		return false, nil
+	}
+	asked := m.deps.Clock.Now()
+	m.claim.UpdateTaskedAt = &asked
+	if err := m.putClaim(ctx); err != nil {
+		m.claim.UpdateTaskedAt = nil
+		return false, err
+	}
+	return true, nil
+}
+
 // ReleasedLaunch is whether a stored claim is an uncertain launch ReleaseUncertainLaunch released
 // and no launch then recorded: queued at a generation above zero, with no process. A claim is
 // created queued at generation zero, and only a release makes one queued again after a launch, so
@@ -1699,10 +1707,10 @@ func (m *Machine) stoppingProcess() func() {
 // every locked section that can change the wake, the credit or the intent ends in unlock, and a
 // section that takes mu without it reads the claim or counts goroutines and changes none of the
 // three. The sections that defer it are Handle, which every event and every timer of this package
-// comes through, ReleaseUncertainLaunch, PodUpdateTold, StartedBy and Retree; the sections that
-// take mu without it are Claim, OnDurableState, Wait, compaction and the two goroutine tails in
-// delivery.go and secrets.go. It is that rule a section added later has to keep, rather than this
-// list of the sections there are now.
+// comes through, ReleaseUncertainLaunch, PodUpdateTold, PodUpdateAsked, StartedBy and Retree; the
+// sections that take mu without it are Claim, OnDurableState, Wait, compaction and the two
+// goroutine tails in delivery.go and secrets.go. It is that rule a section added later has to
+// keep, rather than this list of the sections there are now.
 func (m *Machine) unlock() {
 	m.endRefreshLane()
 	m.publish()
@@ -2262,10 +2270,11 @@ func (m *Machine) launchWaits() bool {
 // whole of what any reader of that part needs beside the answer it already records
 // (Claim.LeftPodRound, the sweep's report of what the pod took with it).
 //
-// It is written once. A claim is asked nothing of a round it has left (askForUpdate), so it can
-// answer nothing between one launch and the next, and the first launch out of the round's own
-// pod is the one that says what was lost. Only the round's end clears it (clearUpdate), so a
-// later relaunch, a suspension and a restart each leave it exactly as it is.
+// It is written once. A claim is asked nothing of a round it has left (internal/daemon's
+// openPodUpdate publishes no ask to it), so it can answer nothing between one launch and the
+// next, and the first launch out of the round's own pod is the one that says what was lost. Only
+// the round's end clears it (clearUpdate), so a later relaunch, a suspension and a restart each
+// leave it exactly as it is.
 //
 // A process in no pod leaves no pod round: a tmux pane runs outside one, and a claim in a plugin
 // round or in no round at all has no pod round to leave.
