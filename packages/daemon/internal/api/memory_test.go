@@ -27,7 +27,7 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // line's own fields beside that place, every issue of it that is not working now carries its
 // answer under `why`, and the two issues whose current phase names a phase worker role carry the
 // entry that role stands on and the entry it was given, so one state proves fourteen of the
-// fifteen downgrades and that they compose; it stands no member of the line of the kind 97
+// fifteen downgrades and that they compose; it stands no member of the line of the kind 100
 // added, whose downgrade waiting_on_issue_test.go proves.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
@@ -117,9 +117,9 @@ var (
 // beside its place and its length, no claim view's `leakCheckCause` and neither entry number; a
 // pod at 85 or 86 the answers and the line's own fields too, and still no `leakCheckCause` and
 // neither entry number; a pod from 87 to 93 the cause too, and not the entry numbers; a pod from
-// 94 to 96 the entry numbers too; a pod below 46 none of the fifteen; and a pod at 97, this
-// daemon's declared contract — the fixture stands no member of the line of the one kind 97
-// added, so 97's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod whose
+// 94 to 99 the entry numbers too; a pod below 46 none of the fifteen; and a pod at 100, this
+// daemon's declared contract — the fixture stands no member of the line of the one kind 100
+// added, so 100's strip finds nothing here (waiting_on_issue_test.go reads it) — a pod whose
 // claims record no contract and a caller in no pod — the operator's `legion state`, whose
 // memory line reads the draws, whose queue line reads the wakes and whose tool-call line reads
 // the step records — are served all of them.
@@ -151,18 +151,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		wakes   bool
 		retired bool
 		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// the contract forty below this daemon's own, so a pod at 57 is served the record
+		// the contract forty-three below this daemon's own, so a pod at 57 is served the record
 		// and a pod still running an older plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), thirty-nine contracts below this daemon's own, so a pod at it
+		// (waitingLineContract), forty-two contracts below this daemon's own, so a pod at it
 		// is served the places and a pod still running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), the contract thirty-five below this daemon's own.
+		// has made (backwardMovesContract), the contract thirty-eight below this daemon's own.
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
-		// stale-plugin lane has left (claimsToRefreshContract), the contract twenty-four below this
+		// stale-plugin lane has left (claimsToRefreshContract), the contract twenty-seven below this
 		// daemon's own, so a pod at 73 or 74 is served the count and every older pod is not.
 		refresh bool
 		// failure is whether the caller is served the nine keys recordFieldsContract added
@@ -179,12 +179,12 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// `length` alone and no issue with a `why`.
 		answers bool
 		// leak is whether the caller is served a claim view's `leakCheckCause`
-		// (leakCheckCauseContract, the contract ten below this daemon's own), the sentence a
+		// (leakCheckCauseContract, the contract thirteen below this daemon's own), the sentence a
 		// launch try was refused with because the shared public leak check could not be
 		// installed.
 		leak bool
 		// entries is whether the caller is served each issue's `phaseEntry` and `givenEntry`
-		// (phaseEntriesContract, the contract three below this daemon's own).
+		// (phaseEntriesContract, the contract six below this daemon's own).
 		entries bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
@@ -243,7 +243,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// claim views' `leakCheckCause` is served too, and the two entry numbers are the keys
 		// held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true},
-		// The band from 94 to 96, from phaseEntriesContract to below waitingOnIssueContract, the
+		// The band from 94 to 99, from phaseEntriesContract to below waitingOnIssueContract, the
 		// last under the declared contract: the two entry numbers are served too, and this
 		// fixture stands nothing the one contract above it holds back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},

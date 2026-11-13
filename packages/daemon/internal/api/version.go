@@ -1335,16 +1335,16 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 97: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
+// 100: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
 // `GET /legion/v1/state` gains a fifth word, `waiting_on_issue`: an issue the daemon has started
 // that gave its admission slot back to wait on another issue — a Dispatch blocker of it that is
 // not done, or an open child its own first phase waits for (record.LineWaitingOnIssue). It
 // stands in the returned part with `since` the moment its row was taken
 // (record.Issue.ReleasedForWaitAt) and `holdsSlot` false, the promotion passes over it while
 // the wait lasts, and it takes a row again at the first pass after the wait ends. A plugin from
-// 85 through 96, INFRA-714's 86, INFRA-3219's 87 and INFRA-2800's 94 above among them, reads
+// 85 through 99, INFRA-714's 86, INFRA-3219's 87 and INFRA-2800's 94 above among them, reads
 // `kind` with a `z.enum` of the four words before it, which refuses a word it does not name and
-// with it the whole state body, so a caller from a pod whose claims record a contract below 97 is
+// with it the whole state body, so a caller from a pod whose claims record a contract below 100 is
 // served every member of that kind without its `kind` (api's stateFor, withoutWaitingOnIssue),
 // which that schema takes as optional; every other field of the member is 85's,
 // `leakCheckCause` on the claim views is 87's and narrowed as 87 says, the issues' `phaseEntry`
@@ -1368,6 +1368,10 @@ package api
 // commit in. The same reading at refs/pull/<n>/head of each of the 140 open pull requests other
 // than this one (141 with it) at 2026-11-13T08:16Z gave, above 94: 95 (#3519 and #3712), 96
 // (#2731 and #3573), 98 (#3708) and 99 (#3575), and no open head declares 97, so this branch
-// takes 97, the lowest number above 94 that no open head declares. Read the base's own number
-// and every open pull request again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 97
+// took 97, the lowest number above 94 that no open head declared. The same reading of the 140
+// open pull requests other than this one at 2026-11-13T09:03:10Z gave, above 94: 95 (#3519 and
+// #3712), 96 (#2731 and #3573), 97 (#3937, which had moved up from 93 meanwhile), 98 (#3708) and
+// 99 (#3575), so 97 was no longer free and this branch takes 100, the lowest number above 94
+// that no open head declares. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line.)
+const DaemonAPIVersion = 100

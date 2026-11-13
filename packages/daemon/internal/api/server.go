@@ -909,14 +909,14 @@ const leakCheckCauseContract = 87
 const phaseEntriesContract = 94
 
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
-// line's `kind` (version.go's 97): a started issue that gave its admission slot back to wait on
+// line's `kind` (version.go's 100): a started issue that gave its admission slot back to wait on
 // another issue (record.LineWaitingOnIssue). A plugin from 85 up to it, INFRA-714's 86,
 // INFRA-3219's 87 and INFRA-2800's 94 among them, reads `kind` with a `z.enum` of the four
 // words before it, which refuses a word it does not name and with it the whole state body, so a
-// caller below 97 is served such a member without its `kind` (withoutWaitingOnIssue), which
+// caller below 100 is served such a member without its `kind` (withoutWaitingOnIssue), which
 // that schema takes as optional. It is the highest of the fifteen bands, this daemon's own
 // contract.
-const waitingOnIssueContract = 97
+const waitingOnIssueContract = 100
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
