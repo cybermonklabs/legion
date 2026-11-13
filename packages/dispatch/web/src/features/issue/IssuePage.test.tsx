@@ -1300,7 +1300,9 @@ test("IssuePage opens the Tree preset and leaves open asks out of the main colum
 });
 
 // `t a` is already the node menu's address, so Activity's chord is `t v`; the tablist is gone,
-// so the chord opens the address the Activity tab answered and the page still resolves it.
+// so the chord opens the address the Activity tab answered and the page still resolves it. What
+// that address draws is the issue's history in the page's column under the tree, and not in
+// the panel, which is what the chord's label says.
 test("IssuePage opens the activity address with the t v chord", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
@@ -1315,6 +1317,10 @@ test("IssuePage opens the activity address with the t v chord", async () => {
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
     );
     await expectPreset("Tree");
+    const history = document.getElementById("issue-activity-panel");
+    expect(history).not.toBeNull();
+    expect(history).not.toHaveAttribute("hidden");
+    expect(history?.closest('[data-testid="issue-margin"]')).toBeNull();
   } finally {
     view.unmount();
     restore();
@@ -1340,7 +1346,7 @@ test("IssuePage names each chord by what it opens on this page", async () => {
     expect(labels.get("tab-verification")).toBe("Open the Checks preset");
     expect(labels.get("tab-plan")).toBe("Open the Plan preset");
     expect(labels.get("tab-conversation")).toBe("Open the conversation in the panel");
-    expect(labels.get("tab-activity")).toBe("Open the activity in the panel");
+    expect(labels.get("tab-activity")).toBe("Open the issue's history under the tree");
     expect(labels.get("tab-children")).toBe("Open the issue's children");
     expect(labels.get("tab-artifacts")).toBe("Open the Files and documents menu");
     expect([...labels.values()].filter((label) => label.includes("tab"))).toEqual([]);

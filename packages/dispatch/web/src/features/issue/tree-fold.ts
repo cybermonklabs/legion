@@ -102,9 +102,11 @@ function unanswered(node: TreeNode): boolean {
     // asks the reader nothing.
     case "ask":
       return node.question;
-    // A check that has not passed: failed, out of date, not judged, or with no result at
-    // all (`NODE_STATE_WORDS.check`). Each of the four leaves the work it covers unproved,
-    // which is what the reader came to see; only `passed` says the issue need not look.
+    // A check that has not passed: any of the six other states `checkState` returns
+    // (`tree-drafts.ts`), which the page draws as Failed, Out of date, Retracted, Cannot tell,
+    // Could not read and No result (`NODE_STATE_WORDS.check`). Each leaves the work it covers
+    // unproved, which is what the reader came to see; only `passed` says the issue need not
+    // look.
     case "check":
       return node.state !== "passed";
     // A decision that waits for the reader's review: Keep and Change are drawn on exactly

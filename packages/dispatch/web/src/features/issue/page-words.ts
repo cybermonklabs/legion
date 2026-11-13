@@ -27,7 +27,7 @@
  * component all read the same list.
  */
 
-import { MAX_ISSUE_BLOCKERS } from "@legion/contracts";
+import { MAX_ISSUE_BLOCKERS, type ResultCommitStands } from "@legion/contracts";
 
 import { ASK_RESOLUTION_WORDS } from "../refs/actor";
 import {
@@ -110,11 +110,11 @@ export const NODE_STATE_WORDS = freeze({
   check: {
     failed: "Failed",
     "no-result": "No result",
-    /** The newest result was recorded against work the check no longer compares its results
-     *  with, or against an older wording of the check, so it no longer speaks for the work as
-     *  it stands, whatever it found. A result says the same of itself in the same words
-     *  (`RESULT_CURRENCY_WORDS`), and nothing else on the page draws them: a decision's chip
-     *  for a block it changed after naming says so in words of its own
+    /** The newest result that stands was recorded against work the check no longer compares
+     *  its results with, or against an older wording of the check, so it no longer speaks for
+     *  the work as it stands, whatever it found. A result says the same of itself in the same
+     *  words (`RESULT_STANDS_WORDS`), and nothing else on the page draws them: a decision's
+     *  chip for a block it changed after naming says so in words of its own
      *  (`CONTROL_LABELS.target_stale`). */
     older: "Out of date",
     passed: "Passed",
@@ -292,6 +292,12 @@ export const EMPTY_STATE_LINES = freeze({
    *  issue with no spec at all. */
   spec_marks_none: "This spec marks no requirements.",
   spec_summary: "This spec has no summary.",
+  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
+   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
+  spec_summary_cut: "The summary is too long to show here.",
+  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
+   *  draws. */
+  spec_summary_unended: "The summary has no complete sentence.",
   tree: "This issue holds nothing yet.",
 } as const);
 
@@ -317,13 +323,13 @@ export const EMPTY_STATE_LINES = freeze({
  * The lines say each of these in the reader's words rather than the model's: a node is "this",
  * because the line is drawn in the node's own body; a node's origin is where it came from; a
  * declaration is what a person asked for; a read-back is a person confirming the sentences;
- * and a negative control is what shows that a check can fail, which the line says beside the
- * name the check's own attribute carries (`BLOCK_ATTRIBUTE_LABELS.negative_control`).
+ * and a result with no negative control is said as what that leaves out, which is a showing
+ * that the check can fail. The control keeps its own name where the check's attribute is drawn
+ * (`BLOCK_ATTRIBUTE_LABELS.negative_control`).
  */
 export const GAP_LINES = freeze({
   no_check: "No check serves this requirement.",
-  no_negative_control:
-    "This result records no negative control, so it does not show that the check can fail.",
+  no_negative_control: "This result does not show that the check can fail.",
   no_origin: "This does not say where it came from.",
   no_plan_task: "No plan task serves this requirement.",
   no_read_back: "Dispatch does not record who confirmed these sentences.",
@@ -408,17 +414,23 @@ export const CHECK_WHEN_WORDS = freeze({
   default_branch: "on the default branch",
 } as const);
 
-/** What a recorded result says about itself beside its verdict: whether it still speaks for the
- *  work as it stands, from where its commit stands against what its check compared its results
- *  with and whether the check's words moved since (`check-facts.ts`). A commit Dispatch could
- *  not place draws no word at all. A result that no longer speaks for the work reads the word
- *  its check's `older` state reads, which is the state of a check whose newest result is such a
- *  result and whose pass stands nowhere (`tree-drafts.ts`'s `checkState`): one fact, one word,
- *  on the result and on its check. */
-export const RESULT_CURRENCY_WORDS = freeze({
-  current: "Up to date",
-  older: NODE_STATE_WORDS.check.older,
-} as const);
+/** What a recorded result says about itself beside its verdict: where its commit stands against
+ *  what its check compared its results with, by the server's answer for that result
+ *  (`commit_stands`, `results_comparison.go`). A commit the check compared with is up to date
+ *  with the work as it stands, any other commit is older work, and a commit Dispatch could not
+ *  place draws no word at all. Keyed by the answers the API declares, so an answer renamed or
+ *  added there is a compile error here rather than a result that silently draws no word.
+ *
+ *  A result whose check's words moved since it was recorded is older work too, whatever its
+ *  commit (`check-facts.ts`). That word is the one its check's `older` state reads, which is the
+ *  state of a check whose newest result that stands is such a result and whose pass stands
+ *  nowhere (`tree-drafts.ts`'s `checkState`): one fact, one word, on the result and on its
+ *  check. */
+export const RESULT_STANDS_WORDS = freeze({
+  at_basis: "Up to date",
+  other_commit: NODE_STATE_WORDS.check.older,
+  unknown: undefined,
+} as const satisfies Record<ResultCommitStands["answer"], string | undefined>);
 
 /** What a recorded result says it saw, in the page's own words rather than the wire's `pass`
  *  and `fail`: the verdict is drawn as a fact of the result's own node (R15). */
@@ -760,7 +772,7 @@ export const NODE_FACT_LABELS = freeze({
   role: "role",
   screenshot: "screenshot",
   skipped: "skipped",
-  /** Whether the result still speaks for the work as it stands (`RESULT_CURRENCY_WORDS`). */
+  /** Whether the result still speaks for the work as it stands (`RESULT_STANDS_WORDS`). */
   stands: "how it stands",
   verdict: "verdict",
 } as const);
@@ -910,7 +922,7 @@ const WORD_SOURCES: readonly unknown[] = [
   PROGRESS_NOUNS,
   READING_LINES,
   CHECK_WHEN_WORDS,
-  RESULT_CURRENCY_WORDS,
+  RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
   WAITING_LINES,
   BLOCKED_BY_REFUSALS,

@@ -3,7 +3,8 @@ import type { NodeFact } from "./issue-tree";
 import {
   CHECK_WHEN_WORDS,
   type GapKind,
-  RESULT_CURRENCY_WORDS,
+  NODE_STATE_WORDS,
+  RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
 } from "./page-words";
 
@@ -36,22 +37,6 @@ export function checkFacts(check: CheckBlock): NodeFact[] {
   ];
 }
 
-/** Where one result's commit stands against what its check compared its results with, in the
- *  two words the page draws for it (`RESULT_CURRENCY_WORDS`): a commit the check compared with
- *  is up to date with the work as it stands, any other commit is older work and out of date,
- *  and an answer Dispatch could not give draws no word at all. The server reads this per
- *  result (`results_comparison.go`), where it read a result's own currency before main's
- *  e98fc56ef8. Keyed by the answers the API declares, so an answer renamed there is a compile
- *  error here rather than a result that silently draws no word. */
-const RESULT_STANDS_WORDS: Readonly<
-  Record<NonNullable<CheckResult["commit_stands"]>["answer"], string | undefined>
-> = {
-  at_basis: RESULT_CURRENCY_WORDS.current,
-  other_commit: RESULT_CURRENCY_WORDS.older,
-  // Dispatch could not place the commit, so where the result stands is not known.
-  unknown: undefined,
-};
-
 /** What one recorded result says of itself: its verdict, whether it still speaks for the work,
  *  who ran it where and how, the commit it ran at, what it counted, and its screenshots. The
  *  result's own `observed` is the node's text and is no fact of its own. */
@@ -59,12 +44,15 @@ export function resultFacts(result: CheckResult): NodeFact[] {
   // "Up to date" is both halves of what the removed `currency` meant: at the commit the work
   // stands at, and against the words the result proved. A check reworded since the result ran
   // keeps the first and loses the second, so the result is out of date whatever its commit is
-  // (`check_words_moved`, which `tree-drafts.ts`'s `checkState` reads for the same reason).
-  const placed =
-    result.commit_stands === undefined
-      ? undefined
-      : RESULT_STANDS_WORDS[result.commit_stands.answer];
-  const stands = result.check_words_moved === true ? RESULT_CURRENCY_WORDS.older : placed;
+  // (`check_words_moved`, which `tree-drafts.ts`'s `checkState` reads for the same reason), and
+  // that is read before where its commit stands. The server reads both per result
+  // (`results_comparison.go`).
+  const stands =
+    result.check_words_moved === true
+      ? NODE_STATE_WORDS.check.older
+      : result.commit_stands === undefined
+        ? undefined
+        : RESULT_STANDS_WORDS[result.commit_stands.answer];
   const verdicts: Readonly<Record<string, string>> = RESULT_VERDICT_WORDS;
   const facts: NodeFact[] = [
     { draw: "word", name: "verdict", value: verdicts[result.verdict] ?? result.verdict },

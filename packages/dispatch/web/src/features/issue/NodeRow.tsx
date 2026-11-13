@@ -38,7 +38,7 @@ import { RowText } from "./RowText";
  *
  * A row is the twisty, the type with its shape, the author where the model holds one, the node's
  * first line, its chips, the gaps on it, and its state with its shape where the model holds one;
- * a folded row says how many nodes it holds. The first line is cut at a word (`firstLineOf`,
+ * a folded row says how many rows it holds. The first line is cut at a word (`firstLineOf`,
  * and again at `oneLineCut` where the row is one line) and the whole text is in the body, so
  * nothing is lost and no row truncates a word. The words beside it - the type, the author, the
  * state - hold no word boundary to cut at, so a one-line row draws each of them whole.

@@ -186,13 +186,13 @@ test("a plan task nobody asked for says so, in words", () => {
 });
 
 // R8: a result recording no negative control is drawn beside that result for the reader to
-// weigh. The page states no verdict of its own on it: the line says what is absent, and what
-// a negative control is for, no more.
+// weigh. The page states no verdict of its own on it: the line says what is absent, which is a
+// showing that the check can fail, no more, and in plain words rather than the model's term.
 test("a result that records no negative control says so, in words", () => {
   const gaps: GapKind[] = ["no_negative_control"];
   expect(drawnGap(node({ gaps, id: "result-1", type: "result" }))).toEqual({
     chip: "No proof it can fail",
-    line: "This result records no negative control, so it does not show that the check can fail.",
+    line: "This result does not show that the check can fail.",
   });
 });
 

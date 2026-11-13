@@ -134,7 +134,7 @@ On the List table, `j` and `k` follow the current sorted, filtered page, skip co
 | `t p` | Open the Plan preset |
 | `t d` | Open the Decisions preset |
 | `t c` | Open the conversation in the panel |
-| `t v` | Open the activity in the panel |
+| `t v` | Open the issue's history under the tree |
 | `t h` | Open the issue's children |
 | `t a` | Open the Files and documents menu |
 | `t f` | Filter the preset |

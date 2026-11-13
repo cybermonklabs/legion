@@ -40,7 +40,7 @@ import {
   PRESET_ORDER,
   PROGRESS_NOUNS,
   READING_LINES,
-  RESULT_CURRENCY_WORDS,
+  RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
   WAITING_LINES,
   wordsIn,
@@ -104,7 +104,7 @@ const WORD_SOURCES: readonly unknown[] = [
   PROGRESS_NOUNS,
   READING_LINES,
   CHECK_WHEN_WORDS,
-  RESULT_CURRENCY_WORDS,
+  RESULT_STANDS_WORDS,
   RESULT_VERDICT_WORDS,
   WAITING_LINES,
   BLOCKED_BY_REFUSALS,
@@ -300,8 +300,8 @@ test("every check state has a word of its own, and the page says it of nothing e
   for (const word of [...Object.values(CONTROL_LABELS), ...Object.values(GAP_WORDS)]) {
     expect(checkWords, `"${word}" reads as a check state`).not.toContain(word);
   }
-  expect(RESULT_CURRENCY_WORDS.older).toBe(NODE_STATE_WORDS.check.older);
-  expect(checkWords).not.toContain(RESULT_CURRENCY_WORDS.current);
+  expect(RESULT_STANDS_WORDS.other_commit).toBe(NODE_STATE_WORDS.check.older);
+  expect(checkWords).not.toContain(RESULT_STANDS_WORDS.at_basis);
 });
 
 test("every gap a row draws has a short word, one per gap the page names", () => {

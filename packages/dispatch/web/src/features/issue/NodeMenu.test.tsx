@@ -8,6 +8,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
+import { CLOSED_ISSUE_DOCUMENT_REFUSAL } from "../artifacts/CreateDocument";
 import { buildIssuePath } from "../refs/routes";
 import { NodeMenu } from "./NodeMenu";
 import { CONTROL_LABELS } from "./page-words";
@@ -161,6 +162,52 @@ test("a closed issue's node menu offers no New document", () => {
       screen.queryByRole("menuitem", { name: CONTROL_LABELS.new_document })
     ).not.toBeInTheDocument();
     expect(screen.queryByRole("form", { name: "New document" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+  }
+});
+
+// A closed issue takes no upload either, and the item said nothing: a press opened no chooser
+// and drew no word. The item is drawn refused, as the Artifacts panel's own Upload is on a
+// closed issue, and says why in the one sentence that panel says for both of its controls
+// (`ArtifactsTab.tsx`, `CreateDocument.tsx`'s `CLOSED_ISSUE_DOCUMENT_REFUSAL`).
+test("a closed issue's node menu draws Upload refused, and says why", async () => {
+  const user = userEvent.setup();
+  const view = renderMenu(true);
+  try {
+    const upload = screen.getByRole("menuitem", { name: CONTROL_LABELS.upload });
+    expect(upload).toHaveAttribute("aria-disabled", "true");
+    expect(upload).toHaveAccessibleDescription(CLOSED_ISSUE_DOCUMENT_REFUSAL);
+    expect(upload).toHaveTextContent(CLOSED_ISSUE_DOCUMENT_REFUSAL);
+    const chooser = screen.getByLabelText(CONTROL_LABELS.upload_file);
+    const opened = spyOn(chooser, "click");
+    try {
+      await user.click(upload);
+      expect(opened).not.toHaveBeenCalled();
+    } finally {
+      opened.mockRestore();
+    }
+  } finally {
+    view.unmount();
+  }
+});
+
+// An open issue's Upload is a plain item that opens the chooser, with no refusal on it.
+test("an open issue's node menu draws Upload as an item that opens the chooser", async () => {
+  const user = userEvent.setup();
+  const view = renderMenu(false);
+  try {
+    const upload = screen.getByRole("menuitem", { name: CONTROL_LABELS.upload });
+    expect(upload).not.toHaveAttribute("aria-disabled");
+    expect(upload).not.toHaveAccessibleDescription();
+    const chooser = screen.getByLabelText(CONTROL_LABELS.upload_file);
+    const opened = spyOn(chooser, "click");
+    try {
+      await user.click(upload);
+      expect(opened).toHaveBeenCalledTimes(1);
+    } finally {
+      opened.mockRestore();
+    }
   } finally {
     view.unmount();
   }

@@ -78,7 +78,7 @@ export function IssueThreeThings({
   /** The spec's summary node, or undefined for a spec that carries none. */
   summary: TreeNode | undefined;
 }): ReactNode {
-  const sentences = spokenSentences(summary?.text ?? "");
+  const { left, sentences } = spokenSentences(summary?.text ?? "");
   // A summary node with no text is one whose words the batched reference read has not named
   // yet - a stored block always holds its own fence - so it says no more than a summary whose
   // blocks are still out.
@@ -94,10 +94,11 @@ export function IssueThreeThings({
     >
       {sentences.length > 0 ? (
         <ul className="flex min-w-0 flex-col">
-          {sentences.map((sentence) => (
+          {sentences.map((sentence, index) => (
             <li
               className={`text-sm leading-tight break-words ${textSecondaryOnCanvas}`}
-              key={sentence}
+              // biome-ignore lint/suspicious/noArrayIndexKey: a summary may say one sentence twice, and its place is what tells the two apart.
+              key={`${index}:${sentence}`}
               {...authorText}
             >
               {sentence}
@@ -105,8 +106,14 @@ export function IssueThreeThings({
           ))}
         </ul>
       ) : known ? (
+        // A summary whose words hold no whole sentence is a summary all the same, so the line
+        // says why none is drawn rather than that the spec has none.
         <p className={`text-sm ${textMutedOnCanvas}`} {...pageChrome}>
-          {EMPTY_STATE_LINES.spec_summary}
+          {left === "cut"
+            ? EMPTY_STATE_LINES.spec_summary_cut
+            : left === "unended"
+              ? EMPTY_STATE_LINES.spec_summary_unended
+              : EMPTY_STATE_LINES.spec_summary}
         </p>
       ) : null}
       {/* The two rows and the two gaps share one wrapping line. Each keeps its own box, because
@@ -215,8 +222,16 @@ const EMPHASIS =
  * sentence; it is left out rather than drawn as a bullet of its own. A last list item is whole
  * where the excerpt is - it holds the block's closing fence - and a fragment like any other
  * where the cut fell inside it.
+ *
+ * `left` says why words were left with no sentence drawn for them, where the fragment was all
+ * the text held: `cut`, the excerpt stopped inside its first sentence, and `unended`, the whole
+ * block ends in no sentence end. It is undefined where a sentence is drawn, and where the text
+ * holds no words at all.
  */
-function spokenSentences(text: string): readonly string[] {
+function spokenSentences(text: string): {
+  readonly left?: "cut" | "unended";
+  readonly sentences: readonly string[];
+} {
   const lines = text.split("\n");
   if (lines[0]?.startsWith(":::") === true) lines.shift();
   // The excerpt holds the closing fence exactly when it holds the whole block: a longer block
@@ -252,9 +267,11 @@ function spokenSentences(text: string): readonly string[] {
   );
   const last = sentences.at(-1);
   const ended = last === undefined || ENDS_A_SENTENCE.test(last.sentence) || (whole && last.item);
-  return (ended ? sentences : sentences.slice(0, -1))
+  const spoken = (ended ? sentences : sentences.slice(0, -1))
     .slice(0, BULLETS)
     .map(({ sentence }) => sentence);
+  if (spoken.length > 0 || ended) return { sentences: spoken };
+  return { left: whole ? "unended" : "cut", sentences: spoken };
 }
 
 /** The issue's summary: the first `callout` block of its spec, which is the nearest thing

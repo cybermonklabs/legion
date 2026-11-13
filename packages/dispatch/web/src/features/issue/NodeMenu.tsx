@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useRef } from "react";
+import { type ReactNode, useEffect, useId, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
@@ -9,13 +9,10 @@ import {
   secondaryButtonBorder,
   secondaryButtonHoverBorder,
   secondaryButtonText,
+  textMutedOnSurface,
   textSecondaryOnSurface,
 } from "../../theme/classes";
-import {
-  ArtifactUploadStatus,
-  CLOSED_ISSUE_UPLOAD_REFUSAL,
-  useArtifactUpload,
-} from "../artifacts/ArtifactUpload";
+import { ArtifactUploadStatus, useArtifactUpload } from "../artifacts/ArtifactUpload";
 import { CLOSED_ISSUE_DOCUMENT_REFUSAL, useCreateDocument } from "../artifacts/CreateDocument";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { buildReferencePath, documentRoute } from "../refs/routes";
@@ -34,9 +31,11 @@ import { CONTROL_LABELS } from "./page-words";
  * so is making a document from a title (`CreateDocument.tsx`), which adds one the same way.
  *
  * The file input lives beside the menu rather than inside it, so a picker opened from a menu
- * item outlives the menu closing; a drop anywhere over the control uploads as well. The title
- * form New document opens is beside it for the same reason: the item closes the menu, and the
- * form takes the line under the preset row, with the caret in its Title.
+ * item outlives the menu closing. The menu takes no dropped file: a file dropped on the issue's
+ * `/artifacts` list uploads (`ArtifactsTab.tsx`'s `ArtifactDropZone`), as it did on the
+ * Artifacts tab that list was. The title form New document opens is beside the menu for the
+ * same reason as the input: the item closes the menu, and the form takes the line under the
+ * preset row, with the caret in its Title.
  */
 export function NodeMenu({
   artifacts,
@@ -60,10 +59,15 @@ export function NodeMenu({
   open: boolean;
 }): ReactNode {
   const navigate = useNavigate();
+  // A closed issue takes no upload, and the item says so in the sentence the Artifacts panel
+  // says beside both of its controls there (`ArtifactsTab.tsx`): one sentence for every way of
+  // adding to a closed issue, as `CLOSED_ISSUE_DOCUMENT_REFUSAL` is declared to be.
   const upload = useArtifactUpload(
     { issue: issueKey },
-    { immediate: true, refusal: isClosed ? CLOSED_ISSUE_UPLOAD_REFUSAL : null }
+    { immediate: true, refusal: isClosed ? CLOSED_ISSUE_DOCUMENT_REFUSAL : null }
   );
+  const uploadLabelId = useId();
+  const uploadRefusalId = useId();
   // A closed issue takes no new document, as the Artifacts panel's own control says; this page
   // offers no write a closed issue refuses (`IssueAddMenu.tsx`, `DecisionActions.tsx`), so the
   // item is not drawn there. The refusal still guards a form left open while the issue closed.
@@ -132,14 +136,29 @@ export function NodeMenu({
                 <CopyRefButton route={documentRoute(artifact)} />
               </div>
             ))}
+            {/* Refused, the item stays in the menu with `aria-disabled`, so a reader on the
+              keyboard reaches it and hears why, and its reason is drawn inside it: the menu owns
+              menu items alone (above), so the line cannot stand beside it. The name stays the
+              label, and the reason is the item's description. */}
             <button
-              className={MENU_ITEM_CLASS}
+              aria-describedby={upload.refusal === null ? undefined : uploadRefusalId}
+              aria-disabled={upload.refusal === null ? undefined : true}
+              aria-labelledby={upload.refusal === null ? undefined : uploadLabelId}
+              className={`${MENU_ITEM_CLASS} refused:cursor-not-allowed`}
               onClick={() => upload.openPicker()}
               role="menuitem"
               type="button"
               {...pageChrome}
             >
-              {CONTROL_LABELS.upload}
+              <span id={uploadLabelId}>{CONTROL_LABELS.upload}</span>
+              {upload.refusal === null ? null : (
+                <span
+                  className={`block text-xs font-normal ${textMutedOnSurface}`}
+                  id={uploadRefusalId}
+                >
+                  {upload.refusal}
+                </span>
+              )}
             </button>
             {isClosed ? null : (
               <button

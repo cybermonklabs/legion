@@ -890,6 +890,47 @@ test("a check whose result stands and failed is still drawn as failed", () => {
   ).toBe("failed");
 });
 
+// The server counts a retracted result as no evidence at all (`results_comparison.go`'s
+// `passStandsOf` skips it), so the page reads how a check stands from the results that still
+// stand. Read from the withdrawn newest result instead, a pass taken back at the compared commit
+// over an older pass at another commit was drawn "Failed", although nothing failed. The result
+// that stands is a pass at work the check no longer compares with, which is what "Out of date"
+// says; "Retracted" is for a check that has nothing standing at all.
+test("a retracted pass over an older pass at another commit is out of date, not failed", () => {
+  expect(
+    stateOfOneCheck({ pass_stands: { answer: "no" } }, [
+      recorded("result-withdrawn", "Keep the pass and it stands.", { retracted: WITHDRAWN }),
+      recorded("result-elsewhere", "Keep the pass and it stands.", {
+        commit_sha: "d".repeat(40),
+        commit_stands: { answer: "other_commit" },
+      }),
+    ])
+  ).toBe("older");
+  expect(nodeStateWord("older")).toBe("Out of date");
+});
+
+// The same rule, from the other side: a pass withdrawn after a fail leaves the fail as the
+// newest result that stands, and the server's `no` is that fail. Whatever commit the withdrawn
+// result ran at, it does not move the check out of date.
+test("a retracted pass over an older fail that stands is drawn as failed", () => {
+  expect(
+    stateOfOneCheck({ pass_stands: { answer: "no" } }, [
+      recorded("result-withdrawn", "Keep the pass and it stands.", { retracted: WITHDRAWN }),
+      recorded("result-failed", "Fix the fault and it passes.", { failed: 1, verdict: "fail" }),
+    ])
+  ).toBe("failed");
+  expect(
+    stateOfOneCheck({ pass_stands: { answer: "no" } }, [
+      recorded("result-withdrawn", "Keep the pass and it stands.", {
+        commit_sha: "d".repeat(40),
+        commit_stands: { answer: "other_commit" },
+        retracted: WITHDRAWN,
+      }),
+      recorded("result-failed", "Fix the fault and it passes.", { failed: 1, verdict: "fail" }),
+    ])
+  ).toBe("failed");
+});
+
 // The deployed server sends no `pass_stands` at all, and Dispatch rolls out with two builds
 // behind one load balancer, so a page meets a payload without it. Reading it unguarded threw
 // inside `buildIssueTree`, which is every preset of the issue page and not the checks alone.

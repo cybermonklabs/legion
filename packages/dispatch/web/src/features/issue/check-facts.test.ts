@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 
 import type { CheckResult } from "../../api/types";
 import { resultFacts } from "./check-facts";
-import { RESULT_CURRENCY_WORDS } from "./page-words";
+import { RESULT_STANDS_WORDS } from "./page-words";
 
 /** The commit the result ran at, which is also the one its check compares results with. */
 const RESULT_COMMIT = "c".repeat(40);
@@ -44,21 +44,27 @@ function standsWord(result: CheckResult): string | undefined {
 }
 
 test("a result at the commit its check compares with reads as up to date", () => {
-  expect(standsWord(recorded())).toBe(RESULT_CURRENCY_WORDS.current);
+  expect(standsWord(recorded())).toBe(RESULT_STANDS_WORDS.at_basis);
+  expect(RESULT_STANDS_WORDS.at_basis).toBe("Up to date");
 });
 
 test("a result the work has moved past reads as out of date", () => {
   expect(standsWord(recorded({ commit_stands: { answer: "other_commit" } }))).toBe(
-    RESULT_CURRENCY_WORDS.older
+    RESULT_STANDS_WORDS.other_commit
   );
+  expect(RESULT_STANDS_WORDS.other_commit).toBe("Out of date");
 });
 
 // "Up to date" means both halves: at the commit the work stands at, and against the words the
 // result proved. A check reworded since keeps the first half and loses the second, and the
 // result once read as current over words it never ran against (`checkState` reads the same
-// field).
+// field). The moved words are read before the commit, so a commit Dispatch could not place
+// does not hide them.
 test("a result under a check whose words moved since does not read as up to date", () => {
-  expect(standsWord(recorded({ check_words_moved: true }))).toBe(RESULT_CURRENCY_WORDS.older);
+  expect(standsWord(recorded({ check_words_moved: true }))).toBe("Out of date");
+  expect(
+    standsWord(recorded({ check_words_moved: true, commit_stands: { answer: "unknown" } }))
+  ).toBe("Out of date");
 });
 
 test("a result whose commit Dispatch could not place draws no word for where it stands", () => {

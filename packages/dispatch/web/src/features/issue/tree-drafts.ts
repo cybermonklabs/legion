@@ -704,14 +704,19 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  * - **`retracted`,** every result of the check withdrawn (`CheckResultRetracted`, which is on
  *   the result and never on the check): nothing stands for it and nothing stands against it,
  *   so neither "Passed" nor "Failed" is true of it, and the withdrawal is what the reader is
- *   owed. It is read before currency, because a result taken back says nothing about the work
- *   whatever commit it ran at; and a check holding one result that still stands is read on
- *   below, so a fail that stands under a withdrawn pass is drawn as the fail it is.
- * - **`older`,** a newest result that no longer speaks for the work as it stands, whatever it
- *   found, because its commit is not one the check compared with or the check's own words have
- *   moved under it.
+ *   owed.
+ * - **`older`,** a newest result that stands and no longer speaks for the work as it stands,
+ *   whatever it found, because its commit is not one the check compared with or the check's
+ *   own words have moved under it.
+ * - **`failed`,** a newest result that stands, at the work the check compares with.
  * - **`unmarked`,** where nothing could be judged: a repository Dispatch cannot read, or a
  *   commit it cannot place.
+ *
+ * A retracted result is no evidence, as the server counts it (`results_comparison.go`'s
+ * `passStandsOf` skips it), so `older` and `failed` are read from the newest result that still
+ * stands and never from a withdrawn one: a pass taken back at the compared commit over an older
+ * pass at another commit is `older`, and a pass taken back over a fail that stands is `failed`,
+ * whatever commit the withdrawn pass ran at.
  *
  * It is the one reading of a check's state the page has: the Checks preset draws the node, the
  * head's Checks line draws the same states, and each is told apart by a word and a shape (R15,
@@ -720,14 +725,15 @@ function addChecks(drafts: Map<string, Draft>, reads: IssueTreeReads, context: T
  */
 export function checkState(check: CheckStateReads): CheckState {
   const results = check.results ?? [];
-  const latest = results[0];
-  if (latest === undefined) return "no-result";
+  if (results.length === 0) return "no-result";
   if (check.pass_stands === undefined) return "unreadable";
   if (check.pass_stands.answer === "yes") return "passed";
   if (check.pass_stands.answer === "unknown") return "unmarked";
-  if (results.every((result) => result.retracted !== undefined)) return "retracted";
-  if (latest.check_words_moved === true) return "older";
-  return latest.commit_stands?.answer === "other_commit" ? "older" : "failed";
+  // The results arrive newest first, so this is the newest one a retraction left standing.
+  const standing = results.find((result) => result.retracted === undefined);
+  if (standing === undefined) return "retracted";
+  if (standing.check_words_moved === true) return "older";
+  return standing.commit_stands?.answer === "other_commit" ? "older" : "failed";
 }
 
 /** What a check's state is read from: the server's answer over its results and the results

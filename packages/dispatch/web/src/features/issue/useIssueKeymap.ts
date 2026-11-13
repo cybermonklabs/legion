@@ -212,9 +212,12 @@ const CHORDS: readonly {
     tab: "conversation",
   },
   // `t a` opens the node menu and `l` is the issue's label editor, so the activity takes `t v`.
+  // `/activity` draws the issue's whole history in the page's column under the tree, and puts
+  // the panel's conversation in its Everything state, whose choice takes the focus: the
+  // history is what the reader is sent to, and it is not in the panel.
   {
     keys: "t v",
-    label: "Open the activity in the panel",
+    label: "Open the issue's history under the tree",
     part: "margin",
     path: (key) => buildIssuePath({ key, kind: "activity" }),
     tab: "activity",

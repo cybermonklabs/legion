@@ -2,7 +2,7 @@ import {
   EMPTY_STATE_LINES,
   NODE_FACT_LABELS,
   NODE_STATE_WORDS,
-  RESULT_CURRENCY_WORDS,
+  RESULT_STANDS_WORDS,
 } from "../web/src/features/issue/page-words";
 import { blockNodeId } from "../web/src/features/issue/tree-drafts";
 import {
@@ -197,7 +197,7 @@ A check nobody has run yet reads no result.
     expect(current).toContain("Pass");
     // The commit the result ran at is the pull request's head, which is what the check
     // compared with, so the result still stands; the page draws that commit whole.
-    expect(current).toContain(RESULT_CURRENCY_WORDS.current);
+    expect(current).toContain(RESULT_STANDS_WORDS.at_basis);
     expect(current).toContain("tester");
     expect(current).toContain("browser");
     expect(current).toContain(secondHead);
@@ -314,10 +314,10 @@ A result at the head is a pass that stands.
     const results = (await drawnRows(page)).filter((row) => row.type === "result");
     const aged = await bodyOf(page, results[0]?.id ?? "");
     expect(aged).toContain("Pass");
-    expect(aged).toContain(RESULT_CURRENCY_WORDS.older);
+    expect(aged).toContain(RESULT_STANDS_WORDS.other_commit);
     expect(aged).toContain(firstHead);
     const atHead = await bodyOf(page, results[1]?.id ?? "");
-    expect(atHead).toContain(RESULT_CURRENCY_WORDS.current);
+    expect(atHead).toContain(RESULT_STANDS_WORDS.at_basis);
     expect(atHead).toContain(secondHead);
   } finally {
     await alice.close();

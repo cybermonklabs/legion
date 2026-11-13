@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, spyOn, test } from "bun:test";
 import { render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 
@@ -98,7 +98,7 @@ test("a summary of two sentences draws two bullets and says nothing about the th
   }
 });
 
-// The node's text is the server's excerpt, cut at 240 runes, so a longer summary arrives ending
+// The node's text is the server's excerpt, cut at 480 runes, so a longer summary arrives ending
 // mid-sentence. That tail is words nobody spoke as a sentence, so it is not drawn.
 test("a summary cut mid-sentence draws its whole sentences and not the fragment", () => {
   const { lines, unmount } = bullets(
@@ -108,6 +108,53 @@ test("a summary cut mid-sentence draws its whole sentences and not the fragment"
     expect(lines).toEqual(["The page is one outline."]);
   } finally {
     unmount();
+  }
+});
+
+// A summary cut inside its first sentence holds words and no whole sentence of them. That is a
+// spec with a summary, so the head says why it draws none rather than that there is none; and a
+// whole summary whose words end in no sentence end says that instead, since it is not too long.
+test("a summary with no whole sentence says why it draws none, not that there is none", () => {
+  for (const [summary, line] of [
+    [
+      summaryNode("The reasoning behind each requirement is reached from the node it", true),
+      EMPTY_STATE_LINES.spec_summary_cut,
+    ],
+    [summaryNode("The page is one outline"), EMPTY_STATE_LINES.spec_summary_unended],
+  ] as const) {
+    const { lines, unmount } = bullets(summary);
+    try {
+      expect(lines).toEqual([]);
+      const head = screen.getByTestId("issue-three-things").textContent;
+      expect(head).not.toContain("This spec has no summary.");
+      expect(head).toContain(line);
+    } finally {
+      unmount();
+    }
+  }
+  expect(EMPTY_STATE_LINES.spec_summary_cut).toBe("The summary is too long to show here.");
+});
+
+// A summary may say one sentence twice. Each is a bullet of its own, and React is told the two
+// apart by their place: keyed by its words alone, the two bullets shared one key.
+test("a summary that says one sentence twice draws both, each under a key of its own", () => {
+  const errors = spyOn(console, "error").mockImplementation(() => {});
+  try {
+    const { lines, unmount } = bullets(
+      summaryNode("The page is one outline. The page is one outline. It fits a phone.")
+    );
+    try {
+      expect(lines).toEqual([
+        "The page is one outline.",
+        "The page is one outline.",
+        "It fits a phone.",
+      ]);
+      expect(errors.mock.calls.filter((call) => String(call[0]).includes("same key"))).toEqual([]);
+    } finally {
+      unmount();
+    }
+  } finally {
+    errors.mockRestore();
   }
 });
 

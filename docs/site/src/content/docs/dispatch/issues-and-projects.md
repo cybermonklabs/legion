@@ -236,8 +236,10 @@ above the rows. On a screen narrower than 768 px the fourth row is at the end of
 A list that still clamps a title shows the whole of it on hover.
 
 Under the header, up to three sentences say what the issue is. They are the sentences of the
-spec's first `callout` block, and an unfinished last sentence is left out. A spec with no such
-block reads **This spec has no summary.** Two lines follow:
+spec's first `callout` block, and an unfinished last sentence is left out. Nothing is drawn there
+until the spec has loaded. A spec with no such block reads **This spec has no summary.** A
+summary cut inside its first sentence reads **The summary is too long to show here.**, and one
+with no sentence end at all reads **The summary has no complete sentence.** Two lines follow:
 
 - **How it gets done** links the **Plan** preset and gives the plan's approval state, such as
   **Awaiting approval**, or says **This issue has no plan tasks yet.**
@@ -292,7 +294,8 @@ name, so it is saved at most once if you retry within 24 hours of the first try;
 Dispatch no longer knows the name, and the change may be made twice. The corner says so.
 
 A closed issue takes no upload and no new document. In the **Files and documents** menu,
-**Upload** opens no file picker and **New document** is not offered. The list at
+**Upload** is shown as unavailable, with **This issue is closed. Reopen it to add a document.**,
+and **New document** is not offered. The list at
 `/issues/<KEY>/artifacts` says **This issue is closed. Reopen it to add a document.** beside its
 **New document** and **Upload**: it picks no file, no key opens a file picker there, and a file
 dropped on it is ignored.
