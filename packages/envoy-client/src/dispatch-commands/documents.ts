@@ -820,17 +820,62 @@ function withoutFinalLineFeed(text: string): string {
   return text.endsWith("\n") ? text.slice(0, -1) : text;
 }
 
+/**
+ * Text Go's `strings.TrimSpace` empties: no characters at all, or only characters Go's
+ * `unicode.IsSpace` reports - `\t`, `\n`, `\v`, `\f`, `\r`, a space, U+0085 and U+00A0, and the
+ * Unicode `White_Space` property above Latin-1, which is U+1680, U+2000 to U+200A, U+2028,
+ * U+2029, U+202F, U+205F and U+3000 (`IsSpace` in Go's `unicode/graphic.go`, reading the
+ * `_White_Space` table of its `unicode/tables.go`).
+ *
+ * The set is written out because it is Go's and not JavaScript's: walked over every Unicode
+ * scalar, `String.prototype.trim` and `strings.TrimSpace` differ on exactly two characters.
+ * `trim` removes U+FEFF, which Go keeps, so `trim` calls U+FEFF blank where the server reads
+ * content; Go removes U+0085, which `trim` keeps, so `trim` calls U+0085 content where the
+ * server reads blank. This is the one place that pair is written out, and the lines that turn
+ * on it cite this comment rather than repeating it.
+ *
+ * `packages/envoy/internal/dispatch/text/refs.go` records a split of the same class in another
+ * pair of sets ("The whitespace is spelled out rather than written `\s`, which means another
+ * set in each language: JavaScript's also matches a vertical tab and U+FEFF"). That pair is the
+ * two languages' `\s`, and it differs in a vertical tab and U+FEFF, not in the two characters
+ * above.
+ *
+ * `packages/contracts/fixtures/go-unicode-isspace.json` holds the 25 scalars `unicode.IsSpace`
+ * reports. This pattern is held to that list over every scalar by `goBlankPattern` > `calls
+ * blank exactly the scalars the committed list holds`, and Go's own predicate by
+ * TestUnicodeIsSpaceReportsTheCommittedScalars in
+ * `packages/envoy/internal/dispatch/text/whitespace_fixture_test.go`: a character either side
+ * gains or loses reddens its test, and the list and this pattern are corrected together.
+ */
+export const goBlankPattern =
+  /^[\t\n\v\f\r \u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000]*$/u;
+
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, documentOwner, issue } = context;
   const summary = optionalString(args, "summary");
   const name = stringArg(args, "name");
   const content = optionalString(args, "content");
+  const path = optionalString(args, "path");
+  // What every create carries, whatever it stores under the name.
+  const options = { name, ...(summary === undefined ? {} : { summary }), actor };
   const artifactOwner = documentOwner();
+  // The server's own `blank`: a body carrying no content, or content Go's
+  // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in
+  // packages/envoy/internal/dispatch/api/artifacts.go, whose set is goBlankPattern's.
+  // JavaScript's `trim` is another set, so it is not read here: goBlankPattern's own comment
+  // says which two characters the two sets differ on. Both checks below read this one
+  // predicate.
+  const blank = content === undefined || goBlankPattern.test(content);
   // An upload under a name the owner already holds writes that document's next version, over
   // the text it holds, so the command reads what the owner holds and refuses it. --force is
   // what asks for the version, and the API writes one for every other caller as before.
-  if (optionalBoolean(args, "force") !== true) {
+  // A create that stores nothing - no path, and content absent or blank - is held to none of
+  // this: it has no version to write, so the server refuses it under a held name whatever
+  // force says, and that refusal names the rule which applies to it. Refusing it here would
+  // answer it with --force, which writes nothing for a create that stores nothing, so it goes
+  // through and reads the server's own answer.
+  if ((path !== undefined || !blank) && optionalBoolean(args, "force") !== true) {
     const held = artifactUnderName(
       artifactOwner.kind === "project"
         ? // unlinked, as every other read of a project's own documents is: without it the
@@ -854,8 +899,14 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   // The round trip is the store's own parse and render (POST /api/v1/markdown/round-trip).
   // Only a Dispatch that holds no such route leaves the upload to make its own refusal, as
   // it did before this check: every other failure refuses the upload, since a check that did
-  // not run says nothing about what the store would write.
-  if (content !== undefined) {
+  // not run says nothing about what the store would write. Blank text goes to the server
+  // unchecked: the round trip answers the empty string for every text this predicate calls
+  // blank, since storedMarkdown returns "" for whatever `strings.TrimSpace` empties before
+  // it parses anything (that package's markdown_round_trip.go), and the empty document is
+  // what such a create asks for. That short answer is not what the store writes for each of
+  // them: the parse and render a seed runs keep every character of this set but a tab, a
+  // line feed, a carriage return and a space, each of the rest rendering to itself.
+  if (!blank) {
     let stored: string | undefined;
     try {
       stored = await client.markdownRoundTrip(content);
@@ -871,27 +922,24 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
       throw new ToolInputError(input.tool, [storedTextProblem(content, stored, name)]);
     }
   }
+  // A call with a path uploads that file, one with content stores that text, and one with
+  // neither makes an empty document the writer fills in afterwards with dispatch doc-edit.
   const artifactInput =
-    content === undefined
+    path !== undefined
       ? {
-          name,
+          ...options,
           // The bytes AskGate's check read, when it read them, typed as Bun types the path.
           file:
             input.uploadBytes === undefined
-              ? Bun.file(resolvePath(input.cwd, stringArg(args, "path")))
+              ? Bun.file(resolvePath(input.cwd, path))
               : // The copy gives the bytes a plain buffer of their own, which a Blob takes.
                 new Blob([new Uint8Array(input.uploadBytes)], {
-                  type: Bun.file(resolvePath(input.cwd, stringArg(args, "path"))).type,
+                  type: Bun.file(resolvePath(input.cwd, path)).type,
                 }),
-          ...(summary === undefined ? {} : { summary }),
-          actor,
         }
-      : {
-          name,
-          content,
-          ...(summary === undefined ? {} : { summary }),
-          actor,
-        };
+      : content !== undefined
+        ? { ...options, content }
+        : options;
   const result =
     artifactOwner.kind === "project"
       ? await client.projectArtifact(artifactOwner.project, artifactInput)
@@ -907,7 +955,9 @@ export async function artifactCommand(context: CommandContext): Promise<Dispatch
   });
   return {
     text: [
-      `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
+      path === undefined && content === undefined
+        ? `Made ${result.artifact.name} as an empty document (artifact slug ${result.artifact.slug}; ${artifactRef}). Write in it with dispatch doc-edit.${await notSubscribed(uploadOwner, input.subscriptions)}`
+        : `Uploaded ${result.artifact.name} as version ${result.version.number} (artifact slug ${result.artifact.slug}; ${artifactRef})${await notSubscribed(uploadOwner, input.subscriptions)}`,
       ...adviceLines,
     ].join("\n"),
     details:

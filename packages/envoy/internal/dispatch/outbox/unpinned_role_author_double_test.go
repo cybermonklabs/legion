@@ -70,8 +70,8 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 	// for the role the comment mentions and the issue is routed to; the listener names one to
 	// the mention's sender a round trip later, and the sender pins it on the attempt row.
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	wrote := rig.receiver(t, author, true)
-	claims := rig.receiver(t, claimant, true)
+	wrote := rig.receiver(t, author)
+	claims := rig.receiver(t, claimant)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", &route)
@@ -181,8 +181,8 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 	// No claim stands for the role when the outbox reads it; the listener names one to the
 	// mention's sender a round trip later, and the sender pins it on the attempt row.
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	follows := rig.receiver(t, follower, true)
-	claims := rig.receiver(t, claimant, true)
+	follows := rig.receiver(t, follower)
+	claims := rig.receiver(t, claimant)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	seedIssue(t, rig.database, "T-1", nil)
@@ -281,7 +281,7 @@ func TestAnUnnamedRoleMentionPinnedToAPrimaryDocumentAuthorShowsItTheCommentTwic
 	// No claim stands for the role when the outbox reads it; the listener names one to the
 	// mention's sender a round trip later, and the sender pins it on the attempt row.
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	wrote := rig.receiver(t, writer, true)
+	wrote := rig.receiver(t, writer)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	// No route and no session claimant: that is the issue whose comments reach the sessions its

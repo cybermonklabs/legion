@@ -12,13 +12,13 @@ import (
 	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/bus/bustest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -286,36 +286,18 @@ func (r *roleRig) silent(t *testing.T, subject string) {
 	})
 }
 
-// receiver is a role holder's own subscription to its agent subject: it records every copy it
-// receives and answers the forwards among them with an empty receipt while answering is set
-// (awaitsAReceipt).
+// receiver is a role holder's own subscription to its agent subject: it records every forward it
+// receives and answers nothing, as a session does now that the stream's acknowledgement is a
+// forward's whole answer.
 type receiver struct {
-	answering atomic.Bool
-	mu        sync.Mutex
-	forwards  []contracts.Envelope
-	arrived   chan contracts.Envelope
+	mu       sync.Mutex
+	forwards []contracts.Envelope
+	arrived  chan contracts.Envelope
 }
 
-// awaitsAReceipt reports whether item, which arrived on subject, is a send that waits for this
-// holder's empty receipt: a role forward, a core request the outbox makes to the holder's agent
-// subject with the role's own topic still on the envelope (roleForward.forward,
-// contracts.RoleForwardDedupeKey). A copy published to a subject carries that subject as its
-// topic (sendChains, routed.Topic) and goes to the stream, whose acknowledgement is its only
-// answer: nats.go reads the first reply on such a publish's inbox as its PubAck, so an empty
-// receipt answered to it fails the publish with `nats: invalid jetstream publish response` and
-// the outbox backs the event off with that error. A subscriber on the published subject sees
-// that inbox and can answer before the stream does, which is a race a loaded box loses - CI job
-// 128275017099, and 5 of 25 local runs of one test under a busy machine. Nothing in production
-// answers there: a session takes its copies from the stream through a pull consumer
-// (bus.SessionConsumers.Pull), never from the subject.
-func awaitsAReceipt(item contracts.Envelope, subject string) bool {
-	return item.Topic != subject
-}
-
-func (r *roleRig) receiver(t *testing.T, holder string, answering bool) *receiver {
+func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 	t.Helper()
 	recv := &receiver{arrived: make(chan contracts.Envelope, 64)}
-	recv.answering.Store(answering)
 	sub, err := r.conn.Subscribe(contracts.AgentSubject(holder), func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
@@ -325,9 +307,6 @@ func (r *roleRig) receiver(t *testing.T, holder string, answering bool) *receive
 		recv.forwards = append(recv.forwards, item)
 		recv.mu.Unlock()
 		recv.arrived <- item
-		if recv.answering.Load() && msg.Reply != "" && awaitsAReceipt(item, msg.Subject) {
-			_ = msg.Respond(nil)
-		}
 	})
 	if err != nil {
 		t.Fatalf("subscribe to %s: %v", holder, err)
@@ -337,6 +316,40 @@ func (r *roleRig) receiver(t *testing.T, holder string, answering bool) *receive
 		t.Fatalf("flush the subscription: %v", err)
 	}
 	return recv
+}
+
+// narrowAgentCapture has the stream capture the agent subjects of holders alone, in place of every
+// agent subject, and lets it capture them all again when the returned func is called or the test
+// ends. A forward to any other holder is then stored nowhere, so nothing acknowledges it and
+// nothing else answers one: that is the shape a role forward goes unanswered in, and the batch
+// that sent it waits roleForwardAckTimeout. The holder's own subscription is handed the forward
+// all the same, over core NATS.
+func (r *roleRig) narrowAgentCapture(t *testing.T, holders ...string) func() {
+	t.Helper()
+	js, err := r.conn.JetStream()
+	if err != nil {
+		t.Fatalf("open JetStream: %v", err)
+	}
+	info, err := js.StreamInfo(bus.Stream)
+	if err != nil {
+		t.Fatalf("read the stream: %v", err)
+	}
+	capturing, narrowed := info.Config, info.Config
+	narrowed.Subjects = slices.DeleteFunc(slices.Clone(capturing.Subjects), func(subject string) bool {
+		return subject == contracts.AgentTopicPrefix+">"
+	})
+	for _, holder := range holders {
+		narrowed.Subjects = append(narrowed.Subjects, contracts.AgentSubject(holder))
+	}
+	update := func(config *natsgo.StreamConfig, what string) {
+		if _, err := js.UpdateStream(config); err != nil {
+			t.Fatalf("%s the stream's agent subjects: %v", what, err)
+		}
+	}
+	update(&narrowed, "narrow")
+	restore := sync.OnceFunc(func() { update(&capturing, "restore") })
+	t.Cleanup(restore)
+	return restore
 }
 
 func (recv *receiver) received() []contracts.Envelope {
@@ -403,72 +416,49 @@ func dueNow(t *testing.T, database *store.Store, id int64) {
 
 // A self-subscribed holder gets the event forwarded to its own agent subject as a listener's role
 // forward carries it - the role's topic, the forward's dedupe key, the event's id - and the event
-// is published only once the holder's receipt is in. A holder that does not answer leaves the
-// event backed off with its attempt and the reason; once it answers, a retry publishes it, and the
-// stream, which captures the holder's subject, holds one copy of the forward however often it was
-// sent. Nothing crosses the role's topic.
-func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnItsReceipt(t *testing.T) {
+// is published on the stream's acknowledgement of the copy it stored, which is a forward's whole
+// answer: the holder answers nothing. The stream, which captures the holder's subject, holds that
+// one copy, and nothing crosses the role's topic.
+func TestARoleRouteIsForwardedToASelfSubscribedHolderAndPublishedOnTheStreamsAcknowledgement(t *testing.T) {
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_self_subscribed"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	recv := rig.receiver(t, holder, false)
+	recv := rig.receiver(t, holder)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
-	outbox := holding(t, rig.deps())
 
-	t.Run("published only after the receipt", func(t *testing.T) {
-		// The holder takes the first forward and does not answer it.
-		recv.answering.Store(false)
-		scanned := make(chan struct{})
-		go func() { outbox.scan(context.Background(), unfenced{}); close(scanned) }()
-		var forward contracts.Envelope
-		select {
-		case forward = <-recv.arrived:
-		case <-time.After(10 * time.Second):
-			t.Fatal("the holder received no forward")
-		}
-		if forward.Topic != contracts.RoleTopicPrefix+role || forward.DedupeKey != contracts.RoleForwardDedupePrefix+fmt.Sprintf("dispatch-%d", event.ID) ||
-			forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
-			t.Fatalf("the holder received topic %q dedupe key %q event id %q, want the role forward of event %d",
-				forward.Topic, forward.DedupeKey, forward.EventID, event.ID)
-		}
-		<-scanned
-		if publishedAt(t, rig.database, event.ID) != nil {
-			t.Fatal("the event was published though its holder never answered")
-		}
-		attempts, failure, destinations := eventState(t, rig.database, event.ID)
-		if attempts != 1 || failure == nil || !strings.Contains(*failure, bus.ErrNotAcknowledged.Error()) ||
-			!strings.Contains(*failure, `publish route "role:reviewer"`) {
-			t.Fatalf("attempt_count %d, publish_error %v: want one attempt naming the role route and the missing receipt", attempts, failure)
-		}
-		if strings.Contains(strings.Join(destinations, ","), contracts.RoleTopicPrefix) {
-			t.Fatalf("published_destinations %v records the role route its holder never answered", destinations)
-		}
-	})
+	holding(t, rig.deps()).scan(context.Background(), unfenced{})
 
-	t.Run("published on a retry once the holder answers", func(t *testing.T) {
-		recv.answering.Store(true)
-		dueNow(t, rig.database, event.ID)
-		outbox.scan(context.Background(), unfenced{})
-		if publishedAt(t, rig.database, event.ID) == nil {
-			t.Fatal("the event was not published once its holder answered")
-		}
-		_, failure, destinations := eventState(t, rig.database, event.ID)
-		if failure != nil || !strings.Contains(strings.Join(destinations, ","), contracts.RoleTopicPrefix+role) {
-			t.Fatalf("publish_error %v, published_destinations %v: want no error and the role topic recorded", failure, destinations)
-		}
-		if got := len(recv.received()); got != 2 {
-			t.Fatalf("the holder received %d forwards, want the first and the retry", got)
-		}
-		if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 1 {
-			t.Fatalf("the stream holds %d copies of the forward on %s after a retry, want one", copies, contracts.AgentSubject(holder))
-		}
-	})
+	var forward contracts.Envelope
+	select {
+	case forward = <-recv.arrived:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the holder received no forward")
+	}
+	if forward.Topic != contracts.RoleTopicPrefix+role || forward.DedupeKey != contracts.RoleForwardDedupePrefix+fmt.Sprintf("dispatch-%d", event.ID) ||
+		forward.EventID != fmt.Sprintf("dispatch-%d", event.ID) {
+		t.Fatalf("the holder received topic %q dedupe key %q event id %q, want the role forward of event %d",
+			forward.Topic, forward.DedupeKey, forward.EventID, event.ID)
+	}
+	if publishedAt(t, rig.database, event.ID) == nil {
+		t.Fatal("the event was not published though the stream stored its forward")
+	}
+	attempts, failure, destinations := eventState(t, rig.database, event.ID)
+	if attempts != 0 || failure != nil || !strings.Contains(strings.Join(destinations, ","), contracts.RoleTopicPrefix+role) {
+		t.Fatalf("attempt_count %d, publish_error %v, published_destinations %v: want no attempt, no error and the role route recorded",
+			attempts, failure, destinations)
+	}
+	if got := len(recv.received()); got != 1 {
+		t.Fatalf("the holder received %d forwards, want the one", got)
+	}
+	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 1 {
+		t.Fatalf("the stream holds %d copies of the forward on %s, want one", copies, contracts.AgentSubject(holder))
+	}
 }
 
-// A holder with a serving port is delivered from the stream's stored copy, which never answers a
-// request, so the stream's acknowledgement of that copy is the receipt: the event is published with
-// nobody subscribed to the holder's subject, and the stream holds the forward once.
+// A holder with a serving port is delivered its stored copy by the listener and never answers a
+// request, so the stream's acknowledgement of that copy is the forward's answer: the event is
+// published with nobody subscribed to the holder's subject, and the stream holds the forward once.
 func TestARoleRouteToAHolderWithAServingPortIsPublishedOnTheStreamsAcknowledgement(t *testing.T) {
 	rig := newRoleRig(t)
 	const role, holder = "reviewer", "ses_serving"
@@ -484,6 +474,38 @@ func TestARoleRouteToAHolderWithAServingPortIsPublishedOnTheStreamsAcknowledgeme
 	}
 	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 1 {
 		t.Fatalf("the stream holds %d copies of the forward, want one", copies)
+	}
+}
+
+// A holder registered for consumer delivery is no different: every Oh My Pi and Claude Code
+// session registers with no serving port and no subscription of its own
+// (session.DeliveryConsumer), and answers no forward either, since it is delivered its stored
+// copy from its own consumer by the listener's relay. Its forward counts as reached on the
+// stream's acknowledgement too, so the event is published on its first attempt with the role
+// recorded, and the owner's next event follows in the same batch rather than waiting behind it.
+func TestARoleRouteToAHolderWithNoServingPortIsPublishedOnTheStreamsAcknowledgement(t *testing.T) {
+	rig := newRoleRig(t)
+	const role, holder = "reviewer", "ses_consumer_delivery"
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	rig.claim(t, role, holder, session.SessionEntry{Delivery: session.DeliveryConsumer})
+	rig.silent(t, contracts.RoleTopicPrefix+role)
+	first := rig.routedEvent(t, "T-1", role, alice)
+	second := rig.laterEvent(t, "T-1", alice)
+
+	holding(t, rig.deps()).scan(context.Background(), unfenced{})
+
+	for _, event := range []model.Event{first, second} {
+		attempts, failure, destinations := eventState(t, rig.database, event.ID)
+		if publishedAt(t, rig.database, event.ID) == nil {
+			t.Fatalf("event %d was not published: attempt_count %d, publish_error %v", event.ID, attempts, failure)
+		}
+		if attempts != 0 || failure != nil || !strings.Contains(strings.Join(destinations, ","), contracts.RoleTopicPrefix+role) {
+			t.Fatalf("event %d: attempt_count %d, publish_error %v, published_destinations %v: want no attempt, no error and the role route recorded",
+				event.ID, attempts, failure, destinations)
+		}
+	}
+	if copies := storedCopies(t, rig.client, contracts.AgentSubject(holder)); copies != 2 {
+		t.Fatalf("the stream holds %d forwards on %s, want the owner's two", copies, contracts.AgentSubject(holder))
 	}
 }
 
@@ -735,8 +757,9 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 }
 
 // One holder's forward that Dispatch's grant denies fails only its own event: in a batch of 50
-// role-routed events on distinct issues, each with a live self-subscribed holder that answers, the
-// 49 others are published with no attempt counted, and the denied one is backed off.
+// role-routed events on distinct issues, each with a live self-subscribed holder whose forward
+// the stream stores, the 49 others are published with no attempt counted, and the denied one is
+// backed off.
 func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	const events, denied = 50, 17
 	holderOf := func(index int) string { return fmt.Sprintf("ses_holder_%02d", index) }
@@ -757,16 +780,6 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 	t.Cleanup(conn.Close)
 	rig := newRoleRigOn(t, url, client, conn)
 
-	sub, err := conn.Subscribe(contracts.AgentTopicPrefix+">", func(msg *natsgo.Msg) {
-		_ = msg.Respond(nil)
-	})
-	if err != nil {
-		t.Fatalf("subscribe the holders: %v", err)
-	}
-	t.Cleanup(func() { _ = sub.Unsubscribe() })
-	if err := conn.Flush(); err != nil {
-		t.Fatalf("flush the holders' subscription: %v", err)
-	}
 	seeded := make([]model.Event, events)
 	for index := range events {
 		role := fmt.Sprintf("lane-%02d", index)
@@ -835,29 +848,92 @@ func TestAForwardHeldByItsHoldersResolutionIsAWaitNotAFailure(t *testing.T) {
 	}
 }
 
-// A role forward NATS took whose holder sent no receipt is counted unanswered, not failed: the
-// flush confirmed the publish, so what is missing is the holder's answer and not the bus. The
-// holder here is registered and self-subscribed, as a session plugin registers it, with nothing
-// subscribed to its agent subject, which is the shape a holder that stopped reading has.
-func TestAForwardNoHolderAnsweredIsCountedUnanswered(t *testing.T) {
+// A role forward NATS took whose stored copy the stream did not acknowledge is counted
+// unanswered, not failed: the flush confirmed the publish, so what is missing is the
+// acknowledgement and not the bus. The holder here is registered and live, as a session plugin
+// registers it, and the stream captures no agent subject while the batch runs, so nothing
+// acknowledges the forward - and no session answers one.
+func TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
 	rig := newRoleRig(t)
-	const role, holder = "reviewer", "ses_silent"
+	const role, holder = "reviewer", "ses_unacknowledged"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
+	rig.narrowAgentCapture(t)
 	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
 	deps, registry := rig.countingDeps(t)
 
 	holding(t, deps).scan(context.Background(), unfenced{})
 
 	if publishedAt(t, rig.database, event.ID) != nil {
-		t.Fatal("the event whose role holder sent no receipt was published")
+		t.Fatal("the event whose role forward the stream did not acknowledge was published")
 	}
 	body := failureReasons(t, registry)
 	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="unanswered"} 1`) {
-		t.Fatalf("/metrics body = %q, want the forward its holder left unanswered counted unanswered", body)
+		t.Fatalf("/metrics body = %q, want the forward the stream did not acknowledge counted unanswered", body)
 	}
 	if strings.Contains(body, `reason="failed"`) {
 		t.Fatalf("/metrics body = %q counts a forward NATS took as a publish failure", body)
+	}
+}
+
+// A role forward a full stream refuses is counted a failure and left to be retried. The stream
+// answered, and what it answered is that it stored nothing, so the holder's consumer has no copy
+// to deliver and the event is not published: its attempt is counted, its failure names the
+// refusal, and the next scan, once the stream has room, forwards it again and publishes it.
+// Counting that refusal as reached, which is what adding bus.ErrStreamFull to the ErrRefused case
+// of sendChains' settle would do, drops the event with no copy anywhere.
+func TestARoleForwardAFullStreamRefusesIsCountedFailedAndRetried(t *testing.T) {
+	const limit = 16 << 10
+	_, url := testnats.Start(t)
+	client, err := bus.ConnectOwningStream([]string{url}, bus.WithStreamMaxBytes(limit))
+	if err != nil {
+		t.Fatalf("connect the outbox's client: %v", err)
+	}
+	t.Cleanup(client.Close)
+	rig := newRoleRigOn(t, url, client, testnats.Connect(t, url))
+	const role, holder = "reviewer", "ses_stream_full"
+	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
+	event := rig.routedEvent(t, "T-1", role, model.Actor{Kind: "user", ID: "alice"})
+	deps, registry := rig.countingDeps(t)
+	bustest.FillStream(t, client, 1024)
+
+	holding(t, deps).scan(context.Background(), unfenced{})
+
+	if publishedAt(t, rig.database, event.ID) != nil {
+		t.Fatal("the event whose role forward the full stream refused was published: nothing will send it again, and the stream holds no copy for the holder's consumer")
+	}
+	attempts, failure, _ := eventState(t, rig.database, event.ID)
+	if attempts != 1 {
+		t.Errorf("attempt_count = %d, want the refused attempt counted once so the event is retried", attempts)
+	}
+	if failure == nil || !strings.Contains(*failure, bus.ErrStreamFull.Error()) {
+		t.Errorf("publish_error = %v, want it naming %v", failure, bus.ErrStreamFull)
+	}
+	body := failureReasons(t, registry)
+	// Both destinations of the event - the role forward and the issue topic - were refused by the
+	// full stream, and a refusal the stream answered is a failure the scan retries.
+	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 2`) {
+		t.Fatalf("/metrics body = %q, want both sends the full stream refused counted failures", body)
+	}
+	if strings.Contains(body, `reason="refused"`) {
+		t.Fatalf("/metrics body = %q counts a full stream's refusal as a destination's permanent refusal, which is counted reached and never sent again", body)
+	}
+
+	// With room on the stream again, the retry stores the copy the holder's consumer delivers and
+	// the event is published.
+	if err := client.JS().PurgeStream(bus.Stream); err != nil {
+		t.Fatalf("purge the stream: %v", err)
+	}
+	dueNow(t, rig.database, event.ID)
+
+	holding(t, deps).scan(context.Background(), unfenced{})
+
+	if publishedAt(t, rig.database, event.ID) == nil {
+		t.Fatal("the event was not published by the retry that ran once the stream had room")
+	}
+	if copies := storedCopies(t, client, contracts.AgentSubject(holder)); copies != 1 {
+		t.Errorf("the stream holds %d copies on %s, want the one copy the holder's consumer delivers",
+			copies, contracts.AgentSubject(holder))
 	}
 }
 
@@ -942,8 +1018,8 @@ func seedHeldRoleFallbackCopyMentioningTwo(
 // refused by the stream, which captures no role subject, and the row would count a failed attempt
 // and back off for ever with the holder never given the comment. A role nobody claims has no
 // holder to forward to, so the copy is kept on that role's kept lane for the session that claims
-// the role next, and the stream's acknowledgement of the keep settles the row published, as a
-// holder's receipt of a forward settles it.
+// the role next, and the stream's acknowledgement of the keep settles the row published, as its
+// acknowledgement of a forward settles one.
 func TestAHeldCopyOfARoleRouteReachesTheRolesHolder(t *testing.T) {
 	const role = "reviewer"
 	roleTopic := contracts.RoleTopicPrefix + role
@@ -1029,7 +1105,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 	const role, holder, target = "reviewer", "s1", "session:s1"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 	deps := rig.deps()
 	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
@@ -1077,7 +1153,7 @@ func TestAKeptFallbackCopyHandedToItsOwnMentionedHolderCarriesTheMentionsKey(t *
 	// holder, and s1 is that holder, claiming the role under the keep.
 	const role, holder, target = "reviewer", "s1", "session:s1"
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 	commentID := seedHeldRoleFallbackCopy(ctx, t, rig.deps(), role)
 	claimed := make(chan error, 1)
 	publisher := claimedUnderTheKeep(rig.client, func() {
@@ -1127,7 +1203,7 @@ func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testi
 	const role, holder, target = "reviewer", "s1", "session:s1"
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 	deps := rig.deps()
 	route := "role:" + role
 	seedIssue(t, deps.Store, "T-1", &route)
@@ -1237,7 +1313,7 @@ func TestAKeptCopyHandedToTheSecondMentionedHolderCarriesItsOwnMentionsKey(t *te
 	const first, second = "ses_a_mentioned_first", "ses_b_mentioned_second"
 	const target = "session:" + second
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	recv := rig.receiver(t, second, true)
+	recv := rig.receiver(t, second)
 	route := "role:" + role
 	seedIssue(t, rig.database, key, &route)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -1316,7 +1392,7 @@ func TestAKeptCopyHandedToAHolderWhoseMentionLandedCarriesItsOwnMentionsKey(t *t
 	const first, second = "ses_a_mention_landed", "ses_b_mention_landed"
 	const target = "session:" + second
 	rig.silent(t, contracts.RoleTopicPrefix+role)
-	recv := rig.receiver(t, second, true)
+	recv := rig.receiver(t, second)
 	route := "role:" + role
 	seedIssue(t, rig.database, key, &route)
 	alice := model.Actor{Kind: "user", ID: "alice"}
@@ -1626,7 +1702,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		rig := newRoleRig(t)
 		rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
-		recv := rig.receiver(t, holder, true)
+		recv := rig.receiver(t, holder)
 		commentID, event := roleRoutedMentioningComment(t, rig.database, rig.broker, role, outcome, holder)
 		return rig, recv, rig.deps(), commentID, event
 	}
@@ -1744,7 +1820,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	rig := newRoleRig(t)
 	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 	rig.silent(t, roleTopic)
-	recv := rig.receiver(t, holder, true)
+	recv := rig.receiver(t, holder)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	issue := new("T-1")
@@ -1913,8 +1989,8 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 		rig = newRoleRig(t)
 		rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
-		pinned = rig.receiver(t, holder, true)
-		other = rig.receiver(t, bystander, true)
+		pinned = rig.receiver(t, holder)
+		other = rig.receiver(t, bystander)
 
 		alice := model.Actor{Kind: "user", ID: "alice"}
 		route := target
@@ -2067,7 +2143,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 		// pass, so the pass resolves it as the holder and forwards the held copy to it.
 		rig.claim(t, role, second, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
-		recv := rig.receiver(t, second, true)
+		recv := rig.receiver(t, second)
 		deps := rig.deps()
 		commentID := seedHeldRoleFallbackCopyMentioningTwo(ctx, t, deps, role, first, second, "failed")
 
@@ -2100,7 +2176,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 		// role's next holder, and the second mentioned session is that holder, claiming the role
 		// inside the window the keep's own race leaves open.
 		rig.silent(t, roleTopic)
-		recv := rig.receiver(t, second, true)
+		recv := rig.receiver(t, second)
 		commentID := seedHeldRoleFallbackCopyMentioningTwo(ctx, t, rig.deps(), role, first, second, "failed")
 		claimed := make(chan error, 1)
 		publisher := claimedUnderTheKeep(rig.client, func() {
@@ -2290,7 +2366,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		rig := newRoleRig(t)
 		rig.claim(t, role, second, session.SessionEntry{SelfSubscribed: true})
 		rig.silent(t, roleTopic)
-		recv := rig.receiver(t, second, true)
+		recv := rig.receiver(t, second)
 		deps := rig.deps()
 		return rig, recv, deps,
 			seedHeldRoleFallbackCopyMentioningTwo(ctx, t, deps, role, first, second, outcome)
@@ -2468,4 +2544,98 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "resolve the role's holder", before, after)
 	})
+}
+
+// A copy held back for a role route, forwarded to a live holder, whose stored copy the stream
+// does not acknowledge is counted unanswered rather than failed, by the same rule a batch's own
+// role forward is counted by (forwardUnanswered,
+// TestAForwardTheStreamDidNotAcknowledgeIsCountedUnanswered): the publish was confirmed, so what
+// is missing is the acknowledgement and not the bus, and a copy may yet stand for the holder's
+// consumer. Counting it failed would read a forward NATS took as one it never had: the other
+// half of that rule, an error that carries bus.ErrPublishUnconfirmed beside the missing
+// acknowledgement, is what TestAFallbackForwardWhosePublishWasNotConfirmedIsCountedFailed
+// holds. The holder here is registered and live, as a session plugin registers it, and the
+// stream captures no agent subject over the pass, so nothing acknowledges the forward - and no
+// session answers one.
+func TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered(t *testing.T) {
+	ctx := store.WithTransactionTracking(context.Background())
+	rig := newRoleRig(t)
+	const role, holder = "reviewer", "ses_fallback_unacknowledged"
+	roleTopic := contracts.RoleTopicPrefix + role
+	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
+	rig.silent(t, roleTopic)
+	deps, registry := rig.countingDeps(t)
+	// The row is seeded while the stream still captures agent subjects, since the scan that
+	// holds the copy back sends the comment's own mention to a session's agent subject; the
+	// capture is narrowed for the pass alone, which is the send under test.
+	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
+	rig.narrowAgentCapture(t)
+
+	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+
+	if held := readHeldCopy(t, rig.database, commentID, roleTopic); held.published || held.settled {
+		t.Fatalf("the copy whose forward the stream did not acknowledge is published=%v settled=%v, want it left unsettled for a later pass",
+			held.published, held.settled)
+	}
+	body := failureReasons(t, registry)
+	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="unanswered"} 1`) {
+		t.Fatalf("/metrics body = %q, want the fallback forward the stream did not acknowledge counted unanswered", body)
+	}
+	if strings.Contains(body, `reason="failed"`) {
+		t.Fatalf("/metrics body = %q counts a fallback forward NATS took as a publish failure", body)
+	}
+}
+
+// unconfirmedForwardSender answers every forward with the error a request returns whose publish
+// the connection could not confirm: bus.ErrNotAcknowledged wrapped with bus.ErrPublishUnconfirmed,
+// which is what internal/bus builds when the stream gave no answer and the flush could not
+// confirm the publish either (bus's async request, "bus: request to %q: %w: %w"). Every other
+// send is taken, so the forward under test is the only thing that fails. A full stream's refusal
+// is no such error and never wraps ErrNotAcknowledged, which is why that case cannot hold this
+// half of the rule.
+type unconfirmedForwardSender struct{ publishOnly }
+
+func (unconfirmedForwardSender) Publish(contracts.Envelope) error { return nil }
+
+func (p unconfirmedForwardSender) WindowUntil(func() time.Time) bus.Sender { return p }
+
+func (unconfirmedForwardSender) PublishAsync(contracts.Envelope) <-chan error { return answered(nil) }
+
+func (unconfirmedForwardSender) Request(subject string, _ contracts.Envelope, _ bus.RequestOptions) <-chan error {
+	return answered(fmt.Errorf("bus: request to %q: %w: %w", subject, bus.ErrNotAcknowledged, bus.ErrPublishUnconfirmed))
+}
+
+// A forward whose publish the connection could not confirm is counted failed, not unanswered,
+// even though the stream did not acknowledge it either: both sentinels are on that one error, and
+// unanswered means the copy stands and may yet be delivered, which an unconfirmed publish does not
+// say. That is the !errors.Is(err, bus.ErrPublishUnconfirmed) half of forwardUnanswered, and this
+// is the case that holds it - TestAFallbackCopyTheStreamDidNotAcknowledgeIsCountedUnanswered holds
+// the other.
+func TestAFallbackForwardWhosePublishWasNotConfirmedIsCountedFailed(t *testing.T) {
+	ctx := store.WithTransactionTracking(context.Background())
+	rig := newRoleRig(t)
+	const role, holder = "reviewer", "ses_fallback_unconfirmed"
+	roleTopic := contracts.RoleTopicPrefix + role
+	rig.claim(t, role, holder, session.SessionEntry{SelfSubscribed: true})
+	rig.silent(t, roleTopic)
+	deps, registry := rig.countingDeps(t)
+	// The row is seeded through the rig's own publisher, which takes the comment's mention and
+	// holds the route's copy back; the pass alone is given the sender that cannot confirm.
+	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
+	unconfirmed := deps
+	unconfirmed.Publisher = unconfirmedForwardSender{}
+
+	publishFallbackCopies(ctx, unconfirmed, unfenced{}, holdingProcess(t, deps.Store))
+
+	if held := readHeldCopy(t, rig.database, commentID, roleTopic); held.published || held.settled {
+		t.Fatalf("the copy whose forward was not confirmed is published=%v settled=%v, want it left unsettled for a later pass",
+			held.published, held.settled)
+	}
+	body := failureReasons(t, registry)
+	if !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 1`) {
+		t.Fatalf("/metrics body = %q, want the forward whose publish was not confirmed counted failed", body)
+	}
+	if strings.Contains(body, `reason="unanswered"`) {
+		t.Fatalf("/metrics body = %q counts a forward whose publish was not confirmed as one the stream may yet have stored", body)
+	}
 }
