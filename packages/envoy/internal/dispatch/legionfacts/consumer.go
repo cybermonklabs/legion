@@ -162,10 +162,11 @@ var serverSchedule = schedule{
 //     (staleStoredRows).
 //
 // The same passes keep each project's filings (issue_filings): an `issue.created` event a Legion
-// session wrote is a new filing of that session's project (readEventPage), and a stored filing
-// is computed again whenever the pass computes its filed issue or its filer's issue
-// (filingsToCompute), so its class, its filer's phase and its root move with the inputs the
-// rows move with.
+// session wrote is a new filing of that session's project, a session that writes under a title
+// naming another issue moves every filing it made to the project and the filer that title names
+// (readEventPage, sessionFilings), and a stored filing is computed again whenever the pass
+// computes its filed issue or its filer's issue (filingsToCompute), so its class, its filer's
+// phase and its root move with the inputs the rows move with.
 //
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // rows again. Every pass is safe to run twice: a row whose values did not move is not rewritten
@@ -303,12 +304,16 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		}
 	}
 	// A filing is the filer's project's, wherever the filed issue lives (legion.SessionTitle's
-	// OfProject, the rule metrics reads a filing by), so it is owed to that project and to no
-	// other. One project at most answers it: a project's key is upper case, and OfProject
-	// compares it ignoring case.
+	// OfProject, the rule metrics reads a filing by), so it is owed to the project its filer's
+	// newest title names, which computes and writes it. One project at most answers that: a
+	// project's key is upper case, and OfProject compares it ignoring case. A filing stored under
+	// another project is owed to that project as well, whose computation answers no filing for it
+	// and so deletes it: the one pass takes the filing out of the project it left and writes it
+	// into the project it joined, and the upsert of the one moves the stored row to it whichever
+	// of the two is written first (upsertFilings).
 	for _, filed := range read.events.filings {
 		for project := range projects {
-			if !filed.filer.OfProject(project) {
+			if !(filed.legion && filed.filer.OfProject(project)) && project != filed.stored {
 				continue
 			}
 			if work := needed(project); work != nil {
@@ -370,8 +375,9 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 }
 
 // projectWork is what one page owes one project: the issues its feeds named, those of them a
-// row moved between trees (touch), the issues its events say a Legion session of the project
-// filed (feed.filings), and whether the project is to be computed whole (a backfill).
+// row moved between trees (touch), the filings its events moved that the project owes, the ones
+// it joined and the ones it left (feed.filings), and whether the project is to be computed whole
+// (a backfill).
 type projectWork struct {
 	keys     map[string]bool
 	moved    map[string]bool
@@ -392,7 +398,7 @@ type projectPass struct {
 // project (computeWhole) and the keys its feeds named are left out of the call, because the
 // whole project already holds them: its stated set is the project itself, and its filings are
 // every filing a Legion session of the project made. Every other project is computed over the
-// rows its changes touch (rowsToCompute) and the filings those rows and its new filings name
+// rows its changes touch (rowsToCompute) and the filings those rows and its moved filings name
 // (filingsToCompute), and no row or filing outside those sets is written or deleted.
 func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectPass, error) {
 	if work.backfill {

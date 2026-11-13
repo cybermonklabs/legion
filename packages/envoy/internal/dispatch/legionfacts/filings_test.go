@@ -22,7 +22,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 	project := run.fixture.Project
 	run.pass(t)
 	whole := run.filings(t)
-	compareFilings(t, run, "the whole read", whole)
+	compareFilings(t, run, project, "the whole read", whole)
 	if len(whole) == 0 {
 		t.Fatal("the rig's history holds no Legion filing, so this check has nothing to compare")
 	}
@@ -43,7 +43,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 	across := run.fileIssue(t, "OTHER", 1, "", roleSession("implementer", otherImplemented), at(12))
 	run.pass(t)
 	added := run.filings(t)
-	compareFilings(t, run, "the pass that read the new filings", added)
+	compareFilings(t, run, project, "the pass that read the new filings", added)
 	for _, want := range []struct {
 		key, class, filer, phase, root string
 	}{
@@ -68,7 +68,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 	run.writeEventAs(t, outside, `{"kind":"user","id":"alice"}`, "issue.updated", `{"changed":["parent"]}`, run.at.Add(-time.Hour))
 	run.pass(t)
 	moved := run.filings(t)
-	compareFilings(t, run, "the pass after the move", moved)
+	compareFilings(t, run, project, "the pass after the move", moved)
 	if got := moved[outside]; got.RootKey != otherRoot || got.Class != metrics.ClassOutOfTree {
 		t.Errorf("%s moved under %s and is stored as %s, want root %s and the class out_of_tree",
 			outside, otherRoot, showFiling(got), otherRoot)
@@ -83,15 +83,15 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 		outside, added[outside].Class, across, added[across].Class, outside, added[outside].RootKey, moved[outside].RootKey)
 }
 
-// compareFilings holds the stored filings of the project to the ones metrics.Compute's splitting
-// table answers over the whole history, field by field, and each stored root to the tree the
-// same population places the filed issue in: Compute's own roots scope keeps a filing exactly
-// where its filed issue is the root of its tree.
-func compareFilings(t *testing.T, run *consumer, when string, stored map[string]Filing) {
+// compareFilings holds the stored filings of project to the ones metrics.Compute's splitting
+// table answers for that project over the whole history, field by field, and each stored root to
+// the tree the same population places the filed issue in: Compute's own roots scope keeps a
+// filing exactly where its filed issue is the root of its tree.
+func compareFilings(t *testing.T, run *consumer, project, when string, stored map[string]Filing) {
 	t.Helper()
-	population, err := metrics.Read(t.Context(), run.database.Pool, nil, run.fixture.Project, run.fixture.From.Add(-24*time.Hour), run.at)
+	population, err := metrics.Read(t.Context(), run.database.Pool, nil, project, run.fixture.From.Add(-24*time.Hour), run.at)
 	if err != nil {
-		t.Fatalf("%s: read the history: %v", when, err)
+		t.Fatalf("%s: read the history of %s: %v", when, project, err)
 	}
 	report := metrics.Compute(population, metrics.ScopeAll, run.at)
 	roots := map[string]bool{}
@@ -101,7 +101,7 @@ func compareFilings(t *testing.T, run *consumer, when string, stored map[string]
 	want := map[string]Filing{}
 	for _, filed := range report.Splitting.Filed {
 		want[filed.Key] = Filing{
-			Project: run.fixture.Project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer,
+			Project: project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer,
 			FilerIssue: filed.FilerIssue, FilerPhase: filed.FilerPhase, Class: filed.Class,
 			RootKey: population.TreeRoot(filed.Key),
 		}
@@ -120,7 +120,7 @@ func compareFilings(t *testing.T, run *consumer, when string, stored map[string]
 			t.Errorf("%s: %s is stored under the root %s, and Compute's roots scope keeps it %t", when, key, got.RootKey, roots[key])
 		}
 	}
-	t.Logf("%s: %d stored filings compared with Compute's splitting table, by class %v", when, len(want), classes)
+	t.Logf("%s: %d stored filings of %s compared with Compute's splitting table, by class %v", when, len(want), project, classes)
 }
 
 // sameFiling is whether two filings hold the same values, the moment compared as an instant.
@@ -133,9 +133,15 @@ func sameFiling(got, want Filing) bool {
 // filings is every stored filing of the history's project, by filed issue.
 func (c *consumer) filings(t *testing.T) map[string]Filing {
 	t.Helper()
-	stored, err := ReadFilings(t.Context(), c.database.Pool, c.fixture.Project)
+	return c.filingsOf(t, c.fixture.Project)
+}
+
+// filingsOf is every stored filing of project, by filed issue.
+func (c *consumer) filingsOf(t *testing.T, project string) map[string]Filing {
+	t.Helper()
+	stored, err := ReadFilings(t.Context(), c.database.Pool, project)
 	if err != nil {
-		t.Fatalf("read the stored filings: %v", err)
+		t.Fatalf("read the stored filings of %s: %v", project, err)
 	}
 	return stored
 }

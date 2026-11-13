@@ -127,12 +127,16 @@ type feed struct {
 	remapped bool
 }
 
-// filing is one issue an event of the page says a Legion session filed: the issue whose
-// `issue.created` event a session wrote, and that session's newest title
-// (legion.ParseSessionTitle), which says whose filing it is (newFilings).
+// filing is one issue a session of the page filed whose stored filing the page can have moved
+// (sessionFilings): the issue whose `issue.created` event the session wrote, that session's
+// newest title (legion.ParseSessionTitle) and whether it is a Legion title at all, which say
+// which project the filing is owed to now, and the project whose issue_filings holds it, "" for
+// none, which is owed the filing's deletion where it is no longer that project's.
 type filing struct {
-	issue string
-	filer legion.SessionTitle
+	issue  string
+	filer  legion.SessionTitle
+	legion bool
+	stored string
 }
 
 // touch is one issue a feed named: the project it belongs to, the issue itself, and whether the
@@ -175,18 +179,21 @@ type touch struct {
 // own project is not the work: the issues are read from the session and from the title the
 // event carries (sessionIssues).
 //
-// An `issue.created` event a session wrote is a filing, which the filer's project owes a row of
-// issue_filings (newFilings). The filed issue may belong to another project than the filer's,
-// and the filer's project is the one that counts it, so the page answers the filing with the
-// filer it names and the pass gives it to that project (passPage).
+// An `issue.created` event a session wrote is a filing, and the session's newest title says which
+// project counts it, as metrics reads it (legion.SessionTitle's OfProject): wherever the filed
+// issue lives. So every session the page names can have moved a filing: one it files on this
+// page, and one it filed long ago, whose project, filer and class move the moment the session
+// writes under a title that names another issue (sessionFilings). The page answers each such
+// filing with the filer its newest title names and the project that stores it, and the pass owes
+// it to both projects (passPage), so one pass writes it into the one and takes it out of the
+// other.
 func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
 		select event.id, coalesce(issue.project_key, ''), coalesce(event.issue_key, ''),
 		       coalesce(event.payload -> 'changed' @> '["parent"]', false),
 		       case when event.actor ->> 'kind' = 'session' then coalesce(event.actor ->> 'id', '') else '' end,
 		       case when event.actor ->> 'kind' = 'session'
-		            then coalesce(event.actor -> 'origin' ->> 'session_title', '') else '' end,
-		       event.type = 'issue.created'
+		            then coalesce(event.actor -> 'origin' ->> 'session_title', '') else '' end
 		from events event
 		left join issues issue on issue.key = event.issue_key
 		where event.id > $1 and event.id <= $2
@@ -201,12 +208,10 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	count := 0
 	sessions := map[string]bool{}
 	titles := map[string]bool{}
-	created := map[string]string{}
 	for rows.Next() {
 		var touched touch
 		var session, title string
-		var creates bool
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session, &title, &creates); err != nil {
+		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session, &title); err != nil {
 			return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 		}
 		count++
@@ -216,9 +221,6 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		if title != "" {
 			titles[title] = true
 		}
-		if creates && session != "" && touched.issue != "" {
-			created[touched.issue] = session
-		}
 		if touched.project != "" {
 			page.touches = append(page.touches, touched)
 		}
@@ -227,38 +229,81 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 	}
 	page.full = count == limit
-	worked, err := sessionIssues(ctx, q, slices.Sorted(maps.Keys(sessions)), slices.Sorted(maps.Keys(titles)))
+	named := slices.Sorted(maps.Keys(sessions))
+	worked, err := sessionIssues(ctx, q, named, slices.Sorted(maps.Keys(titles)))
 	if err != nil {
 		return feed{}, err
 	}
 	page.touches = append(page.touches, worked...)
-	if page.filings, err = newFilings(ctx, q, created); err != nil {
+	if page.filings, err = sessionFilings(ctx, q, named); err != nil {
 		return feed{}, err
 	}
 	return page, nil
 }
 
-// newFilings is the filings among the page's `issue.created` events, each the filed issue and the
-// filing session's newest title, read by primary key (delivery.ResolveSessionTitles) because
-// that title, and not the one the event carried, is what metrics classifies a filing by. A
-// session whose newest title is no Legion title filed nothing Legion counts.
-func newFilings(ctx context.Context, q Querier, created map[string]string) ([]filing, error) {
-	if len(created) == 0 {
+// sessionFilings is every filing the sessions made that their newest titles say is stored wrong:
+// each issue one of them wrote an `issue.created` event of, beside the issue_filings row that
+// holds it, where the session's newest title (read by primary key, delivery.ResolveSessionTitles,
+// because that title and not the one the event carried is what metrics classifies a filing by)
+// is a Legion title and no row holds the filing, or a row holds it under another project, another
+// role or another filer's issue than that title names, or under any project once the title is no
+// Legion title. A filing whose row already names the filer the newest title names is left out:
+// its project and its filer stand, and the pass recomputes it with its filer's issue
+// (filingsToCompute) whenever that issue's own inputs move.
+//
+// That is the filings a new filing on the page adds, and the filings a retitle moves: a session
+// moves its filings only by writing under a new title, and an event that carries the title names
+// the session on the page that carries it, so the page's sessions are every session that can
+// have moved one.
+//
+// It scans events_session_actor_created_at_idx (migration 0026) once for each session, over the
+// events that session wrote, as sessionIssues scans it for the same sessions, keeping the
+// `issue.created` ones, and reads issue_filings by its primary key for each. A broad session, a
+// controller's, has filed many issues, and the read answers them all on every page it writes on,
+// while the pass computes only the ones its newest title moved.
+func sessionFilings(ctx context.Context, q Querier, sessions []string) ([]filing, error) {
+	if len(sessions) == 0 {
 		return nil, nil
 	}
-	sessions := map[string]bool{}
-	for _, session := range created {
-		sessions[session] = true
-	}
-	titles, err := delivery.ResolveSessionTitles(ctx, q, slices.Sorted(maps.Keys(sessions)))
+	rows, err := q.Query(ctx, `
+		select event.issue_key, event.actor ->> 'id', coalesce(filing.project_key, ''),
+		       coalesce(filing.filer_role, ''), coalesce(filing.filer_issue, '')
+		from events event
+		left join issue_filings filing on filing.issue_key = event.issue_key
+		where event.actor ->> 'id' = any($1::text[]) and event.actor ->> 'kind' = 'session'
+		  and event.type = 'issue.created' and event.issue_key is not null
+		order by event.issue_key, event.id
+	`, sessions)
 	if err != nil {
-		return nil, fmt.Errorf("resolve the titles of %d filing sessions: %w", len(sessions), err)
+		return nil, fmt.Errorf("read the filings of %d sessions: %w", len(sessions), err)
+	}
+	type made struct{ issue, session, project, role, filer string }
+	var filed []made
+	filers := map[string]bool{}
+	var one made
+	if _, err := pgx.ForEachRow(rows, []any{&one.issue, &one.session, &one.project, &one.role, &one.filer}, func() error {
+		filed = append(filed, one)
+		filers[one.session] = true
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the filings of %d sessions: %w", len(sessions), err)
+	}
+	if len(filed) == 0 {
+		return nil, nil
+	}
+	titles, err := delivery.ResolveSessionTitles(ctx, q, slices.Sorted(maps.Keys(filers)))
+	if err != nil {
+		return nil, fmt.Errorf("resolve the titles of %d filing sessions: %w", len(filers), err)
 	}
 	filings := []filing{}
-	for _, issue := range slices.Sorted(maps.Keys(created)) {
-		if filer, legionSession := legion.ParseSessionTitle(titles[created[issue]]); legionSession {
-			filings = append(filings, filing{issue: issue, filer: filer})
+	for _, one := range filed {
+		filer, legionSession := legion.ParseSessionTitle(titles[one.session])
+		stands := legionSession && one.project != "" && filer.OfProject(one.project) &&
+			filer.Role == one.role && filer.Issue == one.filer
+		if stands || (!legionSession && one.project == "") {
+			continue
 		}
+		filings = append(filings, filing{issue: one.issue, filer: filer, legion: legionSession, stored: one.project})
 	}
 	return filings, nil
 }
