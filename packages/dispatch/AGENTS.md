@@ -2689,7 +2689,9 @@ ends the probe with exit 1): it writes one JSON line per frame, applies each wit
 /api/v1/live/_test/disconnect` closes its socket as a restart would, and `POST
 /api/v1/live/_test/rotate` exercises a 4001 rotation. With `--compare`, the probe reads the GET
 routes for the last window it applied and writes whether the pull request ids, run ids and every
-measure are equal, exiting 1 when one does not. `docs/site/src/content/docs/dispatch/delivery.md`
+measure are equal, exiting 1 when one does not, or when a read receives nothing for
+`--read-within <seconds>` (`REQUEST_DEADLINE_MS` unless given; it starts over as the headers and
+each piece of the body arrive). `docs/site/src/content/docs/dispatch/delivery.md`
 ("For agents") is its user's guide. `e2e/__tests__/delivery-live-probe.test.ts` (`bun run test`)
 runs it as a process against a Bun websocket server that replays `packages/contracts/fixtures/live`
 and holds the body it applies to `after.json`. It also checks that the probe reopens at once
