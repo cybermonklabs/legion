@@ -211,6 +211,64 @@ func TestAFileReloadLeavesTheEngineFiringTheHookBootRead(t *testing.T) {
 	}
 }
 
+// The engine the daemon opens decides each fact by the design gate the settings holder holds
+// when that decision begins, not the one boot read: openWorkflow hands workflow.NewReading a read
+// of the holder, and NewReading reads it again at every decision. A change of `gates.design`
+// settled through the file arm is therefore the gate the running engine reports next.
+//
+// The other half is TestADecisionReadsTheSettingsHolderOnce in the workflow package: one read
+// per decision. An engine that read the holder once at construction passes that test, and
+// before this one it passed every row of this package as well — they build the engine on a
+// configuration that never changes — so the comment above openWorkflow's closure, that each
+// decision-class value "is read as the decision is made, from the settings holder", was a claim
+// no test could fail. This test reds on that engine, and on a closure that snapshots the holder
+// once instead of reading it.
+func TestADesignGateSettledUnderTheRunningDaemonIsTheGateItsEngineDecidesBy(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !servedBootCall(t, w, r, hookBootProject) {
+			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(board.Close)
+	live := hookBootSettings(t, pool.Config().ConnString(), board.URL, "Say what the round missed.")
+	boot := *live.Snapshot()
+	if len(boot.Gates.Steps()) == 0 {
+		t.Fatalf("the boot gates no step, want the default spec step: the change below would move nothing")
+	}
+
+	log := quietLogger()
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	w, err := openWorkflow(ctx, boot, live, newRebuilder(log, live), st, "project-id", "dispatch-token", nil,
+		newRepositories(boot.Project, boot.RepositoryRenames), log,
+		loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"},
+		repositoriesGitHub(t), nil)
+	if err != nil {
+		t.Fatalf("open the workflow: %v", err)
+	}
+	if got := w.engine.GatedSteps(); len(got) == 0 {
+		t.Fatalf("the engine opened on %+v, want the boot's gated step", got)
+	}
+
+	setInConfig(t, live, "gates", "{design: []}")
+	if _, _, err := live.Apply(config.SourceFile, "", map[string]any{}); err != nil {
+		t.Fatalf("the file arm of the settings route: %v", err)
+	}
+	if steps := live.Snapshot().Gates.Steps(); len(steps) != 0 {
+		t.Fatalf("the settled design gate = %+v, want the file's empty list: the change this test is about did not settle", steps)
+	}
+
+	if got := w.engine.GatedSteps(); len(got) != 0 {
+		t.Fatalf("the running engine decides by %+v after the gate was settled empty, want no gated step: the engine is reading the configuration boot handed it, not the settings holder", got)
+	}
+}
+
 // hookBootProject is the project the hook boot above runs: its own database, so one name serves.
 const hookBootProject = "HOOKS"
 
