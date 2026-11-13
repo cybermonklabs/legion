@@ -217,14 +217,14 @@ type RoleClaimSweep struct {
 // revision, and then nothing per role but the deletes it owes: no Get of its own per key. One
 // role's undecodable record, failed delete or failed release costs that one role: it is logged
 // in a line of its own, counted in Skipped, and the pass goes on. This reaper is the backstop
-// for the claim a deregistration left standing - the one its role claim view had not been
-// delivered when the session left, which releaseAllRoleClaims leaves here, and the one that
-// deregistration was not authorised to free (RoleReleaseAuthority) - and a pass that ends
-// at the first transient failure is no backstop at the role count that made the view miss the
-// claim: one failure would leave every role after it unswept until the next interval, and a
-// failure that lasts would leave them unswept for as long as it does. A role counted Skipped for
-// a read is a stored record this build cannot decode (ErrMalformedRoleClaim), which reads the
-// same on every pass.
+// for the claim a deregistration left standing - the one its interest record did not name and its
+// role claim view had not been delivered when the session left, which releaseAllRoleClaims leaves
+// here, and the one that deregistration was not authorised to free (RoleReleaseAuthority) - and a
+// pass that ends at the first transient failure is no backstop at the role count that made the
+// view miss the claim: one failure would leave every role after it unswept until the next
+// interval, and a failure that lasts would leave them unswept for as long as it does. A role
+// counted Skipped for a read is a stored record this build cannot decode (ErrMalformedRoleClaim),
+// which reads the same on every pass.
 //
 // Two failures still end the pass. The scan, because a pass over part of the bucket is not the
 // pass over every role its counts would claim it was, and because there is no per-role read

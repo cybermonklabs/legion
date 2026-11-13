@@ -349,14 +349,17 @@ one session id and that topic is the interest half of a claim that still stands,
 by the claim itself: `POST /v1/interests/unsubscribe`
 answers in `removed` the topics that actually left the record, which is not always the list the
 request named. The second process is granted
-the role once the first stops answering for the claim and the live window passes, and only
-while Envoy can read its own view of the role claims: a listener that has just restarted is
-still filling that view, and nothing renews a claim while it cannot be read, so that one grant
-answers `503` with `Retry-After: 1` and claims nothing until the view answers again, rather
-than hand a live holder's role away because its renewal aged with nothing able to move it. A
-claim from the process the standing claim already names is granted through that refill, since
-it takes the role from nobody. `GET /v1/roles/<role>` answers the holding process's
-`client_instance_id` beside the holder's session id where the claim names a process, and leaves
+the role once the first stops answering for the claim and the live window passes, and only while
+the listener can tell that the first process stopped, and not that the listener itself failed to
+renew the claim: the claim reads the same either way. So that one grant answers `503` with
+`Retry-After: 1` and claims nothing, rather than hand a live holder's role away, while the listener
+cannot read its own view of the role claims (a listener that has just restarted is still filling
+it), while that view's last full read of the role claims is more than 2 minutes old (see
+[Health and readiness](#health-and-readiness)), and while the listener's own renewal of that role
+for its holder failed inside the live window. A claim from the process the standing claim already
+names is granted in all three cases, since it takes the role from nobody. `GET /v1/roles/<role>`
+answers the holding process's `client_instance_id` beside the holder's session id where the claim
+names a process, and leaves
 the field out where it names none, which is how a refused claimant tells its own session id
 held by another process from a different session.
 
@@ -603,9 +606,29 @@ install it, what each component deploys and which settings it sets.
 | Answer | Meaning |
 | --- | --- |
 | `200` `starting` | The listener is still binding its durable consumer. |
-| `200` `healthy` | Everything answers. The body includes the consumer's lag and `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`. |
-| `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
+| `200` `healthy` | Everything answers. The body includes the consumer's lag; `session_max_age`, the `envoy_sessions` bucket's maximum age in use as a Go duration string such as `"5m0s"`; and `role_claim_repair`, how fresh the listener's copy of the role claims is (below). |
+| `200` `degraded` | A passing key-value failure the listener is retrying, or a role claim view that answers no read: its watcher's first scan has not delivered every claim, so `GET /v1/sessions` and `GET /v1/registry/<session_id>` answer the bus-unavailable `503` until it has. Both repair themselves, so the answer stays `200`. A key-value failure's body carries `status` and `error` alone, and the listener checks nothing after it, so it can stand in front of a lost durable consumer. The role claim view is checked last, after every check that can answer `unhealthy`, and its body keeps the `healthy` body's fields. Also `role claim repair unavailable` when the listener's last full read of the role claims is more than 2 minutes old, or none has completed, while the view answers: its body keeps the `healthy` body's fields too, and `GET /v1/sessions` still answers `200` from the copy. Also `KV watch rebuild unavailable` when the listener has not rebuilt its key-value watches for a minute after a NATS reconnect: its caches serve what they last held, and the answer stays a `200` because the container health check and the readiness probe both read `/healthz`, so refusing would take out the one listener still serving those caches and replace it with one that rebuilds into the same failure with empty caches. |
 | `503` `unhealthy` | NATS is unreachable, the subscription or a cache watcher stopped, the durable consumer is gone, or the durable consumer is `not bound to this listener's subscription`, which a durable deleted and created again under the listener leaves. `role lane subscription inactive` when the role lane's own connection is down or holds no valid subscription, since no role message is forwarded then. |
+
+`role_claim_repair` says how fresh the listener's copy of the role claims is. The listener reads
+every role claim from NATS again one minute after each full read completes, and each such read
+puts back a claim the copy lost and takes out one NATS no longer holds:
+
+| Field | Meaning |
+| --- | --- |
+| `completed_at` | When the last full read of the role claims completed, RFC 3339 in UTC; `null` until one has. |
+| `age_seconds` | How long before the answer that read completed; `null` until one has. |
+| `bound_seconds` | `120`. A read older than this, or none at all, makes the answer `200` `degraded` with `role claim repair unavailable`. |
+| `put_back` | How many claims that read put back into the copy. |
+| `took_out` | How many claims that read took out of the copy. |
+
+That `degraded` answer is never a `503`, so a readiness probe keeps the listener in service.
+Meanwhile `GET /v1/sessions` still answers `200` from the copy, and a claim of a role held under
+the claimant's own session id answers `503` with `Retry-After: 1` rather than take it (see
+[Live, unresponsive, gone](#live-unresponsive-gone)). `/metrics` reports the same read as
+`envoy_role_claim_repair_completed_timestamp_seconds`, `envoy_role_claim_repair_put_back` and
+`envoy_role_claim_repair_took_out`, with no sample before the first read completes, so an alert can
+watch the timestamp's age. No setting changes the minute or the 2-minute bound.
 
 `GET /livez` needs no credential either. It answers `204` and reads nothing: no flush to NATS, no
 cache ping and no read of the durable consumer. A liveness or startup probe reads it, so a bus

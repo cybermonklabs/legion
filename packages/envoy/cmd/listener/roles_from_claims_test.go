@@ -277,10 +277,10 @@ func requireRolesOrUnanswered(t *testing.T, what string, recorder *httptest.Resp
 	}
 }
 
-// A role claim view whose first scan nats.go's idle timer ended is not complete, so it says
-// nothing about who holds a role. The two session routes answer the bus-unavailable 503 with
-// Retry-After: 1, never the claim's holder listed with no roles, and a send still goes out, its
-// sender carrying no roles.
+// A role claim view whose first scan its idle wait ended (kvwatch.ScanIdleTimeout) is not
+// complete, so it says nothing about who holds a role. The two session routes answer the
+// bus-unavailable 503 with Retry-After: 1, never the claim's holder listed with no roles, and a
+// send still goes out, its sender carrying no roles.
 func TestARoleViewWhoseFirstScanTimedOutIsTheBusNotAnsweringOnTheSessionRoutes(t *testing.T) {
 	const (
 		holder = "ses_timed_out_view_holder"

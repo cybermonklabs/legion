@@ -159,12 +159,11 @@ func TestASecondProcessOfOneSessionIdTakesTheRoleOnceTheClaimsRenewalIsOlderThan
 }
 
 // The refill this guards: a listener restart leaves the role claim view unable to answer, and
-// nothing renews a claim while it cannot, since a registration renews the claims its session
-// holds through that very view. Every claim's renewal is then ageing with nothing able to move
-// it, so a renewal older than the live window says nothing about the holder, and a refill longer
-// than the window would hand the live holder's role to the second process. The claim fails closed
-// instead, with the 503 the route answers every read that did not answer with, and writes
-// nothing.
+// while it cannot, a registration renews only the roles its interest row names, so a claim only the
+// view would have named goes unrenewed (store.Registry.RenewRoleClaims). A renewal older than the
+// live window then says nothing about the holder, and a refill longer than the window would hand
+// the live holder's role to the second process. The claim fails closed instead, with the 503 the
+// route answers every read that did not answer with, and writes nothing.
 func TestASecondProcessOfOneSessionIdIsRefusedTheRoleWhileTheRoleClaimViewCannotAnswer(t *testing.T) {
 	const (
 		sessionID = "ses_shared_id"

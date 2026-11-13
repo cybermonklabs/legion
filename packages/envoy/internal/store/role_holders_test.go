@@ -288,10 +288,11 @@ func restartRoleViewTimingOutAfter(t *testing.T, conn *natsgo.Conn, reg *Registr
 	reg.roleWatcher.Start()
 }
 
-// A role claim view whose first scan nats.go's idle timer ended holds only the claims that scan
-// delivered, so it is no answer: RolesHeldBy refuses it as not ready rather than report the holder
-// of a claim the scan did not deliver without its roles. The watcher scans the bucket again
-// (newRoleWatcher's kvwatch.WithRescan), and the view answers once that scan completes.
+// A role claim view whose first scan kvwatch's own idle wait ended (kvwatch.WithScanIdleTimeout)
+// holds only the claims that scan delivered, so it is no answer: RolesHeldBy refuses it as not
+// ready rather than report the holder of a claim the scan did not deliver without its roles. The
+// watcher reads the bucket again itself, a re-read of the timed-out scan (kvwatch's rereadDelay
+// after it), and the view answers once that read completes.
 func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
@@ -330,11 +331,11 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 
 // The listener's startup gate is this wait, so it decides whether GET /v1/sessions and
 // GET /v1/registry/<session_id> are served before the role claim view can answer. Readiness is no
-// gate for them: a first scan nats.go's idle timer ended releases it with the view short of the
-// bucket, and RolesHeldBy goes on refusing (ErrRoleViewNotReady) until the rescan completes, which
-// both routes answer a live client as the bus-unavailable 503 while the bus is healthy. So
-// WaitForCacheReady returns only once that view is complete, and RolesHeldBy answers the moment it
-// returns, with no retry and no poll.
+// gate for them: a first scan that its idle wait ended (kvwatch.ScanIdleTimeout) releases it with
+// the view short of the bucket, and RolesHeldBy goes on refusing (ErrRoleViewNotReady) until the
+// watcher's re-read completes, which both routes answer a live client as the bus-unavailable 503
+// while the bus is healthy. So WaitForCacheReady returns only once that view is complete, and
+// RolesHeldBy answers the moment it returns, with no retry and no poll.
 func TestWaitForCacheReadyHoldsUntilTheRoleClaimViewAnswers(t *testing.T) {
 	conn, cleanup := connectNATS(t)
 	defer cleanup()

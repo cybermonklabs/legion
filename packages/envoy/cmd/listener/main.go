@@ -1162,8 +1162,8 @@ func main() {
 	// roles - GET /v1/sessions and GET /v1/registry/<session_id> - answer a live client the
 	// bus-unavailable 503 while the bus is healthy, because the role claim view refuses every read
 	// until its watcher has delivered every claim. So the gate waits for that view to be complete,
-	// not merely ready: a first scan nats.go's idle timer ended releases readiness, and the
-	// watcher's rescan ends this wait.
+	// not merely ready: a first scan that its idle wait ended (kvwatch.ScanIdleTimeout) releases
+	// readiness, and the watcher's own re-read of the bucket ends this wait.
 	//
 	// Bounded at 30s: a healthy NATS cluster completes the scan in milliseconds. The wait also
 	// ends before that bound with the role claim watcher's terminal error - a first start that

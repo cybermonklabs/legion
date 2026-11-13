@@ -136,6 +136,7 @@ Every topic starts with `notifications.`.
   A forward the stream did not store for a live holder within about 4 seconds errs too, and you see that one after about 8 seconds, because the client tries once more.
   No error releases the role's claim: a holder whose `holder_state` is `unresponsive` keeps its role.
   `envoy_role_get(role=...)` finds the holder first.
+  From a shell with no tool device, read the holder with `envoy role <role>` where sjawhar/dotfiles' `scripts/envoy` is on the PATH, and in a Legion pod, which has no `envoy` command, with `curl -sS -H "Authorization: Bearer $(cat "$ENVOY_TOKEN_FILE")" "$ENVOY_URL/v1/roles/<role>" | jq -r '.holder // .reason'`, which prints the holder's session id, or `unclaimed` for a role nobody holds.
   The forward is kept on the holder's inbox, so the holder's session gets it once from its own durable consumer, also after a restart, a reconnect, or while it was not running.
 
 - A message that must reach more than 4 role topics is the project controller's to send, not yours.
