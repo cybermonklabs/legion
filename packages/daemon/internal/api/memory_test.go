@@ -118,11 +118,11 @@ var (
 // beside its place and its length, no claim view's `leakCheckCause`, neither entry number and
 // nothing of a repository correction; a pod at 85 or 86 the answers and the line's own fields
 // too, and still no `leakCheckCause`, neither entry number and no repository correction; a pod
-// from 87 to 93 the cause too, and not the entry numbers; a pod at 94 the entry numbers too, and
-// still nothing of a repository correction; a pod below 46 none of the fifteen; and a pod at 95,
-// this daemon's declared contract, a pod whose claims record no contract and a caller in no pod
-// — the operator's `legion state`, whose memory line reads the draws, whose queue line reads the
-// wakes and whose tool-call line reads the step records — are served all of them.
+// from 87 to 93 the cause too, and not the entry numbers; a pod from 94 to 100 the entry numbers
+// too, and still nothing of a repository correction; a pod below 46 none of the fifteen; and a
+// pod at 101, this daemon's declared contract, a pod whose claims record no contract and a caller
+// in no pod — the operator's `legion state`, whose memory line reads the draws, whose queue line
+// reads the wakes and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
@@ -151,18 +151,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		wakes   bool
 		retired bool
 		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// the contract thirty-eight below this daemon's own, so a pod at 57 is served the record
+		// the contract forty-four below this daemon's own, so a pod at 57 is served the record
 		// and a pod still running an older plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), thirty-seven contracts below this daemon's own, so a pod at it is
+		// (waitingLineContract), forty-three contracts below this daemon's own, so a pod at it is
 		// served the places and a pod still running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), the contract thirty-three below this daemon's own.
+		// has made (backwardMovesContract), the contract thirty-nine below this daemon's own.
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
-		// stale-plugin lane has left (claimsToRefreshContract), the contract twenty-two below this
+		// stale-plugin lane has left (claimsToRefreshContract), the contract twenty-eight below this
 		// daemon's own, so a pod at 73 or 74 is served the count and every older pod is not.
 		refresh bool
 		// failure is whether the caller is served the nine keys recordFieldsContract added
@@ -183,7 +183,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// public leak check could not be installed.
 		leak bool
 		// entries is whether the caller is served each issue's `phaseEntry` and `givenEntry`
-		// (phaseEntriesContract), the contract right below this daemon's own.
+		// (phaseEntriesContract), the contract seven below this daemon's own.
 		entries bool
 		// correction is whether the caller is served what a correction of an issue's repository
 		// left on its record (repositoryCorrectionContract), this daemon's own contract.
@@ -246,10 +246,11 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// claim views' `leakCheckCause` is served too, and the two entry numbers and the four
 		// repository keys are held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true},
-		// The band at 94 alone, from phaseEntriesContract to below repositoryCorrectionContract,
+		// The band from 94 to 100, from phaseEntriesContract to below repositoryCorrectionContract,
 		// the last band under the declared contract: the two entry numbers are served too, and
-		// the four repository keys are the ones held back.
+		// the four repository keys are the ones held back. Its two rows are its two edges.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
+		{name: "a pod a contract below repositoryCorrectionContract", remote: statePodAddr + ":41000", claims: podClaims(repositoryCorrectionContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
 		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, correction: true},
 		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, correction: true},
 		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, correction: true},

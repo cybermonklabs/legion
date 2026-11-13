@@ -884,7 +884,7 @@ const recordFieldsContract = 75
 // number is the one DaemonAPIVersion takes for these four keys, and version.go's entry for it
 // records how that number was chosen. It is the highest of the fifteen bands, this daemon's own
 // contract, so the only caller served the four keys is one at it.
-const repositoryCorrectionContract = 95
+const repositoryCorrectionContract = 101
 
 // carriesRepositoryCorrection is whether any issue of state carries one of the four keys
 // repositoryCorrectionContract added. Like the gated steps they are written only where there is
@@ -947,8 +947,8 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. It is the band below repositoryCorrectionContract's, so a caller in a pod at
-// 94 is served the two keys and none of the four repository keys.
+// reading at all. It is the band below repositoryCorrectionContract's, so a caller in a pod from
+// 94 to 100 is served the two keys and none of the four repository keys.
 const phaseEntriesContract = 94
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

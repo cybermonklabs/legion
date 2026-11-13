@@ -1335,7 +1335,7 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 95: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 101: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -1356,7 +1356,7 @@ package api
 // and its production check — and what that work is called, "the testing phase of LEGION-208" or
 // "the production check of LEGION-208", empty when nothing is owed. The end-of-turn reminder
 // renders that answer in both harnesses and keeps no model of the phase of its own
-// (dispatch://INFRA-2746). A plugin below 95 calls no such route,
+// (dispatch://INFRA-2746). A plugin below 101 calls no such route,
 // and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -1370,17 +1370,18 @@ package api
 // `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
 // task that resumes an answered root carries, so the task's text is written at each send. An
 // older daemon neither reads nor writes that column: it sends the task text a row holds, which is
-// empty for a resume task this release queued and never sent. (This entry takes 95. It took 95
-// at the fifth forward merge of 2026-11-13, read at 2026-11-13T06:29:55Z against main at
-// 12ba4e6afa71, which declared 87, when 94 was #3677's and 95 the lowest number above the base
-// that no open head declared. The sixth forward merge, of 2026-11-13, brought main in at
-// 045ee0762538, which is #3677 and declares 94, the entry right above this one; the contract
-// gate on this pull request reported 95 declared by no open head but this one and 96 by #2731
-// and #3573, so 95, the number right above the base's, stays this entry's. A reading is of this
-// file at refs/pull/<n>/head for every open pull request, not of a file list: GitHub cuts a pull
-// request's file list short, so one that changes more files than the page holds answers without
-// this path. Read the base's own number and every open pull request again at the next merge
-// rather than from this line, as
+// empty for a resume task this release queued and never sent. (This entry takes 101. It took 95
+// at the fifth forward merge of 2026-11-13, when main declared 87, and held 95 through the sixth,
+// which brought main in at 045ee0762538, #3677, declaring 94, the entry right above this one. The
+// reading of 2026-11-13T09:11:43Z, with main at bc52296a74c2 declaring 94, found #3519 declaring
+// 95 too since its update of 08:16Z, and the open heads declaring 37 (#2213), 61 (#2230), 71
+// (#3577) and 86 (#3534) below the base and, above it, 88 (#3730), 89 (#3659), 90 (#3830), 95
+// (#3519), 96 (#2731, #3573), 97 (#3937), 98 (#3708), 99 (#3575) and 100 (#3715). So 101 is
+// the lowest number above the base's 94 that no other open head declares, and this entry takes
+// it. A reading is of this file at refs/pull/<n>/head for every open pull request, not of a file
+// list: GitHub cuts a pull request's file list short, so one that changes more files than the
+// page holds answers without this path. Read the base's own number and every open pull request
+// again at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 95
+const DaemonAPIVersion = 101
