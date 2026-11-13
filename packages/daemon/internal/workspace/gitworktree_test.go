@@ -1,9 +1,12 @@
 package workspace
 
 import (
+	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 )
@@ -67,5 +70,43 @@ func TestRemoveGitWorktreeRefusesItsEntryWhenItsGitdirCannotBeRead(t *testing.T)
 	}
 	if _, err := os.Lstat(entry); err != nil {
 		t.Fatalf("removeGitWorktree removed an entry it could not read (%v)", err)
+	}
+}
+
+// The provision of a workspace that already exists reads the workspace's .git, the pointer to its
+// worktree entry, before it restores a missing entry (restoreGitWorktree). Every process working
+// the workspace can write that file, and under the tmux runtime the daemon makes this read while
+// it holds the repository's store lock, so a pointer that is a fifo nobody writes must be answered,
+// not waited on: a blocking open there stalls every later provision of the repository's issues.
+func TestRestoreGitWorktreeAnswersAPointerThatIsAFifo(t *testing.T) {
+	located, err := Location(t.TempDir(), ghrepo.MustParse("acme/widgets"), "infra-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, dir := range []string{filepath.Join(located.Clone, ".git", "worktrees"), located.Dir} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pointer := filepath.Join(located.Dir, ".git")
+	if err := syscall.Mkfifo(pointer, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- restoreGitWorktree(context.Background(), NewRunner(testTimeout, testTools(t)), located, func(string) {})
+	}()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatalf("restoreGitWorktree answered nil for a pointer that is a fifo, want the reason it holds no pointer git wrote")
+		}
+	case <-time.After(5 * time.Second):
+		// Open the fifo for writing so the blocked read returns and the test's goroutine ends.
+		if writer, openErr := os.OpenFile(pointer, os.O_WRONLY, 0); openErr == nil {
+			_ = writer.Close()
+		}
+		<-done
+		t.Fatalf("restoreGitWorktree was still reading %s after 5s: a pointer that is a fifo blocks the provision", pointer)
 	}
 }
