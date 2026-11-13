@@ -418,6 +418,11 @@ func TestABlockTheFileDropsReadsAsUnset(t *testing.T) {
 // booted on with every member of its block, and the settle answers *OtherRuntime, naming the
 // key, the runtime the file now names and the one the daemon booted on.
 //
+// Nothing of the refused reading is kept for the next settle either: the file put back as the
+// booted deployment's with one key changed reports that key alone. A holder that kept the
+// refused reading as the one it diffs against would report every member of both runtimes'
+// blocks as moved, to observers that rebuild the runtime holder for them.
+//
 // The selector alone would be worse than nothing. `runtime` is one key carrying the selector
 // and the block it names (readRuntime), so a settle that pinned the name and took the file's
 // block would hold a configuration no loader produces: `kubernetes` beside no
@@ -453,6 +458,15 @@ func TestAFileThatSwapsTheRuntimeKeyKeepsTheWholeBlockBootSettled(t *testing.T) 
 			}
 			if len(applied) != 0 {
 				t.Errorf("applied %+v, want nothing at all: a reading of the other runtime settles no key", applied)
+			}
+
+			rewrite(t, path, "review_round_cap: 9\n"+tc.booted)
+			applied, refused, err = live.Apply(SourceFile, "", nil)
+			if err != nil || len(refused) != 0 {
+				t.Fatalf("the settle of the booted file put back answered %v, refused %+v, want it settled", err, refused)
+			}
+			if paths := appliedPaths(applied); !slices.Equal(paths, []string{"review_round_cap"}) {
+				t.Errorf("the settle of the booted file put back applied %v, want review_round_cap alone: the refused reading settled nothing, the diff it is read against included", paths)
 			}
 		})
 	}
@@ -793,6 +807,76 @@ func TestAFixedMemberIsPinnedWhenOnlyOneReadingCarriesItsBlock(t *testing.T) {
 			}
 			if !reflect.DeepEqual(block.PaneEnv, tc.paneEnv) {
 				t.Errorf("runtime.tmux.pane_env = %v, want %v: the launch keys beside a pinned member are the reading's own", block.PaneEnv, tc.paneEnv)
+			}
+		})
+	}
+}
+
+// A block the file drops and later puts back reads the same whatever the boot pinned in it, and
+// no settle between the two reports anything of it.
+//
+// The pin carries a dropped block's fixed member in a block of the snapshot's own, holding
+// every other member at a zero value no reading wrote (pinBlock). A diff of the snapshot
+// read that carrier as configured: each later settle, by the file or by the route, reported
+// `runtime.tmux.pi_config_files` and `pane_env` moving from the carrier's zero values to unset,
+// which rebuilt the runtime holder and credited the settle's caller with keys it never named,
+// and the put-back reported them moving from those zero values rather than from unset. Under
+// a boot whose block held no fixed member nothing is carried, so the second row is the
+// control: every assertion holds of both, which is what makes the first row's carrier
+// invisible to every Change.
+func TestADroppedBlockReadsTheSameUnderEveryBootUntilTheFilePutsItBack(t *testing.T) {
+	const launchKeys = "    pane_env: {TOOLS_HOME: /opt/tools}\n    pi_config_files: [overlay.json]\n"
+	dropped := []string{"runtime.tmux.pane_env", "runtime.tmux.pi_config_files"}
+	for _, tc := range []struct{ name, block string }{
+		{name: "a boot whose block took over", block: "runtime:\n  tmux:\n    take_over: kubernetes\n" + launchKeys},
+		{name: "a boot whose block holds no fixed member", block: "runtime:\n  tmux:\n" + launchKeys},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			live, path := newLive(t, minimalFile+tc.block, nil)
+			settle := func(why string) []Change {
+				t.Helper()
+				applied, _, err := live.Apply(SourceFile, "", nil)
+				if err != nil {
+					t.Fatalf("the settle of %s: %v", why, err)
+				}
+				return applied
+			}
+
+			rewrite(t, path, minimalFile)
+			applied := settle("the dropped block")
+			if paths := appliedPaths(applied); !slices.Equal(paths, dropped) {
+				t.Fatalf("the drop applied %v, want %v", paths, dropped)
+			}
+			for _, change := range applied {
+				if change.Old == UnsetValue || change.New != UnsetValue {
+					t.Errorf("the drop reports %s as %q → %q, want the boot's value → %q: a dropped block's member is unset whatever the pin carries",
+						change.Path, change.Old, change.New, UnsetValue)
+				}
+			}
+
+			rewrite(t, path, minimalFile+"review_round_cap: 9\n")
+			if paths := appliedPaths(settle("another key of the file")); !slices.Equal(paths, []string{"review_round_cap"}) {
+				t.Errorf("a file settle of review_round_cap applied %v, want that key alone: the dropped block did not move", paths)
+			}
+
+			applied, refused, err := live.Apply(SourceRoute, "ana@example.com", map[string]any{"admission_cap": 9})
+			if err != nil || len(refused) != 0 {
+				t.Fatalf("the route change answered %v, refused %+v", err, refused)
+			}
+			if paths := appliedPaths(applied); !slices.Equal(paths, []string{"admission_cap"}) {
+				t.Errorf("a route change of admission_cap applied %v, want that key alone: the dropped block did not move", paths)
+			}
+
+			rewrite(t, path, minimalFile+"review_round_cap: 9\n"+tc.block)
+			applied = settle("the block put back")
+			if paths := appliedPaths(applied); !slices.Equal(paths, dropped) {
+				t.Fatalf("the put-back applied %v, want %v", paths, dropped)
+			}
+			for _, change := range applied {
+				if change.Old != UnsetValue || change.New == UnsetValue {
+					t.Errorf("the put-back reports %s as %q → %q, want %q → the file's value: the reading before it carried no such block",
+						change.Path, change.Old, change.New, UnsetValue)
+				}
 			}
 		})
 	}

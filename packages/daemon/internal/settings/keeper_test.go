@@ -144,12 +144,15 @@ func (r *logRecorder) WithAttrs([]slog.Attr) slog.Handler { panic("the keeper de
 func (r *logRecorder) WithGroup(string) slog.Handler      { panic("the keeper derived a logger") }
 
 // warnings is every line the keeper wrote at Warn, message and attributes in one string.
-func (r *logRecorder) warnings() []string {
+func (r *logRecorder) warnings() []string { return r.at(slog.LevelWarn) }
+
+// at is every line written at level, message and attributes in one string.
+func (r *logRecorder) at(level slog.Level) []string {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	var lines []string
 	for _, record := range r.records {
-		if record.Level != slog.LevelWarn {
+		if record.Level != level {
 			continue
 		}
 		line := record.Message
@@ -808,6 +811,39 @@ func TestABootThatFailsDeletesNoRowTheFileTookBack(t *testing.T) {
 					cfg.AdmissionCap, cfg.ReviewRoundCap)
 			}
 		})
+	}
+}
+
+// A boot whose file has taken back every stored route change lays nothing over the file and
+// reaches no apply (applyRoute), and still deletes every one of those rows: the file's own
+// values stand, and the next boot finds nothing to lay back.
+func TestABootWhoseFileTookBackEveryRowEmptiesTheStore(t *testing.T) {
+	ctx := context.Background()
+	store := testStore(t)
+	path := configFile(t, minimalFile)
+	changes := map[string]any{"admission_cap": 7, "review_round_cap": 5}
+	if _, refused, err := keeperOn(t, path, store).Route(ctx, config.CallerOperator, "ana@example.com", changes); err != nil || len(refused) != 0 {
+		t.Fatalf("Route: %v, refused %+v", err, refused)
+	}
+
+	rewrite(t, path, minimalFile+"admission_cap: 9\nreview_round_cap: 6\n")
+	restarted := keeperOn(t, path, store)
+	kept, err := restarted.Restore(ctx)
+	if err != nil {
+		t.Fatalf("Restore: %v", err)
+	}
+	if len(kept) != 0 {
+		t.Fatalf("Restore laid %+v back over the file, want nothing: the file took back every key", kept)
+	}
+	rows, err := store.Rows(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("the store holds %v after the boot, want nothing: every row was taken back", pathsOf(rows))
+	}
+	if cfg := restarted.Live().Snapshot(); cfg.AdmissionCap != 9 || cfg.ReviewRoundCap != 6 {
+		t.Fatalf("admission_cap %d and review_round_cap %d after the boot, want the file's own 9 and 6", cfg.AdmissionCap, cfg.ReviewRoundCap)
 	}
 }
 

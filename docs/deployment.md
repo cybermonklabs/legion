@@ -612,7 +612,7 @@ The route answers every path the call named, and `runtime` beside them where the
 `the configuration file under the daemon names runtime "tmux", not the "kubernetes" it booted on: no setting changes until the file names "kubernetes" again or the daemon restarts`.
 A path refused on its own account keeps its own reason: an unknown setting, a key fixed for the process, and one the caller's credential may not set are refused the same whatever runtime the file names.
 The daemon logs such a call once, at `warn`, naming the caller, the paths and both runtimes, and the watcher logs the file's own reading the same way, naming the file and both runtimes.
-Put the file back as this deployment's, or restart the daemon onto the runtime the file now names; a boot that finds a stored route change while its file has become the other runtime's fails with that reason; a boot with none comes up on the runtime the file names, since it booted onto it.
+Put the file back as this deployment's, or restart the daemon onto the runtime the file now names; a restart onto a file that names the other runtime boots onto that runtime, with each stored route change laid over it that the file has not taken back and the daemon still accepts; only a file that changes to the other runtime in the moment between the boot's read of it and the boot's restore of the stored route changes fails the boot, with that reason, and then only where a stored change is still the route's.
 
 What a change of one key needs is its class, which the table below gives for every key `legion.yaml` has, with the holder the daemon builds again for it:
 

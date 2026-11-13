@@ -186,6 +186,10 @@ func (k *Keeper) remember(rows []Change) {
 // loader, App key commands included, and the one that fails changes nothing, so the overlay it
 // left standing keeps both the stored row that backs it and the mark that backs an unstored one
 // — the next settle of the fixed file takes the key back exactly as this one would have.
+//
+// A store that will not delete the rows the file took back answers *config.NotRecorded beside
+// the changes the holder applied, as the route arm does: the daemon runs on the file's values,
+// and its next boot lays those rows back over the file.
 func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -219,7 +223,11 @@ func (k *Keeper) File(ctx context.Context) ([]config.Change, error) {
 	}
 	if k.store != nil {
 		if err := k.store.Write(ctx, nil, taken); err != nil {
-			return applied, err
+			// The holder settled the reading, so the daemon runs on it; only the rows the file
+			// took back are still stored, and the next boot lays each one back over the file.
+			// NotRecorded is that answer, as the route arm gives it: the change took effect, and
+			// the store does not say so.
+			return applied, &config.NotRecorded{Paths: taken, Err: err}
 		}
 	}
 	if len(taken) > 0 {
@@ -272,36 +280,32 @@ func (k *Keeper) Restore(ctx context.Context) ([]Change, error) {
 	// each read runs the App private key commands the file names. An overlay with no row in it
 	// — every stored row taken back by the file — is answered before the holder and reads
 	// nothing (applyRoute).
+	var refusedPaths []string
 	if _, refused, err := k.applyRoute(config.CallerOperator, "", overlay); err != nil {
 		return nil, err
 	} else if len(refused) > 0 {
 		// A stored path the class table no longer holds, or one this release made fixed: the row
 		// is over, and the daemon runs on the file's own value for it.
-		var paths []string
 		for _, refusal := range refused {
-			paths = append(paths, refusal.Path)
+			refusedPaths = append(refusedPaths, refusal.Path)
 			kept = slices.DeleteFunc(kept, func(row Change) bool { return row.Path == refusal.Path })
 		}
 		k.log.Warn("legion settings: a stored route change names a path this daemon will not take; the file's own value stands",
-			"paths", paths, "refusals", refused)
-		if err := k.store.Write(ctx, nil, paths); err != nil {
-			return nil, err
-		}
+			"paths", refusedPaths, "refusals", refused)
 	}
-	// The rows the file took back are deleted once the apply has succeeded, and never before
-	// it: a boot that fails here — the file has become the other runtime's — is a boot whose
-	// cure is to put the file back and start again, and a deletion made first would have thrown
-	// away the route changes that second boot is there to lay back. The running daemon's arm
-	// orders the two the same way (File, whose write comes after Apply).
-	if err := k.store.Write(ctx, nil, taken); err != nil {
+	// The rows the file took back and the rows the holder refused are deleted in one write, so
+	// a write that fails leaves the store exactly as it found it rather than half pruned, and
+	// that write is made once the apply has succeeded, never before it: a boot that fails at
+	// the apply — the file has become the other runtime's — is a boot whose cure is to put the
+	// file back and start again, and a deletion made first would have thrown away the route
+	// changes that second boot is there to lay back. The running daemon's arm orders the two
+	// the same way (File, whose write comes after Apply).
+	if err := k.store.Write(ctx, nil, append(taken, refusedPaths...)); err != nil {
 		return nil, err
 	}
 	if len(taken) > 0 {
 		k.log.Info("legion settings: the file changed keys a route change held while the daemon was down; the file's own values stand",
 			"paths", taken)
-	}
-	if len(overlay) == 0 {
-		return nil, nil
 	}
 	for _, row := range kept {
 		k.log.Info("legion settings: a stored route change is laid over the file again",

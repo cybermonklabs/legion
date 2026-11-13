@@ -32,9 +32,12 @@ const (
 	// or an address whose userinfo or query may carry one (Row.Secret).
 	withheldValue = "(withheld)"
 	// UnsetValue stands for a path the configuration does not carry: a block the file names under
-	// one runtime and not the other, or an optional block it drops. A drift reason says the same
-	// word of the same situation (runtime/sandbox's launchSettingsDrift), so the settings route's
-	// answer and a pod's drift reason never disagree on it.
+	// one runtime and not the other, or an optional block it drops. A Change reads the reading the
+	// loader resolved, before the pin of the fixed paths (Apply), so a dropped block's members read
+	// as unset whether or not the snapshot carries the block for a fixed member of it (pinFixed).
+	// A drift reason says the same word of the same situation (runtime/sandbox's
+	// launchSettingsDrift), so the settings route's answer and a pod's drift reason never
+	// disagree on it.
 	UnsetValue = "(unset)"
 )
 
@@ -93,13 +96,14 @@ func (e *OtherRuntime) Error() string {
 // value, and nothing keeps it. Its next restart reads what the store still holds for those
 // paths — the file's own value for a path the change laid over it, since nothing recorded the
 // change, and the kept row for a path the change withdrew, since the store would not drop it
-// (internal/settings' Keeper.Route). The caller is answered what happened — the change took
-// effect, and nothing keeps it — rather than a refusal of a change the daemon made.
+// (internal/settings' Keeper.Route, and Keeper.File for the rows a file settle took back). The
+// caller is answered what happened — the change took effect, and nothing keeps it — rather than
+// a refusal of a change the daemon made.
 //
 // It is declared here, beside Change and Refusal, because it is a third thing an applied change
 // can be and both sides of the route read it: internal/settings returns it from the keeper's
-// route arm, and internal/api answers for it (api's settingsChange), which otherwise would
-// import internal/settings for this error alone.
+// route and file arms, and internal/api answers for it (api's settingsChange), which otherwise
+// would import internal/settings for this error alone.
 type NotRecorded struct {
 	Paths []string
 	Err   error
@@ -124,6 +128,12 @@ type Live struct {
 	env  func(string) string
 	// settled is the resolved configuration, never nil once the holder is built.
 	settled atomic.Pointer[Config]
+	// reading is the settings of the reading settled was pinned from, as the loader resolved it
+	// and before pinFixed put the boot's fixed values back. Apply diffs the next reading against
+	// it, so a change is what moved between two readings and never a value the pin wrote: a
+	// block the pin carries for a fixed member of it holds every other member at a zero value no
+	// reading wrote, which a diff of settled would read as configured.
+	reading map[string]setting
 	// normalize is the caller's own fix of what the file says, run over every resolution before
 	// it settles (NewLive); nil fixes nothing.
 	normalize func(*Config) error
@@ -156,6 +166,7 @@ func NewLive(path string, env func(string) string, normalize func(*Config) error
 		return nil, err
 	}
 	live.settled.Store(&cfg)
+	live.reading = settingsOf(&cfg)
 	return live, nil
 }
 
@@ -166,6 +177,7 @@ func NewLive(path string, env func(string) string, normalize func(*Config) error
 func Settled(cfg Config) *Live {
 	live := &Live{overlay: map[string]any{}}
 	live.settled.Store(&cfg)
+	live.reading = settingsOf(&cfg)
 	return live
 }
 
@@ -326,29 +338,29 @@ func (l *Live) Apply(source, by string, overlay map[string]any) (applied []Chang
 		// observer, and the daemon goes on running the configuration it has.
 		return nil, refused, &OtherRuntime{Path: "runtime", File: next.Runtime.Name, Booted: settled.Runtime.Name}
 	}
-	pinned, carried := pinFixed(settled, &next)
+	// The reading as the loader resolved it, before the pin edits next: every path the pin
+	// writes is ClassFixed, whose changes are dropped below, so the diff of two readings is the
+	// diff of what the daemon runs on for every path it reports. A member of a block this
+	// reading dropped is absent here and reads as unset, whether or not the pin then carries
+	// the block over for a fixed member of it, and a block the next reading puts back reads as
+	// arriving from unset, since this reading did not carry it either. So one file dropping
+	// `runtime.tmux` reads the same under a boot that took over on nothing and under one that
+	// did, and no later settle reports the carrier's zero values as changes of its own.
+	reading := settingsOf(&next)
+	pinned := pinFixed(settled, &next)
 	if source == SourceFile {
 		refused = append(refused, pinned...)
 	}
-	// A member of a block this reading dropped reads as unset whether or not the pin carried
-	// the block over for a fixed member of it (pinFixed): the reading says nothing about that
-	// member either way, and the zero value the carrier holds is this walk's doing rather than
-	// anything the operator wrote. Without this, one file dropping `runtime.tmux` reported
-	// `pi_config_files` as "(unset)" under a boot that took over on nothing and as "null" under
-	// a boot that did, for the same configured values.
-	reading := settingsOf(&next)
-	for _, path := range carried {
-		delete(reading, path)
-	}
-	applied = diff(settingsOf(settled), reading, source, by)
+	applied = diff(l.reading, reading, source, by)
 	// A fixed path is never a change of the daemon's, whatever the reading carries: it holds the
 	// value boot settled, and the pin put that value back wherever the reading moved it
-	// (pinFixed). A member of a block only this reading carries would otherwise be reported
-	// changed — unset on the boot's side, the pinned zero value on this one — to a caller that
-	// named no such key.
+	// (pinFixed). A fixed path the reading moved, a fixed member of a block only one of the two
+	// readings carries among them, would otherwise be reported changed to a caller that named no
+	// such key.
 	applied = slices.DeleteFunc(applied, func(change Change) bool { return change.Class == ClassFixed })
 	l.overlay = merged
 	l.settled.Store(&next)
+	l.reading = reading
 	for _, observe := range l.observers {
 		observe(&next, applied)
 	}
@@ -524,9 +536,8 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 	}
 }
 
-// pinFixed puts the value settled holds for every fixed path back into next, names each path it
-// pinned with the reason that path's row gives for refusing a change of it, and names every
-// member of a dropped block it carried over that the reading itself did not write (pinWalk).
+// pinFixed puts the value settled holds for every fixed path back into next and names each path
+// it pinned with the reason that path's row gives for refusing a change of it.
 //
 // It is what makes ClassFixed true of the snapshot. The route refuses a fixed path by name, but
 // every resolution reads the whole file again (resolve), so an operator's edit of such a key in
@@ -552,24 +563,13 @@ func walkSettings(block reflect.Value, visit func(row Row, value reflect.Value))
 // under `projects` (`projects.<KEY>.memory.mode` and `.instructions`), because the table makes
 // `projects` one value compared whole — Config.Projects is no Block row — and pinning it would
 // pin the whole rebuild-class block with it.
-func pinFixed(settled, next *Config) (pinned []Refusal, carried []string) {
-	walk := pinWalk{}
-	pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), &walk)
-	return walk.pinned, walk.carried
-}
-
-// pinWalk is what one walk of the two readings collects: the fixed paths it put back, and the
-// members of a dropped block it left a carrier holding a zero value for, which the reading
-// said nothing about and the diff reads as unset (Apply). A carrier inside a carrier names its
-// members twice, which the deletes that read carried do not mind.
-type pinWalk struct {
-	pinned  []Refusal
-	carried []string
+func pinFixed(settled, next *Config) []Refusal {
+	return pinBlock(reflect.ValueOf(settled).Elem(), reflect.ValueOf(next).Elem(), nil)
 }
 
 // pinBlock pins every fixed value of one block of the configuration — was as boot settled it,
-// now as this resolution read it — and descends into the blocks it holds, collecting what it
-// pinned and what it carried in walk.
+// now as this resolution read it — and descends into the blocks it holds, appending each path
+// it pinned to pinned.
 //
 // A fixed member keeps its boot value whether or not either reading carries its block, because
 // a block a reading does not carry is that reading holding every member of it at its zero
@@ -579,11 +579,13 @@ type pinWalk struct {
 // then names `take_over`, which the rebuilt runtime would otherwise take over on for the whole
 // of its life against whyTakeOve — and a reading that drops a block whose boot held a fixed
 // value carries that value in a block of its own, holding it and nothing else, so every launch
-// key the reading dropped reads as the zero value it dropped them to. A block neither reading's
-// fixed members move stays exactly as the reading left it, dropped included, which is the file
-// that drops `runtime.tmux` under a boot that took over on nothing: its members are launch keys
-// an operator is entitled to change (TestABlockTheFileDropsReadsAsUnset).
-func pinBlock(was, now reflect.Value, walk *pinWalk) {
+// key the reading dropped holds the zero value it dropped them to. What the diff reports of
+// such a block is the reading's, taken before this walk (Apply): each member the reading
+// dropped reads as unset there, carried or not. A block neither reading's fixed members move
+// stays exactly as the reading left it, dropped included, which is the file that drops
+// `runtime.tmux` under a boot that took over on nothing: its members are launch keys an
+// operator is entitled to change (TestABlockTheFileDropsReadsAsUnset).
+func pinBlock(was, now reflect.Value, pinned []Refusal) []Refusal {
 	typ := now.Type()
 	for i, row := range settingFields(typ) {
 		fieldType := typ.Field(i).Type
@@ -599,11 +601,11 @@ func pinBlock(was, now reflect.Value, walk *pinWalk) {
 				continue
 			}
 			value.Set(boot)
-			walk.pinned = append(walk.pinned, Refusal{Path: row.Path, Reason: row.Why})
+			pinned = append(pinned, Refusal{Path: row.Path, Reason: row.Why})
 			continue
 		}
 		if fieldType.Kind() != reflect.Pointer {
-			pinBlock(boot, value, walk)
+			pinned = pinBlock(boot, value, pinned)
 			continue
 		}
 		if boot.IsNil() {
@@ -612,7 +614,7 @@ func pinBlock(was, now reflect.Value, walk *pinWalk) {
 			boot = boot.Elem()
 		}
 		if !value.IsNil() {
-			pinBlock(boot, value.Elem(), walk)
+			pinned = pinBlock(boot, value.Elem(), pinned)
 			continue
 		}
 		if !boot.IsValid() {
@@ -624,25 +626,14 @@ func pinBlock(was, now reflect.Value, walk *pinWalk) {
 		// which moved is left dropped, since the pin is the whole of what this walk may add to
 		// a reading.
 		carried := reflect.New(fieldType.Elem())
-		pinnedBefore := len(walk.pinned)
-		pinBlock(boot, carried.Elem(), walk)
-		if len(walk.pinned) == pinnedBefore {
+		pinnedBefore := len(pinned)
+		pinned = pinBlock(boot, carried.Elem(), pinned)
+		if len(pinned) == pinnedBefore {
 			continue
 		}
 		value.Set(carried)
-		// Every other member of the carrier holds a zero value this walk wrote, not one the
-		// reading did: the diff reads each as unset, exactly as it reads a member of the block
-		// a reading drops with no fixed value in it (Apply).
-		written := make(map[string]bool, len(walk.pinned)-pinnedBefore)
-		for _, refusal := range walk.pinned[pinnedBefore:] {
-			written[refusal.Path] = true
-		}
-		walkSettings(carried.Elem(), func(member Row, _ reflect.Value) {
-			if !written[member.Path] {
-				walk.carried = append(walk.carried, member.Path)
-			}
-		})
 	}
+	return pinned
 }
 
 // Render is one value as a log line shows it: a duration as its own string, another scalar as it

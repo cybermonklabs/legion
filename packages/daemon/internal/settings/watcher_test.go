@@ -11,24 +11,26 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 )
 
 // watcherFor is a watcher over path at test speed, already running, and the changes it applies.
 // The keeper keeps nothing: what the file arm does with the store is the keeper's own test.
 func watcherFor(t *testing.T, path string) (*Keeper, chan []config.Change) {
 	t.Helper()
-	return watcherLogging(t, path, quiet())
+	return watcherLogging(t, path, nil, quiet())
 }
 
-// watcherLogging is that watcher with a logger of the test's own, so a test reads the lines an
-// operator would.
-func watcherLogging(t *testing.T, path string, log *slog.Logger) (*Keeper, chan []config.Change) {
+// watcherLogging is that watcher over a keeper of store (nil keeps nothing), with a logger of
+// the test's own, so a test reads the lines an operator would.
+func watcherLogging(t *testing.T, path string, store *Store, log *slog.Logger) (*Keeper, chan []config.Change) {
 	t.Helper()
-	keeper := keeperOn(t, path, nil)
+	keeper := keeperOn(t, path, store)
 	watcher := NewWatcher(keeper, log)
 	watcher.Interval, watcher.Debounce = 10*time.Millisecond, 10*time.Millisecond
 	settled := make(chan []config.Change, 8)
-	watcher.Settled = func(_ *config.Config, applied []config.Change) { settled <- applied }
+	watcher.Settled = func(applied []config.Change) { settled <- applied }
 	// The watcher's baseline is the state it reads first, and a change made before that reading
 	// is part of it: the test waits for that reading before it changes anything.
 	read := make(chan struct{}, 64)
@@ -287,7 +289,7 @@ func TestTheWatcherLogsAFileOfTheOtherRuntimeAtWarnNamingBoth(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			path := configFile(t, kubernetesFile)
 			recorder := &logRecorder{}
-			_, settled := watcherLogging(t, path, slog.New(recorder))
+			_, settled := watcherLogging(t, path, nil, slog.New(recorder))
 
 			rewrite(t, path, tc.reading)
 
@@ -309,5 +311,50 @@ func TestTheWatcherLogsAFileOfTheOtherRuntimeAtWarnNamingBoth(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A settle whose holder applied the reading and whose store would not delete the route changes
+// the file took back is a settle: the daemon runs on the file's values, and the watcher hands
+// those changes to Settled as it does any settle's. Its log line says the file is settled and
+// names what is left standing — the rows the next boot lays back over the file — rather than
+// telling the operator nothing settled while the daemon runs on what did.
+func TestASettleWhoseStoreWriteFailedIsReportedSettled(t *testing.T) {
+	ctx := context.Background()
+	st, err := store.Open(ctx, testdb.Database(t, "legion_settings_watcher_write"))
+	if err != nil {
+		t.Fatalf("open the test database: %v", err)
+	}
+	t.Cleanup(st.Close)
+	if _, err := st.Migrate(ctx); err != nil {
+		t.Fatalf("migrate the test database: %v", err)
+	}
+	path := configFile(t, minimalFile)
+	stored := NewStore(st.Pool(), testProject)
+	if _, _, err := keeperOn(t, path, stored).Route(ctx, config.CallerOperator, "ana@example.com", map[string]any{"admission_cap": 7}); err != nil {
+		t.Fatalf("Route: %v", err)
+	}
+	// The store reads its rows and refuses to delete one, so the settle below reaches the
+	// holder, which applies the reading, and fails at the deletion after it.
+	if _, err := st.Pool().Exec(ctx, `create function refuse_delete() returns trigger language plpgsql as $$
+		begin raise exception 'the store refuses deletions'; end $$;
+		create trigger refuse_delete before delete on settings_overlay for each row execute function refuse_delete()`); err != nil {
+		t.Fatalf("make the store refuse deletions: %v", err)
+	}
+	recorder := &logRecorder{}
+	_, settled := watcherLogging(t, path, stored, slog.New(recorder))
+
+	rewrite(t, path, minimalFile+"admission_cap: 9\n")
+
+	applied := awaitSettled(t, settled, "a file whose taken-back row the store would not delete")
+	if len(applied) != 1 || applied[0].Path != "admission_cap" || applied[0].New != "9" {
+		t.Fatalf("Settled was handed %+v, want admission_cap at the file's 9: the holder applied the reading", applied)
+	}
+	lines := recorder.at(slog.LevelError)
+	if len(lines) != 1 {
+		t.Fatalf("the watcher wrote %d error line(s), want 1:\n%s", len(lines), strings.Join(lines, "\n"))
+	}
+	if !strings.Contains(lines[0], "is settled") || strings.Contains(lines[0], "could not be settled") {
+		t.Errorf("the line does not say the file is settled:\n\t%s", lines[0])
 	}
 }

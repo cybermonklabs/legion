@@ -212,7 +212,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract fourteen below this daemon's own.
+		// claimsToRefreshContract added, which a pod at or above that contract is served.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},

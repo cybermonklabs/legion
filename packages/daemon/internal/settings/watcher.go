@@ -51,7 +51,7 @@ type Watcher struct {
 	// settings holder's own lock (config.Live.WhileSettled): a credential rotated in place
 	// names no changed setting — its path is what the configuration holds, and the path has not
 	// moved — so the file arm is what asks the holders to read their files again.
-	Settled func(cfg *config.Config, applied []config.Change)
+	Settled func(applied []config.Change)
 	// watched is told after every reading of the watched directories: a test that changes a file
 	// must know the watcher has read the state it starts from, since a change made before that
 	// reading is part of that state. nil tells nobody.
@@ -106,7 +106,9 @@ func (w *Watcher) Run(ctx context.Context) {
 
 // apply settles the configuration file as it now reads and reports what changed. A failure is
 // logged and no setting moves: the daemon keeps running on the configuration it has, and the
-// next change of the file is read again from scratch.
+// next change of the file is read again from scratch. The one failure after which settings did
+// move is the store's (config.NotRecorded): the holder settled the reading and only the deletion
+// of the route changes it took back failed, so its changes are reported like any settle's.
 //
 // The reread of the credential files runs either way (Settled), because nothing about it needs
 // the settle to have succeeded: it reads the paths the daemon is already running on, which a
@@ -121,19 +123,23 @@ func (w *Watcher) apply(ctx context.Context) {
 	applied, err := w.keeper.File(ctx)
 	if err != nil {
 		var other *config.OtherRuntime
-		if errors.As(err, &other) {
+		var notRecorded *config.NotRecorded
+		switch {
+		case errors.As(err, &other):
 			w.log.Warn("legion settings: the configuration file under the daemon names another runtime; nothing of it is settled and the daemon keeps the settings it has",
 				"path", w.keeper.live.Path(), "file_runtime", other.File, "booted_runtime", other.Booted)
-		} else {
+		case errors.As(err, &notRecorded):
+			w.log.Error("legion settings: the configuration file is settled but the stored route changes it took back could not be deleted; the next boot lays them over the file again",
+				"path", w.keeper.live.Path(), "error", err)
+		default:
 			w.log.Error("legion settings: the configuration file changed and could not be settled; the daemon keeps the settings it has",
 				"path", w.keeper.live.Path(), "error", err)
 		}
 	}
 	if w.Settled != nil {
-		// The snapshot the daemon runs on, which a refused reading left untouched: the reread
-		// reads the credential paths the daemon holds, not the ones a file it refused names.
-		// applied is what the settle applied, which a refused reading makes none.
-		w.Settled(w.keeper.live.Snapshot(), applied)
+		// applied is what the settle applied: none for a refused reading, and every change of
+		// a settled one whose store write alone failed (NotRecorded).
+		w.Settled(applied)
 	}
 }
 

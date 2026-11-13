@@ -2509,7 +2509,7 @@ func serve(ctx context.Context, cfg config.Config, st *store.Store, startedAt ti
 	// holder that reads a credential file to read it again (rebuilder.rereadCredentials). It
 	// runs under the settings holder's own lock (config.Live.WhileSettled), where an applied
 	// change's rebuilds run, so a reread and a route change never build one holder at once.
-	watcher.Settled = func(*config.Config, []config.Change) { p.live.WhileSettled(p.rebuild.rereadCredentials) }
+	watcher.Settled = func([]config.Change) { p.live.WhileSettled(p.rebuild.rereadCredentials) }
 	group.Go(func() error {
 		watcher.Run(serving)
 		return nil
