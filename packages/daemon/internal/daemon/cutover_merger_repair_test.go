@@ -20,7 +20,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -82,11 +81,14 @@ const cutoverStoredSeq = 5
 
 // cutoverWait bounds each wait of this test on the daemon's own work: a boot, a launch, a
 // registration, an outbox row's tries, an idle pass. The longest of those is a merger's start
-// that a closed design gate held, which runs again only on its row's backoff once the gate opens,
-// up to the outbox's 64 seconds (retryBackoff). It is the bound a fault is reported at, so a slow
+// that a closed design gate held: once the gate opens the test makes the row due at once, and the
+// outbox's sweep, every outboxLease (30 seconds), wakes the row's lane to run it. A try of that
+// row that read the gate closed just before the test opened it can still record its retry after
+// the test made the row due, which puts the row back on its backoff, up to the outbox's 64 seconds
+// (retryBackoff), so the bound stays above that. It is the bound a fault is reported at, so a slow
 // machine is no failure, and a start that never comes fails here rather than at the package's
-// deadline. cutoverPoll is how often a wait asks: most questions are a read of the daemon's
-// claims over its API or of its database.
+// deadline. cutoverPoll is how often a wait asks: most questions are a read of the daemon's claims
+// over its API or of its database.
 const (
 	cutoverWait = 90 * time.Second
 	cutoverPoll = 100 * time.Millisecond
@@ -202,7 +204,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.toldOnce(t, rig.g)
 
 	// The repair's own record of what it did: G and E, each start with StartOrOwe's mark.
-	repairs := cutoverLogged(first, cutoverRepairLine)
+	repairs := cutoverLogged(t, first, cutoverRepairLine)
 	if len(repairs) != 1 {
 		t.Fatalf("the first boot wrote %d records starting %q, want one: %v", len(repairs), cutoverRepairLine, repairs)
 	}
@@ -211,7 +213,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 		t.Fatalf("the first boot's repair record %v names %v mergers, %v; want 2, %s and %s: G's and E's mergers are the ones the old build left released with no backstop",
 			repairs[0]["msg"], count, issues, rig.g.key, rig.e.key)
 	}
-	owed := cutoverLogged(first, cutoverOwedLine)
+	owed := cutoverLogged(t, first, cutoverOwedLine)
 	if len(owed) != 2 {
 		t.Fatalf("the repair wrote %d lines %q, want one for each of G and E: %v", len(owed), cutoverOwedLine, owed)
 	}
@@ -232,6 +234,11 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	approved := 2
 	putOutboxGate(t, rig.pool, rig.records, record.DesignGate{Issue: rig.e.key, Step: record.DesignStepSpec, ArtifactID: "spec-" + rig.e.key,
 		LatestVersion: 2, ApprovedVersion: &approved, EverOpened: true})
+	// The held start waits on its row's backoff, up to the outbox's 64 seconds (retryBackoff):
+	// made due now, it runs at the outbox's next sweep.
+	if _, err := rig.pool.Exec(ctx, "update outbox set next_at = now() where issue = $1 and kind = 'supervise'", rig.e.key); err != nil {
+		t.Fatalf("let the backoff of E's merger start go: %v", err)
+	}
 	rig.connect(t, rig.e)
 	rig.settled(t, rig.e)
 	rig.toldOnce(t, rig.e)
@@ -279,7 +286,7 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	if launched := rig.launches(rig.g.merger, calls); len(launched) != 0 {
 		t.Fatalf("the second boot launched G's merger by %v, want no start: the repair ran at the first boot", cutoverMethods(launched))
 	}
-	repairs = cutoverLogged(rig.logs, cutoverRepairLine)
+	repairs = cutoverLogged(t, rig.logs, cutoverRepairLine)
 	if len(repairs) != 1 || repairs[0]["count"] != float64(0) || len(cutoverIssues(repairs[0]["issues"])) != 0 ||
 		!strings.Contains(fmt.Sprint(repairs[0]["msg"]), "0 mergers") {
 		t.Fatalf("the second boot wrote the records %v starting %q, want one naming 0 mergers", repairs, cutoverRepairLine)
@@ -472,12 +479,12 @@ func (r *cutoverRig) seed(t *testing.T) {
 			t.Fatalf("write %s in legion-v19.57.3's columns: %v", what, err)
 		}
 	}
-	retro := workflow.PhaseStatus(phase.Merging)
+	status := workflow.PhaseStatus(phase.Merging)
 	for _, issue := range []cutoverIssue{r.a, r.g, r.e, r.d} {
 		exec("the root "+issue.key, `insert into issues (key, tree, project, title, phase, generation, status, rank,
 			last_dispatch_seq, handed_over, dispatch_status, repo, default_branch, github_repo)
 			values ($1, $1, $2, $1, 'awaiting_merge', 1, $3, $1, $4, true, $3, $5, 'main', $5)`,
-			issue.key, r.cfg.Project, retro, cutoverStoredSeq, startedAgainRepo)
+			issue.key, r.cfg.Project, status, cutoverStoredSeq, startedAgainRepo)
 		exec("the tree of "+issue.key, `insert into tree_lifecycles (project, tree, epoch, authority) values ($1, $2, 1, 'workflow')`,
 			r.project, issue.key)
 		state, mergeSHA := string(record.PullRequestOpen), ""
@@ -632,15 +639,10 @@ func (r *cutoverRig) notStarted(t *testing.T, token claim.Token, why string) {
 // its task (workflow's readyWorkerTask), and what a task already pending waits for.
 func (r *cutoverRig) connect(t *testing.T, issue cutoverIssue) {
 	t.Helper()
-	var launch runtime.SpawnSpec
 	r.await(t, "a launch of "+issue.key+"'s merger", func() bool {
-		launched := r.launches(issue.merger, 0)
-		if len(launched) == 0 {
-			return false
-		}
-		launch = launched[len(launched)-1].Spec
-		return true
+		return len(r.launches(issue.merger, 0)) != 0
 	})
+	launch := lastLaunch(t, r.rt.Runtime, issue.merger)
 	r.built.mu.Lock()
 	address := r.built.address
 	r.built.mu.Unlock()
@@ -687,13 +689,9 @@ func (r *cutoverRig) settled(t *testing.T, issue cutoverIssue) {
 // (workflow.ResumePhaseTask), read from the issue as the record holds it now.
 func (r *cutoverRig) toldOnce(t *testing.T, issue cutoverIssue) {
 	t.Helper()
-	var stands *record.Issue
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		var err error
-		stands, err = r.records.Issue(context.Background(), tx, issue.key)
-		return err
-	}); err != nil || stands == nil {
-		t.Fatalf("read %s: %v", issue.key, err)
+	stands := readIssue(t, r.pool, issue.key)
+	if stands == nil {
+		t.Fatalf("read %s: the record does not hold it", issue.key)
 	}
 	want := workflow.ResumePhaseTask(*stands)
 	if told := r.prompts(issue.merger); len(told) != 1 || told[0] != want {
@@ -878,18 +876,12 @@ func (r *cutoverRig) github(t *testing.T) string {
 }
 
 // cutoverLogged is every record of a boot's log whose message starts with prefix, oldest first.
-func cutoverLogged(logs *syncBuffer, prefix string) []map[string]any {
-	var found []map[string]any
-	for line := range strings.Lines(logs.String()) {
-		entry := map[string]any{}
-		if json.Unmarshal([]byte(line), &entry) != nil {
-			continue
-		}
-		if msg, _ := entry["msg"].(string); strings.HasPrefix(msg, prefix) {
-			found = append(found, entry)
-		}
-	}
-	return found
+func cutoverLogged(t *testing.T, logs *syncBuffer, prefix string) []map[string]any {
+	t.Helper()
+	return slices.DeleteFunc(loggedLines(t, logs.String(), prefix), func(entry map[string]any) bool {
+		msg, _ := entry["msg"].(string)
+		return !strings.HasPrefix(msg, prefix)
+	})
 }
 
 // cutoverIssues is a record's `issues` attribute as the issue keys it names, in key order.

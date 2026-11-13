@@ -239,14 +239,14 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 		rig.await(t, "the message's row to finish once the issue left merging", func() bool {
 			return rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 		})
-		ended := rig.logged(dequeueLeftMerging, issue.key)
+		ended := rig.logged(t, dequeueLeftMerging, issue.key)
 		if len(ended) != 1 || !strings.Contains(fmt.Sprint(ended[0]["why"]), string(phase.Implementing)) {
 			t.Fatalf("the row's lines %q = %v, want one naming the move to %s", dequeueLeftMerging, ended, phase.Implementing)
 		}
 		if delivered := rig.listener.accepted(issue.topic); len(delivered) != 0 {
 			t.Fatalf("the merger's topic was delivered %v, want nothing: the issue left merging before its merger held the role", delivered)
 		}
-		if lines := rig.logged(dequeueDelivered, issue.key); len(lines) != 0 {
+		if lines := rig.logged(t, dequeueDelivered, issue.key); len(lines) != 0 {
 			t.Fatalf("the row logged %v, want no delivery", lines)
 		}
 		rig.readsWere(t, issue, reads, 1)
@@ -269,10 +269,10 @@ func TestADequeuedPullRequestReachesItsMerger(t *testing.T) {
 			}
 			reads := rig.publish(t, issue, issue.head)
 			rig.await(t, "the message's row to end on the merger's claim", func() bool {
-				return len(rig.logged(dequeueMergerEnded, issue.key)) == 1 &&
+				return len(rig.logged(t, dequeueMergerEnded, issue.key)) == 1 &&
 					rig.rows(t, issue.key, record.OutboxKindMergeQueueRemoval) == 0
 			})
-			if ended := rig.logged(dequeueMergerEnded, issue.key)[0]; ended["state"] != string(tc.state) {
+			if ended := rig.logged(t, dequeueMergerEnded, issue.key)[0]; ended["state"] != string(tc.state) {
 				t.Fatalf("the row ended on a merger whose claim is %v, want %s", ended["state"], tc.state)
 			}
 			rig.nothingPublished(t, issue)
@@ -492,12 +492,12 @@ func (r *dequeueRig) dropped(t *testing.T, issue dequeueIssue, head, why string)
 	t.Helper()
 	reads := r.publish(t, issue, head)
 	r.await(t, "the workflow's drop of the removal", func() bool {
-		return len(r.logged(dequeueReadDropped, issue.key)) == 1
+		return len(r.logged(t, dequeueReadDropped, issue.key)) == 1
 	})
-	if line := r.logged(dequeueReadDropped, issue.key)[0]; !strings.Contains(fmt.Sprint(line["why"]), why) {
+	if line := r.logged(t, dequeueReadDropped, issue.key)[0]; !strings.Contains(fmt.Sprint(line["why"]), why) {
 		t.Fatalf("the drop says %v, want it to name %s", line["why"], why)
 	}
-	if queued := r.logged(dequeueReadQueued, issue.key); len(queued) != 0 {
+	if queued := r.logged(t, dequeueReadQueued, issue.key); len(queued) != 0 {
 		t.Fatalf("the workflow queued the read %v, want none", queued)
 	}
 	r.readsWere(t, issue, reads, 0)
@@ -530,7 +530,7 @@ func (r *dequeueRig) retryHeld(t *testing.T, issue dequeueIssue) {
 func (r *dequeueRig) readsWere(t *testing.T, issue dequeueIssue, mark, want int) {
 	t.Helper()
 	read := r.github.reads(issue.number) - mark
-	lines := len(r.logged(dequeueReadLine, issue.key))
+	lines := len(r.logged(t, dequeueReadLine, issue.key))
 	if read != want || lines != want {
 		t.Fatalf("GitHub was read %d times for %s's pull request and the read executor logged %d reads, want %d of each",
 			read, issue.key, lines, want)
@@ -541,7 +541,7 @@ func (r *dequeueRig) readsWere(t *testing.T, issue dequeueIssue, mark, want int)
 // and no row.
 func (r *dequeueRig) nothingOwed(t *testing.T, issue dequeueIssue) {
 	t.Helper()
-	if owed := r.logged(dequeueMessageOwed, issue.key); len(owed) != 0 {
+	if owed := r.logged(t, dequeueMessageOwed, issue.key); len(owed) != 0 {
 		t.Fatalf("the workflow owed %s's merger a message %v, want none", issue.key, owed)
 	}
 	if rows := r.rows(t, issue.key, record.OutboxKindMergeQueueRemoval); rows != 0 {
@@ -587,18 +587,12 @@ func (r *dequeueRig) wokenOnce(t *testing.T, issue dequeueIssue) {
 }
 
 // logged is every line of the daemon's log about issue whose message starts with msg.
-func (r *dequeueRig) logged(msg, issue string) []map[string]any {
-	var lines []map[string]any
-	for _, line := range strings.Split(r.logs.String(), "\n") {
-		var entry map[string]any
-		if line == "" || json.Unmarshal([]byte(line), &entry) != nil {
-			continue
-		}
-		if text, _ := entry["msg"].(string); strings.HasPrefix(text, msg) && entry["issue"] == issue {
-			lines = append(lines, entry)
-		}
-	}
-	return lines
+func (r *dequeueRig) logged(t *testing.T, msg, issue string) []map[string]any {
+	t.Helper()
+	return slices.DeleteFunc(loggedLines(t, r.logs.String(), msg), func(entry map[string]any) bool {
+		text, _ := entry["msg"].(string)
+		return !strings.HasPrefix(text, msg) || entry["issue"] != issue
+	})
 }
 
 // rows is how many rows of kind the outbox holds for issue. A finished row is deleted
@@ -683,18 +677,11 @@ func (r *dequeueRig) slots(t *testing.T, issue string) []string {
 // phase is the phase the record holds issue in.
 func (r *dequeueRig) phase(t *testing.T, key string) phase.Phase {
 	t.Helper()
-	var stands phase.Phase
-	if err := pgx.BeginFunc(context.Background(), r.pool, func(tx pgx.Tx) error {
-		issue, err := r.records.Issue(context.Background(), tx, key)
-		if err != nil || issue == nil {
-			return fmt.Errorf("the record holds %s as %v: %w", key, issue, err)
-		}
-		stands = issue.Phase
-		return nil
-	}); err != nil {
-		t.Fatalf("read the phase of %s: %v", key, err)
+	issue := readIssue(t, r.pool, key)
+	if issue == nil {
+		t.Fatalf("read the phase of %s: the record does not hold it", key)
 	}
-	return stands
+	return issue.Phase
 }
 
 // dequeueAnswer is how GitHub answers the read of one pull request: open at its head, which is

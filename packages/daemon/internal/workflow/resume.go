@@ -64,14 +64,14 @@ import (
 // is decided by the entry the role's phases row names, read here as the ready of such a claim
 // reads it (catch_up.go's readyWorkerTask) and admission reads it for the same decision (admit's
 // owedEntryRoles). A claim behind that entry is sent the work of that entry at that entry
-// (OwedEntry, sendOwedEntry), which is the task the transition wrote when it raised the number:
-// the resume says to carry the existing phase work on, and the work of an entry this claim was
-// never given is work it does not have, so the resume would spend the claim's first turn after
-// the boot on the wrong prompt and the completion it answered with would be refused as behind
-// that entry. A claim level with that entry is sent the task that takes its phase on
-// (ResumePhaseTask), which the outbox does not deliver to a claim still holding its phase's
-// task. Either start resumes the claim by rule and waits for the issue's admission slot as
-// every start of a phase worker does. A role a start already covers (StartFor) gets no second.
+// (resumeByRule: OwedEntry, sendOwedEntry), which is the task the transition wrote when it raised
+// the number: the resume says to carry the existing phase work on, and the work of an entry this
+// claim was never given is work it does not have, so the resume would spend the claim's first turn
+// after the boot on the wrong prompt and the completion it answered with would be refused as
+// behind that entry. A claim level with that entry is sent the task that takes its phase on
+// (ResumePhaseTask), which the outbox does not deliver to a claim still holding its phase's task.
+// Either start resumes the claim by rule and waits for the issue's admission slot as every start
+// of a phase worker does. A role a start already covers (StartFor) gets no second.
 // The sweep runs first so the resume reads the trees it closed as lingering.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
@@ -142,29 +142,41 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if err != nil {
 			return intake.Result{}, err
 		}
-		// Neither start raises an entry (Engine.enter is called on neither): the boot hands the
-		// role no number the record does not already name. The ruleResume mark is what tells the
-		// outbox to finish the row rather than retry a claim that spends its launch budget
-		// resuming (record.SuperviseRequest.RuleResume); it names this door — the boot's resume
-		// of a claim the daemon suspended by rule — and not the task's text, so both starts
-		// carry it.
-		if OwedEntry(run, root, row.Entry) {
-			if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{ruleResume: true}); err != nil {
-				return intake.Result{}, err
-			}
+		behind, err := e.resumeByRule(ctx, tx, issue, root, role, run, row)
+		if err != nil {
+			return intake.Result{}, err
+		}
+		if behind {
 			e.logOnCommit(ctx, "workflow: the boot starts a suspended claim behind the entry its phases row names on that entry's work",
 				"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "suspendedBy", held.SuspendedBy)
 			continue
-		}
-		// The entry is 0: this start hands the role the work it is already on rather than a new
-		// entry, so it moves no phases row either.
-		if err := e.started(ctx, tx, issue, role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, ruleResume: true}); err != nil {
-			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,
 			"phase", issue.Phase, "suspendedBy", held.SuspendedBy)
 	}
 	return intake.Result{}, nil
+}
+
+// resumeByRule owes role of issue the start the boot gives a claim the daemon itself stopped,
+// built from the entry row names, and says whether the claim stands behind that entry. A claim
+// behind it (OwedEntry, which reads root for a tree close) is sent the work of that entry at that
+// entry (sendOwedEntry). A claim level with it is sent the phase's resume task (ResumePhaseTask)
+// at entry 0: that start hands the role the work it is already on rather than a new entry, so it
+// moves no phases row either. The boot's resume by rule (booted) and the cutover's repair of a
+// merger the `awaiting_merge` cutover left released (oweCutoverMerger) both build their start
+// here, so the two are built alike.
+//
+// Neither start raises an entry (Engine.enter is called on neither): the boot hands the role no
+// number the record does not already name. The ruleResume mark is what tells the outbox to
+// finish the row rather than retry a claim that spends its launch budget resuming
+// (record.SuperviseRequest.RuleResume); it names this door — the boot's resume of a claim the
+// daemon suspended by rule — and not the task's text, so both starts carry it.
+func (e *Engine) resumeByRule(ctx context.Context, tx pgx.Tx, issue, root record.Issue, role claim.Role, run record.RoleRun,
+	row record.PhaseRow) (behind bool, err error) {
+	if OwedEntry(run, root, row.Entry) {
+		return true, e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{ruleResume: true})
+	}
+	return false, e.started(ctx, tx, issue, role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, ruleResume: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported
@@ -259,17 +271,18 @@ const cutoverMergerTold = "The Legion upgrade from a build with the phase `await
 // For each issue it selects, in the fact's transaction, it clears the merger's handoff
 // (clearHandoff): the READY was a completion under the old rule, and kept it would read as a
 // merger that has completed merging, which the silence repair never prompts. Then it reads the
-// merger's phases row and builds the start as booted builds a resume by rule, from the entry that
-// row names: a merger behind that entry (OwedEntry) is sent the work of that entry at that entry
-// (sendOwedEntry), and a merger level with it is sent the merging resume task (ResumePhaseTask)
-// at entry 0. It builds the start that way, and not as one fixed request, for the reason booted
-// gives: the resume task tells a claim to carry on work it already holds, so a merger behind its
-// entry would spend its first turn on the wrong prompt, and the completion it answered with would
-// be refused as behind that entry. Neither start raises an entry, and both carry booted's
-// ruleResume mark, since each resumes a claim the daemon itself stopped and the mark tells the
-// outbox to finish the row rather than retry a claim that spends its launch budget. Both are
-// built by Engine.started and written through StartOrOwe, so the slot mark is StartOrOwe's and
-// this handler sets none. It posts one Dispatch message on the issue (cutoverMergerTold).
+// merger's phases row and builds the start with the builder of booted's resume by rule
+// (resumeByRule), from the entry that row names: a merger behind that entry (OwedEntry) is sent
+// the work of that entry at that entry (sendOwedEntry), and a merger level with it is sent the
+// merging resume task (ResumePhaseTask) at entry 0. It builds the start that way, and not as one
+// fixed request, for the reason booted gives: the resume task tells a claim to carry on work it
+// already holds, so a merger behind its entry would spend its first turn on the wrong prompt, and
+// the completion it answered with would be refused as behind that entry. Neither start raises an
+// entry, and both carry booted's ruleResume mark, since each resumes a claim the daemon itself
+// stopped and the mark tells the outbox to finish the row rather than retry a claim that spends
+// its launch budget. Both are built by Engine.started and written through StartOrOwe, so the slot
+// mark is StartOrOwe's and this handler sets none. It posts one Dispatch message on the issue
+// (cutoverMergerTold).
 //
 // No later start of that boot gives the merger a second task. booted passes over a released
 // claim, and StartFor sees the queued start. Admission's slot repair and the entry sweep send
@@ -383,10 +396,10 @@ func (e *Engine) cutoverStoppedMerger(ctx context.Context, tx pgx.Tx, issue reco
 }
 
 // oweCutoverMerger owes issue's stopped merger its merging task (cutoverMergerRepair): it clears
-// the merger's handoff, reads the merger's phases row, owes the start booted builds for a resume
-// by rule from the entry that row names, posts the cutover's message on the issue, and logs on
-// commit the slot mark the queued start carries, read back from the merger's queued rows, since
-// the mark is StartOrOwe's to set.
+// the merger's handoff, reads the merger's phases row, owes the start booted owes for a resume by
+// rule (resumeByRule) from the entry that row names, posts the cutover's message on the issue, and
+// logs on commit the slot mark the queued start carries, read back from the merger's queued rows,
+// since the mark is StartOrOwe's to set.
 func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, issue record.Issue, merger stoppedMerger) error {
 	if err := e.clearHandoff(ctx, tx, issue.Key, claim.RoleMerger); err != nil {
 		return err
@@ -398,12 +411,7 @@ func (e *Engine) oweCutoverMerger(ctx context.Context, tx pgx.Tx, issue record.I
 	if err != nil {
 		return err
 	}
-	if OwedEntry(merger.run, merger.root, row.Entry) {
-		err = e.sendOwedEntry(ctx, tx, issue, claim.RoleMerger, row, startMarks{ruleResume: true})
-	} else {
-		err = e.started(ctx, tx, issue, claim.RoleMerger, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, ruleResume: true})
-	}
-	if err != nil {
+	if _, err := e.resumeByRule(ctx, tx, issue, merger.root, claim.RoleMerger, merger.run, row); err != nil {
 		return err
 	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.MessagePost{Body: cutoverMergerTold}); err != nil {

@@ -434,19 +434,11 @@ func (e *Engine) dequeued(ctx context.Context, tx pgx.Tx, fact intake.PullReques
 // It moves no phase, writes no slot and wakes no claim: the message's own row wakes a released
 // merger when it runs (the daemon's merge-queue removal executor).
 func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.MergeQueueReadDone) (intake.Result, error) {
-	issue, err := e.store.Issue(ctx, tx, fact.Issue)
+	issue, _, why, err := MergingAt(ctx, e.store, tx, fact.Issue, fact.Number, fact.Head)
 	if err != nil || issue == nil {
 		return intake.Result{}, err
 	}
-	lingers, err := record.TreeLingers(ctx, e.store, tx, issue.Tree)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
-	if err != nil {
-		return intake.Result{}, err
-	}
-	if why := LeftMergingAt(*issue, lingers, pr, fact.Number, fact.Head); why != "" {
+	if why != "" {
 		e.logOnCommit(ctx, "workflow: the merge-queue read finished after the issue left merging at that head; the merger is not told",
 			"issue", issue.Key, "pullRequest", fact.Number, "head", fact.Head, "unread", fact.Unread, "why", why)
 		return intake.Result{}, nil
@@ -457,6 +449,29 @@ func (e *Engine) mergeQueueReadDone(ctx context.Context, tx pgx.Tx, fact intake.
 	e.logOnCommit(ctx, "workflow: the merger is owed word that its pull request left the merge queue",
 		"issue", issue.Key, "pullRequest", fact.Number, "head", fact.Head, "unread", fact.Unread)
 	return intake.Result{}, nil
+}
+
+// MergingAt reads in tx what the merging rule judges issue key by: the issue, whether its tree
+// lingers (record.TreeLingers) and the pull request the record holds for it. It returns the issue
+// and that pull request, with why the workflow no longer works the issue's merging phase at head
+// of pull request number (LeftMergingAt), "" while it does. An issue the record does not hold is a
+// nil issue, no pull request and no reason. The fact that writes the merger's message
+// (mergeQueueReadDone) and the daemon's outbox rows that read the pull request and deliver the
+// message read the issue through this one read, so all three judge it from the same records.
+func MergingAt(ctx context.Context, store record.Store, tx pgx.Tx, key string, number int, head string) (*record.Issue, *record.PullRequest, string, error) {
+	issue, err := store.Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		return nil, nil, "", err
+	}
+	lingers, err := record.TreeLingers(ctx, store, tx, issue.Tree)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	pr, err := store.PullRequest(ctx, tx, key)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	return issue, pr, LeftMergingAt(*issue, lingers, pr, number, head), nil
 }
 
 // LeftMergingAt says why the workflow no longer works issue's merging phase at head of pull

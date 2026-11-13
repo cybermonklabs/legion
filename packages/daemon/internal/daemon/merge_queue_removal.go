@@ -73,10 +73,8 @@ func (r *outbox) mergeQueueRead(ctx context.Context, row record.OutboxRow, paylo
 	case failed == nil:
 		r.log.Info("outbox merge-queue read: GitHub answered not merged; the merger is told", append(attributes, "state", pull.State)...)
 	case read < mergeStateLadderReads:
-		delay := r.mergeStateWait()
-		if after, _ := githubrest.RetryAfter(failed); after > delay {
-			delay = after
-		}
+		after, _ := githubrest.RetryAfter(failed)
+		delay := max(r.mergeStateWait(), after)
 		r.log.Warn("outbox merge-queue read: the read of GitHub failed; it reads again",
 			append(attributes, "reads", mergeStateLadderReads, "wait", delay, "error", failed)...)
 		return wait.Until(r.now().UTC().Add(delay), fmt.Sprintf("the merge-queue read of %s's pull request #%d reads GitHub again in %s, after read %d of %d failed: %v",
@@ -179,24 +177,18 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 
 // mergingAt reads, in one transaction, what a merge-queue row reads of its issue before it acts:
 // the issue, the pull request the record holds for it, and why the workflow no longer works the
-// issue's merging phase at head of pull request number (workflow.LeftMergingAt), "" while it does.
+// issue's merging phase at head of pull request number, "" while it does (workflow.MergingAt).
 // The read row and the delivery row read it at every attempt, as every fence of a row is read just
-// before the row acts, and by the rule the fact between them judges the issue by (workflow's
+// before the row acts, and through the read the fact between them judges the issue by (workflow's
 // mergeQueueReadDone), so none of the three tells a merger of an issue another of them found gone
 // from merging. An issue the record does not hold has left merging too.
 func (r *outbox) mergingAt(ctx context.Context, key string, number int, head string) (record.Issue, *record.PullRequest, string, error) {
 	var issue *record.Issue
 	var pr *record.PullRequest
-	var lingers bool
+	var left string
 	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		var err error
-		if issue, err = r.records.Issue(ctx, tx, key); err != nil || issue == nil {
-			return err
-		}
-		if lingers, err = record.TreeLingers(ctx, r.records, tx, issue.Tree); err != nil {
-			return err
-		}
-		pr, err = r.records.PullRequest(ctx, tx, key)
+		issue, pr, left, err = workflow.MergingAt(ctx, r.records, tx, key, number, head)
 		return err
 	}); err != nil {
 		return record.Issue{}, nil, "", fmt.Errorf("read the merging phase of %s: %w", key, err)
@@ -204,5 +196,5 @@ func (r *outbox) mergingAt(ctx context.Context, key string, number int, head str
 	if issue == nil {
 		return record.Issue{}, nil, "the issue is not recorded", nil
 	}
-	return *issue, pr, workflow.LeftMergingAt(*issue, lingers, pr, number, head), nil
+	return *issue, pr, left, nil
 }
