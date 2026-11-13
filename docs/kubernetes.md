@@ -2120,6 +2120,66 @@ What the rollback costs is the line:
 a pane of the earlier release is told no key and stamps none, so every commit it makes carries the session line alone, and a base branch that requires the issue line in the commit that lands refuses such a branch until a role describes a commit of it with that line by hand.
 The commits already stamped keep their line: it is in their messages, which nothing rewrites.
 
+**The phase entry (daemon API contract 94).**
+A release at contract 94 holds the work a role is owed as numbers of the record rather than as one token carried on one outbox row.
+`phases` carries `entry`, `entry_task` and `entry_raised_at` — the entry the role of the issue's current phase stands on, the work of that entry, and when the transition raised it — and `claims` carries `given_entry` and `served_entry`, the entry of the last task the claim was queued and the entry its worker confirmed, with `pending_task_deliveries.entry` carrying the number from the start row to the claim.
+An issue of `GET /legion/v1/state` carries `phaseEntry` and `givenEntry` from those columns where `phase.RoleFor` names a role for the issue's current phase (`internal/projection/project.go`), and the daemon sends the entry's own work to every role whose claim stands below the entry its `phases` row names, on each admission pass and on a sweep of its own each minute.
+Both keys are absent together for an issue whose current phase names no phase worker role — a root at `admitted` whose design gate has never opened — and each is absent where it is 0 (`internal/api/state.go`), so an issue whose role the daemon holds no claim row of carries `phaseEntry` alone.
+A caller from a pod whose claims record a contract below 94 is served the issues without either key (`withoutPhaseEntries` in `internal/api/server.go`).
+Store migration 20261111225552_phase_entry adds the six columns, fills them from the assignment token the release before it minted at each phase change (a role that release had handed work stands at entry 1, with the task of the start row its issue still owes it), stamps that entry into the payload of each of those start rows, and drops the three columns that token was held in:
+`phases.assignment`, `claims.serving_assignment` and `pending_task_deliveries.assignment`.
+
+To roll this release back to contract 87, stop the daemon and run the eleven statements below, which leave the store at the earlier release's schema and at that release's own version, 20261112180548:
+the version the store reports is its highest recorded row (`schemaVersion` in `internal/store/store.go`), every database this release migrated records 20261112180548 above this migration's own 20261111225552, and the block deletes no row but that one.
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+alter table phases add column if not exists assignment text not null default '';
+alter table claims add column if not exists serving_assignment text not null default '';
+alter table pending_task_deliveries add column if not exists assignment text not null default '';
+update outbox set payload = payload - 'entry' - 'resendEntry'
+where kind = 'supervise' and (payload ? 'entry' or payload ? 'resendEntry');
+alter table phases drop column if exists entry;
+alter table phases drop column if exists entry_task;
+alter table phases drop column if exists entry_raised_at;
+alter table claims drop column if exists given_entry;
+alter table claims drop column if exists served_entry;
+alter table pending_task_deliveries drop column if exists entry;
+delete from schema_version where version = 20261111225552;
+commit;
+SQL
+```
+
+It prints `BEGIN`, three `ALTER TABLE`s, `UPDATE <n>`, six more `ALTER TABLE`s, `DELETE 1` and `COMMIT`;
+a rerun prints a `NOTICE` for each of the nine columns it finds as it means to leave them, the same `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and `COMMIT`, and changes nothing.
+The three `add column`s come first because the earlier release cannot read the claims table without them:
+its claim read names `serving_assignment` (`claimSelect` in `internal/store/claims.go` at contract 87), so every claim read fails and its supervisor loads nothing.
+The `update` is owed for the same reason.
+This release writes `entry` into a supervise start's payload and `resendEntry` onto a start that resends an entry, the earlier release knows neither key and decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`), and its `record.Postgres.RoleRuns` decodes every supervise row of every issue an admission pass reads, so a row left carrying either key fails to decode for ever:
+the runner retries it on its backoff, and every admission pass of its issue fails with it.
+It leaves `assignment` on those payloads where it is, since the earlier release mints that token again at each role's next start and this release still reads the field.
+The six drops and the deleted row are owed to the roll-forward rather than to the earlier release, which reads none of the six columns:
+together they re-arm the migration, so the newer image's `Migrate` runs the file again (`versionRecorded` in `internal/store/store.go` decides each migration on its own row) and fills the entries afresh from the tokens the earlier release kept current while it ran.
+What that second fill costs is the numbering:
+every role the earlier release had handed work is at entry 1 again, whatever entry it stood at before the rollback, and `entry_raised_at` reads the moment of the roll-forward.
+Nothing reads an entry across the rollback — what a role is owed is the difference between its own two numbers, both written by that one run — so the renumbering costs no more than the history it does not keep.
+Zeroing the six columns and leaving the row standing would cost more than that:
+the migration would never run again, and a role whose task the earlier release lost while it ran would read 0 against 0, owed nothing and swept nothing, holding its slot with nobody at work on it until a person noticed.
+The re-arm needs nothing of the other rows:
+`store.apply` decides each migration on its own row, so the deleted row leaves 20261111225552 unapplied whatever version stands highest.
+What the block does need is that no migration recorded after this one builds on the six columns it drops.
+Such a migration keeps its own row through the `delete`, so it never runs again, while the drops take with them whatever it built on those columns, an index or a constraint on `phases.entry`, say:
+reverse such a migration by its own way back first, and run this block after it.
+The one migration recorded above this one at this release, 20261112180548_claim_leak_check_cause, adds `claims.leak_check_cause` and touches none of the six, so the block holds over it and leaves it and its column standing.
+The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
+where that file carries another identifier in the release you roll back from, use that one.
+The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database migrated to this release's head by `internal/store`'s own `Migrate`, which applied 133 migrations and left 133 versions recorded, the highest 20261112180548, and holding four outbox rows:
+two supervise starts carrying `entry`, one of them `resendEntry` beside it, a supervise row carrying neither, and a `notice` row carrying an `entry` key of its own.
+The first run printed `BEGIN`, three `ALTER TABLE`s, `UPDATE 2`, six `ALTER TABLE`s, `DELETE 1` and `COMMIT`, and the second printed the nine `NOTICE`s with their `ALTER TABLE`s, `UPDATE 0`, `DELETE 0` and the same `COMMIT`; both exited 0.
+After them the three assignment columns stood, none of the six entry columns did, `claims.leak_check_cause` still stood, `schema_version` held 132 rows with none of 20261111225552 and its highest still at 20261112180548, the two supervise payloads had lost both keys and kept every other key they carried — the `assignment` the second of them carried among them — and the `notice` row kept its own `entry`.
+Running `Migrate` again then applied that one migration a second time, reporting one migration applied: the six entry columns stood on the three tables again, the three assignment columns were dropped again, and `schema_version` held 133 rows, 20261111225552 among them and 20261112180548 still the highest.
+
 **Each issue's experiment assignments in the state (daemon API contract 99).**
 A release at contract 99 carries, on every issue of `GET /legion/v1/state`, `assignments`:
 one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:
@@ -2137,18 +2197,18 @@ Store migration 20261111045636_experiment_assignments adds the table those answe
 every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its mode, its instant and its mark verbatim and its group as the variant, but for one normalisation: a group drawn under mode `off`, which that column holds as the word `none`, becomes the empty variant.
 The four columns stay in the schema exactly as they stand, this release writes none of them, and a later release drops them.
 
-To roll this release back to contract 87, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
+To roll this release back to contract 94, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
 There is no SQL to run and no table to drop:
 the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
 What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
-The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v19.57.3`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
+The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v20.8.1`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
 it changes arms all the same.
 That release decides a launch's memory from `issues.memory_group` alone (its `treeMemoryGroup`, `issue.MemoryGroup == "memory"`), and this release writes no `memory_*` column, so a tree drawn into the `memory` arm after the upgrade has an empty `memory_group`:
 its next role starts without the memory overlays and without the memory instructions, and the tree runs the rest of its life in the other arm than the one it was drawn into.
 The record goes with it: that tree's answer is in `experiment_assignments`, which the earlier release names nowhere, so it reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
 The trees drawn before the upgrade are untouched: their columns are the back-fill's source and still hold their draw, so they keep their arm and read exactly as they did.
 The earlier release writes `issues.memory_*` in a second place, the hand-over, and that costs the children handed over out of those trees too.
-Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v19.57.3`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
+Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v20.8.1`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
 A tree this release drew holds one and holds empty columns, so a child handed over out of it while the rollback holds is copied no group, no mode and no instant, and marked carried:
 it is settled at no group, and the earlier release never draws it, since its `DrawMemory` passes over a carried root.
 Rolling forward does not undo that for a child whose own tree the earlier release opened during the window, and does for one whose own tree no release has opened yet.

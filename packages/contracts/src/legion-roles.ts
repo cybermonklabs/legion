@@ -47,7 +47,7 @@ export function isLegionRole(role: string): role is LegionRole {
 
 /**
  * The role that works a phase, the TypeScript mirror of the daemon's own table
- * (`packages/daemon/internal/workflow/effects.go`, `RoleFor`). A phase no role works —
+ * (`packages/daemon/internal/phase/phase.go`, `RoleFor`). A phase no role works —
  * `admitted`, `done`, `held`, `unrecorded` — has none, and so has any value
  * that is not a phase; `accepting` is the tree architect's, and `retro` is the implementer's
  * second turn on the issue it developed.

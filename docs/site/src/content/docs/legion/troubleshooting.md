@@ -827,8 +827,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
 - **`suspendedWorkers`** (a suspended phase worker): the move depends on who suspended it, which
   `legion claims list --json` shows as `suspendedBy`, and `legion state` points there too.
-  Only an architect is sent a catch-up, so a worker resumed with no task relaunches with nothing to
-  do, and once it runs the list stops naming it.
+  Only an architect is sent a catch-up; a worker resumed behind the entry its role's phases row
+  names is sent that entry's work, which the daemon does on every admission pass and on a sweep
+  each minute, and one already at that entry relaunches with nothing to do. Once it runs the list
+  stops naming it.
 
   - **`suspendedBy: unknown`** (suspended before this release recorded who did): let the
     workflow start it. Stop the project's daemon, mark the claim as the daemon's, and start the
@@ -909,7 +911,7 @@ The project's controller reads the same issue in the `silent` list of its period
 The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
 That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
 
-The daemon sends the worker its phase's task again, under the assignment the issue's phase row already names where it names one.
+The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
 The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
 A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
 
@@ -1175,19 +1177,25 @@ These arrive as messages on the Dispatch issue:
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
   the issue finds none open on the branch the architect is told
   ([An architect is told `pull-request-missing`](#an-architect-is-told-pull-request-missing)).
-- **A worker's completion refused `HANDOFF_STALE_ASSIGNMENT`.** The phase the completing turn was
+- **A worker's completion refused `HANDOFF_STALE_ENTRY`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, or the head started conflicting with its base while the
   tester tested, while the reviewer reviewed a round it had not completed, or while the merger
-  worked toward the merge. The daemon
-  ends no turn, so the turn reporting the completion is the earlier assignment's and nothing is
-  recorded. The refusal names the issue, the role and the phase: the worker ends that turn without
-  completing, and reports that work and that verdict no further. The phase was entered again, so
-  the task the daemon queued for the assignment it hands the role now — which arrives as the
-  session's next prompt — is work of its own: a testing assignment after such a move is for the
-  head the fix pushed, and the verdict on the head before it answers for nothing there. The worker
-  does that task's work, writes a handoff of its own for it, and completes in its turn. When no
-  such task is queued for it, the refusal says so and the worker tells its architect.
+  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
+  an entry behind the one the role's phases row names, and nothing is recorded. The refusal
+  names the issue, the role and the phase, the entry the completion is of and the entry the
+  role's phases row is on, and, when the task of that entry already waits on the claim, that the
+  turn began before it reached the session. It then tells the worker what to do in the same
+  words the `legion` tool's description gives for the code
+  (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
+  without completing; the task of the entry the phase is on is owed to the claim and the daemon
+  sends it by itself, which it does on every admission pass and on a sweep each minute; and that
+  task is work of its own, done at the head it names and completed with a handoff of its own,
+  never the refused completion's record, commit or verdict. A testing entry after such a move is
+  for the head the fix pushed, and the verdict on the head before it answers for nothing there.
+  The same code on a completion of an entry above the one the phases row names is one the
+  record never produces, since the daemon raises the row in the transaction that composes the
+  entry's task; that refusal tells the worker to end the turn and tell the architect.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
@@ -1196,11 +1204,11 @@ the issue back to the implementer with the base to merge forward and told the ar
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-assignment retro handed it while the phase holds the implementing one, so it is refused
-(`HANDOFF_STALE_ASSIGNMENT`), and the implementer merges the base forward in the implementing
+entry retro handed it while its phases row is on the implementing one, so it is refused
+(`HANDOFF_STALE_ENTRY`), and the implementer merges the base forward in the implementing
 task's own turn and completes that work with a handoff of its own, never retro's commit; the
-merger's row still names the assignment merging gave it, so a completion it sends for the phase it
-lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
+merger's phases row still names the entry merging gave it, so a completion it sends for the phase
+it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
 acceptance and retro to a new merge. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:

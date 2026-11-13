@@ -281,9 +281,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
 			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
-			// sentence contract 87 added (withoutLeakCheckCause), and with each issue's
-			// `assignments` gone, the experiment answers contract 99 added (withoutAssignments).
-			// Every row that reaches here is below all of them, so those fourteen keys go
+			// sentence contract 87 added (withoutLeakCheckCause), with each issue's
+			// `phaseEntry` and `givenEntry` gone, the two keys contract 94 added
+			// (withoutPhaseEntries), and with each issue's `assignments` gone, the experiment
+			// answers contract 99 added (withoutAssignments). Every row that reaches here is
+			// below all of them, so those twenty-eight keys, the twenty-eight stateFor names, go
 			// whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
@@ -305,6 +307,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
+				// Every row that reaches here is below phaseEntriesContract too, so the two
+				// entry numbers go whatever the row is, as the decided record's keys above do.
+				delete(issue, "phaseEntry")
+				delete(issue, "givenEntry")
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)
