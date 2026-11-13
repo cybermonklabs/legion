@@ -427,7 +427,6 @@ describe("awaitSeededInbox", () => {
     expect(inbox.calls).toBe(1);
     expect(match.reads).toBe(1);
     expect(match.line).toBe("inbox rows: 5 of 5 declared rows matched in 1 read");
-    expect(match.line.endsWith("in 1 read")).toBe(true);
   });
 
   test("an abort while a read hangs rejects with Interrupted at once", async () => {
@@ -510,7 +509,7 @@ describe("awaitSeededInbox", () => {
     );
   });
 
-  test("a read that never answers ends the wait at the deadline", async () => {
+  test("a read that never answers is a failed read once the deadline passes", async () => {
     const started = Date.now();
     const message = await failureOf(
       awaitSeededInbox(declared, () => new Promise<never>(() => {}), quick)
@@ -518,9 +517,21 @@ describe("awaitSeededInbox", () => {
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(message.split("\n").slice(1)).toEqual([
       "  the seed declares 5 rows.",
-      "  the last read failed: the read had not answered when the 0.3 s deadline passed",
+      "  the last read failed: the read had not answered within 0.3 s",
       owner,
     ]);
+  });
+
+  test("the wait ends at the deadline and starts no read after it", async () => {
+    // Reads at 0 ms and at 200 ms; the second sleep is cut to the 100 ms the deadline leaves, so
+    // no third read starts at 400 ms with no time left to answer in.
+    const inbox = reader(() => shortSet);
+    const message = await failureOf(
+      awaitSeededInbox(declared, inbox.read, { deadlineMs: 300, intervalMs: 200 })
+    );
+    expect(inbox.calls).toBeLessThanOrEqual(2);
+    expect(message.split("\n")[0]).toMatch(/ and [12] reads?\.$/);
+    expect(message).not.toContain("the last read failed");
   });
 
   test("an unexpected row on a document is named by the document", async () => {

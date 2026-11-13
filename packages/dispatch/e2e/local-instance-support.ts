@@ -1,9 +1,11 @@
 /** What `e2e/local-instance.ts` and `e2e/harness-start.ts` run on: the processes they start and
  *  stop, the refusal of a database the command must not truncate, and the quoting of the commands
- *  it prints. Nothing here runs on import, so `e2e/__tests__/local-instance-support.test.ts`
- *  drives it without a server. */
+ *  it prints; and the check that the Inbox lists the rows `e2e/workspace.ts` seeded
+ *  (`awaitSeededInbox`), which the command and `e2e/workspace.e2e.ts` both run. Nothing here runs
+ *  on import, so `e2e/__tests__/local-instance-support.test.ts` drives it without a server. */
 import { type ChildProcess, spawn } from "node:child_process";
 import type { Readable } from "node:stream";
+import { setTimeout as sleep } from "node:timers/promises";
 
 export class Interrupted extends Error {}
 
@@ -256,7 +258,8 @@ export async function agentViewRefusal(
 
 /** One row the seed guarantees the unfiltered Inbox read returns. An ask of the seed's own is
  *  matched by its ask id; the spec's decision row is matched by its block id on its issue,
- *  because the document service may retract that ask and write it again for the same block. */
+ *  because the document service may retract that ask and write it again for the same block.
+ *  `made` is what the seed made the row, as a failure names it: `the blocking ask on CORE-5`. */
 export type SeededInboxRow =
   | { readonly kind: "ask"; readonly askId: string; readonly made: string }
   | {
@@ -299,7 +302,8 @@ interface SeededInboxDiff {
   readonly matched: number;
   readonly missing: readonly SeededInboxRow[];
   readonly unexpected: readonly InboxRowRead[];
-  readonly rows: readonly InboxRowRead[];
+  /** How many rows the read listed. */
+  readonly rowCount: number;
 }
 
 /** The difference between the rows `declared` and one Inbox read: each declared row, in order,
@@ -322,7 +326,7 @@ function diffSeededInbox(
     else taken.add(index);
   }
   const unexpected = rows.filter((_, at) => !taken.has(at));
-  return { matched: taken.size, missing, rows, unexpected };
+  return { matched: taken.size, missing, rowCount: rows.length, unexpected };
 }
 
 const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
@@ -331,31 +335,13 @@ const plural = (count: number, word: string) => `${count} ${word}${count === 1 ?
 const listed = (items: readonly string[]) =>
   (items.length === 0 ? ["none"] : items).map((item) => `    - ${item}`);
 
-/** Resolves after `ms`, or rejects with Interrupted as soon as `signal` aborts, with its timer
- *  cleared so it keeps no process alive. */
-function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
-  const { promise, resolve, reject } = Promise.withResolvers<void>();
-  const onAbort = () => {
-    clearTimeout(timer);
-    reject(new Interrupted("interrupted"));
-  };
-  const timer = setTimeout(() => {
-    signal?.removeEventListener("abort", onAbort);
-    resolve();
-  }, ms);
-  signal?.addEventListener("abort", onAbort, { once: true });
-  if (signal?.aborted) onAbort();
-  return promise;
-}
-
-/** `step`, or an Error naming `deadlineMs` once `ms` pass with `step` still unsettled, so one read
- *  that never answers cannot hold the wait past its deadline. `step`'s own outcome is always
- *  handled, and the timer is cleared as soon as it settles. */
-function answeredWithin<T>(step: Promise<T>, ms: number, deadlineMs: number): Promise<T> {
+/** `step`, or an Error once `ms` pass with it still unsettled, so one read that never answers
+ *  cannot hold the wait forever. `step`'s own outcome is always handled, and the timer is cleared
+ *  as soon as it settles. */
+function answeredWithin<T>(step: Promise<T>, ms: number): Promise<T> {
   const { promise, resolve, reject } = Promise.withResolvers<T>();
   const timer = setTimeout(() => {
-    const deadline = (deadlineMs / 1_000).toFixed(1);
-    reject(new Error(`the read had not answered when the ${deadline} s deadline passed`));
+    reject(new Error(`the read had not answered within ${(ms / 1_000).toFixed(1)} s`));
   }, ms);
   step.then(resolve, reject).finally(() => clearTimeout(timer));
   return promise;
@@ -370,9 +356,10 @@ function answeredWithin<T>(step: Promise<T>, ms: number, deadlineMs: number): Pr
  * Each declared row takes the first Inbox row it names that no declared row took before it; a
  * declared row that takes none is missing, and an Inbox row that none took is unexpected, a
  * second copy of a declared row included. A read that throws counts as a read and is tried again
- * to the same deadline, and a read still unanswered at the deadline is the last read, failed. The
- * abort of `signal` rejects with Interrupted at once, whether the helper waits on a read or
- * sleeps between reads.
+ * to the same deadline; one read that does not answer within `deadlineMs` is a failed read, so
+ * the wait ends within twice the deadline whatever the server does, and no read starts once the
+ * deadline has passed. The abort of `signal` rejects with Interrupted at once, whether the helper
+ * waits on a read or sleeps between reads.
  */
 export async function awaitSeededInbox(
   declared: readonly SeededInboxRow[],
@@ -388,33 +375,30 @@ export async function awaitSeededInbox(
   for (;;) {
     reads += 1;
     try {
-      const step = answeredWithin(
-        (async () => read())(),
-        Math.max(0, deadlineMs - (Date.now() - started)),
-        deadlineMs
-      );
+      const step = answeredWithin((async () => read())(), deadlineMs);
       answered = diffSeededInbox(declared, await untilAborted(step, signal));
       failure = undefined;
+      if (answered.missing.length === 0 && answered.unexpected.length === 0) {
+        return {
+          line: `inbox rows: ${answered.matched} of ${declared.length} declared rows matched in ${plural(reads, "read")}`,
+          matched: answered.matched,
+          reads,
+        };
+      }
     } catch (error) {
       if (signal?.aborted) throw new Interrupted("interrupted");
       failure = { error };
     }
-    if (
-      failure === undefined &&
-      answered?.missing.length === 0 &&
-      answered.unexpected.length === 0
-    ) {
-      return {
-        line: `inbox rows: ${answered.matched} of ${declared.length} declared rows matched in ${plural(reads, "read")}`,
-        matched: answered.matched,
-        reads,
-      };
+    const left = deadlineMs - (Date.now() - started);
+    if (left > 0) {
+      // The interval between two Inbox reads while the document settlement lands, cut to the
+      // deadline, so the wait ends at the deadline rather than one interval past it.
+      await untilAborted(sleep(Math.min(intervalMs, left), undefined, { signal }), signal);
     }
     const elapsed = Date.now() - started;
     if (elapsed >= deadlineMs) {
       throw new Error(seededInboxFailure(declared, elapsed, reads, answered, failure));
     }
-    await pause(intervalMs, signal);
   }
 }
 
@@ -455,7 +439,7 @@ function seededInboxFailure(
               return `ask ${row.id} on ${on} (block ${row.block_id ?? "none"})`;
             })
           ),
-          `  the Inbox answered ${plural(answered.rows.length, "row")}; the seed declares ${declared.length}.`,
+          `  the Inbox answered ${plural(answered.rowCount, "row")}; the seed declares ${declared.length}.`,
         ];
   if (failure !== undefined) {
     const { error } = failure;
