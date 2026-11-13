@@ -1074,7 +1074,7 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
   issue takes a slot when the daemon starts it and keeps it
-  until it is done or leaves the workflow,
+  until it is done or leaves the workflow, except while it waits on another issue,
   so a tree of four started issues holds four of them, and the `live
   trees` count is the trees that run whether or not any issue of theirs holds one.
 
@@ -1184,7 +1184,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   read; a daemon below contract 58 serves none), beside which the line's own members say where
   that place came from and what it means for the slot the issue waits for:
   `part`, `returned` for an issue whose work came back or `starting` for one that has not
-  started; `kind`, `returning`, `answered`, `queued_root` or `first_phase`; `partPlace` and
+  started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
+  issue that gave its slot back to wait on another issue; it takes a slot again by itself once the
+  wait ends); `partPlace` and
   `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two

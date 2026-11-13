@@ -234,7 +234,7 @@ If you are that child's architect:
 
 This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
 A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
-Your root keeps its admission slot throughout: it holds the slot the daemon gave it at its start until it is done or leaves the workflow.
+Your root keeps its admission slot throughout: a root in `awaiting_person` is one of the roots that keep their slot through a wait (root `AGENTS.md`, "Admission" in the Issue Lifecycle section).
 So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
 The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
 A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.

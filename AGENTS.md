@@ -852,10 +852,11 @@ Triage ──┬──► Icebox ──► Backlog ──► Todo ──► In P
 **Phase roles:** architect → plan → implement → test → review → the architect's acceptance → retro → merge
 
 **Admission:** an admission slot is one issue the daemon has started, not one tree.
-Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase — and keeps it until it is done or leaves the workflow.
-So the row goes in three cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; or it belongs to a tree whose root closed or a tree the daemon no longer runs.
-Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `retro`, `merging`, `accepting`, `held` and `awaiting_person` — so an issue waiting on a person, on a blocker, on its children or on its review keeps its place against the cap and wins none back from the line when the wait ends.
-The admission pass that sees one of those three states deletes the slot row.
+Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase — and keeps it until it is done or leaves the workflow, except while it waits on another issue (see below).
+So the row goes in four cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; it belongs to a tree whose root closed or a tree the daemon no longer runs; or it waits on another issue and is not one of the three roots that keep their slot through such a wait.
+Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `retro`, `merging`, `accepting`, `held` and `awaiting_person` — so an issue waiting on a person or on its review keeps its place against the cap and wins none back from the line when the wait ends.
+A wait on a blocker or on its children is the exception: the issue gives its slot back, as the paragraph on started issues that wait below says.
+The admission pass that sees one of those four cases deletes the slot row.
 `admission_cap` keeps its name and counts these issues, four by default, so a cap of N issues holds fewer issues in progress than a cap of N trees did.
 An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
 A slot change stops no process, claim, session or pod:
@@ -994,7 +995,7 @@ Two waits count: Dispatch shows the issue blocked by an issue that is not `done`
 Three started issues keep their slot although a wait names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never opened, whose architect is writing the design, since releasing it would take the slot of the one issue of the tree that is working; and a root that arrived from another tree carrying the row it held there, which the waiting line judges by its queued-root rule, the one that starts a root carrying a run whatever its links say, so a release here would be undone by the promotion of the same pass.
 Nothing of the work stops: no claim is suspended, no session ends, no phase moves, no Dispatch status is written, and the slot is accounting only.
 The state names such an issue under `admission.waiting` and under `admission.blocked`, never under `admission.active`, which is how a reader tells it from an issue a person parked, which is in none of the three.
-A person's `todo` on a started child re-enters it at `admitted` inside its live tree, where it holds the slot it took — an issue holds its admission slot from the first moment the daemon starts it until it is done or leaves the workflow — unless a wait of the two above takes that slot back.
+A person's `todo` on a started child re-enters it at `admitted` inside its live tree, where it holds the slot it took, unless a wait of the two above takes that slot back.
 Work already under way is never stopped, and its admission is never re-checked, and those are the two exemptions:
 an issue that carries a run into a tree of its own is admitted whatever its links say, and so is a tree that ran, taken back after it finished and lingered, which starts again at its person's `todo`;
 a blocker added to a running tree's issue starts nothing over and stops nothing, and the only thing it changes is the slot that issue holds.

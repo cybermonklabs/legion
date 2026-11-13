@@ -37,8 +37,10 @@ every slot is taken, the issue waits in `todo` and takes the next free slot in t
 A slot is one issue the daemon has started, a root or a child, so a tree of four started issues
 holds four of them. An issue takes its slot when the daemon starts it and keeps it
 until it is done or leaves the workflow,
-so a wait of its own — on a blocker, on its children or on you — keeps the slot, and its agents
-stay live beside it.
+so a wait on you or on a review keeps the slot, and its agents stay live beside it.
+A wait on another issue is the exception: a started issue that Dispatch shows blocked by an issue
+that is not `done`, or whose first phase waits on an open child under it, gives its slot back.
+It waits in line, nothing of its work stops, and it takes a slot again by itself once the wait ends.
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it, park it, or leave it for you.
 
