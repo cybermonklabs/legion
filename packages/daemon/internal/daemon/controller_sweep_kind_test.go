@@ -107,7 +107,7 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 	serving := newRepositories(cfg.Project, ghrepo.Renames{}).serving
 	// The proof applies no fact of a pod's volume, so the trimmer's reports reach a holder
 	// nothing filled, which drops them (volumeTrimReports.report).
-	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
+	return sandboxRuntime(rc, opts, repos, serving, ghrepo.Renames{}, "", &volumeTrimReports{})(ctx, listener, listener.Addr(), outboxTokens{}, nil, st, noRepositories)
 }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the

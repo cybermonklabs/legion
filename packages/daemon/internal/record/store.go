@@ -43,9 +43,10 @@ func (s *Postgres) MarkProcessed(ctx context.Context, tx pgx.Tx, source, eventID
 }
 
 // ForgetProcessed removes the processed-events row of one fact, so the same fact id applies again
-// when it is sent anew. ApplyFact uses it for a refused production check report alone: the report
-// of a look is one fact id, and a refusal of it must not stand as the answer to the implementer's
-// next report of that same look (dispatch://INFRA-714/spec R12).
+// when it is sent anew. ApplyFact uses it for a refused production check report — the report of
+// a look is one fact id, and a refusal of it must not stand as the answer to the implementer's
+// next report of that same look (dispatch://INFRA-714/spec R12) — and for a fact a handler left
+// unspent (intake.Result.Unspent).
 func (s *Postgres) ForgetProcessed(ctx context.Context, tx pgx.Tx, source, eventID string) error {
 	if _, err := tx.Exec(ctx, "delete from processed_events where source = $1 and event_id = $2", source, eventID); err != nil {
 		return fmt.Errorf("forget processed event %s/%s: %w", source, eventID, err)
@@ -2568,6 +2569,8 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // written apart and read together, as claimSelect reads them).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark,
+		c.update_round, c.step_at, c.turn_started_at,
+		c.activity_at, c.activity_background, c.activity_next_reminder_at,
 		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
@@ -2580,9 +2583,31 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var pending bool
 		var task supervise.Delivery
 		var confirmed *time.Time
+		// Both step columns are nullable (migration 20261107052815_claim_step_record): a claim
+		// whose agent has neither stepped nor begun a turn has neither, and the zero time left
+		// in the step record is what says so to its reader (supervise.StepRecord.LastStep).
+		var stepped, turnStarted *time.Time
+		// Both activity moments are nullable (migration 20261101214123_claim_session_activity):
+		// a session that has reported nothing has no activity_at, and one that armed no reminder
+		// has no activity_next_reminder_at. The zero time left in each is what says so to the
+		// rule that reads them (workflow.SilentPhaseWorker).
+		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
+			&held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
 			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
+		}
+		if stepped != nil {
+			held.Step.At = *stepped
+		}
+		if turnStarted != nil {
+			held.Step.TurnStartedAt = *turnStarted
+		}
+		if reported != nil {
+			held.ActivityAt = *reported
+		}
+		if reminder != nil {
+			held.ActivityNextReminderAt = *reminder
 		}
 		if pending {
 			if confirmed != nil {

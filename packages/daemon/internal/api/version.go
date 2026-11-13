@@ -1242,7 +1242,34 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
-// 91: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
+// 95: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
 // runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
 // the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
@@ -1299,5 +1326,13 @@ package api
 // because renumbering changes this branch's own diff, and a renumber made after a result stands
 // against this head costs the tester a round rather than a commit. So do not re-derive a number
 // from this line at the next merge: read main's own DaemonAPIVersion and the open heads' own,
-// and move this one only when one of them reaches 91.)
-const DaemonAPIVersion = 91
+// and move this one only when one of them reaches 91.
+// At the forward merge of 2026-11-13 main had 87, below 91, but #3712 was found declaring 91 as
+// well, so the number moved: a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for each
+// of the 140 open pull requests gives, above main's 87, 87 (#2544, #2813, #2945, #3178, #3769,
+// #3785, #3786, #3831 and #3971), 88 (#3730), 89 (#3659), 90 (#3830), 91 (#3712, and this
+// change's own head before this merge), 92 (#3715), 93 (#3937), 94 (#3677), 96 (#2731 and
+// #3573), 97 (#3575) and 98 (#3708), so 95 is the lowest free number above main's. It is held
+// from here under the same rule: move it only when main's own number or another open head's
+// reaches 95.)
+const DaemonAPIVersion = 95

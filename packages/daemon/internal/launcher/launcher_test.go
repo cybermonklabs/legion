@@ -582,25 +582,39 @@ type fleet struct {
 	conns                 map[string]*roleConn
 }
 
-// newFleet is newFleetDialed with every role's hello admitted by the empty acknowledgement, in
-// the order of the --role list, which is the order an issue pod's daemon answers them in.
+// newFleet is newFleetOf of a launcher that carries no fields of its own but its stop grace.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Helper()
-	f := newFleetDialed(t, grace, roles...)
+	return newFleetOf(t, Config{StopGrace: grace}, roles...)
+}
+
+// newFleetOf is newFleetDialedOf with every role's hello admitted by the empty acknowledgement,
+// in the order of the --role list, which is the order an issue pod's daemon answers them in.
+func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
+	f := newFleetDialedOf(t, cfg, roles...)
 	for _, role := range roles {
 		f.role(role).acknowledge()
 	}
 	return f
 }
 
-// newFleetDialed starts a launcher over a roles directory shaped as an issue pod's one container
-// gives it — every role's launcher token, gh bundle, private, state and agent-secrets directory
-// — and takes every role's connection up to its hello, acknowledging none: a case that drives
-// the pod's cache trimmer answers each hello itself, since the answer to the first role's is
-// what hands the trimmer its settings (launcher.go's serveVolumeTrim). A generation of such a
-// launcher runs in namespaces of its own, so a test that starts one calls requireRoleNamespaces
-// first.
+// newFleetDialed is newFleetDialedOf of a launcher that carries no fields of its own but its
+// stop grace.
 func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
+	t.Helper()
+	return newFleetDialedOf(t, Config{StopGrace: grace}, roles...)
+}
+
+// newFleetDialedOf starts a launcher that carries cfg's own fields (its stop grace, its
+// leak-check directory) besides the fields every fleet's launcher is given, over a roles
+// directory shaped as an issue pod's one container gives it — every role's launcher token, gh
+// bundle, private, state and agent-secrets directory — and takes every role's connection up to
+// its hello, acknowledging none: a case that drives the pod's cache trimmer answers each hello
+// itself, since the answer to the first role's is what hands the trimmer its settings
+// (launcher.go's serveVolumeTrim). A generation of such a launcher runs in namespaces of its
+// own, so a test that starts one calls requireRoleNamespaces first.
+func newFleetDialedOf(t *testing.T, cfg Config, roles ...string) *fleet {
 	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
@@ -637,11 +651,10 @@ func newFleetDialed(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
+	cfg.Connect, cfg.Sandbox, cfg.PodUID = "tcp://"+listener.Addr().String(), "legion-legion-legion-208", "pod-1"
+	cfg.RolesDir, cfg.Roles, cfg.Stdout, cfg.Stderr = f.rolesDir, roles, f.stderr, f.stderr
 	go func() {
-		f.result <- Run(ctx, Config{
-			Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
-			RolesDir: f.rolesDir, Roles: roles, Stdout: f.stderr, Stderr: f.stderr, StopGrace: grace,
-		})
+		f.result <- Run(ctx, cfg)
 	}()
 	t.Cleanup(func() {
 		cancel()

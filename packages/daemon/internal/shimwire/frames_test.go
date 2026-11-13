@@ -147,6 +147,12 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-legion-legion-208","role":"tester","podUid":"pod-1","launcherId":"launcher-1"}`,
 			LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1"},
 		},
+		{
+			// A launcher whose environment pins the shared public leak check and has installed it.
+			"launcher_hello naming an installed leak check",
+			`{"type":"launcher_hello","token":"launcher-token","sandbox":"legion-legion-legion-208","role":"tester","podUid":"pod-1","launcherId":"launcher-1","leakCheckTag":"leak-check-v15","leakCheckInstalled":true}`,
+			LauncherHello{Token: "launcher-token", Sandbox: "legion-legion-legion-208", Role: "tester", PodUID: "pod-1", LauncherID: "launcher-1", LeakCheckTag: "leak-check-v15", LeakCheckInstalled: true},
+		},
 		{"launcher_hello_ack", `{"type":"launcher_hello_ack"}`, LauncherHelloAck{}},
 		{
 			// The ack that hands the launcher its trimmer settings. An ack with no volumeTrim is
@@ -204,6 +210,23 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			LauncherStop{ID: "stop-1", Generation: 7, GraceMs: 10_000},
 		},
 		{"launcher_stop_result", `{"type":"launcher_stop_result","id":"stop-1","ok":true}`, LauncherStopResult{ID: "stop-1", OK: true}},
+		{
+			"launcher_leak_check",
+			`{"type":"launcher_leak_check","id":"leak-check-leak-check-v15-2c26b46b68ff","index":0,"count":1,"tag":"leak-check-v15","sha256":"2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae","payload":"Zm9v"}`,
+			LauncherLeakCheck{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0, Count: 1, Tag: "leak-check-v15",
+				SHA256: "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae", Payload: []byte("foo")},
+		},
+		{
+			"launcher_leak_check_result of an install",
+			`{"type":"launcher_leak_check_result","id":"leak-check-leak-check-v15-2c26b46b68ff","index":0,"ok":true,"installed":true}`,
+			LauncherLeakCheckResult{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0, OK: true, Installed: true},
+		},
+		{
+			"refused launcher_leak_check_result",
+			`{"type":"launcher_leak_check_result","id":"leak-check-leak-check-v15-2c26b46b68ff","index":0,"ok":false,"error":"the shared public leak check could not be installed: the pod's launcher was served leak-check-v15, not its own pin leak-check-v16"}`,
+			LauncherLeakCheckResult{ID: "leak-check-leak-check-v15-2c26b46b68ff", Index: 0,
+				Error: "the shared public leak check could not be installed: the pod's launcher was served leak-check-v15, not its own pin leak-check-v16"},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			decoded, err := Decode([]byte(tc.line))

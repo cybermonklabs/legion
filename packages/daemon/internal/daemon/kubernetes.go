@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/promptrefs"
 	"github.com/sjawhar/legion/daemon/internal/prompts"
@@ -195,7 +196,7 @@ func prepareSandbox(cfg config.Config, o overrides, reads sandboxReads, p *plan)
 	// (volumeTrimReports, daemon.Run). It hangs off the plan by pointer, so the plan's own copy
 	// carries the one holder the factory closed over, as plan.repositories does.
 	p.volumeReports = &volumeTrimReports{}
-	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, p.volumeReports)
+	p.newRuntime = sandboxRuntime(reads.client, reads.opts, p.repositories.Accepted, p.repositories.serving, cfg.RepositoryRenames, o.githubAPI, p.volumeReports)
 	p.clusterCheck = boot.clusterCheck
 	p.claimsCheck = func(ctx context.Context, st *store.Store) error {
 		legacy, err := st.HasLegacySandboxClaims(ctx, p.project)
@@ -522,14 +523,16 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
-// one — per-claim pods, or issue pods on one tree volume — remains.
+// one — per-claim pods, or issue pods on one tree volume — remains. githubAPI is GitHub's REST
+// root ("" is https://api.github.com), which the shared public leak check is read under
+// (leakCheckSource).
 //
 // reports is the holder the launchers' volume reports reach the workflow's fact path through
 // (volumeTrimReports): it is built with this factory, before the workflow opens, and filled once
 // it has (plan.volumeReports). One that is never filled drops every report it is given, which
 // is a daemon with no workflow.
 func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo.Repository,
-	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, reports *volumeTrimReports) runtimeFactory {
+	serving func(ghrepo.Repository) ghrepo.Repository, renames ghrepo.Renames, githubAPI string, reports *volumeTrimReports) runtimeFactory {
 	return func(ctx context.Context, listener *stream.Listener, address string, apps appauth.Tokens,
 		_ func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository) (runtime.Runtime, error) {
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
@@ -548,6 +551,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// what applies that fact, and it opens after this factory is built, so the pair the
 		// apply needs is held in reports and filled when it does (plan.volumeReports).
 		opts.VolumeReported = reports.report
+		// The shared public leak check each pod's launcher is pushed before any role of the pod
+		// starts, read with the implement App's read-only token for its repository alone; a daemon
+		// with no Apps reads none, and the runtime refuses the start of a role whose launcher names
+		// a tag with the cause that says so.
+		opts.LeakCheck = leakCheckSource(apps, githubAPI)
 		if apps != nil {
 			// One record per project, written by the two credentials and read by the directory
 			// set for the Apps of the pod it answers for, so no pod is replaced for a directory
@@ -717,4 +725,49 @@ func (t *implementTokens) warnOwnToken(owner string) {
 	}
 	log.Warn("daemon: this owner's installation refuses a read-only provisioning token, "+
 		"so its pods clone with the owner's own installation token rather than a reading lease", "owner", owner)
+}
+
+// leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
+// (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
+// https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
+// of the pod starts (sandbox.Options.LeakCheck). Where apps drops a read scope
+// (appauth.ReadScopeForgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so
+// the next read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
+// the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
+// nil reads the daemon as holding no credential.
+func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
+	if apps == nil {
+		return nil
+	}
+	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	if forgetter, ok := apps.(appauth.ReadScopeForgetter); ok {
+		source.Forget = func() {
+			forgetter.ForgetReadScope(appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+		}
+	}
+	return source
+}
+
+// leakCheckToken mints the token the shared public leak check is read with: the implement App's
+// read token on the check's owner, narrowed to the check's repository alone (appauth.Tokens.ReadToken,
+// whose read permissions are all a tarball read needs). It mints nothing else: an installation that
+// refuses the narrowing is refused, with no wider token in its place, since the check is the one
+// repository this token is for and the owner's own token would reach every repository of the owner.
+//
+// The error's text is the cause sentence's own words after leakguard.RefusalPrefix
+// (leakguard.Source.Token): GitHub refusing the narrowing (appauth.NarrowingRefused) is told from
+// every other failed mint, since the two are fixed in different places — the installation's
+// repository selection, and the App's configuration or its installation on the owner.
+func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+		switch {
+		case err == nil:
+			return lease.Token, nil
+		case appauth.NarrowingRefused(err):
+			return "", fmt.Errorf("GitHub refused to narrow the daemon's implement App token to %s alone, and the daemon reads the check with no wider token: %w", leakguard.CheckSlug, err)
+		default:
+			return "", fmt.Errorf("the daemon could not mint its read-only token for %s: %w", leakguard.CheckSlug, err)
+		}
+	}
 }
