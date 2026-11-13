@@ -29,6 +29,7 @@ require (
 	github.com/grafana/ai-sdk/providers/openai v0.1.0-alpha.2
 	github.com/grafana/ai-sdk/providers/openai-compatible v0.1.0-alpha.2
 	github.com/jackc/pgx/v5 v5.11.0
+	github.com/jdkato/prose/v3 v3.3.1
 	github.com/klauspost/compress v1.20.1
 	github.com/nats-io/nats-server/v2 v2.15.1
 	github.com/nats-io/nats.go v1.53.1
@@ -156,6 +157,7 @@ require (
 	google.golang.org/genproto v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260715232425-e75dac1f907d // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20261012220534-4341edf3f941 // indirect
+	gopkg.in/neurosnap/sentences.v1 v1.0.6 // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
