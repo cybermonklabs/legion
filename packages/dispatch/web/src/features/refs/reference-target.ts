@@ -26,9 +26,10 @@ import type {
   MessageRead,
   ReferenceQuestions,
 } from "../../api/types";
+import { useAgentText } from "./AgentName";
 import { type BlockItemKind, itemOfBlock } from "./block-reference";
 import { useMarkdownHeadline } from "./markdown-engine";
-import { type PostDeletion, postDeletion } from "./post-marks";
+import { deletedLineText, type PostDeletion, postDeletion } from "./post-marks";
 import {
   buildDispatchReference,
   buildReferencePath,
@@ -691,6 +692,50 @@ export function useReferenceTarget(
     edited,
     descriptionTree: text === undefined ? undefined : markdownTree,
     picture: named === undefined ? undefined : picturePath(named, artifact),
+  };
+}
+
+/** What a link to a reference says in place of the words its author wrote, once the target is
+ *  read (`useReferenceLabel`). */
+export interface ReferenceLabel {
+  /** The words, or undefined where the written words stand: while the target loads, for a
+   *  target that never resolves, and for a block of a deleted post. An issue's text is its title
+   *  alone, which each surface prefixes with the key in its own way. */
+  readonly text: string | undefined;
+  /** Whether `text` is the deleted line, which a link drawn as markup writes in the deleted
+   *  line's italic (`DeletedBody`). */
+  readonly deleted: boolean;
+}
+
+/**
+ * The one rule for a reference link's words, which every link to a `dispatch://` reference reads
+ * its text through (`RefLink`, the document editor's titles, the Plan tab's pointers), so a link
+ * prints the post it names the way the post's own page does (INFRA-1523, R2 and R3):
+ *
+ * - a comment or an issue message its author deleted reads as the deleted line's words
+ *   (`deletedLineText`), never as the headline of its emptied body, which is no words at all;
+ * - a block of a deleted post keeps the words its author wrote: the block is gone with the
+ *   post's text, and the hover card says the post is deleted;
+ * - a comment, a message or a block of either that its author edited reads as its title then
+ *   ` · edited`, as the post's byline writes it (`EditedMark`);
+ * - anything else reads as its title, and an empty title is no title: the written words stand,
+ *   so a link never renders with no text.
+ */
+export function useReferenceLabel(
+  route: DispatchReferenceRoute | undefined,
+  target: Pick<ReferenceTarget, "deleted" | "edited" | "title">
+): ReferenceLabel {
+  const agentText = useAgentText();
+  const kind = route === undefined ? undefined : referenceTargetKind(route);
+  if (target.deleted !== null) {
+    return kind === "comment" || kind === "message"
+      ? { deleted: true, text: deletedLineText(target.deleted, agentText) }
+      : { deleted: false, text: undefined };
+  }
+  const title = target.title === "" ? undefined : target.title;
+  return {
+    deleted: false,
+    text: title !== undefined && target.edited !== null ? `${title} · edited` : title,
   };
 }
 

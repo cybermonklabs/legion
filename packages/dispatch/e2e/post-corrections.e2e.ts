@@ -89,6 +89,14 @@ test("the issue page and the document margin mark an edited message and a delete
     asPlanner
   );
   await deleteComment(comment.id);
+  // A post that cites the two corrected posts, in words, so each reads as an inline link.
+  const citing = await createMessage(
+    issue.key,
+    {
+      body: `The replay was dispatch://${issue.key}/comment/${comment.id} and the window is dispatch://${issue.key}/message/${message.id} now.`,
+    },
+    asPlanner
+  );
 
   // The record behind the two marks: the message's earlier body is kept, and the deleted
   // comment's is given to no read, so the page has nothing of it to print.
@@ -115,6 +123,19 @@ test("the issue page and the document margin mark an edited message and a delete
     const replies = commentTurn.getByRole("list", { name: "Replies" });
     await expect(replies.getByText("I will read the replay window.")).toBeVisible();
     await expect(page.getByText("The ledger replays twice at 02:00.")).toHaveCount(0);
+
+    // A link to a corrected post prints it as the post's own turn does: the deleted comment's
+    // link says it is deleted, where its emptied body's headline drew a link with no text and no
+    // size, and the edited message's carries ` · edited` after its words.
+    const citingTurn = page.locator(`[data-turn="message:${citing.id}"]`);
+    const deletedLink = citingTurn.locator(
+      `a[data-dispatch-ref="dispatch://${issue.key}/comment/${comment.id}"]`
+    );
+    await expect(deletedLink).toHaveText("Deleted by alice");
+    await expect(deletedLink).toBeVisible();
+    await expect(
+      citingTurn.locator(`a[data-dispatch-ref="dispatch://${issue.key}/message/${message.id}"]`)
+    ).toHaveText("Corrected: the export runs at 02:00 UTC. · edited");
 
     // The margin draws the mark the server projects into the document, which carries the
     // thread's text rather than the comment row: the delete has to clear that too.

@@ -9,7 +9,7 @@ import { MemoryRouter } from "react-router-dom";
 import { displayTree } from "../../__tests__/display-trees";
 import { graphNodeFields } from "../../__tests__/graph-fixture";
 import { renderWithQueries as render } from "../../__tests__/query-provider";
-import { api } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import type {
   AskRead,
   IssueReferenceSummary,
@@ -1018,6 +1018,86 @@ test("a block reference reads as the headline of its text: the pinned version's,
     getReferences.mockRestore();
     getIssue.mockRestore();
     getIssueSummary.mockRestore();
+    view.unmount();
+  }
+});
+
+// A block of a post its author deleted is gone with the post's text, so its link keeps the words
+// its author wrote, whichever way the read says so: a node that carries the post's deletion and
+// the empty text the delete left, or a 404 whose words end `: this comment is deleted`. It never
+// reads as the deleted line, which is the post's own link's text, nor as an empty link
+// (`useReferenceLabel`). A block of an edited post reads as its words then ` · edited`.
+test("a block reference to a deleted post keeps the words its author wrote, and one to an edited post marks it", async () => {
+  await warmMarkdownRenderer();
+  const comment = "11111111-1111-4111-8111-111111111111";
+  const block = (id: string) => `dispatch://CORE-1/comment/${comment}#b-${id}`;
+  const node = (id: string, fields: Record<string, unknown>) => ({
+    edges: [],
+    node: {
+      ...graphNodeFields(),
+      block_id: id,
+      id: `comment/${comment}#${id}`,
+      issue_key: "CORE-1",
+      kind: "block" as const,
+      parent: { id: comment, kind: "comment", ref: `dispatch://CORE-1/comment/${comment}` },
+      project: "CORE",
+      ref: block(id),
+      ...fields,
+    },
+  });
+  const getReferences = spyOn(api, "getReferences").mockImplementation((reference) => {
+    if (reference === block("b1")) {
+      return Promise.resolve(
+        node("b1", { edited_at: "2026-11-13T12:00:00Z", text: "Keep the export at noon." })
+      );
+    }
+    if (reference === block("b2")) {
+      return Promise.resolve(
+        node("b2", {
+          deleted_at: "2026-11-13T12:00:00Z",
+          deleted_by: { id: "alice", kind: "user" },
+          text: "",
+        })
+      );
+    }
+    return Promise.reject(
+      new ApiError(404, {
+        code: "NOT_FOUND",
+        error: `no block "b3" in comment ${comment}: this comment is deleted`,
+      })
+    );
+  });
+  const getComment = spyOn(api, "getComment").mockResolvedValue({
+    comment: {
+      author: { id: "alice", kind: "user" },
+      body: "",
+      deleted_at: "2026-11-13T12:00:00Z",
+      deleted_by: { id: "alice", kind: "user" },
+      edited_at: null,
+      id: comment,
+      issue_key: "CORE-1",
+    },
+    replies: [],
+  } as never);
+  const view = render(
+    withQueries(
+      <MarkdownBody markdown={`One ${block("b1")}\n\nTwo ${block("b2")}\n\nThree ${block("b3")}`} />
+    )
+  );
+  const link = (id: string) =>
+    view.container.querySelector(`a[data-dispatch-ref="${block(id)}"]`)?.textContent;
+
+  try {
+    await waitFor(() => expect(link("b1")).toBe("Keep the export at noon. · edited"), {
+      timeout: 2000,
+    });
+    await waitFor(() => expect(getComment).toHaveBeenCalledWith(comment));
+    expect(getReferences).toHaveBeenCalledWith(block("b2"));
+    expect(link("b2")).toBe(block("b2"));
+    expect(link("b3")).toBe(block("b3"));
+  } finally {
+    getComment.mockRestore();
+    getReferences.mockRestore();
     view.unmount();
   }
 });

@@ -1,7 +1,7 @@
 import { type ComponentProps, type ReactNode, useEffect } from "react";
 
 import { textMutedOnSurface } from "../../theme/classes";
-import { AgentName, type AgentText } from "./AgentName";
+import { AgentName } from "./AgentName";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
 import type { PostDeletion } from "./post-marks";
@@ -39,14 +39,6 @@ export function DeletedBody({
       · <Timestamp at={deleted.at} />
     </span>
   );
-}
-
-/** The deleted line's words as plain text, for a place that holds only a string - an
- *  `aria-label`, a `title`, a checkbox's name: `Deleted by <name>` by the rule `DeletedBody` names
- *  the author by (`useAgentText`), or `Deleted` for a payload that names nobody. The time stays
- *  the visible line's. */
-export function deletedLineText(deleted: PostDeletion, text: AgentText): string {
-  return deleted.by === null ? "Deleted" : `Deleted by ${text.label(deleted.by)}`;
 }
 
 /**

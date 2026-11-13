@@ -3,8 +3,8 @@ import type { ReactNode } from "react";
 import type { MyReplyRow } from "../../api/types";
 import { textMutedOnCanvas, textPrimaryOnCanvas, unreadDotBg } from "../../theme/classes";
 import { useAgentText } from "../refs/AgentName";
-import { deletedLineText, EditedMark } from "../refs/PostBody";
-import { postDeletion } from "../refs/post-marks";
+import { EditedMark } from "../refs/PostBody";
+import { deletedLineText, postDeletion } from "../refs/post-marks";
 import { questionLine } from "./question-line";
 
 /**

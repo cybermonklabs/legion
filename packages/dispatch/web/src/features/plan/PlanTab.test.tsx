@@ -140,6 +140,43 @@ test("a task that serves and needs nothing says so", async () => {
   expect(task.getByTestId("plan-task-needs").textContent).toBe("Needsnone");
 });
 
+// A pointer's link reads as the block's words through the label every reference link reads its
+// text through (`useReferenceLabel`), and a block whose text is empty has no words: its link
+// reads as the reference's short form, where an empty headline drew it as a link with no text
+// and no size, which a reader could neither see nor click.
+test("a pointer to a block whose text is empty reads as the reference's short form", async () => {
+  const empty = "dispatch://CORE-1/artifact/plan-md#b-t8";
+  const { getArtifactBlocks, getReferences, view } = renderTab(plan(), [
+    {
+      attributes: [
+        { kind: "block[]", name: "serves", value: "dispatch://CORE-1/spec#b-r1" },
+        { kind: "block[]", name: "needs", value: empty },
+      ],
+      from: 0,
+      id: "t1",
+      references: { asks: 0, comments: 0 },
+      to: 4,
+      token: "sha256:t1",
+      type: "plan_task",
+    },
+  ]);
+  restore = () => {
+    getArtifactBlocks.mockRestore();
+    getReferences.mockRestore();
+    view.unmount();
+  };
+
+  const task = within(await screen.findByTestId("plan-task"));
+  // The serving block's words are drawn once its read lands, and the empty block's read lands
+  // beside it.
+  await within(task.getByTestId("plan-task-serves")).findByRole("link", {
+    name: "Every issue page shows a Plan tab.",
+  });
+  expect(getReferences).toHaveBeenCalledWith(empty);
+  const needs = within(task.getByTestId("plan-task-needs"));
+  expect(needs.getByRole("link").textContent).toBe("CORE-1 plan-md block");
+});
+
 // A plan is approved by its plan review, never by a person, and the chip beside it says so.
 test("the plan review's approval shows on the tab", async () => {
   const { getArtifactBlocks, getReferences, view } = renderTab(

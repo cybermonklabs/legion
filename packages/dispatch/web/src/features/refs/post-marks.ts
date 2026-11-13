@@ -1,4 +1,5 @@
 import type { Actor } from "../../api/types";
+import type { AgentText } from "./AgentName";
 
 /**
  * The deletion marks every read of a comment or an issue message carries: `deleted_at` and
@@ -32,4 +33,14 @@ export function postDeletion(post: DeletablePost | undefined): PostDeletion | nu
     return null;
   }
   return { at, by: post?.deleted_by ?? null };
+}
+
+/** The deleted line's words as plain text, for a place that holds only a string - an
+ *  `aria-label`, a `title`, a checkbox's name, a reference link's text: `Deleted by <name>` by
+ *  the rule `DeletedBody` names the author by (`useAgentText`), or `Deleted` for a payload that
+ *  names nobody. The time stays the visible line's. It lives here rather than beside
+ *  `DeletedBody` because a reference link (`RefLink`) draws it, and `PostBody.tsx` imports
+ *  `MarkdownBody`, which draws that link. */
+export function deletedLineText(deleted: PostDeletion, text: AgentText): string {
+  return deleted.by === null ? "Deleted" : `Deleted by ${text.label(deleted.by)}`;
 }
