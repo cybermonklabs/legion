@@ -20,10 +20,10 @@ dispatch search --query 'reviewer threads OR review comments'
 
 ## What to do with what you find
 
-`dispatch issue` and `dispatch ask` also search. Treat a hit in `advice.suggestions` as yours to read.
+`dispatch issue` and `dispatch ask` also search. Read each hit in `advice.suggestions`.
 
 - **Work already tracked:** put the finding on that issue. File a new issue only when no hit covers the work, and cite the nearest one you ruled out (`dispatch://KEY`).
-- **Question already decided:** the answered ask is the record. Cite it (`dispatch://KEY/ask/<id>`). Do not ask again.
+- **Question already decided:** the answered ask is the record. Cite it (`dispatch://KEY/ask/<id>`). Never ask again.
 - **Duplicate found, or a likely duplicate a create names:** read it; fold only when it is the same work. Keep the issue with the spec, copy to it what only the duplicate has, and close the duplicate (`--status done --reason 'Duplicate of dispatch://KEY.'`). When it has the `legion` label or another holder's claim, comment the kept issue's name on it instead.
 
 ## Research before you ask

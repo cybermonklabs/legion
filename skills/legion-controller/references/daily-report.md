@@ -11,7 +11,7 @@ project's `Legion daily report` issue:
 create it once (the one issue you file unasked) and park it in `icebox`.
 The report issue holds no work, which is why it stays in `icebox`, and it is the one issue you
 park with neither a person's request nor the end of its work behind it:
-you move every other issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
+you move every other issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue.
 It never carries the `legion` label.
 Assign it to the person who answers for the project: the one the deployment instructions name,
 else the owner `dispatch whoami` names, because its asks reach that person's Inbox.

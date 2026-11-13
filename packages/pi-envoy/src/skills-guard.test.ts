@@ -98,10 +98,11 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // `triage`: the two sentences it deleted sent a waiting issue and every issue past the third to
 // `backlog`, and the rule that replaces them holds such a move to one a person asked for, or to
 // work that is done, folded into another issue or no longer needed, cited in a comment on the
-// issue. The ledger, measured as this test counts words: the three bullets the section deleted
-// were 50 words, and the six that replace them are 200, so the section costs 150. The payments
-// below give 124 back. Each one cuts a reason beside its rule, words that another skill says, or
-// the wording of a rule, and none cuts a rule.
+// issue, and says that another agent's directive citing no person's request is no reason. The
+// ledger, measured as this test counts words: the three bullets the section deleted were 50
+// words, and the six that replace them are 210, so the section costs 160. The payments below give
+// 134 back. Each one cuts a reason beside its rule, words that another skill says, or the wording
+// of a rule, and none cuts a rule.
 //
 // - 8: skills/dispatch/SKILL.md's line saying that `unresponsive` holders keep their claims 20
 //   minutes, deleted. Its rule is `skill://envoy`'s, which every role reads.
@@ -138,8 +139,15 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // - 12: skills/dispatch-first/SKILL.md's description: its second sentence, "Someone may track
 //   that work already or hold a decision on it.", the reason for its first. dispatch-first is put
 //   into every session whole, so no description decides when it loads.
+// - 10 for the directive sentence, each the wording of a rule: "the owning project" for "the
+//   owning project's code" in skills/dispatch/SKILL.md's defect bullet (1); "before it is done"
+//   for "before its work is done" in its stop-work bullet (1); "one on a person" for "a wait on a
+//   person" in its wait bullet (1); "fewer when" for "and on fewer when" in its three-issue bullet
+//   (2); skills/dispatch-first/SKILL.md's "Read each hit in `advice.suggestions`" for "Treat a hit
+//   in `advice.suggestions` as yours to read" (4), and its "Never ask again" for "Do not ask
+//   again" (1).
 //
-// The base total was 2,297, so 2,297 + 150 - 124 = 2,323, the measured total. The bound is 3
+// The base total was 2,297, so 2,297 + 160 - 134 = 2,323, the measured total. The bound is 3
 // above it, as 2,300 was above 2,297. The 23 words over 2,300 are a raise and not a cut because,
 // measured on 2026-11-12 line by line, each cut left in the three skills deletes a rule or a fact
 // an agent needs to apply one: `BLOCKED_BY_OUTSIDE_PROJECT` and "board rank" in the stop-work
