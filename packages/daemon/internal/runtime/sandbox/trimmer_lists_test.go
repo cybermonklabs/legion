@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
@@ -42,7 +43,9 @@ const (
 	// the ten values the start environment writes under the volume — roleEnvironment's eight less
 	// XDG_CONFIG_HOME, which is under the pod's in-memory home and off the volume, plus the issue
 	// pod's two uv paths and PUBLIC_LEAK_CHECK, with LEGION_WORKSPACE dropped and the six gh
-	// variables pointing at /var/run/legion/gh — and the three mounts and constants beside them
+	// variables left out because none is on the volume: GH_CONFIG_DIR and LEGION_GH_OWNERS_DIR
+	// point at /var/run/legion/gh, LEGION_GH_PATH at /usr/local/bin/gh, and GH_TOKEN,
+	// GITHUB_TOKEN and GH_HOST are empty — and the three mounts and constants beside them
 	// (issueVolumePaths). The set itself is derived from the renderer and never written out, so
 	// this number is only a floor: it exists because a derivation that broke and matched nothing
 	// would otherwise hold the two lists to an empty set and report agreement.
@@ -59,25 +62,58 @@ const (
 // Every path the pod renderer puts on the issue's volume is named by one of the trimmer's two
 // lists, and every cache the pod's own install blocks render under the cache home is on the
 // protected list. Both halves read the renderer rather than a list written beside it: a list here
-// would have to be edited by whoever adds a cache, which is the edit that gets forgotten.
+// would have to be edited by whoever adds a cache, which is the edit that gets forgotten. The
+// first half is read for each backend the role runs on (backendsRunning, reclaim_doc_test.go),
+// since each renders its own start environment; the second reads the one start wrapper, which
+// renders Claude Code's block whichever backend runs (renderedStartWrapper).
 func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *testing.T) {
 	const issue = "LEGION-1234"
 	const role = claim.RoleImplementer
 
 	protected := protectedList()
-	environment, mounts := issueVolumePaths(t, issue, role)
-	rendered := append(slices.Clone(environment), mounts...)
-	if len(rendered) < renderedIssueVolumePaths {
-		t.Errorf("the renderer puts %d paths on the issue's volume, want at least %d: %v. The set is read "+
-			"out of the renderer, so a derivation that matched nothing would hold the trimmer's two lists to "+
-			"an empty set and report agreement", len(rendered), renderedIssueVolumePaths, rendered)
-	}
-	// base is what the rule earns over the rendered set alone, and the three controls below are
-	// read against it rather than against a whole list: a control that asked for one complaint
-	// outright would also fail for a defect of the lists themselves, where it has nothing to say.
-	base := trimmerListComplaints(protected, rendered)
-	for _, complaint := range base {
-		t.Error(complaint)
+	cacheHome := roleCacheHome(t, role)
+	for _, backend := range backendsRunning(t, role) {
+		t.Run(string(backend), func(t *testing.T) {
+			environment, mounts := issueVolumePaths(t, issue, role, backend)
+			rendered := append(slices.Clone(environment), mounts...)
+			if len(rendered) < renderedIssueVolumePaths {
+				t.Errorf("the renderer puts %d paths on the issue's volume, want at least %d: %v. The set is read "+
+					"out of the renderer, so a derivation that matched nothing would hold the trimmer's two lists to "+
+					"an empty set and report agreement", len(rendered), renderedIssueVolumePaths, rendered)
+			}
+			// base is what the rule earns over the rendered set alone, and the controls below are
+			// read against it rather than against a whole list: a control that asked for one complaint
+			// outright would also fail for a defect of the lists themselves, where it has nothing to say.
+			base := trimmerListComplaints(protected, rendered)
+			for _, complaint := range base {
+				t.Error(complaint)
+			}
+
+			// The three negative controls, of which the first two extend this backend's rendered set
+			// and the third, after the loop, the rendered start wrapper. Each extends a copy of what the
+			// renderer gave rather than editing the renderer, since the renderer is where the real
+			// addition lands and this test must be the thing that reports it. A rule that stopped
+			// reporting any of the three would pass the head that makes that addition, which is the whole
+			// failure this test exists against.
+			//
+			// 1. A cache added to the renderer under the cache home. A reclaimable root covers it and no
+			// list names it, so the reading that counts coverage reports nothing here.
+			reportsOnly(t, "a cache the renderer added under the cache home", base,
+				trimmerListComplaints(protected, append(slices.Clone(rendered), cacheHome+"/"+newToolCache)), cacheHome+"/"+newToolCache)
+
+			// 2. A mount added to the volume, named by neither list. An environment-only source would miss
+			// it: the volume's own mounts and constants are named by no variable, which is why the set
+			// this test walks is wider than issueVolumeDirectories, and the three it adds are each a path
+			// that source does not hold.
+			for _, mount := range mounts {
+				if slices.Contains(environment, mount) {
+					t.Errorf("%s is already one of the renderer's environment values, so it is no evidence that the "+
+						"set reaches what the environment never names", mount)
+				}
+			}
+			reportsOnly(t, "a mount added to the volume", base,
+				trimmerListComplaints(protected, append(slices.Clone(rendered), newMount)), newMount)
+		})
 	}
 
 	// Every cache the pod's own install blocks render under the cache home is on the protected
@@ -85,7 +121,6 @@ func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *te
 	// so an install of ours that writes one and is not excepted is a cache the trimmer may delete
 	// under the `flock` the install holds on it — the failure claudeCodeBlock's own exception
 	// exists to prevent, and a third Legion install there would land eligible with nothing red.
-	cacheHome := roleCacheHome(t, role)
 	script := renderedStartWrapper(t, role)
 	installs, unprotected := cacheHomeInstalls(script, cacheHome, protected)
 	if len(installs) == 0 {
@@ -99,31 +134,8 @@ func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *te
 			"the lock its install holds on it", dir)
 	}
 
-	// The three negative controls. Each extends a copy of what the renderer gave rather than
-	// editing the renderer, since the renderer is where the real addition lands and this test must
-	// be the thing that reports it. A rule that stopped reporting any of the three would pass the
-	// head that makes that addition, which is the whole failure this test exists against.
-	//
-	// 1. A cache added to the renderer under the cache home. A reclaimable root covers it and no
-	// list names it, so the reading that counts coverage reports nothing here.
-	reportsOnly(t, "a cache the renderer added under the cache home", base,
-		trimmerListComplaints(protected, append(slices.Clone(rendered), cacheHome+"/"+newToolCache)), cacheHome+"/"+newToolCache)
-
-	// 2. A mount added to the volume, named by neither list. An environment-only source would miss
-	// it: the volume's own mounts and constants are named by no variable, which is why the set
-	// this test walks is wider than issueVolumeDirectories, and the three it adds are each a path
-	// that source does not hold.
-	for _, mount := range mounts {
-		if slices.Contains(environment, mount) {
-			t.Errorf("%s is already one of the renderer's environment values, so it is no evidence that the "+
-				"set reaches what the environment never names", mount)
-		}
-	}
-	reportsOnly(t, "a mount added to the volume", base,
-		trimmerListComplaints(protected, append(slices.Clone(rendered), newMount)), newMount)
-
 	// 3. A Legion install block added under the cache home with its path on neither list, driven
-	// through the rendered text the first half reads.
+	// through the rendered text the cache-home half reads.
 	_, withTheNewOne := cacheHomeInstalls(script+"\n  cache=\"$XDG_CACHE_HOME/"+newAgentCache+"\"\n", cacheHome, protected)
 	if len(withTheNewOne) != len(unprotected)+1 || !slices.Contains(withTheNewOne, cacheHome+"/"+newAgentCache) {
 		t.Errorf("a Legion install block rendering $XDG_CACHE_HOME/%s leaves the unprotected caches at %v, want "+
@@ -132,16 +144,16 @@ func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *te
 	}
 }
 
-// issueVolumePaths is every path the pod renderer puts on the issue's volume, in two halves so
-// that each is visible as what it is. environment is the renderer's own values, as
-// issueVolumeDirectories (reclaim_doc_test.go) takes them from the start environment
+// issueVolumePaths is every path the pod renderer puts on the issue's volume for a launch on
+// backend, in two halves so that each is visible as what it is. environment is the renderer's own
+// values, as issueVolumeDirectories (reclaim_doc_test.go) takes them from the start environment
 // (mainEnvironment). mounts is what the volume carries beside them and no environment variable
 // names: the pod's feed, which workspace-fetch writes and every other container mounts read-only
 // (FeedDir); the shared clone every workspace is cut from (workspace.CloneRoot); and the
 // workspaces root, derived from workspace.Location — the issue's checkout is
 // <root>/workspaces/<owner>/<repo>/<issue>, so its directory three levels up is that root —
 // rather than written out here, so the layout stays the one source of it.
-func issueVolumePaths(t *testing.T, issue string, role claim.Role) (environment, mounts []string) {
+func issueVolumePaths(t *testing.T, issue string, role claim.Role, backend runtime.Backend) (environment, mounts []string) {
 	t.Helper()
 	repository, err := ghrepo.Parse("workspace repository", "owner/repo")
 	if err != nil {
@@ -152,7 +164,7 @@ func issueVolumePaths(t *testing.T, issue string, role claim.Role) (environment,
 		t.Fatal(err)
 	}
 	workspacesRoot := path.Dir(path.Dir(path.Dir(located.Dir)))
-	return issueVolumeDirectories(t, issue, role), []string{FeedDir, workspace.CloneRoot(TreeRoot), workspacesRoot}
+	return issueVolumeDirectories(t, issue, role, backend), []string{FeedDir, workspace.CloneRoot(TreeRoot), workspacesRoot}
 }
 
 // trimmerListComplaints is the rule, as one complaint per path the two lists fail: it is a

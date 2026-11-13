@@ -1861,8 +1861,8 @@ This change writes no column and runs no migration, so no dump and no `alter tab
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.
-Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-2009`, which declared 69 when this was written, and a forward merge before it landed could still move that number while `main`'s own moved past it.
-So the release before it is `main`'s own 68 at the time of writing, and the rule below applies to a rollback to it.
+Name it by its contract entry rather than by its number: it is the release whose `packages/daemon/internal/api/version.go` carries the entry for `INFRA-2009`, and its number moved with every forward merge while it was open, as `main`'s own moved past each one it held.
+So the release before it is whichever release of `main` precedes that entry, and the rule below applies to a rollback to it.
 A daemon of any release without that entry knows neither, and it decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so a `volume-near-full` row still queued when that image is pinned can never be decoded.
 
 **That row does not fail alone, and that is the part worth knowing before the rollback.**
@@ -2462,7 +2462,7 @@ What it may delete, and what one entry is in each:
   The root itself is a live `flock` target, which is why no root of this list is ever unlinked.
 
 What it never writes to or deletes: `/legion/workspaces`, `/legion/repos`, `/legion/feed`, `/legion/scratch/state`, `/legion/scratch/data`, `/legion/go/mod`, `/legion/uv/cache`, `/legion/uv/python`, `/legion/scratch/leak-check`, and the two children of the cache home above.
-`packages/daemon/internal/launcher/volumepaths.go` carries both lists written out, because the launcher's own process is told none of those paths but the leak check's, whose directory it names from the installer's own constant, and a test holds every path the pod renderer puts on the volume, its start environment included, to being named by one of the two (`TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists`).
+`packages/daemon/internal/launcher/volumepaths.go` carries both lists written out, because the launcher's own process knows none of those paths except the leak check's, which it takes from the installer's own constant, and a test holds every path the pod renderer puts on the volume, the start environment of every backend that runs a role included, to being named by one of the two (`TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists`).
 
 The trimmer writes every line of its own behind the prefix `volume trim: ` in the `roles` container's log: one at its start naming the settings in force, one per interval reading naming what it decided, and one per sweep naming what it freed and why it stopped.
 A sweep that ends with the volume still above the low mark sends the daemon one report, and the daemon turns that into one `volume-near-full` notice to the issue's architect, naming the sizes of the directories two levels under `/legion` with the bytes of each untouched for more than an hour and for more than a day.
@@ -2493,6 +2493,7 @@ Exempt, each for a reason the list above does not hold:
 
 - `/legion/scratch/state/<role>` — per-role, and Oh My Pi's logs, Chromium's profiles and the installed plugin generation rather than a cache; small.
   Oh My Pi's state-class directories (`run/daemons`, `logs`, `browser-profiles`, `reports`, `terminal-sessions`) hang under `$XDG_STATE_HOME/omp`, so they are this path's and not the shared data home's.
+  A Claude Code role's `CLAUDE_CONFIG_DIR` is this path's `claude` directory, its transcripts, its plugin data and the rest of Claude Code's own state, so it is held back with the rest of the path.
 
 - `/legion/scratch/leak-check` — the shared public leak check the pod's launcher installs once before any role starts, and which every role's `legion gh`, pushes and shim read; installed software rather than a cache.
   Nothing installs it again while the pod's launcher runs, so once it is gone every `legion gh` write, every push and every agent start of the issue's roles refuses.
