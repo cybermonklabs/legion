@@ -231,8 +231,10 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 //     were, is weighed by the margin bound alone (applyMargin).
 //   - applyLive refuses a write introducing a block pointer at a block the attribute may not
 //     name — one no document holds, one of a type its targets do not allow, or one outside the
-//     issues and documents it may point into (refuseBlockPointers) — before anything is
-//     appended. A margin record leaves the rendering, and so every pointer, as it was.
+//     issues and documents it may point into (refuseBlockPointers) — and one introducing a check
+//     block that breaks a rule of a check CI proves (refuseCICheckBlocks), before anything is
+//     appended. A margin record leaves the rendering, and so every pointer and check block, as it
+//     was.
 //
 // It writes the transaction's fork of the room (see liveWrite), appends the update inside the
 // transaction, and leaves the room and the credit to its ledger's Commit, so a transaction that
@@ -377,9 +379,13 @@ func (s *Service) applyLiveWritten(ctx context.Context, artifactID string, actor
 		return err
 	}
 	// An agent's or API write is refused when a block pointer it introduces names a block of a
-	// type its attribute does not allow, compared with the tree before the write (nil when that
-	// tree was outside the schema: every pointer of a repair is introduced).
+	// type its attribute does not allow, or a check block it introduces breaks a rule of a check
+	// CI proves, each compared with the tree before the write (nil when that tree was outside the
+	// schema: every pointer and every check block of a repair is introduced).
 	if err := refuseBlockPointers(ctx, op.tx, artifactID, tree.Node(), weighedFrom, offsets); err != nil {
+		return err
+	}
+	if err := refuseCICheckBlocks(ctx, op.tx, artifactID, tree.Node(), weighedFrom); err != nil {
 		return err
 	}
 	// The tree before the write has served every use it has, so it is let go before the record's
@@ -587,8 +593,12 @@ func (s *Service) SeedText(ctx context.Context, artifactID, markdown string, act
 	if err := weighRendering("", canonical); err != nil {
 		return "", err
 	}
-	// A new document holds no pointer before this write, so every pointer it seeds is checked.
+	// A new document holds no pointer and no check block before this write, so every one it
+	// seeds is checked.
 	if err := refuseBlockPointers(ctx, tx, artifactID, tree, nil, offsets); err != nil {
+		return "", err
+	}
+	if err := refuseCICheckBlocks(ctx, tx, artifactID, tree, nil); err != nil {
 		return "", err
 	}
 	update, err := encodeDocumentTree(tree)
