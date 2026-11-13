@@ -611,9 +611,10 @@ type RescueUnpushedResult struct {
 }
 
 // RescueWorkspace is one workspace's check: Status "clean" (nothing its remote lacks),
-// "rescued" (Branches name each rescue branch of the request's prefix the remote holds, pushed by
-// this check or an earlier one of the same pod, and the commit each holds) or "error" (Error says
-// why, and nothing of it is known to be safe).
+// "rescued" (Branches name the rescue branch with the commit it holds: the branch this check
+// pushed to, or one whose tip already holds the workspace's own work; an older shim names each
+// branch of the request's prefix the remote holds) or "error" (Error says why, and nothing of it
+// is known to be safe).
 type RescueWorkspace struct {
 	Dir      string         `json:"dir"`
 	Status   string         `json:"status"`

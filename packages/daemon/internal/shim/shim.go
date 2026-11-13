@@ -651,10 +651,11 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	s.toDaemon(result)
 }
 
-// rescue answers `rescue-unpushed`: every workspace on the pod's disk is checked for work its
-// remote lacks, and that work is pushed to rescue branches, as this role and with its own
-// credential (internal/rescue). The disk is the one the shim's LEGION_WORKSPACE is on; a shim
-// without one (the project controller's) has no workspace and refuses.
+// rescue answers `rescue-unpushed`: every workspace on the pod's disk is checked for the issue's
+// own work its remote lacks, and that work is pushed to the issue's one rescue branch, as this
+// role and with its own credential (internal/rescue). The disk is the one the shim's
+// LEGION_WORKSPACE is on; a shim without one (the project controller's) has no workspace and
+// refuses.
 func (s *shim) rescue(request shimwire.RescueUnpushed) {
 	result := shimwire.RescueUnpushedResult{ID: request.ID, OK: true}
 	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
