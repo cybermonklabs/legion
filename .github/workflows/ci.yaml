@@ -6698,22 +6698,23 @@ jobs:
   #
   # timeout-minutes (ci-budgets.md's Budgets note): this job's unretried duration is what it costs
   # when its own injected faults are the only thing wrong — the sum of the budgets the report
-  # steps enforce, plus its rig. The recover half's 260 + 320 + 500 + 500 + 820 + 920 + 320 =
-  # 3640 s, the stall half's 710 + 530 + 1130 + 1130 + 1130 + 1730 + 380 = 6740 s, the carried
-  # dependency's 620 s, and about 330 s for the checkout, the bypass clearing, the three tool
-  # installs, the cache emptying, the unfaulted install the stalled Playwright site needs and
-  # the 31 rig steps. That is 11330 s. Every faulted site runs its retries out inside its own
+  # steps enforce, plus its rig. The recover half's 710 + 530 + 1130 + 1130 + 1130 + 1730 + 380
+  # = 6740 s, the stall half's same seven at 6740 s, the carried dependency's 620 s, and about
+  # 330 s for the checkout, the bypass clearing, the three tool installs, the cache emptying,
+  # the unfaulted install the stalled Playwright site needs and the 31 rig steps. That is
+  # 14430 s. Every faulted site runs its retries out inside its own
   # report budget above, so the term the rule adds is this job's slowest download that is not a
   # faulted site: install-jj, whose two `ci_tools_fetch` calls are 2562 s and whose
   # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3012 s together (ci-budgets.md's
   # Budgets note) — above setup-bun's 2562 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 600 s. So 11330 + 3012 = 14342 s -> 240 min, the whole minute above the
-  # 239.03 that sum gives. THIS KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that
+  # ci-ok report's 600 s. So 14430 + 3012 = 17442 s -> 291 min, the whole minute above the
+  # 290.7 that sum gives. The recover half moved from 3640 s to 6740 s in round 30, when its
+  # arms were priced at the ladder their retry guarantees rather than at two bounds. THIS KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that
   # 221 came from 11310 + 1932 = 13242 s - the measured term before the stall arm's budget grew
   # by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to
   # 1281 s. The lane is the one job whose cancellation this whole issue exists to prevent, and
   # its derivation is written above this job's id rather than above its key, which is one of
-  # the shapes rule 8's job clause passes over; the `-> 240 min` above is what its pricing rule
+  # the shapes rule 8's job clause passes over; the `-> 291 min` above is what its pricing rule
   # reads, and that rule refuses any job holding a retried step whose comments price none.
   #
   # Each site's budget above carries 20 s more than it did before the probe: `report` measures a
@@ -6725,7 +6726,7 @@ jobs:
     needs: changes
     if: needs.changes.outputs.download_retry == 'true' && (github.event_name != 'merge_group' || github.run_attempt == '1')
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 291
     steps:
       # The bypass, emptied for every step of this job, which the job's comment derives: a
       # `no_proxy` or `NO_PROXY` of `*` sends every host past the proxy, and a fault nothing
@@ -6761,13 +6762,18 @@ jobs:
 
       # --- the recovering fault: 504 for 60 s, then the request passes (check #0946ed09) -------
 
-      # A recover site's budget is not its measured recovery: an attempt already in flight when
-      # the window closes runs to its own bound, and the attempt after it is the first that can
-      # succeed, so each budget carries two full bounds, the sleeps between the first three
-      # attempts, and the site's own cost. The workspace install is where that was measured
-      # rather than reasoned — run 42383790553's job 128436795602: attempt 1 failed at 56 s,
-      # attempt 2 reached its 180 s bound, attempt 3 installed in 40 s, 306 s in all against the
-      # 300 s this budget held then.
+      # A recover site's budget is the ladder its own retry guarantees, the same figure its stall
+      # twin below carries: every attempt at its bound, the sleeps between them, the probe and a
+      # minute. THIS ARM CHECKS THE RETRY'S GUARANTEE - the step succeeds and every attempt holds
+      # its bound - AND NOT HOW FAST A SITE RECOVERS.
+      # The rule these budgets were written to until round 30 of dispatch://INFRA-1545 was that an
+      # attempt in flight when the window closes runs to its bound and the next one succeeds, so
+      # each carried two bounds. Two readings of the workspace install broke it: 250 s at round
+      # 29's head, one hung attempt more than that model allows, and 616 s in run 43357362345,
+      # where attempts 1, 2 and 3 each reached their 180 s bound - attempts 2 and 3 having started
+      # after the fault had cleared, on a healthy network - and attempt 4 installed. The step
+      # succeeded both times, so the retry held; what was false was the arm's model of recovery.
+      # All seven recover arms carried that rule, and each now carries its stall twin's budget.
 
       # curl of a release asset. curl makes the attempts itself, in the spelling
       # .github/actions/install-changie explains: 8, the last starting 127 s after the first,
@@ -6796,7 +6802,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-changie
           --what "changie's release asset (curl, 8 attempts of 60 s)"
-          --outcome ${{ steps.recover-changie.outcome }} --attempts 8 --floor 0 --budget 260
+          --outcome ${{ steps.recover-changie.outcome }} --attempts 8 --floor 0 --budget 710
 
       # mise install. The pin is a github: tool spec, so mise reads the GitHub API and the
       # release asset host; jdx.dev is mise's own registry.
@@ -6818,7 +6824,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-omp
           --what "the pinned Oh My Pi (mise install, 5 attempts of 60 s)"
-          --outcome ${{ steps.recover-omp.outcome }} --attempts 5 --floor 0 --budget 320
+          --outcome ${{ steps.recover-omp.outcome }} --attempts 5 --floor 0 --budget 530
 
       # bun add, of the npm registry.
       - name: Start the recovering fault for install-claude-code
@@ -6839,7 +6845,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-claude
           --what "the pinned Claude Code (bun add, 5 attempts of 180 s)"
-          --outcome ${{ steps.recover-claude.outcome }} --attempts 5 --floor 0 --budget 500
+          --outcome ${{ steps.recover-claude.outcome }} --attempts 5 --floor 0 --budget 1130
 
       # bun install --frozen-lockfile, the install every job of this workflow makes, in the very
       # spelling they make it in.
@@ -6864,7 +6870,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-install
           --what "the workspace's dependencies (bun install --frozen-lockfile, 5 attempts of 180 s)"
-          --outcome ${{ steps.recover-install.outcome }} --attempts 5 --floor 0 --budget 500
+          --outcome ${{ steps.recover-install.outcome }} --attempts 5 --floor 0 --budget 1130
 
       # go mod download. This proxy faults every host, which is what a Go fault has to do: with
       # `|direct` in GOPROXY a go command falls through to the module's own source after any
@@ -6893,7 +6899,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-go
           --what "packages/envoy's Go modules (go mod download, 5 attempts of 180 s)"
-          --outcome ${{ steps.recover-go.outcome }} --attempts 5 --floor 0 --budget 820
+          --outcome ${{ steps.recover-go.outcome }} --attempts 5 --floor 0 --budget 1130
 
       # bunx playwright install chromium, which fetches from Playwright's own CDN. Only that host
       # is faulted, so the download after the window is the real one.
@@ -6919,7 +6925,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-playwright
           --what "Playwright's Chromium (bunx playwright install, 5 attempts of 300 s)"
-          --outcome ${{ steps.recover-playwright.outcome }} --attempts 5 --floor 0 --budget 920
+          --outcome ${{ steps.recover-playwright.outcome }} --attempts 5 --floor 0 --budget 1730
 
       # A gh api read, in the spelling .github/scripts/ci-ok-report.sh reads this same route
       # with. That script is not run here because it posts ci-ok; the read is what retries, and
@@ -6952,7 +6958,7 @@ jobs:
         run: >-
           .github/scripts/download-retry-proof.sh report recover-gh
           --what "the run's artifact list (gh api, 5 attempts of 30 s)"
-          --outcome ${{ steps.recover-gh.outcome }} --attempts 5 --floor 0 --budget 320
+          --outcome ${{ steps.recover-gh.outcome }} --attempts 5 --floor 0 --budget 380
 
       # --- the stalling fault: the connection is accepted and nothing is sent (check #55bc6685) -
 
