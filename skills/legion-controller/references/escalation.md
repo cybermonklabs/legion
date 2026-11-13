@@ -41,8 +41,9 @@ you release it. Read the record, then choose the release.
    linger, `set_status` to `todo` releases the hold and costs nothing: the issue returns to the
    phase `heldFrom` names, that phase's role starts with its task, and the generation, the review
    rounds, the pod and the place in the admission line stay as they were. Take it when the cause
-   is gone — a launch the runtime refused (`launch_refused`), a process that died (`died`), an
-   agent that never came up (`never_registered`) — and when you fixed what the `detail` names. On
+   is gone, a cause that a relaunch no longer meets: a launch the runtime refused
+   (`launch_refused`), a process that died (`died`), an agent that never came up
+   (`never_registered`); and when you fixed what the `detail` names. On
    a child, the same `todo` brings it back at `admitted` with a new generation of its own, since
    the free release reaches a root alone. Where the claim's own session is what the provider keeps
    refusing (`provider_error`, and `prompt_retires_exhausted` for an agent that takes no turn),
