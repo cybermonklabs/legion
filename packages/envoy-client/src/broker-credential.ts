@@ -179,3 +179,5 @@ export function brokerCredential(
     secret: () => held,
   };
 }
+
+// INFRA-1413 selection probe, never merged.
