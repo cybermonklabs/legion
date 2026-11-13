@@ -1494,7 +1494,11 @@ ranking of the two routes `InboxPage` is mounted at), since the landing read rea
 that is neither an issue nor a project as the Inbox while the page draws the list at few of them,
 and on the rest of them the shell starts that chunk itself, one frame after the page has painted,
 so that the reader's press opens the drawer instead of beginning its download — 222,154 bytes
-over 18 chunks on the agents page. An issue, a board and a document start it at neither moment:
+over 18 chunks on the agents page. That figure is one reading: the local Chromium run of
+2026-11-12 that "End-to-end tests" below names for the per-row floor, on a cold landing on
+`/agents`, counting every `/assets/` response and its decoded bytes. That run's report is gone
+with the pod it ran in.
+An issue, a board and a document start it at neither moment:
 their own page chunks are what their reader waits for, and the press is what fetches the peek
 (`features/inbox/InboxHost.tsx`, `loadInboxChunk` and `usePeekChunkAfterFirstPaint`); and the editor
 library and Yjs transport only where the landed page draws a document: a project's document page
@@ -1800,11 +1804,20 @@ before it runs any hook, that config imports the package, and Playwright's own
 runner loads the specs under Node, which takes the package's `default` export
 condition, its gitignored `dist/`, where a `bun` run takes the source. A
 workspace that never built it dies as the config loads, before the hook. So
-whoever starts Playwright builds it: `bun run e2e` and the package's other e2e
-scripts run `build:contracts` first, every CI job that runs the suite carries a
-`Build contracts for dispatch e2e` step
-(`.github/workflows/dispatch-browser.yaml`), and a Playwright command typed by
-hand needs `bun run build:contracts` once.
+whoever starts Playwright builds it.
+`bun run e2e` and the package's other e2e scripts that build anything run
+`build:contracts` first: `e2e:clock`, `e2e:embedder`, `e2e:multiprocess`,
+`e2e:deployed`, `e2e:stub` and `e2e:stub:record` (`package.json`).
+The three `:run` scripts, `e2e:clock:run`, `e2e:embedder:run` and
+`e2e:multiprocess:run`, build nothing: each is the Playwright command alone, for
+a caller that built the package and the dashboards already. In
+`.github/workflows/dispatch-browser.yaml` the multiprocess job calls
+`e2e:multiprocess:run` and the embedder job calls `e2e:embedder:run`.
+Every CI job that runs the suite carries a
+`Build contracts for dispatch e2e` step (`.github/workflows/dispatch-browser.yaml`
+and the `re-record` job of `.github/workflows/dispatch-browser-nightly.yaml`), and
+a Playwright command typed by hand, or a `:run` script, needs
+`bun run build:contracts` once.
 Every harness server serves on a port the OS chooses
 unless its variable sets one (below), so the temporary server never meets the
 production listener on port 8766. A run of one stack takes `DATABASE_URL`, unless
@@ -1940,10 +1953,13 @@ values under them, a harness a person left listening, and a deployed run.
 
 A stack's Postgres comes from one of two providers (`e2e/harness-postgres.ts`),
 and a run of more than one stack that names neither is refused naming both.
-`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names:
-a developer's path on a machine with Docker and no Postgres binaries, and the
-visual job's of `.github/workflows/dispatch-browser.yaml`, which runs on the
-runner with only its Playwright command in a container.
+`DISPATCH_E2E_PG_IMAGE` is a `docker run` of the image digest the caller names.
+It is a developer's path on a machine with Docker and no Postgres binaries.
+It is also the path of every CI job that runs on the runner itself, whose own
+PostgreSQL carries no `vector`: the multiprocess job (both of its browser steps),
+the embedder job and the visual job of `.github/workflows/dispatch-browser.yaml`,
+the visual job with only its Playwright command in a container, and the
+`re-record` job of `.github/workflows/dispatch-browser-nightly.yaml`.
 `DISPATCH_E2E_PG_BIN` is a directory holding `initdb` and `pg_ctl`, which is
 the shard and alone jobs' path and an issue pod's: those two jobs of
 `.github/workflows/dispatch-browser.yaml` run in a container that carries
@@ -2019,11 +2035,16 @@ The five that download them are the shard, alone, two-process, fake-embedder and
 which is six machines, the shard job running two legs; the seventh, `merge`, downloads the
 legs' blob reports and none of this.
 Each of those five downloads what it needs of the two artefacts and builds no dashboard bundle
-and no Go command of its own, except the dev OIDC issuer the two-process job's sign-in step
-builds; the jobs that run Playwright themselves still build `@legion/contracts`, which their
-Node runner reads.
-Each shard leg exports the worker count and the pgvector digest on the browser step's own command
-line rather than in an `env:`, for the reason that job's head gives: a name outside
+and no Go command of its own: the two-process job's sign-in step names the `binaries` job's
+`dev-oidc-issuer` on `DISPATCH_E2E_SIGNIN_ISSUER_BIN`, as every job names the server on
+`DISPATCH_E2E_SERVER_BIN`.
+Each of the five still builds `@legion/contracts`, which its Playwright runner reads under Node.
+Each shard leg sets its stacks' PostgreSQL directory and its worker count on the browser step's
+own command line: `export DISPATCH_E2E_PG_BIN=/usr/lib/postgresql/18/bin`, and `--workers 4` on
+the Playwright command.
+It names no pgvector digest, since its stacks take PostgreSQL 18 with `vector` from the image the
+job runs in.
+Neither value is in an `env:`, for the reason that job's head gives: a name outside
 `.github/scripts/ci_filter_coverage.py`'s `ENV_ALLOWED`, in the job's `env:` or in one of its
 steps', is counted as reaching a go command unseen, and the `binaries` job's build step is read
 under this workflow's own `env:` and defaults for the same reason.
@@ -2086,19 +2107,31 @@ that crossed it: rows of `coverage.e2e.ts`, `plan-tab.e2e.ts` and
 `verification.e2e.ts` sit between 1.5 and 2.7 seconds, where the machine
 decides which side of the bar they land, and without that band such a row fails
 the check bare on a slow run and marked on a fast one. A row's own cost is what
-it proves: most of a short row is the floor every row pays, measured in an issue
-pod at a fresh Chromium context (0.25 s), the cold parse of the dashboard bundle
-that context cannot cache (0.40 s) and the dashboard's boot reads before its
-first draw (0.80 s).
-The last two readings are older than what this release ships.
+it proves: most of a short row is the floor every row pays. That floor was
+measured in an issue pod as three parts: a fresh Chromium context (0.25 s), the
+cold parse of the dashboard bundle that context cannot cache (0.40 s) and the
+dashboard's boot reads before its first draw (0.80 s).
+The last two readings are older than this head.
 The boot reads were measured when a cold issue page sent 21 reads in four waves, and the same
 page now sends 3 in two (`e2e/landing-reads.e2e.ts`, which prints every landing's waterfall
 and holds each page to its bound).
 The parse was measured before this release split the shell, and it is a parse of the entry
 chunk, which the split halved: 491,264 bytes at this head against 1,028,690 before it (the
 Layout section above).
-So both parts of the floor are smaller at this head than the figures above, by how much nothing
-has measured yet; the fresh context's 0.25 s is untouched by either change.
+No reading at this head splits those two parts. The reading that stands in for them is the
+timing fixture's `first-page-load` (`e2e/measure-reporter.ts`): the duration of a row's first
+navigation step, a `page.goto` in nearly every row. Unless the call passes a `waitUntil`,
+Playwright ends that step at the page's `load` event. So the figure holds the entry chunk's
+download and parse, and it does not tell how much of the boot reads, which the entry starts,
+ends before that event.
+A local run of 107 Chromium rows on 2026-11-12, at a head of this branch's shape, read its
+median at 676 ms, against the 1.20 s the two old figures sum to
+(`E2E_MEASURE_FILE=<file>` on a chromium run, then `bun e2e/tools/measure-summary.ts <file>`).
+The same run read `reset-sql` at 95 ms, `reset-fakes` at 20 ms and `sign-in` at 7 ms, and a
+row's four parts summed to a median of 828 ms.
+That run's report is gone with the pod it ran in, so these figures are what was recorded of it,
+and that command run again at this head reads them again.
+The fresh context's 0.25 s is untouched by either change, and the fixture does not measure it.
 
 A row that drives no browser does not belong in this suite: it takes no page
 fixture, it runs in one project because every other would repeat it, and it
@@ -2613,8 +2646,14 @@ reads while another writes it, and a fixed absolute path is somebody else's
 file on a shared box. `e2e/artifacts.e2e.ts` writes the note and the diagram it
 uploads that way; the tree holds no `e2e/fixtures/` directory.
 
-`e2e/tools/` holds two tools, and no third.
+`e2e/tools/` holds four tools: `check-slow-rows.ts`, `compare-recordings.ts`,
+`measure-summary.ts` and `row-map.ts`.
 `check-slow-rows.ts` is the row-length check the `SLOW(>=2s)` paragraph above describes.
+`compare-recordings.ts` checks a fresh recording of every stubbed row against the committed one,
+by each route's status, and the `re-record` job of
+`.github/workflows/dispatch-browser-nightly.yaml` runs it.
+`row-map.ts` generates `e2e/row-map.md`, the map of the rows that moved to the stubbed layer and
+the rows that stayed, which "The stubbed layer" below describes.
 A per-row inventory is no longer a tool's: it comes from the merged JSON report of the
 `dispatch-browser` lane, which the `merge` job of `.github/workflows/dispatch-browser.yaml` writes
 with `playwright merge-reports --reporter=html,json,list` over every leg's blob report and uploads
@@ -2698,7 +2737,12 @@ unset or empty is dev sign-in, above, and `oidc` is the production sign-in, thro
 `run-server.sh`, naming the allowed ones, and every importer refuses `oidc` without
 `DISPATCH_E2E_PROCESSES=2`. Under `oidc` the listener table starts `e2e/run-signin-issuer.sh`
 after the fakes and before the proxy: it builds the issuer as `run-server.sh` builds the server
-(`packages/envoy/dev-oidc-issuer-e2e`, gitignored, under its own lock), serves the code flow for
+(`packages/envoy/dev-oidc-issuer-e2e`, gitignored, under its own lock), or, when
+`DISPATCH_E2E_SIGNIN_ISSUER_BIN` names a prebuilt `dev-oidc-issuer`, executes that and builds
+nothing, as `run-server.sh` does with `DISPATCH_E2E_SERVER_BIN`, refusing a path that is not an
+executable file before the issuer starts. The two-process job of
+`.github/workflows/dispatch-browser.yaml` names the `binaries` job's issuer there. The issuer
+serves the code flow for
 the client `dispatch-e2e` with the secret the harness generates per run, which the script hands
 the issuer through a pipe, never a file or an argv, and signs in `alice@example.com`, a member of
 the group `dispatch-e2e-people`, at every authorization. It
@@ -2833,7 +2877,10 @@ afternoon the row arrived. The row counts only the opens whose `success` handler
 and called a second late, and asserts that count at its end, after every step whose timing it
 depends on, since a hook that silently stopped delaying - another database name, or a page that
 listens for `success` another way - would leave the row passing with the product reverted.
-CI installs WebKit beside Chromium for them (`bun run e2e:install` does the same locally).
+CI installs no browser for them: the shard and alone jobs of
+`.github/workflows/dispatch-browser.yaml` run in the image built from
+`.github/docker/browser.Dockerfile`, which carries Chromium, WebKit and Firefox.
+Locally, `bun run e2e:install` installs the three engines.
 
 The `webkit` and `firefox` projects run seven rows of `e2e/deep-links.e2e.ts`, tagged for two
 reasons. Both engines cancel the chunk downloads in flight when a navigation starts: a deep link followed while the page
@@ -2865,8 +2912,9 @@ along with the text after it, which Chromium and WebKit never do, so that spec i
 a second engine; the picker, deep-link, keyed, live-socket, offline-edits, mermaid and streamed-turn
 rows run for the reasons given under `webkit` above and in the comment above the project; and a
 click on a link inside the editor meets the engine's focus rule — Firefox focuses the editing host,
-not the link — so the picture view's fallback link is clicked there too. CI installs Firefox beside
-Chromium for them (`bun run e2e:install` does the same locally).
+not the link — so the picture view's fallback link is clicked there too.
+CI installs no browser for them either: the image the shard and alone jobs run in carries
+Firefox, as the `webkit` paragraph above says, and locally `bun run e2e:install` installs it.
 
 The `chromium-plain-http` project runs `e2e/plain-http-origin.e2e.ts` and
 `e2e/plain-http-proxy.e2e.ts`, selected by file name: Chromium maps `dispatch-e2e.test` to
@@ -2922,8 +2970,8 @@ before, for the reasons given under `webkit` and `firefox` above.
 No project above them runs those three files, so each row runs once.
 Each of the three sets `default: false`, which leaves it out of a run that names no project and
 takes nothing from a run that names one, so the commands at the top of this section name them
-and a bare `bun run e2e` holds none of their 54 rows (a listing of the three at this head: 54
-tests in 3 files).
+and a bare `bun run e2e` holds none of their 51 rows (`bun run e2e:clock:run -- --list` at this
+head prints `Total: 51 tests in 3 files`).
 Until dispatch://INFRA-1280 each named every project before it in `dependencies` instead, which
 ordered the run and also pulled the whole suite in behind any command naming one of the three
 files they take, because a filter narrows a project it selects and never a project selected to

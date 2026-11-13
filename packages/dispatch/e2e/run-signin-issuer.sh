@@ -14,6 +14,15 @@ set -euo pipefail
 # DISPATCH_E2E_SIGNIN_CLIENT_ID and DISPATCH_E2E_SIGNIN_CLIENT_SECRET are the client both servers
 # are handed; the issuer reads the secret from a file once, at its start, here a pipe this script
 # writes it to, so the secret never reaches an argv or the disk.
+#
+# DISPATCH_E2E_SIGNIN_ISSUER_BIN names a prebuilt dev-oidc-issuer this script executes instead of
+# building one from this checkout, as run-server.sh reads DISPATCH_E2E_SERVER_BIN for the server.
+# The binaries job of .github/workflows/dispatch-browser.yaml builds it beside the server, and
+# the multiprocess job names it here, so no CI step builds the issuer inside its browser step.
+# Unset, the build below is this checkout's, so a developer's run needs nothing new. The path is
+# made absolute against the caller's directory, since this script changes to packages/envoy
+# before it runs the binary, and a path that is not an executable file is refused before the
+# issuer starts, rather than when the harness waits for a report that never comes.
 : "${DISPATCH_E2E_SIGNIN_AS:?DISPATCH_E2E_SIGNIN_AS must name the person the dev OIDC issuer signs in}"
 : "${DISPATCH_E2E_SIGNIN_CLIENT_ID:?DISPATCH_E2E_SIGNIN_CLIENT_ID must name the Dispatch client at the dev OIDC issuer}"
 : "${DISPATCH_E2E_SIGNIN_CLIENT_SECRET:?DISPATCH_E2E_SIGNIN_CLIENT_SECRET must give the secret of that client}"
@@ -28,11 +37,24 @@ person="$DISPATCH_E2E_SIGNIN_AS"
 group="$DISPATCH_E2E_SIGNIN_GROUP"
 unset DISPATCH_E2E_SIGNIN_CLIENT_SECRET
 
+issuer_bin="${DISPATCH_E2E_SIGNIN_ISSUER_BIN:-}"
+if [ -n "$issuer_bin" ]; then
+  [[ "$issuer_bin" == /* ]] || issuer_bin="$PWD/$issuer_bin"
+  if [ ! -x "$issuer_bin" ] || [ -d "$issuer_bin" ]; then
+    echo "run-signin-issuer.sh: DISPATCH_E2E_SIGNIN_ISSUER_BIN=$DISPATCH_E2E_SIGNIN_ISSUER_BIN is not an executable file" >&2
+    exit 2
+  fi
+fi
+
 cd "$(dirname "$0")/../../envoy"
 # Built and exec'd as run-server.sh builds and execs the server, so the pid a caller started is the
 # issuer's: one binary per checkout, under a lock of its own, rewritten only when the source changed.
-flock ./.dev-oidc-issuer-e2e.lock go build -o ./dev-oidc-issuer-e2e ./cmd/dev-oidc-issuer
-exec ./dev-oidc-issuer-e2e \
+# A binary the caller handed over is exec'd as it is, and nothing is built.
+if [ -z "$issuer_bin" ]; then
+  flock ./.dev-oidc-issuer-e2e.lock go build -o ./dev-oidc-issuer-e2e ./cmd/dev-oidc-issuer
+  issuer_bin=./dev-oidc-issuer-e2e
+fi
+exec "$issuer_bin" \
   --code-flow "$client_id="<(printf '%s' "$secret") \
   --sign-in-as "$person" \
   --sign-in-group "$group"

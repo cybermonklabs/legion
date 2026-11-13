@@ -776,10 +776,10 @@ DISPATCH_SERVER_BUILD = "flock ./.dispatch-e2e.lock go build -o ./dispatch-e2e .
 # The three commands of the real broker's harness rows, and the Dispatch server with them: the
 # binaries job of dispatch-browser.yaml builds all four, since every other job of that file
 # either runs in a container, and so runs no go command of its own (that file says why), or
-# names what it built on DISPATCH_E2E_SERVER_BIN and DISPATCH_E2E_BROKER_BIN_DIR and executes
-# it. The one go command left outside this job is e2e/run-signin-issuer.sh's build of
-# ./cmd/dev-oidc-issuer, in the multiprocess job's sign-in step, whose closure this same entry
-# carries.
+# names what it built on DISPATCH_E2E_SERVER_BIN, DISPATCH_E2E_BROKER_BIN_DIR and
+# DISPATCH_E2E_SIGNIN_ISSUER_BIN and executes it. The last of those is the multiprocess job's
+# sign-in step, whose dev OIDC issuer is the ./cmd/dev-oidc-issuer this build makes, so no go
+# command is left outside this job.
 BROKER_PKGS = ["./cmd/broker", "./cmd/dev-oidc-issuer", "./internal/broker/brokertest/requestseed"]
 # The steps of .github/workflows/dispatch-browser.yaml this table cites by name.
 BROWSER_BINARIES_STEP = "Build the binaries and the dashboard the browser suite runs"
@@ -1162,10 +1162,11 @@ GATES = [
     # script Run here would fall to reading every Go file of the repository. It costs this
     # filter nothing. Those two jobs run no go command at all - run-server.sh and run-broker.sh
     # execute the binaries the entry below builds - and neither do the multiprocess, embedder
-    # and visual jobs, which name those same binaries on DISPATCH_E2E_SERVER_BIN and
-    # DISPATCH_E2E_BROKER_BIN_DIR (dispatch://INFRA-1109). One go command is left in the file
-    # outside that entry's own step: run-signin-issuer.sh's build of ./cmd/dev-oidc-issuer, in
-    # the multiprocess job's sign-in step, and that package is in the entry's closure too.
+    # and visual jobs, which name those same binaries on DISPATCH_E2E_SERVER_BIN,
+    # DISPATCH_E2E_BROKER_BIN_DIR and, in the multiprocess job's sign-in step,
+    # DISPATCH_E2E_SIGNIN_ISSUER_BIN, which e2e/run-signin-issuer.sh executes in place of its
+    # own build of ./cmd/dev-oidc-issuer (dispatch://INFRA-1109). So the entry's own step holds
+    # every go command of the file.
     gate("dispatch_browser", BROWSER_JOB, exact=[
         # Every binary this run executes, and the dashboard beside them, built once in the
         # binaries job and downloaded by the five jobs that run them - shard, alone,
@@ -1216,13 +1217,6 @@ GATES = [
     ) + envoy_client_dep("imported by packages/envoy-client/bin/dispatch.ts, which "
                          "packages/dispatch/e2e/inbox-cli.e2e.ts:330 runs")
       + setup_go(BROWSER_BINARIES, f"{ENVOY}/go.mod", BROWSER_SITE)
-      # The multiprocess job keeps its actions/setup-go and its go cache restore where the
-      # embedder and visual jobs lost theirs: e2e/run-signin-issuer.sh builds
-      # ./cmd/dev-oidc-issuer inside that job's sign-in step, which is the one go command of this
-      # workflow outside the binaries job's own build. A job that reads go.mod through
-      # actions/setup-go has that read cited here, and dropping the citation while the step
-      # stands left the table silent about a read that job really makes (dispatch://INFRA-1109).
-      + setup_go(BROWSER_MP, f"{ENVOY}/go.mod", BROWSER_SITE)
       + bun_job(BROWSER_SHARD, BROWSER_SITE)
       + CI_SELF + BROWSER_SITE_SELF),
 
