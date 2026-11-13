@@ -1297,16 +1297,19 @@ func (r *outbox) wakeRan(row record.OutboxRow, notice record.Notice) {
 //
 // A catch-up is published as its tree stands at this delivery, not as it stood when the row was
 // queued: the delivery's one read of the tree composes it again (readNoticeTree,
-// workflow.TreeCatchUp), and its Gates, Issues, HandedOver and Carried, and the notice's Reason,
-// are replaced with what that read states, so a gate registered or an issue added while the row
-// waited reaches the architect with the catch-up (dispatch://INFRA-2819). The order is the
-// fence's: whether a newer catch-up supersedes this one (catchUpSuperseded) is read on the payload
-// as the row holds it, before anything is replaced, because the fence compares the row's
-// Generation and Launch with the root and the claim as they are now, and a payload composed from
-// the root now would compare the root with itself and never be superseded. So Generation and
-// Launch stay the row's. So do Decided and Kept: the row's own queueing claimed those decisions
-// for this row (workflow.EnqueueNaming), and the settling that follows the publish (settleTold,
-// supersededKept) is keyed to what the row named, not to what a read at delivery would name.
+// workflow.TreeCatchUp), and its record half (record.CatchUpTree) is replaced whole with what that
+// read states, as the notice's Reason is, so a gate registered or an issue added while the row
+// waited reaches the architect with the catch-up (dispatch://INFRA-2819). Decided is written again
+// in that read from the decisions the row claimed, each asked of the gates as they stand then
+// (workflow.DecisionStands), so a decision the person's approval followed while the row waited is
+// not named. The order is the fence's: whether a newer catch-up supersedes this one
+// (catchUpSuperseded) is read on the payload as the row holds it, before anything is replaced,
+// because the fence compares the row's Generation and Launch with the root and the claim as they
+// are now, and a payload composed from the root now would compare the root with itself and never
+// be superseded. So Generation and Launch stay the row's. So does Kept: the row's own queueing
+// claimed those decisions for this row (workflow.EnqueueNaming), and the settling that follows the
+// publish (settleTold, supersededKept) is keyed to what the row claimed, not to what a read at
+// delivery would name.
 func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payload record.Notice) error {
 	if r.notices == nil {
 		return errors.New("notice executor has no Envoy publisher")
@@ -1345,8 +1348,7 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			return nil
 		}
 		delivered := *payload.CatchUp
-		delivered.Gates, delivered.Issues = recomposed.state.Gates, recomposed.state.Issues
-		delivered.HandedOver, delivered.Carried = recomposed.state.HandedOver, recomposed.state.Carried
+		delivered.CatchUpTree, delivered.Decided = recomposed.tree, recomposed.decided
 		payload.CatchUp, payload.Reason = &delivered, recomposed.reason
 	}
 	architect, err := owningArchitect(tree.project, tree.issues, issue, payload.Kind, r.holdsItsRole)

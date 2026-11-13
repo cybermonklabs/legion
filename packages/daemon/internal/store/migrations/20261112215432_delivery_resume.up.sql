@@ -24,11 +24,33 @@
 -- parked_decisions.seq is Dispatch's sequence of a kept spec decision's review, beside at, which
 -- for such a decision is now Dispatch's time of the review (record.ParkedDecision.At and Seq,
 -- from the notice's Review). A held task is narrowed at each send by asking the gate whether a
--- later approval superseded each decision it names (workflow's keptReviewStands), and the
+-- later approval superseded each decision it names (workflow.DecisionStands), and the
 -- question is answered by Dispatch's order on both sides: the sequences when both carry one,
 -- else Dispatch's times. It is null where Dispatch gave no sequence, for an answer on an ask, and
 -- for every row kept before this migration; a daemon of an earlier release writes none.
 --
+-- issues.awaiting_answered_version is the version of the changes request that answered a root's
+-- wait (record.Awaiting.AnsweredVersion), written beside the detail by the same answer, so the
+-- resume asks whether the person's approval followed that review (workflow.DecisionStands) of a
+-- number rather than of the detail, which is display text. awaiting_answered_version_at is the
+-- answer's moment (awaiting_answered_at) the version was written with, and the version is read
+-- only while the two are equal (record's issueColumns): a daemon of an earlier release names
+-- neither column, so its write of a later answer leaves the old version standing beside a new
+-- moment, and that answer reads as one with no version. Neither column is part of
+-- issues_awaiting_shape, so that earlier daemon's write that clears a wait is not refused for
+-- leaving them set.
+--
+-- A wait answered by a changes request before this migration is given its version here, read
+-- once from the detail every release so far wrote for it (`version <n>: "<reason>"`, workflow's
+-- changesDetail), so it reads as it did; no daemon parses the detail after this.
+--
 -- There is no down file: migrations here are forward-only.
 alter table pending_task_deliveries add column resume jsonb;
 alter table parked_decisions add column seq bigint;
+alter table issues add column awaiting_answered_version integer,
+  add column awaiting_answered_version_at timestamptz;
+update issues
+   set awaiting_answered_version = substring(awaiting_answered_detail from '^version ([0-9]+): ')::integer,
+       awaiting_answered_version_at = awaiting_answered_at
+ where awaiting_answered_by = 'changes_requested' and awaiting_answered_at is not null
+   and awaiting_answered_detail ~ '^version [0-9]+: ';

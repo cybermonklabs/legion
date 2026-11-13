@@ -96,7 +96,7 @@ func (e *Engine) personAnswered(ctx context.Context, tx pgx.Tx, root record.Issu
 		return nil
 	}
 	e.logOnCommit(ctx, answer, "issue", root.Key, "ask", ask)
-	return e.answerWait(ctx, tx, root, by, ask)
+	return e.answerWait(ctx, tx, root, by, ask, 0)
 }
 
 // itemLeft applies an act that is nobody's answer and takes an item of root's wait away from the
@@ -140,7 +140,7 @@ func (e *Engine) itemLeft(ctx context.Context, tx pgx.Tx, root record.Issue, bef
 	if root.Awaiting.GateVersion != 0 {
 		root.Awaiting = &record.Awaiting{Ask: before.Ask, Since: root.Awaiting.Since}
 	}
-	return e.answerWait(ctx, tx, root, by, detail)
+	return e.answerWait(ctx, tx, root, by, detail, 0)
 }
 
 // catchUpApplied records that the boot catch-up applied root's Dispatch event log through
@@ -162,9 +162,12 @@ func (e *Engine) catchUpApplied(ctx context.Context, tx pgx.Tx, fact intake.Catc
 // waiting line (record.Waiting) — among the issues whose work came back, oldest first — and
 // names the act in the task its architect resumes with (resumeTask). The detail is the act's
 // own: the ask a person acted on, the version and reason of the review that answered, or who
-// took the question away, so a later act of the same kind does not rename it.
-func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string) error {
+// took the question away, so a later act of the same kind does not rename it. reviewed is the
+// version a changes request that answered reviewed, 0 for any other act: it is recorded beside
+// the detail (record.Awaiting.AnsweredVersion), so the resume asks whether an approval followed
+// that review of a number and not of the detail's words.
+func (e *Engine) answerWait(ctx context.Context, tx pgx.Tx, root record.Issue, by record.Answer, detail string, reviewed int) error {
 	at := e.now()
-	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail = &at, by, detail
+	root.Awaiting.AnsweredAt, root.Awaiting.AnsweredBy, root.Awaiting.AnsweredDetail, root.Awaiting.AnsweredVersion = &at, by, detail, reviewed
 	return e.store.PutIssue(ctx, tx, root)
 }

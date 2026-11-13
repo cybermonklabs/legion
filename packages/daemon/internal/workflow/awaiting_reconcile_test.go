@@ -251,7 +251,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 		},
 		{
 			name:    "a changes request with the gate closed",
-			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 4: \"say more\""},
+			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 4: \"say more\"", AnsweredVersion: 4},
 			step:    record.DesignStepSpec,
 			gate:    &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 4},
 			want: []string{"A person requested changes to your primary document on LEGION-208 at version 4: \"say more\"",
@@ -262,9 +262,9 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 			// Round 2, adversarial P3-2: the person approved the version after asking for changes,
 			// before the resume, so the resume asks for no revision of an approved document. The
 			// marks place the approval after the wait the review answered, which is what
-			// classify.ReviewSuperseded reads (answeredReview).
+			// DecisionStands reads (answeredReview).
 			name: "a changes request a later approval superseded",
-			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 3: \"split it\"",
+			waiting: record.Awaiting{Ask: "ask-q", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 3: \"split it\"", AnsweredVersion: 3,
 				Since: record.EventMark{Seq: 5}},
 			step: record.DesignStepSpec,
 			gate: &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 3, ApprovedVersion: &version,
@@ -303,7 +303,7 @@ func TestTheResumeTaskNamesEveryItemStillWithThePerson(t *testing.T) {
 func TestTheResumeTaskNamesNoReviewAnApprovalFollowed(t *testing.T) {
 	answered := time.Date(2026, 11, 11, 20, 0, 0, 0, time.UTC)
 	waiting := record.Awaiting{GateVersion: 13, Artifact: "artifact-208", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges,
-		AnsweredDetail: changesDetail(13, "split it"), Since: record.EventMark{Seq: 20}}
+		AnsweredDetail: changesDetail(13, "split it"), AnsweredVersion: 13, Since: record.EventMark{Seq: 20}}
 	approved := 19
 	open := &record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 19, ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 40}}
 	task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, open, nil, true)
@@ -434,7 +434,7 @@ func TestTheResumeTaskOfAGateWait(t *testing.T) {
 		},
 		{
 			name:    "a changes request that closed the request",
-			waiting: record.Awaiting{Ask: "ask-approval", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 5: \"say more\""},
+			waiting: record.Awaiting{Ask: "ask-approval", AnsweredAt: &answered, AnsweredBy: record.AnsweredByChanges, AnsweredDetail: "version 5: \"say more\"", AnsweredVersion: 5},
 			asks:    []record.RootAsk{{Issue: "LEGION-208", Ask: "ask-approval", Kind: record.AskApproval, Artifact: "artifact-208", Seq: 11, ClosedSeq: 11, ClosedBy: record.ClosedByPerson}},
 			want:    []string{"requested changes", "request approval again and register that version with register_gate"},
 			not:     []string{"request's thread", "Still with the person"},

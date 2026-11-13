@@ -2233,15 +2233,18 @@ Every row already there takes each column's default, and nothing is backfilled.
 The same migration widens the check on a bundle's restore attempt to a third outcome, `refused_repository`, which the daemon records for a bundle of a repository the issue has left, and creates `workspace_bundles_refused`, the table the daemon moves each such bundle to in the transaction that refuses it.
 Store migration 20261112215432_delivery_resume adds `pending_task_deliveries.resume`, null for every delivery but a resume task's, and `parked_decisions.seq`, Dispatch's sequence of the review a kept spec decision records, so the daemon orders it against the gate's approval by Dispatch's order and not by two clocks.
 A design decision's notice now carries where Dispatch recorded the review (`review`, `record.Notice.Review`), and a kept spec decision takes its time and sequence from it.
+The same migration adds `issues.awaiting_answered_version`, the version of the changes request that answered a root's wait, and `issues.awaiting_answered_version_at`, the answer's moment it was written with, so the resume task reads the reviewed version as a number rather than out of the answer's detail text.
+It gives each wait a changes request answered before it its version, read once from the detail every earlier release wrote (`version <n>: "<reason>"`); every other row keeps both columns null.
 
 To roll this release back, re-pin the earlier image (contract 104 at the base this release was written on).
 There is no `legion.yaml` key to put back and no column to drop:
-the earlier release names every column it reads and writes, so it boots with the seven in place, reads none of them and writes none of them.
+the earlier release names every column it reads and writes, so it boots with the nine in place, reads none of them and writes none of them.
+Its write of a later answer to a root's wait leaves `awaiting_answered_version` and `awaiting_answered_version_at` as they stood, and when this release is pinned again it reads that answer as one with no version, since the moment beside the version is no longer the answer's: the resume then asks whether the person's approval followed that changes request at the version the gate holds approved, as it asks of a kept decision.
 It never reads `workspace_bundles_refused` either, so a bundle this release refused for its repository stays in that table through the roll back, and no row of `workspace_bundles` is a refused one that its idle rule could hold a pod for.
 Going back costs three things, and the first loses work unless you act before the earlier image is pinned.
 
 - A resume task, or a design decision's notice, that this release queued and has not sent reaches its architect with no text, or not at all.
-  The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it refuses an outbox start that carries `awaiting`, and a notice that carries `review`, and retries that row on its backoff until this release runs again: the answered root's architect is not resumed, and the design decision is not told.
+  The earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`), so it refuses an outbox start that carries `awaiting` (whose wait carries `AnsweredVersion` beside `AnsweredDetail` for a changes request), and a notice that carries `review`, and retries that row on its backoff until this release runs again: the answered root's architect is not resumed, and the design decision is not told.
   It does not read `pending_task_deliveries.resume`, so it sends a held resume task as the text the row holds, which is empty until this release has sent it.
   Before you pin the earlier image, stop this release's daemon and run the three reads below.
   When any returns a row, start this release again, let it send those rows, and stop it and read again, until all three return none.

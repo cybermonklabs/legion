@@ -9,7 +9,6 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -50,8 +49,8 @@ func keptJSON(kept *record.KeptDecisions) ([]byte, error) {
 // root with no record), or handled before under the same key, by an earlier run or another row
 // carrying the same notice, whose own line said what became of it.
 //
-// A decision the person has since answered with a later approval is not relayed: the gate of the
-// document it was made on, as the record holds it now, is asked (decisionSuperseded), and the
+// A decision the person has since answered with a later approval is not relayed: the gates of the
+// issue it was made on, as the record holds them now, are asked (decisionSuperseded), and the
 // controller is not told to act on a review the person's own approval took the place of.
 func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice record.Notice, key string, row int64) error {
 	decision, ok := record.SpecDecision(notice.Kind)
@@ -114,29 +113,18 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 }
 
 // decisionSuperseded says whether the spec decision notice carries on issue is no longer the
-// person's word: the gate of the document it was made on (workflow.GateOfRef), as the record holds
-// it now, is asked whether an approval followed it (classify.ReviewSuperseded). The notice carries
-// no mark of the review, so it is asked by its version alone where it can be: a changes request of
-// the version the gate holds approved was followed by that approval, since a changes request
-// applied to the gate clears the approval it held, and an approval is followed only by one of a
-// later version — the gate's approval of the same version is that approval itself. A carried
-// gate's opening, a decision on a document no gate of issue holds, and one on a step the
-// deployment does not gate, whose approval is its registration's and no person's, are never
-// superseded.
+// person's word, by the one predicate (workflow.DecisionStands) over the gates of issue as the
+// record holds them now: the decision of the document notice.Ref names, at the version the notice
+// carries and at Dispatch's mark of the review (record.Notice.Review), which this release puts on
+// every design decision's notice. A notice an earlier release queued carries no mark, and is asked
+// at its version alone.
 func (r *outbox) decisionSuperseded(ctx context.Context, tx pgx.Tx, issue string, notice record.Notice, decision record.DecisionKind) (bool, error) {
-	if decision != record.DecisionDesignChangesRequested && decision != record.DecisionDesignApproved {
-		return false, nil
-	}
 	gates, err := r.records.GatesOf(ctx, tx, issue)
 	if err != nil {
 		return false, err
 	}
-	gate, ok := workflow.GateOfRef(gates, issue, notice.Ref)
-	if !ok || !slices.Contains(r.gatedSteps, gate.Step) || gate.ApprovedVersion == nil ||
-		decision == record.DecisionDesignApproved && *gate.ApprovedVersion == notice.Version {
-		return false, nil
-	}
-	return classify.ReviewSuperseded(gate, notice.Version, record.EventMark{}), nil
+	return !workflow.DecisionStands(gates, r.gatedSteps, workflow.Decision{Kind: decision, Issue: issue, Ref: notice.Ref,
+		Version: notice.Version, Mark: notice.Review}), nil
 }
 
 // settleKept settles what an architect start row's task named of what its tree is owed, once the

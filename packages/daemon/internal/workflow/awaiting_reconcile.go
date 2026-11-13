@@ -168,7 +168,7 @@ func (e *Engine) answerOpenGates(ctx context.Context, tx pgx.Tx, project string,
 			}
 			e.logOnCommit(ctx, "workflow: the design gate of a root waiting on a person is open, which answers its wait", "issue", root.Key,
 				"version", version, "ask", root.Awaiting.Ask)
-			if err := e.answerWait(ctx, tx, root, record.AnsweredByApproval, fmt.Sprintf("version %d", version)); err != nil {
+			if err := e.answerWait(ctx, tx, root, record.AnsweredByApproval, fmt.Sprintf("version %d", version), 0); err != nil {
 				return answered, err
 			}
 			answered = true
@@ -205,7 +205,7 @@ func (e *Engine) leaveGateOff(ctx context.Context, tx pgx.Tx, root record.Issue,
 	}
 	e.logOnCommit(ctx, "workflow: the deployment gates no step, which answers a root's wait on its gate", "issue", root.Key,
 		"version", root.Awaiting.GateVersion)
-	return e.answerWait(ctx, tx, root, record.AnsweredByApproval, fmt.Sprintf("version %d", root.Awaiting.GateVersion)+gateOffAnswer)
+	return e.answerWait(ctx, tx, root, record.AnsweredByApproval, fmt.Sprintf("version %d", root.Awaiting.GateVersion)+gateOffAnswer, 0)
 }
 
 // gateOffAnswer ends the detail of a gate wait the empty-list rule answered (leaveGateOff).
@@ -629,6 +629,17 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	gateClosed := gate != nil && !gateOpen
 	version, gateOff := strings.CutSuffix(waiting.AnsweredDetail, gateOffAnswer)
 	gateOff = gateOff && waiting.AnsweredBy == record.AnsweredByApproval
+	// A review the resume names is asked of the gate in question alone (DecisionStands), filed under
+	// step; armed says the deployment gates step, since gateInQuestion takes step from the steps it
+	// gates.
+	var gates map[record.DesignStep]record.DesignGate
+	var gated []record.DesignStep
+	if gate != nil {
+		gates = map[record.DesignStep]record.DesignGate{step: *gate}
+	}
+	if armed {
+		gated = []record.DesignStep{step}
+	}
 	var task strings.Builder
 	switch waiting.AnsweredBy {
 	case record.AnsweredByApproval:
@@ -646,7 +657,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	case record.AnsweredByChanges:
 		// A review the gate's own approval followed is not named: the person's word is that
 		// approval, and the sentences after this one say how the document stands.
-		if reviewed, mark, ok := answeredReview(waiting, gate); ok && armed && classify.ReviewSuperseded(*gate, reviewed, mark) {
+		if !DecisionStands(gates, gated, answeredReview(key, step, waiting, gate)) {
 			fmt.Fprintf(&task, "A person's review answered your wait on %s, and the %s was approved at version %d after it, so the review "+
 				"asks for no revision now.", key, document, *gate.ApprovedVersion)
 		} else {
@@ -703,7 +714,8 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 		fmt.Fprintf(&task, " Your %s is not approved at version %d.", document, gate.LatestVersion)
 	}
 	if gate != nil && gate.ToldChangesVersion != nil && !(waiting.Since.Seq > 0 && gate.ToldChangesMark.Seq == 0) &&
-		gate.ToldChangesMark.After(waiting.Since) && !classify.ReviewSuperseded(*gate, *gate.ToldChangesVersion, gate.ToldChangesMark) {
+		gate.ToldChangesMark.After(waiting.Since) && DecisionStands(gates, gated, Decision{Kind: record.DecisionDesignChangesRequested,
+		Issue: key, Ref: stepRef(key, step), Version: *gate.ToldChangesVersion, Mark: gate.ToldChangesMark}) {
 		detail := changesDetail(*gate.ToldChangesVersion, gate.ToldChangesReason)
 		if waiting.AnsweredBy != record.AnsweredByChanges || waiting.AnsweredDetail != detail {
 			fmt.Fprintf(&task, " A person then requested changes to your %s at %s. Read the review, and revise the %s as they ask.", document, detail, document)
@@ -758,27 +770,23 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	return task.String()
 }
 
-// answeredReview is the changes request that answered waiting as the resume asks
-// classify.ReviewSuperseded about it: its version, read from the detail the answer recorded
-// (changesDetail), and the mark it is asked at. The wait records no mark of the review itself, and
-// the gate's told record of it goes once an approval follows, so it is asked at the wait's start:
-// the review answered the wait, so Dispatch recorded it after that start, and an approval of its
-// version the gate still holds after that start came after the review, since the review applied
-// to the gate clears the approval it held then (classify.ApplyDesignGateEvent). A wait whose start
-// has no mark — one recorded before waits were placed — is asked at the gate's approval itself, for
-// the same reason. ok is false when the detail names no version, or no gate is in question.
-func answeredReview(waiting record.Awaiting, gate *record.DesignGate) (int, record.EventMark, bool) {
-	if gate == nil {
-		return 0, record.EventMark{}, false
+// answeredReview is the changes request that answered waiting as the resume asks DecisionStands
+// about it: of step's document on key, at the version the answer recorded beside its detail
+// (record.Awaiting.AnsweredVersion; 0 for an answer a daemon of an earlier release wrote, which is
+// then asked at the version the gate holds approved, as a kept decision is), and at a mark of its
+// own. The wait records no mark of the review itself, and the gate's told record of it goes once
+// an approval follows, so it is asked at the wait's start: the review answered the wait, so
+// Dispatch recorded it after that start, and an approval of its version the gate still holds
+// after that start came after the review, since the review applied to the gate clears the
+// approval it held then (classify.ApplyDesignGateEvent). A wait whose start has no mark — one
+// recorded before waits were placed — is asked at the gate's approval itself, for the same reason.
+func answeredReview(key string, step record.DesignStep, waiting record.Awaiting, gate *record.DesignGate) Decision {
+	review := Decision{Kind: record.DecisionDesignChangesRequested, Issue: key, Ref: stepRef(key, step), Version: waiting.AnsweredVersion,
+		Mark: waiting.Since}
+	if review.Mark == (record.EventMark{}) && gate != nil {
+		review.Mark = gate.ApprovedMark
 	}
-	version, named := changesDetailVersion(waiting.AnsweredDetail)
-	if !named {
-		return 0, record.EventMark{}, false
-	}
-	if waiting.Since == (record.EventMark{}) {
-		return version, gate.ApprovedMark, true
-	}
-	return version, waiting.Since, true
+	return review
 }
 
 // recordedDecline is the decline the mirror holds for ask, nil where no person declined it: it

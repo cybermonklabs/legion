@@ -245,19 +245,28 @@ const HoldEscalated HoldReason = "escalated"
 // (Ask, the ask's id), or the closed design gate at a spec version (GateVersion) on the document
 // it registered (Artifact); when a person answered it (AnsweredAt, nil until then), with what
 // (AnsweredBy) and that act's own detail (AnsweredDetail: the ask acted on, who closed it, or the
-// version and reason of the review); and where on Dispatch the wait began (Since): the newest
+// version and reason of the review); for a changes request, the version it reviewed
+// (AnsweredVersion), written beside the detail by the same answer, so a reader that asks whether
+// the person's approval followed that review reads a number and never parses the detail, which is
+// display text; and where on Dispatch the wait began (Since): the newest
 // hand-back the architect made since it was last given work (Issue.DeclaredSeq). It is a snapshot
 // of the wait's subject; what else is still with the person is the root's asks (RootAsk). A
 // person's act Dispatch recorded at or before Since never answers the wait. An answered root waits
 // for a slot ahead of every root that never ran (Waiting).
+//
+// AnsweredVersion is 0 for every other answer, and for a changes request a daemon of an earlier
+// release answered after this release's migration gave every older answer its version
+// (20261112215432_delivery_resume): such a review is asked as a kept decision is, at the version
+// the gate holds approved (workflow.DecisionStands).
 type Awaiting struct {
-	Ask            string
-	GateVersion    int
-	Artifact       string
-	AnsweredAt     *time.Time
-	AnsweredBy     Answer
-	AnsweredDetail string
-	Since          EventMark
+	Ask             string
+	GateVersion     int
+	Artifact        string
+	AnsweredAt      *time.Time
+	AnsweredBy      Answer
+	AnsweredDetail  string
+	AnsweredVersion int `json:",omitempty"`
+	Since           EventMark
 }
 
 // Answer is the act that answered a root's wait, which the task resuming its architect names.
@@ -310,7 +319,7 @@ const (
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
 // a release never leaves it kept with nobody to name it again. A design decision that a later
 // approval superseded is deleted unnamed, by the task that asks it or before the clear of a
-// generation that deletes the approval's gate (workflow.KeptDecisionsTask,
+// generation that deletes the approval's gate (workflow.ForgetSuperseded,
 // workflow.Engine.ForgetSupersededKept): nothing of it is left to tell.
 type ParkedDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
@@ -325,7 +334,7 @@ type ParkedDecision struct {
 	// At and Seq place the decision: for a spec decision, where Dispatch recorded the person's
 	// review (the notice's Review: Dispatch's time of it and its event's sequence, Seq 0 when
 	// Dispatch gave none), so it is judged against the gate's approval mark by Dispatch's own order
-	// (workflow's keptReviewStands); the daemon's clock at keep time only where the notice carried
+	// (workflow.DecisionStands); the daemon's clock at keep time only where the notice carried
 	// no time of the review. For an answer, resolution or reply on an ask, the daemon's clock at
 	// keep time and no sequence: those are never judged against a gate. At is also the row's
 	// identity with Ref (DecisionMark).

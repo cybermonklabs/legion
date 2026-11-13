@@ -150,7 +150,7 @@ type DecisionMark struct {
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
 	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), which a send
-	// asks the gate with (workflow's keptReviewStands); it is no part of the row's identity.
+	// asks the gate with (workflow.DecisionStands); it is no part of the row's identity.
 	Seq int64 `json:"seq,omitempty"`
 }
 

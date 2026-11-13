@@ -478,7 +478,7 @@ func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
 		t.Fatal("the ready queued no catch-up")
 	}
 
-	var state record.CatchUp
+	var state record.CatchUpTree
 	var reason string
 	if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
 		var err error
@@ -487,8 +487,7 @@ func TestTreeCatchUpIsTheQueuedCatchUpsTreeReadWithoutAWrite(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("compose the tree in a read-only transaction: %v", err)
 	}
-	want := *queued.CatchUp
-	want.Launch, want.Decided, want.Kept = 0, "", nil
+	want := queued.CatchUp.CatchUpTree
 	if !reflect.DeepEqual(state, want) || reason != queued.Reason {
 		t.Fatalf("TreeCatchUp = %+v, %q; want the queued catch-up's tree %+v, %q", state, reason, want, queued.Reason)
 	}

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -152,15 +153,15 @@ func TestACatchUpStatesTheHandOverItsRootRecordsWhenItIsDelivered(t *testing.T) 
 	for _, tc := range []struct {
 		name              string
 		before, after     *record.HandedOverRoot
-		queued, delivered record.CatchUp
+		queued, delivered record.CatchUpTree
 	}{
 		{name: "the root is handed over after the queueing",
 			after:  &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1},
-			queued: record.CatchUp{}, delivered: record.CatchUp{HandedOver: true}},
+			queued: record.CatchUpTree{}, delivered: record.CatchUpTree{HandedOver: true}},
 		{name: "the handed-over root's gate is carried after the queueing",
 			before: &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1},
 			after:  &record.HandedOverRoot{Issue: "LEGION-1", Generation: 1, GateCarried: true},
-			queued: record.CatchUp{HandedOver: true}, delivered: record.CatchUp{HandedOver: true, Carried: true}},
+			queued: record.CatchUpTree{HandedOver: true}, delivered: record.CatchUpTree{HandedOver: true, Carried: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := newCatchUpDelivery(t)
@@ -222,10 +223,10 @@ func TestACatchUpWhoseRootAdvancedAGenerationBeforeItsDeliveryIsStillSuperseded(
 
 // The decisions a catch-up's queueing named are the ones its delivery tells and settles. The
 // queueing claimed them for its row (workflow.EnqueueNaming), and the publish forgets exactly what
-// the row names (settleTold), so the delivery composes the tree again and leaves Decided and Kept
-// as the row holds them. A decision kept after the queueing is no part of this telling: the
-// catch-up does not name it, and it stays kept, unclaimed, for the architect's next start or
-// catch-up to name.
+// the row names (settleTold), so the delivery composes the tree again, keeps Kept as the row holds
+// it, and writes Decided again from Kept alone, which names the same while no approval followed
+// any of them. A decision kept after the queueing is no part of this telling: the catch-up does
+// not name it, and it stays kept, unclaimed, for the architect's next start or catch-up to name.
 func TestACatchUpPublishesAndSettlesTheKeptDecisionsItNamedWhenItWasQueued(t *testing.T) {
 	d := newCatchUpDelivery(t)
 	named, later := "dispatch://LEGION-1/ask/ask-named", "dispatch://LEGION-1/ask/ask-later"
@@ -252,5 +253,53 @@ func TestACatchUpPublishesAndSettlesTheKeptDecisionsItNamedWhenItWasQueued(t *te
 	left := keptDecisions(t, d.pool, d.records, "LEGION-1")
 	if len(left) != 1 || left[0].Ref != later || left[0].ClaimedBy != 0 {
 		t.Fatalf("kept after the publish = %s, want %s alone, unclaimed: the publish forgets what its row named and nothing else", keptRefs(left), later)
+	}
+}
+
+// A kept changes request a catch-up was queued naming, which the person's approval of that version
+// followed while the row waited (on its wake pacing, or behind a failed forward), is not named by
+// the catch-up the architect is delivered: Decided is written again at the delivery from the row's
+// Kept, each decision asked of the gates the delivery's own read holds (workflow.DecisionStands),
+// as the tree beside it is. What the row claimed is still the row's to settle, so Kept stays the
+// row's and the publish forgets that row as it would have. The control is the same row delivered
+// with no approval, which names the request.
+func TestACatchUpDeliveredAfterAnApprovalNamesNoChangesRequestTheApprovalFollowed(t *testing.T) {
+	for _, approve := range []bool{true, false} {
+		t.Run(fmt.Sprintf("approved before the delivery: %v", approve), func(t *testing.T) {
+			d := newCatchUpDelivery(t)
+			ref := "dispatch://LEGION-1/spec"
+			requested := time.Date(2026, 11, 13, 9, 0, 0, 0, time.UTC)
+			d.putSpecGate(t, "artifact-1", 3)
+			d.write(t, "keep the person's changes request", func(ctx context.Context, tx pgx.Tx) error {
+				return d.records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: ref,
+					Decision: record.DecisionDesignChangesRequested, Actor: "user:alice", At: requested, Seq: 10})
+			})
+			keptCatchUp(t, d.pool, d.records, "LEGION-1", 1, d.now)
+			if approve {
+				version := 3
+				d.write(t, "approve version 3", func(ctx context.Context, tx pgx.Tx) error {
+					return d.records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+						LatestVersion: 3, ApprovedVersion: &version, ApprovedMark: record.EventMark{Seq: 12, At: requested.Add(time.Hour)}})
+				})
+			}
+			queued, published := d.deliver(t)
+			if queued.CatchUp.Kept == nil || !strings.Contains(queued.CatchUp.Decided, ref) {
+				t.Fatalf("the queued catch-up names %q (kept %+v), want it to name %s, which stood when it was queued", queued.CatchUp.Decided, queued.CatchUp.Kept, ref)
+			}
+			if len(published) != 1 {
+				t.Fatalf("the delivery published %d notices, want the one catch-up", len(published))
+			}
+			delivered := published[0].CatchUp
+			if names := strings.Contains(delivered.Decided, ref); names == approve {
+				t.Fatalf("the delivered catch-up names %q, want the changes request named only while no approval followed it (approved: %v)",
+					delivered.Decided, approve)
+			}
+			if !reflect.DeepEqual(delivered.Kept, queued.CatchUp.Kept) {
+				t.Fatalf("the delivered catch-up keeps %+v, want what its row claimed, %+v, for the settling", delivered.Kept, queued.CatchUp.Kept)
+			}
+			if left := keptDecisions(t, d.pool, d.records, "LEGION-1"); len(left) != 0 {
+				t.Fatalf("kept after the publish = %s, want nothing: the publish forgets what its row claimed", keptRefs(left))
+			}
+		})
 	}
 }

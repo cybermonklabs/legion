@@ -729,10 +729,10 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // release queued carries no such mark, and is sent as the text it holds.
 //
 // Every kept decision and kept approval the task still names is asked again at this send, against
-// the gates as the record holds them now (workflow.KeptDecisionsTask, which asks
-// classify.ReviewSuperseded of each): a person who approved since has answered what the sentence
-// would tell or ask them, so the sentence is dropped, and the row of a decision it superseded is
-// deleted in the same write.
+// the gates as the record holds them now (workflow.DecisionStands): a person who approved since
+// has answered what the sentence would tell or ask them, so the sentence is dropped
+// (workflow.KeptDecisionsTask), and the row of a decision it superseded is deleted in the same
+// write (workflow.ForgetSuperseded).
 func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
 	if len(d.Resume) > 0 {
 		return w.resumeTaskNow(ctx, c, d)
@@ -781,9 +781,11 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
-		if task, stays, err = workflow.KeptDecisionsTask(scoped, tx, w.records, w.gatedSteps, c.Tree, stays); err != nil {
+		gates, err := workflow.ForgetSuperseded(scoped, tx, w.records, w.gatedSteps, c.Tree, stays)
+		if err != nil {
 			return err
 		}
+		task, stays = workflow.KeptDecisionsTask(gates, w.gatedSteps, c.Tree, stays)
 		if len(left) == 0 {
 			return nil
 		}
@@ -811,10 +813,10 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 
 // resumeTaskNow is the resume task delivery d carries the wait of (supervise.Delivery.Resume),
 // written from the record as it stands now: the root's gates and its ask mirror rows, read in one
-// transaction, rendered by the one rule (workflow.ResumeTask), which asks of every review and
-// every approval request it names whether the person's approval followed it
-// (classify.ReviewSuperseded). A read that fails returns its error, as the kept-decisions answer
-// above does: the machine sends nothing then, and the next trigger asks again.
+// transaction, rendered by the one rule (workflow.ResumeTask), which asks of every review it names
+// whether the person's approval followed it (workflow.DecisionStands), and of every approval
+// request whether the gate's approval answered it. A read that fails returns its error, as the
+// kept-decisions answer above does: the machine sends nothing then, and the next trigger asks again.
 func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
 	var waiting record.Awaiting
 	if err := json.Unmarshal(d.Resume, &waiting); err != nil {
