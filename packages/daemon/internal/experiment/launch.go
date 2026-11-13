@@ -140,7 +140,8 @@ func DeclaredVariants(declared []config.Experiment) []runtime.Variant {
 }
 
 // arm is one declared arm as a runtime reads it: the experiment's name and the arm's, as a draw
-// records them, the overlays the arm names and the key the operator wrote them under. It is the
+// records them, the overlays the arm names, the key the operator wrote them under and whether the
+// `memory` block declares the arm. It is the
 // one place a config.Variant becomes a runtime.Variant, so the arms a launch runs in and the arms
 // a runtime is built with carry the same fields.
 func arm(experiment config.Experiment, variant config.Variant) runtime.Variant {
@@ -149,5 +150,6 @@ func arm(experiment config.Experiment, variant config.Variant) runtime.Variant {
 		Name:             variant.Name,
 		ConfigFiles:      variant.ConfigFiles,
 		ConfigFilesField: variant.ConfigFilesField,
+		MemoryBlock:      variant.MemoryBlock,
 	}
 }

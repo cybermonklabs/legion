@@ -748,9 +748,16 @@ const waitingLineNamedCap = 10
 // experimentLines are the lines an operator reads for the experiments the deployment declares
 // (the daemon's own project): one per experiment, in the order the daemon's loader declares
 // them — the `memory` block's experiment first, then the `experiments` key's own in the file's
-// order (api.ProjectSettings.DeclaredExperiments) — counting how many issues hold each arm of
-// it. An experiment no issue holds is `none` after its name, as a deployment that has drawn
-// nothing has always read.
+// order (api.ProjectSettings.DeclaredExperiments) — counting how many issues were drawn each arm
+// of it. An experiment no issue was drawn an arm of is `none` after its name, as a deployment
+// that has drawn nothing has always read.
+//
+// It counts only the rows that record a draw, which are the rows that carry an instant
+// (api.AssignmentView's DrawnAt), and leaves out a row a hand-over settled at no arm — no
+// variant, no mode and no instant — for every experiment alike, as internal/projection's
+// memoryOf leaves that row out of an issue's three memory fields. So the `memory` experiment's
+// line counts the issues the memory line counted before any experiment was declared, the
+// issues whose `memoryGroup` is set.
 //
 // The list is built from the settings and not from `settings.projects.<KEY>.experiments` alone,
 // because the two keys a project declares an experiment with are carried apart there: a
@@ -775,6 +782,9 @@ func experimentLines(settings api.Settings, project string, issues map[string]ap
 	counts := make(map[string]map[armDraw]int, len(declared))
 	for _, issue := range issues {
 		for _, assignment := range issue.Assignments {
+			if assignment.DrawnAt == nil {
+				continue
+			}
 			held, counted := counts[assignment.Experiment]
 			if !counted {
 				held = map[armDraw]int{}
@@ -790,33 +800,25 @@ func experimentLines(settings api.Settings, project string, issues map[string]ap
 	return lines
 }
 
-// armDraw is what one experiment line counts issues by: the arm an issue holds and the mode it
-// was drawn under (api.AssignmentView's Variant and Mode).
+// armDraw is what one experiment line counts issues by: the arm an issue was drawn and the mode
+// it was drawn under (api.AssignmentView's Variant and Mode).
 type armDraw struct{ variant, mode string }
 
-// label is how the line names the arm: its own name, `none` for the empty arm a draw under a
-// mode gave — the arm an experiment at mode off draws — and `no variant` for a row no draw made,
-// which a hand-over settles a unit at when the tree it left held no row for the experiment and
-// which records no mode.
+// label is how the line names the arm: its own name, or `none` for the empty arm, which is the
+// arm an experiment at mode off draws.
 func (d armDraw) label() string {
-	switch {
-	case d.variant != "":
-		return d.variant
-	case d.mode != "":
+	if d.variant == "" {
 		return "none"
-	default:
-		return "no variant"
 	}
+	return d.variant
 }
 
-// experimentLine is one experiment's line: how many issues hold an arm of it at all, and how
-// many of those under each arm and mode, `N <arm> (<mode>)`, in the order of the arm's printed
-// name and then of the mode, so two runs over one state print one line. A row no draw made is
-// `N no variant`, with no mode, which is an answer and no arm, told apart from an issue the
-// experiment never reached, which holds no row and is counted in nothing. Over issues whose
-// `memory` answer a draw made, the `memory` experiment's line is word for word the one `legion
-// state` printed for the memory groups before any experiment was declared; an issue a hand-over
-// settled at no arm, which that line left out, is counted here as `no variant`.
+// experimentLine is one experiment's line: how many issues were drawn an arm of it, and how many
+// of those under each arm and mode, `N <arm> (<mode>)`, in the order of the arm's printed name
+// and then of the mode, so two runs over one state print one line. The `memory` experiment's two
+// arms are `memory` and `none` (config.MemoryVariantNames), the two memory groups, so its line is
+// word for word the one `legion state` printed for the memory groups before any experiment was
+// declared.
 func experimentLine(name string, counts map[armDraw]int) string {
 	held := 0
 	for _, count := range counts {
@@ -830,10 +832,6 @@ func experimentLine(name string, counts map[armDraw]int) string {
 	})
 	named := make([]string, len(draws))
 	for i, draw := range draws {
-		if draw.mode == "" {
-			named[i] = fmt.Sprintf("%d %s", counts[draw], draw.label())
-			continue
-		}
 		named[i] = fmt.Sprintf("%d %s (%s)", counts[draw], draw.label(), draw.mode)
 	}
 	noun := "issues"

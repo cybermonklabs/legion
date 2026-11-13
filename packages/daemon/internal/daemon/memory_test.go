@@ -38,14 +38,15 @@ func memoryBlock(mode config.ExperimentMode) config.Memory {
 
 // memoryVariants are the two arms the `memory` block maps to, as each runtime's options carry
 // them (config.Project.ExperimentsDeclared, experiment.DeclaredVariants): memory with the block's
-// overlays and the key the operator wrote them under, then none with no file at all.
+// overlays and the key the operator wrote them under, then none with no file at all, both marked
+// as the block's own.
 var memoryVariants = []runtime.Variant{
-	{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, ConfigFilesField: memoryField},
-	{Experiment: "memory", Name: "none"},
+	{Experiment: "memory", Name: "memory", ConfigFiles: memoryFiles, ConfigFilesField: memoryField, MemoryBlock: true},
+	{Experiment: "memory", Name: "none", MemoryBlock: true},
 }
 
-// memoryField is the key the block's arm carries wherever a refusal or a drift names its
-// overlays: `projects.<KEY>.memory.config_files`, for the project every test here configures.
+// memoryField is the key the block's arm carries wherever a refusal names its overlays:
+// `projects.<KEY>.memory.config_files`, for the project every test here configures.
 const memoryField = "projects.test.memory.config_files"
 
 // fileless are the same two arms as a project that writes no `memory` block declares them: it
@@ -53,8 +54,8 @@ const memoryField = "projects.test.memory.config_files"
 // reach every runtime's options and name nothing there, since an arm with no overlay adds no
 // PI_CONFIG_FILES value and no mount (runtime.RoleOverlayValues).
 var fileless = []runtime.Variant{
-	{Experiment: "memory", Name: "memory", ConfigFilesField: memoryField},
-	{Experiment: "memory", Name: "none"},
+	{Experiment: "memory", Name: "memory", ConfigFilesField: memoryField, MemoryBlock: true},
+	{Experiment: "memory", Name: "none", MemoryBlock: true},
 }
 
 // A project that names overlays hands the arms that carry them to the tmux runtime whatever its

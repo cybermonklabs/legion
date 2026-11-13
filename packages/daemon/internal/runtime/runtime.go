@@ -356,17 +356,25 @@ type SpawnSpec struct {
 // arms).
 //
 // ConfigFilesField is what a refusal and a pod's drift name the arm's overlays by, so both name
-// the key an operator can find in the file — `projects.<KEY>.memory.config_files` for the arm
-// the `memory` block declares — rather than a path each reader works out for itself. The
+// the key an operator can find in the file rather than a path each reader works out for itself:
+// `projects.<KEY>.memory.config_files` for the arm the `memory` block declares, which a drift
+// names `memory.config_files` instead (MemoryBlock). The
 // declared list sets it on every arm that may carry overlays (config.Project.ExperimentsDeclared):
 // each arm of an `experiments` key, and the `memory` block's own arm whether or not the block
 // names `config_files`. It is read only where the arm names overlays, so the block's control arm,
 // which names none and stands under no key of its own, leaves it empty.
+//
+// MemoryBlock is whether the arm is one the project's `memory` block declares
+// (config.Variant.MemoryBlock), which config.Project.ExperimentsDeclared decides and this carries.
+// It is for a pod's drift report (internal/runtime/sandbox's movedRoleOverlays), which names a
+// moved overlay of the block's own arm `memory.config_files <file>`, the spelling it had before
+// any experiment was declared, and every other arm's by ConfigFilesField.
 type Variant struct {
 	Experiment       string
 	Name             string
 	ConfigFiles      []string
 	ConfigFilesField string
+	MemoryBlock      bool
 }
 
 // VariantOverlays are the Oh My Pi settings overlays of variants as one PI_CONFIG_FILES tail:

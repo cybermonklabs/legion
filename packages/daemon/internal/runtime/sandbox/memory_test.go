@@ -49,15 +49,16 @@ func memoryRuntime(t *testing.T, files []string) *Runtime {
 
 // memoryVariants are the two arms the `memory` block declares
 // (config.Project.ExperimentsDeclared): memory, carrying the block's overlays and the key the
-// operator wrote them under, and none, carrying nothing. A nil list is a project that names no
-// block at all, which declares no experiment.
+// operator wrote them under, and none, carrying nothing, both marked as the block's own
+// (runtime.Variant.MemoryBlock). A nil list is a project that names no block at all, which
+// declares no experiment.
 func memoryVariants(files []string) []runtime.Variant {
 	if files == nil {
 		return nil
 	}
 	return []runtime.Variant{
-		{Experiment: "memory", Name: "memory", ConfigFiles: files, ConfigFilesField: "projects.LEGION.memory.config_files"},
-		{Experiment: "memory", Name: "none"},
+		{Experiment: "memory", Name: "memory", ConfigFiles: files, ConfigFilesField: "projects.LEGION.memory.config_files", MemoryBlock: true},
+		{Experiment: "memory", Name: "none", MemoryBlock: true},
 	}
 }
 
@@ -202,7 +203,7 @@ func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.
 	worker := workerSpec(t)
 	pod := podOf(t, before, worker)
 	got, moved := after.movedRoleOverlays(pod, worker.Role)
-	if want := "projects.LEGION.memory.config_files /etc/b/memory.yml"; !moved || got.where != want {
+	if want := "memory.config_files /etc/b/memory.yml"; !moved || got.where != want {
 		t.Errorf("%s: moved %v %+v, want a move of %s", worker.Role, moved, got, want)
 	}
 	if got, moved := before.movedRoleOverlays(pod, worker.Role); moved {
@@ -212,6 +213,31 @@ func TestAMovedMemoryOverlaysMountDriftsEveryIssuePodOfTheDeployment(t *testing.
 	controller := controllerSpec(t)
 	if got, moved := after.movedRoleOverlays(podOf(t, before, controller), controller.Role); moved {
 		t.Errorf("the controller's pod moved %+v, want no move: it is in no tree and names no memory overlay", got)
+	}
+}
+
+// The `memory` block's own arm keeps the drift's name it had before any experiment was declared,
+// `memory.config_files`, and that name is the block's alone: the same arm declared under
+// `experiments.memory` is no arm of the block (runtime.Variant.MemoryBlock), so its moved overlay
+// is named by the key the operator wrote it under, as every arm of the `experiments` key is.
+func TestAMovedOverlayOfExperimentsMemoryIsNamedByItsOwnKey(t *testing.T) {
+	const field = "projects.LEGION.experiments.memory.variants.memory.config_files"
+	at := func(dir string) func(*Options) {
+		return func(o *Options) {
+			volume, mount := memoryMount(dir)
+			o.Pod.Volumes = append(o.Pod.Volumes, volume)
+			o.Pod.VolumeMounts = append(o.Pod.VolumeMounts, mount)
+			o.ExperimentVariants = []runtime.Variant{
+				{Experiment: "memory", Name: "memory", ConfigFiles: []string{dir + "/memory.yml"}, ConfigFilesField: field},
+				{Experiment: "memory", Name: "none"},
+			}
+		}
+	}
+	before, after := runtimeWithOptions(t, at("/etc/a")), runtimeWithOptions(t, at("/etc/b"))
+	worker := workerSpec(t)
+	got, moved := after.movedRoleOverlays(podOf(t, before, worker), worker.Role)
+	if want := field + " /etc/b/memory.yml"; !moved || got.where != want {
+		t.Errorf("%s: moved %v %+v, want a move of %s", worker.Role, moved, got, want)
 	}
 }
 

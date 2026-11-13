@@ -1231,12 +1231,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   this caller no sentence at all, which is what a daemon older than the sentence serves.
 
   **The experiment lines.** There is one per experiment the project declares, counting the issues
-  that hold each arm of that experiment under each mode it was drawn in:
+  drawn each arm of that experiment under each mode it was drawn in:
   `memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)` above. Each count reads
   `N <variant> (<mode>)`, the arm's own name and the mode in force when that unit was drawn;
   `none` stands for the empty variant a draw under a mode gives, which is what an experiment at
-  mode `off` draws, and `N no variant`, with no mode, counts the units a hand-over settled at no
-  arm because the tree each left held no row for the experiment, which no draw made. The counts
+  mode `off` draws. A unit a hand-over settled at no arm, because the tree it left held no row
+  for the experiment, records no draw and is counted in no line, as its `memoryGroup` is absent
+  for the `memory` experiment; `--json` still shows its row. The counts
   of one line are in the order of the name they print and then of the mode; the lines are in the
   order the daemon declares the experiments, which is the `memory` block's experiment first and
   then the order `projects.<KEY>.experiments` names the rest in. A project that declares

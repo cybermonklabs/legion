@@ -5463,7 +5463,7 @@ each issue's pod (every role of it alike) and the image probe's.
   the mount check at load (a file under no `pod.volume_mounts` mount is refused, naming `projects.<KEY>.memory.config_files`), the image probe's per-role value (they are passed for every workflow role and never for the controller, and a file the probe cannot read refuses the boot), the pod drift, and what a kept pod's role is told.
 
 - **Turning it on:** a pod created before the operator added the memory overlay's volume and mount is handled as it is for an overlay of `role_config_files` ("Rolling it out" above), with two differences.
-  The drift is reported `projects.<KEY>.memory.config_files <file>`, naming the key the operator wrote, and it replaces every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
+  The drift is reported `memory.config_files <file>`, and it replaces every issue pod of the deployment rather than the memory-group trees' pods alone, since any tree may be drawn into the group;
   the controller's pod is never replaced for it, since the controller names these files in no list.
   A role of a memory-group tree started into a pod the launch keeps is told only the memory overlays that pod holds, as it is told only the role's own files that it holds, so it starts, pushes its work and answers the update round that replaces the pod.
 

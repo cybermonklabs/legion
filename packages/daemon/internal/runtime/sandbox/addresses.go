@@ -543,17 +543,27 @@ func (r *Runtime) movedRoleOverlays(pod corev1.PodSpec, role claim.Role) (movedA
 			for _, file := range variant.ConfigFiles {
 				if held, want, moved := r.movedOverlay(seen, pod.Volumes, file); moved {
 					// The key the operator wrote these overlays under, carried on the arm
-					// (runtime.Variant.ConfigFilesField): the `memory` block's own
-					// `projects.<KEY>.memory.config_files` for the arm that block declares, and
-					// the experiment's own `…experiments.<name>.variants.<arm>.config_files` for
-					// a declared one, so a drift names a key an operator can find in the file.
-					return movedAddress{where: variant.ConfigFilesField + " " + file, held: held, handed: want}, true
+					// (runtime.Variant.ConfigFilesField): the experiment's own
+					// `…experiments.<name>.variants.<arm>.config_files` for an arm of the
+					// `experiments` key, so a drift names a key an operator can find in the
+					// file. The `memory` block's own arm (runtime.Variant.MemoryBlock) is named
+					// as it was before any experiment was declared, memoryOverlayField.
+					field := variant.ConfigFilesField
+					if variant.MemoryBlock {
+						field = memoryOverlayField
+					}
+					return movedAddress{where: field + " " + file, held: held, handed: want}, true
 				}
 			}
 		}
 	}
 	return movedAddress{}, false
 }
+
+// memoryOverlayField is the project's `memory.config_files`, as a drift of one of the `memory`
+// block's own overlays names it (movedRoleOverlays): the key an operator reads in the daemon's
+// configuration, which names no project, since a daemon runs one.
+const memoryOverlayField = "memory.config_files"
 
 // heldRoleOverlays are the overlays role_config_files names for role (Options.RoleConfigFiles) and
 // the overlays of every arm the project declares (Options.ExperimentVariants), each in that

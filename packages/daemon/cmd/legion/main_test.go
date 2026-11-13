@@ -1925,7 +1925,7 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 	child := issue("LEGION-209", "admitted", drawn("memory", "memory"), drawn("plan-length", "long"))
 	// A tree of its own, handed over from that one: its memory draw is the old tree's verbatim,
 	// so it counts as one more issue under the same arm, and its hand-over settled it at no arm
-	// of the issue experiment, which is an answer and no arm.
+	// of the issue experiment, a row that records no draw and is counted in nothing.
 	handedOver := issue("LEGION-210", "planning", drawn("memory", "memory"),
 		`{"experiment":"plan-length","variant":"","mode":""}`)
 	// A second tree the same mode drew the other way, and a tree first opened before any
@@ -1939,7 +1939,7 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 			name:     "two experiments, each drawn for, in the settings' order",
 			declared: planLength + "," + memory,
 			issues:   `{` + root + `,` + child + `,` + handedOver + `,` + second + `,` + undrawn + `}`,
-			want: "plan-length: 3 issues — 1 long (random), 1 no variant, 1 short (random)\n" +
+			want: "plan-length: 2 issues — 1 long (random), 1 short (random)\n" +
 				"memory: 4 issues — 3 memory (random), 1 none (random)\n",
 		},
 		{
