@@ -7,12 +7,14 @@ package rescue_test
 //
 // The dimensions:
 //
-//   - The index state of the path in the worktree's index copy, 11 of them: absent; a regular
+//   - The index state of the path in the worktree's index copy, 13 of them: absent; a regular
 //     entry; an intent-to-add entry, a file new in @ that a role's `jj status` snapshotted; an
 //     entry marked assume-unchanged; one marked skip-worktree; a gitlink; an entry forced into
 //     the index with `git add -f` under an ignore rule (the workspace's .gitignore holds
 //     `/forced.*/p`); a gitlink marked assume-unchanged; a gitlink marked skip-worktree; a
-//     symlink, at mode 120000; and an executable file, at mode 100755.
+//     symlink, at mode 120000; an executable file, at mode 100755; a gitlink staged at another
+//     commit than HEAD, a bump `git add` staged after a commit inside the repository; and a
+//     gitlink HEAD holds that `git rm --cached` took out of the index.
 //   - The disk state at the path, 15 of them: absent; the same content as the record; new
 //     content of the same size, written in a later second than the record and its mtime then set
 //     back to the record's, as an archive tool or `touch -r` leaves it; new content of the same
@@ -78,14 +80,22 @@ package rescue_test
 //   - A missing index file under an unborn HEAD: the regular, symlink, executable and gitlink
 //     entries were only staged, and jj holds no record of them, so each is the absent cell of its
 //     disk state, and is built once.
+//   - The staged gitlink bump and the gitlink `git rm --cached` took out are index states only a
+//     born HEAD with an index file can hold: elsewhere each is the plain gitlink's cell, so they
+//     are built in that combination alone, crossed with the gitlink's disk states.
 //
-// That leaves 139 cells under a born HEAD with an index file, 84 with none, 139 under an unborn
-// HEAD with an index file, and 32 with none: 394 cells.
+// That leaves 161 cells under a born HEAD with an index file, 84 with none, 139 under an unborn
+// HEAD with an index file, and 32 with none: 416 cells.
 //
 // What the matrix does not cover, and the rows do: two paths of one cell in different states,
 // such as a record under another record; git's content conversion and its configuration; sparse
 // patterns and jj's size limit; a conflicted or stale working copy; an unreadable directory;
-// names git refuses or that are not valid UTF-8.
+// names git refuses or that are not valid UTF-8. What it does not cover, and no row does either:
+// an unreadable tracked file, which today's read fails on and the route reads clean, the one
+// named exception to failing where that read fails; special files (a fifo, a socket, a device);
+// a parent replaced by a regular file; a .git that is a gitfile rather than a directory;
+// unmerged index stages; and a symlink or executable record crossed with the assume-unchanged or
+// skip-worktree mark, with intent-to-add or with the forced entry.
 //
 // What the matrix does not prove, of the cells it builds:
 //
@@ -111,10 +121,11 @@ package rescue_test
 // ways, and where both reads answer a tree, that is the class of every cell in it, since a path
 // that fails would have failed the workspace. Where either read fails, the workspace's cells are
 // split in two halves, each built in a workspace of its own and classified the same way, until a
-// cell that fails is in a workspace alone. Each cell is classified by measurement, as it would be
-// alone, without a workspace for every cell: measured on 2026-11-13 over the 218 cells of the
-// seven index states and eleven disk states before these, one workspace per cell ran the matrix
-// in 289 s and this in 134 s, since 16 of the 218 cells fail in a read, and they sit side by side
+// cell that fails is in a workspace alone. So each cell that fails in a read alone is classified
+// by measurement without a workspace for every cell, and a failure that needs two cells together
+// is not found, as the bullet above says: measured on 2026-11-13 over the 218 cells of the seven
+// index states and eleven disk states before these, one workspace per cell ran the matrix in 289
+// s and this in 134 s, since 16 of the 218 cells fail in a read, and they sit side by side
 // (cells).
 //
 // A cell that fails in either read is held to the rule a failure is held to, in its own
@@ -165,14 +176,25 @@ const (
 	indexGitlinkSkipWorktree
 	indexSymlink
 	indexExecutable
+	indexGitlinkBumped
+	indexGitlinkRmCached
 	matrixIndexes
 )
 
-var matrixIndexNames = [matrixIndexes]string{"absent", "regular", "intent-to-add", "assume-unchanged", "skip-worktree", "gitlink", "forced", "gitlink-assume-unchanged", "gitlink-skip-worktree", "symlink", "executable"}
+var matrixIndexNames = [matrixIndexes]string{"absent", "regular", "intent-to-add", "assume-unchanged", "skip-worktree", "gitlink", "forced", "gitlink-assume-unchanged", "gitlink-skip-worktree", "symlink", "executable", "gitlink-bumped", "gitlink-rm-cached"}
 
-// gitlink is whether the index state records a gitlink, marked or not.
+// gitlink is whether the index state's record is a gitlink: marked or not, bumped, or the one
+// HEAD holds that `git rm --cached` took out of the index.
 func (i matrixIndex) gitlink() bool {
-	return i == indexGitlink || i == indexGitlinkAssumeUnchanged || i == indexGitlinkSkipWorktree
+	return i == indexGitlink || i == indexGitlinkAssumeUnchanged || i == indexGitlinkSkipWorktree || i == indexGitlinkBumped || i == indexGitlinkRmCached
+}
+
+// headAlone is whether the index state is one only an index file under a born HEAD holds: a
+// gitlink staged at another commit than HEAD's, or one HEAD holds that the index does not. Under
+// an unborn HEAD there is no HEAD to differ from, and with no index file the copy is HEAD's tree,
+// so each is the gitlink cell there.
+func (i matrixIndex) headAlone() bool {
+	return i == indexGitlinkBumped || i == indexGitlinkRmCached
 }
 
 // marked is whether the index state marks its record assume-unchanged or skip-worktree.
@@ -269,6 +291,8 @@ func (w matrixWorkspace) built(c matrixCell) bool {
 		return false
 	case c.index == indexForced && c.disk == diskIgnored:
 		return false
+	case c.index.headAlone() && !(w.born && w.indexFile):
+		return false
 	case w.indexFile:
 		return true
 	case c.index.marked():
@@ -327,16 +351,15 @@ func (d matrixDeclaration) kinds() differentialRow {
 // path named relative to the cell's directory, with that reason. Every other cell must answer
 // the same entries in both trees, or fail in both reads naming its own path.
 var matrixDeclared = map[string]matrixDeclaration{
-	"born HEAD with an index file/regular.new-same-size":       {contentLost: map[string]string{"p": mtimeSetBack}},
-	"born HEAD with no index file/regular.new-same-size":       {contentLost: map[string]string{"p": mtimeSetBack}},
-	"born HEAD with an index file/intent-to-add.new-same-size": {contentLost: map[string]string{"p": mtimeSetBack}},
-	"born HEAD with an index file/executable.new-same-size":    {contentLost: map[string]string{"p": mtimeSetBack}},
-	"born HEAD with no index file/executable.new-same-size":    {contentLost: map[string]string{"p": mtimeSetBack}},
-	"born HEAD with an index file/symlink.new-same-size":       {contentLost: map[string]string{"p": linkMtimeSetBack}},
-	"born HEAD with no index file/symlink.new-same-size":       {contentLost: map[string]string{"p": linkMtimeSetBack}},
-	"born HEAD with no index file/intent-to-add.ignored":       {gained: map[string]string{"p": trackedThenIgnored}},
-	"unborn HEAD with an index file/intent-to-add.ignored":     {gained: map[string]string{"p": trackedThenIgnored}},
-	"unborn HEAD with no index file/intent-to-add.ignored":     {gained: map[string]string{"p": trackedThenIgnored}},
+	"born HEAD with an index file/regular.new-same-size":    {contentLost: map[string]string{"p": mtimeSetBack}},
+	"born HEAD with no index file/regular.new-same-size":    {contentLost: map[string]string{"p": mtimeSetBack}},
+	"born HEAD with an index file/executable.new-same-size": {contentLost: map[string]string{"p": mtimeSetBack}},
+	"born HEAD with no index file/executable.new-same-size": {contentLost: map[string]string{"p": mtimeSetBack}},
+	"born HEAD with an index file/symlink.new-same-size":    {contentLost: map[string]string{"p": linkMtimeSetBack}},
+	"born HEAD with no index file/symlink.new-same-size":    {contentLost: map[string]string{"p": linkMtimeSetBack}},
+	"born HEAD with no index file/intent-to-add.ignored":    {gained: map[string]string{"p": trackedThenIgnored}},
+	"unborn HEAD with an index file/intent-to-add.ignored":  {gained: map[string]string{"p": trackedThenIgnored}},
+	"unborn HEAD with no index file/intent-to-add.ignored":  {gained: map[string]string{"p": trackedThenIgnored}},
 }
 
 // declared is what matrixDeclared declares of the cell's kinds in w, its paths under the cell's
@@ -374,10 +397,12 @@ func (c matrixCell) declared(w matrixWorkspace) differentialRow {
 // with plain git, and then the regular, assume-unchanged, skip-worktree, symlink and executable
 // records with jj, so jj has imported every commit before the files change. Then the
 // intent-to-add files are written and snapshotted by `jj status`, the last jj command. Then git
-// alone writes the index: the staged entries under an unborn HEAD, the forced entries, and the
-// marks. Then the rule `/*.ignored/p` joins .gitignore, so every record stands before it covers
-// them. Each cell's index entry is checked (requireCellIndex) before its disk state is made
-// (becomes), and last, where w has no index file, the index file is removed.
+// alone writes the index: the staged entries under an unborn HEAD, the forced entries, the bumped
+// gitlinks, each staged with `git add` at a commit made inside its repository after HEAD's, the
+// gitlinks `git rm --cached` takes out, and the marks. Then the rule `/*.ignored/p` joins
+// .gitignore, so every record stands before it covers them. Each cell's index entry is checked
+// (requireCellIndex) before its disk state is made (becomes), and last, where w has no index
+// file, the index file is removed.
 //
 // Nothing a read keeps may hang on how fast the build ran, and git's stat rule would make it so
 // twice; measured on this build, forced.new-same-size under a born HEAD with an index file was
@@ -432,7 +457,7 @@ func buildMatrix(t *testing.T, d *rescuetest.Disk, w matrixWorkspace, name, targ
 		}
 		return paths(cells)
 	}
-	links := paths(of(indexGitlink, indexGitlinkAssumeUnchanged, indexGitlinkSkipWorktree))
+	links := paths(of(indexGitlink, indexGitlinkAssumeUnchanged, indexGitlinkSkipWorktree, indexGitlinkBumped, indexGitlinkRmCached))
 	committed := of(indexRegular, indexAssumeUnchanged, indexSkipWorktree, indexSymlink, indexExecutable)
 	ws.Write(ws.Workspace, ".gitignore", "/forced.*/p\n")
 	if w.born {
@@ -461,6 +486,18 @@ func buildMatrix(t *testing.T, d *rescuetest.Disk, w matrixWorkspace, name, targ
 	}
 	if forced := of(indexForced); len(forced) > 0 {
 		ws.Git(append([]string{"add", "-f", "--"}, write(forced)...)...)
+	}
+	if bumped := of(indexGitlinkBumped); len(bumped) > 0 {
+		for _, c := range bumped {
+			at := filepath.Join(ws.Workspace, c.path())
+			ws.Write(at, "bump.txt", "the commit a bump stages\n")
+			ws.Run(at, "git", "add", "bump.txt")
+			ws.Run(at, "git", "commit", "--quiet", "-m", "the commit a bump stages")
+		}
+		ws.Git(append([]string{"add", "--"}, paths(bumped)...)...)
+	}
+	if uncached := paths(of(indexGitlinkRmCached)); len(uncached) > 0 {
+		ws.Git(append([]string{"rm", "--quiet", "--cached", "--"}, uncached...)...)
 	}
 	for flag, states := range map[string][]matrixIndex{
 		"--assume-unchanged": {indexAssumeUnchanged, indexGitlinkAssumeUnchanged},
@@ -497,14 +534,30 @@ func setTimes(t *testing.T, at string, when time.Time) {
 }
 
 // requireCellIndex fails the test unless the workspace's index holds at the cell's path the entry
-// its index state names: no entry where it is absent; a gitlink, which `ls-files -v` tags h where
-// it is marked assume-unchanged and S where it is marked skip-worktree; a file entry it tags h or
-// S the same way; a symlink at 120000; an executable file at 100755; the empty blob of
-// intent-to-add; and otherwise a file's blob at 100644, for a regular entry and a forced one.
+// its index state names: no entry where it is absent, and no entry where HEAD holds a gitlink
+// there for one `git rm --cached` took out; a gitlink, which `ls-files -v` tags h where it is
+// marked assume-unchanged and S where it is marked skip-worktree, and which is at another commit
+// than the one HEAD holds there for a bumped one; a file entry it tags h or S the same way; a
+// symlink at 120000; an executable file at 100755; the empty blob of intent-to-add; and
+// otherwise a file's blob at 100644, for a regular entry and a forced one.
 func requireCellIndex(t *testing.T, ws *rescuetest.Disk, c matrixCell) {
 	t.Helper()
+	// headLink is the commit of the gitlink HEAD holds at the cell's path, and "" where HEAD is
+	// unborn or holds none there.
+	headLink := ""
+	if out, code, _ := gitExit(t, ws, ws.Workspace, nil, "", "ls-tree", "-z", "HEAD", "--", c.path()); code == 0 {
+		for _, line := range nulSplit(out) {
+			meta, _, _ := strings.Cut(line, "\t")
+			if fields := strings.Fields(meta); len(fields) == 3 && fields[0] == gitlinkMode {
+				headLink = fields[2]
+			}
+		}
+	}
 	records := nulSplit(gitRead(t, ws, ws.Workspace, nil, "ls-files", "-s", "-v", "-z", "--", c.path()))
 	held := "absent"
+	if headLink != "" {
+		held = "gitlink-rm-cached"
+	}
 	switch {
 	case len(records) > 1:
 		held = fmt.Sprintf("%q", records)
@@ -517,6 +570,8 @@ func requireCellIndex(t *testing.T, ws *rescuetest.Disk, c matrixCell) {
 			held = "gitlink-assume-unchanged"
 		case fields[1] == gitlinkMode && fields[0] == "S":
 			held = "gitlink-skip-worktree"
+		case fields[1] == gitlinkMode && fields[0] == "H" && headLink != "" && headLink != fields[2]:
+			held = "gitlink-bumped"
 		case fields[1] == gitlinkMode && fields[0] == "H":
 			held = "gitlink"
 		case fields[0] == "h" && fields[1] == "100644":
@@ -715,8 +770,10 @@ func listing(entries map[string]entry) string {
 	return strings.Join(paths, ", ")
 }
 
-// The outcomes of a cell that fails in a read alone (failedAsRuled).
+// The outcomes of a cell: equal where both trees hold the same entries under it, and those of a
+// cell that fails in a read alone (failedAsRuled).
 const (
+	equal              = "equal"
 	bothFail           = "both fail"
 	routeFailsDeclared = "route fails alone, declared"
 	undecided          = "undecided"
@@ -765,7 +822,7 @@ func declaredKinds(row differentialRow) string {
 		}
 	}
 	if len(kinds) == 0 {
-		return "equal"
+		return equal
 	}
 	return "declared " + strings.Join(kinds, " and ")
 }
@@ -802,7 +859,7 @@ func (m *matrixRun) classify(t *testing.T, cells []matrixCell) {
 		t.Run(c.dir(), func(t *testing.T) {
 			outcome = failedAsRuled(t, m.w, c, ws, r)
 			declaration := matrixDeclared[c.key(m.w)]
-			if declaredKinds(declaration.kinds()) != "equal" {
+			if declaredKinds(declaration.kinds()) != equal {
 				t.Errorf("matrixDeclared declares kinds of the cell %s, %s, which fails in a read alone and has no two trees to declare a difference of", m.w, c.dir())
 				outcome = undecided
 			}
@@ -891,7 +948,7 @@ func TestTheJJRouteKeepsWhatTheWholeWorktreeGitReadKeepsInEveryCellOfTheMatrix(t
 	slices.Sort(kinds)
 	for _, outcome := range kinds {
 		t.Logf("%s: %d cells", outcome, len(outcomes[outcome]))
-		if outcome != "equal" {
+		if outcome != equal {
 			for _, cell := range outcomes[outcome] {
 				t.Logf("  %s: %s", outcome, cell)
 			}

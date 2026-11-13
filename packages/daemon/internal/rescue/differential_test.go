@@ -27,18 +27,23 @@ package rescue_test
 //   - gained: a file new in @ that `git reset` took out of the index and an ignore rule then
 //     covers. jj keeps tracking a file it snapshotted, whatever an ignore rule says; the git read,
 //     over an index that no longer holds the file, adds no file an ignore rule covers.
-//   - contentLost: a file jj snapshotted, rewritten at its size with its mtime set back to the
-//     one jj recorded. jj's stat rule passes over it, as the role's own jj commit would, so jj's
-//     tree keeps the blob jj read before; the git read carries the new one only because the index
-//     jj writes has no stat data and git hashes every file. A symlink pointed at a name as long
-//     as its old one, its mtime set back the same way, is the same case (matrix_test.go).
-//   - reformed: a file git converts on its way into the index, which jj's tree records as the
-//     worktree holds it: CRLF lines under an eol rule of .gitattributes or under core.autocrlf,
-//     a tracked file under a clean filter, and a tracked file whose executable bit was set under
-//     core.fileMode=false. The git read stores git's form of the file (LF lines, the filter's
-//     output, the mode the index records) and the route the worktree's own bytes and mode. A
-//     file the carry adds is in git's form already, since `update-index --add` runs the same
-//     conversion: a new file under the clean filter is in both trees at the same blob.
+//   - contentLost: a file jj's tree holds at the copy of the index's own record, which is a file
+//     HEAD holds that no edit jj snapshotted has changed, rewritten at its size with its mtime set
+//     back to the one jj recorded. jj's stat rule passes over it, as the role's own jj commit
+//     would, so jj's tree keeps the blob jj read before; the git read carries the new one only
+//     because the index jj writes has no stat data and git hashes every file. A symlink pointed
+//     at a name as long as its old one, its mtime set back the same way, is the same case
+//     (matrix_test.go). A file jj's tree holds at another entry than the copy's, an edit or a new
+//     file jj snapshotted, is no exception: the carry updates it from the worktree
+//     (rescue.seeds).
+//   - reformed: a file jj's tree holds at the copy's own record that git converts when it
+//     hashes it again, such as CRLF lines committed before an eol rule of .gitattributes was
+//     written. The git read stores git's form of the file (LF lines) and the route the bytes HEAD
+//     holds. A file the carry adds or updates is in git's form already, since `update-index
+//     --add` and `git add -f` run the same conversion: a tracked file rewritten with CRLF lines
+//     under an eol rule or core.autocrlf, one rewritten under a clean filter, a new file under
+//     that filter and a tracked file whose executable bit was set under core.fileMode=false are
+//     each in both trees at the same entry.
 //
 // Those rows declare each path by name, with its reason, under the word for what the two trees
 // hold there, and each declaration is checked against both trees (heldAsRuled):
@@ -333,11 +338,10 @@ var conflictTerm = regexp.MustCompile(`^\.jjconflict-(?:base|side)-[0-9]+/(.+)$`
 // 120000, which is the new content; and by the jj route's tree at other content, an entry that
 // is no regular file or a blob git's own conversion at that path does not store as the git
 // read's (asGitStores): the route lost the new content the worktree holds, whatever HEAD holds
-// there. Either side that is not so fails, naming both trees' entries, and the eol, autocrlf,
-// clean-filter and fileMode rows each fail so declared: the first three at the route's side,
-// whose bytes git stores as the git read's blob, and the last at the git read's, whose mode is
-// the index's. A path declared reformed must be a regular file in both trees, and the jj route's
-// entry must be the worktree's own file at that path, its
+// there. Either side that is not so fails, naming both trees' entries, and the row of CRLF lines
+// committed before an eol rule fails so declared, at the route's side, whose bytes git stores as
+// the git read's blob. A path declared reformed must be a regular file in both trees, and the jj
+// route's entry must be the worktree's own file at that path, its
 // bytes unconverted and its mode by its execute bits (worktreeHolds); the git read's entry must
 // then differ from it in form alone: the same blob at the other mode, or the same mode and the
 // blob git's own conversion of the route's bytes makes at that path (asGitStores). Anything else
@@ -1415,6 +1419,22 @@ var differentialRows = []differentialRow{
 		holds: []string{"f.txt"},
 	},
 	{
+		// The deep review's shape of round 13: e.txt is committed, edited and snapshotted by a
+		// role's `jj status`, which writes the colocated index with HEAD's blob for it, and then
+		// rewritten at the same size with its mtime set back to the one jj recorded. jj's tree
+		// keeps the edit jj read, which is not the copy's record, so the carry updates e.txt from
+		// the worktree (rescue.seeds).
+		name: "an edited file jj snapshotted, rewritten at the same size with its mtime set back",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "e.txt", "AAAA")
+			pushedByTheRole(t, d, "the file edited and then rewritten at the same size")
+			d.Write(d.Workspace, "e.txt", "BBBB")
+			d.JJ("status")
+			rewrittenAtTheSameSize(t, d, "e.txt", "CCCC", true)
+		},
+		holds: []string{"e.txt"},
+	},
+	{
 		name: "a file new in @ under a plain directory",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, "p/new.txt", "a file a role's jj snapshotted under a plain directory\n")
@@ -1483,6 +1503,57 @@ var differentialRows = []differentialRow{
 			d.Git("add", "sub")
 		},
 		holds: []string{"sub"},
+	},
+	{
+		// The bump a role makes in a pod, where jj checks the submodule out as an empty
+		// directory: `update-index --cacheinfo` stages another commit at sub. git resolves no
+		// HEAD in sub, so the git read keeps the staged gitlink, where jj's tree and HEAD hold
+		// the committed one.
+		name: "a committed submodule bumped with update-index --cacheinfo over its empty directory",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			at := committedSubmodule(d, "sub")
+			d.Run(at, "git", "add", "loose.txt")
+			d.Run(at, "git", "commit", "--quiet", "-m", "the commit the bump stages")
+			bump := d.Run(at, "git", "rev-parse", "HEAD")
+			removeAll(t, at)
+			if err := os.Mkdir(at, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			d.Git("update-index", "--cacheinfo", gitlinkMode+","+bump+",sub")
+		},
+		holds: []string{"sub"},
+	},
+	{
+		// The same bump staged with `git add sub` over the submodule's moved HEAD, whose .git is
+		// removed after: the git read keeps the staged gitlink, and none of the files left in sub.
+		name: "a committed submodule bumped with git add, whose directory has lost its .git",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			at := committedSubmodule(d, "sub")
+			d.Run(at, "git", "add", "loose.txt")
+			d.Run(at, "git", "commit", "--quiet", "-m", "the commit the bump stages")
+			d.Git("add", "sub")
+			removeAll(t, filepath.Join(at, ".git"))
+		},
+		holds:  []string{"sub"},
+		absent: []string{"sub/inner.txt", "sub/loose.txt"},
+	},
+	{
+		// A committed submodule taken out of the index and replaced there by a file under its
+		// path: the git read records sub/new.txt and no gitlink, where jj's tree holds the
+		// gitlink HEAD holds.
+		name: "a committed submodule emptied, taken out of the index, and a file added under its path",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			at := committedSubmodule(d, "sub")
+			removeAll(t, at)
+			if err := os.Mkdir(at, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			d.Git("rm", "--quiet", "--cached", "sub")
+			d.Write(d.Workspace, "sub/new.txt", "a file added where the submodule was\n")
+			d.Git("add", "--", "sub/new.txt")
+		},
+		holds:  []string{"sub/new.txt"},
+		absent: []string{"sub"},
 	},
 	{
 		// Only the index copy holds the gitlink, which `git add sub` staged over an untracked
@@ -1693,8 +1764,9 @@ var differentialRows = []differentialRow{
 	},
 	{
 		// Measured on this build: the git read keeps y.txt at 100644 blob 975fbec8 ("y\n", which
-		// is HEAD's), and jj's tree and the route's both hold it at 100644 blob 5758d80d
-		// ("y\r\n"): jj records the file's own bytes, and the carry adds no file jj's tree holds.
+		// is HEAD's), and so does the route, where jj's tree holds it at 100644 blob 5758d80d
+		// ("y\r\n"): the copy holds HEAD's blob, which is not jj's entry, so the carry updates
+		// y.txt with `git add -f`, which converts it as the git read does (rescue.seeds).
 		name: "a tracked file rewritten with CRLF lines under a .gitattributes eol=lf rule",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, ".gitattributes", "*.txt text eol=lf\n")
@@ -1702,15 +1774,27 @@ var differentialRows = []differentialRow{
 			pushedByTheRole(t, d, "the eol rule and the file it covers")
 			d.Write(d.Workspace, "y.txt", "y\r\n")
 		},
+		holds: []string{"y.txt", ".gitattributes"},
+	},
+	{
+		// The same file committed with CRLF lines before the eol rule is written: the copy holds
+		// the CRLF blob HEAD holds, which is jj's entry too, so the carry does not read y.txt,
+		// where the git read hashes it again and converts it.
+		name: "a file committed with CRLF lines before a .gitattributes eol=lf rule",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "y.txt", "y\r\n")
+			pushedByTheRole(t, d, "the file with CRLF lines")
+			d.Write(d.Workspace, ".gitattributes", "*.txt text eol=lf\n")
+		},
 		reformed: map[string]string{
-			"y.txt": "the eol rule has git store the CRLF lines as LF, and the route keeps the CRLF bytes the worktree holds: the same lines in another form",
+			"y.txt": "the eol rule has git store the CRLF lines as LF when it hashes the file again, and the route keeps the CRLF bytes HEAD and the copy hold, which jj's tree holds too: the same lines in another form",
 		},
 		holds: []string{"y.txt", ".gitattributes"},
 	},
 	{
 		// Measured on this build: the git read keeps c.txt at 100644 blob f2ad6c76 ("c\n", which
-		// is HEAD's), and jj's tree and the route's both hold it at 100644 blob 764d69f6
-		// ("c\r\n").
+		// is HEAD's), and so does the route, where jj's tree holds it at 100644 blob 764d69f6
+		// ("c\r\n"), as for the eol rule.
 		name: "a tracked file rewritten with CRLF lines under core.autocrlf=true",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, "c.txt", "c\n")
@@ -1718,19 +1802,16 @@ var differentialRows = []differentialRow{
 			d.Git("config", "core.autocrlf", "true")
 			d.Write(d.Workspace, "c.txt", "c\r\n")
 		},
-		reformed: map[string]string{
-			"c.txt": "core.autocrlf has git store the CRLF lines as LF, and the route keeps the CRLF bytes the worktree holds: the same lines in another form",
-		},
 		holds: []string{"c.txt"},
 	},
 	{
 		// Measured on this build: the git read keeps a.fx at 100644 blob 03fbba43 ("A
-		// REWRITTEN\n", the filter's output), and jj's tree and the route's both hold it at 100644
-		// blob d3055428 ("a rewritten\n"); HEAD holds 37beafe0 ("a committed\n"). b.fx is new and
-		// untracked: jj's tree holds it at 100644 blob b32a5fba ("b new and untracked\n", its own
-		// bytes), and the carry's `update-index --add`, which runs the clean filter, records it at
-		// 100644 blob 7fe8dabd ("B NEW AND UNTRACKED\n"), the git read's entry, so both trees hold
-		// b.fx at the same entry.
+		// REWRITTEN\n", the filter's output), and so does the route, where jj's tree holds it at
+		// 100644 blob d3055428 ("a rewritten\n"); HEAD holds 37beafe0 ("a committed\n"). b.fx is
+		// new and untracked: jj's tree holds it at 100644 blob b32a5fba ("b new and untracked\n",
+		// its own bytes), and the carry's `update-index --add`, which runs the clean filter,
+		// records it at 100644 blob 7fe8dabd ("B NEW AND UNTRACKED\n"), the git read's entry, so
+		// both trees hold b.fx at the same entry.
 		name: "a tracked file rewritten and a new untracked file under a clean filter",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, ".gitattributes", "*.fx filter=up\n")
@@ -1741,14 +1822,12 @@ var differentialRows = []differentialRow{
 			d.Write(d.Workspace, "a.fx", "a rewritten\n")
 			d.Write(d.Workspace, "b.fx", "b new and untracked\n")
 		},
-		reformed: map[string]string{
-			"a.fx": "git stores the clean filter's output for the file, and the route keeps the bytes the worktree holds, from which that filter makes git's: the same file in another form",
-		},
 		holds: []string{"a.fx", "b.fx", ".gitattributes"},
 	},
 	{
 		// Measured on this build: the git read keeps x.sh at 100644 blob 67b376aa, the mode the
-		// index records, and jj's tree and the route's both hold it at 100755 blob 67b376aa.
+		// index records, and so does the route, where jj's tree holds it at 100755 blob
+		// 67b376aa: the carry seeds the copy's record and `git add -f` keeps its mode.
 		name: "a tracked file whose executable bit was set under core.fileMode=false",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, "x.sh", "echo x\n")
@@ -1757,9 +1836,6 @@ var differentialRows = []differentialRow{
 			if err := os.Chmod(filepath.Join(d.Workspace, "x.sh"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-		},
-		reformed: map[string]string{
-			"x.sh": "core.fileMode=false has git keep the mode its index records, and the route keeps the executable bit the worktree's file has: the same blob at the other mode",
 		},
 		holds: []string{"x.sh"},
 	},
@@ -1771,11 +1847,12 @@ var differentialRows = []differentialRow{
 			"jd/a.txt", "jd/b.txt", "m/a.txt", "m/loose.txt", "x/k.txt",
 			"ga/loose.txt", "ga/new.txt", "jb/b.txt", "rw.txt", "pd/new.txt", "late.log",
 			"au.txt", "sw.txt", "skip.txt", "sf", "ss", "sl", "b", "eg", "nested",
-			"sm", "sb", "p", "na", "su", ".gitmodules", "ax/k.txt", "sx/k.txt", "ae", "si",
+			"sm", "sb", "sc", "sd", "sr/new.txt", "p", "na", "su", ".gitmodules", "ax/k.txt", "sx/k.txt", "ae", "si",
 		},
 		absent: []string{
 			"x", "x/i.log", "gone.txt", "eg/inner.txt", "eg/loose.txt", "ga/old.txt", "jb/a.txt", "sg", "sl/p.txt",
 			"p/sub", "na/inner.txt", "na/loose.txt", "su/u.txt", "ax", "sx", "si/i.log",
+			"sd/inner.txt", "sd/loose.txt", "sr",
 		},
 	},
 }
@@ -1784,17 +1861,22 @@ var differentialRows = []differentialRow{
 // tree, whose git HEAD names a commit, whose worktree has an index file and that declare no path
 // the two trees may differ at. The rows that declare one are left out, each standing alone so
 // that its exception covers its own shape and no other: the file git reset took out of the
-// index, which is gained, the mtime set back, which is contentLost, and the four whose git
-// converts a file, which are reformed and whose attributes and configuration would convert the
-// files of every other shape; so are the unborn HEAD's row, whose HEAD cannot be both, and the
-// row with no index file, which could not hold the index entries the other shapes stand on. The
-// jj commands come first, the snapshot that puts jd/a.txt, m/a.txt, jb/a.txt, pd/new.txt and
-// late.log in the colocated index among them, then the plain git commits that move the git HEAD
-// behind jj's back, the submodules sf, ss, sg, sm, sb and p/sub among them, then the files and
-// the directories that change, and last what a role writes into the index: the `git add -f`, the
-// flags, the staged bump of sb and the gitlinks na and su only the index holds. Any jj command of
-// the workspace after them would rewrite that index. The rewrite of rw.txt at its size leaves its
-// mtime to move, so this row declares no path for it.
+// index, which is gained, the mtime set back over HEAD's content, which is contentLost, and the
+// CRLF file committed before the eol rule, which is reformed; so are the four whose git converts
+// a file, whose attributes and configuration would convert the files of every other shape, the
+// unborn HEAD's row, whose HEAD cannot be both, and the row with no index file, which could not
+// hold the index entries the other shapes stand on. So is the mtime set back over an edit jj
+// snapshotted: measured on this build on 2026-11-13, such a file here, with the carry of the
+// copy's records jj's tree holds at another entry taken out of rescue.seeds, read equal in both
+// trees, which the row standing alone does not, so here it would guard nothing. The jj commands
+// come first, the snapshot that puts jd/a.txt, m/a.txt, jb/a.txt, pd/new.txt and late.log in the
+// colocated index among them, then the plain git commits that move the git HEAD behind jj's back,
+// the submodules sf, ss, sg, sm, sb, sc, sd, sr and p/sub among them, then the files and the
+// directories that change, and last what a role writes into the index: the `git add -f`, the
+// flags, the staged bumps of sb, sc and sd, sr taken out of the index with sr/new.txt added under
+// it, and the gitlinks na and su only the index holds. Any jj command of the workspace after them
+// would rewrite that index. The rewrite of rw.txt at its size leaves its mtime to move, so this
+// row declares no path for it.
 func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	limitTo(d, oneMiB)
 	d.Write(d.Workspace, "aa", "the tracked file the refused name is magic for\n")
@@ -1825,10 +1907,20 @@ func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	}
 	moved := committedSubmodule(d, "sm")
 	bumped := committedSubmodule(d, "sb")
+	cached := committedSubmodule(d, "sc")
+	unlinked := committedSubmodule(d, "sd")
+	unsubmoduled := committedSubmodule(d, "sr")
 	beyond := committedSubmodule(d, "p/sub")
-	for _, at := range []string{moved, bumped} {
+	for _, at := range []string{moved, bumped, cached, unlinked} {
 		d.Run(at, "git", "add", "loose.txt")
 		d.Run(at, "git", "commit", "--quiet", "-m", "a commit made inside the submodule")
+	}
+	bump := d.Run(cached, "git", "rev-parse", "HEAD")
+	for _, at := range []string{cached, unsubmoduled} {
+		removeAll(t, at)
+		if err := os.Mkdir(at, 0o755); err != nil {
+			t.Fatal(err)
+		}
 	}
 	targetP := filepath.Join(filepath.Dir(d.Remote), "target-p")
 	if err := os.MkdirAll(targetP, 0o755); err != nil {
@@ -1908,6 +2000,12 @@ func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	d.Write(d.Workspace, "sw.txt", "edited after it was marked skip-worktree\n")
 	deleted(t, d, "skip.txt")
 	d.Git("add", "sb")
+	d.Git("update-index", "--cacheinfo", gitlinkMode+","+bump+",sc")
+	d.Git("add", "sd")
+	removeAll(t, filepath.Join(unlinked, ".git"))
+	d.Git("rm", "--quiet", "--cached", "sr")
+	d.Write(d.Workspace, "sr/new.txt", "a file added where the submodule was\n")
+	d.Git("add", "--", "sr/new.txt")
 	stripped := embeddedRepository(d, "na")
 	d.Git("add", "na")
 	removeAll(t, filepath.Join(stripped, ".git"))
