@@ -81,6 +81,42 @@ import { expectNoneOf } from "./none-of";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
+// Every wait of this file for something the page draws is bounded by one of the three figures
+// below, so a page that never draws it fails the row by name inside the leg it runs in.
+//
+// The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under a step
+// of 540 s with one retry (.github/workflows/dispatch-browser.yaml). In run 43421318396 the
+// `chromium` rows were in `shard (3)`, whose step took 329 s and leaves 211 s, and the `iphone`
+// rows in `shard (5)`, projected at 372 s since that leg's moves, which leaves 168 s; the longest
+// leg of that run took 433 s, which leaves 107 s. A row that hangs runs twice, so it adds twice
+// its failing time, less what it costs when it passes, to the worker it runs on.
+//
+// What the waits cost, timed on this pod, one worker on two CPUs (dispatch://INFRA-341), the
+// slower of `chromium` and `iphone`. Bounded by `aDrawWithinMs`: the drawn card 6.72 s, the
+// draw's first block 0.76 s and 1.69 s, Bob's editor holding the title 5.81 s, the diagrams
+// settled 2.22 s, the reconnected dot 1.30 s and the edit at the server 0.86 s. Bounded by
+// `aBuildWithinMs`: the linked block in the viewport 16.25 s, the editor open over the reader's
+// typing 19.91 s, the larger document's card 11.50 s and its editor taking edits 14.26 s. Bounded
+// by `herBuildWithinMs`: her editor open while Bob writes 69.23 s.
+//
+// So 20 s is three times the slowest of the first kind and 45 s more than twice the slowest of
+// the second; each such row fails within about 60 s and adds at most 90.4 s to its worker,
+// which fits every leg above. 90 s for the third is 1.3 times its reading, and is the room its
+// row has: that row costs 102 s passing, 32.8 s of it before this wait, so a failing attempt is
+// 122.8 s and the row and its retry add 143.6 s to the worker - inside the 168 s and 211 s of
+// the legs it ran in, and over the 107 s of the longest leg, where no bound above its own
+// reading would fit.
+
+/** How long a row waits for something the page draws in its first seconds. */
+const aDrawWithinMs = 20_000;
+
+/** How long a row waits for a build of the larger document, or for the reader's own typing to
+ *  have crossed a build, to end. */
+const aBuildWithinMs = 45_000;
+
+/** How long the two-people row waits for her editor to open while his page writes into it. */
+const herBuildWithinMs = 90_000;
+
 test(`a link to the decision block at the end of ${documentNames.large} lands on that block @phone`, async ({
   browser,
 }) => {
@@ -110,9 +146,8 @@ test(`a link to the decision block at the end of ${documentNames.large} lands on
     // box before it has painted, so the first focus lands on an estimate; the block has to be in
     // the viewport once the page has stopped moving, not only before it.
     //
-    // The wait is the larger document's build, which is minutes rather than seconds on a busy
-    // machine: 600 s is the wait a build that never ends fails by, not a budget this row spends.
-    await expect(linked).toBeInViewport({ timeout: 600_000 });
+    // The wait is the larger document's build (`aBuildWithinMs`).
+    await expect(linked).toBeInViewport({ timeout: aBuildWithinMs });
     await settledScrollTop(page);
     await expect(linked).toBeInViewport();
   } finally {
@@ -152,7 +187,7 @@ test("a reader answers a decision block the server drew, with the editor's socke
 
     const drawn = page.locator('[aria-label="Document text"]');
     const card = drawn.getByTestId(`ask-${indexed?.id}`);
-    await expect(card).toBeVisible({ timeout: 120_000 });
+    await expect(card).toBeVisible({ timeout: aDrawWithinMs });
     await expect(documentEditor(page)).toHaveCount(0);
     await expect(editorBeingBuilt(page)).toHaveCount(0);
 
@@ -329,7 +364,7 @@ test(`typing in ${documentNames.small}'s first block while it is built reaches t
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeAttached(
-      { timeout: 240_000 }
+      { timeout: aDrawWithinMs }
     );
 
     // Throttled here and not before the load: the build this row reads begins with the release
@@ -337,7 +372,7 @@ test(`typing in ${documentNames.small}'s first block while it is built reaches t
     await throttleTheCpu(page);
 
     await transport.release();
-    await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
+    await expect(documentEditor(page)).toBeVisible({ timeout: aBuildWithinMs });
     const whole = await blocksBuilt(page);
     const made = await editsMade(page, typing);
     expect(
@@ -457,7 +492,7 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     await Promise.all([
       (async () => {
         await bobPage.goto(path);
-        await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
+        await expect(documentEditor(bobPage)).toContainText(title, { timeout: aDrawWithinMs });
         await expect(connectedDot(bobPage)).toHaveText("connected");
         await placeCaret(bobPage, "after", title);
       })(),
@@ -465,7 +500,7 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
         await page.goto(path);
         await expect(
           page.locator('[aria-label="Document text"] [data-block-id]').first()
-        ).toBeAttached({ timeout: 240_000 });
+        ).toBeAttached({ timeout: aDrawWithinMs });
       })(),
     ]);
 
@@ -526,7 +561,7 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
     await bobPage.keyboard.press("Backspace");
     heWrote();
 
-    await expect(documentEditor(page)).toBeVisible({ timeout: 900_000 });
+    await expect(documentEditor(page)).toBeVisible({ timeout: herBuildWithinMs });
     const whole = await blocksBuilt(page);
     // Alice's four edits, each made in a frame of her own build, with part of the document in
     // the editor and the rest still to come.
@@ -623,10 +658,9 @@ test(`a reader answers a decision block in ${documentNames.large} @phone`, async
     await page.goto(`${path}#b-${block}`);
     const decision = documentEditor(page).locator(`[data-dispatch-ask-block="${block}"]`);
     // The block hosts the Inbox's own ask card once the server has indexed it, which is once
-    // the editor this document's build fills has reached that block: minutes over 406,000
-    // characters, so the wait below is what a build that never ends fails by.
+    // the editor this document's build fills has reached that block (`aBuildWithinMs`).
     const card = decision.locator("article[data-testid^=ask-]");
-    await expect(card).toBeVisible({ timeout: 600_000 });
+    await expect(card).toBeVisible({ timeout: aBuildWithinMs });
 
     await card.getByRole("radio", { name: "The next window" }).check();
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
@@ -695,7 +729,7 @@ test(`a comment body of ${commentDiagrams} diagrams draws only the diagrams near
           drawnBefore = drawnNow;
           return settled;
         },
-        { intervals: [1_000], timeout: 120_000 }
+        { intervals: [1_000], timeout: aDrawWithinMs }
       )
       .toBe(true);
 
@@ -827,10 +861,9 @@ test(`an unsent edit survives a reconnect to ${documentNames.large}, whose sync 
       },
     });
     await page.goto(path);
-    // The build of 406,000 characters is minutes on a busy machine: this is the wait a build
-    // that never ends fails by, not a budget the row spends.
+    // The build of 406,000 characters (`aBuildWithinMs`).
     await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true", {
-      timeout: 600_000,
+      timeout: aBuildWithinMs,
     });
     await expect(connectedDot(page)).toHaveText("connected");
 
@@ -849,13 +882,13 @@ test(`an unsent edit survives a reconnect to ${documentNames.large}, whose sync 
     await page.reload();
     reconnecting = true;
     await transport.release();
-    await expect(connectedDot(page)).toHaveText("connected", { timeout: 240_000 });
+    await expect(connectedDot(page)).toHaveText("connected", { timeout: aDrawWithinMs });
 
     await expect
       .poll(async () => (await getArtifactText(artifactId)).markdown, {
         intervals: [500],
         message: "the edit typed while the socket was down never reached the server's /text",
-        timeout: 240_000,
+        timeout: aDrawWithinMs,
       })
       .toContain(`${quote}${typed}`);
     const stored = (await getArtifactText(artifactId)).markdown;

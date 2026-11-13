@@ -33,6 +33,16 @@ import { documentEditor } from "./editor";
 import { seedDocument, shortDocument } from "./large-documents-rows";
 import { asUser } from "./users";
 
+/** How long the row waits for the document's header and for its editor to hold the document.
+ *  The row runs in the shards, `chromium` and `iphone` four workers wide, under a step of 540 s
+ *  with one retry (.github/workflows/dispatch-browser.yaml), whose longest leg took 433 s in
+ *  run 43421318396, which leaves 107 s. Timed on this pod, one worker on two CPUs
+ *  (dispatch://INFRA-341), the header took 2.38 s from the navigation and the editor's text
+ *  0.02 s after it; the row costs 4.4 s passing. 20 s is eight times the slower, and a row that
+ *  never draws either fails at about 2 s of seeding and its own read plus 20 s, then fails its
+ *  retry the same way: about 40 s more on one worker. */
+const aDrawWithinMs = 20_000;
+
 /** The id of the block the server drew first, read from the bytes the server sends rather than
  *  from the page built out of them: the page adopts the server's element about a second in and
  *  the editor swaps its own copy of that block in under the reader later
@@ -109,10 +119,12 @@ test("a reader who opens a document has its first block inside the viewport, uns
     // above the document - nothing else of the chrome is still to arrive - and the place it
     // leaves the first block is the place the reader is left in.
     const header = page.getByTestId("artifact-header");
-    await expect(header).toBeVisible({ timeout: 120_000 });
+    await expect(header).toBeVisible({ timeout: aDrawWithinMs });
     await expect(header.getByRole("button", { exact: true, name: "Correct title" })).toBeVisible();
     await expect(header.getByRole("button", { exact: true, name: "Remove" })).toBeVisible();
-    await expect(documentEditor(page)).toContainText("The lease ledger", { timeout: 120_000 });
+    await expect(documentEditor(page)).toContainText("The lease ledger", {
+      timeout: aDrawWithinMs,
+    });
 
     const opened = await theOpenedPage(page, drewFirst);
     const reading =

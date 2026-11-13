@@ -52,6 +52,37 @@ import { settledScrollTop, withoutScrollAnchoring } from "./mermaid-helpers";
 import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
+// Every wait of this file for something the page draws is bounded by one of the two figures
+// below, so a page that never draws it fails the row by name inside the leg it runs in.
+//
+// The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under a step
+// of 540 s with one retry (.github/workflows/dispatch-browser.yaml). In run 43421318396 the
+// `chromium` rows were in `shard (3)`, whose step took 329 s, and the `iphone` rows in
+// `shard (4)` and `shard (5)`, 369 s and a projected 372 s since that leg's moves; the longest
+// leg of that run took 433 s, which leaves 107 s. A row that hangs runs twice, so it adds twice
+// its failing time, less what it costs when it passes, to the worker it runs on.
+//
+// What the waits cost, timed on this pod, one worker on two CPUs (dispatch://INFRA-341), the
+// slower of `chromium` and `iphone`: every wait bounded by `aDrawWithinMs` - the draw's first
+// block, the editor's first block, the held boxes, the Subscribers control, the headers, the
+// reads and parts the page held behind its first batch - took 0.03 to 2.67 s. The two bounded
+// by `aLongDrawWithinMs` took 12.98 s (the editor open over the larger document, from the
+// navigation) and 12.63 s (the chrome on a page whose socket never answers, which waits out
+// `LONGEST_WAIT_FOR_THE_DOCUMENT_MS`).
+//
+// So 20 s is more than seven times the slowest of the first kind and 40 s three times the
+// slowest of the second. The longest a row then runs before it fails is the long-document row's:
+// the 9.6 s it spends before its editor wait and 40 s, 49.6 s; twice that, less the 22.6 s the
+// row costs passing, is 76.6 s more on one worker, which fits every leg above, the longest's
+// 107 s among them.
+
+/** How long a row waits for something the page draws in its first seconds. */
+const aDrawWithinMs = 20_000;
+
+/** How long a row waits for the editor over the larger document, or for the chrome a page whose
+ *  socket never answers draws once its own deadline has passed. */
+const aLongDrawWithinMs = 40_000;
+
 // The three rows below are about what the page does in front of the document's own draw,
 // which is what the numbers of `large-documents-measured.e2e.ts` are mostly made of. The
 // document's own reads are started from the address, the first of them before any of the
@@ -137,7 +168,7 @@ test("a document's text is asked for before the entry's imports have evaluated @
         '[aria-label="Document text"] [data-block-id], [aria-label="Document editor"] [data-block-id]'
       )
       .first();
-    await expect(firstBlock).toBeVisible({ timeout: 120_000 });
+    await expect(firstBlock).toBeVisible({ timeout: aDrawWithinMs });
 
     // What the browser itself timed: when the page asked for the document's text, and when the
     // entry's own module body began. Its first statement writes the
@@ -256,7 +287,7 @@ test("a page the server drew a document into builds no Markdown engine while its
     // merely late.
     await expect(
       page.locator('.proof-editor[data-write-path="live"] [data-block-id]').first()
-    ).toBeVisible({ timeout: 180_000 });
+    ).toBeVisible({ timeout: aDrawWithinMs });
 
     const asked = await chunksAskedFor(page);
 
@@ -326,7 +357,9 @@ test("a phone draws the margin's ask cards only once its reader opens the review
     const page = await alice.newPage();
     const asked = requestedPaths(page);
     await page.goto(path);
-    await expect(documentEditor(page)).toContainText("The lease ledger", { timeout: 120_000 });
+    await expect(documentEditor(page)).toContainText("The lease ledger", {
+      timeout: aDrawWithinMs,
+    });
 
     // The whole page is up, and the shut sheet holds no card: a card behind it is 64 px of
     // `Review (1)`, and the thread read each card makes is a read the reader never sees the
@@ -504,7 +537,7 @@ test("the reads the first editable block needs none of go out after the editor's
     // its box, which draws it: every panel the held reads belong to is then on the page, and
     // each of those reads still waits, because each has a gate of its own.
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
-      timeout: 120_000,
+      timeout: aDrawWithinMs,
     });
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
     await expect(page.getByRole("button", { name: /^Subscribers/ })).toBeVisible();
@@ -523,14 +556,17 @@ test("the reads the first editable block needs none of go out after the editor's
 
     // Released, the editor builds, and every one of them goes out behind its first batch.
     await transport.release();
-    await expect(editorBeingBuilt(page)).toBeAttached({ timeout: 120_000 });
+    await expect(editorBeingBuilt(page)).toBeAttached({ timeout: aDrawWithinMs });
     await expect
       .poll(
         async () =>
           [...whenEachWentOut((await readTheReads(page)).reads, paths)].filter(
             ([, at]) => at.length === 0
           ).length,
-        { message: "a read the page held behind the first batch never went out", timeout: 120_000 }
+        {
+          message: "a read the page held behind the first batch never went out",
+          timeout: aDrawWithinMs,
+        }
       )
       .toBe(0);
 
@@ -582,7 +618,7 @@ test("a reader who opens a panel before the first batch has its read started the
     // inside it is still shut, and its read still held.
     await page.getByTestId("issue-header-box").click({ position: { x: 5, y: 5 } });
     const toggle = page.getByRole("button", { name: /^Subscribers/ });
-    await expect(toggle).toBeVisible({ timeout: 120_000 });
+    await expect(toggle).toBeVisible({ timeout: aDrawWithinMs });
     // The settled window above: only time shows that the subscribers read nobody made is a read
     // nobody made (`settledWithTheSocketHeldMs`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
@@ -642,7 +678,7 @@ test("a page with no document on it makes those reads as it always did @phone", 
     await watchTheReads(page);
     await page.goto(`/issues/${issueKey}/conversation`);
     await expect(page.getByRole("button", { name: /^Subscribers/ })).toBeVisible({
-      timeout: 120_000,
+      timeout: aDrawWithinMs,
     });
 
     await expect
@@ -697,7 +733,7 @@ test("a panel arriving while the reader is in a long document moves what they ar
       await route.continue();
     });
     await page.goto(path);
-    await expect(documentEditor(page)).toBeVisible({ timeout: 240_000 });
+    await expect(documentEditor(page)).toBeVisible({ timeout: aLongDrawWithinMs });
     await withoutScrollAnchoring(page);
 
     // The reader opens the panel - its read is still held, so it is the empty frame of itself -
@@ -836,7 +872,7 @@ test("the shell's parts and the page's chrome are drawn after the editor's first
     // The reader has the document's own draw and the boxes the page keeps where its chrome
     // will stand; no editor is being built, so none of the chrome itself is drawn.
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
-      timeout: 120_000,
+      timeout: aDrawWithinMs,
     });
     await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
     // The settled window above: a first batch, or any chrome read behind it, would have gone
@@ -855,11 +891,11 @@ test("the shell's parts and the page's chrome are drawn after the editor's first
 
     // Released, the editor builds, and every part is drawn behind its first batch.
     await transport.release();
-    await expect(editorBeingBuilt(page)).toBeAttached({ timeout: 120_000 });
+    await expect(editorBeingBuilt(page)).toBeAttached({ timeout: aDrawWithinMs });
     await expect
       .poll(async () => Object.keys(await readTheChrome(page)).sort(), {
         message: "a part of the chrome the page held behind the first batch was never drawn",
-        timeout: 120_000,
+        timeout: aDrawWithinMs,
       })
       .toEqual(Object.keys(parts).sort());
 
@@ -906,7 +942,7 @@ test("the chrome is drawn even where the socket never answers @phone", async ({
     await expect
       .poll(async () => Object.keys(await readTheChrome(page)).sort(), {
         message: "the chrome was never drawn on a page whose socket never answered",
-        timeout: 120_000,
+        timeout: aLongDrawWithinMs,
       })
       .toEqual(Object.keys(parts).sort());
     const held = await readTheReads(page);
@@ -945,7 +981,7 @@ test("the chrome arriving moves the document's own first block by no pixels @pho
     const transport = await documentTransport(page, { holding: true });
     await page.goto(path);
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
-      timeout: 120_000,
+      timeout: aDrawWithinMs,
     });
     await withoutScrollAnchoring(page);
     // The reader's own draw of the whole document, before they are placed in it: the page
@@ -1020,14 +1056,14 @@ test("the chrome arriving moves the document's own first block by no pixels @pho
     });
 
     await transport.release();
-    await expect(page.locator("[data-issue-header]")).toBeAttached({ timeout: 120_000 });
+    await expect(page.locator("[data-issue-header]")).toBeAttached({ timeout: aDrawWithinMs });
     await expect(page.locator('[data-testid="artifact-header"]')).toBeAttached({
-      timeout: 120_000,
+      timeout: aDrawWithinMs,
     });
     await expect
       .poll(async () => (await page.evaluate(() => window.__firstBlockPlace))?.grew, {
         message: "the chrome landing never changed how much page stands above the reader",
-        timeout: 120_000,
+        timeout: aDrawWithinMs,
       })
       .toBe(true);
 
@@ -1068,7 +1104,7 @@ test("a reader who reaches for the chrome before the batch has it then @phone", 
     await page.goto(path);
 
     const box = page.getByTestId("issue-tabs-box");
-    await expect(box).toBeAttached({ timeout: 120_000 });
+    await expect(box).toBeAttached({ timeout: aDrawWithinMs });
     // The settled window above: with the socket held no batch ever comes, and this is how long
     // the row gives it before it reads that none did (`settledWithTheSocketHeldMs`).
     await page.waitForTimeout(settledWithTheSocketHeldMs);
@@ -1260,7 +1296,7 @@ test("a reader with no pointer tabs into each held box and goes on into the chro
     // The page as this reader meets it: the document's own text, the two boxes the chrome will
     // stand in, and nothing of the chrome in either of them.
     await expect(page.locator('[aria-label="Document text"] [data-block-id]').first()).toBeVisible({
-      timeout: 120_000,
+      timeout: aDrawWithinMs,
     });
     await expect(page.getByTestId("issue-header-box")).toBeAttached();
     await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
