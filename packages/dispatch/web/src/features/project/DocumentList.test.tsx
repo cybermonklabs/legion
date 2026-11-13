@@ -104,7 +104,9 @@ test("a document's row names its latest version's stored size", async () => {
   }
 });
 
-test("New document opens its document page", async () => {
+// The create sends the title alone: the new document holds nothing, so the heading a person
+// never typed is not there to delete.
+test("New document makes an empty document and opens its document page", async () => {
   const user = userEvent.setup();
   const { listProjectArtifacts, view } = renderList([]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(uploadResponse());
@@ -119,7 +121,7 @@ test("New document opens its document page", async () => {
     await waitFor(() =>
       expect(uploadArtifact).toHaveBeenCalledWith(
         { project: "CORE" },
-        { content: "# Design notes\n", name: "Design notes" },
+        { name: "Design notes" },
         keyedAttempt
       )
     );
@@ -174,7 +176,7 @@ test("New document answered KEY_COMMITTED closes the form, says it was made, and
   }
 });
 
-test("New document refuses a name that already exists", async () => {
+test("New document refuses a title the project already holds, as a name and as a slug", async () => {
   const user = userEvent.setup();
   const { listProjectArtifacts, view } = renderList([document()]);
   const uploadArtifact = spyOn(api, "uploadArtifact").mockResolvedValue(uploadResponse());
@@ -187,7 +189,20 @@ test("New document refuses a name that already exists", async () => {
     await user.click(screen.getByRole("button", { name: "Create" }));
 
     const error = await screen.findByRole("alert");
-    expect(error).toHaveTextContent("A document named Design notes already exists");
+    expect(error).toHaveTextContent(
+      "A document on this project already holds that title: Design notes."
+    );
+
+    // The write reads the owner's slugs too (`$2 in (name, slug)`), so the control refuses the
+    // slug of a document it lists and names the document that holds it.
+    await user.clear(screen.getByRole("textbox", { name: "Title" }));
+    await user.click(screen.getByRole("textbox", { name: "Title" }));
+    await user.paste("design-notes");
+    await user.click(screen.getByRole("button", { name: "Create" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "A document on this project already holds that title: Design notes."
+    );
     expect(uploadArtifact).not.toHaveBeenCalled();
   } finally {
     view.unmount();
@@ -196,26 +211,21 @@ test("New document refuses a name that already exists", async () => {
   }
 });
 
-// Dispatch refuses an upload under the name of a document that already exists unless it names
-// the version it replaces, and a new document replaces nothing, so it names none: a title this
-// list did not show as taken - a document created since the list was read, or one whose slug
-// the title matches - is refused `400 PRECONDITION_REQUIRED`. The server writes that refusal
-// for a caller holding the `dispatch` command; a person creating a document in the browser runs
-// no command and pastes no token, so the form says the name is taken, in its own words.
-test("a New document Dispatch refused over a name it holds says the name is taken", async () => {
+// New document sends the title alone, so a title this list did not show as taken - a document
+// created since the list was read, or one whose slug the title matches - reaches Dispatch as a
+// write with no content over a document that exists. Dispatch refuses that write whatever token
+// it names (`blankWriteToADocumentThatExists`, `api/artifacts.go`), before it reads any token, so
+// the person reads that refusal, whose remedies Dispatch takes, and never the token refusal of a
+// replacement, whose remedy - name the token - would be refused in its turn.
+test("a New document over a title Dispatch holds reads the blank write's refusal, not a token's", async () => {
   const user = userEvent.setup();
   const { listProjectArtifacts, view } = renderList([]);
+  const refusal =
+    '"Design notes" names artifact design-notes (Design notes), which exists; a write with no ' +
+    "content makes no document and writes no version: edit it with dispatch doc-edit, or give " +
+    "the new document another name";
   const uploadArtifact = spyOn(api, "uploadArtifact").mockRejectedValue(
-    // The sentence the server sends, which it refuses every replacement naming no version with
-    // (`api/artifacts.go` in the server).
-    new ApiError(400, {
-      code: "PRECONDITION_REQUIRED",
-      error:
-        'an upload replacing document "Design notes" must name the token of the version it ' +
-        "replaces: read the document with `dispatch doc-read`, which prints " +
-        "`Document token: sha256:…`, and upload again naming that token as " +
-        '`--precondition-json \'{"document":"sha256:…"}\'`',
-    })
+    new ApiError(400, { code: "ARTIFACT_INPUT", error: refusal })
   );
 
   try {
@@ -226,9 +236,12 @@ test("a New document Dispatch refused over a name it holds says the name is take
     await user.click(screen.getByRole("button", { name: "Create" }));
 
     const error = await screen.findByRole("alert");
-    expect(error.textContent).toBe("A document named Design notes already exists");
-    expect(error.textContent).not.toContain("dispatch doc-read");
+    expect(error.textContent).toBe(refusal);
     expect(error.textContent).not.toContain("--precondition-json");
+    // The write carries the title and nothing else: no content, so Dispatch reads it as a blank
+    // write, and no token, which a new document has none of to name.
+    const sent = uploadArtifact.mock.calls[0]?.[1];
+    expect(sent).toEqual({ name: "Design notes" });
   } finally {
     view.unmount();
     listProjectArtifacts.mockRestore();
@@ -265,5 +278,23 @@ test("a New document the reader stopped says what the stopped write says", async
     listProjectArtifacts.mockRestore();
     uploadArtifact.mockRestore();
     realClock();
+  }
+});
+
+// A project's document is not removed: its events are its own rows, so its removal event would
+// need the row the removal deletes. The list says so by offering no such control on any row.
+test("the project document list shows no removal control", async () => {
+  const { listProjectArtifacts, view } = renderList([
+    document(),
+    document({ id: "artifact-2", name: "Goals", ref_key: "CORE/goals", slug: "goals" }),
+  ]);
+
+  try {
+    const rows = await screen.findAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    expect(screen.queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listProjectArtifacts.mockRestore();
   }
 });

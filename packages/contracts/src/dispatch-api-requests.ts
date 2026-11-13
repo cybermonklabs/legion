@@ -53,8 +53,16 @@ interface CreateArtifactOptions {
   readonly actor?: Actor;
 }
 
+/** What a create carries: a file, inline content, or neither. A create carrying a name alone
+ *  makes an empty document, which a person or an agent writes in afterwards with
+ *  `dispatch doc-edit`; it goes as JSON with the name, as inline content does, and never as
+ *  multipart, which carries its bytes as its file part and still needs one. */
 export type CreateArtifactInput = CreateArtifactOptions &
-  ({ readonly file: Blob } | { readonly content: string });
+  (
+    | { readonly file: Blob; readonly content?: undefined }
+    | { readonly content: string; readonly file?: undefined }
+    | { readonly file?: undefined; readonly content?: undefined }
+  );
 
 /** What `DispatchClient.read` composes from `GET /api/v1/issues/{key}` and that issue's events
  *  page: no route answers it. The events are `DispatchEvent`, whose payload this package types

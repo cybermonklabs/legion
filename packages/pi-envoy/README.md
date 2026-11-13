@@ -316,11 +316,13 @@ session's subscriptions, as the Envoy listener records them, covers that owner.
 The shared specs in `@legion/contracts` supply each command's description and flags:
 `@legion/envoy-client`'s `dispatch-command.ts` derives one command per spec and one flag per field.
 
-`dispatch artifact` takes exactly one upload source: a local `--path`, or inline `--content`. For
-example, an architect can post a specification directly, its text on stdin. Every issue is created
-with a `spec.md`, and the command refuses an upload under the name of a document the issue already
-holds, so this one carries `--force`, which writes the next version of it, and the token of the
-version it replaces, which `dispatch doc-read --issue LEGION-1` prints:
+`dispatch artifact` takes at most one upload source: a local `--path`, or inline `--content`.
+With neither, it makes an empty document under `--name`, which a person or an agent writes in
+afterwards with `dispatch doc-edit`. For example, an architect can post a specification directly,
+its text on stdin. Every issue is created with a `spec.md`, and the command refuses an upload
+under the name of a document the issue already holds, so this one carries `--force`, which writes
+the next version of it, and the token of the version it replaces, which
+`dispatch doc-read --issue LEGION-1` prints:
 
 ```sh
 dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force \
@@ -329,12 +331,12 @@ dispatch artifact --issue LEGION-1 --name spec.md --content-file - --force \
 EOF
 ```
 
-Inline content is stored as a Markdown document, so `--content` and `--content-file` take only a
-`--name` that ends in `.md` or `.markdown` or has no extension. The command refuses any other name
-(`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it sends anything and names
-`--path`, which stores a file whose path does not end in `.md` or `.markdown` as its bytes,
-unchanged, under that name. A document title with a dot near its end takes `--content` once it
-ends in `.md`.
+Inline content is stored as a Markdown document, so `--content`, `--content-file` and a call with
+neither flag take only a `--name` that ends in `.md` or `.markdown` or has no extension. The
+command refuses any other name (`rows.jsonl`, `sizes.tsv`, `rows.jsonl.1`, `plan v1.2`) before it
+sends anything and names `--path`, which stores a file whose path does not end in `.md` or
+`.markdown` as its bytes, unchanged, under that name. A document title with a dot near its end
+takes `--content` once it ends in `.md`.
 
 An upload over a document the owner already holds under that name replaces every word of it, so it names the token of the version it replaces.
 That token is the one `dispatch doc-read` prints as `Document token: sha256:…`, and it travels in `--precondition-json '{"document":"sha256:…"}'`, beside the `--force` that asks the command for the document's next version.

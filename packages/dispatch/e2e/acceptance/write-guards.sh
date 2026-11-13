@@ -544,6 +544,39 @@ read_token base "$guard" guard.md
     "the document token moved from $before_refusal to $doc_token"
 pass base "the refused replacement wrote nothing: the document is where the accepted upload left it"
 
+# --- base: a write with no content over a document that exists ---------------------------------
+
+# A write with no content over a document that exists is refused whatever token it names, so it is
+# refused before any token is read, and its refusal names no token: a writer told to name one
+# would be refused again for a write Dispatch takes under no token. That is the case a person
+# typing a title the issue already holds meets. Both orders are driven: no token, and the live one.
+cli artifact --issue "$guard" --name guard.md >"$work/out" 2>&1 &&
+  fail base "a write with no content over guard.md" "the command exited 0: $(<"$work/out")"
+pass base "a write with no content over a document that exists exits non-zero"
+grep -qF 'a write with no content makes no document and writes no version' "$work/out" ||
+  fail base "the refusal is the blank write's own" "$(<"$work/out")"
+pass base "the refusal is the blank write's own, which names its remedies"
+! grep -qF -- '--precondition-json' "$work/out" ||
+  fail base "the blank write's refusal names no token" "$(<"$work/out")"
+pass base "the blank write's refusal names no token"
+
+send POST "/api/v1/issues/$guard/artifacts" \
+  "$(jq -cn --arg a "$session" '{actor: {kind: "session", id: $a}, name: "guard.md"}')"
+want_status 400 base "the same blank write over the artifacts route"
+expect base "it is refused ARTIFACT_INPUT, not PRECONDITION_REQUIRED" '"ARTIFACT_INPUT"' '.code'
+send POST "/api/v1/issues/$guard/artifacts" \
+  "$(jq -cn --arg a "$session" --arg t "$before_refusal" \
+    '{actor: {kind: "session", id: $a}, name: "guard.md", content: "", precondition: {document: $t}}')"
+want_status 400 base "a blank write naming the live token over the artifacts route"
+expect base "it is refused ARTIFACT_INPUT too: the token does not make it a write Dispatch takes" \
+  '"ARTIFACT_INPUT"' '.code'
+
+read_token base "$guard" guard.md
+[[ "$doc_token" == "$before_refusal" ]] ||
+  fail base "the refused blank writes wrote nothing" \
+    "the document token moved from $before_refusal to $doc_token"
+pass base "the refused blank writes wrote nothing"
+
 # --- close: the issues the run wrote -------------------------------------------------------------
 
 close_issue close "$reviewed"
