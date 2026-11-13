@@ -181,3 +181,58 @@ test("a refused pin leaves the state Dispatch last gave when the read again fail
     put.mockRestore();
   }
 });
+
+// R10 of dispatch://INFRA-299. What a refused pin is put back to is the state as Dispatch last
+// gave it. Another issue's pin landing while this one is out is merged over the state as it
+// stands (the pin kind's own `landed`), and that state carries this pin's change, shown by the
+// store: the merge is Dispatch's answer for CORE-2 alone, not for CORE-1. So when this pin is
+// refused and the read again fails, CORE-1 must show what Dispatch last gave it, not the pin
+// Dispatch refused.
+test("a refused pin is not put back to another issue's pin merged over it while it was out", async () => {
+  const client = signedIn("alice");
+  let online = true;
+  const getMyState = spyOn(api, "getMyState").mockImplementation(() =>
+    online
+      ? Promise.resolve({ "CORE-1": fresh, "CORE-2": fresh })
+      : Promise.reject(new NetworkError("/api/v1/me/state", new TypeError("Failed to fetch")))
+  );
+  const refusal = Promise.withResolvers<UserIssueState>();
+  const core2Answer: UserIssueState = { ...fresh, dismissed: [pinnedItemMarker("ask:b")], seq: 1 };
+  const put = spyOn(api, "putIssueState").mockImplementation((key) =>
+    key === "CORE-1" ? refusal.promise : Promise.resolve(core2Answer)
+  );
+  // A surface drawing the viewer's state, so the read again goes out.
+  const unsubscribe = new QueryObserver(client, userStateQuery()).subscribe(() => {});
+  const dismissed = (issueKey: string) =>
+    client.getQueryData<UserState>(["user-state"])?.[issueKey]?.dismissed;
+  try {
+    await client.fetchQuery(userStateQuery());
+    writePin(client, "CORE-1", { id: "ask:a", op: "pin" });
+    await settle();
+    expect(dismissed("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
+
+    // Another issue's pin lands while CORE-1's is out, and is merged into the state.
+    writePin(client, "CORE-2", { id: "ask:b", op: "pin" });
+    await settle();
+    expect(dismissed("CORE-2")).toEqual([pinnedItemMarker("ask:b")]);
+    expect(dismissed("CORE-1")).toEqual([pinnedItemMarker("ask:a")]);
+
+    // Dispatch refuses CORE-1's pin, and the read again fails.
+    online = false;
+    refusal.reject(new ApiError(422, { code: "INVALID_STATE", error: "not a state" }));
+    await settle();
+    expect(
+      writesOf(client)
+        .rows()
+        .map((write) => write.status)
+    ).toEqual(["refused"]);
+    expect(client.getQueryState(["user-state"])?.status).toBe("error");
+    expect(dismissed("CORE-1")).toEqual([]);
+    expect(dismissed("CORE-2")).toEqual([pinnedItemMarker("ask:b")]);
+  } finally {
+    unsubscribe();
+    writesOf(client).clear();
+    getMyState.mockRestore();
+    put.mockRestore();
+  }
+});
