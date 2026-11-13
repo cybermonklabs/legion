@@ -142,23 +142,24 @@ type legionBoardColumn struct {
 
 // legionBoardCard is one issue on the board. Key, Title and Priority come from Dispatch's own
 // issues table, joined on the daemon's key (the plan's D13; the daemon's state carries none of the
-// three). Phase, PhaseSince, Slot, Roles, ChecksVerdict and WaitingOn are the newest observations
-// of that issue, PhaseSince being when the phase it is in was first recorded — the time in the
-// phase the card shows. BlockedBy names the issues a blocker link holds it on, and Children counts
-// the issues of its tree that its tree has not started, which are on no card of their own.
+// three). Phase, PhaseSince, Slot, Roles and WaitingOn are the newest observations of that issue,
+// PhaseSince being when the phase it is in was first recorded — the time in the phase the card
+// shows. BlockedBy names the issues a blocker link holds it on, and Children counts the issues of
+// its tree that its tree has not started, which are on no card of their own. The card carries no
+// CI verdict: the daemon's state has none since cybermonklabs/legion#2539, and a verdict row a
+// read wrote before then is read by nothing.
 type legionBoardCard struct {
-	Key           string           `json:"key"`
-	Title         string           `json:"title"`
-	Priority      *int             `json:"priority"`
-	Phase         string           `json:"phase"`
-	PhaseSince    *time.Time       `json:"phase_since"`
-	Slot          *int             `json:"slot"`
-	Roles         []string         `json:"roles"`
-	ChecksVerdict *string          `json:"checks_verdict"`
-	BlockedBy     []string         `json:"blocked_by"`
-	WaitingOn     *legionBoardWait `json:"waiting_on"`
-	Tree          string           `json:"tree"`
-	Children      int              `json:"children"`
+	Key        string           `json:"key"`
+	Title      string           `json:"title"`
+	Priority   *int             `json:"priority"`
+	Phase      string           `json:"phase"`
+	PhaseSince *time.Time       `json:"phase_since"`
+	Slot       *int             `json:"slot"`
+	Roles      []string         `json:"roles"`
+	BlockedBy  []string         `json:"blocked_by"`
+	WaitingOn  *legionBoardWait `json:"waiting_on"`
+	Tree       string           `json:"tree"`
+	Children   int              `json:"children"`
 }
 
 // legionBoardWait is what a root in `awaiting_person` waits on, as the daemon recorded it: the
@@ -242,9 +243,8 @@ type legionBoardIssue struct {
 	phaseSince time.Time
 	slot       *int
 	// tree is the daemon's own `tree` for the issue, empty where it named none.
-	tree          string
-	waitingOn     *legionBoardWait
-	checksVerdict string
+	tree      string
+	waitingOn *legionBoardWait
 	// roles are the roles of the issue whose claim state is `working`, sorted.
 	roles []string
 	// title and priority are Dispatch's, empty for an issue Dispatch does not hold; the parent
@@ -377,8 +377,6 @@ func (issue *legionBoardIssue) observe(field string, value []byte, at time.Time)
 		if err := json.Unmarshal(value, &wait); err == nil && wait.Kind != "" {
 			issue.waitingOn = &legionBoardWait{Kind: wait.Kind, Since: wait.Since, AnsweredAt: wait.AnsweredAt}
 		}
-	case field == legion.FieldPullRequestChecksVerdict:
-		issue.checksVerdict = legion.JSONString(value)
 	case strings.HasPrefix(field, legion.ClaimFieldPrefix):
 		role := strings.TrimPrefix(field, legion.ClaimFieldPrefix)
 		working := legion.JSONString(value) == "working"
@@ -682,10 +680,6 @@ func (p *legionBoardPopulation) card(issue *legionBoardIssue, blockedBy []string
 	if !issue.phaseSince.IsZero() {
 		since := issue.phaseSince.UTC()
 		card.PhaseSince = &since
-	}
-	if issue.checksVerdict != "" {
-		verdict := issue.checksVerdict
-		card.ChecksVerdict = &verdict
 	}
 	return card
 }

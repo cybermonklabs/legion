@@ -41,9 +41,9 @@ function Fact({
 }
 
 /** One card of the Legion view: the issue's key and title, its priority, how long it has been in
- *  its phase, the slot it holds, the roles in a turn now and its pull request's CI verdict, plus
- *  what holds it where it is — the issues a blocker link names, what it waits on from a person,
- *  and how many issues of its tree have not started and so have no card of their own.
+ *  its phase, the slot it holds and the roles in a turn now, plus what holds it where it is — the
+ *  issues a blocker link names, what it waits on from a person, and how many issues of its tree
+ *  have not started and so have no card of their own.
  *
  *  `nowMs` is the moment the time in the phase is measured from, which the view passes to every
  *  card so one board reads one clock. */
@@ -83,11 +83,6 @@ export function LegionCard({
           hook="roles"
           label="In a turn"
           value={roles.length === 0 ? "nobody" : roles.join(", ")}
-        />
-        <Fact
-          hook="checks"
-          label="CI"
-          value={issue.checks_verdict === null ? "no verdict" : issue.checks_verdict}
         />
       </div>
       {blockedBy.length === 0 ? null : (

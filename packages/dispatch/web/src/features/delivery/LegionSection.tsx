@@ -59,8 +59,9 @@ const SCOPES: readonly SegmentedOption<LegionMetricsScope>[] = [
   { value: "children", label: "Children" },
 ];
 
-/** The five segments of a bar, in the precedence the server books an hour by (the spec's "Rule
- *  details — Precedence"), each a run of bars over the seven worker types. */
+/** The five segments of a bar, in the spec's order (its "Rule details — Precedence"), each a run
+ *  of bars over the seven worker types. CI wait is not measured: the server books no hour to it,
+ *  so it is 0 on every bar. */
 const SEGMENTS: readonly { readonly key: keyof LegionSegments; readonly label: string }[] = [
   { key: "waiting_on_person", label: "Waiting on a person" },
   { key: "in_a_turn", label: "In a turn" },

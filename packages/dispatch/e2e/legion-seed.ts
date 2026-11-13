@@ -59,12 +59,10 @@ const OBSERVATIONS: readonly Observation[] = [
     value: JSON.stringify(SETTING_SOURCES),
     ago: "3 hours",
   },
-  // ACME-1 holds slot 0 and is being implemented, with its implementer in a turn and its pull
-  // request's checks failing.
+  // ACME-1 holds slot 0 and is being implemented, with its implementer in a turn.
   { issue: "ACME-1", field: "phase", value: '"implementing"', ago: "2 hours" },
   { issue: "ACME-1", field: "slot", value: "0", ago: "3 hours" },
   { issue: "ACME-1", field: "claim.implementer", value: '"working"', ago: "20 minutes" },
-  { issue: "ACME-1", field: "pull_request.checks_verdict", value: '"failing"', ago: "15 minutes" },
   // ACME-2 holds slot 1 and waits on a person.
   { issue: "ACME-2", field: "phase", value: '"awaiting_person"', ago: "45 minutes" },
   { issue: "ACME-2", field: "slot", value: "1", ago: "3 hours" },

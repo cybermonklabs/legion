@@ -53,7 +53,6 @@ const NOW = Date.parse("2026-11-03T05:04:00Z");
 function card(overrides: Partial<LegionBoardCard> = {}): LegionBoardCard {
   return {
     blocked_by: [],
-    checks_verdict: null,
     children: 0,
     key: "ACME-1",
     phase: "implementing",
@@ -171,13 +170,12 @@ test("the queue keeps the daemon's own order, which the view does not re-sort", 
   ).toEqual(["ACME-9", "ACME-2", "ACME-7"]);
 });
 
-test("a card shows its key, title, priority, time in phase, slot, the roles in a turn and the CI verdict", async () => {
+test("a card shows its key, title, priority, time in phase, slot and the roles in a turn", async () => {
   spies.push(spyOn(Date, "now").mockReturnValue(NOW));
   await renderView(
     board({
       implementing: [
         card({
-          checks_verdict: "failing",
           key: "ACME-4",
           phase_since: "2026-11-03T02:34:00Z",
           priority: 0,
@@ -199,7 +197,9 @@ test("a card shows its key, title, priority, time in phase, slot, the roles in a
   expect(issue.querySelector('[data-legion-fact="roles"]')?.textContent).toContain(
     "implementer, reviewer"
   );
-  expect(issue.querySelector('[data-legion-fact="checks"]')?.textContent).toContain("failing");
+  // The daemon's state carries no CI verdict since cybermonklabs/legion#2539, so the card draws
+  // no fact for one.
+  expect(issue.querySelector('[data-legion-fact="checks"]')).toBeNull();
 });
 
 test("a card with no phase entry recorded shows no time in the phase rather than one nobody measured", async () => {

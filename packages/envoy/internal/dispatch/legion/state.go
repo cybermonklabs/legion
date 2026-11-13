@@ -105,25 +105,20 @@ type Worker struct {
 
 // PullRequest is the issue's pull request as the daemon observes it from GitHub.
 type PullRequest struct {
-	State         string `json:"state"`
-	ChecksVerdict string `json:"checksVerdict,omitempty"`
-	// RequiresChecks is kept as the bytes the daemon sent, so an observation records whatever a
-	// daemon writes and a shape no reader expects is stored rather than dropped. One reader
-	// reads it, and it reads a boolean: the CI-wait segment takes true as "the base branch
-	// requires a check" and anything else as no check at all
-	// (legion/metrics/segments.go's requiresChecks, mirroring `legionPullRequestView` in
-	// packages/contracts/src/legion-api.ts).
-	RequiresChecks json.RawMessage `json:"requiresChecks,omitempty"`
+	State string `json:"state"`
 }
 
 // The fields a read observes, one row of legion_observations each where the value moved.
 const (
-	FieldPhase                     = "phase"
-	FieldStatus                    = "status"
-	FieldSlot                      = "slot"
-	FieldWaitingOn                 = "waiting_on"
-	FieldPullRequestState          = "pull_request.state"
-	FieldPullRequestChecksVerdict  = "pull_request.checks_verdict"
+	FieldPhase            = "phase"
+	FieldStatus           = "status"
+	FieldSlot             = "slot"
+	FieldWaitingOn        = "waiting_on"
+	FieldPullRequestState = "pull_request.state"
+	// FieldPullRequestRequiresChecks names the field that rows a read wrote before
+	// cybermonklabs/legion#2539 carry, when the daemon still marked a base branch that requires a
+	// check. Nothing writes it now and nothing reads it: a database written before then still
+	// holds such rows, and the one reader they had, metric 2's CI-wait segment, is not measured.
 	FieldPullRequestRequiresChecks = "pull_request.requires_checks"
 	// FieldTree is the issue's tree root as the daemon named it (dispatch://INFRA-980). It is
 	// observed only for an issue carrying one: a daemon that sends none leaves the reader to the
@@ -202,14 +197,14 @@ type Observation struct {
 // AdmissionKey: the admission block, the settings the daemon reports and where each came from,
 // none of which belongs to an issue.
 //
-// Phase, status, slot, the wait and the pull request's three fields are observed on every issue,
+// Phase, status, slot, the wait and the pull request's state are observed on every issue,
 // `null` where the issue carries none, so a slot released or a wait answered is a change like any
 // other; a first `null` writes no row (store.go's insert). A claim is observed for each role the
 // read names — the architect and each worker — and a tree only for an issue the daemon named one
 // for, since a field the daemon does not name has not changed: it is simply not this daemon's.
 func (s State) Observations() []Observation {
 	keys := slices.Sorted(maps.Keys(s.Issues))
-	observations := make([]Observation, 0, len(keys)*8+3)
+	observations := make([]Observation, 0, len(keys)*6+3)
 	for _, project := range []struct {
 		field string
 		value any
@@ -244,13 +239,11 @@ func (s State) Observations() []Observation {
 		for _, role := range slices.Sorted(maps.Keys(issue.Workers)) {
 			add(ClaimFieldPrefix+role, optional(issue.Workers[role].Claim.State))
 		}
-		var state, verdict, requires any
+		var state any
 		if pull := issue.PullRequest; pull != nil {
-			state, verdict, requires = optional(pull.State), optional(pull.ChecksVerdict), rawOrNil(pull.RequiresChecks)
+			state = optional(pull.State)
 		}
 		add(FieldPullRequestState, state)
-		add(FieldPullRequestChecksVerdict, verdict)
-		add(FieldPullRequestRequiresChecks, requires)
 	}
 	return observations
 }

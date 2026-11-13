@@ -69,7 +69,7 @@ test("the Legion view shows the daemon's columns and its cards @legion", async (
     await expect(card.locator('[data-legion-fact="phase-time"]')).toContainText("2 h");
     await expect(card.locator('[data-legion-fact="slot"]')).toContainText("0");
     await expect(card.locator('[data-legion-fact="roles"]')).toContainText("implementer");
-    await expect(card.locator('[data-legion-fact="checks"]')).toContainText("failing");
+    await expect(card.locator('[data-legion-fact="checks"]')).toHaveCount(0);
 
     // The queue keeps the daemon's own order: ACME-4 before ACME-3, then the blocked root, which
     // names what holds it. Neither key order nor priority order would give this.

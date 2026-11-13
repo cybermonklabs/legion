@@ -100,7 +100,6 @@ func seedLegionBoard(t *testing.T, database *store.Store, project string, now ti
 	// The implementer is in a turn; its reviewer's claim ended.
 	seedLegionObservation(t, database, project, project+"-4", legion.ClaimFieldPrefix+"implementer", `"working"`, ago(2))
 	seedLegionObservation(t, database, project, project+"-4", legion.ClaimFieldPrefix+"reviewer", `"idle"`, ago(2))
-	seedLegionObservation(t, database, project, project+"-4", legion.FieldPullRequestChecksVerdict, `"failure"`, ago(1))
 	// What each root in awaiting_person waits on: one answered, which is why the daemon's line
 	// holds it first, and one still with the person.
 	seedLegionObservation(t, database, project, project+"-10", legion.FieldWaitingOn,
@@ -222,9 +221,6 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	if !slices.Equal(child.Roles, []string{"implementer"}) {
 		t.Errorf("the child's roles in a turn = %v, want the implementer alone", child.Roles)
 	}
-	if child.ChecksVerdict == nil || *child.ChecksVerdict != "failure" {
-		t.Errorf("the child's CI verdict = %v, want failure", child.ChecksVerdict)
-	}
 	if child.Tree != "INFRA-3" || child.Slot == nil || *child.Slot != 1 {
 		t.Errorf("the child's card = %+v, want slot 1 on its root's tree", child)
 	}
@@ -248,6 +244,55 @@ func TestTheLegionBoardPutsEachIssueInOneColumn(t *testing.T) {
 	}
 	if !header.ReadOK || header.ReadAt == nil || header.ReadError != nil {
 		t.Errorf("the header's read = %+v, want the successful read the sampler recorded", header)
+	}
+}
+
+// TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded: the daemon's state carries no
+// CI verdict since cybermonklabs/legion#2539, and the card has no field for one (spec version 38
+// of dispatch://INFRA-1077). A database a sampler wrote before then still holds verdict rows, as
+// the browser seed once wrote one, and the card of such an issue answers no verdict key at all.
+// The key is looked for in the answer's own JSON, not in the struct that decodes it, since a
+// struct drops a key it has no field for.
+func TestALegionCardCarriesNoCIVerdictEvenWhereARowOfOneIsRecorded(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	seedLegionProjects(t, handler, "INFRA")
+	nameLegionDaemon(t, handler, "INFRA", "http://legion-infra.internal:13370")
+	now := time.Now().UTC()
+	key := seedLegionIssue(t, database, "INFRA", 1, "An issue with a recorded verdict", "a", nil, "")
+	seedLegionObservation(t, database, "INFRA", key, legion.FieldPhase, `"implementing"`, now.Add(-time.Hour))
+	seedLegionObservation(t, database, "INFRA", key, legion.FieldPullRequestState, `"open"`, now.Add(-time.Hour))
+	seedLegionObservation(t, database, "INFRA", key, "pull_request.checks_verdict", `"failing"`, now.Add(-time.Minute))
+	seedLegionRead(t, database, "INFRA", now, "")
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/legion/board?project=INFRA", nil, "alice")
+	if response.Code != http.StatusOK {
+		t.Fatalf("GET the board of INFRA: status=%d body=%s", response.Code, response.Body.String())
+	}
+	var board struct {
+		Columns []struct {
+			ID    string                       `json:"id"`
+			Cards []map[string]json.RawMessage `json:"cards"`
+		} `json:"columns"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &board); err != nil {
+		t.Fatalf("decode the board: %v", err)
+	}
+	var card map[string]json.RawMessage
+	for _, column := range board.Columns {
+		for _, each := range column.Cards {
+			if legion.JSONString(each["key"]) == key {
+				if column.ID != legionColumnImplementing {
+					t.Errorf("%s is in the %q column, want %q", key, column.ID, legionColumnImplementing)
+				}
+				card = each
+			}
+		}
+	}
+	if card == nil {
+		t.Fatalf("the board holds no card for %s: %s", key, response.Body.String())
+	}
+	if verdict, present := card["checks_verdict"]; present {
+		t.Fatalf("%s's card carries a CI verdict, %s, want none: %s", key, verdict, response.Body.String())
 	}
 }
 
@@ -321,7 +366,7 @@ const newAdmissionShapeState = `{
     "INFRA-2": {"key": "INFRA-2", "phase": "implementing", "status": "in_progress", "tree": "INFRA-1",
       "slot": {"index": 1, "admittedAt": "2026-11-03T10:05:00Z"},
       "workers": {"implementer": {"claim": {"session": "s-1", "state": "working"}, "rounds": 1}},
-      "pullRequest": {"state": "open", "checksVerdict": "pending", "requiresChecks": true}},
+      "pullRequest": {"state": "open"}},
     "INFRA-3": {"key": "INFRA-3", "phase": "admitted", "status": "todo", "tree": "INFRA-3"},
     "INFRA-4": {"key": "INFRA-4", "phase": "admitted", "status": "todo", "tree": "INFRA-1"}
   },
@@ -373,8 +418,8 @@ func TestTheLegionBoardReadsADaemonOnTheNewAdmissionShape(t *testing.T) {
 	if child.Tree != "INFRA-1" || child.Slot == nil || *child.Slot != 1 {
 		t.Errorf("the child's card = %+v, want the slot it holds on the tree the daemon named", child)
 	}
-	if !slices.Equal(child.Roles, []string{"implementer"}) || child.ChecksVerdict == nil || *child.ChecksVerdict != "pending" {
-		t.Errorf("the child's card = %+v, want the implementer in a turn and the pending verdict", child)
+	if !slices.Equal(child.Roles, []string{"implementer"}) {
+		t.Errorf("the child's card = %+v, want the implementer in a turn", child)
 	}
 	if header := board.Header; header.SlotsInUse != 2 || header.SlotCap == nil || *header.SlotCap != 6 {
 		t.Errorf("the header = %+v, want the two slots the issues hold of the cap the daemon named", header)

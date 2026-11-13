@@ -15,7 +15,7 @@ type Segment string
 const (
 	SegmentWaitingOnPerson   Segment = "waiting_on_person"
 	SegmentInATurn           Segment = "in_a_turn"
-	SegmentCIWait            Segment = "ci_wait"
+	SegmentCIWait            Segment = "ci_wait" // not measured: no rule claims it (precedence)
 	SegmentWaitingOnChildren Segment = "waiting_on_children"
 	SegmentIdle              Segment = "idle"
 )
@@ -27,18 +27,25 @@ type segmentRule struct {
 	Spans   func(view *issueView) []Span
 }
 
-// precedence is the order of the five segments, and the only place it is written (the spec's
-// "Rule details — Precedence": "The order the phase-time section gives is exact: waiting on a
-// person, in a turn, CI wait, waiting on children, idle. Each hour goes to the first that
-// holds."). Each rule is one function below; idle is no rule, it is what no rule claimed.
+// precedence is the order the split walks, and the only place it is written (the spec's "Rule
+// details — Precedence": "The order the phase-time section gives is exact: waiting on a person, in
+// a turn, CI wait, waiting on children, idle. Each hour goes to the first that holds."). Each rule
+// is one function below; idle is no rule, it is what no rule claimed.
+//
+// Segment 3, CI wait, keeps its place in that order and has no rule: it is not measured since
+// cybermonklabs/legion#2539 took the CI verdict and the required-check mark out of the daemon's
+// state, so no source says when a pull request waits on CI (spec version 38). An hour it would
+// have held goes to the next segment that holds — waiting on children, for a root while a child
+// works, else idle.
 var precedence = []segmentRule{
 	{SegmentWaitingOnPerson, waitingOnPersonSpans},
 	{SegmentInATurn, inATurnSpans},
-	{SegmentCIWait, ciWaitSpans},
 	{SegmentWaitingOnChildren, waitingOnChildrenSpans},
 }
 
-// Segments is one bar's hours, one field per segment, in the precedence's order.
+// Segments is one bar's hours, one field per segment, in the spec's order. CIWait is 0 on every
+// bar: segment 3 is not measured (precedence), and the bar keeps the field so its five segments
+// keep their places.
 type Segments struct {
 	WaitingOnPerson   float64 `json:"waiting_on_person"`
 	InATurn           float64 `json:"in_a_turn"`
@@ -54,8 +61,6 @@ func (s *Segments) add(segment Segment, spent time.Duration) {
 		s.WaitingOnPerson += hours(spent)
 	case SegmentInATurn:
 		s.InATurn += hours(spent)
-	case SegmentCIWait:
-		s.CIWait += hours(spent)
 	case SegmentWaitingOnChildren:
 		s.WaitingOnChildren += hours(spent)
 	case SegmentIdle:
@@ -173,22 +178,6 @@ func inATurnSpans(view *issueView) []Span {
 	return spans
 }
 
-// ciWaitSpans is segment 3: "the pull request was open, its base branch requires a check, and the
-// daemon had no CI verdict for its head (`checksVerdict` empty)". Each of the three is read from
-// the issue's own observations, and a field no read ever carried holds through nothing: a daemon
-// that sends no `requiresChecks` leaves this segment empty rather than guessing a check.
-func ciWaitSpans(view *issueView) []Span {
-	issue, end := view.issue, view.end
-	open := markSpans(issue.Observed[legion.FieldPullRequestState], end, func(value string) bool {
-		return legion.JSONString([]byte(value)) == "open"
-	})
-	required := markSpans(issue.Observed[legion.FieldPullRequestRequiresChecks], end, requiresChecks)
-	judged := markSpans(issue.Observed[legion.FieldPullRequestChecksVerdict], end, func(value string) bool {
-		return legion.JSONString([]byte(value)) != ""
-	})
-	return subtract(intersect(open, required), judged)
-}
-
 // waitingOnChildrenSpans is segment 4: "the issue is a root with a child in a phase from planning
 // to awaiting merge", each child counted "only during its own work time, as work time to merge
 // defines it: not while it is parked, back in the queue, or before its first worker event" (the
@@ -205,16 +194,6 @@ func waitingOnChildrenSpans(view *issueView) []Span {
 		spans = append(spans, intersect(inPhase, view.childWorked[child.Key])...)
 	}
 	return spans
-}
-
-// requiresChecks reads the daemon's `requiresChecks`, which this change defines as the boolean
-// `record.PullRequest.Required` (api.PullRequestView.RequiresChecks, and `legionPullRequestView`
-// in packages/contracts/src/legion-api.ts): true says the base branch requires a check. Anything
-// else — the field absent, null, or a shape no daemon sends — leaves the CI-wait segment empty
-// rather than reading a check into it.
-func requiresChecks(value string) bool {
-	var required bool
-	return json.Unmarshal([]byte(value), &required) == nil && required
 }
 
 // answeredAts are the moments a root's recorded wait named as answered, from the `waitingOn` the

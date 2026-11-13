@@ -114,8 +114,7 @@ const newFieldsState = `{
       "slot": {"index": 0, "admittedAt": "2026-11-03T10:00:00Z"},
       "architect": {"session": "s-1", "state": "working", "pluginContract": 47},
       "workers": {"implementer": {"claim": {"session": "s-2", "state": "working", "pluginContract": 47}, "rounds": 1}},
-      "pullRequest": {"repo": "acme/widgets", "number": 7, "head": "abc", "state": "open",
-                      "checksVerdict": "green", "requiresChecks": ["lint", "test"], "fixAttempts": 0}
+      "pullRequest": {"repo": "acme/widgets", "number": 7, "head": "abc", "state": "open", "fixAttempts": 0}
     },
     "INFRA-2": {
       "key": "INFRA-2", "generation": 1, "phase": "planning", "status": "doing",
@@ -156,17 +155,13 @@ func TestAStateWithTheNewAdmissionFieldsParses(t *testing.T) {
 		t.Errorf("INFRA-2's planner = %v, want its claim state", child.Workers["planner"])
 	}
 	root := state.Issues["INFRA-1"]
-	if root.PullRequest == nil || root.PullRequest.State != "open" || root.PullRequest.ChecksVerdict != "green" {
-		t.Errorf("INFRA-1's pull request = %+v, want its state and verdict", root.PullRequest)
-	}
-	if string(root.PullRequest.RequiresChecks) != `["lint", "test"]` {
-		t.Errorf("requiresChecks = %s, want the bytes the daemon sent", root.PullRequest.RequiresChecks)
+	if root.PullRequest == nil || root.PullRequest.State != "open" {
+		t.Errorf("INFRA-1's pull request = %+v, want its state", root.PullRequest)
 	}
 }
 
 // TestAStateFromTodaysDaemonParses: the same decode reads a daemon that carries none of those
-// fields — no tree, no admission.trees, no requiresChecks — so the two shapes are read by one
-// reader.
+// fields — no tree, no admission.trees — so the two shapes are read by one reader.
 func TestAStateFromTodaysDaemonParses(t *testing.T) {
 	const today = `{"daemon":{"project":"INFRA","contract":46},
 	  "admission":{"cap":4,"active":["INFRA-1"],"waiting":[],"blocked":[]},
@@ -184,8 +179,8 @@ func TestAStateFromTodaysDaemonParses(t *testing.T) {
 	if issue.Tree != nil {
 		t.Errorf("tree = %v, want none: this daemon sends no tree field", *issue.Tree)
 	}
-	if issue.PullRequest == nil || issue.PullRequest.ChecksVerdict != "" || len(issue.PullRequest.RequiresChecks) != 0 {
-		t.Errorf("pull request = %+v, want the two absent fields absent", issue.PullRequest)
+	if issue.PullRequest == nil || issue.PullRequest.State != "open" {
+		t.Errorf("pull request = %+v, want its state", issue.PullRequest)
 	}
 }
 

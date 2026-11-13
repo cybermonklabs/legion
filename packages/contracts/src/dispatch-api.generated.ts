@@ -1763,7 +1763,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Legion view on the Issues page for ?project= (the first project naming a daemon when none is given), from what the sampler recorded of that project's daemon: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, its pull request's CI verdict, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon. */
+    /** @description The Legion view on the Issues page for ?project= (the first project naming a daemon when none is given), from what the sampler recorded of that project's daemon: ten columns (queue, design, planning, implementing, testing, reviewing, accepting, merging, awaiting_person, held), each card naming its issue's key, title, priority, phase and when that phase began, the slot it holds, the roles in a turn now, the issues a blocker link holds it on, what it waits on from a person, its tree root and the children of its tree that have not started; and a header with the slots in use, the slot cap, the queue's length and the last read of the daemon with its failure. 404 LEGION_NOT_CONFIGURED when the project names no daemon. */
     get: operations["getApiV1LegionBoard"];
     put?: never;
     post?: never;
@@ -1780,7 +1780,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The Delivery page's Legion section for ?project= (the first project naming a daemon when none is given), [from, to) (default the last 7 days) and ?scope=all|roots|children: over the issues that closed in the window with Legion phase work, the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle in that order, the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week; 400 INVALID_QUERY for a malformed window or scope, 404 NOT_FOUND for a project that does not exist. */
+    /** @description The Delivery page's Legion section for ?project= (the first project naming a daemon when none is given), [from, to) (default the last 7 days) and ?scope=all|roots|children: over the issues that closed in the window with Legion phase work, the work time to merge less parked and queued time, the phase hours of each of the seven worker bars split into waiting on a person, in a turn, CI wait, waiting on children and idle in that order (CI wait is not measured and is 0 on every bar, its hours going to waiting on children or idle), the review rounds, send-back share and post-review hours, and the issues Legion sessions filed per week by class against the issues finished per week; 400 INVALID_QUERY for a malformed window or scope, 404 NOT_FOUND for a project that does not exist. */
     get: operations["getApiV1LegionMetrics"];
     put?: never;
     post?: never;
@@ -5215,7 +5215,6 @@ export interface components {
     };
     LegionBoardCard: {
       blocked_by: string[] | null;
-      checks_verdict: null | string;
       children: number;
       key: string;
       phase: string;

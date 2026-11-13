@@ -19,10 +19,11 @@ func goldenStatePath() string {
 // TestTheDecodeReadsTheStateDocumentTheDaemonWrote: the sampler's decode reads the daemon's own
 // golden, and every field the Legion view and the four metrics take from a read survives it — the
 // settings the settings control shows with the source of each (the spec's contract 4), the
-// admission block the view's header and queue draw, and each issue's phase and claims. The pull
-// request's `requiresChecks`, which metric 2's CI-wait segment reads, is no longer on the
-// daemon's state (contract 96 dropped it with the required-checks record main's 86 deleted), so
-// this golden carries none and that segment reads it as absent (metrics' requiresChecks).
+// admission block the view's header and queue draw, and each issue's phase and claims. Of the
+// pull request the decode keeps the state alone: cybermonklabs/legion#2539 (main's contract 86)
+// took the CI verdict out of the daemon's state and deleted the record its required-check mark
+// was read from, so metric 2's CI-wait segment is not measured and the Legion card shows no CI
+// verdict.
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 	body, err := os.ReadFile(goldenStatePath())
 	if err != nil {
