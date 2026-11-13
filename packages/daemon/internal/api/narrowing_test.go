@@ -194,9 +194,11 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	})
 
 	// The newest narrowing is a row of the table like every other, so the caller below it is
-	// told what it lost. A strip applied beside the loop takes the field with no line, which is
-	// the state this requirement exists to end; a caller one contract below the highest row
-	// stands below that row alone, so the log holds that row's line and nothing else.
+	// told what it lost: a caller one contract below the highest row stands below that row
+	// alone, so the log holds that row's line and nothing else. This subtest does not catch a
+	// strip applied beside the loop, because it reads both its expectation and its answer from
+	// stateNarrowings; the subtest below, which names the line as a literal, is what catches
+	// that.
 	t.Run("the highest narrowing writes its own line", func(t *testing.T) {
 		body, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
 
@@ -222,8 +224,8 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 	// table: take the row out, apply the strip beside the loop as an `if` of its own, and the
 	// expectation falls with the answer, so the body is still narrowed, no line is written and
 	// nothing fails. That is exactly the state R12 of dispatch://INFRA-3083 forbids. Measured
-	// at 7530a855fb25 with the row removed and that `if` restored: the whole of internal/api
-	// passed, the subtest above included, and this one is what failed.
+	// at 7530a855fb25 with the row removed and that `if` restored: every other test of
+	// internal/api passed, the subtest above included, and this one alone failed.
 	t.Run("the assignments narrowing names its own keys in the log", func(t *testing.T) {
 		const dropped = "the issues' assignments"
 		_, narrowings := stateNarrowed(t, populatedState(t), statePodAddr+":41000", podClaims(assignmentsContract-1))
