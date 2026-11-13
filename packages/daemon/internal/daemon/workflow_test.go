@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -265,6 +266,86 @@ func TestADesignGateSettledUnderTheRunningDaemonIsTheGateItsEngineDecidesBy(t *t
 
 	if got := w.engine.GatedSteps(); len(got) != 0 {
 		t.Fatalf("the running engine decides by %+v after the gate was settled empty, want no gated step: the engine is reading the configuration boot handed it, not the settings holder", got)
+	}
+}
+
+// The admission the daemon opens decides each promotion by the admission cap the settings holder
+// holds when it decides, not the one boot read: openWorkflow hands admit.NewReading a read of the
+// holder. Three roots wait for a slot under a cap of 1, and the first reconcile admits one; the
+// cap is settled to 3 through the file arm, and the next reconcile admits the other two.
+//
+// internal/admit's TestTheAdmissionCapChangedThroughTheSettingsHolderIsUsedByTheNextDecision
+// holds the admission's own half — a read at every decision — on a read it builds itself, and
+// TestAnAdmissionCapChangedThroughTheRouteIsReadByTheNextDecision in this package reads the cap
+// from the daemon's state, which reads the holder directly. Neither runs the read openWorkflow
+// hands admission, so a closure that snapshotted the cap at boot passed both, and every other
+// test of this package that names admission, a cap or a slot. This test reds on that closure.
+func TestAnAdmissionCapSettledUnderTheRunningDaemonIsTheCapItsAdmissionPromotesUnder(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	board := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !servedBootCall(t, w, r, hookBootProject) {
+			t.Errorf("Dispatch request = %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(board.Close)
+	live := hookBootSettings(t, pool.Config().ConnString(), board.URL, "Say what the round missed.")
+	setInConfig(t, live, "admission_cap", "1")
+	if _, _, err := live.Apply(config.SourceFile, "", map[string]any{}); err != nil {
+		t.Fatalf("settle the boot's cap of 1: %v", err)
+	}
+	boot := *live.Snapshot()
+	if boot.AdmissionCap != 1 {
+		t.Fatalf("the boot's admission cap = %d, want 1", boot.AdmissionCap)
+	}
+
+	log := quietLogger()
+	st, err := store.Open(ctx, pool.Config().ConnString())
+	if err != nil {
+		t.Fatalf("open the store: %v", err)
+	}
+	t.Cleanup(st.Close)
+	w, err := openWorkflow(ctx, boot, live, newRebuilder(log, live), st, "project-id", "dispatch-token", nil,
+		newRepositories(boot.Project, boot.RepositoryRenames), log,
+		loginTokens{appauth.Implement: "legion-implementer[bot]", appauth.Review: "legion-reviewer[bot]"},
+		repositoriesGitHub(t), nil)
+	if err != nil {
+		t.Fatalf("open the workflow: %v", err)
+	}
+
+	var summaries []dispatch.IssueSummary
+	for _, rank := range []string{"A", "B", "C"} {
+		key := hookBootProject + "-" + rank
+		seedTickIssue(t, w.pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+			Project: hookBootProject, Title: key, Tree: key, Phase: phase.Admitted, Generation: 1, Status: "todo", Rank: rank, HandedOver: true})
+		summaries = append(summaries, dispatch.IssueSummary{Key: key, ResolvedRepo: "acme/widgets", Title: key, Status: "todo", Rank: rank, HandedOver: true})
+	}
+	slots := func() int {
+		t.Helper()
+		var n int
+		if err := w.pool.QueryRow(ctx, "select count(*) from slots").Scan(&n); err != nil {
+			t.Fatalf("count the slots: %v", err)
+		}
+		return n
+	}
+
+	reconcileAdmission(t, w.pool, w.admission, summaries, 1, intake.DispatchConsumerPosition{})
+	if got := slots(); got != 1 {
+		t.Fatalf("the first reconcile under a cap of 1 filled %d slots, want 1: the test's own premise does not hold", got)
+	}
+
+	setInConfig(t, live, "admission_cap", "3")
+	if _, _, err := live.Apply(config.SourceFile, "", map[string]any{}); err != nil {
+		t.Fatalf("the file arm of the settings route: %v", err)
+	}
+	if cap := live.Snapshot().AdmissionCap; cap != 3 {
+		t.Fatalf("the settled admission cap = %d, want the file's 3: the change this test is about did not settle", cap)
+	}
+
+	reconcileAdmission(t, w.pool, w.admission, summaries, 1, intake.DispatchConsumerPosition{})
+	if got := slots(); got != 3 {
+		t.Fatalf("the reconcile after the cap was settled to 3 filled %d slots, want 3: the running admission is promoting under the cap boot handed it, not the settings holder", got)
 	}
 }
 
