@@ -956,7 +956,7 @@ func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	go func() {
 		var err error
 		if adopting {
-			err = m.adopt(role, loc)
+			err = m.adopt(role, loc, &d)
 		}
 		if err == nil {
 			sending, cancel := context.WithTimeout(m.ctx, m.deps.timeouts().RPC)
@@ -1003,14 +1003,19 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 	return m.deps.IssueInTurn(m.claim.Issue, m.claim.Token)
 }
 
-// adopt hands the working copy the role's App identity before a phase task reaches the agent, so
-// the task's commits are authored by the bot. A failure keeps the task from being sent. Who
+// adopt hands the working copy the role's App identity before the phase task d reaches the agent,
+// so the task's commits are authored by the bot. A failure keeps the task from being sent. Who
 // adopts, and when, is adopts and sendPending's hold.
 //
 // A mint that failed is marked as what it is (runtime.ErrIdentityUnavailable) rather than left to
 // read as the transport's silence: it is raised here, before any frame leaves the daemon, and the
 // send's refusal is logged by that name (table.go's refused).
-func (m *Machine) adopt(role claim.Role, loc *runtime.Locator) error {
+//
+// An adoption the shim answers ok is logged here, once, at Info: the task, its phase, the App's git
+// name — never a token — and how long the shim took. The refusals are logged where the send's
+// outcome is (refused); without this line nothing in the log tells which tasks adopted the working
+// copy, which is what a production check reads to see the rule held (dispatch://INFRA-2695).
+func (m *Machine) adopt(role claim.Role, loc *runtime.Locator, d *Delivery) error {
 	if loc == nil {
 		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
 	}
@@ -1018,7 +1023,13 @@ func (m *Machine) adopt(role claim.Role, loc *runtime.Locator) error {
 	if err != nil {
 		return fmt.Errorf("%w: the git identity of %s: %w", runtime.ErrIdentityUnavailable, m.claim.Token, err)
 	}
-	return m.deps.Runtime.AdoptWorkingCopy(m.ctx, *loc, id)
+	started := m.deps.Clock.Now()
+	if err := m.deps.Runtime.AdoptWorkingCopy(m.ctx, *loc, id); err != nil {
+		return err
+	}
+	m.log.Info("supervise: the working copy was adopted for the phase task",
+		"delivery", d.ID, "phase", string(d.Phase), "identity", id.Name, "took", m.deps.Clock.Now().Sub(started))
+	return nil
 }
 
 // confirm records that the pending delivery's turn started: the claim and the delivery together,
