@@ -9,10 +9,11 @@ import { StagedDocument } from "./StagedDocument";
 
 /**
  * What the page draws under the outline (dispatch://INFRA-1196 R3, R15): the one editor a row of
- * the outline is being edited in, and the history at `/activity`. No preset, filter or address
- * draws a document here: a document is opened from the node menu, at its own address, in place
- * of the outline (`IssueBody`), and `/artifacts` opens the node menu, which is the issue's list
- * of files (`NodeMenu.tsx`).
+ * the outline is being edited in, and the history at `/activity` and at the address of a comment
+ * or message agents wrote outside every thread a person wrote in, which lands there (R20). No
+ * preset, filter or address draws a document here: a document is opened from the node menu, at
+ * its own address, in place of the outline (`IssueBody`), and `/artifacts` opens the node menu,
+ * which is the issue's list of files (`NodeMenu.tsx`).
  *
  * These are plain panels, not tabpanels: the presets are queries over one tree and the page has
  * no tablist of panels any more. A panel the reader has never opened stays unmounted, and one
@@ -23,6 +24,7 @@ export function IssuePresetPanels({
   activeTab,
   conversationState,
   editedDocument,
+  history,
   isClosed,
   issueKey,
   onToolbarSink,
@@ -37,6 +39,9 @@ export function IssuePresetPanels({
   conversationState: ConversationState;
   /** The document a row of the outline is being edited in. */
   editedDocument: Artifact | undefined;
+  /** Whether the address names a comment or message agents wrote outside every thread a person
+   *  wrote in, which lands in the history as `/activity` draws it (`IssuePage`'s `historyItem`). */
+  history: boolean;
   isClosed: boolean;
   issueKey: string;
   onToolbarSink: (artifactId: string) => (next: DocumentToolbar | undefined) => void;
@@ -48,7 +53,7 @@ export function IssuePresetPanels({
   // Questions or Pinned keeps their address (`IssuePage`'s `pickState`), so the history goes
   // with the state that drew it rather than standing under a panel showing the questions
   // alone; it stays mounted, and Everything brings it back.
-  const drawsActivity = activeTab === "activity" && conversationState === "everything";
+  const drawsActivity = (activeTab === "activity" || history) && conversationState === "everything";
   return (
     <>
       {/* The document a row of the outline is being edited in: one editor per document, so the

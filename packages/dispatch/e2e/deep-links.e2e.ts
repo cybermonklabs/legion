@@ -22,6 +22,7 @@ import {
   markSpan,
   selectEditorText,
 } from "./editor";
+import { conversationStateControl, focusedNodeId, onScreen, tree } from "./issue-page";
 import { navigateInApp } from "./sends";
 import { serveWithoutDisplayTrees } from "./strip-trees";
 import { expect, type Locator, type Page, test } from "./test";
@@ -61,18 +62,6 @@ async function seedIssue() {
     name: secondaryName,
   });
   return { issue, secondary };
-}
-
-/** Below the phone breakpoint a link to a comment opens its thread full-screen over the
- *  Conversation (`features/conversation/usePhoneThread.ts`), and the turns list behind it is
- *  inert while it shows. Back closes it and leaves the reader on the card the landing marked. */
-async function leaveThreadOverlay(page: Page, project: string): Promise<void> {
-  if (project !== "iphone") {
-    return;
-  }
-  const thread = page.getByRole("dialog", { name: "Thread" });
-  await thread.getByRole("button", { name: "Back" }).click();
-  await expect(thread).toHaveCount(0);
 }
 
 /** The long-document fixture every landing test shares: the quotation is thousands of pixels
@@ -279,26 +268,24 @@ async function withAnimationFramesHeld(page: Page, during: () => Promise<void>):
   }
 }
 
-/** Searches the issue tracker for `query` from the shell's search dialog and returns its one
- *  comment hit. */
-async function searchHit(page: Page, query: string): Promise<Locator> {
-  await page.getByRole("button", { name: /^search/i }).click();
-  await page.getByRole("combobox", { name: "Search" }).fill(query);
-  const hit = page.getByRole("dialog", { name: "Search" }).getByRole("option", {
-    name: /^comment /,
-  });
-  await expect(hit).toHaveCount(1);
-  return hit;
-}
-
 async function expectSelectedMarginItem(page: Page, id: string) {
   const item = page.getByTestId("margin-sheet").locator(`[data-margin-item="${id}"]`);
   await expect(item).toHaveAttribute("aria-current", "true");
   await expect(item).toBeInViewport();
 }
 
+/** The address "View in document" builds for an ask or a comment anchored in one of an issue's
+ *  documents: the document's own address with the item named by `?mark=`, which opens that
+ *  document with the item marked and the margin landed on its card (`refs/routes.ts`'s
+ *  `openDocumentPath`). `?comment=` and `?ask=` on an issue's address open the issue's outline on
+ *  the item's node instead (dispatch://INFRA-1196 R20). */
+function markPath(issueKey: string, slug: string, id: string): string {
+  return `/issues/${issueKey}/artifacts/${slug}?mark=${id}`;
+}
+
 // SLOW(>=2s): four anchored writes, each seeded on its own transaction, and the four links the
-// row lands on in turn, in WebKit.
+// row lands on in turn, in WebKit. The href each one is: "View in document"'s `?mark=`, for an
+// ask as for a comment.
 // @pr: The deep-link family's one row on the lane: an emitted document item href selects and scrolls its anchored thread.
 test("emitted document item hrefs select and scroll their anchored thread @pr", async ({
   browser,
@@ -332,16 +319,10 @@ test("emitted document item hrefs select and scroll their anchored thread @pr", 
   try {
     const page = await context.newPage();
     const targets = [
-      { id: comments[0].id, path: `/issues/${issue.key}/spec?comment=${comments[0].id}` },
-      {
-        id: comments[1].id,
-        path: `/issues/${issue.key}/artifacts/${secondarySlug}?comment=${comments[1].id}`,
-      },
-      { id: asks[0].id, path: `/issues/${issue.key}/spec?ask=${asks[0].id}` },
-      {
-        id: asks[1].id,
-        path: `/issues/${issue.key}/artifacts/${secondarySlug}?ask=${asks[1].id}`,
-      },
+      { id: comments[0].id, path: markPath(issue.key, "spec", comments[0].id) },
+      { id: comments[1].id, path: markPath(issue.key, secondarySlug, comments[1].id) },
+      { id: asks[0].id, path: markPath(issue.key, "spec", asks[0].id) },
+      { id: asks[1].id, path: markPath(issue.key, secondarySlug, asks[1].id) },
     ];
     for (const [index, target] of targets.entries()) {
       // Cold entry is proved once, by the first href; the rest are followed as a link in the
@@ -384,10 +365,10 @@ test("a document link followed while the page before it is still downloading its
     // not answer the failed chunk by reloading itself over the navigation. The first page's
     // download stays held until the link is followed, and the next page downloads its own.
     const transportCode = await holdFirstRequest(page, /\/assets\/yjs-[^/]+\.js$/u);
-    await page.goto(`/issues/${issue.key}/spec?comment=${comments[0].id}`);
+    await page.goto(markPath(issue.key, "spec", comments[0].id));
     const held = await transportCode.held;
 
-    const link = `/issues/${issue.key}/artifacts/${secondarySlug}?comment=${comments[1].id}`;
+    const link = markPath(issue.key, secondarySlug, comments[1].id);
     await page.goto(link);
     await expectSelectedMarginItem(page, comments[1].id);
     const opened = new URL(page.url());
@@ -421,7 +402,7 @@ test("a linked card the margin's later cards push down is scrolled back into vie
       await asksHeld.promise;
       await route.continue();
     });
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
     await expectSelectedMarginItem(page, comment.id);
 
     const sheet = page.getByTestId("margin-sheet");
@@ -441,7 +422,7 @@ test("a desktop document item link shows its far-away card and its quote", async
 
   try {
     const page = await context.newPage();
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -472,7 +453,7 @@ test("a composer opened from the document is in the margin's view after a commen
 
   try {
     const page = await context.newPage();
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -548,7 +529,7 @@ test("a press in the document while a comment link is still landing does not end
       await asksHeld.promise;
       await route.continue();
     });
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -625,13 +606,14 @@ for (const state of crossDocumentLandingStates) {
           await route.continue();
         });
       }
-      await (await searchHit(page, "must show its quote")).click();
-      await expect(page).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
+      // The link is the one "View in document" builds, followed as a link in the app is. A search
+      // hit for the comment names the comment's own address, which opens the issue's outline on
+      // its node rather than the document (dispatch://INFRA-1196 R20).
+      const link = markPath(issue.key, "spec", comment.id);
+      await navigateInApp(page, link);
+      await expect(page).toHaveURL(link);
       if (!state.holdIssuePageCode) {
-        await expect(page.getByRole("tab", { exact: true, name: "Spec" })).toHaveAttribute(
-          "aria-selected",
-          "true"
-        );
+        await expect(page.getByTestId("artifact-header")).toBeVisible();
       }
 
       const sheet = page.getByTestId("margin-sheet");
@@ -684,9 +666,11 @@ const hiddenEditorJourneys = [
       await page.getByRole("combobox", { name: "Version" }).selectOption("1");
       await expect(page.getByTestId("version-view")).toBeVisible();
       await expect(page).toHaveURL(`/issues/${issueKey}/artifacts/spec?v=1`);
-      const hit = await searchHit(page, "must show its quote");
+      // Back by the link, followed as a link in the app is: a search hit for the comment names
+      // the comment's own address, which opens the issue's outline on its node rather than the
+      // document (dispatch://INFRA-1196 R20).
       return async () => {
-        await hit.click();
+        await navigateInApp(page, link);
         await expect(page).toHaveURL(link);
       };
     },
@@ -712,7 +696,7 @@ for (const journey of hiddenEditorJourneys) {
 
     try {
       const page = await context.newPage();
-      const link = `/issues/${issue.key}/spec?comment=${comment.id}`;
+      const link = markPath(issue.key, "spec", comment.id);
       await page.goto(link);
       const sheet = page.getByTestId("margin-sheet");
       const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -842,7 +826,7 @@ test("a resolving reference above a linked card does not end the hold", async ({
       await referenceHeld.promise;
       await route.continue();
     });
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -907,7 +891,7 @@ test("the margin stops holding a landed card once the reader works the document"
   try {
     const page = await context.newPage();
     await page.setViewportSize({ height: 1000, width: 1280 });
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -991,7 +975,7 @@ test("a linked card's placement ignores the margin's own scroll @webkit @firefox
 
   try {
     const page = await context.newPage();
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -1026,7 +1010,7 @@ test("an iPhone document item link brings its far-away mark above the closed rev
 
   try {
     const page = await context.newPage();
-    await page.goto(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await page.goto(markPath(issue.key, "spec", comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const mark = markSpan(page, markId);
@@ -1081,9 +1065,7 @@ test("an iPhone secondary-document link scrolls its selected card after opening 
 
   try {
     const page = await context.newPage();
-    await page.goto(
-      `/issues/${issue.key}/artifacts/${secondary.artifact.slug}?comment=${comment.id}`
-    );
+    await page.goto(markPath(issue.key, secondary.artifact.slug, comment.id));
 
     const sheet = page.getByTestId("margin-sheet");
     const card = sheet.locator(`[data-margin-item="${comment.id}"]`);
@@ -1206,9 +1188,14 @@ test("an item link the SPA cannot resolve names what is missing, inside the shel
   }
 });
 
-// A landing marks exactly one conversation card, whatever bucket that conversation is in, and
-// where the link names a reply rather than the root it marks that reply's own row inside it.
-test("every item link lands on exactly one marked card, and a reply link marks its row too @phone", async ({
+// A landing focuses exactly one node of the outline - the one the link names - brings it on
+// screen and draws its text there, whatever bucket its conversation is in and wherever it is
+// anchored (dispatch://INFRA-1196 R20). A comment agents wrote to each other outside every
+// thread a person wrote in lands in the history instead, which is not in the panel yet and so is
+// today's: what `/activity` opens, the conversation in its Everything state with that card
+// marked and, at a desktop width, its thread open with the reply's own row marked. On a phone no
+// link opens a thread: the reader opens it from the card when they ask for it.
+test("every item link focuses exactly one node, and an agents-only link marks its card in the history @phone", async ({
   browser,
 }, testInfo) => {
   const isPhone = testInfo.project.name === "iphone";
@@ -1241,6 +1228,19 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     page
       .getByRole("list", { name: "Conversation turns" })
       .locator('li[data-turn][aria-current="true"]');
+  /** The one node the landing focused: the tree's one tab stop holds the focus, it is the node
+   *  the link names, it draws the node's words, and it is on screen. */
+  const landsOnNode = async (page: Page, id: string, words: string) => {
+    await expect
+      .poll(() => focusedNodeId(page), { message: `the link to ${id} focuses no node of it` })
+      .toBe(id);
+    const stop = tree(page).locator('[data-node-row][tabindex="0"]');
+    await expect(stop).toHaveCount(1);
+    await expect(stop).toHaveAttribute("data-node-id", id);
+    await expect(stop).toContainText(words);
+    await expect.poll(() => onScreen(stop), { message: `${id}'s row is off screen` }).toBe(true);
+    await expect(page.getByRole("dialog", { name: "Thread" })).toHaveCount(0);
+  };
 
   const context = await asUser(browser, "alice");
   try {
@@ -1249,46 +1249,44 @@ test("every item link lands on exactly one marked card, and a reply link marks i
     // before it may say so; its clock fires those waits.
     await page.clock.install();
 
-    // A reply written under an ask marks that ask's card and the reply's own row.
+    // A reply written under an ask is in the ask's thread, which the outline draws, so its link
+    // focuses the reply's node there.
     await page.goto(`/issues/${issue.key}/comments/${askReply.id}`);
-    await expect(marked(page)).toHaveCount(1);
-    await expect(marked(page)).toHaveAttribute("data-turn", `ask:${ask.id}`);
-    await expect(marked(page).locator('[data-reply][aria-current="true"]')).toHaveCount(1);
+    await landsOnNode(page, askReply.id, "A reply under the ask.");
 
-    // A retracted ask: Closed, and the landing resets the filter so the link never fails.
-    // Every landing after the first is reached as a link in the app reaches it: the cold entry
-    // is proved once above, and each of these drives the same router and the same landing.
+    // A retracted ask: Closed, and still the one node the link focuses. Every landing after the
+    // first is reached as a link in the app reaches it: the cold entry is proved once above, and
+    // each of these drives the same router and the same landing.
     await navigateInApp(page, `/issues/${issue.key}/asks/${retracted.id}`);
-    await expect(marked(page)).toHaveCount(1);
-    await expect(marked(page)).toHaveAttribute("data-turn", `ask:${retracted.id}`);
+    await landsOnNode(page, retracted.id, "Withdrawn sextant?");
 
-    // A reply in a resolved comment thread marks the thread's card and that reply's row. Below
-    // the phone breakpoint the link opens that thread full-screen over the Conversation
-    // (`features/conversation/usePhoneThread.ts`), which inerts the turns list behind it: the
-    // reply's row is marked in the thread the reader lands on, and the card behind it once
-    // Back closes the thread.
+    // A reply in a thread only agents wrote in lands in today's history: the conversation in
+    // its Everything state marks the thread's card, the outline takes no focus for it, and at a
+    // desktop width the thread is open with the reply's own row marked.
     await navigateInApp(page, `/issues/${issue.key}/comments/${resolvedReply.id}`);
-    const resolvedThread = page.getByRole("dialog", { name: "Thread" });
-    await expect(
-      (isPhone ? resolvedThread : marked(page)).locator('[data-reply][aria-current="true"]')
-    ).toHaveCount(1);
-    await leaveThreadOverlay(page, testInfo.project.name);
     await expect(marked(page)).toHaveCount(1);
     await expect(marked(page)).toHaveAttribute("data-turn", `comment:${resolvedRoot.id}`);
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    // The focus stays where the last landing left it: the outline puts none on this thread.
+    expect(
+      [resolvedRoot.id, resolvedReply.id],
+      "an agents-only link focuses its node in the outline"
+    ).not.toContain(await focusedNodeId(page));
+    if (isPhone) {
+      await expect(page.getByRole("dialog", { name: "Thread" })).toHaveCount(0);
+    } else {
+      await expect(marked(page).locator('[data-reply][aria-current="true"]')).toHaveCount(1);
+    }
 
-    // A search hit opens the very path the palette's row carries.
+    // A search hit opens the very path the palette's row carries, and lands on the node.
     const hits = await search("quadrant");
     const hit = (hits.results ?? []).find((result) => result.id === found.id);
     expect(hit?.href).toBe(`/issues/${issue.key}/comments/${found.id}`);
     await navigateInApp(page, hit?.href ?? "");
-    if (isPhone) {
-      await expect(page.getByRole("dialog", { name: "Thread" })).toContainText(
-        "Search me: quadrant note."
-      );
-    }
-    await leaveThreadOverlay(page, testInfo.project.name);
-    await expect(marked(page)).toHaveCount(1);
-    await expect(marked(page)).toHaveAttribute("data-turn", `comment:${found.id}`);
+    await landsOnNode(page, found.id, "Search me: quadrant note.");
 
     // The negative controls: an item that lives on another issue still redirects to it, and an
     // id that names nothing still renders the missing page.

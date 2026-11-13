@@ -125,6 +125,7 @@ import {
   nodeRow,
   nodeRows,
   offered,
+  onScreen,
   openEveryDeeperBranch,
   openedArtifact,
   openedEditor,
@@ -3678,18 +3679,48 @@ test("every address of the old page still resolves", async ({ browser }) => {
 
     // An ask the server indexed from a document's `ask` block *is* that block's node
     // (`e2e/issue-page.ts`), which is what the `?ask=` reading below asserts too: no row of the
-    // tree carries the ask's own uuid, so each address names the node it opens.
-    for (const [kind, id, node] of [
-      ["asks", seeded.openQuestion.askId, blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID)],
-      ["comments", seeded.comments.anchored, seeded.comments.anchored],
-      ["messages", seeded.messages.root, seeded.messages.root],
+    // tree carries the ask's own uuid, so each address names the node it opens. Each address
+    // focuses that node in the outline, on screen, and draws its text there, wherever the item
+    // is anchored: the comment is anchored in the spec, and the spec's addresses beside it open
+    // the outline on it too (R20).
+    const commentWords = "This requirement is the one the tree reads first.";
+    for (const [address, node, words] of [
+      [
+        `asks/${seeded.openQuestion.askId}`,
+        blockNodeId(specSlug, OPEN_QUESTION_BLOCK_ID),
+        "At which width does the identity block condense?",
+      ],
+      [`comments/${seeded.comments.anchored}`, seeded.comments.anchored, commentWords],
+      [
+        `messages/${seeded.messages.root}`,
+        seeded.messages.root,
+        "The tree is folded to the frontier.",
+      ],
+      [`spec?comment=${seeded.comments.anchored}`, seeded.comments.anchored, commentWords],
+      [
+        `artifacts/${specSlug}?comment=${seeded.comments.anchored}`,
+        seeded.comments.anchored,
+        commentWords,
+      ],
     ] as const) {
-      await gotoIssue(page, `/issues/${seeded.key}/${kind}/${id}`);
+      await gotoIssue(page, `/issues/${seeded.key}/${address}`);
       await expectIssuePageDrawn(page);
+      await expect
+        .poll(() => focusedNodeId(page), { message: `/${address} focuses no node for it` })
+        .toBe(node);
+      await expect
+        .poll(() => onScreen(nodeRow(page, node).first()), {
+          message: `/${address} leaves its node off screen`,
+        })
+        .toBe(true);
+      await expect(
+        nodeRow(page, node).first(),
+        `/${address} does not draw its node's text`
+      ).toContainText(words);
       expect(
-        await nodeRow(page, node).count(),
-        `/${kind}/<id> opens no node for it`
-      ).toBeGreaterThan(0);
+        await openedEditor(page).count(),
+        `/${address} opens a document in place of the outline`
+      ).toBe(0);
     }
 
     // The queries, each doing what it does today.
@@ -3720,6 +3751,9 @@ test("every address of the old page still resolves", async ({ browser }) => {
       await nodeRow(page, seeded.comments.anchored).count(),
       "?comment= opens no node for that comment"
     ).toBe(1);
+    await expect
+      .poll(() => focusedNodeId(page), { message: "?comment= does not focus that comment" })
+      .toBe(seeded.comments.anchored);
 
     // A `#b-` fragment scrolls to its node, including one in a document the page does not open
     // first: the plan's last task is in no preset the issue's own address opens.

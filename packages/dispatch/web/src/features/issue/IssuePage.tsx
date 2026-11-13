@@ -1,3 +1,4 @@
+import { isIdPrefix, itemFromSearch } from "@legion/contracts";
 import { useQuery } from "@tanstack/react-query";
 import {
   type ReactNode,
@@ -11,7 +12,7 @@ import {
 import { createPortal } from "react-dom";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 
-import { ApiError } from "../../api/client";
+import { ApiError, api } from "../../api/client";
 import { artifactBlocksQuery } from "../../api/queries";
 import type { Artifact } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -24,6 +25,7 @@ import {
   textPrimaryOnCanvas,
   textSecondaryOnCanvas,
 } from "../../theme/classes";
+import { useSelectedItem } from "../artifacts/ArtifactDocument";
 import { ConversationTab } from "../conversation/ConversationTab";
 import { conversationScrollport } from "../conversation/use-follow-latest";
 import { useFillMarginSlot, useMarginDrawsSlot } from "../margin/margin-slot";
@@ -41,7 +43,12 @@ import { IssueHeader } from "./IssueHeader";
 import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
-import { conversationStatePath, type IssueAddress, issueAddress } from "./issue-address";
+import {
+  agentsOnlyItem,
+  conversationStatePath,
+  type IssueAddress,
+  issueAddress,
+} from "./issue-address";
 import { OpenedDocument } from "./OpenedDocument";
 import {
   CONVERSATION_STATE_ORDER,
@@ -165,8 +172,6 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const {
     activeTab,
     artifactRoute,
-    askId,
-    commentId,
     conversationFocusItemId,
     highlightTerm,
     issue,
@@ -176,7 +181,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     state,
     verificationArtifact,
   } = useIssueDetail(route);
-  const landing = useItemLanding(route, issue.data);
+  const landing = useItemLanding(route);
   const { hash, pathname, search, state: locationState } = useLocation();
   const navigate = useNavigate();
   const panelScroll = useRef<Partial<Record<IssueTab, number>>>({});
@@ -188,10 +193,70 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // What this address opens: its preset, the document it opens, the node it names, the
   // conversation's state, the filter and the version it pins (`issue-address.ts`). A block a
   // `/spec` address names is the spec's own, looked up in the spec by its slug.
-  const address = issueAddress(route, search, hash, primaryArtifact?.slug);
+  const addressed = issueAddress(route, search, hash, primaryArtifact?.slug);
+  // An address naming an ask, a comment or a message and opening no document lands on its node.
+  const namesItem = addressed.document === undefined && addressed.target?.kind === "item";
+  // The ask or comment an address's `?ask=` or `?comment=` names for the outline to open on. An
+  // id written short is resolved as a document's address resolves one, and the address is
+  // replaced with the whole id, which names the node (`ArtifactDocument`'s `useSelectedItem`);
+  // a whole id reads nothing more.
+  const queryItem =
+    namesItem && !isItemRoute(route) ? (itemFromSearch(search) ?? undefined) : undefined;
+  const queryLanding = useSelectedItem({ key: route.key, kind: "issue" }, queryItem);
+  const listed = addressed.documentItem;
+  const marked = listed?.kind === "mark" ? listed.id : undefined;
+  // The issue's comments and messages, under the keys the outline, the conversation and the
+  // margin read them by (`useIssueTree.ts`, `useMarginItems.ts`), so they cost no request of
+  // their own: they say whether the item the address names sits in a thread no person wrote in,
+  // and whether the item `?mark=` names is a comment or an ask. Only such an address reads them
+  // here; on every other the outline reads them as it draws.
+  const comments = useQuery({
+    enabled: namesItem || marked !== undefined,
+    queryFn: () => api.listComments(route.key),
+    queryKey: ["comments", route.key],
+  });
+  const messages = useQuery({
+    enabled: namesItem,
+    queryFn: () => api.listIssueMessages(route.key),
+    queryKey: ["issue-messages", route.key],
+  });
+  // `?mark=` names an ask or a comment by its id alone: a comment when the issue's comments
+  // hold that id - or, for an id written short, one starting with it, which the document then
+  // resolves and writes whole under `?mark=` (`ArtifactDocument`'s `marked`) - and an ask
+  // otherwise. The document marks neither until they have answered.
+  const documentItem =
+    listed?.kind !== "mark"
+      ? listed
+      : comments.data === undefined
+        ? undefined
+        : {
+            id: listed.id,
+            kind: comments.data.some(
+              (comment) =>
+                comment.id === listed.id ||
+                (isIdPrefix(listed.id) && comment.id.startsWith(listed.id))
+            )
+              ? ("comment" as const)
+              : ("ask" as const),
+            marked: true,
+          };
+  // A comment or message an agent wrote outside every thread a person wrote in lands in the
+  // history and not in the outline (R20). The history is not in the panel yet, so it lands in
+  // today's: what `/activity` opens - the conversation in its Everything state with the page's
+  // history drawn under the outline - with the conversation marking the entry, and the outline
+  // takes no focus for it. An address that opens a document lands in that document.
+  const historyItem = namesItem
+    ? agentsOnlyItem(addressed.target, comments.data, messages.data)
+    : undefined;
+  const address: IssueAddress =
+    historyItem === undefined
+      ? addressed
+      : { ...addressed, conversation: "everything", target: undefined };
   // The document the address opens in place of the outline (R3, R20): a document's own address,
-  // and a `/spec` address that names a comment or a block of the spec, which opens the spec as
-  // `/artifacts/<spec>` with the same query and fragment does (`issue-address.ts`).
+  // and a `/spec` address that names a block of the spec, or an item at a pinned version or
+  // `?mark=`, which opens the spec as `/artifacts/<spec>` with the same query and fragment does
+  // (`issue-address.ts`). Any other address naming an ask or a comment opens the outline on its
+  // node instead, whatever document it addresses.
   const documentRoute: Extract<IssueRoute, { kind: "artifact" }> | undefined =
     artifactRoute ??
     (route.kind !== "spec" || address.document === undefined
@@ -351,6 +416,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   if (!activatedTabs[activeTab]) {
     setActivatedTabs({ ...activatedTabs, [activeTab]: true });
   }
+  // An agents-only item lands in the history and the conversation, which mount for it as their
+  // own addresses mount them.
+  if (historyItem !== undefined && !(activatedTabs.activity && activatedTabs.conversation)) {
+    setActivatedTabs({ ...activatedTabs, activity: true, conversation: true });
+  }
   // The conversation's one list, which the panel draws under the four state controls that
   // drive it (R12): it belongs to the panel and to no column of the page, and it is drawn
   // wherever the panel is. It is mounted once its own address has been opened and kept
@@ -364,7 +434,11 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       details === undefined || !activatedTabs.conversation ? undefined : (
         <ConversationTab
           issueArtifacts={issueArtifacts}
-          focusItemId={conversationFocusItemId}
+          focusItemId={conversationFocusItemId ?? historyItem}
+          // The outline is the landing of every item address but one in the history, and keeps
+          // its node on screen; on a phone the conversation shares the page's scroll, so only a
+          // history landing scrolls the page to its entry (R20).
+          focusMovesPage={historyItem !== undefined}
           isClosed={details.closed_at !== null}
           issueKey={details.key}
           narrow={narrowConversation(
@@ -373,7 +447,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           )}
           onFirstPlacement={forgetConversationScroll}
           state={state.data}
-          visible={activeTab === "conversation"}
+          visible={activeTab === "conversation" || historyItem !== undefined}
         />
       ),
     [
@@ -383,6 +457,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
       conversationState,
       details,
       forgetConversationScroll,
+      historyItem,
       issueArtifacts,
       state.data,
     ]
@@ -455,9 +530,22 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     issue.data === undefined ? "Dispatch" : `${issue.data.key} · ${issue.data.title} · Dispatch`
   );
 
-  // A failed issue read is reported before an item link's landing: the landing waits on the
-  // issue to tell it which artifact an anchor names, so reading its pending state first turns a
-  // 500 into "Loading issue…" for good.
+  // An approval request's own address puts the focus on the approval the identity block draws
+  // for the document it reviews, since the outline draws no node for it (`useItemLanding`'s
+  // `approval`, R20). It runs once the identity block is drawn, and again only for another
+  // landing: after that the focus is the reader's.
+  const approvalOf = landing?.kind === "approval" ? landing.artifactId : undefined;
+  const headerDrawn = issue.data !== undefined && !state.isPending;
+  useEffect(() => {
+    if (approvalOf === undefined || !headerDrawn) return;
+    document
+      .querySelector<HTMLElement>(`[data-approval-artifact="${CSS.escape(approvalOf)}"]`)
+      ?.focus();
+  }, [approvalOf, headerDrawn]);
+
+  // A failed issue read is reported before an item link's landing: the item's own read may still
+  // be out, or out for good, and reading the landing's pending state first turns a 500 into
+  // "Loading issue…" for as long as it is.
   if (issue.isError || state.isError) {
     const notFound = issue.error instanceof ApiError && issue.error.status === 404;
     return (
@@ -500,8 +588,19 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   if (landing?.kind === "redirect" || landing?.kind === "rewrite") {
     return <Navigate replace to={landing.to} />;
   }
+  if (queryLanding.rewrite !== undefined) {
+    return <Navigate replace to={queryLanding.rewrite} />;
+  }
   if (isItemRoute(route) && landing?.kind === "ambiguous") {
     return <ItemMatchList candidates={landing.candidates} route={route} />;
+  }
+  if (queryItem !== undefined && queryLanding.candidates !== undefined) {
+    return (
+      <ItemMatchList
+        candidates={queryLanding.candidates}
+        route={{ id: queryItem.id, key: route.key, kind: queryItem.kind }}
+      />
+    );
   }
   if (isItemRoute(route) && (landing?.kind === "missing" || landing?.kind === "unavailable")) {
     return <ItemLandingFailure landing={landing} route={route} />;
@@ -571,8 +670,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             <OpenedDocument
               artifact={documentArtifact}
               artifactRoute={documentRoute}
-              askId={askId}
-              commentId={commentId}
+              item={documentItem}
               highlightTerm={highlightTerm}
               isClosed={isClosed}
               issueKey={issueKey}
@@ -675,6 +773,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           activeTab={activeTab}
           conversationState={conversationState}
           editedDocument={edited}
+          history={historyItem !== undefined}
           isClosed={isClosed}
           issueKey={issueKey}
           onToolbarSink={toolbarSink}

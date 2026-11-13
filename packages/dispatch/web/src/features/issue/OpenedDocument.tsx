@@ -33,11 +33,10 @@ import { StagedDocument } from "./StagedDocument";
 export function OpenedDocument({
   artifact,
   artifactRoute,
-  askId,
-  commentId,
   highlightTerm,
   isClosed,
   issueKey,
+  item,
   onShowDiff,
   onToolbarChange,
   onVersionChange,
@@ -47,12 +46,14 @@ export function OpenedDocument({
 }: {
   artifact: Artifact | undefined;
   artifactRoute: Extract<IssueRoute, { kind: "artifact" }>;
-  /** The ask and the comment the address names for the document's editor to open. */
-  askId: string | undefined;
-  commentId: string | undefined;
   highlightTerm: string | undefined;
   isClosed: boolean;
   issueKey: string;
+  /** The ask or comment the address names for the document to land on, marked in its text
+   *  (`issue-address.ts`'s `documentItem`), and whether the address names it by `?mark=`. */
+  item:
+    | { readonly kind: "ask" | "comment"; readonly id: string; readonly marked?: boolean }
+    | undefined;
   onShowDiff: (next: boolean) => void;
   onToolbarChange: (next: DocumentToolbar | undefined) => void;
   onVersionChange: (version: number | null) => void;
@@ -112,11 +113,12 @@ export function OpenedDocument({
         {artifact === undefined || artifact.kind !== "doc" ? null : (
           <StagedDocument
             artifact={artifact}
-            askId={askId}
-            commentId={commentId}
+            askId={item?.kind === "ask" ? item.id : undefined}
+            commentId={item?.kind === "comment" ? item.id : undefined}
             highlightTerm={highlightTerm}
             isClosed={isClosed}
             issueKey={issueKey}
+            marked={item?.marked}
             onToolbarChange={onToolbarChange}
             onVersionChange={(version) => {
               onShowDiff(false);

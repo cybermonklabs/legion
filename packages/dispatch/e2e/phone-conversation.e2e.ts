@@ -12,6 +12,7 @@ import {
   patchIssue,
   resolveComment,
 } from "./api";
+import { focusedNodeId } from "./issue-page";
 import { expectUncovered } from "./layout";
 import { answeredPost, holdPosts, refusePosts, WRITE_REFUSED, WRITE_REFUSED_TEXT } from "./sends";
 import { expect, type Locator, type Page, test } from "./test";
@@ -1117,15 +1118,15 @@ test("on a phone, a thread over an older conversation holds the issue's read mar
   }
 });
 
-// The other side of the rule: a comment link opens that comment's thread full-screen as the
-// page lands on a phone, so a reader following one from the Inbox, a Replies row or a copied
-// reference reads the conversation in the thread and never sees the list behind it. A thread
-// showing the newest conversation is the issue read through its head, so the mark is written
-// from the thread itself rather than waiting for a Back that may never come: `usePhoneThread`
-// adds no history entry, so the browser's back leaves the issue, and the list it would have
-// been written from is never shown. This row lands on the link from another page, so that back
-// leaves the issue altogether and no dwell of the list can write the mark after it.
-test("on a phone, a comment link to the newest conversation marks the issue read from its thread @phone", async ({
+// The other side of the rule: on a phone a comment link lands on the comment's node in the
+// issue's outline, focused, and opens no thread (dispatch://INFRA-1196 R20); the reader opens
+// the thread from the card when they ask for it. A thread showing the newest conversation is
+// the issue read through its head, so the mark is written from the thread itself rather than
+// waiting for a Back that may never come: `usePhoneThread` adds no history entry, so the
+// browser's back leaves the issue, and the list it would have been written from is never
+// shown. This row lands on the link from another page, so that back leaves the issue
+// altogether and no dwell of the list can write the mark after it.
+test("on a phone, a comment link lands on its node, and the thread the reader opens from it marks the issue read @phone", async ({
   browser,
 }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -1166,7 +1167,19 @@ test("on a phone, a comment link to the newest conversation marks the issue read
     await expect(issueLink).toBeVisible();
 
     await page.goto(`/issues/${issue.key}/comments/${newest.id}`);
+    // The page draws nothing of its own accord on a paused clock (`drawn`): each read's answer
+    // waits on a zero-delay page timer, so the landing is waited for a millisecond at a time.
+    await expect
+      .poll(async () => {
+        await page.clock.runFor(1);
+        return focusedNodeId(page);
+      }, PROBE)
+      .toBe(newest.id);
     const thread = threadView(page);
+    await expect(thread).toHaveCount(0);
+    // Opened by the reader from the card; it draws on the paused clock only as the clock is
+    // spent (`drawn`), as the thread this link used to open did.
+    await commentTurn(page, newest.id).getByRole("button", { name: "Expand thread" }).click();
     await drawn(thread.getByText("Newest comment", { exact: true }), 1);
     await expect(thread).toBeVisible();
     await expect(thread.getByText("Newest comment", { exact: true })).toBeVisible();

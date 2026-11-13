@@ -292,6 +292,9 @@ export function ApprovalChip({
       <button
         aria-haspopup="dialog"
         className={approvalPillClassName(approval.state)}
+        // The document whose approval this is, which an approval request's own address puts the
+        // focus on (`features/issue/IssuePage.tsx`, dispatch://INFRA-1196 R20).
+        data-approval-artifact={artifact.id}
         onClick={() => setReviewsOpen(true)}
         title={
           approval.state === "stale"

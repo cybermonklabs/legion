@@ -126,6 +126,10 @@ export interface ThreadCardProps {
    *  and draft, whatever unmounted the last one; and a host that holds its own Replies while one
    *  of its sends is out (the Conversation tab) holds them for this one too. */
   replyMutationKey?: MutationKey;
+  /** The card was expanded by a link landing on it rather than by the reader, so its reply
+   *  composer takes no focus as it mounts (`MentionComposer`'s `standing`): the issue page
+   *  puts the focus on the item's node in the outline (dispatch://INFRA-1196 R20). */
+  standingReply?: boolean;
   /** Whether this card is one of the margin's own items, which it is wherever the margin draws
    *  it and is not where the Conversation draws the same card in its own list. The margin names
    *  its items (`data-margin-item`) so a landed card is found and placed by its mark, and the
@@ -259,6 +263,7 @@ export function ThreadCard({
   pulseOrphanBlock = true,
   renderDeliveries,
   replyMutationKey,
+  standingReply = false,
   thread,
   viewerLogin,
   editingCommentId: editingId,
@@ -352,6 +357,7 @@ export function ThreadCard({
         onSent={() => {}}
         owner={composerOwner(owner)}
         replyTo={{ actor: root.author, excerpt: "", id: root.id, parentKind: "comment" }}
+        standing={standingReply}
       />
     </div>
   ) : null;

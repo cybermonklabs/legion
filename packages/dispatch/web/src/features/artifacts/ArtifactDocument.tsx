@@ -13,8 +13,8 @@ import type { MarginOwner } from "../margin/useMarginItems";
 import { useWholeRouteRead } from "../refs/reference-target";
 import type { DispatchReferenceRoute } from "../refs/routes";
 
-/** The item a document address names, as `?comment=` or `?ask=` writes it. Its id may be written
- *  short, which only the reference it stands for can resolve. */
+/** The item a document's or an issue's address names, as `?comment=` or `?ask=` writes it. Its id
+ *  may be written short, which only the reference it stands for can resolve. */
 interface SelectedItem {
   id: string;
   kind: "ask" | "comment";
@@ -37,8 +37,8 @@ function itemId(route: DispatchReferenceRoute, kind: SelectedItem["kind"]): stri
   return route.kind === kind ? route.id : undefined;
 }
 
-/** Where a document address's `?comment=` or `?ask=` lands, the query half of what
- *  `useItemLanding` does for `/issues/KEY/asks|comments|messages/<id>`. */
+/** Where an address's `?comment=` or `?ask=` lands, the query half of what `useItemLanding` does
+ *  for `/issues/KEY/asks|comments|messages/<id>`. */
 interface SelectedItemLanding {
   /** The matches an ambiguous short id named, for the list the item routes show; undefined for
    *  every other answer. */
@@ -56,9 +56,16 @@ interface SelectedItemLanding {
  * whole id is kept as written and read under itself, with no added request; a short one is
  * resolved through the reference it stands for (`GET /references?to=`), as every other surface
  * resolves one, and the address is then replaced with the whole id so what a reader copies off
- * the page is unambiguous.
+ * the page is unambiguous. The document a document's address opens lands on the item, and the
+ * issue page's outline on its node (`IssuePage`, dispatch://INFRA-1196 R20).
  */
-function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): SelectedItemLanding {
+export function useSelectedItem(
+  owner: MarginOwner,
+  item: SelectedItem | undefined,
+  /** The query parameter the address names the item by, which the rewrite keeps: `?comment=`
+   *  or `?ask=` by its kind, or `?mark=` (`issue-address.ts`'s `documentItem`). */
+  param: "ask" | "comment" | "mark" | undefined = item?.kind
+): SelectedItemLanding {
   const { hash, pathname, search } = useLocation();
   const route = item === undefined ? undefined : itemReference(owner, item);
   // Only an id written short is resolved; the hook reads nothing for a route that writes every
@@ -67,11 +74,11 @@ function useSelectedItem(owner: MarginOwner, item: SelectedItem | undefined): Se
   const whole =
     item === undefined || answered === undefined ? undefined : itemId(answered, item.kind);
   const candidates = prefix === undefined ? undefined : ambiguousItems(resolution.error);
-  if (item === undefined || whole === undefined || whole === item.id) {
+  if (item === undefined || param === undefined || whole === undefined || whole === item.id) {
     return { candidates, id: whole, rewrite: undefined };
   }
   const params = new URLSearchParams(search);
-  params.set(item.kind, whole);
+  params.set(param, whole);
   return { candidates, id: whole, rewrite: `${pathname}?${params.toString()}${hash}` };
 }
 
@@ -81,6 +88,7 @@ export function ArtifactDocument({
   commentId,
   highlightTerm,
   isClosed,
+  marked = false,
   owner,
   onToolbarChange,
   onVersionChange,
@@ -92,6 +100,9 @@ export function ArtifactDocument({
   commentId?: string;
   highlightTerm?: string;
   isClosed: boolean;
+  /** The address names the ask or the comment by `?mark=` rather than by its kind, and the
+   *  whole id that replaces one written short is written there too. */
+  marked?: boolean;
   owner: MarginOwner;
   showDiff: boolean;
   onToolbarChange?(toolbar: DocumentToolbar | undefined): void;
@@ -105,7 +116,7 @@ export function ArtifactDocument({
         ? undefined
         : { id: askId, kind: "ask" }
       : { id: commentId, kind: "comment" };
-  const landing = useSelectedItem(owner, selected);
+  const landing = useSelectedItem(owner, selected, marked ? "mark" : selected?.kind);
   // The ask is read under its whole id alone: a prefix is no key anything is cached under. The
   // comment list is the document's own, the same read whichever comment the address names.
   const askRead = selected?.kind === "ask" ? landing.id : undefined;

@@ -16,8 +16,8 @@ interface UseMarginListenersOptions {
   onSelectCard: (id: string, blockID?: string) => void;
   /** Whether the open document has reported where its blocks and marks sit. */
   placementsPublished: boolean;
-  /** Whether the item the address names is the margin's to land on, rather than a conversation
-   *  entry the conversation itself places the reader on (`useMarginSheet.ts`). */
+  /** Whether the item the address names is the margin's to land on - an item the document the
+   *  page opens is opened at - rather than a node of the issue's outline (`useMarginSheet.ts`). */
   routeItemBesideDocument: boolean;
   routeItemId: string | undefined;
   /** The link's request: a new navigation to the same item is a new one. */
@@ -83,12 +83,11 @@ export function useMarginListeners({
   // A hold scrolls the margin's scrollport, and on the issue page that is the one scrollport
   // the whole panel has - the margin's own cards and the issue's conversation together
   // (dispatch://INFRA-1196 R12). So it holds only what the margin is the landing for: a
-  // passage of the document open beside it, named by a document address (`?ask=`, `?comment=`,
-  // a project document's own item) or focused as a mark. An ask or a comment the address names
-  // by its own route is a conversation entry no document holds - an anchored one never reaches
-  // this, it is redirected to that document's address first - and the conversation's own list
-  // places the reader on its turn; a hold here would scroll them off that turn and onto the
-  // margin's copy of the same item.
+  // passage of the document open beside it, named by a document address (`?mark=`, an item at
+  // a pinned version, a project document's own item) or focused as a mark. An ask or a comment
+  // an issue's address names otherwise - by its own route, `?ask=` or `?comment=` - is a node
+  // of the outline, which the page focuses, and the conversation marks its entry; a hold here
+  // would scroll the reader off that entry and onto the margin's copy of the same item.
   const lands = visibleArtifact !== undefined;
   useCardHold({
     card: lands && routeItemBesideDocument ? routeCard : undefined,

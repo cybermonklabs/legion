@@ -27,7 +27,7 @@ import {
   setSheet,
   specAddress,
 } from "./editor";
-import { pickPreset } from "./issue-page";
+import { conversationStateControl, focusedNodeId, pickPreset } from "./issue-page";
 import { commentWithBody } from "./margin-helpers";
 import { setCommentAuthorService } from "./seed";
 import { navigateInApp } from "./sends";
@@ -119,11 +119,12 @@ test("the selection bar comments, suggests, and asks on marks that both users se
       expect(alicePage.locator(`[data-turn="comment:${comment.id}"]`)).toContainText("why?"),
       expect(bobPage.locator(`[data-turn="comment:${comment.id}"]`)).toContainText("why?"),
     ]);
-    // The comment quotes the spec, so its deep link opens the spec with the thread beside it.
+    // The comment quotes the spec, and its deep link opens the issue's outline on the comment's
+    // node, focused, wherever it is anchored (dispatch://INFRA-1196 R20): no redirect to the spec.
     await alicePage.goto(`/issues/${issue.key}/comments/${comment.id}`);
-    await expect(alicePage).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
-    // A load, not an in-app step: closing the thread the deep link opened beside the document is
-    // what leaves one composer on the page for the bar action below.
+    await expect(alicePage).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
+    await expect.poll(() => focusedNodeId(alicePage)).toBe(comment.id);
+    // A load, not an in-app step, back to the document for the bar action below.
     await alicePage.goto(await specAddress(issue.key));
     await navigateInApp(bobPage, await specAddress(issue.key));
     await expect(documentEditor(alicePage)).toContainText(initialMarkdown);
@@ -561,16 +562,24 @@ test("a document mark opens its thread in the margin and stays on the document",
     await expect(
       page.getByTestId("margin-sheet").getByRole("tab", { name: "Comments" })
     ).toHaveAttribute("aria-selected", "true");
-    await expect(page).toHaveURL(`/issues/${issue.key}/spec`);
+    await expect(page).toHaveURL(await specAddress(issue.key));
     await expect(connectedDot(page)).toHaveText("connected");
 
-    // The comment is anchored, so its deep link lands on the document it quotes, with the
-    // thread open beside it — the same place clicking the mark just opened. The card is read
-    // inside the margin's own anchored-comments region rather than anywhere in the sheet: the
-    // issue page's panel now draws the Conversation inside that same sheet
-    // (dispatch://INFRA-1196 R12), and it holds a card for this comment too.
+    // The comment is an agent's, in a thread no person wrote in, so its deep link lands in the
+    // history and not the outline (dispatch://INFRA-1196 R20): today's history, the
+    // conversation in its Everything state with the comment's card marked. No redirect takes
+    // the reader to the document; the reader reaches the card beside the document from the
+    // conversation's "View in document", whose address marks the comment there.
     await page.goto(`/issues/${issue.key}/comments/${comment.id}`);
-    await expect(page).toHaveURL(`/issues/${issue.key}/spec?comment=${comment.id}`);
+    await expect(page).toHaveURL(`/issues/${issue.key}/comments/${comment.id}`);
+    await expect(
+      page.locator(`li[data-turn="comment:${comment.id}"][aria-current="true"]`)
+    ).toContainText("focus this");
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    await page.goto(`${await specAddress(issue.key)}?mark=${comment.id}`);
     const deepLinked = page
       .getByRole("region", { name: "Anchored comments" })
       .getByTestId(`margin-comment-${comment.id}`);

@@ -1,5 +1,6 @@
 import { decodeBlockId, itemFromSearch } from "@legion/contracts";
 
+import type { Comment, MessageRead } from "../../api/types";
 import { buildIssuePath, type IssueRoute } from "../refs/routes";
 import type { TreeNode } from "./issue-tree";
 import type { ConversationState, Preset } from "./page-words";
@@ -27,18 +28,13 @@ export type AddressTarget =
    *  address that names no document - a `#b-` fragment on the issue's own address - leaves it
    *  undefined, and the first node carrying that block id answers. */
   | { readonly kind: "block"; readonly id: string; readonly document?: string }
-  /** One ask, comment or message a preset's own address names beside it (`?ask=`, `?comment=`),
-   *  by its own id: the tree is what that address opens, and the item is a node of it. */
-  | { readonly kind: "item"; readonly id: string }
-  /** One ask, comment or message a conversation address names by its own route
-   *  (`/asks/<id>`, `/comments/<id>`, `/messages/<id>`). It is the same node of the tree, and
-   *  the page unfolds the path to it as it does for any target; what differs is the landing.
-   *  That address opens the conversation (`refs/routes.ts`'s `issueTabForRoute`), which places
-   *  the reader on the entry's own turn and marks it `aria-current`, so the tree reveals its
-   *  row and leaves the focus alone: a row focused there scrolls the page back off that turn,
-   *  and on a phone it is what the comment's thread restores the focus to when the reader
-   *  closes it. */
-  | { readonly kind: "turn"; readonly id: string };
+  /** One ask, comment or message, by its own id: the one a preset's own address names beside
+   *  it (`?ask=`, `?comment=`), and the one its own route names (`/asks/<id>`, `/comments/<id>`,
+   *  `/messages/<id>`). It is a node of the tree, which the page unfolds the path to and puts
+   *  the focus on, wherever the item is anchored (R20). Its own route also opens the
+   *  conversation in the panel, which marks the same entry there (`useIssueDetail`'s
+   *  `conversationFocusItemId`). */
+  | { readonly kind: "item"; readonly id: string };
 
 /** What one address of the issue page opens. */
 export interface IssueAddress {
@@ -46,9 +42,24 @@ export interface IssueAddress {
    *  the panel opens in the state the reader kept (`IssuePage`, R13). */
   readonly conversation: ConversationState | undefined;
   /** The slug of the document or file the address opens in place of the outline: its own
-   *  address, `/artifacts/<slug>` (R3, R20). The issue's spec is opened at its slug like every
-   *  other document; `/spec` is the Spec filter. Undefined for every other address. */
+   *  address, `/artifacts/<slug>`, and a `/spec` address naming a block of the spec (R3, R20).
+   *  The issue's spec is opened at its slug like every other document; `/spec` is the Spec
+   *  filter. An address naming an ask or a comment (`?ask=`, `?comment=`) opens none, whichever
+   *  document it is the address of: the item is a node of the outline, which it opens on that
+   *  node - unless it also pins a version (`?v=`), or names the item with `?mark=`, which
+   *  `documentItem` answers. Undefined for every other address. */
   readonly document: string | undefined;
+  /** The ask or comment the document the address opens lands on, marked in its text: the one
+   *  `?ask=` or `?comment=` names beside a version the address pins (`?v=`), since the item's
+   *  quote as it stood at that version is content only the document at that version shows
+   *  (R20), and the ask or comment `?mark=` names, which is the address "View in document"
+   *  builds (`refs/routes.ts`'s `openDocumentPath`). `?mark=` names it by its id alone, so its
+   *  kind is `mark` until the issue's comments tell which it is (`IssuePage`). Undefined for
+   *  every other address. */
+  readonly documentItem:
+    | { readonly kind: "ask" | "comment"; readonly id: string }
+    | { readonly kind: "mark"; readonly id: string }
+    | undefined;
   /** What `?q=` narrows the preset to; `""` for an address that narrows nothing. */
   readonly filter: string;
   /** Whether the address opens the node menu, which `/artifacts` does (R20). */
@@ -133,7 +144,7 @@ function routeDocument(route: IssueRoute, specSlug: string | undefined): string 
 /** The node `route` and `search` name, outside of a `#b-` fragment. */
 function routeTarget(route: IssueRoute, specSlug: string | undefined): AddressTarget | undefined {
   if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
-    return { id: route.id, kind: "turn" };
+    return { id: route.id, kind: "item" };
   }
   if (route.kind === "artifact" || route.kind === "spec") {
     const block = "block" in route ? route.block : undefined;
@@ -170,23 +181,79 @@ export function issueAddress(
     block === undefined
       ? routeTarget(route, specSlug)
       : { document: routeDocument(route, specSlug), id: block, kind: "block" };
-  // A `/spec` address that names something in the spec - a comment (`?comment=`) or a block
-  // (`#b-`) - named content the old page opened the spec at, so it opens the spec, as the spec's
-  // own address with the same query and fragment does (R20). Plain `/spec` is the Spec filter,
-  // and which block opens the outline instead is the page's to say (`IssuePage.tsx`'s
+  // An ask or a comment the address names beside it (`?ask=`, `?comment=`) is a node of the
+  // outline, so the address opens the outline on that node, whichever document's address it is
+  // - the spec's, `/spec`, or any other's - and wherever the item is anchored (R20). Two
+  // addresses of a document name an item the document lands on instead: one that also pins a
+  // version (`?v=`), whose quote as it stood then only that version of the document shows, and
+  // `?mark=`, the address "View in document" builds. Otherwise a `/spec` address naming a block
+  // of the spec (`#b-`) named content the old page opened the spec at, so it opens the spec, as
+  // the spec's own address with the same fragment does; plain `/spec` is the Spec filter, and
+  // which block opens the outline instead is the page's to say (`IssuePage.tsx`'s
   // `useOpensDocument`).
-  const namesSpecContent =
-    route.kind === "spec" &&
-    (item?.kind === "comment" || (item == null && named?.kind === "block"));
+  const version = pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined);
+  const addressed = routeDocument(route, specSlug);
+  const marked = query.get("mark") ?? "";
+  const documentItem =
+    addressed === undefined
+      ? undefined
+      : item !== null && item !== undefined && version !== undefined
+        ? item
+        : marked === ""
+          ? undefined
+          : { id: marked, kind: "mark" as const };
+  const outlineItem = documentItem === undefined && item !== null && item !== undefined;
+  const namesSpecBlock = route.kind === "spec" && named?.kind === "block";
   return {
     conversation: ROUTE_CONVERSATION_STATES[route.kind],
-    document: route.kind === "artifact" ? route.slug : namesSpecContent ? specSlug : undefined,
+    document: outlineItem
+      ? undefined
+      : documentItem !== undefined || route.kind === "artifact" || namesSpecBlock
+        ? addressed
+        : undefined,
+    documentItem,
     filter: query.get("q") ?? "",
     nodeMenu: route.kind === "artifacts",
     preset: ROUTE_PRESETS[route.kind] ?? "tree",
-    target: item === null || item === undefined ? named : { id: item.id, kind: "item" },
-    version: pinnedVersion(search) ?? (route.kind === "artifact" ? route.version : undefined),
+    target:
+      documentItem === undefined
+        ? outlineItem
+          ? { id: item.id, kind: "item" }
+          : named
+        : { id: documentItem.id, kind: "item" },
+    version,
   };
+}
+
+/**
+ * The id `target` names where it is a comment or a message an agent wrote outside every thread
+ * a person wrote in, which R20 lands in the panel's history rather than in the outline; undefined
+ * for every other target, and while the reads that tell are not in. A thread is a comment and
+ * every reply under its head (`reply_to`, which the server climbs to the head as it stores), or
+ * a message and its replies; a person is a user. A comment under an ask is in the ask's thread,
+ * and every ask is a node of the outline, so it is not one of these.
+ */
+export function agentsOnlyItem(
+  target: AddressTarget | undefined,
+  comments: readonly Pick<Comment, "ask_id" | "author" | "id" | "reply_to">[] | undefined,
+  messages: readonly MessageRead[] | undefined
+): string | undefined {
+  if (target?.kind !== "item") return undefined;
+  const comment = comments?.find((one) => one.id === target.id);
+  if (comment !== undefined) {
+    if (comment.ask_id !== null) return undefined;
+    const head = comment.reply_to ?? comment.id;
+    const thread = (comments ?? []).filter((one) => (one.reply_to ?? one.id) === head);
+    return thread.every((one) => one.author.kind !== "user") ? target.id : undefined;
+  }
+  const thread = messages?.find(
+    (one) =>
+      one.message.id === target.id || (one.replies ?? []).some((reply) => reply.id === target.id)
+  );
+  if (thread === undefined) return undefined;
+  return [thread.message, ...(thread.replies ?? [])].every((one) => one.author.kind !== "user")
+    ? target.id
+    : undefined;
 }
 
 /** The chain from `root` down to the first node `wanted` answers for, the root first, or

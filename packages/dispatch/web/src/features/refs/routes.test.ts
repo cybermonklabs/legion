@@ -14,6 +14,7 @@ import {
   issueTabForRoute,
   itemRoute,
   nodeRouteFromHref,
+  openDocumentPath,
   parseAgentArtifactPath,
   parseDispatchReference,
   parseInboxSearch,
@@ -136,6 +137,28 @@ test("an item's document path names the document it belongs to, never the issue'
     "/issues/CORE-1/artifacts/expert-message-v4-md#b-ship-it"
   );
   expect(documentItemPath(projectDocument, { id: "c3", kind: "comment" })).toBe(
+    "/projects/CORE/documents/handbook-md?comment=c3"
+  );
+});
+
+// dispatch://INFRA-1196 R20: `?comment=` and `?ask=` on an issue's address open the outline on
+// the item's node, so a link that means the document - "View in document", an approval's
+// document - opens the document's own address, the spec's `/artifacts/<slug>` included, and
+// names a comment to mark with `?mark=`. A project document's page has no outline.
+test("a document's own path opens the document, and names a comment to mark with ?mark=", () => {
+  const primary = {
+    issue_key: "CORE-1",
+    kind: "doc" as const,
+    primary: true,
+    project: "CORE",
+    session_id: null,
+    slug: "spec",
+  };
+  const projectDocument = { ...primary, issue_key: null, primary: false, slug: "handbook-md" };
+  expect(openDocumentPath(primary)).toBe("/issues/CORE-1/artifacts/spec");
+  expect(openDocumentPath(primary, "c1")).toBe("/issues/CORE-1/artifacts/spec?mark=c1");
+  expect(openDocumentPath(projectDocument)).toBe("/projects/CORE/documents/handbook-md");
+  expect(openDocumentPath(projectDocument, "c3")).toBe(
     "/projects/CORE/documents/handbook-md?comment=c3"
   );
 });

@@ -828,7 +828,7 @@ test("renders an anchored comment with the owner controls in Conversation", asyn
     ).toHaveLength(1);
     expect(screen.getByRole("link", { name: "View in document" })).toHaveAttribute(
       "href",
-      "/issues/CORE-1/artifacts/supporting-document?comment=comment-1"
+      "/issues/CORE-1/artifacts/supporting-document?mark=comment-1"
     );
     expect(screen.getByRole("link", { name: "View original text" })).toHaveAttribute(
       "href",
@@ -840,9 +840,10 @@ test("renders an anchored comment with the owner controls in Conversation", asyn
   }
 });
 
-test("a comment on the primary document links to the Spec route, not its artifact route", async () => {
-  // The link is built by `documentItemPath`, the one builder that knows a primary document is
-  // the issue's Spec tab; the hand-assembled href it replaced always named the artifact route.
+test("a comment's View in document opens the document itself with the comment marked", async () => {
+  // The link is built by `openDocumentPath`: the spec's own `/artifacts/<slug>`, since `/spec` is
+  // the Spec filter, with the comment named by `?mark=`. `?comment=` there would open the
+  // issue's outline on the comment's node instead (dispatch://INFRA-1196 R20).
   const stub = stubLists({
     comments: [
       comment("comment-1", {
@@ -874,7 +875,7 @@ test("a comment on the primary document links to the Spec route, not its artifac
     await screen.findByText("Please revise this.");
     expect(screen.getByRole("link", { name: "View in document" })).toHaveAttribute(
       "href",
-      "/issues/CORE-1/spec?comment=comment-1"
+      "/issues/CORE-1/artifacts/spec?mark=comment-1"
     );
   } finally {
     view.unmount();
@@ -1137,6 +1138,60 @@ test("landing on a reply under an ask marks that ask's card and the reply's own 
   } finally {
     view.unmount();
     getAsk.mockRestore();
+    HTMLElement.prototype.scrollIntoView = scrollIntoView;
+    stub.restore();
+  }
+});
+
+// dispatch://INFRA-1196 R20: where the page itself is the turns' scrollport (a phone), an address
+// the issue's outline lands on (`focusMovesPage` false) has its entry marked without the page
+// being scrolled off the outline's node; a landing that is the conversation's still brings its
+// entry into view.
+test("a landing scrolls the page to its entry only where the conversation is the landing", async () => {
+  const stub = stubLists({ comments: [comment("comment-1", { body: "The linked comment" })] });
+  const scrollIntoView = HTMLElement.prototype.scrollIntoView;
+  const scrolled: string[] = [];
+  HTMLElement.prototype.scrollIntoView = function (this: HTMLElement) {
+    scrolled.push(this.dataset.turn ?? "");
+  };
+  try {
+    for (const movesPage of [false, true]) {
+      scrolled.length = 0;
+      const view = render(
+        <MemoryRouter future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
+          <KeymapProvider>
+            <QueryClientProvider client={newQueryClient()}>
+              <ConversationTab
+                focusItemId="comment-1"
+                focusMovesPage={movesPage}
+                issueArtifacts={new Map()}
+                isClosed={false}
+                issueKey="CORE-1"
+                state={{ "CORE-1": issueState() }}
+                visible
+              />
+            </QueryClientProvider>
+          </KeymapProvider>
+        </MemoryRouter>
+      );
+      try {
+        await waitFor(() =>
+          expect(
+            view.container
+              .querySelector('[data-turn="comment:comment-1"]')
+              ?.getAttribute("aria-current")
+          ).toBe("true")
+        );
+        if (movesPage) {
+          await waitFor(() => expect(scrolled).toContain("comment:comment-1"));
+        } else {
+          expect(scrolled, "the page is scrolled to the entry").not.toContain("comment:comment-1");
+        }
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
     HTMLElement.prototype.scrollIntoView = scrollIntoView;
     stub.restore();
   }
@@ -2245,7 +2300,11 @@ test("landing on a comment's reply opens the thread it belongs to and marks that
   }
 });
 
-test("on a phone, landing on a comment opens its thread dialog and reading it marks it", async () => {
+// On a phone a comment link lands on the comment's node in the issue's outline and the thread is
+// a full-screen dialog over it, so the link marks the card and opens no thread: the reader opens
+// it from the card when they ask for it (dispatch://INFRA-1196 R20), and reading it there marks
+// it as before.
+test("on a phone, landing on a comment opens no thread until the reader asks, and reading it marks it", async () => {
   const restoreViewport = stubMatchMedia(true);
   const root = comment("root-comment", { body: "Root comment" });
   const reply = comment("reply-comment", {
@@ -2253,8 +2312,17 @@ test("on a phone, landing on a comment opens its thread dialog and reading it ma
     created_at: "2026-09-20T00:01:00Z",
     reply_to: "root-comment",
   });
+  const user = userEvent.setup();
   const page = renderThreads({ comments: [root, reply] }, ["root-comment"], "root-comment");
   try {
+    await screen.findByText("Root comment");
+    await waitFor(() =>
+      expect(page.turn("comment:root-comment")).toHaveAttribute("aria-current", "true")
+    );
+    expect(screen.queryByRole("dialog", { name: "Thread" })).not.toBeInTheDocument();
+    await user.click(
+      within(page.turn("comment:root-comment")).getByRole("button", { name: "Expand thread" })
+    );
     const dialog = await screen.findByRole("dialog", { name: "Thread" });
     const replyItem = within(dialog).getByText("Reply comment").closest("li");
     if (replyItem === null) throw new Error("expected the reply's item");

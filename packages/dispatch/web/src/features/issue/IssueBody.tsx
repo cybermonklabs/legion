@@ -175,7 +175,7 @@ export function IssueBody({
             context={view.context}
             emptyLine={EMPTY_STATE_LINES[address.preset]}
             filtering={view.filtering}
-            focusReveal={followed || (address.preset !== "spec" && targetKind !== "turn")}
+            focusReveal={followed || address.preset !== "spec" || targetKind === "item"}
             isClosed={isClosed}
             onEditing={onEditing}
             onReport={setReport}

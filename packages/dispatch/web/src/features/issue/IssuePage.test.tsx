@@ -108,8 +108,8 @@ const issue = {
 } satisfies IssueDetails;
 
 const itemComment = {
-  // Anchored: the landing has to wait on the issue to learn which document the anchor names,
-  // which is the case that turned a failed issue read into a permanent "Loading issue…".
+  // Anchored in the spec: a comment's own address opens the outline on its node all the same,
+  // not the document it quotes (R20).
   anchor: {
     artifact_id: "artifact-1",
     block_id: null,
@@ -2567,16 +2567,13 @@ test("IssuePage lets a human move a Todo issue to In progress", async () => {
 });
 
 test("IssuePage reports a failed issue read on an item deep link instead of loading forever", async () => {
-  // The landing waits on the issue to tell it which document an anchor names, so a page that
-  // read the landing's pending state before the issue's error showed "Loading issue…" for good.
+  // The item's own read is still out when the issue's fails, so a page that read the landing's
+  // pending state before the issue's error showed "Loading issue…" for as long as it was.
   const restore = stubIssuePage(issue);
   api.getIssue = async () => {
     throw new ApiError(500, { code: "SERVER_ERROR", error: "boom" });
   };
-  const getComment = spyOn(api, "getComment").mockResolvedValue({
-    comment: { ...itemComment },
-    replies: [],
-  });
+  const getComment = spyOn(api, "getComment").mockReturnValue(new Promise(() => {}));
   const view = renderIssuePage(`/issues/CORE-1/comments/${itemComment.id}`);
 
   try {
@@ -2596,8 +2593,7 @@ const WHOLE_ID = "4c9f3e12-1111-4222-8333-444444444444";
 const OTHER_ID = "4c9f3e12-5555-4666-8777-888888888888";
 const SHORT_ID = "4c9f3e12";
 
-/** The comment the ids above name: unanchored, so the landing opens its Conversation turn
- *  rather than a document. */
+/** The comment the ids above name. */
 const shortIdComment = { ...itemComment, anchor: null, id: WHOLE_ID };
 
 function GoBack(): ReactNode {
@@ -3064,7 +3060,7 @@ const landingMessage: Message = {
   target: null,
 };
 
-/** The comment a landing row's `/comments/<id>` names: unanchored, so it lands on its turn. */
+/** The comment a landing row's `/comments/<id>` names. */
 const landingComment = { ...itemComment, anchor: null, id: "comment-landing" };
 
 // R19: every address resolves to what it names, and a comment, message or ask link names one
@@ -3114,6 +3110,314 @@ test("IssuePage lands a comment, message or ask link whatever conversation state
         window.localStorage.removeItem(KEPT_STATE);
       }
     }
+  }
+});
+
+// R20: an item's own address, and an address naming it beside a document (`?comment=`,
+// `?ask=`), opens that node, focused, in the outline, wherever the item is anchored. An
+// anchored comment, an anchored ask and an ask indexed from a block of the spec used to be sent
+// on to the spec's address (`/spec?comment=`, `/spec?ask=`, `/spec#b-`), and those opened the
+// spec in place of the outline, so the node the address named was drawn nowhere.
+test("IssuePage opens an item anchored in a document on its node in the outline, focused", async () => {
+  const anchoredAsk: IssueAskThreadRow = {
+    ...landingAsk,
+    anchor: { ...itemComment.anchor, mark_id: "m-2" },
+    artifact_id: "artifact-1",
+    id: "ask-anchored",
+  };
+  const blockAsk: IssueAskThreadRow = {
+    ...landingAsk,
+    block_artifact: { id: "artifact-1", primary: true, slug: "spec" },
+    block_id: "q1",
+    id: "ask-block",
+  };
+  const links = [
+    { ask: anchoredAsk, node: itemComment.id, path: `/issues/CORE-1/comments/${itemComment.id}` },
+    { ask: anchoredAsk, node: anchoredAsk.id, path: `/issues/CORE-1/asks/${anchoredAsk.id}` },
+    { ask: blockAsk, node: "spec#b-q1", path: `/issues/CORE-1/asks/${blockAsk.id}` },
+    {
+      ask: anchoredAsk,
+      node: itemComment.id,
+      path: `/issues/CORE-1/spec?comment=${itemComment.id}`,
+    },
+    {
+      ask: anchoredAsk,
+      node: itemComment.id,
+      path: `/issues/CORE-1/artifacts/spec?comment=${itemComment.id}`,
+    },
+    { ask: anchoredAsk, node: anchoredAsk.id, path: `/issues/CORE-1/spec?ask=${anchoredAsk.id}` },
+    { ask: blockAsk, node: "spec#b-q1", path: `/issues/CORE-1/artifacts/spec?ask=${blockAsk.id}` },
+  ];
+  for (const { ask, node, path } of links) {
+    const restore = stubIssuePage(issue);
+    api.listComments = async () => [itemComment];
+    api.listIssueAsks = async () => [ask];
+    api.listIssueAskThreads = async () => [ask];
+    const reads = [
+      spyOn(api, "getComment").mockResolvedValue({ comment: itemComment, replies: [] }),
+      spyOn(api, "getAsk").mockResolvedValue({ ...ask.thread, ask }),
+    ];
+    const view = renderIssuePage(path);
+
+    try {
+      await waitFor(
+        () =>
+          expect(
+            document.activeElement?.closest("[data-node-row]")?.getAttribute("data-node-id"),
+            `${path} does not focus its node`
+          ).toBe(node),
+        { timeout: 5_000 }
+      );
+      expect(screen.getByTestId("current-route").textContent, `${path} left its address`).toBe(
+        path
+      );
+      expect(screen.getByRole("tree", { name: "Issue tree" })).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Document editor" })).not.toBeInTheDocument();
+    } finally {
+      view.unmount();
+      for (const read of reads) read.mockRestore();
+      restore();
+    }
+  }
+});
+
+// R20: a comment agents wrote outside every thread a person wrote in lands in the history, not
+// the outline. The history is not in the panel yet, so it lands in today's: the conversation in
+// its Everything state, marking the entry, with the history `/activity` draws under the outline;
+// the outline takes no focus for it.
+test("IssuePage lands a comment agents wrote outside every person's thread in the history", async () => {
+  const agentsComment = {
+    ...itemComment,
+    anchor: null,
+    author: { id: "session-1", kind: "session" as const },
+    id: "comment-agents",
+  };
+  for (const path of [
+    `/issues/CORE-1/comments/${agentsComment.id}`,
+    `/issues/CORE-1/spec?comment=${agentsComment.id}`,
+  ]) {
+    window.localStorage.removeItem(KEPT_STATE);
+    const restore = stubIssuePage(issue);
+    api.listComments = async () => [agentsComment];
+    const getComment = spyOn(api, "getComment").mockResolvedValue({
+      comment: agentsComment,
+      replies: [],
+    });
+    const view = renderIssuePage(path);
+
+    try {
+      await waitFor(
+        () =>
+          expect(
+            document
+              .querySelector(`li[data-turn="comment:${agentsComment.id}"]`)
+              ?.getAttribute("aria-current"),
+            `${path} does not mark its entry in the history`
+          ).toBe("true"),
+        { timeout: 5_000 }
+      );
+      expect(
+        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+          name: "Everything",
+        })
+      ).toHaveAttribute("aria-selected", "true");
+      expect(document.getElementById("issue-activity-panel")).not.toHaveAttribute("hidden");
+      expect(
+        document.activeElement?.closest("[data-node-row]") ?? null,
+        `${path} puts the focus in the outline`
+      ).toBeNull();
+      expect(screen.getByTestId("current-route").textContent).toBe(path);
+    } finally {
+      view.unmount();
+      getComment.mockRestore();
+      restore();
+      window.localStorage.removeItem(KEPT_STATE);
+    }
+  }
+});
+
+// "View in document" means the document: its address is the document's own with the comment
+// named by `?mark=`, which opens that document with the comment marked in it, where `?comment=`
+// would open the outline on the comment's node (R20, `refs/routes.ts`'s `openDocumentPath`).
+test("IssuePage opens a document's ?mark= address on the document, the comment marked", async () => {
+  const restore = stubIssuePage(issue);
+  const listComments = spyOn(api, "listComments").mockResolvedValue([itemComment]);
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "The spec",
+    token: "sha256:spec",
+    version: 1,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/artifacts/spec?mark=${itemComment.id}`);
+
+  try {
+    expect(await screen.findByTestId("opened-artifact")).toBeInTheDocument();
+    expect(screen.queryByRole("tree", { name: "Issue tree" })).not.toBeInTheDocument();
+    // The document reads its own comments only to mark the one an address names in it
+    // (`ArtifactDocument`'s `commentId`).
+    await waitFor(() => expect(listComments).toHaveBeenCalledWith("CORE-1", "artifact-1"));
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/artifacts/spec?mark=${itemComment.id}`
+    );
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+// `?mark=` names an ask anchored in a document as it names a comment: the issue's comments do
+// not hold the id, so the document reads the ask and marks it (`ArtifactDocument`'s `askId`).
+test("IssuePage opens a document's ?mark= address naming an ask on the document, the ask marked", async () => {
+  const restore = stubIssuePage(issue);
+  const anchoredAsk: IssueAskThreadRow = {
+    ...landingAsk,
+    anchor: { ...itemComment.anchor, mark_id: "m-2" },
+    artifact_id: "artifact-1",
+    id: "ask-anchored",
+  };
+  const listComments = spyOn(api, "listComments").mockResolvedValue([itemComment]);
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ...anchoredAsk.thread,
+    ask: anchoredAsk,
+  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "The spec",
+    token: "sha256:spec",
+    version: 1,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/artifacts/spec?mark=${anchoredAsk.id}`);
+
+  try {
+    expect(await screen.findByTestId("opened-artifact")).toBeInTheDocument();
+    expect(screen.queryByRole("tree", { name: "Issue tree" })).not.toBeInTheDocument();
+    await waitFor(() => expect(getAsk).toHaveBeenCalledWith(anchoredAsk.id));
+    // Read as the ask it is, never looked for among the document's comments.
+    expect(listComments).not.toHaveBeenCalledWith("CORE-1", "artifact-1");
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/artifacts/spec?mark=${anchoredAsk.id}`
+    );
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+    getAsk.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+// `?mark=` written short is resolved as every address's short id is, and the whole id replaces
+// it under `?mark=`: written under `?comment=` the address would open the outline instead.
+test("IssuePage resolves a ?mark= written short and writes the whole id under ?mark=", async () => {
+  const restore = stubIssuePage(issue);
+  const marked = { ...itemComment, id: WHOLE_ID };
+  const listComments = spyOn(api, "listComments").mockResolvedValue([marked]);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({
+      id: WHOLE_ID,
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+    }),
+  });
+  const getArtifactText = spyOn(api, "getArtifactText").mockResolvedValue({
+    markdown: "The spec",
+    token: "sha256:spec",
+    version: 1,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/artifacts/spec?mark=${SHORT_ID}`);
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        `/issues/CORE-1/artifacts/spec?mark=${WHOLE_ID}`
+      )
+    );
+    expect(getReferences).toHaveBeenCalledWith(`dispatch://CORE-1/comment/${SHORT_ID}`);
+    expect(await screen.findByTestId("opened-artifact")).toBeInTheDocument();
+  } finally {
+    view.unmount();
+    listComments.mockRestore();
+    getReferences.mockRestore();
+    getArtifactText.mockRestore();
+    restore();
+  }
+});
+
+// R20: `?comment=` on an issue's address opens the outline on the comment's node; written short,
+// the id is resolved first and the address replaced with the whole one, which names the node.
+test("IssuePage resolves a ?comment= written short and focuses the comment's node", async () => {
+  const restore = stubIssuePage(issue);
+  const named = { ...itemComment, id: WHOLE_ID };
+  api.listComments = async () => [named];
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
+    edges: [],
+    node: graphNode({
+      id: WHOLE_ID,
+      kind: "comment",
+      ref: `dispatch://CORE-1/comment/${WHOLE_ID}`,
+    }),
+  });
+  const view = renderIssuePage(`/issues/CORE-1/spec?comment=${SHORT_ID}`);
+
+  try {
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe(
+        `/issues/CORE-1/spec?comment=${WHOLE_ID}`
+      )
+    );
+    expect(getReferences).toHaveBeenCalledWith(`dispatch://CORE-1/comment/${SHORT_ID}`);
+    await waitFor(
+      () =>
+        expect(
+          document.activeElement?.closest("[data-node-row]")?.getAttribute("data-node-id")
+        ).toBe(WHOLE_ID),
+      { timeout: 5_000 }
+    );
+    expect(screen.queryByRole("region", { name: "Document editor" })).not.toBeInTheDocument();
+  } finally {
+    view.unmount();
+    getReferences.mockRestore();
+    restore();
+  }
+});
+
+// R20: an approval request is no node of the outline; the identity block draws the approval of
+// the document it reviews, so the request's own address puts the focus on that entry there.
+test("IssuePage focuses an approval request's entry in the identity block", async () => {
+  const restore = stubIssuePage({
+    ...issue,
+    artifacts: [{ ...issue.artifacts[0], approval: { latest_version: 1, state: "awaiting" } }],
+  });
+  const approvalAsk: Ask = {
+    ...openIssueAsk,
+    approval: {
+      artifact_id: "artifact-1",
+      documents: null,
+      name: "spec.md",
+      requested_version: 1,
+      version: 1,
+    },
+    id: "ask-approval",
+    kind: "approval",
+  };
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue({
+    ...landingAsk.thread,
+    ask: approvalAsk,
+  });
+  const view = renderIssuePage(`/issues/CORE-1/asks/${approvalAsk.id}`);
+
+  try {
+    await waitFor(() =>
+      expect(document.activeElement?.getAttribute("data-approval-artifact")).toBe("artifact-1")
+    );
+    expect(screen.getByTestId("current-route").textContent).toBe(
+      `/issues/CORE-1/asks/${approvalAsk.id}`
+    );
+  } finally {
+    view.unmount();
+    getAsk.mockRestore();
+    restore();
   }
 });
 

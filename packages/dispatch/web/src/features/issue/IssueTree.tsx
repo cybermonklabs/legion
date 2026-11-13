@@ -4,6 +4,7 @@ import type { Artifact } from "../../api/types";
 import { textMutedOnCanvas } from "../../theme/classes";
 import { useMediaQuery } from "../shell/useDialog";
 import { useSetFocusedNode } from "./focused-node";
+import { bringOnScreen } from "./identity-block";
 import { firstLineOf, nodeWords, type TreeNode } from "./issue-tree";
 import { useOneLineBox } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
@@ -298,6 +299,13 @@ export function IssueTree({
   // reader - or anything else on the page - has the focus, it is theirs: the effect leaves it
   // alone until another address names another node.
   const taken = useRef<string | undefined>(undefined);
+  // The rows around a landed node are still arriving when it takes the focus - the outline's
+  // other reads, the children's section above it - and each pushes it down the page, out of
+  // sight: the node an address names is focused *and on screen* (R20). Until the reader acts,
+  // the page puts it back on screen whenever the page grows (`bringOnScreen`); a key, a press, a
+  // wheel or a touch is the reader taking over, and a focus that has moved off it ends the hold.
+  const landingHold = useRef<AbortController | undefined>(undefined);
+  useEffect(() => () => landingHold.current?.abort(), []);
   const targetId = target?.id;
   useEffect(() => {
     if (targetId === undefined || !focusReveal) return;
@@ -313,6 +321,19 @@ export function IssueTree({
     // row's own focus places it by the page's one rule (`bringOnScreen`) when it is not.
     const box = row.getBoundingClientRect();
     row.focus({ preventScroll: box.top >= 0 && box.bottom <= window.innerHeight });
+    landingHold.current?.abort();
+    const hold = new AbortController();
+    landingHold.current = hold;
+    for (const type of ["keydown", "pointerdown", "wheel", "touchstart"] as const) {
+      window.addEventListener(type, () => hold.abort(), { capture: true, signal: hold.signal });
+    }
+    if (typeof ResizeObserver === "undefined") return;
+    const grown = new ResizeObserver(() => {
+      if (document.activeElement === row) bringOnScreen(row);
+      else hold.abort();
+    });
+    grown.observe(document.body);
+    hold.signal.addEventListener("abort", () => grown.disconnect());
   }, [focusReveal, rows, targetId]);
 
   // The tree is one tab stop, and it rests where the reader last stood: before they have

@@ -51,7 +51,7 @@ import {
 } from "../refs/AgentName";
 import { CopyRefButton } from "../refs/CopyRefButton";
 import { MarkdownBody } from "../refs/MarkdownBody";
-import { buildIssuePath, documentItemPath, sessionOfAddress } from "../refs/routes";
+import { buildIssuePath, openDocumentPath, sessionOfAddress } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { Unfurl } from "../refs/Unfurl";
@@ -104,6 +104,12 @@ interface ConversationTabProps {
    *  what `IssuePage` has. A comment's anchor names one of them, and its link is built from it. */
   issueArtifacts: ReadonlyMap<string, Artifact>;
   focusItemId?: string;
+  /** Whether the landing on `focusItemId` may scroll the page itself, where the page is the
+   *  turns' scrollport (a phone): only where the conversation is what the address lands on. An
+   *  address the outline lands on keeps its node on screen there, and the conversation marks
+   *  its entry without moving the page off it (`IssuePage`, dispatch://INFRA-1196 R20). The
+   *  panel's own scrollport is scrolled to the turn either way. */
+  focusMovesPage?: boolean;
   isClosed: boolean;
   issueKey: string;
   /** What the panel's conversation state keeps, where the reader picked one that narrows the
@@ -628,6 +634,7 @@ function CommentTurn({
   isPhone = false,
   issueKey,
   item,
+  landed = false,
   onAction,
   onPhoneThreadToggle,
   onPin,
@@ -666,6 +673,9 @@ function CommentTurn({
   isPhone?: boolean;
   issueKey: string;
   item: Extract<Conversation, { kind: "comment" }>;
+  /** The thread is open because a link landed on it, not because the reader opened it, so its
+   *  reply composer takes no focus (`ThreadCard`'s `standingReply`). */
+  landed?: boolean;
   onAction: (id: string, kind: "accept" | "reject" | "resolve" | "reopen") => void;
   onPhoneThreadToggle?: () => void;
   onPin: () => void;
@@ -782,6 +792,7 @@ function CommentTurn({
         pulseOrphanBlock={false}
         replyMutationKey={replySendKey}
         showReference={false}
+        standingReply={landed}
         renderDeliveries={(comment) => (
           <CommentDeliveryList
             agents={agents}
@@ -796,7 +807,7 @@ function CommentTurn({
       {item.root.anchor === null || anchorArtifact === undefined ? null : (
         <Link
           className={`ml-3 text-sm ${linkText}`}
-          to={documentItemPath(anchorArtifact, { id: item.root.id, kind: "comment" })}
+          to={openDocumentPath(anchorArtifact, item.root.id)}
         >
           View in document
         </Link>
@@ -908,6 +919,7 @@ function TargetedMessageTurn({
 export function ConversationTab({
   issueArtifacts,
   focusItemId,
+  focusMovesPage = true,
   isClosed,
   issueKey,
   narrow,
@@ -1168,18 +1180,34 @@ export function ConversationTab({
         : document.querySelector<HTMLElement>(`[data-reply][aria-current="true"]`);
     const anchor = reply ?? document.querySelector<HTMLElement>(`[data-turn="${focus.id}"]`);
     if (anchor !== null) {
-      anchor.scrollIntoView({ block: "center" });
+      // Centred in the box the turns scroll in. Where the panel is a scrollport of its own, only
+      // that box moves, and the page - whose outline holds the node the same address focuses
+      // (dispatch://INFRA-1196 R20) - stays where it is; `scrollIntoView` would move every
+      // scrollport above the turn, the page's included. Where the page itself is the turns' box,
+      // it moves only for a landing that is the conversation's (`focusMovesPage`).
+      const port = conversationScrollport();
+      if (port === undefined) {
+        if (focusMovesPage) anchor.scrollIntoView({ block: "center" });
+      } else {
+        const box = anchor.getBoundingClientRect();
+        const frame = port.getBoundingClientRect();
+        port.scrollTop += box.top + box.height / 2 - (frame.top + port.clientHeight / 2);
+      }
       if (focus.replyId === undefined || reply !== null) {
         scrolledToFocus.current = focus.id;
       }
     }
-  }, [focus, shown, visible]);
+  }, [focus, focusMovesPage, shown, visible]);
 
   // A link to a comment (`/issues/<key>/comments/<id>`, from a Replies row, the Inbox, search or
-  // a copied reference) opens that comment's thread as it lands, so its replies are on screen:
-  // inline at a desktop width, the thread dialog on a phone. Once per link; the reader closes it
-  // as any thread.
+  // a copied reference) opens that comment's thread inline as it lands at a desktop width, so
+  // its replies are on screen. Once per link; the reader closes it as any thread. The thread the
+  // link opened is held as landed until the reader opens or closes it themselves: its reply box
+  // takes no focus, which the issue page puts on the comment's node in the outline
+  // (dispatch://INFRA-1196 R20). On a phone the thread is a full-screen dialog over that
+  // outline, so the link opens none: the reader opens it from the card when they ask for it.
   const openedFocusThread = useRef<string | undefined>(undefined);
+  const [landedThread, setLandedThread] = useState<string | undefined>(undefined);
   useEffect(() => {
     if (!visible || focus === undefined || openedFocusThread.current === focus.id) return;
     const root = shown.find(
@@ -1188,9 +1216,10 @@ export function ConversationTab({
     );
     if (root === undefined) return;
     openedFocusThread.current = focus.id;
-    if (isPhoneViewport) phone.open(root.root.id);
-    else setThreadOpen(root.root.id, true);
-  }, [focus, isPhoneViewport, phone.open, setThreadOpen, shown, visible]);
+    if (isPhoneViewport) return;
+    setLandedThread(root.root.id);
+    setThreadOpen(root.root.id, true);
+  }, [focus, isPhoneViewport, setThreadOpen, shown, visible]);
 
   // The issue's read mark, and the only writer of it: the newest conversation three-quarters on
   // screen for a second reads the issue through its head. A single watermark cannot say "I read
@@ -1205,9 +1234,9 @@ export function ConversationTab({
   // copy of the newest card gives up the ref while a thread is open. A thread showing the
   // newest conversation is that conversation read, though, so the dialog's `CommentTurn`
   // carries the ref there (below) and the mark is written from the card the reader has on
-  // screen. A comment link lands straight in that thread on a phone, and `usePhoneThread` adds
-  // no history entry, so without that the browser's back and the drawer would leave the issue
-  // unread for a reader who had just read its newest conversation in the thread.
+  // screen. `usePhoneThread` adds no history entry for a thread the reader opens, so without
+  // that the browser's back and the drawer would leave the issue unread for a reader who had
+  // just read its newest conversation in the thread.
   // A thread over any older conversation holds the mark until its own Back gives the list back:
   // the newest conversation is behind the thread, unread, and marking the issue read would also
   // move `lastReadSeq` under the reader - that value is in the `unreadBoundary` key above, so
@@ -1430,6 +1459,7 @@ export function ConversationTab({
                 isClosed={isClosed}
                 issueKey={issueKey}
                 item={item}
+                landed={landedThread === item.root.id}
                 key={item.id}
                 onPin={() => pinConversation(item.id)}
                 onReply={isPhoneViewport ? phone.beginReply : beginReply}
@@ -1437,7 +1467,10 @@ export function ConversationTab({
                 register={register}
                 replyDisabled={composerSending}
                 sendKey={sendKey}
-                setExpanded={(open) => setThreadOpen(item.root.id, open)}
+                setExpanded={(open) => {
+                  setLandedThread((held) => (held === item.root.id ? undefined : held));
+                  setThreadOpen(item.root.id, open);
+                }}
                 viewerLogin={viewer.data?.login ?? ""}
               />
             );

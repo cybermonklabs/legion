@@ -82,8 +82,11 @@ test("a margin thread and the Conversation show every reply in the chosen order"
       REPLIES.map((reply) => expect.stringContaining(reply))
     );
 
-    // The issue's margin draws the same thread, the same way.
-    await page.goto(`/issues/${seeded.commentIssue}/spec?comment=${seeded.comment}`);
+    // The issue's margin draws the same thread, the same way, beside the document "View in
+    // document" opens with the comment marked (`?mark=`; `?comment=` opens the issue's outline
+    // on the comment's node, dispatch://INFRA-1196 R20).
+    const marked = `/issues/${seeded.commentIssue}/artifacts/spec?mark=${seeded.comment}`;
+    await page.goto(marked);
     const margin = page.locator(`[data-margin-item="${seeded.comment}"]`);
     await expect(margin).toBeVisible();
     await expand(margin);
@@ -110,7 +113,7 @@ test("a margin thread and the Conversation show every reply in the chosen order"
       [...REPLIES].reverse().map((reply) => expect.stringContaining(reply))
     );
 
-    await page.goto(`/issues/${seeded.commentIssue}/spec?comment=${seeded.comment}`);
+    await page.goto(marked);
     await expect(margin).toBeVisible();
     await expand(margin);
     await expect(marginReplies).toHaveCount(6);

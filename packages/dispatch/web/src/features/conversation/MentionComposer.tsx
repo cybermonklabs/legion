@@ -524,9 +524,11 @@ interface MentionComposerProps {
   readonly saveEdit?: SaveCommentEdit;
   /** The reply target is this box's own standing address rather than a Reply the reader
    *  pressed: the Inbox reading column's thread box, which is the thread's permanent reply and
-   *  is remounted whenever the column follows the selection onto another row. Taking a target
+   *  is remounted whenever the column follows the selection onto another row, and the reply box
+   *  of a thread a link opened as it landed (`ThreadCard`'s `standingReply`). Taking a target
    *  normally takes the focus, so the reader can write at once; a standing box takes neither,
-   *  since the reader's place is the list the column follows and the next `j` belongs to it. */
+   *  since the reader's place is elsewhere - the list the column follows, whose next `j`
+   *  belongs to it, or the node the link named. */
   readonly standing?: boolean;
   /** Shows the Comment / Suggest / Ask switch and hands each pick to the host, which answers
    *  through `kind` - a selected document mark is the only surface where the kind can change, and

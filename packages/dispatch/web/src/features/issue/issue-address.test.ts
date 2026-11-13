@@ -1,8 +1,29 @@
 import { expect, test } from "bun:test";
 
-import { conversationStatePath, issueAddress, pathToTarget, presetPath } from "./issue-address";
+import type { Message } from "../../api/types";
+import {
+  agentsOnlyItem,
+  conversationStatePath,
+  issueAddress,
+  pathToTarget,
+  presetPath,
+} from "./issue-address";
 import type { TreeNode } from "./issue-tree";
 import type { NodeType } from "./page-words";
+
+/** A message of the issue, which the rows below give an author and an id. */
+const messageFixture: Message = {
+  author: { id: "alice", kind: "user" },
+  body: "A message.",
+  broadcast_id: null,
+  created_at: "2026-09-11T00:00:00Z",
+  deliveries: [],
+  id: "message",
+  in_reply_to: null,
+  issue_key: "CORE-1",
+  reply_block: null,
+  target: null,
+};
 
 function node(id: string, type: NodeType, over: Partial<TreeNode> = {}): TreeNode {
   return {
@@ -118,24 +139,66 @@ test("the address says which preset it opens, which document, and which node it 
     id: "r3",
     kind: "block",
   });
-  // An ask or a comment a conversation address names by its own route is a turn, not an item
-  // beside a document: the conversation places the reader on it and the tree leaves the focus
-  // alone (`IssueBody`'s `focusReveal`).
-  expect(issueAddress({ id: "ask-9", key: "CORE-1", kind: "ask" }, "", "", "spec").target).toEqual({
-    id: "ask-9",
-    kind: "turn",
-  });
+  // An ask, a comment or a message an address names by its own route is that node of the
+  // outline, which the tree puts the focus on, wherever the item is anchored (R20): no document
+  // is opened for it.
+  for (const kind of ["ask", "comment", "message"] as const) {
+    const item = issueAddress({ id: "item-9", key: "CORE-1", kind }, "", "", "spec");
+    expect(item.target, `/${kind}s/<id> names no node to focus`).toEqual({
+      id: "item-9",
+      kind: "item",
+    });
+    expect(item.document, `/${kind}s/<id> opens a document`).toBeUndefined();
+    expect(item.preset, `/${kind}s/<id> opens a filter`).toBe("tree");
+  }
 });
 
-// R20: `/spec?comment=` and `/spec#b-` named content in the spec, so they open the spec, as its
-// own address does with the same query and fragment; plain `/spec`, and `/spec` with a `?q=`, is
-// the Spec filter. Which block of the spec opens the outline instead is the page's to say.
-test("a spec address naming a comment or a block of the spec opens the spec", () => {
+// R20: an ask or a comment an address names beside it (`?ask=`, `?comment=`) is a node of the
+// outline, so the address opens the outline on it whichever document's address it is: `/spec`,
+// `/artifacts/<slug>`, or the spec's own. A version pin beside it (`?v=`) keeps the document,
+// whose quote as it stood then only that version shows, and so does `?mark=`, the address "View
+// in document" builds, which names an ask or a comment by its id alone (`mark`, which the page
+// tells apart). `/spec#b-` still names content in the spec, so it opens the spec, as its own
+// address does with the same fragment; plain `/spec`, and `/spec` with a `?q=`, is the Spec
+// filter. Which block of the spec opens the outline instead is the page's to say.
+test("an address naming an ask or a comment opens the outline, unless it pins a version", () => {
   const spec = { key: "CORE-1", kind: "spec" } as const;
-  const commented = issueAddress(spec, "?comment=comment-7", "", "spec");
-  expect(commented.document).toBe("spec");
-  expect(commented.preset).toBe("spec");
-  expect(commented.target).toEqual({ id: "comment-7", kind: "item" });
+  for (const [route, search] of [
+    [spec, "?comment=comment-7"],
+    [spec, "?ask=comment-7"],
+    [{ key: "CORE-1", kind: "artifact", slug: "spec" }, "?comment=comment-7"],
+    [{ key: "CORE-1", kind: "artifact", slug: "notes-md" }, "?ask=comment-7"],
+  ] as const) {
+    const named = issueAddress(route, search, "#b-p1", "spec");
+    expect(named.document, `${route.kind} ${search} opens a document`).toBeUndefined();
+    expect(named.documentItem, `${route.kind} ${search} lands in a document`).toBeUndefined();
+    expect(named.target).toEqual({ id: "comment-7", kind: "item" });
+  }
+  for (const [route, search, document, item] of [
+    [spec, "?v=1&comment=comment-7", "spec", { id: "comment-7", kind: "comment" }],
+    [
+      { key: "CORE-1", kind: "artifact", slug: "notes-md" },
+      "?v=2&ask=ask-7",
+      "notes-md",
+      { id: "ask-7", kind: "ask" },
+    ],
+    [
+      { key: "CORE-1", kind: "artifact", slug: "spec" },
+      "?mark=comment-7",
+      "spec",
+      { id: "comment-7", kind: "mark" },
+    ],
+    [spec, "?mark=ask-7", "spec", { id: "ask-7", kind: "mark" }],
+  ] as const) {
+    const opened = issueAddress(route, search, "", "spec");
+    expect(opened.document, `${route.kind} ${search} opens no document`).toBe(document);
+    expect(opened.documentItem).toEqual(item);
+  }
+  // A version pin on the issue's own address names no document, so the outline stands.
+  const own = issueAddress({ key: "CORE-1", kind: "issue" }, "?v=1&comment=comment-7", "", "spec");
+  expect(own.document).toBeUndefined();
+  expect(own.target).toEqual({ id: "comment-7", kind: "item" });
+  expect(issueAddress(spec, "?comment=comment-7", "", "spec").preset).toBe("spec");
   const block = issueAddress(spec, "?v=3", "#b-p1", "spec");
   expect(block.document).toBe("spec");
   expect(block.version).toBe(3);
@@ -143,7 +206,48 @@ test("a spec address naming a comment or a block of the spec opens the spec", ()
   expect(issueAddress(spec, "", "", "spec").document).toBeUndefined();
   expect(issueAddress(spec, "?q=routes", "", "spec").document).toBeUndefined();
   // Until the issue's documents are read there is no spec to open.
-  expect(issueAddress(spec, "?comment=comment-7", "", undefined).document).toBeUndefined();
+  expect(issueAddress(spec, "?v=3", "#b-p1", undefined).document).toBeUndefined();
+});
+
+// R20: a comment or a message agents wrote outside every thread a person wrote in lands in the
+// history, not the outline; one in a thread a person wrote in, and a reply under an ask, is a
+// node of the outline like any other.
+test("an item in a thread no person wrote in is the history's, and every other the outline's", () => {
+  const agent = { id: "session-1", kind: "session" } as const;
+  const person = { id: "alice", kind: "user" } as const;
+  const comments = [
+    { ask_id: null, author: agent, id: "agents-root", reply_to: null },
+    { ask_id: null, author: agent, id: "agents-reply", reply_to: "agents-root" },
+    { ask_id: null, author: agent, id: "mixed-root", reply_to: null },
+    { ask_id: null, author: person, id: "mixed-reply", reply_to: "mixed-root" },
+    { ask_id: "ask-1", author: agent, id: "under-ask", reply_to: null },
+  ];
+  const messages = [
+    {
+      message: { ...messageFixture, author: agent, id: "agents-message" },
+      replies: [{ ...messageFixture, author: agent, id: "agents-message-reply" }],
+    },
+    {
+      message: { ...messageFixture, author: agent, id: "asked-message" },
+      replies: [{ ...messageFixture, author: person, id: "answered-message" }],
+    },
+  ];
+  const landing = (id: string) => agentsOnlyItem({ id, kind: "item" }, comments, messages);
+  for (const id of ["agents-root", "agents-reply", "agents-message", "agents-message-reply"]) {
+    expect(landing(id), `${id} is drawn in the outline`).toBe(id);
+  }
+  for (const id of [
+    "mixed-root",
+    "mixed-reply",
+    "under-ask",
+    "asked-message",
+    "answered-message",
+  ]) {
+    expect(landing(id), `${id} lands in the history`).toBeUndefined();
+  }
+  // Nothing lands in the history until the reads that tell have answered, nor for a block.
+  expect(agentsOnlyItem({ id: "agents-root", kind: "item" }, undefined, undefined)).toBeUndefined();
+  expect(agentsOnlyItem({ id: "agents-root", kind: "block" }, comments, messages)).toBeUndefined();
 });
 
 test("an item is found by its own id, and an ask by the address of the ask it was indexed from", () => {

@@ -1,4 +1,3 @@
-import { itemFromSearch } from "@legion/contracts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation } from "react-router-dom";
@@ -11,6 +10,7 @@ import { useSending } from "../../hooks/useSending";
 import { useHeldSend, useHeldSends, useHeldSendsUnder } from "../conversation/held-sends";
 import type { CarriedBlockIds } from "../conversation/send-request";
 import { useProjectArtifact } from "../document/useProjectArtifact";
+import { issueAddress } from "../issue/issue-address";
 import { writePin } from "../issue/pin-write";
 import { eventItemId } from "../issue/pins";
 import { parseIssuePath, parseProjectPath } from "../refs/routes";
@@ -92,33 +92,38 @@ export function useMarginSheet(): MarginSheetModel {
   } = useMargin();
   const store = useHeldSends();
   const queryClient = useQueryClient();
-  const { key: locationKey, pathname, search } = useLocation();
+  const { hash, key: locationKey, pathname, search } = useLocation();
   const issueRoute = parseIssuePath(pathname, search);
   const projectRoute = parseProjectPath(pathname, search);
   const documentRoute = projectRoute?.kind === "document" ? projectRoute : undefined;
   const owner = useMarginOwner();
   const issueKey = owner?.kind === "issue" ? owner.key : undefined;
+  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   const documentArtifact = useProjectArtifact(documentRoute);
   const routeArtifactSlug = issueRoute?.kind === "artifact" ? issueRoute.slug : documentRoute?.slug;
-  const queryItem = itemFromSearch(search);
+  // The item the address names, and whether it is the margin's to land on: an item the document
+  // the page opens is opened at. That is a project document's own item (`?comment=`, `?ask=`),
+  // and on the issue page the item its opened document lands on (`issue-address.ts`'s
+  // `documentItem`): the one `?mark=` names, which "View in document" builds, or one named at a
+  // pinned version (`?v=`). Every other item an issue's address names - by its own route
+  // (`/issues/KEY/comments/<id>`) or by `?comment=` and `?ask=` - is a node of the outline,
+  // which the page opens on that node, focused, wherever the item is anchored, with the
+  // conversation in the panel marking the same entry (`features/issue/useItemLanding.ts`,
+  // dispatch://INFRA-1196 R20). The margin marks its own copy of that item and lands on nothing:
+  // an expanded thread's reply box takes the focus off the node, and a hold scrolls the one
+  // scrollport the panel shares with that conversation (R12) off the entry the address named.
+  const address =
+    issueRoute === undefined
+      ? undefined
+      : issueAddress(issueRoute, search, hash, primarySpec(issue.data)?.slug);
   const routeItemId =
-    issueRoute?.kind === "ask" || issueRoute?.kind === "comment"
-      ? issueRoute.id
-      : (documentRoute?.item?.id ?? queryItem?.id);
+    documentRoute?.item?.id ?? (address?.target?.kind === "item" ? address.target.id : undefined);
+  const routeItemBesideDocument =
+    documentRoute?.item !== undefined || address?.documentItem !== undefined;
   // Each navigation is its own request for the item it names, even when it names the one the
   // reader is already on: following a link back to the card you moved off has to bring you back.
   // `useLocation().key` changes on a same-URL push, which an item id alone cannot see.
   const routeItemKey = routeItemId === undefined ? undefined : `${locationKey}:${routeItemId}`;
-  // Whether the item the address names is the margin's to land on. An ask or a comment named
-  // by its own route (`/issues/KEY/asks/<id>`) reaches this only when no document holds it:
-  // an anchored one is redirected to that document's address first
-  // (`features/issue/useItemLanding.ts`), and what is left lands on its own turn in the
-  // conversation (`features/conversation/ConversationTab.tsx`). On the issue page that
-  // conversation and the margin's own cards share one scrollport (dispatch://INFRA-1196 R12),
-  // so a hold here would scroll the reader off the turn the address named and onto the
-  // margin's copy of the same item. An item a document address names beside it (`?ask=`,
-  // `?comment=`, a project document's own item) is the margin's.
-  const routeItemBesideDocument = issueRoute?.kind !== "ask" && issueRoute?.kind !== "comment";
 
   // The URL names the selection until the reader makes one: the link's item is rendered selected
   // from the first commit, before the asynchronous selection effect has caught the shared margin
@@ -159,7 +164,6 @@ export function useMarginSheet(): MarginSheetModel {
     if (sheetThreadKey !== undefined) store.discard(marginReplySendKey(sheetThreadKey));
   }, [sheetReplySendingNow, sheetThreadKey, store]);
   const marginRef = useRef<HTMLElement>(null);
-  const issue = useQuery({ ...issueQuery(issueKey), enabled: issueKey !== undefined });
   const viewer = useQuery(whoAmIQuery());
   const visibleArtifact =
     documentRoute === undefined
@@ -441,8 +445,8 @@ export function useMarginSheet(): MarginSheetModel {
     return { anchor, kind, owner: composerOwner(owner), seq, turnedAway: false };
   }, [heldRequest, owner, pendingCompose, turnedAway, visibleArtifactId]);
   // A project-document item link has nowhere else to land, so the compact sheet opens on it.
-  // An issue's comment or ask deep link lands on its Conversation turn; the margin selects the
-  // card without covering that turn with the sheet.
+  // An issue's item link lands on its node in the outline, or on its quote in the document
+  // `?mark=` opens; the margin selects the card without covering either with the sheet.
   const documentItemId = documentRoute?.item?.id;
   useEffect(() => {
     if (documentItemId !== undefined) {
@@ -544,10 +548,12 @@ export function useMarginSheet(): MarginSheetModel {
       return;
     }
     // The selection is applied once per link; the quote is still brought into view the first
-    // time the open document can be asked, which is often a later pass than this one.
+    // time the open document can be asked, which is often a later pass than this one. An item
+    // that is a node of the outline is marked and no more (`routeItemBesideDocument`).
     if (appliedRouteItem.current !== routeItemKey) {
       appliedRouteItem.current = routeItemKey;
-      selectMarginItem(routeItemId, false);
+      if (routeItemBesideDocument) selectMarginItem(routeItemId, false);
+      else selectItem(routeItemId);
     }
     const markId = marginItemMarkId(item);
     // Only once the open document has reported that mark. `focusMark` is a one-shot scroll into
@@ -555,6 +561,7 @@ export function useMarginSheet(): MarginSheetModel {
     // is where a client-side navigation lands - it silently does nothing and the reader never
     // sees the quote. A published placement is the document saying the span is rendered.
     if (
+      !routeItemBesideDocument ||
       markId === undefined ||
       !markPlacements.has(markId) ||
       focusedRouteMark.current === `${routeItemKey}:${markId}` ||
@@ -564,7 +571,16 @@ export function useMarginSheet(): MarginSheetModel {
     }
     focusedRouteMark.current = `${routeItemKey}:${markId}`;
     documentBridge.focusMark(markId);
-  }, [documentBridge, marginItems, markPlacements, routeItemId, routeItemKey, selectMarginItem]);
+  }, [
+    documentBridge,
+    marginItems,
+    markPlacements,
+    routeItemBesideDocument,
+    routeItemId,
+    routeItemKey,
+    selectItem,
+    selectMarginItem,
+  ]);
 
   useMarginListeners({
     composer: shownComposer,

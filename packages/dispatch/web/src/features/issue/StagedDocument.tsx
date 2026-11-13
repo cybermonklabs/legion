@@ -26,6 +26,7 @@ export function StagedDocument({
   highlightTerm,
   isClosed,
   issueKey,
+  marked,
   onToolbarChange,
   onVersionChange,
   resting = true,
@@ -33,14 +34,17 @@ export function StagedDocument({
   version,
 }: {
   artifact: Artifact;
-  /** The ask an address names for this document's editor to open (`?ask=`). */
+  /** The ask an address names for this document's editor to land on (`issue-address.ts`'s
+   *  `documentItem`). */
   askId?: string;
-  /** The comment an address names the same way (`?comment=`). */
+  /** The comment an address names the same way. */
   commentId?: string;
   /** What a `?q=` search term marks in the document's text. */
   highlightTerm?: string;
   isClosed: boolean;
   issueKey: string;
+  /** The address names the ask or the comment by `?mark=` (`ArtifactDocument`'s `marked`). */
+  marked?: boolean;
   onToolbarChange: (toolbar: DocumentToolbar | undefined) => void;
   onVersionChange: (version: number | null) => void;
   resting?: boolean;
@@ -59,6 +63,7 @@ export function StagedDocument({
           commentId={commentId}
           highlightTerm={highlightTerm}
           isClosed={isClosed}
+          marked={marked}
           onToolbarChange={onToolbarChange}
           onVersionChange={onVersionChange}
           owner={{ key: issueKey, kind: "issue" }}

@@ -15,6 +15,7 @@ import {
   CommentLink,
   comment,
   issue,
+  markedCommentPath,
   ReportEmptyLayoutButton,
   SameCommentLink,
   SelectedItemLabel,
@@ -92,9 +93,7 @@ function landingClient(comments: Comment[], asks: Ask[] = []): QueryClient {
 
 function renderCommentLinkLanding(comments: Comment[] = [comment], asks: Ask[] = []): RenderResult {
   return render(
-    <MemoryRouter
-      initialEntries={[`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=comment-1`]}
-    >
+    <MemoryRouter initialEntries={[markedCommentPath("comment-1")]}>
       <QueryClientProvider client={landingClient(comments, asks)}>
         <MarginProvider>
           <SelectedItemLabel />
@@ -135,10 +134,10 @@ async function quiet(): Promise<void> {
 }
 
 test("a phone comment deep link highlights its card without expanding it or opening the Thread dialog", async () => {
-  // The link's destination on a phone is the Conversation turn. The margin marks the card so the
-  // reader finds it when they open the review panel, but a thread on a phone opens only in the
-  // Thread dialog: an inline expansion left behind here would strand a Reply composer whose Cancel
-  // opens the fullscreen thread (#1239).
+  // The link's destination is the comment's node in the issue's outline (dispatch://INFRA-1196
+  // R20). The margin marks the card so the reader finds it when they open the review panel, but
+  // a thread on a phone opens only in the Thread dialog: an inline expansion left behind here
+  // would strand a Reply composer whose Cancel opens the fullscreen thread (#1239).
   const restoreMatchMedia = stubMatchMedia(true);
   const view = render(
     <MemoryRouter
@@ -164,6 +163,48 @@ test("a phone comment deep link highlights its card without expanding it or open
   } finally {
     view.unmount();
     restoreMatchMedia();
+  }
+});
+
+// dispatch://INFRA-1196 R20: a comment's own route, and `?comment=` on an issue's address, open
+// the issue's outline on the comment's node, focused. The margin marks its copy of the comment
+// and expands nothing at a desktop width either: an expanded thread's Reply box takes the focus
+// off that node as it mounts.
+test("a desktop link to a comment's node marks its card without expanding its thread", async () => {
+  const restoreMatchMedia = stubMatchMedia(false);
+  const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
+  try {
+    for (const path of [
+      buildIssuePath({ id: comment.id, key: issue.key, kind: "comment" }),
+      `${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=${comment.id}`,
+    ]) {
+      const view = render(
+        <MemoryRouter initialEntries={[path]}>
+          <QueryClientProvider client={landingClient([comment])}>
+            <MarginProvider>
+              <SelectedItemLabel />
+              <Margin />
+            </MarginProvider>
+          </QueryClientProvider>
+        </MemoryRouter>
+      );
+      try {
+        await waitFor(() =>
+          expect(screen.getByLabelText("Selected margin item").textContent).toBe(comment.id)
+        );
+        await settled();
+        expect(
+          screen.getByTestId(`margin-comment-${comment.id}`).getAttribute("aria-expanded"),
+          `${path} expands the comment's thread`
+        ).toBe("false");
+        expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+      } finally {
+        view.unmount();
+      }
+    }
+  } finally {
+    restoreMatchMedia();
+    scrollTo.mockRestore();
   }
 });
 
@@ -288,9 +329,7 @@ test("following the same comment link again brings the reader back to its card",
   const restoreMatchMedia = stubMatchMedia(false);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
   const view = render(
-    <MemoryRouter
-      initialEntries={[`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=comment-1`]}
-    >
+    <MemoryRouter initialEntries={[markedCommentPath("comment-1")]}>
       <QueryClientProvider client={landingClient([comment, secondComment])}>
         <MarginProvider>
           <SameCommentLink />
@@ -331,9 +370,7 @@ test("following a second comment link selects the item that link names", async (
   const restoreMatchMedia = stubMatchMedia(false);
   const scrollTo = spyOn(HTMLElement.prototype, "scrollTo").mockImplementation(() => {});
   const view = render(
-    <MemoryRouter
-      initialEntries={[`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=comment-2`]}
-    >
+    <MemoryRouter initialEntries={[markedCommentPath("comment-2")]}>
       <QueryClientProvider client={landingClient([comment, secondComment])}>
         <MarginProvider>
           <CommentLink />
@@ -449,9 +486,7 @@ test("the margin stops correcting a linked card once the reader scrolls the marg
  *  the "Report layout" press: by default the spec the margin shows cards for. */
 function renderLandingWithReport(artifactId?: string): RenderResult {
   return render(
-    <MemoryRouter
-      initialEntries={[`${buildIssuePath({ key: issue.key, kind: "spec" })}?comment=comment-1`]}
-    >
+    <MemoryRouter initialEntries={[markedCommentPath("comment-1")]}>
       <QueryClientProvider client={landingClient([comment])}>
         <MarginProvider>
           <ReportEmptyLayoutButton artifactId={artifactId} />

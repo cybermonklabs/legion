@@ -7,6 +7,7 @@ import {
   getArtifactText,
 } from "./api";
 import { connectedDot, documentEditor, specAddress } from "./editor";
+import { conversationStateControl } from "./issue-page";
 import { sql } from "./psql";
 import {
   ANCHOR,
@@ -102,6 +103,10 @@ test("an item address that writes its id short opens the item and is replaced by
   }
 });
 
+// A `/spec` address naming a comment by `?comment=` opens the issue page on that comment, not the
+// spec it quotes (dispatch://INFRA-1196 R20); written short, the id is resolved first and the
+// address replaced by the whole one. An agent wrote this comment, in a thread no person wrote in,
+// so it lands in the history: the conversation in its Everything state, marking its entry.
 test("a spec address that writes an anchored comment's id short opens it and is replaced by the whole id", async ({
   browser,
 }) => {
@@ -118,8 +123,14 @@ test("a spec address that writes an anchored comment's id short opens it and is 
     const page = await context.newPage();
     const address = `/issues/${world.host.key}/spec?comment=`;
     await page.goto(`${address}${short(anchored.id)}`);
-    await expectOpenedMarginItem(page, anchored.id);
     await expect(page).toHaveURL(`${address}${anchored.id}`);
+    const turn = conversationTurn(page, "comment", anchored.id);
+    await expect(turn).toHaveAttribute("aria-current", "true");
+    await expect(turn).toContainText("Anchored on the first line.");
+    await expect(conversationStateControl(page, "everything")).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
   } finally {
     await context.close();
   }

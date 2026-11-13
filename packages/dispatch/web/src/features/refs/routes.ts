@@ -854,6 +854,27 @@ export function documentItemPath(
   return `${path}?${item.kind}=${encodeURIComponent(item.id)}`;
 }
 
+/**
+ * The path that opens `artifact` itself, and `mark` - a comment anchored in it - marked in its
+ * text. An issue's document opens at its own `/artifacts/<slug>`, the spec's included, since
+ * `/spec` is the Spec filter, and the comment is named by `?mark=`: `?comment=` or `?ask=` on an
+ * issue's address names that item's node in the outline, which the address opens instead
+ * (dispatch://INFRA-1196 R20, `issue-address.ts`). A project document's page has no outline, so
+ * it keeps `?comment=` (`documentItemPath`).
+ */
+export function openDocumentPath(
+  artifact: Pick<Artifact, "issue_key" | "kind" | "primary" | "project" | "session_id" | "slug">,
+  mark?: string
+): string {
+  if (artifact.issue_key === null) {
+    return mark === undefined
+      ? buildReferencePath(documentRoute(artifact))
+      : documentItemPath(artifact, { id: mark, kind: "comment" });
+  }
+  const path = buildIssuePath({ key: artifact.issue_key, kind: "artifact", slug: artifact.slug });
+  return mark === undefined ? path : `${path}?mark=${encodeURIComponent(mark)}`;
+}
+
 /** A reference's compact plain-text form: what its link shows until the target's title
  * resolves (or if it never does, e.g. a deleted ask), and what a plain-text headline
  * (`useMarkdownHeadline`) writes in its place. Mirrors `buildDispatchReference`'s shape without
