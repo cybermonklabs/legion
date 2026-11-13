@@ -103,6 +103,73 @@ func censusOfHandBuiltMigrations(t *testing.T, databaseURL string, migrations []
 	return report
 }
 
+// appliedSession is what the session a marked migration was applied on held at the moment its
+// statement returned, read on that session itself through the runner's own hook
+// (Store.afterNonTransactionalStatement): its backend, whether it holds the runner's migration
+// key, its transaction status and txid_current_if_assigned(), null while it has no transaction
+// id.
+type appliedSession struct {
+	pid      uint32
+	holdsKey bool
+	status   byte
+	assigned *string
+}
+
+// readAppliedSessions sets store's hook to record, on every marked migration the runner applies,
+// what the session that applied it holds, and answers where those records land. The status is
+// read before the statement the read itself sends, since that statement leaves the session as
+// it found it and says nothing on its own. Holding migrationLockKey is what proves the session
+// read is the runner's applying session and not another connection of the pool: the runner
+// takes the key on that session before it applies anything and holds it until it closes it.
+func readAppliedSessions(store *Store) *[]appliedSession {
+	sessions := &[]appliedSession{}
+	store.afterNonTransactionalStatement = func(ctx context.Context, conn *pgx.Conn) error {
+		session := appliedSession{status: conn.PgConn().TxStatus()}
+		if err := conn.QueryRow(ctx, `
+			select pg_backend_pid(), txid_current_if_assigned()::text,
+			       exists (select 1 from pg_locks
+			               where locktype = 'advisory' and pid = pg_backend_pid() and granted
+			                 and objsubid = 1 and (classid::bigint << 32 | objid::bigint) = $1)`,
+			migrationLockKey).Scan(&session.pid, &session.assigned, &session.holdsKey); err != nil {
+			return fmt.Errorf("read the session the statement was applied on: %w", err)
+		}
+		*sessions = append(*sessions, session)
+		return nil
+	}
+	return sessions
+}
+
+// requireNoTransactionAround fails the test unless every marked migration the runner has applied
+// so far ran on its own session, the one holding the migration key, and left that session
+// holding no transaction when its statement returned - no transaction id assigned, and the
+// session idle - and unless there are exactly applications of them, one for each marked
+// statement this test has had the runner apply. The sessions are judged before they are
+// counted, so a runner that held a transaction open is named for that and not for what it then
+// failed to record.
+func requireNoTransactionAround(t *testing.T, what string, sessions []appliedSession, applications int) {
+	t.Helper()
+	for _, session := range sessions {
+		switch {
+		case !session.holdsKey:
+			t.Fatalf("%s: the session the hook read (backend %d) does not hold the migration key %d, so it is not the session the runner applied the statement on",
+				what, session.pid, migrationLockKey)
+		case session.assigned != nil:
+			t.Fatalf("%s: txid_current_if_assigned() on the session that applied the statement (backend %d) is %s: the runner held a transaction open around the statement",
+				what, session.pid, *session.assigned)
+		case session.status != 'I':
+			t.Fatalf("%s: the session that applied the statement (backend %d) is in transaction status %q, want idle (I): the runner held a transaction open around the statement",
+				what, session.pid, string(session.status))
+		}
+	}
+	if len(sessions) != applications {
+		t.Fatalf("%s: the runner's hook read %d applying session(s), want %d, one for each marked statement this test had the runner apply",
+			what, len(sessions), applications)
+	}
+	session := sessions[applications-1]
+	t.Logf("%s: the session that applied the statement (backend %d, holding migration key %d) is idle and txid_current_if_assigned() is null: the runner held no transaction open around it",
+		what, session.pid, migrationLockKey)
+}
+
 // graphTuplesIndexState is the index's oid and whether Postgres has it as valid; the oid is 0
 // when no index of that name exists.
 func graphTuplesIndexState(t *testing.T, store *Store) (oid uint32, valid bool) {
@@ -125,9 +192,10 @@ func graphTuplesIndexState(t *testing.T, store *Store) (oid uint32, valid bool) 
 //
 // The whole route is read against a real Postgres: graph_tuples is filled past a limit this run
 // sets itself, the index as an ordinary migration is refused on the table's size, the same index
-// under the marker passes the census and is built for real by the store's own runner, a second
-// application of it through that runner does nothing, and a UNIQUE build under the same marker
-// is refused like the ordinary migration.
+// under the marker passes the census and is built for real by the store's own runner, on a
+// session that held no transaction around the build, a second application of it through that
+// runner does nothing, and a UNIQUE build under the same marker is refused like the ordinary
+// migration.
 //
 // The run creates no event trigger, so it needs no superuser, which the test server's login is
 // not. It reads pg_event_trigger at the end instead, since an enabled DDL event trigger is what
@@ -232,15 +300,19 @@ func TestAnIndexIsStillPossibleOnceTheLogPassesTheCensusLimit(t *testing.T) {
 	// The build itself, through the store's own runner (store.migrate), which applies a marked
 	// migration on a connection of its own and outside any transaction
 	// (applyNonTransactionalMigration). The index does not exist until the runner runs, so the
-	// index read valid afterwards is the one the runner built.
+	// index read valid afterwards is the one the runner built. The runner closes that connection
+	// before migrate returns, so the session that applied the statement is read through the
+	// runner's own hook, the moment its statement returns.
 	set := migrationsThrough(t, graphStoreVersion)
 	set[graphIndexMigrationID] = &fstest.MapFile{Data: []byte(graphMarkedIndexSQL)}
 	if before, _ := graphTuplesIndexState(t, store); before != 0 {
 		t.Fatalf("%s exists before the runner applied the migration that builds it: oid %d", graphTuplesIndex, before)
 	}
+	applied := readAppliedSessions(store)
 	if err := store.migrate(ctx, set); err != nil {
 		t.Fatalf("apply the marked migration through the runner: %v", err)
 	}
+	requireNoTransactionAround(t, "the runner's build", *applied, 1)
 	if got := schemaVersion(t, store); got != graphIndexVersion {
 		t.Fatalf("the runner recorded version %d, want %d", got, graphIndexVersion)
 	}
@@ -265,6 +337,7 @@ func TestAnIndexIsStillPossibleOnceTheLogPassesTheCensusLimit(t *testing.T) {
 	if err := store.migrate(ctx, set); err != nil {
 		t.Fatalf("apply the marked migration through the runner a second time: %v", err)
 	}
+	requireNoTransactionAround(t, "the runner's second application", *applied, 2)
 	if got := schemaVersion(t, store); got != graphIndexVersion {
 		t.Fatalf("the runner's second application recorded version %d, want %d", got, graphIndexVersion)
 	}
@@ -273,36 +346,6 @@ func TestAnIndexIsStillPossibleOnceTheLogPassesTheCensusLimit(t *testing.T) {
 		t.Fatalf("the second application changed %s: oid %d -> %d, valid %v", graphTuplesIndex, built, rebuilt, valid)
 	}
 	t.Logf("the runner applied %s again and recorded version %d; %s is still oid %d and valid", graphIndexFile, graphIndexVersion, graphTuplesIndex, rebuilt)
-
-	// The runner closes the connection it applied the statement on before migrate returns, so
-	// that session can no longer be asked whether it held a transaction. The executor the runner
-	// applies the statement with can be, on a session the test holds: a statement run outside a
-	// transaction leaves the session idle with no transaction id assigned, where an executor that
-	// had wrapped it would leave an open transaction holding one. The index exists by now, so this
-	// third run is the no-op the second one was.
-	conn, err := pgx.Connect(ctx, databaseURL)
-	if err != nil {
-		t.Fatalf("connect for the executor's own run: %v", err)
-	}
-	t.Cleanup(func() { conn.Close(context.Background()) })
-	marked := pgmigrate.Migration{Version: graphIndexVersion, Name: graphIndexFile, SQL: graphMarkedIndexSQL, NonTransactional: true}
-	if err := pgmigrate.ExecNonTransactional(ctx, conn, marked, nil); err != nil {
-		t.Fatalf("run the marked statement through the runner's executor: %v", err)
-	}
-	var assigned *string
-	if err := conn.QueryRow(ctx, "select txid_current_if_assigned()::text").Scan(&assigned); err != nil {
-		t.Fatalf("read txid_current_if_assigned(): %v", err)
-	}
-	if assigned != nil {
-		t.Fatalf("the session the executor ran the statement on holds transaction %s, so the statement ran inside a transaction", *assigned)
-	}
-	if status := conn.PgConn().TxStatus(); status != 'I' {
-		t.Fatalf("the session the executor ran the statement on is in transaction status %q, want idle", string(status))
-	}
-	t.Logf("the session the executor ran the statement on is idle and txid_current_if_assigned() is null: no transaction was held open around it")
-	if again, valid := graphTuplesIndexState(t, store); again != built || !valid {
-		t.Fatalf("the executor's own run changed %s: oid %d -> %d, valid %v", graphTuplesIndex, built, again, valid)
-	}
 
 	// A UNIQUE build validates the rows it scans, so it gets no size exception. No file can carry
 	// one: the loader refuses it before any database is read.

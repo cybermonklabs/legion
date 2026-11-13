@@ -2323,12 +2323,15 @@ It is one `repeatable read, read only` transaction on a connection of its own, s
 
 For each projected kind it counts the live nodes (a node whose `state` is `live`) against the projection rows, in both directions, and reports each difference by its cause and by the row it was found at:
 a row naming no node, a row naming a node the store does not hold, a row naming one the store holds `gone` — which is the separate assertion that no gone node holds a projection row — a row whose shared fields disagree with its node's, and a live node no row projects.
-The shared fields are digested rather than printed: a comment's `created_at` and `author` against its node's `made_at` and `made_by`, and a block's `parent_block_id` against the parent its `part_of` tuple states.
+The shared fields are digested rather than printed, and for the three projected kinds they include the tuples that answer the row, read as the store reads a current relation (the newest tuple per kind and far end, kept while it asserts), and not the node row alone:
+once a kind's cutover is complete `graph_edges`, `refs.Edges` and `refs.BacklinkCounts` answer its links from the tuples, so a missing or retracted tuple takes a link out of every read while each node row still stands.
+A comment's `created_at`, `author`, the artifact its `anchor` names, the artifact its `artifact_id` names and the author `graphstore.AuthorOf` reads off `author` are held against its node's `made_at` and `made_by` and its current `anchored_to`, `owned_by` and `authored_by` tuples.
+A block's document and the block its `parent_block_id` names, or the document where it names none, are held against its current `in_document` and `part_of` tuples.
 A block that states no parent at all digests differently from one the document holds directly, which is how the census tells a block the index has not reached yet from a block at a document's top level.
 The kinds are:
 
 - `comment` against `comments`, `block` against `document_blocks` and `block_ref` against `block_refs`, the three kinds `graph_store_cutover` names, whose rows the report prints beside the counts.
-  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is the live block nodes its rows name.
+  A `block_refs` row is one link out of a block and its node is that block's, so several rows share one node: that kind's node side is the live block nodes its rows name, and every row of a block is held, as the set of links that block's rows name, against every link its node states now other than its `in_document` and `part_of`, so a link with no tuple and a tuple with no row are both read.
   A block whose address is past the store's key bound (`refs.MaxBlockNodeBytes`) is no node of the store by design, and both sides leave those rows out.
 
 - `person`, `session`, `role` and a role's page, which no table projects.

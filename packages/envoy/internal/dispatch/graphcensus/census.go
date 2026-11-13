@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -104,6 +105,15 @@ func (r *StoreReport) Refused() bool {
 // names, each with a table that projects it; the four after them are the people and the agents,
 // which no table projects.
 //
+// Each of the first three holds a row to the tuples that answer it as well as to its node row.
+// Once a kind's cutover is complete, graph_edges, refs.Edges and refs.BacklinkCounts answer that
+// kind's links from the tuples, so a link whose tuple is missing or retracted is gone from every
+// read while each node row still stands, and a census of the node rows alone reads zero
+// differences over a store that has lost edges. A row's digest therefore carries every link the
+// row states (statedLinks), and its node's digest carries every link the store states now under
+// the same tuple kinds (currentLinks): the two agree exactly when the store states each link the
+// row names and no other.
+//
 // A block's address is its document's ref_key, '#' and its block id, and a block whose address
 // is past refs.MaxBlockNodeBytes is deliberately no node of the store: its row carries no node
 // address and nothing is stated about it. Both block sides leave those rows out, so the census
@@ -112,42 +122,67 @@ var projections = []projection{{
 	name:     "comment",
 	nodeKind: "comment",
 	table:    "comments",
-	note:     "one node per row; the digest is the row's created_at and author against the node's made_at and made_by",
+	note: "one node per row; the digest is the row's created_at and author, the artifacts its anchor and its" +
+		" artifact_id name and the author graphstore.AuthorOf reads off it, against the node's made_at and" +
+		" made_by and the anchored_to, owned_by and authored_by tuples it states now",
 	rows: `
 		select 'comment ' || c.id::text, c.node_kind, c.node_address,
-		       md5(c.created_at::text || '|' || c.author::text)
-		from comments c`,
+		       md5(c.created_at::text || '|' || c.author::text || '|' || ` + statedLinks(
+		`'`+tupleAnchoredTo+`>artifact:' || anchor.ref_key`,
+		`'`+tupleOwnedBy+`>artifact:' || owner.ref_key`,
+		`'`+graphstore.TupleAuthoredBy+`>' || `+commentAuthor,
+	) + `)
+		from comments c
+		left join artifacts anchor on anchor.id = (c.anchor->>'artifact_id')::uuid
+		left join artifacts owner on owner.id = c.artifact_id`,
 	nodes: `
-		select n.id, md5(n.made_at::text || '|' || n.made_by::text)
+		select n.id, md5(n.made_at::text || '|' || n.made_by::text || '|' || ` + currentLinks(commentNodeKind,
+		`t.kind in ('`+tupleAnchoredTo+`', '`+tupleOwnedBy+`', '`+graphstore.TupleAuthoredBy+`')`) + `)
 		from graph_nodes n where n.kind = 'comment'`,
 }, {
 	name:     "block",
 	nodeKind: refs.BlockNodeKind,
 	table:    "document_blocks",
-	note: "one node per row, blocks past the address bound aside; the digest is the row's parent_block_id" +
-		" against the parent the node's part_of tuple states, a block with no such tuple telling itself" +
-		" from one the document holds directly",
+	note: "one node per row, blocks past the address bound aside; the digest is the row's document and the block" +
+		" its parent_block_id names, or the document where it names none, against the in_document and part_of" +
+		" tuples the node states now, a block with no part_of telling itself from one the document holds directly",
 	rows: `
 		select 'block ' || d.node_id, d.node_kind, d.node_address,
-		       md5(d.node_id || '|t|' || coalesce(d.parent_block_id, ''))
+		       md5(d.node_id || '|' || ` + statedLinks(
+		`'`+refs.TupleInDocument+`>artifact:' || a.ref_key`,
+		`'`+graphstore.TuplePartOf+`>' || case when d.parent_block_id is null then 'artifact:' || a.ref_key
+		      else '`+refs.BlockNodeKind+`:' || a.ref_key || '#' || d.parent_block_id end`,
+	) + `)
 		from document_blocks d
+		join artifacts a on a.id = d.artifact_id
 		where octet_length(d.node_id) <= ` + blockBound,
 	nodes: `
-		select n.id, md5(n.id || '|' || ` + currentParent + `)
+		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
+		`t.kind in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
 		from graph_nodes n where n.kind = '` + refs.BlockNodeKind + `'`,
 }, {
 	name:     "block_ref",
 	nodeKind: refs.BlockNodeKind,
 	table:    "block_refs",
 	note: "a row is one link out of a block and its node is that block's, so several rows share one node:" +
-		" the node side is the live block nodes the rows name, and the digest is the row's from_node against it",
+		" the node side is the live block nodes the rows name, and the digest is every link the rows of that" +
+		" block name against every link its node states now beside its in_document and part_of",
 	rows: `
 		select 'block_ref ' || r.from_node || ' ' || r.kind || ' -> ' || r.to_kind || ' ' || r.to_id,
-		       r.node_kind, r.node_address, md5(r.from_node)
+		       r.node_kind, r.node_address, md5(r.from_node || '|' || named.links)
 		from block_refs r
+		join (
+			select b.from_node,
+			       string_agg(b.kind || '>' || b.to_kind || ':' || b.to_id, ','
+			                  order by b.kind || '>' || b.to_kind || ':' || b.to_id) as links
+			from block_refs b
+			where octet_length(b.from_node) <= ` + blockBound + `
+			group by b.from_node
+		) named on named.from_node = r.from_node
 		where octet_length(r.from_node) <= ` + blockBound,
 	nodes: `
-		select n.id, md5(n.id)
+		select n.id, md5(n.id || '|' || ` + currentLinks(refs.BlockNodeKind,
+		`t.kind not in ('`+refs.TupleInDocument+`', '`+graphstore.TuplePartOf+`')`) + `)
 		from graph_nodes n
 		where n.kind = '` + refs.BlockNodeKind + `'
 		  and exists (select 1 from block_refs r where r.node_kind = n.kind and r.node_address = n.id)`,
@@ -201,30 +236,50 @@ var projections = []projection{{
 // one shared constant keeps the two sides reading the same bound.
 var blockBound = strconv.Itoa(refs.MaxBlockNodeBytes)
 
-// currentParent is the parent a block node states now, as a statement reads it: the newest
-// tuple per far end, kept while that newest one asserts (graphstore.CurrentOut), with the
-// parent's own block id read out of its address. A ref_key holds no '#' (migration 0121), so
-// the first one parts the document from the block.
+// statedLinks is the links a projection row states, as one value its digest can carry: links are
+// SQL expressions over the row, each answering one link written kind>to_kind:to_id, or null where
+// the row states no such link. They are joined in order as currentLinks joins the store's, and
+// a row that states none reads the empty string.
+func statedLinks(links ...string) string {
+	return `(select coalesce(string_agg(stated.link, ',' order by stated.link), '')
+		from (values (` + strings.Join(links, `), (`) + `)) stated (link))`
+}
+
+// currentLinks is every link the node n of kind fromKind states now under the tuple kinds the
+// predicate kinds selects (written over t.kind), read as a statement reads a current relation:
+// the newest tuple per (kind, far end), kept while that newest one asserts
+// (graphstore.CurrentOut). Each is written kind>to_kind:to_id, as statedLinks writes a row's, and
+// they are joined in order, so a node that states none reads the empty string. A link whose
+// newest tuple is a retraction is absent here exactly as a tuple never written is. The read walks
+// graph_tuples_current, whose columns are the ones the distinct on and the order by name.
 //
-// It answers `t|<block id>` for a block another block holds, `t|` for one the document holds
-// directly, which document_blocks spells as a null parent_block_id, and `f|` for a node that
-// states no parent at all. The last two are different facts - a block the document holds, and
-// a block the store says nothing about - and a digest that wrote both as the empty string
-// would read a node with no parent as agreeing with every top-level row. Two asserted parents
-// are an impossible state the digests must still tell from one, so they are joined rather than
-// reduced to either of them.
-const currentParent = `
-	(select coalesce(string_agg('t|' || held.parent, ',' order by held.parent), 'f|')
+// A block's part_of is one of these links, so a block that states no parent at all and a block
+// the document holds directly read differently: the first has no part_of link and the second
+// has the one to its document, which is the link its row's null parent_block_id states.
+func currentLinks(fromKind, kinds string) string {
+	return `(select coalesce(string_agg(held.link, ',' order by held.link), '')
 	 from (
-		select distinct on (t.to_kind, t.to_id)
-		       case when t.to_kind = '` + refs.BlockNodeKind + `'
-		            then substr(t.to_id, position('#' in t.to_id) + 1) else '' end as parent,
-		       t.asserted
+		select distinct on (t.kind, t.to_kind, t.to_id)
+		       t.kind || '>' || t.to_kind || ':' || t.to_id as link, t.asserted
 		from graph_tuples t
-		where t.from_kind = '` + refs.BlockNodeKind + `' and t.from_id = n.id
-		  and t.kind = '` + graphstore.TuplePartOf + `' and t.to_kind <> '` + graphstore.KindValue + `'
-		order by t.to_kind, t.to_id, t.seq desc
+		where t.from_kind = '` + fromKind + `' and t.from_id = n.id
+		  and t.to_kind <> '` + graphstore.KindValue + `' and ` + kinds + `
+		order by t.kind, t.to_kind, t.to_id, t.seq desc
 	 ) held where held.asserted)`
+}
+
+// commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
+// the node graphstore.AuthorOf reads off the actor the row stored, a login canonicalised as
+// commentPeople canonicalises one, and null for an actor that names nobody, whose comment states
+// no authored_by at all.
+const commentAuthor = `case
+			when c.author->>'kind' = 'user' and coalesce(c.author->>'id', '') <> ''
+				then '` + graphstore.KindPerson + `:' || user_threads_login(c.author->>'id')
+			when c.author->>'kind' = 'session' and coalesce(c.author->>'id', '') <> ''
+				then '` + graphstore.KindSession + `:' || (c.author->>'id')
+			when coalesce(c.author->>'owner', '') <> ''
+				then '` + graphstore.KindPerson + `:' || user_threads_login(c.author->>'owner')
+		end`
 
 // commentPeople are the people the projected tables name as the author of a row, as
 // graphstore.AuthorOf reads an actor: the login an actor of kind user carries, or the owner a
@@ -296,6 +351,14 @@ const addressedRoles = `
 //
 // sizing adds the growth pass (SizingReport), which reads the same snapshot.
 func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreReport, error) {
+	return storeCensus(ctx, databaseURL, sizing, nil)
+}
+
+// storeCensus is StoreCensus with afterKind, which runs once each kind has been read and before
+// anything after it is, on the census's own context, and whose error ends the census. Only a
+// test passes one: it is how a test commits a write between two of the census's reads and asks
+// whether the reads after it still answer the snapshot the first one took. Nil runs nothing.
+func storeCensus(ctx context.Context, databaseURL string, sizing bool, afterKind func(ctx context.Context, kind string) error) (*StoreReport, error) {
 	conn, err := connect(ctx, databaseURL, applicationName)
 	if err != nil {
 		return nil, err
@@ -313,6 +376,11 @@ func StoreCensus(ctx context.Context, databaseURL string, sizing bool) (*StoreRe
 			return nil, err
 		}
 		report.Kinds = append(report.Kinds, kind)
+		if afterKind != nil {
+			if err := afterKind(ctx, held.name); err != nil {
+				return nil, err
+			}
+		}
 	}
 	cutover, err := readCutover(ctx, tx)
 	if err != nil {

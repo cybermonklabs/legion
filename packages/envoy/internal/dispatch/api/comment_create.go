@@ -1013,6 +1013,15 @@ func (s *server) createCommentFor(w http.ResponseWriter, r *http.Request, owner 
 			r.Context(), tx, "POST /api/v1/issues/{key}/comments", *owner.IssueKey, actor, "", *status, false,
 		)
 	}
+	// The test seam: a case holds the write here, with every event it appended and nothing
+	// committed, or ends it in a rollback (server beforeCommentCommit). Nothing but a test sets
+	// it.
+	if s.beforeCommentCommit != nil {
+		if err := s.beforeCommentCommit(r.Context(), events); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
