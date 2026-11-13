@@ -885,8 +885,13 @@ check "naming them" "$(contains "$out" 'this check takes one mode')"
 # The package mode alone. ci.yaml's lint job runs `check-ci-images.sh tree` over this
 # repository on every change (.github/workflows/ci-job-lint.yaml, "Check every image a CI job
 # fetches is a row of .github/ci-images.yaml"), so a tree-mode case here would run that same
-# check a second time in the same CI run; no job of a pull request's run runs the package mode,
-# which reads ghcr.io, so that one is this suite's.
+# check a second time in the same CI run. The package mode runs in a CI run too: ci.yaml's
+# ci-images job runs `check-ci-images.sh package` (.github/workflows/ci-job-ci-images.yaml,
+# "Check the package holds every row of .github/ci-images.yaml") on every event ci.yaml runs
+# on - a pull request, a merge group and a dispatch - whenever the ci_images filter selects
+# it, and there it reads ghcr.io itself. This case runs that mode over this tree's rows against
+# a stand-in for the registry instead (CI_IMAGES_MANIFEST_HEAD and LABELS below), so the mode's
+# own reading of the rows is held in every run of this suite, which reaches no registry.
 echo "case: the repository's own tree, in the package mode"
 
 # This tree's own `built` row carries the digest of an image this repository published, and

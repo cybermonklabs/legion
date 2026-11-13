@@ -129,15 +129,24 @@ def reads(*entries):
     return [Read(glob, why) for glob, why in entries]
 
 
-def envoy_top_level_but_infra():
-    """packages/envoy/* and every top-level directory of it but infra, node_modules, testdata and
-    out. The last three hold no tracked file, and a rule naming a directory that holds none is
-    refused: out is where packages/dispatch/e2e/run-broker.sh builds the broker binaries the
-    browser suite starts, so it exists on a checkout that has run that suite and nowhere else."""
-    globs = [f"{ENVOY}/*"]
+def envoy_go_files_but_infra():
+    """The .go files internal/testnats/nats_test.go's dockerDriverFiles opens: every one under
+    packages/envoy but infra's, node_modules' and testdata's, test files included, as one
+    `<dir>/**/*.go` per top-level directory that holds one and packages/envoy/*.go if the root
+    does. A glob for a directory holding no .go file would name no file, which rule 9 refuses, and
+    out - where packages/dispatch/e2e/run-broker.sh builds the broker binaries the browser suite
+    starts - holds binaries alone."""
+    def holds_go(directory: Path) -> bool:
+        for current, subdirs, names in os.walk(directory):
+            subdirs[:] = [s for s in subdirs if s not in {"node_modules", "testdata"}]
+            if any(n.endswith(".go") for n in names):
+                return True
+        return False
+
+    globs = [f"{ENVOY}/*.go"] if any(Path(ENVOY).glob("*.go")) else []
     for entry in sorted(Path(ENVOY).iterdir()):
-        if entry.is_dir() and entry.name not in {"infra", "node_modules", "out", "testdata"}:
-            globs.append(f"{ENVOY}/{entry.name}/**")
+        if entry.is_dir() and entry.name not in {"infra", "node_modules", "testdata"} and holds_go(entry):
+            globs.append(f"{ENVOY}/{entry.name}/**/*.go")
     return globs
 
 
@@ -339,13 +348,15 @@ RULES = {
     # --- daemon
     f"{DAEMON}/cmd/legion/config_example_test.go": reads(("deploy/kubernetes/daemon/legion.yaml.example", "cmd/legion/config_example_test.go:164 (runtime.Caller at :160 + ../../../..)")),
     f"{DAEMON}/cmd/legion/gh_test.go": reads((f"{DAEMON}/docker/gh", "cmd/legion/gh_test.go:978 ../../docker/gh")),
+    f"{DAEMON}/cmd/legion/state_read_budget_test.go": reads(
+        (f"{FIX}/daemon-api/state.json", "cmd/legion/state_read_budget_test.go:30 reads the daemon's state golden as the slow daemon's answer")),
     f"{DAEMON}/internal/admit/admit_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/admit/admit_test.go:1058")),
     # main's #2780 added the guard that holds internal/api's reachable claim states to the ones
     # internal/supervise declares, which it reads by parsing that package's own sources.
     f"{DAEMON}/internal/api/reachstates_test.go": reads(
         (f"{DAEMON}/internal/supervise/*", "internal/api/reachstates_test.go:47 lists ../supervise and :57 parses each file of it")),
     f"{DAEMON}/internal/api/real_github_test.go": reads(("scripts/e2e/lib/github-apps.sh", "internal/api/real_github_test.go:115 runs it in bash, and :208,249 read it")),
-    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:728 (path from goldenPath at :717, declared :32)")),
+    f"{DAEMON}/internal/api/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/api/state_golden_test.go:868 (path from goldenPath at :857, declared :32)")),
     f"{DAEMON}/internal/capabilities/capabilities_test.go": reads(
         (f"{FIX}/capability-redaction.json", "internal/capabilities/capabilities_test.go:236 readFixture"),
         (f"{FIX}/capability-redaction-plugin-report.json", "internal/capabilities/capabilities_test.go:236 readFixture")),
@@ -360,7 +371,7 @@ RULES = {
     # with nobody noticing (dispatch://INFRA-1413).
     f"{DAEMON}/internal/config/stalldefaults_test.go": reads(
         (f"{FIX}/daemon-api/*", "internal/config/stalldefaults_test.go:72 (the :67 write is under -update, which CI never passes)")),
-    f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:315")),
+    f"{DAEMON}/internal/daemon/capability_reports_test.go": reads((f"{FIX}/capability-redaction.json", "internal/daemon/capability_reports_test.go:318")),
     f"{DAEMON}/internal/daemon/daemon_test.go": reads((f"{DAEMON}/internal/intake/testdata/dispatch/issue-updated.json", "internal/daemon/daemon_test.go:1331")),
     # The harness main's #2780 added under the e2e tag for the two agent proofs it brought
     # (claim_compaction_live_test.go and provider_error_retry_live_test.go): it builds the
@@ -384,15 +395,15 @@ RULES = {
     f"{DAEMON}/internal/daemon/supervision_test.go": reads((f"{DAEMON}/internal/stream/*", "internal/daemon/supervision_test.go:1254 Glob ../stream/*.go")),
     f"{DAEMON}/internal/intake/redelivered_test.go": [
         run(ENVOY, ["./cmd/listener", "./cmd/dispatch"], "internal/intake/redelivered_test.go:298-299 testbuild.EnvoyBinary, which runs go build ./cmd/listener and ./cmd/dispatch in packages/envoy (internal/testbuild/testbuild.go:112)", mode="build")],
-    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:792,889")),
+    f"{DAEMON}/internal/intake/intake_test.go": reads((f"{FIX}/github-envelopes/*", "internal/intake/intake_test.go:802 globs it and :808 reads each file; :902 reads one")),
     f"{DAEMON}/internal/projection/state_golden_test.go": reads((f"{FIX}/daemon-api/*", "internal/projection/state_golden_test.go:209")),
     f"{DAEMON}/internal/prompts/roles_test.go": reads(
-        ("packages/pi-legion/agents/*", "internal/prompts/roles_test.go:260"),
-        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:578")),
+        ("packages/pi-legion/agents/*.md", "internal/prompts/roles_test.go:261 stats agents/<name>.md for each task agent"),
+        ("skills/legion-worker/references/tools.md", "internal/prompts/roles_test.go:689")),
     f"{DAEMON}/internal/runtime/sandbox/operatorpod_test.go": reads(
-        ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:27"),
-        (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:230"),
-        (f"{DAEMON}/docker/worker.Dockerfile", "internal/runtime/sandbox/operatorpod_test.go:292")),
+        ("deploy/kubernetes/operator-route/pod.yml", "internal/runtime/sandbox/operatorpod_test.go:28"),
+        (f"{FIX}/dispatch-public-url.json", "internal/runtime/sandbox/operatorpod_test.go:236"),
+        (f"{DAEMON}/docker/worker.Dockerfile", "internal/runtime/sandbox/operatorpod_test.go:298")),
     f"{DAEMON}/internal/runtime/sandbox/boundary_test.go": [legion_build("internal/runtime/sandbox/boundary_test.go:646 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/tmux/tmux_real_test.go": [
         legion_build("internal/runtime/tmux/tmux_real_test.go:86 go build .../daemon/cmd/legion"),
@@ -561,7 +572,8 @@ RULES = {
         (f"{ENVOY}/deploy/scripts/autodeploy_test.sh",
          "internal/dispatch/store/deployer_key_test.go:44 reads it the same way (:31)")),
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
-        (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
+        (f"{ENVOY}/**/*.md", "internal/dispatch/store/search_text_test.go:104-120 walks packages/envoy (infra included, "
+                             "node_modules and out passed over) and :114 opens each .md file, and no other")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -570,8 +582,10 @@ RULES = {
         Read(f"{ENVOY}/docker/rds-global-bundle.pem", "internal/smoke/rdsbundle_test.go:62")],
     f"{ENVOY}/internal/testnats/nats_test.go": [
         run(ENVOY, ["./..."], "internal/testnats/nats_test.go:708-709 go list -f ... ./... in packages/envoy", mode="build"),
-        *[Read(g, "internal/testnats/nats_test.go:741-747 walks every .go file under packages/envoy but infra, node_modules, testdata")
-          for g in envoy_top_level_but_infra()]],
+        *[Read(g, "internal/testnats/nats_test.go:741-754 walks packages/envoy but infra, node_modules and testdata, "
+                  "and :754 reads every .go file it finds, test files included (dockerDriverFiles, called from "
+                  "TestNoPackageOutsideTheRigsImportsOrDrivesAContainerRuntime at :669)")
+          for g in envoy_go_files_but_infra()]],
     f"{ENVOY}/internal/textcheck/claims_doc_test.go": reads(
         ("docs/kubernetes.md", "internal/textcheck/claims_doc_test.go:36,43 reads it under ../../../.."),
         (f"{ENVOY}/internal/broker/oauth/claims_doc_extract.txt",
@@ -776,7 +790,7 @@ TEXT_CHECK_PACKAGE = "internal/textcheck"
 def has_go_files(directory: Path) -> bool:
     """Whether a `./<directory>/...` pattern names any package at all: a .go file under it, in a
     directory the go command does not pass over (go_skips_dir). `go list` answers a pattern that
-    names none with a warning and no package, so packages_but() leaves such a directory out."""
+    names none with a warning and no package, so packages_kept() leaves such a directory out."""
     for current, subdirs, names in os.walk(directory):
         here = Path(current)
         subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(here, s))
@@ -785,31 +799,40 @@ def has_go_files(directory: Path) -> bool:
     return False
 
 
-def packages_but(root: str, excluded: str) -> list:
-    """The `go list` patterns that together name every package `./...` names in the module at
-    `root` but the one at `excluded`: a `/...` pattern for each directory the excluded package
-    is not under, and, for each directory it is under, that directory's own package where it has
-    one. A step that pipes `go list ./...` through a `grep -Ev` tests exactly these, so the Run
-    standing for it names them rather than the superset `./...`. The superset is what the
-    envoy-go unit step's Run and the test job's plain one said while the only thing they left out
-    was a package another job of the same filter ran; it cannot stand once the excluded package
-    is another job's, since the closure of `./...` carries that package's RULES - the files only
-    its tests read - onto this job's filter, and a change to one of them would go on starting a
-    job that no longer runs the test that reads it."""
-    base, target = Path(root), Path(root) / excluded
-    if not target.is_dir():
-        raise ValueError(f"{target} is no directory, so no lane can be leaving it out; follow the package, "
-                         "or drop the call")
+def packages_kept(root: str, pattern: str) -> list:
+    """The `go list` patterns that together name the packages a step's `go list ./... | grep -Ev
+    '<pattern>'` hands go test in the module at `root`. The pattern is tried as that grep tries
+    it: against each import path `go list ./...` prints, which is the module path the root's
+    go.mod declares, then the package's directory under the root, for every directory `./...`
+    walks (a .go file in it, nothing go_skips_dir passes over on the way). A directory under
+    which the pattern takes out no package is one `/...` pattern; one that holds a package it
+    takes out is its own package, where it has one the pattern keeps, and then its children in
+    turn. So the Run standing for such a step names what the step tests, read from the step's
+    own pattern, rather than the superset `./...` or a list kept by hand beside it: the closure of
+    `./...` carries a dropped package's test files and RULES - the files only its tests read -
+    onto this job's filter, and a change to one of them would go on starting a job that does not
+    run the test that reads it (dispatch://INFRA-1413)."""
+    base = Path(root)
+    module = next(line.split()[1] for line in (base / "go.mod").read_text().splitlines()
+                  if line.startswith("module "))
+    dropped = []
+    for current, subdirs, names in os.walk(base):
+        here = Path(current)
+        subdirs[:] = sorted(s for s in subdirs if not go_skips_dir(here, s))
+        under = here.relative_to(base).as_posix()
+        if any(n.endswith(".go") for n in names) and re.search(pattern, module if under == "." else f"{module}/{under}"):
+            dropped.append(here)
+    if not dropped:
+        raise ValueError(f"`grep -Ev '{pattern}'` takes no package of {root} out of `go list ./...`, so no lane "
+                         "is leaving one out; follow the package, or drop the grep")
     found = []
 
     def walk(here: Path):
-        if any(entry.name.endswith(".go") for entry in here.iterdir() if entry.is_file()):
+        if here not in dropped and any(entry.name.endswith(".go") for entry in here.iterdir() if entry.is_file()):
             found.append("./" if here == base else f"./{here.relative_to(base).as_posix()}/")
         for name in sorted(d.name for d in here.iterdir() if d.is_dir() and not go_skips_dir(here, d.name)):
             child = here / name
-            if child == target:
-                continue
-            if target.is_relative_to(child):
+            if any(d.is_relative_to(child) for d in dropped):
                 walk(child)
             elif has_go_files(child):
                 found.append(f"./{child.relative_to(base).as_posix()}/...")
@@ -823,9 +846,10 @@ def packages_but(root: str, excluded: str) -> list:
 # packages and drops that one before go test sees them. `set -o pipefail` is what makes a failed
 # go list fail the step rather than pass it with nothing tested.
 INFRA_PLAIN_STEP = "Unit test envoy-infra"
+INFRA_PLAIN_PATTERN = f"/{TEXT_CHECK_PACKAGE}$"
 INFRA_PLAIN_SCRIPT = f"""\
 set -o pipefail
-go list ./... | grep -Ev '/{TEXT_CHECK_PACKAGE}$' | xargs go test -count=1"""
+go list ./... | grep -Ev '{INFRA_PLAIN_PATTERN}' | xargs go test -count=1"""
 
 
 # The three packages the test job's race step runs, and which its plain step therefore leaves out.
@@ -1809,14 +1833,14 @@ GATES = [
         # form that check reduces either. What it compiles is every test file of every package
         # it lists, the two skipped table pins' included: -skip leaves a test out of the run,
         # never out of the build, so the closure here is the step's whole closure. The Run names
-        # the module's packages but the text checks (packages_but), rather than the superset
-        # ./...: the race step's Run above claims the three packages this step also leaves out,
-        # which are this job's own, while the text checks are the text-check job's, and a Run
-        # saying ./... would keep what only their tests read - docs/kubernetes.md - on this
-        # job's filter.
+        # the packages the step's own `grep -Ev` keeps (packages_kept over DAEMON_PLAIN_PATTERN),
+        # rather than the superset ./...: the race step's Run below claims the three packages
+        # this step leaves out, which are this job's own, while the text checks are the
+        # text-check job's, and a Run saying ./... would keep what only their tests read -
+        # docs/kubernetes.md - on this job's filter.
         pinned_step("daemon-go", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
-            (DAEMON, packages_but(DAEMON, TEXT_CHECK_PACKAGE),
-             "go list ./... piped into go test, counted as go test over the module but the text checks, the "
+            (DAEMON, packages_kept(DAEMON, DAEMON_PLAIN_PATTERN),
+             "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps, the "
              "supervise table's two pure pins skipped by name", {}),
         ]),
         # The race step carries a -skip, which is no form check-ci-filters.sh reduces either, so
@@ -2280,10 +2304,13 @@ GATES = [
         ]),
         # The module but the race lane's packages, internal/integration, which the integration
         # step tests, and the text checks, which the text-check job runs. The Run names the
-        # packages the step is left with (packages_but) rather than the superset ./...: the
-        # first two sets are claimed by Runs of jobs this gate's own wide patterns already
-        # cover, while the text checks are another job's, and a Run saying ./... would keep
-        # what only their tests read - docs/kubernetes.md - on this job's filter.
+        # packages the step's own `grep -Ev` keeps (packages_kept over UNIT_TEST_PATTERN), so it
+        # is read from the pattern the step runs rather than claimed beside it. A Run saying
+        # more would credit this job with tests other jobs run: the race lane's are
+        # envoy-go-race's, envoy-go-race-api's and envoy-go-race-docs', the text checks are the
+        # text-check job's, and the closure of ./... would put their test files and the files
+        # only those tests read on this job's filter, so a change to one of them would start a
+        # job that does not run the test it touches.
         # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
         # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
         # so a second run here asks nothing and can only pass, and
@@ -2292,8 +2319,8 @@ GATES = [
         # makes the first a requirement. The tests stay compiled into this step's binary, which
         # is what a skipped test is.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
-            (ENVOY, packages_but(ENVOY, TEXT_CHECK_PACKAGE),
-             "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
+            (ENVOY, packages_kept(ENVOY, UNIT_TEST_PATTERN),
+             "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
         ]),
         # Only what the natslive tag adds, one package at a time: the rig's own matrix, and the
         # one test of internal/bus that needs a real server image. The rest of internal/testnats
@@ -2377,8 +2404,8 @@ GATES = [
         # compiles the text checks, and must: vetting them keeps them compiling, and a vet run
         # reads none of the files a test of theirs reads.
         pinned_step("envoy-infra-go", INFRA_PLAIN_STEP, INFRA, INFRA_PLAIN_SCRIPT, [
-            (INFRA, packages_but(INFRA, TEXT_CHECK_PACKAGE),
-             "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
+            (INFRA, packages_kept(INFRA, INFRA_PLAIN_PATTERN),
+             "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps", {}),
         ]),
         # One go test per package, each running only what the natslive tag adds to it.
         pinned_step("envoy-infra-go", INFRA_NATSLIVE_STEP, INFRA, INFRA_NATSLIVE_SCRIPT, [

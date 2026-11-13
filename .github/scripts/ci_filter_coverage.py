@@ -560,8 +560,8 @@ def changes_filters(document: dict, problems: list) -> tuple:
     job the changes job already gates.
 
     Every paths-filter step of the job is read, since the filters are declared in more than one
-    (rule 18, and ci.yaml's `changes` job says why). A group both steps write out is one filter
-    here, as it is to dorny/paths-filter: the two must be the same patterns under the same
+    (rule 18, and ci.yaml's `changes` job says why). A group more than one step writes out is one
+    filter here, as it is to dorny/paths-filter: each copy must be the same patterns under the same
     quantifier, and a name an output of the job reads may be in one step only (rule 19,
     check_output_steps)."""
     filters, quantifiers, holders = {}, {}, defaultdict(list)
@@ -588,7 +588,7 @@ def changes_filters(document: dict, problems: list) -> tuple:
                 if patterns != filters[name] or quantifier != quantifiers[name]:
                     problems.append(f"::error file={WORKFLOW}::filter {name} is declared in paths-filter steps "
                                     f"{holders[name][0]} and {step.get('id')} of the changes job, and the two do not "
-                                    f"say the same thing; a group written out in both steps must be the same "
+                                    f"say the same thing; a group written out in more than one step must be the same "
                                     f"patterns under the same quantifier in each")
             else:
                 filters[name], quantifiers[name] = patterns, quantifier
@@ -606,7 +606,7 @@ def check_output_steps(document: dict, holders: dict, problems: list) -> None:
     """Rule 19: every `steps.<id>.outputs.<name>` an output of the changes job hands on must name
     the paths-filter step that declares filter <name>, and a filter an output reads must be
     declared in one step alone. A reference to a step that is no paths-filter step carries no
-    filter (the step that merges the two steps' verdicts) and is held only to being a step of the
+    filter (the step that merges the paths-filter steps' verdicts) and is held only to being a step of the
     job."""
     job = (document.get("jobs") or {}).get("changes") or {}
     steps = job.get("steps") or []
@@ -1614,6 +1614,19 @@ def check_dead_patterns(data, filters: dict, expander: Expander, problems: list)
                         f"the repository, so it holds its filter to nothing; correct the path or drop the read")
 
 
+def tag_held_files(data, filters: dict, selection: Selection) -> dict:
+    """Per filter, the files rule 15 holds it to: every file the filter of a TAG_RUNS step
+    selects, held on the filter of the job that runs that package's untagged tests, so a change
+    that starts the tagged run starts the untagged one with it. Rule 9's second direction passes
+    over them (rule_required_files) and rule 17 writes no `!` pattern for one (wanted_negations):
+    either would be refusing the rule that put the file there."""
+    held: dict = defaultdict(set)
+    for entry in data.TAG_RUNS:
+        if entry.filter in filters and entry.untagged_filter in filters:
+            held[entry.untagged_filter].update(selection.of(entry.filter))
+    return held
+
+
 def rule_required_files(data, filters: dict, selection: Selection, listed: dict, expander: Expander) -> dict:
     """Per filter, the files another rule holds that filter to whatever this check computes its
     job reads, which rule 9's second direction has to pass over: refusing one of those patterns
@@ -1641,9 +1654,8 @@ def rule_required_files(data, filters: dict, selection: Selection, listed: dict,
     for name, path in data.PUSH_WORKFLOWS.items():
         if name in filters:
             required[name].add(path)
-    for entry in data.TAG_RUNS:
-        if entry.filter in filters and entry.untagged_filter in filters:
-            required[entry.untagged_filter].update(selection.of(entry.filter))
+    for name, held in tag_held_files(data, filters, selection).items():
+        required[name].update(held)
     for name, block in listed.items():
         if name in filters and block.begin >= 0:
             for pattern in block.patterns:
@@ -1963,21 +1975,24 @@ def push_paths_block(lines: list, name: str, path: str, problems: list) -> dict:
 
 
 def wanted_negations(filters: dict, quantifiers: dict, gate_files: dict, blocks: dict, expander: Expander,
-                     tests: list) -> dict:
+                     tests: list, held: dict) -> dict:
     """Per gate filter, the `!` patterns its list must hold: the ones that keep it off every Go
     test file it selects and the gates on it do not read. What the filter selects is read from
     its patterns without its own generated block, so two runs over one tree write one text;
     every other `!` pattern of the list counts, since one of those narrows what is left to
     exclude. A filter the changes job declares under `some` gets none: a `!` pattern there
     matches every file outside it, which rule 6 refuses, and these patterns would then mean the
-    opposite of what they say."""
+    opposite of what they say. A test file rule 15 holds the filter to (`held`, tag_held_files)
+    is kept as a read file is: listener_server_change selects cmd/listener's tagged soak test,
+    which envoy-go-race does not compile, and rule 15 holds envoy_go_race to selecting it so
+    that a change to it runs that package's untagged tests too."""
     wanted = {}
     for name in sorted(gate_files):
         if quantifiers[name] != "some-with-excludes":
             continue
         generated = set(blocks[name].patterns) if name in blocks else set()
         base = [p for p in filters[name] if p not in generated]
-        read = {f for f in gate_files[name].reads if f.endswith(TEST_SUFFIX)}
+        read = {f for f in gate_files[name].reads | held.get(name, set()) if f.endswith(TEST_SUFFIX)}
         picked = {f for f in selected(base, expander) if f.endswith(TEST_SUFFIX)}
         wanted[name] = negation_patterns(picked - read, read, tests)
     return wanted
@@ -2145,7 +2160,8 @@ def main() -> int:
     # the loop above has just finished, and the text of ci.yaml, read above.
     blocks = filter_blocks(lines, problems)
     tests = [f for f in files if f.endswith(TEST_SUFFIX)]
-    wanted = wanted_negations(filters, quantifiers, gate_files, blocks, expander, tests)
+    wanted = wanted_negations(filters, quantifiers, gate_files, blocks, expander, tests,
+                              tag_held_files(data, filters, selection))
     if mode == "write":
         rewrite(WORKFLOW, lines, blocks, wanted)
         # Rule 8 holds a PUSH_WORKFLOWS workflow's on.push.paths equal to its filter, so the

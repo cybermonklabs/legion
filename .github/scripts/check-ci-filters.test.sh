@@ -972,6 +972,31 @@ check "names both jobs, the step and the path" \
 check "counts it" \
   "$(contains "$out" '^image step "Build": 1 files selected by filter image, 1 uncovered by app (filter app)$')"
 
+# Rule 15 holds the untagged job's filter to every file the tag step's filter selects, a tagged
+# test file its own job never compiles among them, so rule 17 must write no `!` pattern keeping
+# that filter off such a file: the two rules would then refuse every block the other accepts.
+# mod/other/live_test.go is that file here: the image job's tag step runs it, and the app job,
+# whose filter rule 15 holds to it, compiles nothing of mod/other.
+echo "case: a tagged test file rule 15 holds the untagged job's filter to"
+root=$(fixture tag-run-held)
+printf '//go:build live\n\npackage other\n\nimport "testing"\n\nfunc TestLive(t *testing.T) {}\n' \
+  > "$root/mod/other/live_test.go"
+replace "$root/.github/workflows/ci.yaml" "              - 'docs/**'" $'              - \'docs/**\'\n              - \'mod/other/*\''
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
+  $'              - \'fixtures/**\'\n              - \'docs/**\'\n              - \'mod/other/*\''
+replace "$root/.github/scripts/ci_job_reads.py" 'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition")]' \
+  'reads=[Read(".github/workflows/ci.yaml", "a job reads its own definition"), Read("docs/readme.md", "the app job reads the note under docs")]'
+tagged_step "$root"
+tag_run "$root" "$entry"
+run_check "$root" write
+check "the write mode passes" "$(is "$status" 0)"
+check "and writes no block keeping the app filter off the tagged test" \
+  "$(is "$(grep -c "!mod/other" "$root/.github/workflows/ci.yaml" || true)" 0)"
+run_check "$root"
+check "the ordinary mode passes" "$(is "$status" 0)"
+check "with the tag step's files covered" \
+  "$(contains "$out" '^image step "Build": 3 files selected by filter image, 0 uncovered by app (filter app)$')"
+
 echo "case: a TAG_RUNS entry naming a filter the changes job does not have"
 root=$(fixture tag-run-no-filter)
 tagged_step "$root"
