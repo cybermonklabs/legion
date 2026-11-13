@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
@@ -38,7 +39,7 @@ import (
 // directory: `jj workspace add --name` names the jj workspace, and git names the worktree entry
 // after the directory, so the two agree here as they do in a pod, where both are the issue's key.
 // It is the issue of every clone of this package, since the launcher's sweep derives the clone
-// from the workspace's place in the layout (workspace.CloneGitDir, lockCloneIssue).
+// from the workspace's place in the layout (workspace.WorkspaceOf, lockCloneIssue).
 const jjWorkspaceName = lockCloneIssue
 
 // gitIndexLockRefusal is what jj prints when the index lock of the workspace's worktree entry is
@@ -89,10 +90,14 @@ func newJJClone(t *testing.T) *jjClone {
 	// thing in a pod as on a runner whose git is the real one.
 	run = run.With("PUBLIC_LEAK_CHECK=" + leakguardtest.Write(t, root, leakguardtest.Passes))
 	feed, seed := filepath.Join(root, "feed"), filepath.Join(root, "seed")
-	// The clone and the workspace sit where provisioning puts them under a state directory
-	// (workspace.Location), which is where the launcher's sweep derives the clone from.
-	clone := filepath.Join(workspace.CloneRoot(root), lockCloneOwner, lockCloneRepo)
-	ws := filepath.Join(root, "workspaces", lockCloneOwner, lockCloneRepo, jjWorkspaceName)
+	// The clone and the workspace sit where provisioning puts them under a state directory,
+	// which is where the launcher's sweep derives the clone from, so both come from the call
+	// that lays them out rather than from a layout this fixture writes out again.
+	located, err := workspace.Location(root, ghrepo.MustParse(lockCloneOwner+"/"+lockCloneRepo), jjWorkspaceName)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clone, ws := located.Clone, located.Dir
 	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/shim"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -416,13 +417,16 @@ func (f *bundleFixture) pod(clone, ws string) {
 // secondPod is the pod that replaces the released one: its own clone of the remote as it stands
 // now, and its own workspace, holding only what was pushed. name is the state directory the pair
 // is laid out under, each pod having one of its own; the clone and the workspace sit where
-// provisioning puts them below it (workspace.Location), which is where a launcher started in
-// that workspace derives the clone from (workspace.CloneGitDir).
+// provisioning puts them below it, which is where a launcher started in that workspace derives
+// the clone from (workspace.Location, workspace.WorkspaceOf).
 func (f *bundleFixture) secondPod(name string) string {
 	f.t.Helper()
 	state := filepath.Join(f.root, name)
-	clone := filepath.Join(workspace.CloneRoot(state), bundleOwner, bundleRepo)
-	ws := filepath.Join(state, "workspaces", bundleOwner, bundleRepo, strings.ToLower(bundleIssue))
+	located, err := workspace.Location(state, ghrepo.MustParse(bundleOwner+"/"+bundleRepo), bundleIssue)
+	if err != nil {
+		f.t.Fatal(err)
+	}
+	clone, ws := located.Clone, located.Dir
 	for _, dir := range []string{filepath.Dir(clone), filepath.Dir(ws)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			f.t.Fatal(err)
