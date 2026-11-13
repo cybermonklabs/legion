@@ -369,7 +369,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.recordedRepository = recordedRepositoryOf(workflow.recordedIssue)
 		// Everything that writes on a Dispatch issue outside the workflow itself reads this one
 		// field: the runtime's refusal of a saved bundle of a repository the issue has left
-		// (tellBundleRepositoryRefused, over plan.writeOnIssue), which is built before the
+		// (tellBundleRepositoryRefused, over plan.writeBodyOnIssue), which is built before the
 		// workflow attaches to supervision, and supervision's own writes, which read it through
 		// the plan it holds (plan.writeOnIssue).
 		plan.enqueue = workflow.enqueueOutbox
@@ -813,7 +813,7 @@ type plan struct {
 	// to write to and no Dispatch issue to write on. run fills it beside repository, before the
 	// runtime is built and before the workflow attaches, because it is the one enqueue outside
 	// the workflow: the runtime's refusal of a saved bundle of a repository the issue has left
-	// reads it (tellBundleRepositoryRefused, over plan.writeOnIssue), and so does every write
+	// reads it (tellBundleRepositoryRefused, over plan.writeBodyOnIssue), and so does every write
 	// supervision makes on an issue, through the plan it holds (tellUpdateStalled, the stall
 	// backstop's owner notice).
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
@@ -827,26 +827,33 @@ type plan struct {
 // workflow): the set every role's gh bundle is built over, and the set a configured rename is
 // resolved against, one repository at a time (appauth.GitHubCredential), which the Sandbox
 // runtime's repository caches follow too, and write the one message a runtime may leave on a
-// Dispatch issue (plan.writeOnIssue; it refuses the write in a deployment with no workflow).
+// Dispatch issue (plan.writeBodyOnIssue; it refuses the write in a deployment with no workflow).
 // openSupervision hands it the
 // plan the workflow completed, so no factory reads a field the workflow sets after prepare.
 type runtimeFactory func(ctx context.Context, listener *stream.Listener, address string, tokens appauth.Tokens,
 	repository func(context.Context, string) (ghrepo.Repository, string, error), st *store.Store, mapped func() []ghrepo.Repository,
 	writeOnIssue func(ctx context.Context, issue, body string) error) (runtime.Runtime, error)
 
-// writeOnIssue posts one message on the issue, through the outbox's Dispatch message row that
-// the plan's enqueue writes, and refuses the write where there is no enqueue: a deployment with
-// no workflow has no outbox to write to and no Dispatch issue to write on. Both writers read
-// this one plan: the runtime factory, which is handed the method value because the runtime is
+// writeOnIssue posts one message on the issue, with the document it links when it links one,
+// through the outbox's Dispatch message row that the plan's enqueue writes, and refuses the write
+// where there is no enqueue: a deployment with no workflow has no outbox to write to and no
+// Dispatch issue to write on. Both writers read this one plan: the runtime factory, which is
+// handed a writer of a message's body over this method (writeBodyOnIssue) because the runtime is
 // built before the workflow attaches to supervision and its refusal of a saved bundle of a
 // repository the issue has left must reach a person where the work is
 // (tellBundleRepositoryRefused), and supervision, through the plan it holds (podupdate's
-// rescueMessage and podWentMessage).
-func (p plan) writeOnIssue(ctx context.Context, issue, body string) error {
+// rescueMessage, whose post links the document of every rescued commit, and podWentMessage).
+func (p plan) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) error {
 	if p.enqueue == nil {
 		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
 	}
-	return p.enqueue(ctx, issue, record.MessagePost{Body: body})
+	return p.enqueue(ctx, issue, post)
+}
+
+// writeBodyOnIssue is writeOnIssue of a message that is a body alone, which is the one message a
+// runtime may leave on a Dispatch issue (runtimeFactory).
+func (p plan) writeBodyOnIssue(ctx context.Context, issue, body string) error {
+	return p.writeOnIssue(ctx, issue, record.MessagePost{Body: body})
 }
 
 // prepare is every refusal that needs nothing but the configuration and the machine (readBoot's,
@@ -1459,7 +1466,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		endDrain()
 		return nil, err
 	}
-	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted, p.writeOnIssue)
+	rt, err := p.newRuntime(supervising, listener, dial, apps, p.repository, st, p.repositories.Accepted, p.writeBodyOnIssue)
 	if err != nil {
 		cancel()
 		endDrain()

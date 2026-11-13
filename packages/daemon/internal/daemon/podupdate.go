@@ -215,7 +215,7 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 	var live []supervise.Claim
 	if open != "" {
 		live = s.liveGroup(group)
-		candidate := podReplacement{issue: issue, round: open, pod: pod, reasons: joined, repository: drift.repository, now: now}
+		candidate := podReplacement{issue: issue, round: open, pod: pod, reasons: joined, now: now}
 		if replace, decided := s.completePodUpdate(ctx, candidate, group, live); decided {
 			return replace
 		}
@@ -249,9 +249,9 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // working is what keeps the promise that no worker is stopped mid-turn — a worker answers from
 // inside a turn, and that turn ends a moment later. candidate is the replacement this round
 // would make, which is the whole of what the round is: its issue, the round, the pod it was
-// opened over, the reasons it names, the repository that pod was built from and the sweep's own
-// now (podReplacement). It reports whether it decided the round, and with it the pod
-// replacement that decision leaves the sweep to make, which is candidate itself.
+// opened over, the reasons it names and the sweep's own now (podReplacement). It reports whether
+// it decided the round, and with it the pod replacement that decision leaves the sweep to make,
+// which is candidate itself.
 //
 // The replacement is handed back rather than made here because it waits its pod out, and the
 // sweep makes every one of this tick's replacements after its whole walk over the issues
@@ -397,26 +397,19 @@ func readReplacement(live []supervise.Claim, round string) replacementReading {
 // podReplacement is the one step the sweep's walk over the issues leaves for after the walk: the
 // pod of a round that is over is to be replaced (completePodUpdate). It carries what the step
 // cannot read again — the issue, the round, the pod the round was opened over, the reasons the
-// round records, the repository that pod was built from and the sweep's own now, which the
-// notice of a stalled replacement is dated from — and nothing of the claims, which the step
-// reads afresh.
+// round records and the sweep's own now, which the notice of a stalled replacement is dated
+// from — and nothing of the claims, which the step reads afresh.
 //
 // It is also what the walk hands the decision that may make it (completePodUpdate, which takes
 // it as the round's candidate and hands it back where every reading passed): the round under
-// decision and the replacement it would make name the same six things, and one value is what
+// decision and the replacement it would make name the same five things, and one value is what
 // keeps the two from naming them differently.
-//
-// repository is the pod's own, as the runtime answered it this sweep (groupDrift), and "" where
-// the runtime answered nothing. The push check runs inside that pod, against the remote its own
-// clone has, so it is the repository the rescue branches are in and the one the issue is told
-// of (rescueMessage).
 type podReplacement struct {
-	issue      string
-	round      string
-	pod        string
-	reasons    string
-	repository string
-	now        time.Time
+	issue   string
+	round   string
+	pod     string
+	reasons string
+	now     time.Time
 }
 
 // replacePodForRound makes one replacement the sweep's walk over the issues decided on, after
@@ -462,7 +455,7 @@ type podReplacement struct {
 // with nothing lost — every claim the round asks had answered before this call was made — so
 // nothing is deleted earlier than it would have been.
 func (s *supervision) replacePodForRound(ctx context.Context, replace podReplacement) {
-	issue, round, pod, reasons, repository, now := replace.issue, replace.round, replace.pod, replace.reasons, replace.repository, replace.now
+	issue, round, pod, reasons, now := replace.issue, replace.round, replace.pod, replace.reasons, replace.now
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -530,8 +523,8 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	s.log.Info("supervise: every worker of this update round has answered; the pod is replaced and the round is over",
 		"issue", issue, "round", round, "pod", pod, "failedNotWaitedFor", namesOf(failed),
 		"rescued", checked.rescued(), "unchecked", checked.unchecked)
-	if message := rescueMessage(round, repository, checked); message != "" {
-		if err := s.plan.writeOnIssue(ctx, issue, message); err != nil && ctx.Err() == nil {
+	if post := rescueMessage(issue, round, checked); post.Body != "" {
+		if err := s.plan.writeOnIssue(ctx, issue, post); err != nil && ctx.Err() == nil {
 			s.log.Error("supervise: write on the issue what the push check before its pod's replacement found",
 				"issue", issue, "round", round, "rescued", checked.rescued(), "unchecked", checked.unchecked, "error", err)
 		}
@@ -660,39 +653,25 @@ type pushCheck struct {
 	unchecked  string
 }
 
-// rescued is every rescue branch the check reports, as `<branch>@<commit>`, each once: a branch an
-// earlier check of the same pod pushed is reported by every workspace whose remote holds it.
+// rescued is every rescue branch the check reports, as `<branch>@<commit> in <owner>/<repo>`, each
+// once for each repository (branches).
 func (p pushCheck) rescued() []string {
 	var named []string
 	for _, b := range p.branches() {
-		named = append(named, b.name+"@"+b.commit)
+		named = append(named, b.Name+"@"+b.Commit+" in "+b.repository)
 	}
 	return named
 }
 
-// rescuedBranch is one rescue branch of the check, and the workspace that first reports it.
-type rescuedBranch struct{ name, commit, dir string }
-
-// branches is every rescue branch the check reports, each once, in the order reported.
-func (p pushCheck) branches() []rescuedBranch {
-	var branches []rescuedBranch
-	seen := map[string]bool{}
-	for _, w := range p.workspaces {
-		for _, b := range w.Branches {
-			if !seen[b.Name] {
-				seen[b.Name] = true
-				branches = append(branches, rescuedBranch{name: b.Name, commit: b.Commit, dir: w.Dir})
-			}
-		}
-	}
-	return branches
-}
-
 // rescueBranch is the prefix of every rescue branch of a pod's replacement:
-// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which the check numbers from 1. It is no
-// issue's branch (claim.BranchIssue), so nothing the daemon keeps follows it.
+// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which a shim that predates the issue's one
+// rescue branch (rescue.Target) numbers from 1. It is no issue's branch (claim.BranchIssue), so
+// nothing the daemon keeps follows it. The request names the issue's one branch in a field of its
+// own, beside this prefix rather than in its place: an older shim reports every remote branch that
+// starts with `<branch>-` as its own, so the one branch's name there would have it report every
+// earlier pod's rescue branches (shimwire.RescueUnpushed).
 func rescueBranch(issue, pod string) string {
-	return claim.IssueBranch(issue) + "-rescue-" + pod[:min(8, len(pod))]
+	return rescue.Target(issue) + "-" + pod[:min(8, len(pod))]
 }
 
 // checkUnpushed runs the push check of the round's pod (runtime.Runtime.RescueUnpushed) through a
@@ -723,7 +702,8 @@ func (s *supervision) checkUnpushed(ctx context.Context, issue, round, pod strin
 	if timeout <= 0 {
 		return fmt.Errorf("%w: the replacement has no time left to run it in", errPushCheckFailed)
 	}
-	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
+	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescue.Target(issue),
+		WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
 	var refused []string
 	for _, c := range rescuers(group, round) {
 		report, err := s.runtime.RescueUnpushed(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator}, request)
@@ -794,39 +774,6 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 		}
 	}
 	return append(implement, review...)
-}
-
-// rescueMessage is what the issue is told after its pod's replacement when the push check pushed
-// rescue branches or could not check the pod, and "" when it found nothing. The issue's branch
-// does not hold rescued work, and the next pod provisions from that branch, so somebody must bring
-// it in. Another agent reads it, so it follows ASD-STE100.
-//
-// repository is the repository the pod was built from (podReplacement.repository), which is the
-// repository the branches are in: the push ran inside the pod, against the remote the pod's own
-// clone has. After a repository correction that is the repository the issue has left, and the
-// repository the issue is recorded on now holds none of these branches, so the message names it
-// rather than send a reader to the new repository for branches that are not there. A message
-// built where the pod's repository is unknown ("") names no repository.
-func rescueMessage(round, repository string, checked pushCheck) string {
-	if checked.unchecked != "" {
-		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)
-	}
-	var lines []string
-	for _, b := range checked.branches() {
-		lines = append(lines, fmt.Sprintf("- `%s` (commit %s), from %s", b.name, b.commit, b.dir))
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	where := ""
-	if repository != "" {
-		where = fmt.Sprintf("\n\nThe branches are in the repository `%s`.", repository)
-	}
-	return fmt.Sprintf(`Before the daemon replaced the pod of this issue (update round %s), it found work in the pod's workspaces that the remote did not have. It pushed that work to these branches:
-
-%s%s
-
-The issue branch does not have this work, and the new pod starts from the issue branch. Merge each branch into the issue branch, or delete the branch if its work is not necessary.`, round, strings.Join(lines, "\n"), where)
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -982,7 +929,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 	reasons := roundReasons(group, round)
 	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
-	if err := s.plan.writeOnIssue(ctx, issue, podWentMessage(round, reasons, lost)); err != nil {
+	if err := s.plan.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
 			"issue", issue, "round", round, "error", err)
 	}
@@ -1202,18 +1149,14 @@ const (
 )
 
 // podDrift is what one sweep read of the pod the group's claims record (groupDrift): why that
-// pod has drifted, the repository it was built from and the reading that says what the reasons
-// are worth. The three are one value because none of them decides anything alone — no reason is
-// a pod that drifted from nothing only under podRead, and the repository is the one the reasons
-// were read against — and a caller that took them as three results could hold the reasons of
-// one round beside the reading of another.
+// pod has drifted and the reading that says what the reasons are worth. The two are one value
+// because neither decides anything alone — no reason is a pod that drifted from nothing only
+// under podRead — and a caller that took them as two results could hold the reasons of one
+// round beside the reading of another.
 type podDrift struct {
 	// reasons is why the pod has drifted, in the claims' own order and without repeats, empty
 	// for a pod that has drifted from nothing.
 	reasons []string
-	// repository is the pod's own, as the runtime answered it, and "" where it answered none:
-	// the rescue branches a replacement pushes are pushed in it (rescueMessage).
-	repository string
 	// reading is what could be read of the pod at all (podReading).
 	reading podReading
 }
@@ -1221,9 +1164,9 @@ type podDrift struct {
 // groupDrift is why the group's pod has drifted: the union of the runtime's PodDrift over every
 // claim of the group that records a process, in the claims' own order and without repeats, and
 // then the repository the pod was built from read against the repository the issue's record
-// holds now (repositoryDrift). It answers that pod's own repository beside the reasons, since
-// the rescue branches a replacement pushes are pushed in it (rescueMessage), and the reading
-// that says what the reasons are worth (podReading).
+// holds now (repositoryDrift), with the reading that says what the reasons are worth
+// (podReading). The rescue branches a replacement pushes are told by the repository of the
+// workspace that pushed each (rescueMessage, pushCheck.branches), which is that same pod's.
 //
 // It reads podUnread when the runtime could not be asked at all: an error is never a statement
 // that something drifted, and a round must neither open nor end on one.
@@ -1274,7 +1217,7 @@ func (s *supervision) groupDrift(ctx context.Context, issue string, group []supe
 	if reason := s.repositoryDrift(ctx, issue, repository); reason != "" && !slices.Contains(reasons, reason) {
 		reasons = append(reasons, reason)
 	}
-	return podDrift{reasons: reasons, repository: repository, reading: podRead}
+	return podDrift{reasons: reasons, reading: podRead}
 }
 
 // repositoryDrift is the one reason the runtime cannot state itself: the pod was built from one

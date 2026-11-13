@@ -400,13 +400,15 @@ type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue keeps its slot from the moment the daemon starts it until it is done or leaves the
-	// workflow (record.KeepsSlot). So one tree with three started children holds three of these,
-	// and an issue waiting on a person, one in accepting, one held, a merger at work in merging,
-	// one in merging whose start a closed design gate holds (the outbox's
-	// mergerWaitsForTheDesignGate) and a merged root standing in merging while the rest of its
-	// tree runs are each here, while an issue whose phase has left the workflow — done, or a
-	// status Dispatch took it out of the workflow with — is in neither list.
+	// issue holds one of the cap's slots from the moment the daemon starts it until its work is
+	// past its review — accepting, retro and merging hold none — or until it is done or
+	// Dispatch takes it out of the workflow (record.KeepsSlot). So one tree with three started
+	// children holds three of these, and an issue at work, one held and one waiting on a person
+	// are each here, while one past its review — a merger at work in merging, one in merging
+	// whose start a closed design gate holds (the outbox's mergerWaitsForTheDesignGate) and a
+	// merged root standing in merging while the rest of its tree runs — and one whose phase has
+	// left the workflow, done or a status Dispatch took it out of the workflow with, are in
+	// neither list.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
@@ -433,9 +435,10 @@ type Admission struct {
 	// issue key. It is the other half of the three lists above — a reader that has `active`,
 	// `waiting` and this one has every issue of the workflow and what each is doing — so the
 	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
-	// the one that waits: a root whose Legion label is off, or an issue none of the other words
-	// is true of; `at_work` names no issue today (record.HeldAtWork). Never null; empty when
-	// every issue of the workflow runs or waits in the line.
+	// the one that waits: a root whose Legion label is off, an issue none of the other words
+	// is true of, or an issue past its review under `at_work`, which no other issue holds
+	// (record.HeldAtWork says which issues read it). Never null; empty when every issue of the
+	// workflow runs or waits in the line.
 	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
@@ -623,6 +626,22 @@ type Issue struct {
 	// value no reader parses empty.
 	PhaseEntry int64 `json:"phaseEntry,omitempty"`
 	GivenEntry int64 `json:"givenEntry,omitempty"`
+	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
+	// is how long that tree has been still at this read, in hours (contract 111). The two are one
+	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every
+	// issue of one tree carries the same pair: an issue past its review, which holds no slot, and
+	// a done child recorded under a live tree each answer their tree's quiet time, because what
+	// has stopped is the tree and not the issue a reader happens to hold. Both are absent
+	// together for an issue whose tree is not live — one whose tree has left the workflow, and
+	// one the workflow does not record — since there is no tree of the deployment's to measure,
+	// and both are absent from the body the route serves a caller below quietTimeContract (api's
+	// stateFor, withoutQuietTime). A tree the record shows no movement for at all is measured
+	// from the zero time, as the measure defines it, and a Go duration saturates there, so such
+	// a tree reads as quiet for 2562047.788 hours — the largest span a duration holds, 292
+	// years. That is the pair saying the tree has never moved, not a fault: the alternative,
+	// leaving the keys off, would read as a tree nobody measures at all.
+	TreeMovedAt *time.Time `json:"treeMovedAt,omitempty"`
+	QuietHours  *float64   `json:"quietHours,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -1153,6 +1172,15 @@ const (
 	WhyWaiting      WhyState = "waiting"
 	WhyBlocked      WhyState = "blocked"
 	WhyUnlisted     WhyState = "unlisted"
+)
+
+// TreeMovedAtField and QuietHoursField are the names `treeMovedAt` and `quietHours` carry on the
+// wire, read from here by the tests that look for the fields rather than repeating the strings.
+// The two are named together because they are served and stripped together: a reader that holds
+// one without the other holds half a measure.
+const (
+	TreeMovedAtField = "treeMovedAt"
+	QuietHoursField  = "quietHours"
 )
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull

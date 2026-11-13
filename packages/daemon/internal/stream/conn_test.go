@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -837,12 +836,15 @@ func TestAdoptWorkingCopyAsksTheShimAndReadsItsResult(t *testing.T) {
 
 // The push check is a request the shim answers itself, with one entry per workspace; a shim built
 // before it forwards the frame to its agent, whose refusal is runtime.ErrRescueUnsupported, and a
-// shim that answers and could not run the check is a refusal like any other.
+// shim that answers and could not run the check is a refusal like any other. The frame carries
+// both of the request's branches: a shim that reads target falls back to the per-pod prefix only
+// when target is missing, so a target dropped here would send the work there with nothing failing.
 func TestRescueUnpushedAsksTheShimAndTellsAnOldShimApart(t *testing.T) {
 	h := startListener(t, harnessOptions{})
 	p := h.connect(testToken)
 	conn := h.conn()
-	request := runtime.RescueRequest{Branch: "legion/LEGION-484-rescue-9d3f0c7a", WorkspaceTimeout: 2 * time.Second, Timeout: 3 * time.Second}
+	request := runtime.RescueRequest{Branch: "legion/LEGION-484-rescue-9d3f0c7a", Target: "legion/LEGION-484-rescue",
+		WorkspaceTimeout: 2 * time.Second, Timeout: 3 * time.Second}
 	var report []runtime.WorkspaceRescue
 	ask := func() <-chan error {
 		return async(func() (err error) {
@@ -856,15 +858,31 @@ func TestRescueUnpushedAsksTheShimAndTellsAnOldShimApart(t *testing.T) {
 	if frame.Branch != request.Branch || frame.WorkspaceTimeoutMs != 2000 || frame.TimeoutMs != 3000 || frame.ID == "" {
 		t.Fatalf("rescue-unpushed frame = %#v", frame)
 	}
+	if frame.Target != request.Target {
+		t.Fatalf("rescue-unpushed frame carries target %q, want the request's %q: without it a shim pushes to the per-pod prefix %q",
+			frame.Target, request.Target, frame.Branch)
+	}
+	// One workspace as a shim that predates the branch's commits reports it, and one as a shim
+	// that knows them: both reach the runtime boundary whole.
 	p.send(shimwire.RescueUnpushedResult{ID: frame.ID, OK: true, Workspaces: []shimwire.RescueWorkspace{
 		{Dir: "/legion/workspaces/acme/widgets/legion-484", Status: "rescued", Branches: []shimwire.RescueBranch{{Name: request.Branch + "-1", Commit: "c0ffee"}}},
+		{Dir: "/legion/workspaces/acme/widgets/legion-485", Status: "rescued", Branches: []shimwire.RescueBranch{{
+			Name: request.Target, Commit: "facade", Previous: "decade", Pushed: true,
+			Commits: []shimwire.RescueCommit{{ID: "facade", Subject: "rescue: LEGION-485"}, {ID: "beef01", Subject: "fix the widget"}},
+		}}},
 	}})
 	if err := awaitResult(t, result); err != nil {
 		t.Fatalf("RescueUnpushed: %v", err)
 	}
-	want := []runtime.WorkspaceRescue{{Dir: "/legion/workspaces/acme/widgets/legion-484", Status: runtime.RescueRescued,
-		Branches: []runtime.RescuedBranch{{Name: request.Branch + "-1", Commit: "c0ffee"}}}}
-	if fmt.Sprint(report) != fmt.Sprint(want) {
+	want := []runtime.WorkspaceRescue{
+		{Dir: "/legion/workspaces/acme/widgets/legion-484", Status: runtime.RescueRescued,
+			Branches: []runtime.RescuedBranch{{Name: request.Branch + "-1", Commit: "c0ffee"}}},
+		{Dir: "/legion/workspaces/acme/widgets/legion-485", Status: runtime.RescueRescued, Branches: []runtime.RescuedBranch{{
+			Name: request.Target, Commit: "facade", Previous: "decade", Pushed: true,
+			Commits: []runtime.RescuedCommit{{ID: "facade", Subject: "rescue: LEGION-485"}, {ID: "beef01", Subject: "fix the widget"}},
+		}}},
+	}
+	if !reflect.DeepEqual(report, want) {
 		t.Fatalf("report = %+v, want %+v", report, want)
 	}
 

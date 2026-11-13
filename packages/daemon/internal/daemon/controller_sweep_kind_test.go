@@ -111,7 +111,7 @@ func controllerSweepKindRuntime(ctx context.Context, cfg config.Config, listener
 // noWriteOnIssue is the proof's writer for the one message a runtime may leave on a Dispatch
 // issue, the refusal of a saved workspace bundle of a repository the issue has left
 // (tellBundleRepositoryRefused): the proof saves no bundle and restores none, so nothing calls
-// it. A deployment passes the plan's own write there (plan.writeOnIssue).
+// it. A deployment passes the plan's own write there (plan.writeBodyOnIssue).
 func noWriteOnIssue(context.Context, string, string) error { return nil }
 
 // controllerSweepKindSpec is the project controller's launch as the proof makes it: the

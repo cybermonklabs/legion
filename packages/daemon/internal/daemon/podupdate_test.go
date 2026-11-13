@@ -537,15 +537,11 @@ func (r *podUpdateRig) notices() []record.ControllerNotice {
 	return notices
 }
 
-// messages is every message the sweep wrote on the issue, oldest first.
+// messages is the body of every message the sweep wrote on the issue, oldest first (posts).
 func (r *podUpdateRig) messages() []string {
 	r.t.Helper()
 	var bodies []string
-	for _, row := range r.rows(record.OutboxKindDispatchMessage) {
-		var post record.MessagePost
-		if err := json.Unmarshal(row.Payload, &post); err != nil {
-			r.t.Fatalf("decode message %d: %v", row.ID, err)
-		}
+	for _, post := range r.posts() {
 		bodies = append(bodies, post.Body)
 	}
 	return bodies

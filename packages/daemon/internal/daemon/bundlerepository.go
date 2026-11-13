@@ -36,7 +36,7 @@ import (
 // whether the message landed. A log line reaches an operator who reads the daemon's logs. The
 // message reaches the agent that did the work.
 //
-// write is never nil: every daemon builds this over the plan's own write (plan.writeOnIssue), a
+// write is never nil: every daemon builds this over the plan's own write (plan.writeBodyOnIssue), a
 // method value that answers an error in a deployment with no workflow, which has no outbox to
 // write through and no Dispatch issue to write on, and such a deployment takes the error arm
 // below, where the error is logged and the work stays in the database. A rig that builds the

@@ -243,15 +243,16 @@ func TestRepositoryCorrectionAddsNoReasonWhereNothingDisagrees(t *testing.T) {
 
 // The rescue branches are in the repository the pod pushed to, which after a correction is the
 // repository the issue has left: the push check runs inside the pod, against the remote the pod's
-// own clone has. The message names that repository, so the agent that reads it does not look for
-// the branches in the repository the issue is recorded on now, which holds none of them.
+// own clone has, from the workspace that clone was laid out at (rescue.RepositoryOf). The message
+// names that repository, so the agent that reads it does not look for the branch in the
+// repository the issue is recorded on now, which holds none of it.
 func TestRepositoryCorrectionNamesTheRepositoryTheRescueBranchesAreIn(t *testing.T) {
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
-	branch := rescueBranch(podUpdateIssue, podUpdatePod) + "-1"
 	rig.rt.RescueWith(func(context.Context, runtime.Known, runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
 		return []runtime.WorkspaceRescue{{
-			Dir: "/workspaces/" + podUpdateIssue, Status: runtime.RescueRescued,
-			Branches: []runtime.RescuedBranch{{Name: branch, Commit: "a1b2c3d"}},
+			Dir: "/legion/workspaces/" + podUpdateRepo + "/" + strings.ToLower(podUpdateIssue), Status: runtime.RescueRescued,
+			Branches: []runtime.RescuedBranch{{Name: podUpdateRescueTarget, Commit: "a1b2c3d", Pushed: true,
+				Commits: []runtime.RescuedCommit{{ID: "a1b2c3d", Subject: "work"}}}},
 		}}, nil
 	})
 	rig.corrects(podUpdateCorrectedRepo, podUpdateCorrectedBranch)
@@ -265,15 +266,12 @@ func TestRepositoryCorrectionNamesTheRepositoryTheRescueBranchesAreIn(t *testing
 	if len(messages) != 1 {
 		t.Fatalf("the issue was told %q, want one message naming the rescue branch", messages)
 	}
-	where := "The branches are in the repository `" + podUpdateRepo + "`."
+	where := "In the repository `" + podUpdateRepo + "`, the push check pushed 1 commit to the branch `" + podUpdateRescueTarget + "`."
 	if !strings.Contains(messages[0], where) {
 		t.Errorf("the issue was told %q, want it to say %q", messages[0], where)
 	}
-	if !strings.Contains(messages[0], "`"+branch+"` (commit a1b2c3d)") {
-		t.Errorf("the issue was told %q, want it to name the branch %s at a1b2c3d", messages[0], branch)
-	}
 	if strings.Contains(messages[0], podUpdateCorrectedRepo) {
-		t.Errorf("the issue was told %q, which names %s: the branches are not in the repository the issue moved to", messages[0], podUpdateCorrectedRepo)
+		t.Errorf("the issue was told %q, which names %s: the branch is not in the repository the issue moved to", messages[0], podUpdateCorrectedRepo)
 	}
 }
 

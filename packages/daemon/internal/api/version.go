@@ -1427,7 +1427,126 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 107: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 111: dispatch://INFRA-2560 -- every issue record of `GET /legion/v1/state` that stands in a
+// live tree gains that tree's quiet time: `treeMovedAt`, the newest movement the daemon has
+// seen anywhere in the tree, and `quietHours`, how long the tree has been still at this read,
+// as a number of hours. The pair is the tree's and not the issue's, so every issue of one tree
+// carries the same two values — the root, a child past its own review, which holds no admission
+// slot since 111's first slice, and a done child recorded under the tree alike — and a reader
+// that wants to know whether a tree has stopped asks any one of its issues. The measure behind
+// the keys is `record.QuietTrees`, the one statement of the question the admission pass reads
+// too, so the state and the pass read one rule and neither keeps a measure of its own — the
+// records they are handed are their own, so a tree whose root is done is measured here and by
+// no admission pass. The movement is the newest of the `MovedAt` of every member the workflow
+// still runs and the step times of those members' claims, and a tree that has never moved at
+// all is measured from the zero time, where the daemon's duration saturates: such a tree reads
+// as quiet for 2562047.788 hours, 292 years, rather than carrying no key. An issue whose tree
+// has left the workflow — one no longer among `admission.trees` — carries neither key, and
+// neither does an issue the workflow does not record. Nothing of the operator's plain
+// `legion state` output changes: a line per issue would print hundreds of them on a live
+// deployment, so the two values are in `--json` and in the one issue a pane prints, which is
+// where the memory keys and the waiting line each landed.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 111 is served the issues without the two keys (api's stateFor,
+// withoutQuietTime), as a caller below 98 is served the admission block without `held`, the
+// entry two above (withoutHeld) — 104, the entry right above, moves no shape and narrows
+// nothing — one below 94 the issues without `phaseEntry` and
+// `givenEntry` (withoutPhaseEntries), one below 87 every claim view
+// without `leakCheckCause` (withoutLeakCheckCause), one below 85 without each issue's one
+// rendered answer and without the waiting line's own fields beside each member's place
+// (withoutWhyAndLineFields), one below 75 the state with none of the record
+// fields of the entry before that, one below 73 a body with no `claimsToRefresh`, one below 62
+// the workers with no `backwardMoves`, one below 58 the issues with no `waitingLine`, one
+// below 57 the claim views with no `step`, one below 56 the stranded report without its retired
+// entries, one below 55 the issues without the gated steps, one below 53 a body with no wakes
+// waiting, one below 51 the issues without the admission's trees and each issue's tree, one
+// below 49 without the memory draw and one below 46 without the claim views' update rounds; the
+// sixteen compose, and every reader from 111 on takes both keys as optional
+// (`packages/contracts/src/legion-api.ts`). A plugin from 58 to 110 does
+// not refuse them, as a plugin before one of the earlier contracts above refuses its own: every
+// answer-side schema of `packages/contracts` has stripped a key it does not name since
+// sjawhar/legion#2788. The strip is still what serves such a caller: a reader that did not ask
+// for the keys is not given them, and a plugin built before #2788 is strict and would refuse
+// the whole body for one of them.
+// This change adds no route: the record column the movement is read from (`issues.moved_at`)
+// and the measure over it are the slices before this one.
+// The same change gives `legion.yaml` a `stalled_tree_notice_hours` key — how long a tree may be
+// quiet before the admission pass tells the project's controller that the tree has stopped — and
+// the settings block of this state carries it under that same name. That key is no part of this
+// number: the plugin parses the settings block loosely (35 above), so a later legion.yaml key
+// changes no strictly parsed shape and bumps nothing. The change carries three store migrations
+// beside it: `20261110233602_past_review_starts_unmarked`, which takes the admission-slot mark
+// off every queued start of a phase past the review; `20261111010031_issue_moved_at`, which adds
+// the column the movement above is read from; and `20261111041503_tree_stalled_told_at`, which
+// adds the mark that holds one stall to one notice. Those are no part of this number either: a
+// migration moves the daemon's own record, and the shape a caller reads is the two keys above.
+// Nor does `admission.held` move, though what it names does: an issue past its review holds no
+// slot on this contract, so one not standing in `held` stands in that list under `at_work` where
+// no earlier word of the ladder is true of it, and one held from such a phase under
+// `unclassified` (`record.HeldAtWork`) — words the eleven of 98 already carry, so no strict
+// reader of 98 or above refuses them.
+// (This branch took 62 against the base 5a585b02, which carried 59; INFRA-2551's counts of the
+// moves back landed on main as 62 (cybermonklabs/legion#3522) and INFRA-312's spend attributes
+// as 64 (#3521), so this change takes a number above both. Read again on
+// 2026-11-11 at 10:13Z, in each head's own copy of this file: main declares 64, and the open
+// branches declare 65 (legion/INFRA-2009 and legion/INFRA-1282), 66 (legion/INFRA-1578) and 59
+// (legion/INFRA-1522), with INFRA-2009 having published a move to 67. 65 was a four-way
+// collision there, where the first of the four to land refuses the other three, so this change
+// took 70: above every open declaration, and leaving 68 and 69 free for the two trees that had
+// not chosen. That reading is of this file at each head, never of a file list, which GitHub
+// cuts short. It held 70 through the forward merges that followed, and renumbered when main's
+// own `DaemonAPIVersion` passed it: at the merge of 2026-11-12 that brought main in at
+// efa39e15f9cd8a06f6a61f332b728407f34a668d, main declares 73, and the reading of
+// `const DaemonAPIVersion` at refs/pull/<n>/head for each open pull request of this
+// repository, which .github/scripts/check-daemon-api-contract.sh makes for every refusal,
+// gives 74 (#3575), 75 (#3662), 76 (#3718), 77 (#3677), 78 (#3708), 79 (#3712), 80 (#3730) and
+// 81 (#3659), so this change took 82, the lowest number above the base's that no open pull
+// request declared, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says. It kept 82 at the forward merge of 2026-11-12 that brought main in at
+// 9009dc1d5c73e017bc8a293873265f3629f00b33, where #3662's 75 was the entry above and was the
+// number the base then carries: 82 was above it, so nothing was renumbered. It took 86 at the
+// forward merge of 2026-11-12 that brought main in at
+// fbe970eef84df8635b58ba73b380a13f1e6f0a78, which lands INFRA-2554's 85. It took 91 at the
+// forward merge of 2026-11-12 that brought main in at
+// a4c0ff994adc50fe79ca0e3b07ddde3af8aff708, which lands INFRA-714's own 86: 86 was no longer
+// above the base, so .github/scripts/check-daemon-api-contract.sh was run as CI runs it,
+// refused this tree for declaring 86 against a base at 86, and named 91 — the lowest number
+// above the base's that no open pull request declared, read in each head's own copy of this
+// file and never from a file list, which passed over 87 (#3939), 88 (#3730), 89 (#3519 and
+// #3659) and 90 (#3575, #3830 and #3937). It takes 96 at the forward merge of 2026-11-13 that
+// brought main in at 12ba4e6afa71acf380d0b64738de7a44653f9ea8, which lands #3939's INFRA-3219
+// at 87, the entry right above, and is the number the base now carries. 91 was still above it
+// but was declared by #3519 and #3712 as well, a three-way collision where the first of the
+// three to land refuses the other two, so the check was run as CI runs it against this tree
+// declaring the base's own 87, refused it, and named 96 — the lowest number above the base's
+// that no open pull request declares, which passed over 88 (#3730), 89 (#3659), 90 (#3830), 91
+// (#3519, #3712 and this change's own former number), 92 (#3715), 93 (#3677 and #3937), 94
+// (#3708) and 95 (#3575) — which was the number this change then declared. It takes 100 at the
+// forward merge of 2026-11-13 that brought main in at 045ee07625382ecc0f00bb3cc4069d479cf76d4a,
+// which lands #3677's INFRA-2800 at 94, the entry right above, and is the number the base now
+// carries. 96 was still above it but was declared by #2731 as well, so the check was run as CI
+// runs it against this tree declaring the base's own 94, refused it, and named 100 — the lowest
+// number above the base's that no open pull request declares, which passed over 95 (#3519 and
+// #3712), 96 (#2731, and this change's own former number), 97 (#3937), 98 (#3708) and 99
+// (#3575) — which was the number this change then declared. It takes 101 at the forward merge of
+// 2026-11-13 that brought main in at 0fde2dcff6e4eb08a172d6fe7309151dabe011b1, which lands
+// #3708's INFRA-3107 at 98, then the entry right above, and was the number the base then carried. 100
+// was still above it, so the check was run as CI runs it against this tree declaring the base's
+// own 98, refused it, and named 101 — the lowest number above the base's that no open pull
+// request declares, which passed over 99 (#3575) and 100 (this change's own former number) —
+// which was the number this change then declared. It takes 111 at the forward merge of
+// 2026-11-13 that brought main in at 7810d00ef1c3a52e08e090f127bcf9e3b7ab3393, which lands
+// #3830's INFRA-3161 at 104, the entry right above, and is the number the base now carries.
+// 101 was no longer above it, so the check was run as CI runs it against this tree declaring
+// 101, refused it, and named 111 — the lowest number above the base's that no open pull
+// request declares, which passed over 105 (#3659), 106 (#2731 and #3730), 107 (#3712), 108
+// (#3519), 109 (#3793) and 110 (#3715 and #3937) — which is the number this change declares. Each of those is the number that head declared at
+// that reading and no head's for good, which is why this line is a reading and never the rule.
+// Read the base's own number and every open head again at the next forward merge rather than
+// from this line.)
+//
+// 119: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -1435,7 +1554,7 @@ package api
 // no key changes its meaning, and an issue no correction has reached and nothing waits on carries
 // none of them, so most issues are served exactly as before. A plugin below this contract is
 // served every issue with the four stripped (`withoutRepositoryCorrection`), composed with the
-// fifteen narrowings 98 describes, because one built before sjawhar/legion#2788 reads the state
+// sixteen narrowings 111 describes, because one built before sjawhar/legion#2788 reads the state
 // with a strict schema and would refuse the whole body for a key it does not name.
 // `packages/contracts/src/legion-api.ts` mirrors the four on `legionIssue`, each optional.
 //
@@ -1448,7 +1567,7 @@ package api
 // and its production check — and what that work is called, "the testing phase of LEGION-208" or
 // "the production check of LEGION-208", empty when nothing is owed. The end-of-turn reminder
 // renders that answer in both harnesses and keeps no model of the phase of its own
-// (dispatch://INFRA-2746). A plugin below 107 calls no such route,
+// (dispatch://INFRA-2746). A plugin below 119 calls no such route,
 // and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -1465,7 +1584,7 @@ package api
 // empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
 // Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
 // writes: a row it keeps carries no sequence and its own clock, as before this release.
-// (This entry takes 107. It took 95 at the fifth forward merge of 2026-11-13, when main declared
+// (This entry takes 119. It took 95 at the fifth forward merge of 2026-11-13, when main declared
 // 87, held 95 through the sixth, which brought main in at 045ee0762538, #3677, declaring 94, and
 // took 101 at that sixth merge. The seventh brings main in at 0fde2dcff6e4, #3707, which declares
 // 98, landed by #3708. The reading of 2026-11-13T13:43:48Z, with
@@ -1478,15 +1597,27 @@ package api
 // (#3575), 100 (#3573, #3715), 103 (#3519), 104 (#3830, #3937) and 105 (#3659). So 107 was the
 // lowest number above every number another open head declared, and this entry took it. The
 // eighth merge brings main in at 2a6ff6c03269, #3786, still declaring 98. The ninth brings main
-// in at aee2873c54ee, #3830, which declares 104, the entry right above this one. The reading of
-// 2026-11-13T16:58:14Z found no other open head declaring 107: the others declare 37, 61, 86,
-// 99, 100, 104 (twice), 105, 106 (three times), 108 and 109. By the rule of
-// 2026-11-13T06:29Z this entry keeps 107, which stands above the base's 104 and no other open
-// head declares. A
+// in at aee2873c54ee, #3830, which declares 104. The reading of 2026-11-13T16:58:14Z found no
+// other open head declaring 107: the others declare 37, 61, 86, 99, 100, 104 (twice), 105, 106
+// (three times), 108 and 109. By the rule of 2026-11-13T06:29Z this entry kept 107, which stood
+// above the base's 104 and no other open head declared. The tenth merge brings main in at
+// 61685f973c9a, #3997, which declares 111, #3573's entry right above this one, so 107 no longer
+// stands above the base. The reading of 2026-11-13T23:41:03Z found the other open heads
+// declaring 37, 61 and 86 below the base and, above it, 112, 113, 114, 115 (four times) and 116,
+// so 117 was then the lowest number above the base's 111 and above every number another open
+// head declared, and this entry took it. The reading of 2026-11-14T00:41:11Z, with main still
+// declaring 111, found #3711 declaring 117 beside 37 (#2213), 61 (#2230) and 86 (#3534) below
+// the base and, above it, 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3519, #3659, #3793 and
+// #3937) and 116 (#3715), so 118 was then the lowest number above the base's 111 and above every
+// number another open head declared, and this entry took it. The reading of
+// 2026-11-14T00:48:05Z, with main still declaring 111, found #3659 declaring 118 beside 37, 61
+// and 86 below the base and, above it, 112 (#2731), 113 (#3575), 114 (#3730), 115 (#3519, #3793
+// and #3937), 116 (#3715) and 117 (#3711), so 119 is the lowest number above the base's 111 and
+// above every number another open head declares, and this entry takes it. A
 // reading is of this file at refs/pull/<n>/head for every open pull request, not of a file list:
 // GitHub cuts a pull request's file list short, so one that changes more files than the page
 // holds answers without this path. Read the base's own number and every open pull request again
 // at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 107
+const DaemonAPIVersion = 119
