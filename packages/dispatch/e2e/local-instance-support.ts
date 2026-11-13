@@ -7,6 +7,19 @@ import type { Readable } from "node:stream";
 
 export class Interrupted extends Error {}
 
+/** `step`, or Interrupted as soon as `signal` aborts; `step` itself with no signal. `step`'s own
+ *  outcome is always handled, so a step the abort outruns settles later into nothing rather than
+ *  an unhandled rejection. */
+function untilAborted<T>(step: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return step;
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  const onAbort = () => reject(new Interrupted("interrupted"));
+  signal.addEventListener("abort", onAbort, { once: true });
+  step.then(resolve, reject).finally(() => signal.removeEventListener("abort", onAbort));
+  if (signal.aborted) onAbort();
+  return promise;
+}
+
 interface Running {
   readonly name: string;
   readonly child: ChildProcess;
@@ -38,17 +51,10 @@ export class Supervisor {
     this.#stopping.abort();
   }
 
-  /** `step`, or Interrupted as soon as a stop is under way. `step`'s own outcome is always
-   *  handled, so a step the stop outruns settles later into nothing rather than an unhandled
-   *  rejection; `stop` ends the processes it waits on. */
+  /** `step`, or Interrupted as soon as a stop is under way (`untilAborted`); `stop` ends the
+   *  processes it waits on. */
   untilInterrupted<T>(step: Promise<T>): Promise<T> {
-    const { signal } = this.#stopping;
-    return new Promise<T>((resolve, reject) => {
-      const onInterrupt = () => reject(new Interrupted("interrupted"));
-      signal.addEventListener("abort", onInterrupt, { once: true });
-      step.then(resolve, reject).finally(() => signal.removeEventListener("abort", onInterrupt));
-      if (signal.aborted) onInterrupt();
-    });
+    return untilAborted(step, this.#stopping.signal);
   }
 
   /** Starts `argv` as the leader of a process group of its own, so stopping it reaches what it
@@ -246,4 +252,215 @@ export async function agentViewRefusal(
   } finally {
     clearTimeout(timeout);
   }
+}
+
+/** One row the seed guarantees the unfiltered Inbox read returns. An ask of the seed's own is
+ *  matched by its ask id; the spec's decision row is matched by its block id on its issue,
+ *  because the document service may retract that ask and write it again for the same block. */
+export type SeededInboxRow =
+  | { readonly kind: "ask"; readonly askId: string; readonly made: string }
+  | {
+      readonly kind: "block";
+      readonly blockId: string;
+      readonly issueKey: string;
+      readonly made: string;
+    };
+
+/** What the helper reads of an Inbox row; `getInbox`'s own rows satisfy it. */
+export interface InboxRowRead {
+  readonly id: string;
+  readonly issue_key?: string | null;
+  readonly block_id?: string | null;
+  readonly document?: { readonly name?: string; readonly slug?: string } | null;
+}
+
+export interface SeededInboxOptions {
+  /** 15_000 by default: the deadline `waitForSpecAsk` already gives this settlement. */
+  readonly deadlineMs?: number;
+  /** 100 by default, the interval `waitForSpecAsk` uses. */
+  readonly intervalMs?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface SeededInboxMatch {
+  readonly matched: number;
+  readonly reads: number;
+  /** `inbox rows: 5 of 5 declared rows matched in 1 read`. */
+  readonly line: string;
+}
+
+/** The last line of every failure block: whose rows these are. */
+const SEEDED_INBOX_OWNER =
+  "  These rows are written by the seed (packages/dispatch/e2e/workspace.ts) and by Dispatch's " +
+  "own document settlement, not by the change under test.";
+
+/** What one Inbox read holds against the rows the seed declares. */
+interface SeededInboxDiff {
+  readonly matched: number;
+  readonly missing: readonly SeededInboxRow[];
+  readonly unexpected: readonly InboxRowRead[];
+  readonly rows: readonly InboxRowRead[];
+}
+
+/** The difference between the rows `declared` and one Inbox read: each declared row, in order,
+ *  takes the first Inbox row not yet taken that it names, so a second copy of a row is left over. */
+function diffSeededInbox(
+  declared: readonly SeededInboxRow[],
+  rows: readonly InboxRowRead[]
+): SeededInboxDiff {
+  const taken = new Set<number>();
+  const missing: SeededInboxRow[] = [];
+  for (const want of declared) {
+    const index = rows.findIndex(
+      (row, at) =>
+        !taken.has(at) &&
+        (want.kind === "ask"
+          ? row.id === want.askId
+          : row.block_id === want.blockId && row.issue_key === want.issueKey)
+    );
+    if (index === -1) missing.push(want);
+    else taken.add(index);
+  }
+  const unexpected = rows.filter((_, at) => !taken.has(at));
+  return { matched: taken.size, missing, rows, unexpected };
+}
+
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
+
+/** `items` as the block's list lines, or one `none` line for an empty list. */
+const listed = (items: readonly string[]) =>
+  (items.length === 0 ? ["none"] : items).map((item) => `    - ${item}`);
+
+/** Resolves after `ms`, or rejects with Interrupted as soon as `signal` aborts, with its timer
+ *  cleared so it keeps no process alive. */
+function pause(ms: number, signal: AbortSignal | undefined): Promise<void> {
+  const { promise, resolve, reject } = Promise.withResolvers<void>();
+  const onAbort = () => {
+    clearTimeout(timer);
+    reject(new Interrupted("interrupted"));
+  };
+  const timer = setTimeout(() => {
+    signal?.removeEventListener("abort", onAbort);
+    resolve();
+  }, ms);
+  signal?.addEventListener("abort", onAbort, { once: true });
+  if (signal?.aborted) onAbort();
+  return promise;
+}
+
+/** `step`, or an Error naming `deadlineMs` once `ms` pass with `step` still unsettled, so one read
+ *  that never answers cannot hold the wait past its deadline. `step`'s own outcome is always
+ *  handled, and the timer is cleared as soon as it settles. */
+function answeredWithin<T>(step: Promise<T>, ms: number, deadlineMs: number): Promise<T> {
+  const { promise, resolve, reject } = Promise.withResolvers<T>();
+  const timer = setTimeout(() => {
+    const deadline = (deadlineMs / 1_000).toFixed(1);
+    reject(new Error(`the read had not answered when the ${deadline} s deadline passed`));
+  }, ms);
+  step.then(resolve, reject).finally(() => clearTimeout(timer));
+  return promise;
+}
+
+/**
+ * Reads the Inbox with `read` until it lists exactly the rows `declared`, and answers the pass
+ * line, or throws a block that names every missing and every unexpected row once `deadlineMs`
+ * has passed. `read` is ONE UNFILTERED Inbox read (`GET /api/v1/inbox` with no query): the seed
+ * declares that set, and a filtered read (`?assignee=unassigned`, say) holds another.
+ *
+ * Each declared row takes the first Inbox row it names that no declared row took before it; a
+ * declared row that takes none is missing, and an Inbox row that none took is unexpected, a
+ * second copy of a declared row included. A read that throws counts as a read and is tried again
+ * to the same deadline, and a read still unanswered at the deadline is the last read, failed. The
+ * abort of `signal` rejects with Interrupted at once, whether the helper waits on a read or
+ * sleeps between reads.
+ */
+export async function awaitSeededInbox(
+  declared: readonly SeededInboxRow[],
+  read: () => Promise<readonly InboxRowRead[]>,
+  options: SeededInboxOptions = {}
+): Promise<SeededInboxMatch> {
+  const { deadlineMs = 15_000, intervalMs = 100, signal } = options;
+  if (signal?.aborted) throw new Interrupted("interrupted");
+  const started = Date.now();
+  let reads = 0;
+  let answered: SeededInboxDiff | undefined;
+  let failure: { readonly error: unknown } | undefined;
+  for (;;) {
+    reads += 1;
+    try {
+      const step = answeredWithin(
+        (async () => read())(),
+        Math.max(0, deadlineMs - (Date.now() - started)),
+        deadlineMs
+      );
+      answered = diffSeededInbox(declared, await untilAborted(step, signal));
+      failure = undefined;
+    } catch (error) {
+      if (signal?.aborted) throw new Interrupted("interrupted");
+      failure = { error };
+    }
+    if (
+      failure === undefined &&
+      answered?.missing.length === 0 &&
+      answered.unexpected.length === 0
+    ) {
+      return {
+        line: `inbox rows: ${answered.matched} of ${declared.length} declared rows matched in ${plural(reads, "read")}`,
+        matched: answered.matched,
+        reads,
+      };
+    }
+    const elapsed = Date.now() - started;
+    if (elapsed >= deadlineMs) {
+      throw new Error(seededInboxFailure(declared, elapsed, reads, answered, failure));
+    }
+    await pause(intervalMs, signal);
+  }
+}
+
+/** The failure block of `awaitSeededInbox`: the newest difference it read, and the error of the
+ *  last read where that read threw. */
+function seededInboxFailure(
+  declared: readonly SeededInboxRow[],
+  elapsedMs: number,
+  reads: number,
+  answered: SeededInboxDiff | undefined,
+  failure: { readonly error: unknown } | undefined
+): string {
+  const seconds = (elapsedMs / 1_000).toFixed(1);
+  const lines =
+    answered === undefined
+      ? [
+          `inbox rows: no read of the Inbox answered in ${seconds} s over ${plural(reads, "read")}.`,
+          `  the seed declares ${plural(declared.length, "row")}.`,
+        ]
+      : [
+          `inbox rows: the Inbox and the seed still disagree after ${seconds} s and ${plural(reads, "read")}.`,
+          "  missing (the seed declares it, the Inbox did not list it):",
+          ...listed(
+            answered.missing.map((row) =>
+              row.kind === "ask"
+                ? `${row.made} (ask ${row.askId})`
+                : `${row.made} (block ${row.blockId})`
+            )
+          ),
+          "  unexpected (the Inbox listed it, the seed declares no such row):",
+          ...listed(
+            answered.unexpected.map((row) => {
+              const on =
+                row.issue_key ??
+                (row.document?.name === undefined
+                  ? "no issue"
+                  : `the document ${row.document.name}`);
+              return `ask ${row.id} on ${on} (block ${row.block_id ?? "none"})`;
+            })
+          ),
+          `  the Inbox answered ${plural(answered.rows.length, "row")}; the seed declares ${declared.length}.`,
+        ];
+  if (failure !== undefined) {
+    const { error } = failure;
+    lines.push(`  the last read failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  lines.push(SEEDED_INBOX_OWNER);
+  return lines.join("\n");
 }
