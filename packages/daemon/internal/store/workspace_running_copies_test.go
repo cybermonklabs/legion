@@ -306,6 +306,72 @@ func TestARunningCopyLeavesTheIssueReleasableWhileItIsIdle(t *testing.T) {
 	}
 }
 
+// Once an idle release has saved its bundle, that bundle is the last copy of the pod it came off,
+// and no running copy taken off that pod afterwards is stored. The release's save runs before its
+// role stops, so the pod's roles are live after it, and a push the daemon records in that window
+// asks them for a copy: stored, that copy would be the later of the two by the clock, the next
+// pod would be offered it in the bundle's place, and the bundle's row would hold the issue's pod
+// from then on. The write refuses it with a refusal of its own, which the daemon tells apart from
+// a save that failed, and the bundle is what the next pod is sent. A copy off the next pod is
+// stored once that pod has asked, and a late copy off the released pod is still refused then, so
+// it cannot take the place of the next pod's own work.
+func TestARunningCopyOffThePodAReleaseBundleCameOffIsRefusedAndOneOffTheNextPodIsStored(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	at := time.Date(2026, 11, 13, 9, 30, 0, 0, time.UTC)
+	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "c1",
+		Tips: []string{"c1"}, At: at, PodUID: releasedPodUID}
+	if err := s.PutWorkspaceBundle(ctx, "INFRA-1117", 7, saved); err != nil {
+		t.Fatal(err)
+	}
+
+	// The copy a push in the release's window asks of the pod's roles, two minutes after the save.
+	window := runtime.WorkspaceBundle{Bundle: []byte("PACK the released pod's work after the save"), Head: "c1",
+		Tips: []string{"c1"}, At: at.Add(2 * time.Minute), PodUID: releasedPodUID}
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", window); !errors.Is(err, ErrReleaseBundleSaved) {
+		t.Fatalf("a copy off the pod the release bundle came off was answered %v, want %v", err, ErrReleaseBundleSaved)
+	}
+	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117"); row.held {
+		t.Fatalf("the refused copy was stored: %+v", row)
+	}
+	// The read the cadence makes before it asks a shim answers the same of that pod and of no
+	// other, nor of the pod of another issue.
+	for _, c := range []struct {
+		issue, pod string
+		want       bool
+	}{
+		{"INFRA-1117", releasedPodUID, true},
+		{"INFRA-1117", "pod-that-replaces-it", false},
+		{"INFRA-1117", "", false},
+		{"INFRA-2760", releasedPodUID, false},
+	} {
+		if got, err := s.ReleaseBundleSavedOff(ctx, c.issue, c.pod); err != nil || got != c.want {
+			t.Fatalf("whether the release bundle of %s came off pod %q read %t (%v), want %t", c.issue, c.pod, got, err, c.want)
+		}
+	}
+
+	// The pod that replaces the released one asks, and is sent the bundle: the refused copy is
+	// nowhere to be offered in its place.
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-that-replaces-it", at.Add(20*time.Minute))
+	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend || restore.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the next pod was answered %+v (%v), want the release bundle sent and no running copy", restore, err)
+	}
+	// Its own copies are stored.
+	next := runtime.WorkspaceBundle{Bundle: []byte("PACK the next pod's work"), Head: "c4",
+		Tips: []string{"c4"}, At: at.Add(30 * time.Minute), PodUID: "pod-that-replaces-it"}
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", next); err != nil {
+		t.Fatalf("a copy off the pod that replaced the released one was answered %v, want it stored", err)
+	}
+	// A copy off the released pod that reaches the store only now is refused all the same, and
+	// leaves the next pod's copy where it is.
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", window); !errors.Is(err, ErrReleaseBundleSaved) {
+		t.Fatalf("a late copy off the released pod was answered %v, want %v", err, ErrReleaseBundleSaved)
+	}
+	if row := storedRunningCopy(t, s, "INFRA-1117"); row.sourcePod != next.PodUID || !bytes.Equal(row.bundle, next.Bundle) {
+		t.Fatalf("the running copy is %q off %q, want the next pod's %q", row.bundle, row.sourcePod, next.Bundle)
+	}
+}
+
 // A copy whose content equals the stored row's moves the time alone. A turn that read the
 // workspace and wrote nothing in it ends with the work the copy before it already holds, and
 // rewriting a multi-megabyte row every five minutes to store those bytes again is waste. The bytes

@@ -107,7 +107,10 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 	if !stored.At.After(pushedAt) {
 		t.Fatalf("the stored copy was taken at %s, want it after the push recorded at %s", stored.At, pushedAt)
 	}
+	// The row is written before its line is logged, so the stored line is waited for, as the
+	// overtaken line is, before the lines are counted.
 	rig.awaitLine(t, runningCopyOvertakenLine)
+	rig.awaitLine(t, runningCopyStoredLine)
 	if lines := rig.lines(t, runningCopyStoredLine); len(lines) != 1 {
 		t.Fatalf("the cadence stored %d copies, want only the one taken after the push: the copy read before it is not stored", len(lines))
 	}

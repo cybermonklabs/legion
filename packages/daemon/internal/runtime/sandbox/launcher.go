@@ -464,12 +464,14 @@ func refusedOlderLine(kind runtime.WorkspaceCopyKind) string {
 // held a copy, and what that copy would have done.
 const refusedPushedLine = "launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded, so it is refused and no pod is sent it: restoring it would put the workspace back on work behind the pushed commits, which the roles would have to bring forward over them; its bytes stay in the daemon's database"
 
-// supersededLine is the line the older of the issue's two copies is closed unsent with
-// (runtime.WorkspaceBundleSuperseded). It names the newer copy, the one the decision offered
+// supersededLine is the line the copy the decision did not offer is closed unsent with
+// (runtime.WorkspaceBundleSuperseded). That is the older of the issue's two copies, or a running
+// copy off the pod the release bundle came off, whatever its time: once an idle release has saved
+// its bundle, the bundle is that pod's last copy. The line names the copy the decision offered
 // (runtime.WorkspaceRestore.Offered), and what this pod's ask did with it, since that copy is not
 // always sent here: its attempt can be spent already, this pod can be the one its work came off,
 // and this pod can be older than it.
-const supersededLine = "launcher bundle: the older of the issue's two saved workspace copies is closed unsent, since the newer one is the copy the issue's pods are offered and no pod may restore the older over its work; its bytes stay in the database"
+const supersededLine = "launcher bundle: one of the issue's two saved workspace copies is closed unsent, since the other is the copy the issue's pods are offered (the newer one, or the release bundle of the pod both came off) and no pod may restore this one over its work; its bytes stay in the database"
 
 // withheldBranchLine is the line a copy that holds the issue's own branch is sent with. The
 // restore sets every bookmark the copy holds but that one (bundleFrames,

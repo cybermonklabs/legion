@@ -67,10 +67,10 @@ func TestAnIdleReleaseWithNothingUnpushedLeavesNoSavedWorkOfEitherKind(t *testin
 }
 
 // A release that does store a bundle drops the running copy too. The bundle is the newer copy of
-// the same workspace — the shim takes it after the roles have stopped, off the disk the running
-// copy came off — so from that save the copy is stale. Left behind it would be the newer-looking
-// of the two for any pod after the one that restores the bundle, and that pod's workspace holds
-// the descendants of the bundle's own work.
+// the same workspace — the shim takes it off the disk the running copy came off, while the roles
+// are idle and before the release stops them — so from that save the copy is stale. Left behind
+// it would be the newer-looking of the two for any pod after the one that restores the bundle,
+// and that pod's workspace holds the descendants of the bundle's own work.
 func TestAnIdleReleaseThatSavesABundleLeavesNoRunningCopy(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -108,7 +108,13 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
-	rig.copyWorkspace(t)
+	// The pod that replaced the released one works on, and the cadence copies it: no copy is
+	// stored off the pod the bundle came off once the bundle is saved (store.ErrReleaseBundleSaved).
+	if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, runtime.WorkspaceBundle{
+		Bundle: []byte("PACK the work of the pod that replaced it"), Head: "abc", Tips: []string{"abc"},
+		At: time.Now().UTC(), PodUID: "pod-that-replaced-it"}); err != nil {
+		t.Fatalf("take the running copy of %s: %v", rig.issue.Key, err)
+	}
 
 	rig.runner.dropReleasedWork(ctx, rig.issue.Key)
 

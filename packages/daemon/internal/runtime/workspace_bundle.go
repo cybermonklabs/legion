@@ -84,10 +84,11 @@ const (
 	// a release bundle is never refused so. The refusal is the copy's one attempt and its bytes
 	// stay for an operator, as RefusedOlder's do.
 	WorkspaceBundleRefusedPushed
-	// WorkspaceBundleSuperseded: the issue's other copy is the newer one and is the copy this
-	// pod is offered, so this one is closed unsent. The pods after this one hold the
-	// descendants of the work it restores, so a copy left open for them would be applied over
-	// everything pushed in between. Its bytes stay for an operator too.
+	// WorkspaceBundleSuperseded: the issue's other copy is the copy this pod is offered — the
+	// newer one, or the release bundle beside a running copy off the bundle's own pod, which is
+	// that pod's last copy (DecideWorkspaceRestore) — so this one is closed unsent. The pods
+	// after this one hold the descendants of the work it restores, so a copy left open for them
+	// would be applied over everything pushed in between. Its bytes stay for an operator too.
 	WorkspaceBundleSuperseded
 )
 
@@ -116,8 +117,8 @@ func (t WorkspaceBundleTake) String() string {
 type WorkspaceCopyKind string
 
 const (
-	// WorkspaceCopyReleaseBundle is the bundle the issue's last idle release saved after its
-	// roles stopped (store.Store.PutWorkspaceBundle).
+	// WorkspaceCopyReleaseBundle is the bundle the issue's last idle release saved while its
+	// roles were idle, just before it stopped them (store.Store.PutWorkspaceBundle).
 	WorkspaceCopyReleaseBundle WorkspaceCopyKind = "release bundle"
 	// WorkspaceCopyRunning is the copy the daemon took while the issue's pod ran, at a turn's
 	// end, inside a long turn and at each push the daemon recorded
@@ -154,30 +155,48 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // two copies of its issue's workspace. It reads what each copy's row says of it, the newest push
 // of the issue's branch the daemon recorded, and the pod asking: its uid, podUID, and the
 // creationTimestamp the API server stamped it with, podCreated. It answers what the ask does to
-// each copy, and the kind of the copy it offers, which is the newer of the copies the issue holds,
-// or empty when it holds neither. It is a pure function so that it is one decision, read in one
-// place: the store calls it inside the transaction that holds both rows and records every take it
-// answers but WorkspaceBundleNone (store.Store.TakeWorkspaceCopyForRestore), and a test outside
-// the store drives the very same decision against real git and jj.
+// each copy, and the kind of the copy it offers: the newer of the copies the issue holds, but the
+// release bundle beside a running copy off the bundle's own pod, and empty when it holds neither.
+// It is a pure function so that it is one decision, read in one place: the store calls it inside
+// the transaction that holds both rows and records every take it answers but WorkspaceBundleNone
+// (store.Store.TakeWorkspaceCopyForRestore), and a test outside the store drives the very same
+// decision against real git and jj.
 //
 // The newer copy is offered and the older superseded (WorkspaceBundleSuperseded). `at` orders
 // them because it is the one thing both carry and the only one that says which work descends
-// from which: a running copy is taken while the roles work, a release bundle after they stop, and
-// either can be the newer, since a pod can be released minutes after a copy or run for hours
-// after a cancelled release left one behind. A tie goes to the release bundle, which is taken
-// from a workspace whose roles have stopped: a copy of the same second was taken before those
-// roles ended, so it holds no more than the bundle does, and restoring the bundle also lifts the
-// hold its row puts on the issue's pod (workflow.IdleHoldBundleUnrestored). Which copy is the
-// newer is a fact of the two copies and not of the pod asking or of the push, so the comparison
-// reads every copy the issue holds, spent or not, whichever pod its work came off and whether or
-// not the push refuses it: an older copy is never sent because the newer one went to an earlier
-// pod, nor because the newer one is a running copy the push refuses, which would put the
-// workspace further back still than the copy the push refused.
+// from which: a running copy is taken while the roles work, a release bundle while they are idle,
+// just before the release stops them, and either can be the newer, since a pod can be released
+// minutes after a copy or run for hours after a cancelled release left one behind. A tie goes to
+// the release bundle, which is taken from a workspace whose roles are idle: a copy of the same
+// second holds no more than the bundle does, and restoring the bundle also lifts the hold its row
+// puts on the issue's pod (workflow.IdleHoldBundleUnrestored). Which copy is the newer is a fact
+// of the two copies and not of the pod asking or of the push, so the comparison reads every copy
+// the issue holds, spent or not, whichever pod its work came off and whether or not the push
+// refuses it: an older copy is never sent because the newer one went to an earlier pod, nor
+// because the newer one is a running copy the push refuses, which would put the workspace further
+// back still than the copy the push refused.
 //
 // The older is superseded, which spends its attempt, rather than left, because a copy left with
 // its attempt unspent is a copy some later pod can still be sent, and that pod's workspace holds
 // the descendants of the work this pod is about to restore: the older copy would then be applied
 // over everything pushed in between.
+//
+// A running copy off the pod the release bundle came off never supersedes that bundle, whatever
+// their times: the bundle is offered and the copy is closed as an older copy is. Once an idle
+// release has saved its bundle, that bundle is the pod's last copy. The release's rows run the
+// save first, then a stop per role, then the teardown (internal/daemon's idleReleaseRows), so the
+// pod's roles are still live after the save, and a copy taken off them in that window, such as
+// the copy a push the daemon records there asks for, is the later of the two by the clock. It
+// holds no work the bundle lacks: the roles were idle, work given to the pod before its first
+// role stops cancels the release and drops its bundle (store.Store.CancelIssueRelease), and work
+// given after that waits for the release to end. The daemon stores no such copy
+// (store.Store.PutRunningWorkspaceCopy), and this rule answers any row a daemon that stored one
+// left behind. Offered, such a copy would be sent to the next pod and the bundle closed unsent,
+// and a row of workspace_bundles of any outcome holds the issue's pod
+// (workflow.IdleHoldBundleUnrestored), so no idle release of the issue would run again; a push
+// after both would refuse the copy, and that pod would be sent nothing at all. The copy's own
+// take follows the rules below as any other copy's does: it is superseded, or refused by the push
+// when it was taken before it.
 //
 // A running copy taken before the newest recorded push is refused (WorkspaceBundleRefusedPushed),
 // the offered one or the older. No restore sets the issue's branch `legion/<KEY>`
@@ -196,18 +215,18 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // a copy taken before a push the daemon has not recorded.
 //
 // A release bundle is never refused by the push: the other rules alone offer, supersede and send
-// it. It is taken after the issue's roles stopped, so a push the daemon records after it is no
-// push of those roles' work: it is a push from outside the pod — GitHub's "Update branch", a
-// person's push — whose commits the bundle lacks, or a push the daemon applied late, such as one
-// whose webhook was lost and which the per-issue read rebuilt, whose commits the bundle holds.
-// Restoring the bundle over either loses no pushed commit, since the branch stays on what GitHub
-// holds and the role brings its work forward over the push. Refusing it would protect nothing and
-// cost the issue both its work and its pod: the disk the bundle came off is gone, and a bundle no
-// pod restored holds the issue's pod (workflow.IdleHoldBundleUnrestored), so a push during any
-// release that saved one would stop every later idle release of that issue. A bundle left
-// unrestored while the issue's work went on, by a pod that came back without restoring it, is the
-// newer-copy rule's to close: that pod's running copies, the copy taken at each push among them,
-// are newer than it.
+// it. It is the pod's last copy, taken while the issue's roles were idle and just before the
+// release stopped them, so a push the daemon records after it is no push of those roles' work: it
+// is a push from outside the pod — GitHub's "Update branch", a person's push — whose commits the
+// bundle lacks, or a push the daemon applied late, such as one whose webhook was lost and which
+// the per-issue read rebuilt, whose commits the bundle holds. Restoring the bundle over either
+// loses no pushed commit, since the branch stays on what GitHub holds and the role brings its work
+// forward over the push. Refusing it would protect nothing and cost the issue both its work and
+// its pod: the disk the bundle came off is gone, and a bundle no pod restored holds the issue's
+// pod (workflow.IdleHoldBundleUnrestored), so a push during any release that saved one would stop
+// every later idle release of that issue. A bundle left unrestored while the issue's work went on,
+// by a pod that came back without restoring it, is the newer-copy rule's to close: that pod's
+// running copies, the copy taken at each push among them, are newer than it.
 //
 // Two rules answer a copy WorkspaceBundleNone whatever the rules above say of it, and the store
 // records nothing on such a copy:
@@ -235,8 +254,10 @@ func (c WorkspaceCopyHeld) Held() bool { return !c.At.IsZero() }
 // future and that pod is refused, which costs the restore and loses no work: the direction to
 // fail in.
 func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePush, podUID string, podCreated time.Time) (bundleTake, runningTake WorkspaceBundleTake, offered WorkspaceCopyKind) {
+	// A running copy off the bundle's own pod is never the newer (above), so only a copy off
+	// another pod is weighed against the bundle by time.
 	switch {
-	case running.Held() && (!bundle.Held() || running.At.After(bundle.At)):
+	case running.Held() && (!bundle.Held() || (running.Source != bundle.Source && running.At.After(bundle.At))):
 		offered = WorkspaceCopyRunning
 	case bundle.Held():
 		offered = WorkspaceCopyReleaseBundle

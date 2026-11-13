@@ -2114,11 +2114,12 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 //
 // The copy the cadence took while this pod ran goes whichever way the save falls, in the save's
 // own transaction (store.PutWorkspaceBundle, store.DeleteWorkspaceBundle). This bundle is the
-// newer copy of the same workspace — it is taken after the roles stopped, from the disk that copy
-// came off — so from this moment the running copy is stale. A save that found nothing unpushed
-// says the same thing more strongly: there is no unpushed work to put back at all. A write that
-// fails cancels the release, as the save's own does, and the cancel drops both copies in its own
-// transaction (store.CancelIssueRelease).
+// newer copy of the same workspace — it is taken off the disk that copy came off, while the roles
+// are idle and before the rows that stop them — so from this moment the running copy is stale,
+// and the bundle is the pod's last copy: no copy taken off the pod after it is stored
+// (takeRunningCopy). A save that found nothing unpushed says the same thing more strongly: there
+// is no unpushed work to put back at all. A write that fails cancels the release, as the save's
+// own does, and the cancel drops both copies in its own transaction (store.CancelIssueRelease).
 //
 // The save takes the issue's place in the workspace cadence's single flight before it asks the
 // shim (runningCopies.hold), waiting out a copy already in flight, and no copy starts while it

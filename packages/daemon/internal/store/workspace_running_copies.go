@@ -26,6 +26,49 @@ import (
 // marked by a sign.
 const MinRunningWorkspaceCopyRestoreID int64 = 1 << 62
 
+// ErrReleaseBundleSaved is PutRunningWorkspaceCopy's refusal of a copy taken off a pod an idle
+// release has saved its bundle off (ReleaseBundleSavedOff). It is a refusal and not a failure:
+// nothing went wrong, and the bundle already holds that pod's last copy of the issue's work, so
+// the daemon logs it apart from a save that failed.
+var ErrReleaseBundleSaved = errors.New("an idle release has saved its bundle off the pod this copy was taken off, and that bundle is the pod's last copy")
+
+// releaseBundleSavedOff is the condition, on issue $1 and pod $2, that the issue's release bundle
+// came off that pod. Once an idle release has saved its bundle, that bundle is the pod's last
+// copy: no running copy is taken off that pod afterwards, at a push or for any other reason. The
+// release's rows run the save first, then a stop per role, then the teardown (daemon's
+// idleReleaseRows), so the pod's roles are still live after the save and a push the daemon
+// records in that window asks them for a copy; stored, that copy would be the later of the two by
+// the clock and would be offered to the next pod in the bundle's place, and the bundle's row,
+// closed unsent, would hold the issue's pod from every idle release after it
+// (workspaceBundleUnrestored).
+//
+// It names the pod and not the issue alone because the rule is about that pod. A pod that is not
+// the one the bundle came off is never refused by it: a pod that came back without spending the
+// bundle's one attempt — its launcher could not read the store, so it started on what was pushed
+// — goes on working, and its copies are newer than the bundle and are the restore's to weigh
+// (runtime.DecideWorkspaceRestore). Nor does it read the attempt: the pod a bundle came off never
+// spends it (TakeWorkspaceCopyForRestore answers that pod nothing), and the pod that does is made
+// only once the release has taken that pod away, so for as long as the bundle's row stands the
+// bundle is its pod's last copy. A release a wake cancels drops its bundle (CancelIssueRelease),
+// which lifts the refusal for the pod that then works on, and a confirmed restore drops it too
+// (DeleteRestoredWorkspaceBundle).
+//
+// It is one text, read by the cadence before it asks a shim (ReleaseBundleSavedOff) and written
+// into both of PutRunningWorkspaceCopy's statements, so the two places are one rule.
+const releaseBundleSavedOff = `exists (select 1 from workspace_bundles where issue = $1 and source_pod_uid = $2)`
+
+// ReleaseBundleSavedOff is whether issue's release bundle came off pod (releaseBundleSavedOff),
+// which the daemon's cadence reads before it asks a shim of that pod for a copy, so that no bundle
+// is built off a pod an idle release has saved its bundle off. A pod of "" is no pod, and no row
+// names one.
+func (s *Store) ReleaseBundleSavedOff(ctx context.Context, issue, pod string) (bool, error) {
+	var saved bool
+	if err := s.pool.QueryRow(ctx, `select `+releaseBundleSavedOff, issue, pod).Scan(&saved); err != nil {
+		return false, fmt.Errorf("read whether the release bundle of %s came off pod %s: %w", issue, pod, err)
+	}
+	return saved, nil
+}
+
 // PutRunningWorkspaceCopy saves the unpushed work of issue's workspace as the copy taken while its
 // pod runs, replacing whatever the issue's last copy left: one issue has one running copy, the
 // newest, and a copy of an older minute must never be restored in place of a newer one. The copy
@@ -56,6 +99,13 @@ const MinRunningWorkspaceCopyRestoreID int64 = 1 << 62
 // then tell the pod the work is on from the pod that replaces it, and so is one carrying no bytes:
 // a bundle of nothing restores nothing, and a row holding one would be answered to a pod in place
 // of the release bundle it should have had.
+//
+// A copy off a pod the issue's release bundle came off is refused with ErrReleaseBundleSaved
+// (releaseBundleSavedOff), and the refusal is a condition of each statement that would write the
+// row, so no read between the check and the write can let a copy land after the bundle's save.
+// The daemon's single flight keeps the save from running beside a copy's write in the first
+// place (runningCopies.hold), so a copy that wrote before the save is dropped by it
+// (PutWorkspaceBundle), and one whose write comes after it meets this refusal.
 func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a running workspace copy needs its issue")
@@ -73,20 +123,24 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, b run
 	// The unchanged workspace is answered first and without its bytes, so the common copy of a
 	// turn that changed nothing neither carries tens of megabytes to the database nor writes
 	// them again. A workspace that did change matches no row here and is written whole below,
-	// at the cost of one indexed read that touched nothing.
-	moved, err := s.pool.Exec(ctx, `update workspace_running_copies set at = $2
-		where issue = $1 and source_pod_uid = $3 and head = $4 and size_bytes = $5
-			and tips = $6 and bookmarks = $7`,
-		issue, b.At, b.PodUID, b.Head, b.Size(), tips, bookmarks)
+	// at the cost of one indexed read that touched nothing. A copy the release bundle refuses
+	// moves nothing here either, and the write below refuses it by the same condition.
+	moved, err := s.pool.Exec(ctx, `update workspace_running_copies set at = $3
+		where issue = $1 and source_pod_uid = $2 and head = $4 and size_bytes = $5
+			and tips = $6 and bookmarks = $7 and not `+releaseBundleSavedOff,
+		issue, b.PodUID, b.At, b.Head, b.Size(), tips, bookmarks)
 	if err != nil {
 		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
 	}
 	if moved.RowsAffected() > 0 {
 		return nil
 	}
-	_, err = s.pool.Exec(ctx, `insert into workspace_running_copies
+	// The insert is a select so that it can carry the refusal's condition: a statement of values
+	// has no condition of its own, and the conflict's condition guards the update alone.
+	written, err := s.pool.Exec(ctx, `insert into workspace_running_copies
 			(issue, source_pod_uid, bundle, size_bytes, at, head, tips, bookmarks)
-		values ($1, $2, $3, $4, $5, $6, $7, $8)
+		select $1, $2, $3, $4, $5, $6, $7, $8
+		where not `+releaseBundleSavedOff+`
 		on conflict (issue) do update set restore_id = nextval('workspace_running_copy_restore_ids'),
 			source_pod_uid = excluded.source_pod_uid, bundle = excluded.bundle,
 			size_bytes = excluded.size_bytes, at = excluded.at, head = excluded.head,
@@ -95,6 +149,9 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, b run
 		issue, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks)
 	if err != nil {
 		return fmt.Errorf("save the running workspace copy of %s: %w", issue, err)
+	}
+	if written.RowsAffected() == 0 {
+		return fmt.Errorf("save the running workspace copy of %s off pod %s: %w", issue, b.PodUID, ErrReleaseBundleSaved)
 	}
 	return nil
 }

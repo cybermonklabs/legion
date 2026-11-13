@@ -852,13 +852,14 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 
 // A release bundle older than a push the daemon recorded after it is restored, so the issue's pod
 // is released when it next goes idle. Every idle release of a workspace with unpushed work saves a
-// bundle after its roles stop, and a push recorded while the release runs — GitHub's "Update
-// branch", a person's push, a webhook the per-issue read rebuilt late — is newer than it. Were the
-// bundle refused for that push, nothing would be sent, its row would stay, and the idle rule would
-// hold every later pod of the issue on it (workflow.IdleHoldBundleUnrestored), as the pass before
-// the restore shows. The push goes through the workflow's push handler as the daemon wires it,
-// with the daemon's store as its record, and the restore's confirmation is the delete the
-// launcher's report runs (store.DeleteRestoredWorkspaceCopy).
+// bundle while its roles are idle, before it stops them, and a push recorded while the release
+// runs — GitHub's "Update branch", a person's push, a webhook the per-issue read rebuilt late — is
+// newer than it. Were the bundle refused for that push, nothing would be sent, its row would stay,
+// and the idle rule would hold every later pod of the issue on it
+// (workflow.IdleHoldBundleUnrestored), as the pass before the restore shows. The push goes through
+// the workflow's push handler as the daemon wires it, with the daemon's store as its record, and
+// the restore's confirmation is the delete the launcher's report runs
+// (store.DeleteRestoredWorkspaceCopy).
 func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhenIdle(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()

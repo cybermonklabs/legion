@@ -100,7 +100,7 @@ func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t
 			}
 			before := f.remoteCommits(branch)
 			workspace, created := f.replacementPod("ws2")
-			bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeld(earlier), copyHeld(held), push, replacementPodUID, created)
+			bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeldOff(earlier, earlierReleasedPodUID), copyHeld(held), push, replacementPodUID, created)
 			// The decision that keeps them: the earlier release's bundle is the older copy and is
 			// closed unsent, a running copy taken before the push is refused, and the copy taken
 			// at the push is the one sent. A wrong decision is reported and the case goes on, so it
@@ -215,7 +215,7 @@ func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t
 	t.Run("a release bundle taken before a push from outside the pod", func(t *testing.T) {
 		f := newBundleFixture(t)
 		// The role pushes c1 and goes on with work it has not pushed, and the idle release saves
-		// the workspace once the role has stopped.
+		// the workspace while the role is idle, before it stops it.
 		if err := f.rolePush(f.ws, "c1"); err != nil {
 			t.Fatalf("the push of c1: %v", err)
 		}
@@ -253,16 +253,24 @@ func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t
 }
 
 // takenOffPodUID is the pod every copy of these cases was taken off, and replacementPodUID the pod
-// that replaces it.
+// that replaces it. earlierReleasedPodUID is the pod an earlier release took away: the bundle that
+// release saved came off it, and a pod that came back after it, without restoring that bundle, is
+// the one the later copies come off.
 const (
-	takenOffPodUID    = "pod-the-copies-came-off"
-	replacementPodUID = "pod-that-replaces-it"
+	takenOffPodUID        = "pod-the-copies-came-off"
+	replacementPodUID     = "pod-that-replaces-it"
+	earlierReleasedPodUID = "pod-an-earlier-release-took-away"
 )
 
 // copyHeld is taken as the restore's decision reads its row: taken when the shim says it was, its
 // one attempt unspent, off the pod being replaced.
 func copyHeld(taken shimwire.WorkspaceBundle) runtime.WorkspaceCopyHeld {
-	return runtime.WorkspaceCopyHeld{At: taken.At, Source: takenOffPodUID}
+	return copyHeldOff(taken, takenOffPodUID)
+}
+
+// copyHeldOff is taken as the restore's decision reads its row, off pod.
+func copyHeldOff(taken shimwire.WorkspaceBundle, pod string) runtime.WorkspaceCopyHeld {
+	return runtime.WorkspaceCopyHeld{At: taken.At, Source: pod}
 }
 
 // replacementPod is the pod that replaces the one the copies came off, created now: its own clone

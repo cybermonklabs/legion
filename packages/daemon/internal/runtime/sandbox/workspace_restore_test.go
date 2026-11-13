@@ -786,10 +786,11 @@ func TestARestoreSendsNoRunningCopyOlderThanTheIssuesNewestPushAndLogsThePushItW
 }
 
 // A release bundle older than the newest push of its branch the daemon recorded is restored like
-// any other: a release takes it after the roles stopped, so a push recorded after it — GitHub's
-// "Update branch", a person's push, a webhook the daemon applied late — holds none of its work,
-// and the bundle is the one place that work is. It crosses whole but for the issue's own branch,
-// and the launcher's report drops it, so it holds the issue's pod no longer.
+// any other: it is the released pod's last copy, taken while the roles were idle and before the
+// release stopped them, so a push recorded after it — GitHub's "Update branch", a person's push,
+// a webhook the daemon applied late — holds none of its work, and the bundle is the one place that
+// work is. It crosses whole but for the issue's own branch, and the launcher's report drops it,
+// so it holds the issue's pod no longer.
 func TestARestoreSendsAReleaseBundleOlderThanTheIssuesNewestPushAndItsReportDropsIt(t *testing.T) {
 	st := migratedStore(t)
 	ctx := context.Background()

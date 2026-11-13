@@ -28,10 +28,12 @@ import (
 //
 // The issue's running copy is dropped in the save's own transaction, whatever minute took it
 // (DeleteRunningWorkspaceCopy). This bundle is the newer copy of the same workspace — it is taken
-// after the roles stopped, from the disk that copy came off — so from this moment the running
-// copy is stale, and leaving it would mean a pod after the next one being sent work older than
-// the bundle the next one restored. The two are one write because a save that stored the bundle
-// and then failed to drop the copy would have left the very copy this rule exists to remove.
+// off the disk that copy came off, while the roles are idle and just before the release stops
+// them — so from this moment the running copy is stale, and leaving it would mean a pod after the
+// next one being sent work older than the bundle the next one restored. The two are one write
+// because a save that stored the bundle and then failed to drop the copy would have left the very
+// copy this rule exists to remove. The bundle is that pod's last copy from here on: no running
+// copy off it is stored after the save (PutRunningWorkspaceCopy, releaseBundleSavedOff).
 func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release int64, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a workspace bundle needs its issue")

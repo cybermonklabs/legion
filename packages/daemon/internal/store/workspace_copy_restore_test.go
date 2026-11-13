@@ -238,10 +238,11 @@ func TestARunningCopyOlderThanTheNewestRecordedPushIsSentToNoPod(t *testing.T) {
 }
 
 // A release bundle older than the newest push of the issue's branch the daemon recorded is sent
-// all the same. The release took it after the issue's roles stopped, so a push recorded after it —
-// GitHub's "Update branch", a person's push, a webhook the daemon applied late — holds none of its
-// work, and the bundle is the one place that work is. The launcher's confirmation of the restore
-// then drops it, so the row that would hold the issue's pod (workspaceBundleUnrestored) is gone.
+// all the same. The release took it while the issue's roles were idle, before it stopped them, so
+// a push recorded after it — GitHub's "Update branch", a person's push, a webhook the daemon
+// applied late — holds none of its work, and the bundle is the one place that work is. The
+// launcher's confirmation of the restore then drops it, so the row that would hold the issue's pod
+// (workspaceBundleUnrestored) is gone.
 func TestAReleaseBundleOlderThanTheNewestRecordedPushIsSentAndItsConfirmationLiftsTheHold(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -295,7 +296,7 @@ func TestAReleaseBundleOlderThanTheNewestRecordedPushIsSentAndItsConfirmationLif
 // An issue can hold both copies at once, and the pod that replaces its pod is offered the newer
 // while the older is closed unsent in the same take: the pods after this one hold the descendants
 // of the work it restores, so a copy left open for them would be applied over everything pushed in
-// between. A tie goes to the release bundle, taken once the roles had stopped.
+// between. A tie goes to the release bundle, taken while the roles were idle.
 func TestTheBundleRestoreOffersTheNewerCopyAndSupersedesTheOlderInOneTake(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)

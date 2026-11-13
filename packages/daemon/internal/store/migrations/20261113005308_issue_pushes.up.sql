@@ -12,9 +12,15 @@
 -- roles would have to bring their work forward over the pushed commits.
 -- store.TakeWorkspaceCopyForRestore reads this row in the transaction that chooses between the
 -- issue's two copies and refuses a running copy whose `at` (when the shim took it) is before
--- pushed_at (runtime.DecideWorkspaceRestore). It guards running copies only: a release bundle is
--- taken after the issue's roles stopped, so a push recorded after it is no push of the work it
--- holds, and the bundle is restored as any other.
+-- pushed_at (runtime.DecideWorkspaceRestore). It guards running copies only, because once an idle
+-- release has saved its bundle, that bundle is the pod's last copy. The release's rows run the
+-- save first, while the pod's roles are idle, then a stop per role, then the teardown (the
+-- daemon's idleReleaseRows), so a push recorded after the save is no push of the work the bundle
+-- holds, and the bundle is restored as any other. No running copy is taken off that pod after
+-- the save, at a push or for any other reason, although its roles are live until their stops
+-- (store.PutRunningWorkspaceCopy), and no running copy off that pod supersedes the bundle: such a
+-- copy would be the later of the two by the clock and would be offered to the next pod in the
+-- bundle's place.
 --
 -- The record is the push webhook itself (intake.Push, the workflow engine's push handler), for
 -- every push of `legion/<KEY>` on the repository the issue is recorded on, whether or not the
@@ -64,13 +70,15 @@ create table issue_push_heads (
 -- The outcomes an attempt can now record beside `sent` and `refused_older`. `refused_pushed` is
 -- the rule above: a running copy is older than the issue's newest recorded push, so it is sent to
 -- no pod and its bytes stay for an operator. It is a running copy's alone, and the release bundle's
--- check does not admit it: a release bundle is taken after the roles stop, so no later push holds
--- its work, and a refused bundle would hold the issue's pod from every later idle release
--- (workflow.IdleHoldBundleUnrestored). `superseded` is the older of the issue's two copies when
--- the newer one is offered to the pod: the pods after it hold that work's descendants, so the
--- older copy is closed unsent. Both spend the copy's one attempt, as `refused_older` does. A
--- daemon of an earlier release reads neither, since it never reads the outcome of a row whose
--- attempt is spent.
+-- check does not admit it: a release bundle is its pod's last copy, saved while the roles are idle
+-- and before the release stops them, so no later push holds its work, and a refused bundle would
+-- hold the issue's pod from every later idle release (workflow.IdleHoldBundleUnrestored).
+-- `superseded` is the copy a pod is not offered when it is offered the other: the older of the
+-- issue's two copies, or a running copy off the pod the release bundle came off, which is never
+-- offered in that bundle's place. The pods after it hold the descendants of the work the offered
+-- copy restores, so this one is closed unsent. Both spend the copy's one attempt, as
+-- `refused_older` does. A daemon of an earlier release reads neither, since it never reads the
+-- outcome of a row whose attempt is spent.
 alter table workspace_bundles
   drop constraint workspace_bundles_attempt_outcome,
   add constraint workspace_bundles_attempt_outcome

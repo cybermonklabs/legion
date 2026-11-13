@@ -4870,8 +4870,16 @@ The daemon stores it in its own database, in the `workspace_running_copies` tabl
 A workspace that holds nothing unpushed drops the issue's running copy instead, so no pod restores work that has since been pushed.
 A copy that is not taken or not stored holds nothing back:
 the daemon logs `running copy: no copy of the issue workspace was stored` with the reason by name
-— `claims_unread`, `no_live_role`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed` or `drop_failed` —
+— `claims_unread`, `no_live_role`, `bundler_failed`, `budget_spent`, `bundle_too_large`, `save_failed`, `drop_failed` or `release_bundle_unread` —
 the issue keeps the copy it had, and the next period tries again.
+
+Once an idle release has saved its bundle, that bundle is the pod's last copy.
+No running copy is taken off that pod afterwards, at a push or for any other reason, and no running copy taken earlier supersedes it.
+The release saves the bundle first, while the pod's roles are idle, and stops them after it ([Idle release](#idle-release)), so the roles are still live for a moment after the save.
+A push the daemon records in that moment, such as GitHub's "Update branch", a person's push or a late webhook, asks for a copy like any other push.
+The daemon reads the pod the role's process runs in before it asks the role, and asks no role of a pod whose release has saved its bundle; the store refuses the write of a copy off that pod as well.
+It logs the same `running copy: no copy of the issue workspace was stored` line at Info with the reason `release_bundle_saved`, which is no fault and is not one of the reasons above.
+Stored, such a copy would be the later of the two copies by the clock, the next pod would be sent it in the bundle's place, and the bundle's row would then hold the issue's pod under `bundle_unrestored` until the issue's work is over.
 
 A copy runs the shim's own `jj` in the workspace a role is working in, and two `jj` commands at once in one workspace can leave a divergent change there, which a role then has to clean up in its own turn.
 That race is not new — another role's `jj` makes it today — and the copy raises how often the workspace is inside a `jj` command of somebody else's.
@@ -4886,7 +4894,8 @@ The running copy is what the cadence takes, in `workspace_running_copies`.
 A new pod of the issue is sent the newer of the two, by the time each was taken, and its launcher restores it before any role starts.
 The older is closed unsent:
 the daemon spends its one restore attempt and discards its body, because a copy left open could still be sent to a later pod whose workspace already holds the descendants of the work the newer copy put back.
-A tie goes to the release bundle, which was taken after the roles stopped.
+A tie goes to the release bundle, which was taken while the roles were idle.
+A running copy off the pod a release bundle came off never supersedes that bundle, whatever their times: the bundle is that pod's last copy, so it is the copy offered and the running copy is closed unsent, which also answers any such row a daemon before this rule stored.
 The bytes of a closed copy stay in the database for an operator.
 
 No restore sets the issue's branch `legion/<KEY>`, so no restore can move that branch.
@@ -4897,9 +4906,9 @@ The daemon logs, at Info, a line that begins `launcher bundle: the saved workspa
 The time rule is the second line, and it guards running copies only: a running copy is not sent when it was taken before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
 Such a copy would put the workspace back on work behind what GitHub holds, which the roles would then have to bring forward over the pushed commits.
 A running copy is taken while the roles work and push, so this is its common case: an update round replaces a pod just after its roles push.
-A refused running copy is still the newer of the issue's two copies, so a release bundle older than it is closed unsent rather than sent in its place.
+A refused running copy off another pod is still the newer of the issue's two copies, so a release bundle older than it is closed unsent rather than sent in its place.
 A release bundle is never refused by this rule.
-An idle release saves it after the issue's roles have stopped, so a push the daemon records after it is none of those roles' pushes: it is a push from outside the pod, such as GitHub's "Update branch" or a person's push, or one the daemon applied late, such as a push whose webhook was lost and that the daemon's read of the pull request rebuilt.
+An idle release saves it while the issue's roles are idle, just before it stops them, and it is the pod's last copy, so a push the daemon records after it is none of those roles' pushes: it is a push from outside the pod, such as GitHub's "Update branch" or a person's push, or one the daemon applied late, such as a push whose webhook was lost and that the daemon's read of the pull request rebuilt.
 The bundle is restored like any other, the withheld bookmark keeps that push on GitHub, and the role brings its work forward over it.
 Refusing the bundle would leave its work in the database alone and hold the issue's pod under `bundle_unrestored` from then on.
 The daemon keeps its own record of each issue's newest push in the `issue_pushes` table: one row per issue, holding `pushed_at`, the daemon's clock when it applied the push webhook for `legion/<KEY>` on the issue's recorded repository, and `head`, the commit that push left.

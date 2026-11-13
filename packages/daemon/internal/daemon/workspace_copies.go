@@ -57,7 +57,9 @@ const (
 	// runningCopyUnsavedLine is a copy that was not taken or not stored, at Warn, under the
 	// reason it failed by name. Such a copy holds nothing and leaves the issue with the copy it
 	// had; the issue is tried again at the next period. A push's copy and an owed copy of an
-	// issue with no live role write it at Debug instead (copyWorkspaceAtPush, takeRunningCopy).
+	// issue with no live role write it at Debug instead (copyWorkspaceAtPush, takeRunningCopy),
+	// and a copy off a pod an idle release has saved its bundle off writes it at Info, since
+	// nothing failed (runningCopyReleaseBundled).
 	runningCopyUnsavedLine = "running copy: no copy of the issue workspace was stored"
 	// runningCopyOvertakenLine is a copy that was being built when the daemon recorded a push of
 	// the issue's branch, at Info. It is not stored: it may have read the workspace before the
@@ -93,6 +95,16 @@ const (
 	// runningCopyDropFailed: the store did not drop the copy of a workspace that bundled to
 	// nothing, which leaves the issue holding work that has since been pushed.
 	runningCopyDropFailed = "drop_failed"
+	// runningCopyReleaseBundled: an idle release of the issue has saved its bundle off the pod
+	// the copy would be taken off, and that bundle is the pod's last copy, so no copy is taken
+	// off that pod (takeRunningCopy, store.Store.ReleaseBundleSavedOff). It is written at Info:
+	// it is no fault, and it is not one of the reasons above that a deployment counts. The pod's
+	// roles are still live between the release's save and their stops, and a push the daemon
+	// records then asks them for a copy.
+	runningCopyReleaseBundled = "release_bundle_saved"
+	// runningCopyBundleUnread: the daemon could not read whether the issue's release bundle came
+	// off the pod the copy would be taken off, so it asked no shim of that pod.
+	runningCopyBundleUnread = "release_bundle_unread"
 )
 
 // runningCopies is what the cadence holds in memory: per issue, whether a copy of that issue is
@@ -261,10 +273,12 @@ func (c *runningCopies) overtaken(issue string) bool {
 //
 // Giving the place back is a copy's own give-back (giveBack): it starts the issue's period and
 // prunes as a copy's end does, and it drops any copy that was owed while the save held it. The
-// save is the newer copy of the same workspace, taken once the roles had stopped, and it drops the
-// issue's running copy as it is stored (store.PutWorkspaceBundle), so a copy taken after it would
-// be a second, later copy of the same work in the other table, which the restore would then offer
-// in place of the bundle and leave the bundle holding the issue's pod.
+// save is the newer copy of the same workspace, taken while the roles are idle and just before
+// the release stops them, and it drops the issue's running copy as it is stored
+// (store.PutWorkspaceBundle). It is the pod's last copy, so no copy taken off that pod after it is
+// stored at all (takeRunningCopy): it would be a second, later copy of the same work in the other
+// table, which the restore would then offer in place of the bundle and leave the bundle holding
+// the issue's pod.
 func (c *runningCopies) hold(ctx context.Context, issue string) (func(), error) {
 	for {
 		c.mu.Lock()
@@ -409,7 +423,9 @@ func (w *workflowRuntime) copyWorkspaceAtTurnEnd(c supervise.Claim, state superv
 // not stored, and this copy, owed behind it, is taken as it ends. It runs on a goroutine of its
 // own like every other copy, so the fact's commit waits for nothing. The engine asks for it only
 // for a push that moved the issue's push record (store.Store.RecordIssuePush), so a redelivered
-// or late webhook neither discards the copy in flight nor bundles the workspace again.
+// or late webhook neither discards the copy in flight nor bundles the workspace again. A push the
+// daemon records while an idle release runs, between its save and its role stops, takes no copy:
+// the release's bundle is that pod's last copy (takeRunningCopy).
 //
 // An issue with no live role to ask is logged at Debug for a push, where the turn's end and the
 // cadence log it at Warn (takeRunningCopy). Every push of the branch that moves the record asks,
@@ -460,7 +476,7 @@ func (w *workflowRuntime) startRunningCopy(issue string, claims []supervise.Clai
 // workspace that bundles to nothing.
 //
 // claims is the project's claims as the caller already read them, which is what the role is
-// chosen from (runningCopyRole); the tick reads them once for the whole pass and hands that one
+// chosen from (runningCopyClaim); the tick reads them once for the whole pass and hands that one
 // slice to every copy it starts, and a caller with none — the turn's end, which holds one claim
 // and not the project's — passes nil and has them read here.
 //
@@ -487,6 +503,23 @@ func (w *workflowRuntime) startRunningCopy(issue string, claims []supervise.Clai
 // (copyWorkspaceAtPush): it may hold none of the pushed commits, and the push's own copy is owed
 // behind it.
 //
+// A copy off a pod an idle release has saved its bundle off is refused, before the issue's place
+// is taken and the shim is asked, and again by the store's write: once an idle release has saved
+// its bundle, that bundle is the pod's last copy. The release's rows run the save first, then a
+// stop per role, then the teardown (idleReleaseRows), so the pod's roles are still live after the
+// save, and a copy asked of them then — the one a push the daemon records in that window asks
+// for above all — would be stored as the later of the issue's two copies, offered to the next pod
+// in the bundle's place, and the bundle's row would hold the issue's pod from every idle release
+// after it (workflow.IdleHoldBundleUnrestored). The read names the pod the chosen role's locator
+// records, which is the pod the runtime's bundler names the copy by (sandbox's
+// Runtime.BundleWorkspace), so no bundle is built off that pod; the write refuses by the pod the
+// copy itself names (store.ErrReleaseBundleSaved), which also refuses a copy whose read ran
+// before the save and whose place was taken after the save gave it back, and a copy asked of a
+// role whose locator names no pod. The two are one rule (store.Store.ReleaseBundleSavedOff), and
+// each logs it at Info under a reason of its own (runningCopyReleaseBundled). Every copy is taken
+// here — the cadence's (copyWorkingWorkspaces), a turn's end (copyWorkspaceAtTurnEnd), a push's
+// (copyWorkspaceAtPush) and the copy owed behind one in flight (done) — so each meets it.
+//
 // Every way it can come to nothing is logged under its own reason and holds nothing: the issue
 // keeps the copy it had, and the next period tries again. The daemon's own stop is not such a
 // way: the run's context ending ends the copy, which is the stop and nothing an operator need
@@ -510,10 +543,24 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 		}
 		claims = read
 	}
-	role, ok := runningCopyRole(claims, w.projectID, issue)
+	chosen, ok := runningCopyClaim(claims, w.projectID, issue)
 	if !ok {
 		w.log.Log(ctx, noRole, runningCopyUnsavedLine, "issue", issue, "reason", runningCopyNoRole)
 		return
+	}
+	role := chosen.Role
+	// A locator that names no pod leaves the refusal to the store's write, which reads the pod
+	// the copy itself names.
+	if pod := podOf(chosen.Locator); pod != "" {
+		saved, err := w.copyStore.ReleaseBundleSavedOff(ctx, issue, pod)
+		if err != nil {
+			unsaved("role", role, "reason", runningCopyBundleUnread, "pod", pod, "error", err)
+			return
+		}
+		if saved {
+			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyReleaseBundled, "pod", pod)
+			return
+		}
 	}
 	if !w.copies.begin(issue) {
 		w.log.Debug("running copy: a copy of this issue's workspace is already being taken, so this one is owed and will be taken when that one ends", "issue", issue)
@@ -557,7 +604,13 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 	case w.copies.overtaken(issue):
 		w.log.Info(runningCopyOvertakenLine, "issue", issue, "role", role, "bytes", size, "taken", bundle.At, "took", took())
 	default:
-		if err := w.copyStore.PutRunningWorkspaceCopy(ctx, issue, bundle); err != nil {
+		err := w.copyStore.PutRunningWorkspaceCopy(ctx, issue, bundle)
+		if errors.Is(err, store.ErrReleaseBundleSaved) {
+			w.log.Info(runningCopyUnsavedLine, "issue", issue, "role", role, "reason", runningCopyReleaseBundled,
+				"pod", bundle.PodUID, "bytes", size, "took", took())
+			return
+		}
+		if err != nil {
 			unsaved("role", role, "reason", runningCopySaveFailed, "bytes", size, "took", took(), "error", err)
 			return
 		}
@@ -585,8 +638,10 @@ func issuesInTurn(claims []supervise.Claim, project string) []string {
 	return issues
 }
 
-// runningCopyRole is the role the copy is asked of: the first live role of the issue with a
-// registered agent and a running process (supervise.HoldsCapability), which is what a shim is.
+// runningCopyClaim is the claim of the role the copy is asked of: the first live role of the
+// issue with a registered agent and a running process (supervise.HoldsCapability), which is what
+// a shim is. It is the claim and not the role alone because its locator names the pod the copy
+// would be taken off (takeRunningCopy).
 //
 // The order is the order the store reads the claims in, by claim token, which is the order the
 // idle release's own view reads them in and so the order of the roles its decision carries
@@ -594,16 +649,16 @@ func issuesInTurn(claims []supervise.Claim, project string) []string {
 // workspace is shared by every role of the issue, so which of them answers decides nothing but
 // whose process does the work — and the two paths choosing the same way means a deployment reads
 // one role's log for both.
-func runningCopyRole(claims []supervise.Claim, project, issue string) (claim.Role, bool) {
+func runningCopyClaim(claims []supervise.Claim, project, issue string) (supervise.Claim, bool) {
 	for _, c := range claims {
 		if c.Project != project || c.Issue != issue || c.Role == claim.RoleController {
 			continue
 		}
 		if supervise.HoldsCapability(c.State) {
-			return c.Role, true
+			return c, true
 		}
 	}
-	return "", false
+	return supervise.Claim{}, false
 }
 
 // runningCopyBudget is how long one copy is given, the production constant unless a test
