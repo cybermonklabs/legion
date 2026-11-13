@@ -1725,3 +1725,5 @@ check "names the file neither rule read" \
   "$(contains "$out" '; 1 file(s) under .github are not valid UTF-8, so neither rule read them: .github/actions/install-tool/binary.dat$')"
 
 summary "check-ci-tools.sh"
+
+# INFRA-1413 selection probe, never merged.
