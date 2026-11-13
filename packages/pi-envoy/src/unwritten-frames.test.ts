@@ -59,7 +59,7 @@ function harness() {
     matched: undefined as string | undefined,
   };
   // Each frame the host was asked to record, with the session whose ledger it names. The real
-  // host binds the write to that session (`ReplayEngine.recordDeliveredFor`) and records nothing
+  // host binds the write to that session (`DeliveryLedger.recordDeliveredFor`) and records nothing
   // once it is not the one this process writes its transcript to.
   const recorded: { session: string; identity: DedupeIdentity }[] = [];
   // The cards handed to nobody, each with the session it was for.
@@ -196,7 +196,7 @@ describe("a card handed to the host", () => {
     await frames.written(writtenCard({ event_id: "event-1" }));
 
     // The card was shown in s1, so s1 is the session its record names. The write binds to that
-    // session (`ReplayEngine.recordDeliveredFor`) and records nothing once the process writes
+    // session (`DeliveryLedger.recordDeliveredFor`) and records nothing once the process writes
     // another session's transcript, which is not read here.
     expect(recorded).toEqual([{ session: "s1", identity: frame }]);
     expect(claimState(frame)).toBe("settled");

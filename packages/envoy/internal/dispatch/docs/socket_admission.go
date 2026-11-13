@@ -133,6 +133,19 @@ func socketRoom(r *http.Request) string {
 // ends it; a socket that ends unregistered - its admission or its authorization refused, its room's
 // load failed or panicked - gives it back. The room's place the socket gives back however it ends,
 // and a room ygo loaded keeps a place of its own until it unloads (releaseUnloadedRoom).
+//
+// The room's name has to be the document's id as Dispatch writes it, lower case and hyphenated,
+// and a name uuid.Parse takes in any other spelling - upper case, braced, a dash-free run of hex,
+// urn:uuid:<id> - is refused below rather than rewritten. That is what makes one document one
+// room, and therefore one lock: a durable write takes its lock on the room's own name
+// (lockDocumentRoom) while the stream it appends to is keyed by the document's uuid
+// (doc_updates.artifact_id), so two rooms of one id would be two editor states writing one
+// stream, neither browser seeing the other's typing and the stored markdown ending as text that
+// matched neither. Rewriting the name instead would admit a browser that cannot use what it was
+// given: its client routes every frame by the name it asked for, so a connection answered under
+// another name syncs nothing while holding a room's place. The rule holds for this endpoint
+// alone - another transport, or another handler that reaches a room name by a path of its own,
+// opens a room under whatever name it passes, and no code here can stop that.
 func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if s.hostname != "" {
 		w.Header().Set(ProcessHeader, s.hostname)
@@ -148,8 +161,13 @@ func (s *Service) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return
 	}
-	if _, err := uuid.Parse(room); err != nil {
+	id, err := uuid.Parse(room)
+	if err != nil {
 		http.Error(w, "document not found", http.StatusNotFound)
+		return
+	}
+	if id.String() != room {
+		http.Error(w, "document not found: a document's address is its id as Dispatch writes it, lower case with dashes, here "+id.String(), http.StatusNotFound)
 		return
 	}
 	issue, err := s.readIssue(r.Context(), s.queryFrom(r.Context()), room)

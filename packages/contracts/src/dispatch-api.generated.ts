@@ -183,10 +183,12 @@ export interface paths {
     get: operations["getApiV1ArtifactsById"];
     put?: never;
     post?: never;
-    delete?: never;
+    /** @description Remove a document of an issue that is still untouched: made by typing a title and never written in. It answers 204 and appends artifact.removed on the issue, and it leaves no row behind. A document that holds writing or a later version, an edit that has not settled, or a comment, ask, review, approval request, check result, read mark or link from anything in Dispatch is 409 ARTIFACT_NOT_UNTOUCHED, saying which of those it is; the issue's spec, a document that plays a role and an artifact that is no document read the same refusal; and a project's document is 400 ARTIFACT_PROJECT_DOCUMENT, since a project document's events are its own and its removal event would need the row the removal deletes. */
+    delete: operations["deleteApiV1ArtifactsById"];
     options?: never;
     head?: never;
-    patch?: never;
+    /** @description Correct a document's title: {name}. It writes the name alone - the slug, the reference key it gives and the role the document plays do not move - and answers the document as it now is. The owner's name it already holds is 409 ARTIFACT_NAME_TAKEN, a name whose slug is one of the documents Dispatch makes itself, on a document that is not that one, 400 ARTIFACT_ROLE_NAME, the issue's spec 400 ARTIFACT_PRIMARY, an artifact that is no document 400 ARTIFACT_KIND_MISMATCH, and a name that is empty or too long 400 INVALID_ARTIFACT. */
+    patch: operations["patchApiV1ArtifactsById"];
     trace?: never;
   };
   "/api/v1/artifacts/{id}/_test/hold-persistence": {
@@ -5095,7 +5097,7 @@ export interface components {
     };
     JsonArtifactUpload: {
       actor?: components["schemas"]["Actor"] | null;
-      content: null | string;
+      content?: null | string;
       name: string;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
@@ -5554,6 +5556,9 @@ export interface components {
       to: null | string;
       total: number;
       total_ms: components["schemas"]["RelatedCheckTiming"];
+    };
+    RenameArtifactInput: {
+      name: string;
     };
     ReplyBlock: {
       block_id: string;
@@ -6651,6 +6656,138 @@ export interface operations {
         };
       };
       /** @description Unserved: REQUEST_TIMEOUT, the read ran past its own deadline, or DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
+      503: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1ArtifactsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
+      503: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1ArtifactsById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RenameArtifactInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Artifact"];
+        };
+      };
+      /** @description Refused before anything ran: OVERLOADED, which admission writes for a request the server has no room for and for a heavy read whose lane is full, or EDIT_QUEUE_FULL, which a write of a live document whose writer queue is full is given before its transaction opens. Nothing of the request ran, and Retry-After says how long to wait before sending it again. */
+      429: {
+        headers: {
+          /** @description how many seconds to wait before sending the request again */
+          "Retry-After"?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description COMMIT_OUTCOME_UNKNOWN: the database did not answer this write's commit, or a statement it ran outside any transaction, so the write may have landed and may not. It carries no Retry-After: read what the write would have written before sending it again. */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+      /** @description Unserved: DATABASE_BUSY, a bound of the server's own ended the request before the database answered it and before anything of it had committed: no connection of a pool came free within its acquire bound, so nothing ran, or the database stopped answering on the connection the request held, leaving nothing behind - a read, a call that had not reached the database, or a statement whose transaction then rolled back. Retry-After says how long to wait before sending it again. */
       503: {
         headers: {
           /** @description how many seconds to wait before sending the request again */
@@ -18300,6 +18437,7 @@ export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
+export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
 export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];

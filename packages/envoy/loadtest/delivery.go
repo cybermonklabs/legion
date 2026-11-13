@@ -61,13 +61,14 @@ type commitTagRow struct {
 	At      *time.Time
 }
 
-// receipt is one envelope a simulated session received, matched by the event id in its payload.
+// receipt is one relay frame a simulated session received, matched by the event id in its
+// payload; a session gets its messages on no other path (sessions.go).
 type receipt struct {
 	EventID int64
 	Recv    int64 // Unix ns
-	Agent   bool  // on a session's agent topic (a route copy), not an issue topic
-	// Published is when the stream stored the message (a relay frame's Envoy-Stored-At), Unix ns;
-	// 0 for a core receipt, which carries no such time.
+	Agent   bool  // the frame's subject is the session's agent topic (a route copy), not an issue topic
+	// Published is when the stream stored the message (the frame's Envoy-Stored-At), Unix ns; 0
+	// for a frame whose header could not be read as a time.
 	Published int64
 	// Session is the loop session that took it (sessionWindow.ID): the join counts what each
 	// session was owed and what it got by it, and a second receipt of one event id by one session

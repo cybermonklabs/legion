@@ -158,8 +158,7 @@ base_env=(
 
 # loadgen_env adds what loadgen needs: the root, the go toolchain for `loadgen tables`
 # (`go tool pprof`), this script's path and the run's lock token, for `loadgen run -restart-at`'s
-# `stack.sh restart-dispatch`, and LOADTEST_SESSION_DELIVERY and LOADTEST_NO_RESUME when they are
-# set (`loadgen run -session-delivery`).
+# `stack.sh restart-dispatch`, and LOADTEST_NO_RESUME when it is set.
 loadgen_env() {
   local gobin
   gobin=$(command -v go || true)
@@ -167,7 +166,6 @@ loadgen_env() {
   [ -n "$gobin" ] && path="$(dirname -- "$gobin"):$path"
   printf '%s\n' "${base_env[@]:1}" "PATH=$path" "LOADTEST_ROOT=$ROOT" "LOADTEST_STACK_SH=$here/stack.sh"
   [ -z "${LOADTEST_LOCK_TOKEN:-}" ] || printf '%s\n' "LOADTEST_LOCK_TOKEN=$LOADTEST_LOCK_TOKEN"
-  [ -z "${LOADTEST_SESSION_DELIVERY:-}" ] || printf '%s\n' "LOADTEST_SESSION_DELIVERY=$LOADTEST_SESSION_DELIVERY"
   [ -z "${LOADTEST_NO_RESUME:-}" ] || printf '%s\n' "LOADTEST_NO_RESUME=$LOADTEST_NO_RESUME"
 }
 

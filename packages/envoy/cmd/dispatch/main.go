@@ -506,8 +506,7 @@ func main() {
 	// boot, as the embedder's is, since the deployment asked for a model and got none.
 	answerer, err := newAnswerer(boot.Answerer)
 	if err != nil {
-		slog.Error("dispatch: build the answerer", "error", err)
-		os.Exit(1)
+		fatal("dispatch: build the answerer", "error", err)
 	}
 
 	built := routes.AppContextOptions{
@@ -543,8 +542,7 @@ func main() {
 	}
 	brokerTokens, err := brokerTokenVerifier(boot, database, serverURL)
 	if err != nil {
-		slog.Error("dispatch: build the broker access-token verifier", "error", err)
-		os.Exit(1)
+		fatal("dispatch: build the broker access-token verifier", "error", err)
 	}
 	built.BrokerTokens = brokerTokens
 	if brokerTokens != nil {
@@ -667,7 +665,7 @@ func main() {
 	met := metrics.New()
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
-		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the answer never came: the role holder's receipt, or, for a holder whose entry an earlier listener stored with a port, the stream's acknowledgement of the stored copy) or failed (every other failure)",
+		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
 	)
 	// The holds beside the failures: a role-routed event whose holder is not answering is waiting
 	// for that session, with nothing sent and nothing failed, so it is counted here rather than
@@ -821,7 +819,11 @@ func main() {
 	// reopens during a roll are withdrawn or restored every interval after the boot's own pass.
 	go api.RunIssueAskRepair(ctx, api.Deps{Store: backgroundStore, Docs: documentService, Events: broker}, leases)
 
-	sweeper, err := webhookSweeper(natsClient, database, appCfg, boot.GitHubAPIBase, boot.NATSReplicas)
+	// The webhook redelivery sweep's statements - its own doubling backoff and the shared GitHub
+	// rate limits its App client reads before every request it sends - run on the background
+	// pool, as every other loop's here do: the sweep is a timer under a lease, so no request may
+	// queue behind one of its reads for a connection.
+	sweeper, err := webhookSweeper(natsClient, backgroundStore, appCfg, boot.GitHubAPIBase, boot.NATSReplicas)
 	if err != nil {
 		fatal("dispatch: open webhook redelivery", "error", err)
 	}
@@ -851,8 +853,7 @@ func main() {
 	ciInstance := &registeredInstance{}
 	reconciler, err := ciReconciler(natsClient, backgroundStore, appCfg, boot.GitHubAPIBase, boot.ReviewerAppID, ciReconcileInterval, ciInstance)
 	if err != nil {
-		slog.Error("dispatch: open the CI reconcile pass", "error", err)
-		os.Exit(1)
+		fatal("dispatch: open the CI reconcile pass", "error", err)
 	}
 	if reconciler != nil {
 		slog.Info("dispatch: reconciling the CI records GitHub's webhook never delivered", "client_id", appCfg.ClientID, "interval", ciReconcileInterval)

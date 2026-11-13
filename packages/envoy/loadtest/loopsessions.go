@@ -35,6 +35,10 @@ import (
 // Beside them one driver session follows -driver-topics issue topics and the units' exit topic
 // for the whole step, as the loop's own driver does.
 //
+// Every loop session takes its messages as every session at this head does: from the relay of
+// its own consumer, on its own deliver subject (bus.DeliverSubject), and it subscribes nothing
+// else, so a relay frame is the only copy of a message it ever sees (relay.go, sessions.go).
+//
 // What each class was owed and what it got is counted by the delivery join, under the rule a
 // session's own subscribe and unsubscribe acknowledgements give (delivery.go, sessionWindow):
 // this file records those four times for every session it runs.
@@ -67,11 +71,14 @@ const (
 )
 
 // unitExitTopic is the topic every unit session publishes its one exit message on and the driver
-// session follows: an ad-hoc topic of this run's own, which no stream subject captures, so the
-// listener publishes it over core NATS and confirms it with each self-subscribed session
-// registered on it (packages/envoy/AGENTS.md, POST /v1/messages/publish).
+// session follows: a team topic of this run's own, the one namespace an agent names itself. The
+// stream carries notifications.team.> (packages/envoy/internal/bus/stream.go, streamSubjects),
+// so the listener stores the message and the driver takes it from its own consumer. A topic no
+// stream subject captures would reach nobody: the publish route refuses one 400 by name, and a
+// registration naming one has it dropped with a warning (packages/envoy/cmd/listener/api.go,
+// POST /v1/messages/publish and POST /v1/interests/subscribe).
 func unitExitTopic(nonce int64) string {
-	return "notifications.loadtest." + formatNonce(nonce) + ".unit-exit"
+	return "notifications.team.loadtest-" + formatNonce(nonce) + ".unit-exit"
 }
 
 // --- the flags -------------------------------------------------------------------------------
@@ -396,19 +403,16 @@ func (l *loopListener) post(ctx context.Context, path string, body any) ([]byte,
 	return b, nil
 }
 
-// loopRelay is one loop session's consumer delivery: the epoch it registers with, whether the
-// listener's last answer gave it consumer delivery, its resume point and the stream sequences it
-// has taken. The flat population keeps the same by session index (relaySessions, which holds the
-// protocol); a loop session comes and goes, so it keeps its own.
+// loopRelay is one loop session's consumer delivery: the epoch it registers with, its resume
+// point and the stream sequences it has taken. The flat population keeps the same by session
+// index (relaySessions, which holds the protocol); a loop session comes and goes, so it keeps
+// its own.
 type loopRelay struct {
-	epoch string
-	// consumer is read once per delivered frame, on another goroutine than the registration that
-	// writes it, so it is an atomic as the flat population's is (relay.go).
-	consumer atomic.Bool
-	mu       sync.Mutex
-	stream   string
-	written  uint64
-	seen     map[uint64]struct{}
+	epoch   string
+	mu      sync.Mutex
+	stream  string
+	written uint64
+	seen    map[uint64]struct{}
 }
 
 // newLoopRelay names the epoch after the session and the run, which no other session of any run
@@ -429,26 +433,25 @@ func (r *loopRelay) delivery() map[string]any {
 	return d
 }
 
-// answered reads a registration's answer: a core answer, or none, leaves the session on its core
-// subscriptions, and a consumer answer naming another stream than its resume point starts that
-// point again on the new stream.
+// answered reads a registration's answer: a consumer answer naming another stream than its
+// resume point starts that point again on the new stream. An answer naming no consumer leaves
+// the resume point as it is and nothing else: the listener answers consumer or refuses the
+// registration, since a session takes its messages from its own consumer and nothing else
+// (relay.go).
 func (r *loopRelay) answered(body []byte) {
 	var ans registerAnswer
-	consumer, stream := false, ""
-	if json.Unmarshal(body, &ans) == nil && ans.Delivery != nil {
-		consumer, stream = ans.Delivery.Mode == sessionDeliveryConsumer, ans.Delivery.StreamID
+	if json.Unmarshal(body, &ans) != nil || ans.Delivery == nil {
+		return
+	}
+	if ans.Delivery.Mode != sessionDeliveryConsumer || ans.Delivery.StreamID == "" {
+		return
 	}
 	r.mu.Lock()
-	if consumer && stream != "" && stream != r.stream {
-		r.stream, r.written = stream, 0
+	defer r.mu.Unlock()
+	if ans.Delivery.StreamID != r.stream {
+		r.stream, r.written = ans.Delivery.StreamID, 0
 	}
-	r.mu.Unlock()
-	r.consumer.Store(consumer)
 }
-
-// relayed reports whether the listener's last answer relays the session, so that a core copy of
-// one of its subjects is no receipt.
-func (r *loopRelay) relayed() bool { return r.consumer.Load() }
 
 // take reports whether seq is a frame the session has not taken. A repeat of one it has is the
 // stream's redelivery, which the plugin's ledger hides, and is no receipt.
@@ -642,11 +645,11 @@ func (lp *loopSessions) sampleConcurrent(ctx context.Context) chan struct{} {
 // when ctx ends, so that every window is recorded before the summary reads them.
 func (lp *loopSessions) stop() { lp.wg.Wait() }
 
-// run is one loop session's life: it subscribes its relay subject, its agent topic and the topics
-// it follows, registers with the listener, heartbeats until end (the driver until ctx ends),
-// publishes its exit message, unsubscribes the topics it held and drops its subscriptions. It
-// records the session's window whatever happens, so a session whose registration failed is
-// counted as one that followed nothing.
+// run is one loop session's life: it subscribes its deliver subject, registers with the
+// listener, heartbeats until end (the driver until ctx ends), publishes its exit message,
+// unsubscribes the topics it held and drops its subscription. It records the session's window
+// whatever happens, so a session whose registration failed is counted as one that followed
+// nothing.
 func (lp *loopSessions) run(ctx context.Context, s *loopSession, end time.Time) {
 	began := time.Now().UnixNano()
 	w := sessionWindow{Class: s.class, ID: s.id, Issues: s.issues}
@@ -654,33 +657,16 @@ func (lp *loopSessions) run(ctx context.Context, s *loopSession, end time.Time) 
 	ready := sync.OnceFunc(func() { close(s.ready) })
 	defer ready()
 
-	var subs []sessionSub
-	defer func() {
-		for _, sub := range subs {
-			_ = sub.unsubscribe()
-		}
-	}()
-	// The relay subject first, as the pi plugin subscribes it before it registers (relay.go),
-	// then the agent topic and the topics the session follows, as a self-subscribed session does.
-	for _, sub := range []struct {
-		topic string
-		take  func(busMsg)
-	}{{bus.DeliverSubject(s.id), lp.frames(s)}, {contracts.AgentSubject(s.id), lp.copies(s, true)}} {
-		got, err := lp.bus.subscribe(s.conn, sub.topic, sub.take)
-		if err != nil {
-			lp.failedStart(s, fmt.Errorf("subscribe %s: %w", sub.topic, err))
-			return
-		}
-		subs = append(subs, got)
+	// Its deliver subject, and nothing else: the pi plugin subscribes it before it registers and
+	// subscribes no topic of its own, since every message a session gets arrives as a relay
+	// frame of its own consumer (relay.go, sessions.go).
+	deliver := bus.DeliverSubject(s.id)
+	sub, err := lp.bus.subscribe(s.conn, deliver, lp.frames(s))
+	if err != nil {
+		lp.failedStart(s, fmt.Errorf("subscribe %s: %w", deliver, err))
+		return
 	}
-	for _, topic := range s.topics {
-		got, err := lp.bus.subscribe(s.conn, topic, lp.copies(s, false))
-		if err != nil {
-			lp.failedStart(s, fmt.Errorf("subscribe %s: %w", topic, err))
-			return
-		}
-		subs = append(subs, got)
-	}
+	defer func() { _ = sub.unsubscribe() }()
 
 	w.SubSent = time.Now().UnixNano()
 	answer, err := s.listener.post(ctx, "/v1/interests/subscribe", s.fields())
@@ -762,8 +748,9 @@ func (lp *loopSessions) heartbeatUntil(ctx context.Context, s *loopSession, end 
 }
 
 // publishExit publishes the unit session's one exit message on the run's exit topic through its
-// own listener, as a session publishes an ad-hoc topic (POST /v1/messages/publish): the driver
-// follows that topic, so a unit's stop is itself traffic the step measures.
+// own listener, as a session publishes a team topic (POST /v1/messages/publish): the driver
+// follows that topic and is delivered the message by its own consumer, so a unit's stop is
+// itself traffic the step measures.
 func (lp *loopSessions) publishExit(ctx context.Context, s *loopSession) {
 	body := map[string]any{"topic": lp.exit, "message": "unit session " + s.id + " is stopping",
 		"source": "agent", "source_session": s.id}
@@ -791,27 +778,6 @@ func (lp *loopSessions) unsubscribe(ctx context.Context, s *loopSession) ([]stri
 		return nil, fmt.Errorf("unreadable answer: %s", trunc(body))
 	}
 	return answer.Removed, nil
-}
-
-// copies takes a core copy of one of the session's subjects: the event in it is the session's
-// receipt, under its own id. For a session the listener relays, the relay frame is the receipt
-// instead, and the core copy only answers the lane receipt on the agent topic, as the pi plugin
-// does (relay.go).
-func (lp *loopSessions) copies(s *loopSession, agent bool) func(busMsg) {
-	return func(m busMsg) {
-		now := time.Now().UnixNano()
-		if s.relay.relayed() {
-			if agent {
-				_ = m.respond(nil)
-			}
-			return
-		}
-		id, _, ok := envelopeEvent(m.data())
-		if !ok {
-			return
-		}
-		lp.receipts.add(receipt{EventID: id, Recv: now, Agent: agent, Session: s.id})
-	}
 }
 
 // frames takes the session's relay frames: it answers received at once, counts the first frame of

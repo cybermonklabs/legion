@@ -378,7 +378,16 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	pass.ledger, pass.tx = ledger, tx
 	owner, open, err := lockArtifactOwner(ctx, tx, s.room)
-	if err != nil {
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// The document has gone: a removal deleted every row of it under the owner row this
+		// pass took or waited for (api.removeArtifact). Nothing is left to version and nothing
+		// is owed - the pending-settlement row and the pending authors went with the artifact
+		// row - so the pass ends here rather than reading a version that cannot exist. The room
+		// is closed on every process by the removal's own announcement (documentRemoved), and
+		// the settlement it had armed goes with the room's state.
+		return settleDone, settleOutcome{}
+	case err != nil:
 		return settleDone, s.stoppedShort(err)
 	}
 	if !open {
