@@ -1,7 +1,7 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { type ArtifactOwner, api, apiErrorMessage } from "../../api/client";
+import { type ArtifactOwner, api, apiErrorMessage, isArtifactNotFound } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -199,7 +199,18 @@ export function RemoveDocument({
     // The document's name is what the press is of, as the indicator names it; the route takes
     // its id.
     label: (name: string) => `Remove ${name}`,
-    write: (_name: string, bounds) => api.deleteArtifact(artifact.id, bounds),
+    // A removal is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made again
+    // after a removal that landed - one the reader stopped, or one whose answer was lost - it is a
+    // new `DELETE`, which finds no document and is answered `404 ARTIFACT_NOT_FOUND`. That answer
+    // is the removal done, since the document is gone, which is what the person asked: the write
+    // lands on it as on a `204` (`onSuccess`), and no refusal is shown.
+    write: async (_name: string, bounds) => {
+      try {
+        await api.deleteArtifact(artifact.id, bounds);
+      } catch (error) {
+        if (!isArtifactNotFound(error)) throw error;
+      }
+    },
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       refreshArtifact(queryClient, artifact);
@@ -211,6 +222,7 @@ export function RemoveDocument({
     ? remove.error instanceof SendStoppedError
       ? stoppedWriteNote(`the removal of “${artifact.name}”`, "made", {
           again: "Remove",
+          method: "DELETE",
           stopped: remove.error,
         })
       : apiErrorMessage(remove.error, "Could not remove the document.")
@@ -222,8 +234,8 @@ export function RemoveDocument({
         busy={remove.isPending ? "Removing…" : undefined}
         look="secondary-compact"
         // A press of Remove while its refusal is on screen is the Retry of the press that refusal
-        // is about (`retry`): a removal the reader stopped is made again under its key, and
-        // Dispatch answers it with what it did there rather than refusing a document it removed.
+        // is about (`retry`). Where the reader stopped that removal and it had landed, the Retry
+        // finds no document, which `write` takes for the removal done.
         onPress={() =>
           submitGuard.guard(() => (remove.isError ? remove.retry() : remove.mutate(artifact.name)))
         }

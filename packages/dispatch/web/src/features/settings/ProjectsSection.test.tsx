@@ -71,9 +71,11 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
 });
 
 // A row's Retry is of the project's newest save. Here the reader stopped a save of alice, picked
-// alice again and stopped that save too, so the two picks read alike: the Retry makes the newer
-// save again under its own key, where Dispatch answers with what that save did, and never the
-// older one, whose key Dispatch would answer with what an earlier pick did there.
+// alice again and stopped that save too, so the two picks read alike. A default assignee is a
+// `PUT`, which sends no key, so Dispatch could not tell the two apart and keeps nothing under
+// either: the key each call is handed is the page's own, a key of its own for each press, and
+// what it shows here is which press the Retry made again - the newer save, the one the refusal
+// on screen is about, and never the older one.
 test("Retry after two stopped saves of the same default assignee goes under the newer save's key", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
@@ -160,6 +162,7 @@ test("a new project the reader stopped says Retry makes it again, not that it fa
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the new project", "made", {
         again: "Retry",
+        method: "POST",
         stopped: new SendStoppedError(),
       })
     );
@@ -206,6 +209,7 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the default assignee", "saved", {
         again: "Retry",
+        method: "PUT",
         stopped: new SendStoppedError(),
       })
     );

@@ -467,6 +467,7 @@ export function AgentTokensSection(): ReactNode {
               createToken.error instanceof SendStoppedError
                 ? stoppedWriteNote("the new agent token", "made", {
                     again: "Retry",
+                    method: "POST",
                     stopped: createToken.error,
                   })
                 : "Couldn't create the agent token."

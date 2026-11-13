@@ -441,6 +441,31 @@ test("the replacing-upload note says a later upload names the version it replace
   }
 });
 
+/**
+ * Lets the real event loop turn until `uploadArtifact` has been called `calls` times: until the
+ * press's file is kept and its attempt is out. An upload's attempt, and its send deadline with
+ * it, start only once its file is kept (`Writes.#start`), and kept files live in
+ * `fake-indexeddb` (`__tests__/setup.ts`), which runs its work on the real `setImmediate`: Bun's
+ * fake clock holds `setTimeout` and not that, so `tick` moves the clock and not the keep. A case
+ * that moved the clock past the deadline before the keep was done found its write still
+ * `sending`, with no deadline started, and passed only behind an earlier case on the real clock
+ * whose upload had made the database, which leaves a keep few enough turns to finish in those
+ * that moving the clock happened to let through. A keep is done here within a few of these
+ * turns; one not done after a thousand will not be, and the case fails on what it expects next.
+ */
+async function untilAttempted(
+  uploadArtifact: Mock<typeof api.uploadArtifact>,
+  calls: number
+): Promise<void> {
+  for (let turn = 0; turn < 1_000 && uploadArtifact.mock.calls.length < calls; turn += 1) {
+    await act(() => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      return promise;
+    });
+  }
+}
+
 // One press is one key, and Dispatch digests the whole body under that key, the `precondition`
 // field included (`bodyDigest` in the server's `api/request_keys.go`). An attempt that read the
 // base again would send other bytes and be answered `422 KEY_REUSED` instead of what the first
@@ -465,6 +490,7 @@ test("a second attempt under one key sends the base the first did and takes the 
     await user.upload(screen.getByLabelText("Upload artifact"), [file]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
     await tick(2_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(2);
@@ -562,12 +588,14 @@ test("pressing Upload again after a stopped press sends that press's base under 
     await user.upload(screen.getByLabelText("Upload artifact"), [file]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
     await stopTheLateWrite(view.queryClient);
     expect(screen.getByRole("alert")).not.toBeNull();
     const stopped = uploadArtifact.mock.calls.length;
 
     uploadArtifact.mockResolvedValue(UPLOADED);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, stopped + 1);
     await tick(1_000);
 
     expectTheStoppedPressAgain(uploadArtifact, ownerArtifactText, stopped);
@@ -613,6 +641,7 @@ test("a press of another file after a stopped press goes under a key of its own"
     await user.upload(screen.getByLabelText("Upload artifact"), [file]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
     await stopTheLateWrite(view.queryClient);
     const stopped = uploadArtifact.mock.calls.length;
 
@@ -620,6 +649,7 @@ test("a press of another file after a stopped press goes under a key of its own"
     await user.upload(screen.getByLabelText("Upload artifact"), [other]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, stopped + 1);
     await tick(1_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
@@ -661,6 +691,7 @@ test("a press made again from the form goes out under its own key and is told th
     await user.upload(screen.getByLabelText("Upload artifact"), [file]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
     await stopTheLateWrite(view.queryClient);
     const stopped = uploadArtifact.mock.calls.length;
 
@@ -674,6 +705,7 @@ test("a press made again from the form goes out under its own key and is told th
     await user.upload(screen.getByLabelText("Upload artifact"), [afresh]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, stopped + 1);
     await tick(1_000);
 
     expect(uploadArtifact).toHaveBeenCalledTimes(stopped + 1);
@@ -747,10 +779,12 @@ test("an upload the reader stopped says what Upload does, staged and let go", as
     await user.upload(screen.getByLabelText("Upload artifact"), [file]);
     await tick(0);
     await user.click(screen.getByRole("button", { name: "Upload" }));
+    await untilAttempted(uploadArtifact, 1);
     await stopTheLateWrite(view.queryClient);
     expect(screen.getByRole("alert").textContent).toBe(
       stoppedWriteNote("the upload", "stored", {
         again: "Upload",
+        method: "POST",
         stopped: new SendStoppedError(),
       })
     );
@@ -791,7 +825,11 @@ test("a draft's upload the reader stopped says Retry makes it again, not that it
 
     // The alert's paragraph, without its Retry button's name.
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
-      stoppedWriteNote("the upload", "stored", { again: "Retry", stopped: new SendStoppedError() })
+      stoppedWriteNote("the upload", "stored", {
+        again: "Retry",
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
     );
   } finally {
     view.unmount();

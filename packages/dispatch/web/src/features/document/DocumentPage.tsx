@@ -144,6 +144,7 @@ export function DocumentPage(): ReactNode {
               unsubscribe.error instanceof SendStoppedError
                 ? stoppedWriteNote("this agent's unsubscribe", "made", {
                     again: "Retry",
+                    method: "DELETE",
                     stopped: unsubscribe.error,
                   })
                 : "Could not unsubscribe this agent."

@@ -3,11 +3,13 @@ import { useQueryClient } from "@tanstack/react-query";
 import { api } from "../../api/client";
 import { inboxQuery, whoAmIQuery } from "../../api/queries";
 import type { Ask, InboxRow } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { invalidateOwnerReads } from "./owner-reads";
 
 export interface AskHandOnWrite {
-  /** The server's reason after a refused hand-on, until the next attempt. */
+  /** The server's reason after a refused hand-on, or what one the reader stopped may have done
+   *  and what Retry does with it, until the next attempt. */
   error: string | undefined;
   /** True after a hand-on failed until the next attempt starts. */
   failed: boolean;
@@ -84,7 +86,16 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
     },
   });
   return {
-    error: mutation.error?.message,
+    // A hand-on the reader stopped may have been made, and Retry makes it again (`retry`): the
+    // error's own words are a composer's, of a message.
+    error:
+      mutation.error instanceof SendStoppedError
+        ? stoppedWriteNote("the hand-on of this question", "made", {
+            again: "Retry",
+            method: "PUT",
+            stopped: mutation.error,
+          })
+        : mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
     retry: mutation.retry,

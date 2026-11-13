@@ -432,6 +432,7 @@ export function AskRecipients({
               unfollow.error instanceof SendStoppedError
                 ? stoppedWriteNote("the unfollow", "made", {
                     again: "Retry",
+                    method: "DELETE",
                     stopped: unfollow.error,
                   })
                 : "Could not unfollow."
@@ -448,6 +449,7 @@ export function AskRecipients({
               unsubscribe.error instanceof SendStoppedError
                 ? stoppedWriteNote("the unsubscribe", "made", {
                     again: "Retry",
+                    method: "DELETE",
                     stopped: unsubscribe.error,
                   })
                 : "Could not unsubscribe."

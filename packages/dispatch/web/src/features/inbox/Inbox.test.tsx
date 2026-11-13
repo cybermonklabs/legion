@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps the row hold's bare pointerover/pointerout with a relatedTarget, a blur naming no target, and the Enter presses whose survival only fireEvent reports.
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
@@ -9,10 +9,13 @@ import { MemoryRouter, Route, Routes, useLocation, useNavigate } from "react-rou
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
 import { type FakeEditor, fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerAskSnoozes, answerIssuePatches } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
 import { wholeText } from "../../__tests__/whole-text";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type {
   Artifact,
   AskRead,
@@ -30,6 +33,7 @@ import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, DIALOG_SCOPE } from "../shell/keymap";
 import { READING_PANE_QUERY } from "../shell/useDialog";
 import { replyRow } from "../threads/replies-fixture";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { installInboxApiMocks, issueAsk, mockAskReads } from "./inbox-fixture";
 
@@ -2193,6 +2197,43 @@ test("a refused snooze rolls the row back and says why, where the reader can sti
     expect(screen.getByText("snoozed_until must be in the future")).toBeTruthy();
     expect(screen.getByText(/Blocked on you: 1 item/)).toBeTruthy();
   } finally {
+    unmount();
+    getAsk.mockRestore();
+    getInbox.mockRestore();
+    snoozeAsk.mockRestore();
+  }
+});
+
+// A snooze is a `PUT` of the row's moment. One the reader stopped may have been saved, so the row
+// neither says it failed nor shows the stopped write's own words, which are a composer's and
+// speak of a message: it says what its Retry does with the snooze.
+test("a snooze the reader stopped says what Retry does, not a message's words", async () => {
+  const row = issueAsk({ id: "ask-b", question: "Which format?" });
+  const getInbox = spyOn(api, "getInbox").mockResolvedValue([row]);
+  const snoozeAsk = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-b/snooze", new TypeError("Failed to fetch"))
+  );
+  const getAsk = mockAskReads([row]);
+  const { queryClient, unmount } = renderInbox("/?group=waiting-on");
+  try {
+    await screen.findByText("Which format?");
+    jest.useFakeTimers();
+    await userOnFakeClock().selectOptions(
+      screen.getByLabelText("Snooze CORE-1: Which format?"),
+      "tomorrow"
+    );
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the snooze", "saved", {
+        again: "Retry",
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
     unmount();
     getAsk.mockRestore();
     getInbox.mockRestore();

@@ -166,7 +166,11 @@ export function AskReplyComposer({
         <QueryError
           message={
             submit.error instanceof SendStoppedError
-              ? stoppedWriteNote("your reply", "posted", { again: "Retry", stopped: submit.error })
+              ? stoppedWriteNote("your reply", "posted", {
+                  again: "Retry",
+                  method: "POST",
+                  stopped: submit.error,
+                })
               : "Could not post your reply."
           }
           onRetry={submit.retry}

@@ -878,6 +878,7 @@ export function IssueHeader({
             updateState.error instanceof SendStoppedError
               ? stoppedWriteNote("the pin status", "saved", {
                   again: "Retry",
+                  method: "PUT",
                   stopped: updateState.error,
                 })
               : "Could not save pin status."
@@ -892,6 +893,7 @@ export function IssueHeader({
             unsubscribe.error instanceof SendStoppedError
               ? stoppedWriteNote("this agent's unsubscribe", "made", {
                   again: "Retry",
+                  method: "DELETE",
                   stopped: unsubscribe.error,
                 })
               : "Could not unsubscribe this agent."
@@ -906,6 +908,7 @@ export function IssueHeader({
             releaseClaim.error instanceof SendStoppedError
               ? stoppedWriteNote("the release of this claim", "made", {
                   again: "Retry",
+                  method: "DELETE",
                   stopped: releaseClaim.error,
                 })
               : "Could not release this claim."

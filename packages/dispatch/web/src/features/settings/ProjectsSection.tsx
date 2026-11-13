@@ -211,6 +211,7 @@ export function ProjectsSection(): ReactNode {
                   createProject.error instanceof SendStoppedError
                     ? stoppedWriteNote("the new project", "made", {
                         again: "Retry",
+                        method: "POST",
                         stopped: createProject.error,
                       })
                     : apiErrorMessage(createProject.error, "Couldn't create the project.")
@@ -262,6 +263,7 @@ function DefaultAssigneeCell({
               write.error instanceof SendStoppedError
                 ? stoppedWriteNote("the default assignee", "saved", {
                     again: "Retry",
+                    method: "PUT",
                     stopped: write.error,
                   })
                 : apiErrorMessage(write.error, "Couldn't update the default assignee.")
@@ -397,9 +399,11 @@ function useDefaultAssigneeWrite(project: string): {
     error: refused?.error ?? null,
     pending: pendingPicks.length > 0,
     retry: () => {
-      // The newest save is read from the cache itself, not from `saves`: `useMutationState` shares
-      // what its `select` gives structurally, so the pick it holds can be an older save's pick of
-      // the same assignee, and that save is not the one the refusal is about.
+      // The pick is read from the mutation cache rather than from `saves`, which
+      // `useMutationState` gives: that hook shares its `select` result structurally, so it can
+      // hand back an older save's pick where the two are deep-equal. While the Retry is on screen
+      // the cache holds one settled save - each save's `onSettled` removes the project's settled
+      // saves - so the newest save is that one.
       const newestSave = queryClient
         .getMutationCache()
         .findAll({ exact: true, mutationKey })
@@ -409,9 +413,9 @@ function useDefaultAssigneeWrite(project: string): {
         return;
       }
       // The Retry of the press the refusal is about, which is the very press the cache holds: one
-      // this row made and the reader stopped is made again under its key (`again`). A refusal
-      // Dispatch decided, or a press of a row mounted before this one, is retried as a new pick
-      // under a key of its own.
+      // this row made and the reader stopped is made again as that press (`again`). A default
+      // assignee is a `PUT`, which sends no key, so that is the same change sent again. A refusal
+      // Dispatch decided, or a press of a row mounted before this one, is retried as a new pick.
       if (!mutation.again(press)) {
         mutation.mutate({ assignee: press.variables.assignee });
       }

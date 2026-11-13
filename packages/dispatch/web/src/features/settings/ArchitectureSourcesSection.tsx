@@ -281,6 +281,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                   saveSource.error instanceof SendStoppedError
                     ? stoppedWriteNote("the architecture source", "saved", {
                         again: "Retry",
+                        method: "PUT",
                         stopped: saveSource.error,
                       })
                     : apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
@@ -297,6 +298,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                   deleteSource.error instanceof SendStoppedError
                     ? stoppedWriteNote("the removal of the architecture source", "made", {
                         again: "Retry",
+                        method: "DELETE",
                         stopped: deleteSource.error,
                       })
                     : "Couldn't delete the architecture source."
@@ -313,6 +315,7 @@ export function ArchitectureSourcesSection(): ReactNode {
                   refreshSource.error instanceof SendStoppedError
                     ? stoppedWriteNote("the refresh of the architecture source", "made", {
                         again: "Retry",
+                        method: "POST",
                         stopped: refreshSource.error,
                       })
                     : apiErrorMessage(

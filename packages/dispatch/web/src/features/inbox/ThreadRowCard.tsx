@@ -16,6 +16,7 @@ import {
 } from "../../theme/classes";
 import { storeAgentState } from "../agents/unread";
 import { Timestamp } from "../refs/Timestamp";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
@@ -96,7 +97,20 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
       </div>
       {markRead.isError ? (
         <div className="mt-2">
-          <QueryError message={markRead.error.message} onRetry={markRead.retry} />
+          {/* A mark the reader stopped may have been saved, and Retry makes it again (`retry`):
+              the error's own words are a composer's, of a message. */}
+          <QueryError
+            message={
+              markRead.error instanceof SendStoppedError
+                ? stoppedWriteNote("this thread's read mark", "saved", {
+                    again: "Retry",
+                    method: "PUT",
+                    stopped: markRead.error,
+                  })
+                : markRead.error.message
+            }
+            onRetry={markRead.retry}
+          />
         </div>
       ) : null}
     </div>

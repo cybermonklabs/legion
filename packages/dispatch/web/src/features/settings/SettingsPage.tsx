@@ -92,6 +92,7 @@ export function SettingsPage(): ReactNode {
           error instanceof SendStoppedError
             ? stoppedWriteNote(`the mapping of ${variables.repo}`, "saved", {
                 again: "Retry",
+                method: "PUT",
                 stopped: error,
               })
             : apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
@@ -149,6 +150,7 @@ export function SettingsPage(): ReactNode {
           error instanceof SendStoppedError
             ? stoppedWriteNote(`the removal of ${repo}'s mapping`, "made", {
                 again: "Retry",
+                method: "DELETE",
                 stopped: error,
               })
             : apiErrorMessage(error, `Couldn't delete ${repo}.`),
@@ -168,7 +170,8 @@ export function SettingsPage(): ReactNode {
 
   // The refusal on screen is the newest press of its write: a later press of either write that
   // lands lets it go, and Retry waits while either is out. So Retry is that write's own
-  // (`retry`), which makes a press the reader stopped again under its key.
+  // (`retry`), which makes a press the reader stopped again as that press. Both are a `PUT` or a
+  // `DELETE`, which sends no key, so that is the same change sent again.
   const retry = () => {
     if (failedAction?.kind === "put") {
       putMapping.retry();

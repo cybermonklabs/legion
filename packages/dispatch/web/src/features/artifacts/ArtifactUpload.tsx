@@ -193,7 +193,7 @@ export function uploadErrorMessage(error: unknown, again: string | undefined): s
         ? {
             anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
           }
-        : { again, stopped: error }
+        : { again, method: "POST", stopped: error }
     );
   }
   if (error instanceof UploadBaseUnreadableError) {

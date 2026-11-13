@@ -384,38 +384,37 @@ test("a refused removal shows the server's own sentence", async () => {
   }
 });
 
-// A removal the reader stopped may have reached Dispatch. Pressed while its refusal is on screen,
-// Remove is the Retry of that removal (`retry`), so it goes under the stopped removal's key and
-// Dispatch answers with what it did there: the document is gone, and the person is not told
-// Dispatch found no document to remove.
-test("Remove pressed again after a stopped removal makes that removal again under its key", async () => {
+// A removal is a `DELETE`, which sends no key, and Dispatch keeps no answer for one. Here the
+// reader stopped a removal that had reached Dispatch while the line was down: the document is
+// gone, and no answer came back. Pressed while its refusal is on screen, Remove is the Retry of
+// that removal (`retry`), a new `DELETE` to Dispatch, which finds no document and answers
+// `404 ARTIFACT_NOT_FOUND`. That is the removal done - the document is gone, which is what the
+// person asked - so the page shows the document removed and no refusal.
+test("Remove after a stopped removal that landed takes the not-found as done", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();
   let stored: Artifact[] = [document()];
   const listArtifacts = spyOn(api, "listArtifacts").mockImplementation(() =>
     Promise.resolve(stored)
   );
-  // Dispatch as it keeps a key: the first request under a key removes the document, a later one
-  // under it is answered as that one was, and a removal under another key finds no document.
-  // While the line is down no answer comes back, though the document was removed.
-  const removedUnder = new Set<string>();
+  // Dispatch as it answers a `DELETE`, whatever key the page hands the call: one that finds the
+  // document removes it, and one after it finds none. While the line is down no answer comes
+  // back, though the first removal reached Dispatch and was made.
   let answering = false;
-  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation((_id, bounds) => {
-    const key = bounds?.key ?? "";
-    if (!removedUnder.has(key)) {
-      if (stored.length === 0) {
-        return Promise.reject(
-          new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
-        );
-      }
+  const deleteArtifact = spyOn(api, "deleteArtifact").mockImplementation(() => {
+    if (!answering) {
       stored = [];
-      removedUnder.add(key);
+      return Promise.reject(
+        new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
+      );
     }
-    return answering
-      ? Promise.resolve()
-      : Promise.reject(
-          new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed to fetch"))
-        );
+    if (stored.length === 0) {
+      return Promise.reject(
+        new ApiError(404, { code: "ARTIFACT_NOT_FOUND", error: "artifact not found" })
+      );
+    }
+    stored = [];
+    return Promise.resolve();
   });
   const view = renderPage(documentPath);
   view.queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
@@ -425,6 +424,8 @@ test("Remove pressed again after a stopped removal makes that removal again unde
     await user.click(screen.getByRole("button", { name: "Remove" }));
     await stopTheLateWrite(view.queryClient);
     expect(screen.getByRole("alert")).not.toBeNull();
+    // The key each call is handed is the one the page holds that press under, which a `DELETE`
+    // does not send: what it tells here is that Remove made the stopped press again.
     const stoppedKey = deleteArtifact.mock.calls[0]?.[1]?.key;
     const stopped = deleteArtifact.mock.calls.length;
 
@@ -435,6 +436,7 @@ test("Remove pressed again after a stopped removal makes that removal again unde
     expect(deleteArtifact).toHaveBeenCalledTimes(stopped + 1);
     expect(deleteArtifact.mock.calls.at(-1)?.[1]?.key).toBe(stoppedKey);
     expect(screen.queryByRole("alert")).toBeNull();
+    // The removal landed, so the page read the document list again, which no longer holds it.
     expect(screen.queryByRole("heading", { name: "Lauch notes" })).toBeNull();
   } finally {
     view.unmount();
@@ -464,6 +466,7 @@ test("a removal the reader stopped says Remove makes it again, not that it faile
     expect(screen.getByRole("alert").textContent).toBe(
       stoppedWriteNote("the removal of “Lauch notes”", "made", {
         again: "Remove",
+        method: "DELETE",
         stopped: new SendStoppedError(),
       })
     );

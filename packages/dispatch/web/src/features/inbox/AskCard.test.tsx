@@ -8,15 +8,19 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerThreadReads } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import { myRepliesOwnerQuery } from "../../api/queries";
 import type { AnswerAskInput, Ask, AskAnswer, AskRead, Comment } from "../../api/types";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { replyRow, seedUnread } from "../threads/replies-fixture";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskCard } from "./AskCard";
 import { answerDraft } from "./answer-drafts";
 import { ThreadBody } from "./ThreadBody";
@@ -741,6 +745,48 @@ test("a hand-on reads the ask's thread again, so a card reading that thread foll
     handAskTo.mockRestore();
     listMyReplies.mockRestore();
     listUsers.mockRestore();
+  }
+});
+
+// A hand-on is a `PUT` of whom the ask waits on. One the reader stopped may have been made, so
+// the card neither says it failed nor shows the stopped write's own words, which are a
+// composer's and speak of a message: it says what its Retry does with the hand-on.
+test("a hand-on the reader stopped says what Retry does, not a message's words", async () => {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const handAskTo = spyOn(api, "handAskTo").mockRejectedValue(
+    new NetworkError("/api/v1/asks/ask-1/asked-of", new TypeError("Failed to fetch"))
+  );
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([
+    { login: "alice" },
+    { login: "bob" },
+  ]);
+  // The hand-on reads the ask's thread again once it settles, stopped or not.
+  const getAsk = spyOn(api, "getAsk").mockResolvedValue(thread(open, []));
+  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  const card = within(view.container);
+  try {
+    const control = await card.findByLabelText<HTMLSelectElement>("Hand this question to");
+    // The people are read only once the reader reaches for the control (`AskHandOn`).
+    await userEvent.setup().click(control);
+    await waitFor(() => expect(within(control).getByRole("option", { name: "bob" })).toBeTruthy());
+    jest.useFakeTimers();
+    await userOnFakeClock().selectOptions(control, "bob");
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the hand-on of this question", "made", {
+        again: "Retry",
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    view.unmount();
+    handAskTo.mockRestore();
+    listUsers.mockRestore();
+    getAsk.mockRestore();
   }
 });
 

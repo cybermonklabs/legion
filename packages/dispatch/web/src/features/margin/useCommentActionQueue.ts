@@ -35,7 +35,11 @@ function actionFailure(id: string, error: Error): CommentActionFailure {
     id,
     message:
       error instanceof SendStoppedError
-        ? stoppedWriteNote("this action", "saved", { again: "Retry", stopped: error })
+        ? stoppedWriteNote("this action", "saved", {
+            again: "Retry",
+            method: "POST",
+            stopped: error,
+          })
         : apiErrorMessage(error, "Could not save this action."),
     retryable: !apiErrorCodeIn(error, permanentRefusals),
   };

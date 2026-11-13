@@ -90,9 +90,10 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
   readonly forgetUnanswered: () => void;
   /** The surface's Retry of its newest press, the press its refusal is about. Where the reader
    *  stopped that press it is made again, under its key (`again`): it may have reached Dispatch,
-   *  which answers the key with what it did there. Where Dispatch refused it, the Retry is a new
-   *  press of the same variables under a new key, since Dispatch would answer the old key with
-   *  that refusal. Nothing where the hook has made no press. */
+   *  which answers a `POST` or a `PATCH` under that key with what it did there, and a `PUT` or a
+   *  `DELETE`, which sends no key, is the same change made again. Where Dispatch refused it, the
+   *  Retry is a new press of the same variables under a new key, since Dispatch would answer the
+   *  old key with that refusal. Nothing where the hook has made no press. */
   readonly retry: () => void;
   /** The press the reader stopped that `wanted` picks out by its variables, or `undefined` where
    *  the hook holds no stopped press that is that one. The hook holds every press that ended
@@ -142,20 +143,21 @@ function pressCallbacks<TData, TVariables, TContext>(
  * `SendStoppedError` once the reader stops it, so the surface keeps its optimistic state until
  * then and rolls it back on anything but a landing.
  *
- * A press the reader stopped is no verdict: it may have reached Dispatch, which answers its key
- * with what it did there. So the hook holds every press that ended stopped, under its key, and
- * that press belongs to the press that made it: only the surface's own Retry reaches it, through
- * `retry` where the Retry is of the surface's newest press, or through the handle `stopped` gives
- * and `again` where more than one press is out at once. A `mutate` or `mutateAsync` is a press
- * the person made anew and always goes under a new key, whatever its variables are: the hook
- * never matches a press by its variables, by identity or by value, so a later press of equal
- * values - a title typed again, Approve after a change request - is a write Dispatch decides,
- * never one it answers with what the stopped press did there while the person's own choice is
- * dropped in silence. Where the stopped press had landed, the later press is a second write:
- * Dispatch refuses it where that would be wrong - a name the owner holds now, an upload's base
- * the document has moved past - and the person reads that refusal, and a field ends at the value
- * the person chose last. A Retry after Dispatch's own refusal is a press of its own too, since
- * Dispatch would answer the old key with that refusal.
+ * A press the reader stopped is no verdict: it may have reached Dispatch, which answers the key
+ * of a `POST` or a `PATCH` with what it did there; a `PUT` or a `DELETE` sends no key, and is the
+ * same change however often it is made. So the hook holds every press that ended stopped,
+ * under its key, and that press belongs to the press that made it: only the surface's
+ * own Retry reaches it, through `retry` where the Retry is of the surface's newest press, or
+ * through the handle `stopped` gives and `again` where more than one press is out at once. A
+ * `mutate` or `mutateAsync` is a press the person made anew and always goes under a new key,
+ * whatever its variables are: the hook never matches a press by its variables, by identity or by
+ * value, so a later press of equal values - a title typed again, Approve after a change request -
+ * is a write Dispatch decides, never one it answers with what the stopped press did there while
+ * the person's own choice is dropped in silence. Where the stopped press had landed, the later
+ * press is a second write: Dispatch refuses it where that would be wrong - a name the owner holds
+ * now, an upload's base the document has moved past - and the person reads that refusal, and a
+ * field ends at the value the person chose last. A Retry after Dispatch's own refusal is a press
+ * of its own too, since Dispatch would answer the old key with that refusal.
  *
  * TanStack runs each press as the hook made it (`KeyedPress`), the key with it, so the key goes
  * with its own press however many are out at once; the surface's callbacks and the result's

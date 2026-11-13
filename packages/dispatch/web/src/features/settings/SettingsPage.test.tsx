@@ -285,6 +285,7 @@ test("a mapping removal the reader stopped says Retry makes it again, not that i
     expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
       stoppedWriteNote("the removal of acme/api's mapping", "made", {
         again: "Retry",
+        method: "DELETE",
         stopped: new SendStoppedError(),
       })
     );
