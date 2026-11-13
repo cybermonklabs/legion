@@ -125,10 +125,10 @@ An issue the daemon has already started returns its admission slot while a block
 `done`, so the deployment's cap goes to work that can move,
 except for three roots that keep it: one in `awaiting_person`, one at `admitted` whose design gate has never opened,
 and one that arrived from another tree carrying the row it held there
-(root `AGENTS.md`, "Admission" in the Issue Lifecycle section; `docs/site/src/content/docs/legion/concepts.md`);
+([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label));
 nothing of the waiting issue stops — its workers stay live, its phase does not move, and its
-Dispatch status is not written — and the daemon gives it a slot again by itself at the first pass
-after its last blocker closes.
+Dispatch status is not written — and it takes one again by itself;
+you do nothing for it.
 
 A blocker's close is the blocker's own Dispatch issue reaching `done`, and nothing more.
 It is not a merge of that work, and it is not a deployment of it.

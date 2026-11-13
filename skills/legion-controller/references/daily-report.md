@@ -74,7 +74,9 @@ every issue by its `dispatch://` link and what it does for the reader, every pul
   Of the issues here, say of each whose `issues.<KEY>.waitingLine.kind` is `waiting_on_issue`
   that it holds no admission slot while it waits,
   that nothing of its work has stopped,
-  and that it takes a slot again by itself at the first pass after its wait ends.
+  and that it takes one again by itself,
+  but that the start of its next phase waits until it does
+  ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
   That kind is the one reading that says the daemon started the issue and it gave its slot back:
   the state gives it to no issue Legion has not started.
 - **Phase workers nothing will prompt.** Each entry of the tick's `silent` list, with the role whose

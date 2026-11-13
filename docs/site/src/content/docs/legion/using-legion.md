@@ -42,7 +42,8 @@ until it is done or leaves the workflow,
 so a wait on you or on a review keeps the slot, and its agents stay live beside it.
 A wait on another issue is the exception: a started issue that Dispatch shows blocked by an issue
 that is not `done`, or whose first phase waits on an open child under it, gives its slot back.
-It waits in line, nothing of its work stops, and it takes a slot again by itself once the wait ends.
+It waits in line, nothing of its work stops, and it takes one again by itself
+([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it or leave it for you, and parks it only when a person asked for that or
 its work is done, folded into another issue or no longer needed.

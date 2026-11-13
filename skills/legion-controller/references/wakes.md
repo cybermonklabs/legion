@@ -30,7 +30,7 @@ unless it waits on another issue, where it holds no admission slot and stands in
 for one again — the one wait of its own that sends this wake —
 except for three roots that keep their slot through such a wait: one in `awaiting_person`, one at `admitted` whose
 design gate has never opened, and one that arrived from another tree carrying the row it held there
-(root `AGENTS.md`, "Admission" in the Issue Lifecycle section). A slot is one issue the daemon has started, a root or a
+([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
@@ -272,8 +272,8 @@ A running tree can hold a slot while it waits on an event outside Legion: a depl
 project's release, a vendor, or a person outside the company.
 When the event is a Dispatch issue, of this project or of another, and the waiting issue names it
 in its `blocked_by` links, the waiting issue gives its slot back while that issue is not `done`
-and takes a slot again by itself once it is, unless it is one of the three roots that keep their
-slot through a wait (root `AGENTS.md`, "Admission"): it holds no slot for that wait, so there is
+and takes one again by itself, unless it is one of the three roots that keep their
+slot through a wait ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)): it holds no slot for that wait, so there is
 nothing to park or ask.
 An event no `blocked_by` link names keeps the slot.
 Do not park such a tree: it stays admitted and keeps its slot. Ask the person whether to park it, as

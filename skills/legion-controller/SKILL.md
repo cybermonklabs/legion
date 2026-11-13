@@ -151,7 +151,8 @@ Report the free slots, or the full cap, to the person in the day's report, and m
 A slot is one issue the daemon has started, a root or a child, not one
 tree: a tree of four started issues holds four slots. An issue takes its slot when the daemon
 starts it and keeps it
-until it is done or leaves the workflow, except while it waits on another issue,
+until it is done or leaves the workflow, except while it waits on another issue
+([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)),
 so a root waiting on a person keeps the slot it took, and `admission.trees` is what names the
 roots of the live trees. The free slots are `admission.cap`, less every issue in
 `admission.active`, which is every issue holding a slot, and less again each issue of

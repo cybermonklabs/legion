@@ -259,8 +259,7 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {why, waitingL
 child below it holds, and `unlisted` for one the record holds in the workflow that stands in
 none of the three admission lists; `why.reason` is the sentence. An issue holding an admission
 slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
-stranded claim names it: an answered root reads `waiting`, a root whose open children hold its
-own first phase reads `blocked`, and an issue at work whose worker runs, one `held` and a root
+stranded claim names it: an answered root reads `waiting`, and an issue at work whose worker runs, one `held` and a root
 whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
 does an issue the record does not hold in the workflow (`done`, `backlog`, `icebox`,
 `triage`). The daemon serves

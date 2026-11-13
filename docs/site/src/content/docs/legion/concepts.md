@@ -111,7 +111,7 @@ of its own, inside the same tree.
 **The children do the work first.** An issue starts no phase of its own while Dispatch shows an
 open child under it, a child the architect has filed and not released yet included; the architect
 is told so once, with a notice naming each open child and the Dispatch status that holds it. A
-parent starts its own first phase once the last of them has left the workflow, and its pull
+parent's own first phase can start once the last of them has left the workflow, and its pull
 request then builds on a base that already carries their merges. For the same reason the daemon
 refuses a parent's acceptance, and a root's close, while an issue beneath it is still in the
 workflow.
@@ -164,9 +164,13 @@ a closed design gate holds its merge request.
 A wait on another issue is the exception: a started
 issue that Dispatch shows blocked by an issue that is not `done`, or whose own first phase waits on
 an open child under it, holds no admission slot.
-The daemon takes its slot back, stands it in the
-waiting line among the issues whose work came back, oldest first, and gives it a slot again by
-itself at the first pass after the wait ends.
+The daemon takes its slot back and stands it in the
+waiting line among the issues whose work came back, oldest first.
+Once the daemon has seen the wait end, the issue takes the next free slot by itself,
+ahead of every issue that has not started; under a full cap it waits for a free slot.
+The daemon sees a blocker in the same project close as a live event.
+It sees a blocker in another project close only at its periodic turn's re-read
+(`controller_wake_interval_seconds`, an hour by default) or at its boot.
 Three started issues keep their slot although a wait
 names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never
 opened, whose architect is writing the design; and a root that arrived from another tree
@@ -179,6 +183,8 @@ A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers
 questions until the issue closes, and giving a slot back for a wait stops nothing either — no
 claim is suspended, no session ends, no phase moves, and no Dispatch status is written.
+The worker at work goes on, but the start of the issue's next phase waits until the issue
+holds a slot again.
 `legion state` names such an issue under `admission.waiting` and under `admission.blocked` and
 never under `admission.active`, which is how you tell it from an issue a person parked, which is
 in none of the three.
@@ -197,8 +203,7 @@ work came back, or `rootRank`, `ownRank` and `rootKey` for an issue that has not
 `blocked` and `unlisted` (the record holds it in the workflow and no list places it), with a
 `reason` sentence. An issue holding an admission slot carries no `why` unless it
 also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an
-answered root reads `waiting`, a root whose open children hold its own first phase reads
-`blocked`, and an issue at work whose worker runs, one `held` and a root whose ask a person has
+answered root reads `waiting`, and an issue at work whose worker runs, one `held` and a root whose ask a person has
 not answered yet, which `waitingOn` answers for, read nothing. Neither does an issue the record
 does not hold in the workflow. So the daemon says why an issue stands where it does, and nobody has to
 work it out from the order.
