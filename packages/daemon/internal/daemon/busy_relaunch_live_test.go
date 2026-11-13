@@ -33,8 +33,9 @@
 //     step lets it go or the process that asked dies.
 //   - the Envoy listener a pane registers with (newConsumerPaneListener), which answers that
 //     registration with a consumer of the session's own, as a session has needed since
-//     cybermonklabs/legion#2603; the shared newPaneListener answers none, at this head and at the
-//     base alike, and every pane that registers with it ends its claim boot.
+//     cybermonklabs/legion#2603. The shared newPaneListener answers one at this head and none at
+//     the base, where every pane that registers with it ends its claim boot, so this proof keeps
+//     its own.
 //
 // Each step runs as a subtest of its own (run), so a step that fails ends there and the next
 // step still runs: the negative control's one run shows every step's own failure, each at the
@@ -55,6 +56,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -411,9 +413,9 @@ func (r *busyRelaunchLive) fails(assertion, format string, args ...any) {
 // busyLateTurn is R4's measured case: a phase worker's task whose turn waits on a held recall,
 // past the daemon's own wait for it. That wait runs out and takes the task back, the next sweep
 // sends it again into the recall, Oh My Pi answers that send busy, and the turn of the first
-// prompt starts late. At this head that late turn is the task's own: one busy answer, the turn
-// confirms the task while it runs and its prompt's result retires it, and nothing is sent after
-// it. The base drops that result at the fence and sends the task again at the turn's end
+// prompt starts late. At this head that late turn is the task's own: at most one busy answer, the
+// turn confirms the task while it runs and its prompt's result retires it, and nothing is sent
+// after it. The base drops that result at the fence and sends the task again at the turn's end
 // (stale-result).
 func (r *busyRelaunchLive) busyLateTurn() {
 	pane := r.pane(r.late)
@@ -432,15 +434,18 @@ func (r *busyRelaunchLive) busyLateTurn() {
 	ended := r.daemon.count()
 	late.let()
 	turnEnd := r.awaitLogFrom("the late turn's end", ended, 2*time.Minute, streamTurnEnded(pane.token))
-	r.awaitQuiet(pane.token, 3*time.Minute)
+	// Whether the claim settles is judged with the rest below (retired), so a claim still holding
+	// the task fails there by name rather than here.
+	quiet := r.quietWithin(pane.token, 3*time.Minute)
 
 	recall, held := r.hindsight.recallCarrying(marker)
-	if !held || recall.held < busyRecallHold || arrived.Before(recall.answered) {
+	if !held || recall.answered.IsZero() || recall.answered.Sub(recall.at) < busyRecallHold || arrived.Before(recall.answered) {
 		r.fails("recall-held", "the task's prompt was to wait %s on its memory recall before its turn, and the stand-in read %s",
 			busyRecallHold, recall.describe(held))
 	}
 	r.note("Oh My Pi recalled for the prompt at +%s and the stand-in answered 503 after %s, at +%s",
-		recall.at.Sub(sent).Round(100*time.Millisecond), recall.held, recall.answered.Sub(sent).Round(100*time.Millisecond))
+		recall.at.Sub(sent).Round(100*time.Millisecond), recall.answered.Sub(recall.at).Round(100*time.Millisecond),
+		recall.answered.Sub(sent).Round(100*time.Millisecond))
 	waited := r.daemon.firstAfter(from, promptWaitRanOut(pane.token))
 	if waited == nil || waited.at.After(recall.answered) {
 		r.fails("wait-ran-out", "the daemon's %s wait for the prompt's turn did not run out inside the recall: %v", r.cfg.WorkerRPCTimeout, waited)
@@ -470,9 +475,9 @@ func (r *busyRelaunchLive) busyLateTurn() {
 	if len(turns) != 1 {
 		r.fails("one-turn", "%d turns carried the task, want the late one alone: %v", len(turns), requestTimes(turns, sent))
 	}
-	after := r.claim(pane.token)
-	if after.Pending != nil {
-		r.fails("retired", "after the late turn ended the claim still holds a task: %s", describePending(after.Pending, marker))
+	if !quiet {
+		r.fails("retired", "within %s of the late turn's end the claim never stood ready or idle with no task for %s; it holds %s",
+			3*time.Minute, liveSettle, describePending(r.claim(pane.token).Pending, marker))
 	}
 	r.note("one turn carried the task; it ended at +%s, the claim retired the task by that turn's result and has been sent nothing since",
 		turnEnd.at.Sub(sent).Round(100*time.Millisecond))
@@ -487,7 +492,8 @@ func (r *busyRelaunchLive) busyLateTurn() {
 // result starts runs no recall — a run of the pin made for this proof saw the job's result start
 // that turn with no recall asked, where every prompt before it asked one — and its agent_start
 // reaches the daemon at once, so the daemon has seen the turn begin and sends the task nothing
-// while it runs, which this step reads as zero busy answers.
+// while it runs. This step reads one busy answer at most, for a send that reached the agent before
+// that agent_start did.
 func (r *busyRelaunchLive) busyOwnTurn() {
 	pane := r.pane(r.own)
 	r.awaitQuiet(pane.token, 3*time.Minute)
@@ -723,21 +729,35 @@ func (r *busyRelaunchLive) deliver(token claim.Token, task string) {
 // phase reminder continues the run once), so a claim read idle once may be read working again.
 func (r *busyRelaunchLive) awaitQuiet(token claim.Token, within time.Duration) {
 	r.t.Helper()
+	if !r.quietWithin(token, within) {
+		r.t.Fatalf("timed out after %s waiting for %s to hold no task and run no turn", within, token)
+	}
+}
+
+// quietWithin is awaitQuiet's wait, answering whether the claim settled within the bound rather
+// than failing, for a step that judges it by an assertion of its own name.
+func (r *busyRelaunchLive) quietWithin(token claim.Token, within time.Duration) bool {
+	r.t.Helper()
+	deadline := time.Now().Add(within)
 	var since time.Time
-	r.await(string(token)+" to hold no task and run no turn", within, func() bool {
+	for {
 		held := r.claim(token)
 		if held.State == string(supervise.StateFailed) {
 			r.t.Fatalf("%s failed; its workers' output is under %s", token, r.rt.paneLogs)
 		}
-		if held.Pending != nil || (held.State != string(supervise.StateReady) && held.State != string(supervise.StateIdle)) {
+		switch {
+		case held.Pending != nil || (held.State != string(supervise.StateReady) && held.State != string(supervise.StateIdle)):
 			since = time.Time{}
+		case since.IsZero():
+			since = time.Now()
+		case time.Since(since) >= liveSettle:
+			return true
+		}
+		if time.Now().After(deadline) {
 			return false
 		}
-		if since.IsZero() {
-			since = time.Now()
-		}
-		return time.Since(since) >= liveSettle
-	})
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 // startsASubagent gives the claim a task whose turn starts a `task` subagent, whose own model
@@ -853,9 +873,10 @@ func (r *busyRelaunchLive) catchUpOpensWithTheSentence(pane *busyPane, told int)
 	r.note("the catch-up published at the relaunched process's ready opens with the sentence:\n%s", indentOutput(firstParagraph(reason)))
 }
 
-// claimRowHolds reads the claim row's `ended_work` and holds that it records a death and that
-// want holds of it. The read is SQL, so over the base commit — whose schema has no such column —
-// the read's own error is this assertion's failure.
+// claimRowHolds reads the claim row's `ended_work` and holds that it records a death, that the
+// process it records left a report (Reported), and that want holds of it. The read is SQL, so over
+// the base commit — whose schema has no such column — the read's own error is this assertion's
+// failure.
 func (r *busyRelaunchLive) claimRowHolds(token claim.Token, want func(endedWorkRow) bool) endedWorkRow {
 	r.t.Helper()
 	ended, err := readEndedWork(r.st, token)
@@ -1187,7 +1208,6 @@ type scriptedStandin struct {
 	mu      sync.Mutex
 	rules   []*standinRule
 	seen    []seenRequest
-	calls   int
 	stopped chan struct{}
 }
 
@@ -1216,7 +1236,8 @@ type seenRequest struct {
 	// own was started on — rather than a tool's result alone.
 	last   string
 	prompt bool
-	// conversation is the text of every message of the request.
+	// conversation is the text of every message of the request. Only the rules read it, as the
+	// request arrives (ruleFor), so the request kept in seen drops it.
 	conversation string
 	// side is the plugin's own side question (isSideQuestion), and subagent a `task` subagent's
 	// own request (deepWorkerSystemLine): neither is a turn of the role's.
@@ -1245,10 +1266,10 @@ func (s *scriptedStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 	seen := readStandinRequest(body, time.Now())
 	s.mu.Lock()
-	s.seen = append(s.seen, seen)
 	rule := s.ruleFor(seen)
-	s.calls++
-	id := fmt.Sprintf("toolu_%s_%d", s.name, s.calls)
+	seen.conversation = ""
+	s.seen = append(s.seen, seen)
+	id := fmt.Sprintf("toolu_%s_%d", s.name, len(s.seen))
 	s.mu.Unlock()
 	if rule != nil && rule.hold != nil && !rule.hold.take(req.Context(), s.stopped) {
 		return
@@ -1281,9 +1302,7 @@ func (s *scriptedStandin) ruleFor(seen seenRequest) *standinRule {
 // one-line intent every Oh My Pi tool requires.
 func (s *scriptedStandin) callTool(match func(seenRequest) bool, name string, input map[string]any) {
 	called := map[string]any{"i": "Running the proof's step"}
-	for key, value := range input {
-		called[key] = value
-	}
+	maps.Copy(called, input)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.rules = append(s.rules, &standinRule{match: match, call: &toolCall{name: name, input: called}})
@@ -1500,7 +1519,11 @@ func (h hindsightRecall) describe(asked bool) string {
 	if !asked {
 		return "no recall carrying the task"
 	}
-	return fmt.Sprintf("a recall held %s, answered at %s", h.held, h.answered.Format(time.RFC3339Nano))
+	if h.answered.IsZero() {
+		return fmt.Sprintf("a recall armed to be held %s, which the client gave up on before its answer", h.held)
+	}
+	return fmt.Sprintf("a recall armed to be held %s, answered %s after it came, at %s",
+		h.held, h.answered.Sub(h.at).Round(100*time.Millisecond), h.answered.Format(time.RFC3339Nano))
 }
 
 func newHindsightStandin(t *testing.T) *hindsightStandin {
@@ -1545,7 +1568,8 @@ func (h *hindsightStandin) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	_, _ = io.WriteString(w, `{"detail":"this stand-in keeps no memories"}`)
 }
 
-// holdNext holds the next recall the stand-in is asked for held before its answer.
+// holdNext arms the stand-in to hold the next recall it is asked for, for held, before answering
+// it.
 func (h *hindsightStandin) holdNext(held time.Duration) {
 	h.mu.Lock()
 	defer h.mu.Unlock()

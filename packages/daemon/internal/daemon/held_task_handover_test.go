@@ -221,6 +221,17 @@ func (r *heldTaskRig) launchArchitect() {
 	if err := machine.Handle(r.ctx, supervise.RequestSpawn{Claim: r.token}); err != nil {
 		r.t.Fatalf("spawn the architect: %v", err)
 	}
+	r.bootArchitect(machine, "the architect")
+	if got := machine.Claim().State; !supervise.SaidReady(got) {
+		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
+	}
+}
+
+// bootArchitect brings the agent of the architect's current launch up: the shim's hello, the
+// agent's registration and its ready, as the architect's pod does. who names the architect in a
+// failure.
+func (r *heldTaskRig) bootArchitect(machine *supervise.Machine, who string) {
+	r.t.Helper()
 	launch := machine.Claim().Generation
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: r.token, Generation: launch},
@@ -228,13 +239,10 @@ func (r *heldTaskRig) launchArchitect() {
 		supervise.RequestReady{Claim: r.token, Generation: launch, Session: "ses-architect"},
 	} {
 		if err := machine.Handle(r.ctx, ev); err != nil {
-			r.t.Fatalf("handle %T for the architect: %v", ev, err)
+			r.t.Fatalf("handle %T for %s: %v", ev, who, err)
 		}
 	}
 	machine.Wait()
-	if got := machine.Claim().State; !supervise.SaidReady(got) {
-		r.t.Fatalf("the architect after its ready = %s, want a claim that can be prompted", got)
-	}
 }
 
 // decide is a person deciding on an ask of issue while nobody in the root's tree hears it, kept

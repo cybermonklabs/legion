@@ -618,11 +618,14 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // The claim takes an operator's task over such a one, so a person is waiting on a task this claim
 // will work, and the launch runs for it. The replacement is made here, before that launch, and
 // not left to the row (replaceOwedTask, the one path both places a task replaces an owed one
-// take): the launch takes the ladder's wait with the claim's timers (letGo), and that wait is the
-// whole of what makes the owed task replaceable, so queue — reading the claim the launch leaves —
-// would refuse the very task the launch had just replaced a live process for. Nothing is lost if
-// the launch's own lifecycle recheck refuses (runWake): the row that follows queues the
-// operator's task into a claim holding none, which is where R2 leaves it either way.
+// take). For the task a provider error took back it must be: the launch takes the ladder's wait
+// with the claim's timers (letGo), and that wait is the whole of what makes that task
+// replaceable, so queue — reading the claim the launch leaves — would refuse the very task the
+// launch had just replaced a live process for. The relaunch's delivery would stay replaceable,
+// since the let-go also ends the wait for its prompts' results (Machine.outstanding), which is
+// all that holds it; it is replaced here with the other, on the one path. Nothing is lost if the
+// launch's own lifecycle recheck refuses (runWake): the row that follows queues the operator's
+// task into a claim holding none, which is where R2 leaves it either way.
 //
 // The launch takes no second token — the reservation was taken once, at the gate — so the wakes
 // behind it keep the turns they already hold, and the line it writes says the pacing did not

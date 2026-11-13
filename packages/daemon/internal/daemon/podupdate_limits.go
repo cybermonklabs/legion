@@ -143,15 +143,15 @@ func (sweep podUpdateSweep) held() []string {
 // over the pod its claims record, or its claims record two pods with a pod round open, which is a
 // replacement in flight and a round being carried like any other (holdsOpenRound). A round over a
 // pod the claims no longer record holds none: that pod is gone and the walk ends the round at this
-// same sweep (reconcileIssuePodUpdate), so counted it would hold back an opening with a slot it is
-// giving up, the issue's own next round over the pod in its place among them. Nor does a round
-// whose claims record no pod at all: a claim of the issue running in a pod again is what says the
-// issue is still being carried by its round. To those are added the rounds this daemon opened at
-// an earlier sweep whose claims have not recorded one yet, which are openings all the same: the
-// post that carries a round to a machine is asynchronous and a machine in a relaunch can take
-// minutes to take it, so a sweep that counted only the claims would read one slot short and open
-// an issue above the limit. Those openings are carried in the sweep, because its walk weighs them
-// again at the issue each was made for (podUpdateSweep.reasks).
+// same sweep (reconcileIssuePodUpdate), so counted it would hold back another issue's opening
+// with a slot it is giving up. Nor does a round whose claims record no pod at all: a claim of the
+// issue running in a pod again is what says the issue is still being carried by its round. To
+// those are added the rounds this daemon opened at an earlier sweep whose claims have not
+// recorded one yet, which are openings all the same: the post that carries a round to a machine
+// is asynchronous and a machine in a relaunch can take minutes to take it, so a sweep that counted
+// only the claims would read one slot short and open an issue above the limit. Those openings are
+// carried in the sweep, because its walk weighs them again at the issue each was made for
+// (podUpdateSweep.reasks).
 //
 // The sweep's own budget is the whole of the per-minute limit, spent at this one sweep rather
 // than paced inside it, and nothing at all within podUpdateOpeningGap of the last opening.

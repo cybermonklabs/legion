@@ -119,8 +119,8 @@ func TestADeathEndsTheTurnItInterruptedSoLaterIdleDeathsAreNotCharged(t *testing
 	h.relaunched()
 	// The death cut a turn off, so the relaunched agent is told so in a delivery of the daemon's
 	// own (queueRelaunch); that sentence is no task, and the claim holds nothing else.
-	if p := h.claim().Pending; p != nil && !relaunchTask(p.ID) {
-		t.Fatalf("the relaunched claim holds %+v, want nothing pending but the relaunch's sentence", p)
+	if p := h.claim().Pending; p == nil || !relaunchTask(p.ID) {
+		t.Fatalf("the relaunched claim holds %+v, want the relaunch's sentence pending and nothing else", p)
 	}
 
 	for death := 2; death <= testLimits().LaunchFailures; death++ {

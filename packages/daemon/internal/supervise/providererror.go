@@ -62,8 +62,9 @@ func (m *Machine) providerErrored(ctx context.Context, r StreamPromptResult) err
 		"delivery", r.DeliveryID, "retryable", r.Retryable, "httpStatus", r.HTTPStatus,
 		"provider", r.Provider, "model", r.Model, "providerErrorRun", m.claim.ProviderErrorRun)
 	m.tellControllerOfProviderErrors(r.Model, cause)
-	// The prompt's turn ran and is over, so nothing of the task is left outstanding.
-	if err := m.takeBackPending(ctx, taskRead, false); err != nil {
+	// The prompt's turn ran and is over, and its result has ended the wait for results
+	// (promptResulted), so nothing of the task is left outstanding.
+	if err := m.takeBackPending(ctx, taskRead); err != nil {
 		return err
 	}
 	if holdsTheIssue(r.HTTPStatus) {

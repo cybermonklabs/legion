@@ -33,7 +33,7 @@ func (h *harness) busyRecorded() {
 	h.t.Helper()
 	h.conn.SetStreaming(true)
 	h.conn.RefusePrompt(busyAnswer)
-	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+	h.must(RequestDeliver{Claim: h.token, Task: "the task", Generation: 7})
 	h.wantPrompts(1)
 	h.wantState(StateWorking)
 }
@@ -58,9 +58,7 @@ func TestABusyAnswerHoldsTheTaskUntilTheTurnEnds(t *testing.T) {
 		answer func(t *testing.T, h *harness) *fake.Conn
 	}{
 		{name: "the send refused busy", answer: func(t *testing.T, h *harness) *fake.Conn {
-			h.conn.SetStreaming(true)
-			h.conn.RefusePrompt(busyAnswer)
-			h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
+			h.busyRecorded()
 			return h.conn
 		}},
 		{name: "the acknowledged prompt refused busy", answer: func(t *testing.T, h *harness) *fake.Conn {
@@ -385,6 +383,8 @@ func TestABusyRecordedClaimEndsAtTheSweepWhenTheAgentStopsStreaming(t *testing.T
 // The record is durable (durableWrite): the daemon hears the claim working once (OnDurableState),
 // as it hears a turn's start, and a daemon restarted inside the turn restores the claim working
 // with the question armed (askFirst), so its first sweep asks the agent rather than prompting it.
+// The agent answers that it is still streaming, which disarms the question and leaves the turn one
+// this daemon never saw begin (unseenTurn), and the turn's own end sends the task.
 func TestABusyRecordedClaimIsRestoredWorkingAndAskedAgain(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -411,6 +411,9 @@ func TestABusyRecordedClaimIsRestoredWorkingAndAskedAgain(t *testing.T) {
 	h.observe(runtime.Alive) // still streaming: the claim stays working, and nothing is sent
 	h.wantState(StateWorking)
 	h.wantPrompts(1)
+	if _, unseen, askFirst := h.marks(); askFirst || !unseen {
+		t.Fatalf("marks after the sweep: unseen turn %v, question armed %v, want the question asked and answered streaming", unseen, askFirst)
+	}
 
 	h.conn.SetStreaming(false)
 	h.conn.FailPrompt(nil)

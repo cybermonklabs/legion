@@ -1338,13 +1338,12 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // worker here has answered and its turn is over, so it holds nothing: the pod round's own ask
 // retired with that turn, and the round held every task since. The pod the round was opened over
 // is gone whichever way the round ended — the replacement this round made, a pod that went
-// without its round, or a pod that went for a failure of its own and left the round's last tick
-// reading no drift over the pod that replaced it — so the worker comes back on the session it
-// kept and a disk built new, where its launch is what starts the process and nothing of the
-// round's end prompts the agent in it. What keeps that session is the launch's own
-// ResumeSessionFile (runtime.SpawnSpec), which only Resume sets, and the worker is told so in
-// the prompt every role reads (internal/prompts/go/worker-common.md, "Your process is shorter
-// than your session").
+// without its round while a worker of it had work unpushed, or a pod that went once every worker
+// of the round had answered — so the worker comes back on the session it kept and a disk built
+// new, where its launch is what starts the process and nothing of the round's end prompts the
+// agent in it. What keeps that session is the launch's own ResumeSessionFile (runtime.SpawnSpec),
+// which only Resume sets, and the worker is told so in the prompt every role reads
+// (internal/prompts/go/worker-common.md, "Your process is shorter than your session").
 //
 // What does prompt it is the daemon's silence sweep, a bound after that last turn: it finds a
 // phase worker nothing will prompt and sends the phase's task again
@@ -1367,9 +1366,11 @@ func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 			roles: []podUpdateRole{readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester)},
 			end:   func(r *podUpdateRig) { r.tickBackIn(podUpdateReplacementPod) },
 		},
-		"the drift cleared over the pod that replaced the round's own": {
+		"the pod went once every worker of the round had answered": {
 			roles: []podUpdateRole{readyWorker(claim.RoleImplementer)},
-			end:   func(r *podUpdateRig) { r.drifts(); r.tickBackIn(podUpdateReplacementPod) },
+			// The round ends before any drift is read (reconcileIssuePodUpdate); the pod that
+			// replaced it drifts from nothing, so no later sweep of the wait opens a round over it.
+			end: func(r *podUpdateRig) { r.drifts(); r.tickBackIn(podUpdateReplacementPod) },
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -2659,12 +2660,11 @@ func (r *podUpdateRig) envoyTurn(role claim.Role) {
 	}
 }
 
-// Whether this round's pod is still there is asked before the round waits on a turn, because
-// every such wait in the round's completion is a wait on that pod. A round whose pod no live
-// claim records has nothing in that pod to cut and nothing there to replace: the turn the sweep
-// would wait for runs in the pod that replaced this one, waiting for it would hold every answered
-// worker's next task behind a round that can never end, and the stalled-round notice would name a
-// pod that is gone.
+// A round over a pod its claims no longer record is decided before the round waits on a turn,
+// because every such wait in the round's completion is a wait on that pod. Such a round has
+// nothing in that pod to cut and nothing there to replace: the turn the sweep would wait for runs
+// in the pod that replaced this one, waiting for it would hold every answered worker's next task
+// behind a round that can never end, and the stalled-round notice would name a pod that is gone.
 //
 // So the round is decided here rather than held: the claims record the pod that replaced the
 // round's own, which ends the round at that sweep before anything waits on a turn
@@ -2844,12 +2844,14 @@ func TestPodUpdateEndsAStaleRoundAfterAFreshSession(t *testing.T) {
 // process go with its locator (letGo) — is decided on the runtime's word about the issue's Sandbox
 // (podlessRound). While the Sandbox holds the round's own pod the round waits, as it waits for
 // a claim to run in that pod again. Once the Sandbox holds another pod, or none, the round's pod
-// is gone: the round ends on every member as every gone pod's round does, and the issue is told
-// which member had not answered, since what it had not pushed went with that pod's disk.
+// is gone: the round ends on every member as every gone pod's round does, the end names the
+// round's own pod rather than what the Sandbox holds now, and the issue is told which member had
+// not answered, since what it had not pushed went with that pod's disk.
 func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 	const (
 		waits = "supervise: no claim of this issue records a pod; its update round waits for one to run again"
-		ended = "supervise: no claim of this issue records a pod, and the pod its update round was opened over is gone; the round is over"
+		ended = "supervise: no claim of this issue records a pod, and the issue's Sandbox no longer holds the pod its update round was opened over"
+		lost  = "supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed"
 	)
 	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
 	for name, now := range map[string]string{
@@ -2895,9 +2897,13 @@ func TestPodUpdateEndsAPodlessRoundWhoseOwnPodIsGone(t *testing.T) {
 				rig.awaitClaim(role, "its round to end with its pod gone",
 					func(c supervise.Claim) bool { return c.UpdateRound == "" })
 			}
-			if lines := loggedLines(t, rig.logs.String(), ended); len(lines) != 1 || lines[0]["pod"] != now {
-				t.Errorf("the sweep logged the end of the podless round %d times, want once naming the pod %q the Sandbox holds: %+v",
+			if lines := loggedLines(t, rig.logs.String(), ended); len(lines) != 1 || lines[0]["sandboxPod"] != now {
+				t.Errorf("the sweep logged the podless round's reading %d times, want once naming the pod %q the Sandbox holds: %+v",
 					len(lines), now, lines)
+			}
+			if lines := loggedLines(t, rig.logs.String(), lost); len(lines) != 1 || lines[0]["pod"] != podUpdatePod {
+				t.Errorf("the sweep logged the end of the podless round %d times, want once naming the round's own pod %s: %+v",
+					len(lines), podUpdatePod, lines)
 			}
 			messages := rig.messages()
 			if len(messages) != 1 {

@@ -195,8 +195,9 @@ func (e *Engine) workerBackgroundStalled(ctx context.Context, tx pgx.Tx, fact in
 		return intake.Result{}, nil
 	}
 	// A report of another moment than the fact's is another reading than the one the sweep
-	// judged — a session sends one at each turn's end and on each change of what it reads
-	// (packages/pi-legion/extensions/legion.ts) — and its standing is a later fact's.
+	// judged — a session sends one at its turns' ends, and an Oh My Pi session on each change of
+	// what it reads too (packages/pi-legion/extensions/legion.ts,
+	// packages/claude-envoy/src/legion-phase-hook.ts) — and its standing is a later fact's.
 	if !read.run.Claim.ActivityAt.Equal(fact.ReportedAt) {
 		return intake.Result{}, nil
 	}

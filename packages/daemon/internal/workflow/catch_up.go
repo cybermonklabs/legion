@@ -44,8 +44,8 @@ import (
 // A launch's ready that carries the sentence of what the last let-go of the architect's process
 // ended (intake.ClaimReady.Relaunch) has its catch-up open with it (QueueCatchUp): the first turn
 // of a relaunched root architect can be this catch-up's rather than its prompt's, and the
-// architect then reads that its subagent died before it reads its tree. The prompt the claim's
-// machine sends carries the same sentence and is what tells it, so a catch-up that is held,
+// architect then reads that its subagent died before it reads its tree. A prompt the claim's
+// machine sends tells the same record and is what marks it told, so a catch-up that is held,
 // superseded or never queued here costs nothing (dispatch://INFRA-3276 R3).
 func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) (intake.Result, error) {
 	if fact.Role != claim.RoleArchitect {
@@ -77,8 +77,8 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // and "" from every other caller. The notice's reason — the text the architect reads of the
 // catch-up — opens with it, so the architect reads what died with its last process before it
 // reads its tree. The copy tells nothing: the record is the claim's, and it is told at the
-// confirmation of the prompt the claim's machine sends with the same sentence (supervise's
-// confirm), which the outbox's publish of this notice does not see.
+// confirmation of a prompt the claim's machine sends that tells the same record (supervise's
+// confirm, Delivery.message), which the outbox's publish of this notice does not see.
 //
 // A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
 // now, which is the clock a lane's lease is written from), so the agent is given one catch-up,

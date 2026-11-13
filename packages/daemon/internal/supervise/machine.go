@@ -1097,10 +1097,12 @@ type Machine struct {
 	// (turnEnded, resultPending).
 	//
 	// acked and ackedInTurn add an id. A result or a refusal naming one removes it, and the
-	// result of a prompt that ran a turn ends the wait for them all; the wait for a turn that runs
-	// out (noTurn) takes the task back and keeps its prompt here. letGo, retirePending — and with
-	// it queue, when a newer task takes the pending one's place — and interrupted empty it, since
-	// what it waits on goes with the process or the task.
+	// result of a prompt that ran a turn ends the wait for them all (promptResulted); the wait for
+	// a turn that runs out (noTurn) takes the task back and keeps its prompt here. The sweep's
+	// answer that the agent is in no prompt empties it (askTurnOver), and so does a compaction,
+	// which aborts whatever run the session had (compactStart). letGo, retirePending — and with
+	// it queue, when a newer task takes the pending one's place — and interrupted empty it too,
+	// since what it waits on goes with the process or the task.
 	//
 	// It is memory only: a daemon restarted inside a late turn's wait restores the claim with no
 	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
@@ -1857,10 +1859,11 @@ const turnStartedLine = "supervise: a turn started"
 // site either — an operator counts the two against each other.
 const turnEndedLine = "supervise: a turn ended"
 
-// logTurn writes one of the two turn lines at Info, with the claim's generation and, where the
-// turn is a task's, that delivery. The claim is already an attribute of the machine's own logger,
-// so neither line repeats it, and a turn that is no task's carries no delivery key at all rather
-// than an empty one.
+// logTurn writes a turn line at Info — one of the two pinned above, or the start of a turn a busy
+// answer recorded (busyTurnBegun) — with the claim's generation and, where the turn is a task's,
+// that delivery. The claim is already an attribute of the machine's own logger, so no line
+// repeats it, and a turn that is no task's carries no delivery key at all rather than an empty
+// one.
 func (m *Machine) logTurn(line, delivery string) {
 	if delivery == "" {
 		m.log.Info(line, "generation", m.claim.Generation)

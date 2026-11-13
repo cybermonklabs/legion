@@ -158,7 +158,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "Abandoned", Column: ColumnWithheld,
 		Reason: "the session this claim left behind, which reaches its replacement in that agent's first task and no surface"},
 	{Field: "EndedWork", Column: ColumnWithheld,
-		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and no surface"},
+		Reason: "what the last let-go of this claim's process ended, which reaches the next process in that agent's own prompt and in a root architect's catch-up, and no surface"},
 	{Field: "SessionLost", Column: ColumnWithheld,
 		Reason: "an argument of one spec build, set on the copy handed the builder and never on the claim, so no surface could carry it"},
 }

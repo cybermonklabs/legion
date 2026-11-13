@@ -22,10 +22,10 @@ import (
 // (20261109191929), the backward-move counts with the hook prompt (20261110225246), the kind of
 // the rule that wrote a release mark (20261111001612), the declined ask (20261111021610) and the
 // claim's failure cause (20261111212544), are
-// main's own and are applied as main's run applied them. Every version of this branch's but one
+// main's own and are applied as main's run applied them. Every version of this branch's but three
 // stands below main's newest: a migration's version is a timestamp rather than a place in a line,
-// and the one above it is the phase entry's own (20261111225552, dispatch://INFRA-2800), which
-// this branch wrote after main's claim-failure cause.
+// and the three above it are the phase entry's own (20261111225552, dispatch://INFRA-2800), which
+// this branch wrote after main's claim-failure cause, and the two the next paragraph names.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version

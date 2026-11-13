@@ -65,9 +65,6 @@ func TestAKeptDecisionToldInALateTurnIsToldOnce(t *testing.T) {
 
 	// Oh My Pi's pre-turn work outlasts the wait for the turn: the task goes back under a new id,
 	// and the first prompt stays outstanding.
-	if live, _ := clock.armed(heldTaskTurnBound); live != 1 {
-		t.Fatalf("%d timers are armed for %s, want the one wait for the acknowledged prompt's turn", live, heldTaskTurnBound)
-	}
 	if fired := clock.fire(heldTaskTurnBound); fired != 1 {
 		t.Fatalf("firing the wait for the turn ran %d timers, want 1", fired)
 	}
@@ -79,7 +76,7 @@ func TestAKeptDecisionToldInALateTurnIsToldOnce(t *testing.T) {
 	r.wantHeldBy(ref, taken.ID)
 
 	// The sweep sends the task again, and Oh My Pi, preparing the first prompt's turn, answers busy.
-	r.conn.RefusePrompt(busyAnswer)
+	r.conn.RefusePrompt(keptBusyRefusal)
 	if err := machine.Handle(r.ctx, aliveObservation(machine)); err != nil {
 		t.Fatalf("post the sweep's observation: %v", err)
 	}
@@ -186,7 +183,8 @@ func (r *heldTaskRig) turnOn(machine *supervise.Machine, delivery string) {
 }
 
 // wantHeldBy fails the test unless the root keeps ref as its one decision, held by the architect's
-// claim under delivery: the row the delivery's confirmation tells (store's holdKeptDecisions).
+// claim under delivery (store's holdKeptDecisions): the row the delivery's confirmation tells
+// (tellKeptDecisions).
 func (r *heldTaskRig) wantHeldBy(ref, delivery string) {
 	r.t.Helper()
 	kept := keptDecisions(r.t, r.pool, r.records, heldTaskRoot)
@@ -197,8 +195,7 @@ func (r *heldTaskRig) wantHeldBy(ref, delivery string) {
 
 // relaunchArchitect ends the architect's process as the runtime's sweep sees a process gone, which
 // the supervisor answers with a launch of the same session, and brings the agent of that launch up
-// as launchArchitect brings the first: its connection, the shim's hello, its registration and its
-// ready.
+// as launchArchitect brings the first (bootArchitect).
 func (r *heldTaskRig) relaunchArchitect(machine *supervise.Machine) {
 	r.t.Helper()
 	if err := machine.Handle(r.ctx, supervise.RuntimeObservation{Observation: runtime.Observation{
@@ -207,17 +204,7 @@ func (r *heldTaskRig) relaunchArchitect(machine *supervise.Machine) {
 	}
 	machine.Wait()
 	r.sup.deps.Conns.(*fake.Conns).Register(r.token, r.conn)
-	launch := machine.Claim().Generation
-	for _, ev := range []supervise.Event{
-		supervise.StreamHello{Claim: r.token, Generation: launch},
-		supervise.RequestRegister{Claim: r.token, Generation: launch, Session: "ses-architect", SessionFile: "/tmp/architect.jsonl"},
-		supervise.RequestReady{Claim: r.token, Generation: launch, Session: "ses-architect"},
-	} {
-		if err := machine.Handle(r.ctx, ev); err != nil {
-			r.t.Fatalf("handle %T for the relaunched architect: %v", ev, err)
-		}
-	}
-	machine.Wait()
+	r.bootArchitect(machine, "the relaunched architect")
 }
 
 // catchUpOf is whether the outbox holds a catch-up of the root written for launch.

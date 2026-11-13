@@ -73,10 +73,12 @@ func (r *Runtime) IssueSandbox(issue string) (string, bool) {
 // a Sandbox deleted and made again is no pod of this one. A pod that has run to its end, or is
 // being ended under a suspension, is answered all the same: its disk is still there until the
 // pod is deleted, and the round over it waits until it is gone rather than end over a disk that
-// may still hold its workers' unpushed work. Where the store itself cannot be read, or no Sandbox
+// may still hold its workers' unpushed work. Where the Sandbox store cannot be read, or no Sandbox
 // name can be built from the issue key, nothing is answered (read false), since a round must not
 // end on a read that was never made, which is where this parts from IssueSandbox: that read
-// holds a pod by answering it absent, and this one would end a round by doing so.
+// holds a pod by answering it absent, and this one would end a round by doing so. The pod store
+// is read through storedPod, which answers no pod for a read that fails as for one that finds
+// none; the informer's store answers every read without an error, so that case is never met.
 func (r *Runtime) IssuePod(issue string) (string, bool) {
 	name, err := issueSandboxName(r.project, issue)
 	if err != nil {

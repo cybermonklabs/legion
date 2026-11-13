@@ -1066,9 +1066,11 @@ func (m *Machine) issueInTurn() (claim.Token, bool) {
 // send's refusal is logged by that name (table.go's refused).
 //
 // An adoption the shim answers ok is logged here, once, at Info: the task, its phase, the App's git
-// name — never a token — and how long the shim took. The refusals are logged where the send's
-// outcome is (refused); without this line nothing in the log tells which tasks adopted the working
-// copy, which is what a production check reads to see the rule held (dispatch://INFRA-2695).
+// name — never a token — and how long the call to adopt took (Runtime.AdoptWorkingCopy): the
+// runtime's own check of where the claim's process runs, then the round trip to the shim and back,
+// with the shim's own work inside it. The refusals are logged where the send's outcome is
+// (refused); without this line nothing in the log tells which tasks adopted the working copy,
+// which is what a production check reads to see the rule held (dispatch://INFRA-2695).
 func (m *Machine) adopt(role claim.Role, loc *runtime.Locator, d *Delivery) error {
 	if loc == nil {
 		return fmt.Errorf("adopt the working copy of %s: the claim has no locator", m.claim.Token)
@@ -1190,7 +1192,7 @@ func (m *Machine) settle(ctx context.Context) error {
 // stays outstanding, since its turn at the pin is still the session's next. Whatever stays
 // outstanding is what the take-back reads (takeBackPending).
 func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error {
-	if err := m.takeBackPending(ctx, read, m.awaitsResult()); err != nil {
+	if err := m.takeBackPending(ctx, read); err != nil {
 		return err
 	}
 	return m.chargePrompt(ctx, why)
@@ -1384,16 +1386,17 @@ func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 // new id so the retry is a new prompt rather than an echo the shim answers from its record, and
 // with the wait for its turn disarmed.
 //
-// outstanding is whether a prompt of the task is still outstanding once the caller has dropped
-// the one its answer named (Machine.outstanding). The pinned Oh My Pi runs one admitted prompt at
-// a time and refuses the rest, so the session's next turn, running or still to come, is that
-// prompt's: the task keeps its confirmation and its read mark for it, and only the pending id
-// moves. That is the busy answer of a send made while the first prompt's turn is late — refused
-// because that very turn is being prepared or run — which takes back nothing of that turn. With
-// none outstanding, the task goes back unconfirmed if a turn had confirmed it, and a task taken
-// back unread loses the mark, so nothing the worker reports from whatever turn follows belongs to
-// it; and the wait for results ends, so a caller whose prompt's turn is over or aborted — a
-// provider error's, a compaction's — passes false and leaves nothing of the task outstanding.
+// While a prompt of the task is still outstanding once the caller has dropped the one its answer
+// named (awaitsResult), the pinned Oh My Pi runs one admitted prompt at a time and refuses the
+// rest, so the session's next turn, running or still to come, is that prompt's: the task keeps
+// its confirmation and its read mark for it, and only the pending id moves. That is the busy
+// answer of a send made while the first prompt's turn is late — refused because that very turn is
+// being prepared or run — which takes back nothing of that turn. With none outstanding, the task
+// goes back unconfirmed if a turn had confirmed it, and a task taken back unread loses the mark,
+// so nothing the worker reports from whatever turn follows belongs to it; and the wait for
+// results ends. A caller whose prompt's turn is over or aborted therefore leaves nothing of the
+// task outstanding before it calls: a provider error's result has ended the wait already
+// (promptResulted), and a compaction ends it itself (compactStart).
 //
 // The id moves either way: the prompt whose answer this is gets a new one, so its own late
 // acknowledgement is fenced out (fenceOutcome) and adds nothing outstanding, and the shim's
@@ -1407,10 +1410,10 @@ func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 // before that write is safe here, where interrupted ends it after its own: this clears
 // ConfirmedAt in memory first, so the claim a failed write leaves is one settle reads as a task
 // still waiting rather than as a turn that is over (turnOver, resultPending).
-func (m *Machine) takeBackPending(ctx context.Context, read, outstanding bool) error {
+func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
 	p := m.claim.Pending
-	if !outstanding {
+	if !m.awaitsResult() {
 		m.outstanding = nil
 		p.ConfirmedAt = time.Time{}
 		if !read {

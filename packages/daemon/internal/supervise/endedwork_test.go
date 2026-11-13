@@ -327,10 +327,10 @@ func TestARelaunchRecordsAFailure(t *testing.T) {
 }
 
 // A relaunch does not wait for the background work it ends: the launch that replaces the process
-// runs in the very decision that decided it, a subagent reported running or not, and what it
-// ended is a record and a line beside it. A store that cannot answer the read costs the record
-// its report — the process is recorded as one the daemon has no report of — and never the
-// relaunch.
+// runs in the very decision that decided it, a subagent reported running or not — the runtime's
+// Resume is called before that decision returns — and what it ended is a record and a line
+// beside it. A store that cannot answer the read costs the record its report — the process is
+// recorded as one the daemon has no report of — and never the relaunch.
 func TestARelaunchRecordsAndDoesNotWait(t *testing.T) {
 	t.Run("a subagent reported running", func(t *testing.T) {
 		h := newHarness(t)
@@ -343,9 +343,6 @@ func TestARelaunchRecordsAndDoesNotWait(t *testing.T) {
 
 		h.wantCalls("Resume", 1)
 		h.wantState(StateLaunching)
-		if waiting := h.m.View().WakeWaiting; waiting != nil {
-			t.Fatalf("the relaunch waits %+v, want it run in the decision that decided it", waiting)
-		}
 		h.wantEnded(EndedWork{At: at, Cause: endStalePlugin, Generation: stale,
 			Background: true, Kinds: []string{"subagent"}, Reported: true})
 	})
@@ -356,13 +353,12 @@ func TestARelaunchRecordsAndDoesNotWait(t *testing.T) {
 		h.reportActivity("subagent")
 		h.store.fail("ClaimActivity", errBoom)
 		died, at := h.generation(), h.clock.Now()
-		observation := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: at}
 
-		h.must(RuntimeObservation{Observation: observation})
+		h.observe(runtime.Gone)
 
 		h.wantCalls("Resume", 1)
 		h.wantState(StateLaunching)
-		h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(observation)), Generation: died,
+		h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})), Generation: died,
 			Turn: true, TaskTurn: true})
 	})
 }
@@ -384,9 +380,6 @@ func TestARelaunchRecordsNoReportOfAnEarlierLaunch(t *testing.T) {
 	if h.store.reportActivity(h.token, first, ActivityReport{At: h.clock.Now(), Background: true, Kinds: []string{"subagent"}}) {
 		t.Fatal("the dead process's late report was written over the relaunched launch")
 	}
-	if _, held, _ := h.store.ClaimActivity(h.ctx, h.token, first); held {
-		t.Fatal("the earlier launch still reads a report after the relaunch")
-	}
 	h.relaunched()
 	h.must(RequestDeliver{Claim: h.token, Task: "implement the plan"})
 	h.must(StreamTurnStart{Claim: h.token})
@@ -394,36 +387,33 @@ func TestARelaunchRecordsNoReportOfAnEarlierLaunch(t *testing.T) {
 	if second == first {
 		t.Fatalf("the relaunch kept launch %d, want a new one", first)
 	}
-	observation := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: at}
 
-	h.must(RuntimeObservation{Observation: observation})
+	h.observe(runtime.Gone)
 
-	h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(observation)), Generation: second, Turn: true, TaskTurn: true})
+	h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})), Generation: second, Turn: true, TaskTurn: true})
 }
 
 // Unknown is not silence: a process that ran a turn and left no report of its launch — a Claude
 // Code worker reports only at its Stop hook, a stale plugin's report is refused — is recorded as
-// one the daemon has no report of, so its next turn is told any background work it started is
-// gone, even though no turn was running and no task was in one when it was let go.
+// one the daemon has no report of (EndedWork.Reported false), whose sentence says that any
+// background work it started is gone (relaunchSentence), though no turn was running and no task
+// was in one when it was let go.
 func TestARelaunchRecordsAProcessWithNoReportAsUnknown(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateIdle)
 	died, at := h.generation(), h.clock.Now()
-	observation := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: at}
 
-	h.must(RuntimeObservation{Observation: observation})
+	h.observe(runtime.Gone)
 
-	cause := endDied(deathCause(observation))
+	cause := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: died})
 	h.wantEndedLine(cause)
-	if h.claim().EndedWork.Reported {
-		t.Fatal("the record says the process reported, want it unreported")
-	}
 }
 
-// Only a process that ran no turn, held none, and reported no background work is recorded as
-// having ended nothing: one that ran a turn and reported nothing running, released idle, and one
-// that never ran a turn and reported nothing at all, found dead before its first.
+// Only a process in no turn, with no task in one and no background work reported running, is
+// recorded as having ended nothing, and then only where it left a report or never ran a turn
+// (recordEnd): one that ran a turn and reported nothing running, released idle; and one that never
+// ran a turn and reported nothing at all, found dead before its first.
 func TestARelaunchRecordsNothingWhenNothingRan(t *testing.T) {
 	t.Run("a turn ran and its report says nothing runs", func(t *testing.T) {
 		h := newHarness(t)

@@ -489,8 +489,7 @@ func TestADeliveryToASuspendedClaimResumesIt(t *testing.T) {
 	// does, so the suspension ends no work and the task goes as it was queued (recordEnd).
 	h.reach(StateIdle)
 	h.reportActivity()
-	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
-	h.wantState(StateSuspended)
+	h.reach(StateSuspended)
 
 	h.must(RequestDeliver{Claim: testToken, Task: "answer the review"})
 

@@ -1537,7 +1537,7 @@ func refusedElsewhere(m *Machine, ctx context.Context, r StreamLateRefusal) (boo
 		m.log.Warn("supervise: a replayed refusal names the prompt a foreign turn confirmed; the task goes back unread",
 			"delivery", r.DeliveryID, "error", r.Error)
 		m.answered(r.DeliveryID)
-		return true, m.takeBackPending(ctx, taskUnread, m.awaitsResult())
+		return true, m.takeBackPending(ctx, taskUnread)
 	case r.DeliveryID != p.ID && m.outstandingPrompt(r.DeliveryID):
 		return true, m.waitedOutAnswer(ctx, r.DeliveryID, taskUnread, agentBusy(r.Error), "refused: "+r.Error)
 	case r.Replayed || r.DeliveryID != p.ID:
@@ -1577,7 +1577,7 @@ func refusedUnprompted(m *Machine, ctx context.Context, ev Event) error {
 	m.log.Warn("supervise: a prompt was refused while no process can be prompted; the task goes back unread",
 		"delivery", r.DeliveryID, "state", string(m.claim.State), "error", r.Error)
 	m.answered(r.DeliveryID)
-	return m.takeBackPending(ctx, taskUnread, m.awaitsResult())
+	return m.takeBackPending(ctx, taskUnread)
 }
 
 // lateRefused is the agent refusing a prompt it had acknowledged. OMP answers that way when it
@@ -1628,7 +1628,7 @@ func lateRefused(m *Machine, ctx context.Context, ev Event) error {
 		// delivery goes back to waiting, unread unless an earlier prompt of the task is the turn's,
 		// and nothing the worker reports from a turn of its own belongs to it. The turn is the
 		// agent's word whatever became of the take-back's write, so the record is made either way.
-		return errors.Join(m.takeBackPending(ctx, taskUnread, m.awaitsResult()), m.recordBusyTurn(ctx))
+		return errors.Join(m.takeBackPending(ctx, taskUnread), m.recordBusyTurn(ctx))
 	}
 	m.log.Warn("supervise: the agent refused an acknowledged prompt and is in no turn; the prompt is charged",
 		"delivery", r.DeliveryID, "error", r.Error)
@@ -1899,13 +1899,10 @@ func turnStartedWhileBusy(m *Machine, ctx context.Context, ev Event) error {
 // end line names (Machine.turnsDelivery): the turn is now known to be that task's, which the
 // start line written at the record could not yet say.
 func (m *Machine) busyTurnBegun(delivery string) {
-	const line = "supervise: the turn a busy answer recorded has begun"
-	if delivery == "" {
-		m.log.Info(line, "generation", m.claim.Generation)
-		return
+	if delivery != "" {
+		m.turnsDelivery = delivery
 	}
-	m.turnsDelivery = delivery
-	m.log.Info(line, "generation", m.claim.Generation, "delivery", delivery)
+	m.logTurn("supervise: the turn a busy answer recorded has begun", delivery)
 }
 
 // takeBackSignal takes back this claim's answer to its open round when the turn starting is not
@@ -2285,7 +2282,7 @@ func promptResulted(m *Machine, ctx context.Context, ev Event) error {
 				m.log.Warn("supervise: Oh My Pi ran no turn for the prompt; it is in a turn of its own, whose end sends the task again",
 					"delivery", r.DeliveryID, "error", r.Error)
 			}
-			return errors.Join(m.takeBackPending(ctx, taskUnread, m.awaitsResult()), m.recordBusyTurn(ctx))
+			return errors.Join(m.takeBackPending(ctx, taskUnread), m.recordBusyTurn(ctx))
 		}
 		return m.promptFailed(ctx, why, taskRead)
 	}
@@ -2361,7 +2358,7 @@ func (m *Machine) waitedOutAnswer(ctx context.Context, id string, read, busy boo
 	case !p.ConfirmedAt.IsZero() && m.send == nil:
 		m.log.Warn("supervise: a prompt whose wait for its turn ran out was answered with no turn, so the turn taken for it was another's; the task goes back to waiting",
 			"delivery", id, "pending", p.ID, "why", why)
-		if err := m.takeBackPending(ctx, read, false); err != nil {
+		if err := m.takeBackPending(ctx, read); err != nil {
 			return err
 		}
 		if m.claim.State == StateIdle {

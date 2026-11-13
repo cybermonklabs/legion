@@ -18,8 +18,7 @@ import (
 // (intake.ClaimReady.Relaunch, the daemon's applyTerminal): the first turn of such an architect
 // can be its catch-up's, and it reads that its subagent died before it reads its tree
 // (dispatch://INFRA-3276 R3). The rest of the catch-up is what it always was. A ready that carries
-// no sentence — the record told, or nothing recorded — and a hand-over's catch-up compose the
-// reason as before.
+// no sentence — the record told, or nothing recorded — composes the reason as before.
 func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
 	pool := migratedPool(t)
 	seedAdmittedTree(t, pool, 1)
@@ -50,12 +49,8 @@ func TestARelaunchSentenceOpensTheRootArchitectsCatchUp(t *testing.T) {
 	}
 
 	ready(2, sentence)
-	got := reasons()
-	if len(got) != 1 || !strings.HasPrefix(got[0], sentence) {
-		t.Fatalf("the relaunched architect's catch-up reasons %q, want one opening with the relaunch's sentence %q", got, sentence)
-	}
-	if want := sentence + "\n\n" + tree; got[0] != want {
-		t.Fatalf("the relaunched architect's catch-up reason is %q, want %q: the sentence, then the tree as before", got[0], want)
+	if got, want := reasons(), sentence+"\n\n"+tree; len(got) != 1 || got[0] != want {
+		t.Fatalf("the relaunched architect's catch-up reasons %q, want the one %q: the sentence, then the tree as before", got, want)
 	}
 
 	ready(3, "")

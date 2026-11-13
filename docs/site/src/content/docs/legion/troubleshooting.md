@@ -1179,10 +1179,13 @@ On such a daemon, an update round or a message wake can take the author of the c
   of the daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and
   which a newer task replaces while no prompt of it is outstanding). A root architect's catch-up
   opens with the same sentence, and the daemon-launched controller reads it in front of its start
-  message. A process that left no activity report is told that the daemon has no report of its
-  background work, so its subagents and background jobs are gone. The record is marked told once
-  a turn confirms a prompt that carried it. Nothing to do; the agent checks what that work did
-  before it repeats it.
+  message. A claim whose fresh session has not yet been told of the session it abandoned is the
+  exception: that session's sentence, which says that everything of the old session is gone,
+  goes in front of its first task instead, and it gets no delivery of the daemon's own and no
+  sentence in its catch-up. A process that left no activity report is told that the daemon has no
+  report of its background work, so its subagents and background jobs are gone. The record is
+  marked told once a turn confirms a prompt that carried it, or the abandoned session's sentence
+  in its place. Nothing to do; the agent checks what that work did before it repeats it.
 - **`supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no
   process is recorded for it`** at boot names a claim the store held live with no process, with the
   state it was stored in (`stored=`): a launch the previous daemon began and never recorded. The

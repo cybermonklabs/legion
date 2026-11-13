@@ -1,14 +1,15 @@
 package daemon
 
 // The sentence a relaunched process is told of what the last let-go of its process ended
-// (dispatch://INFRA-3276 R3, plan task T5), end to end over the real supervision, the real
-// workflow and a real Postgres, with a faked runtime: a root architect relaunched holding a task
-// and holding none, and either one's catch-up; the daemon-launched controller's start message; and
-// a phase worker's resume task behind the daemon's own delivery of the sentence.
+// (dispatch://INFRA-3276 R3), end to end over the real supervision, the real workflow and a real
+// Postgres, with a faked runtime: a root architect relaunched holding a task and holding none,
+// either one's catch-up, and the catch-up of one whose relaunch also lost its session; the
+// daemon-launched controller's start message; and a phase worker's resume task behind the daemon's
+// own delivery of the sentence.
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
@@ -18,7 +19,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -36,18 +36,20 @@ import (
 )
 
 // relaunchDeliveryPrefix starts the id of the daemon's own delivery of a relaunch's sentence
-// (supervise's relaunchTaskPrefix).
+// (supervise's relaunchTaskPrefix), for the checks that read an id on its own, as a prompt the
+// shim was sent carries it; a check of a delivery asks it (supervise.Delivery.Relaunch).
 const relaunchDeliveryPrefix = "relaunch:"
 
 // rootArchitectRig is a tree's root architect as the daemon runs one: its root in the workflow,
 // its claim started by the outbox's start row and supervised over a real Postgres, its ready
 // applied to the real workflow (workflowRuntime.terminal), whose catch-up is queued in the outbox,
 // and its session's activity report read from the store as the daemon reads it
-// (supervise.Deps.ClaimActivity).
+// (supervise.Deps.ClaimActivity). rt is the faked runtime the claim's processes run on.
 type rootArchitectRig struct {
 	t       *testing.T
 	pool    *pgxpool.Pool
 	st      *store.Store
+	rt      *fake.Runtime
 	machine *supervise.Machine
 	conn    *fake.Conn
 	token   claim.Token
@@ -70,7 +72,7 @@ func newRootArchitectRig(t *testing.T) *rootArchitectRig {
 	if _, err := st.OpenTreeLifecycle(ctx, "legion", root.Key, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("admit the tree: %v", err)
 	}
-	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
+	sup, rt := newOutboxSupervisor(t, "legion", t.TempDir())
 	sup.deps.Store = st
 	sup.deps.ClaimActivity = st.ClaimActivity
 	engine := workflow.New(records, workflow.Config{Project: root.Project, Repositories: testRepositories}, quietLogger())
@@ -82,7 +84,7 @@ func newRootArchitectRig(t *testing.T) *rootArchitectRig {
 			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
 		},
 	}
-	rig := &rootArchitectRig{t: t, pool: pool, st: st, token: mustClaimToken(t, root.Key, claim.RoleArchitect), conn: fake.NewConn()}
+	rig := &rootArchitectRig{t: t, pool: pool, st: st, rt: rt, token: mustClaimToken(t, root.Key, claim.RoleArchitect), conn: fake.NewConn()}
 	sup.deps.Conns.(*fake.Conns).Register(rig.token, rig.conn)
 	if err := runner.execute(ctx, mustOutboxRow(t, root.Key, record.SuperviseRequest{Op: "start", Tree: root.Tree,
 		Role: claim.RoleArchitect, Generation: root.Generation}, time.Now())); err != nil {
@@ -102,12 +104,18 @@ func (r *rootArchitectRig) claim() supervise.Claim { return r.machine.Claim() }
 // handle hands the machine its events in order and waits for what they set going.
 func (r *rootArchitectRig) handle(events ...supervise.Event) {
 	r.t.Helper()
+	handleAll(r.t, r.machine, events...)
+}
+
+// handleAll hands m its events in order and waits for what they set going.
+func handleAll(t *testing.T, m *supervise.Machine, events ...supervise.Event) {
+	t.Helper()
 	for _, ev := range events {
-		if err := r.machine.Handle(context.Background(), ev); err != nil {
-			r.t.Fatalf("handle %T: %v", ev, err)
+		if err := m.Handle(context.Background(), ev); err != nil {
+			t.Fatalf("handle %T: %v", ev, err)
 		}
 	}
-	r.machine.Wait()
+	m.Wait()
 }
 
 // boot drives the launched process through its shim's hello, its agent's registration and its
@@ -121,14 +129,10 @@ func (r *rootArchitectRig) boot() {
 }
 
 // report is the architect's session reporting a goal-red-team subagent running, through the
-// store's own write onto the launch it runs now (the activity route's PutClaimActivity).
+// store's own write onto the launch it runs now (putActivity).
 func (r *rootArchitectRig) report() {
 	r.t.Helper()
-	known, err := r.st.PutClaimActivity(context.Background(), r.token, r.claim().Generation, claim.SessionActivity{
-		At: time.Now(), BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"subagent"}}})
-	if err != nil || !known {
-		r.t.Fatalf("report the architect's subagent: known=%v, %v", known, err)
-	}
+	putActivity(r.t, r.st, r.token, r.claim().Generation, "subagent")
 }
 
 // dies is the runtime finding the architect's process gone, and the relaunch that follows it
@@ -201,7 +205,7 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 		t.Fatalf("the relaunch recorded %+v, want an untold record of the task's turn and the subagent", ended)
 	}
 	held := rig.claim().Pending
-	if held == nil || held.Task != task || strings.HasPrefix(held.ID, relaunchDeliveryPrefix) {
+	if held == nil || held.Task != task || held.Relaunch() {
 		t.Fatalf("the relaunched architect holds %+v, want its task and no delivery of the daemon's own", held)
 	}
 	sent := rig.lastPrompt()
@@ -229,10 +233,9 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingATask(t *testing
 	}
 }
 
-// A root architect relaunched holding nothing — its goal-red-team reading started, its turn
-// ended, its process gone — is given a delivery of the daemon's own that carries the sentence
-// alone, with no phase, no run and no entry, and is sent it at once. Its catch-up opens with
-// the same sentence.
+// A root architect relaunched holding nothing — its goal-red-team subagent reported running, its
+// process gone — is given a delivery of the daemon's own that carries the sentence alone, with no
+// phase, no run and no entry, and is sent it at once. Its catch-up opens with the same sentence.
 func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testing.T) {
 	rig := newRootArchitectRig(t)
 	if held := rig.claim().Pending; held != nil {
@@ -248,7 +251,7 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 	}
 	sentence := supervise.RelaunchSentence(ended)
 	held := rig.claim().Pending
-	if held == nil || !strings.HasPrefix(held.ID, relaunchDeliveryPrefix) || held.Task != sentence ||
+	if held == nil || !held.Relaunch() || held.Task != sentence ||
 		held.Phase != "" || held.Generation != 0 || held.Entry != 0 {
 		t.Fatalf("the relaunched architect holds %+v, want the daemon's own delivery of the sentence, of no phase, run or entry", held)
 	}
@@ -261,37 +264,48 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 	wantCatchUpOpensWith(t, rig.pool, sentence)
 }
 
-// storedOf is token's claim among the stored claims.
-func storedOf(t *testing.T, claims []supervise.Claim, token claim.Token) supervise.Claim {
-	t.Helper()
-	for _, c := range claims {
-		if c.Token == token {
-			return c
-		}
+// A root architect whose relaunch also lost its session — the resume found the session in no
+// store, so a fresh agent runs in its place (supervise's startFresh) — has two things to be told:
+// what the relaunch ended, and the session it abandoned. The abandoned session's sentence takes
+// precedence, as it does in every prompt the claim's machine sends (supervise's Delivery.message,
+// queueRelaunch): it says that everything of the old session is gone, and the fresh session has
+// no transcript of the work the relaunch's sentence describes. So the catch-up its ready queues
+// states the tree with no relaunch sentence in front of it, and the claim is given no delivery of
+// the daemon's own.
+func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T) {
+	rig := newRootArchitectRig(t)
+	rig.report()
+	rig.rt.ScriptResume(fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: the session table holds no such session",
+		rig.token, runtime.ErrSessionFileMissing)})
+
+	rig.handle(supervise.RuntimeObservation{Observation: runtime.Observation{
+		Locator: *rig.claim().Locator, Kind: runtime.Gone, At: time.Now()}})
+	generation := rig.claim().Generation
+	rig.handle(supervise.StreamHello{Claim: rig.token, Generation: generation},
+		supervise.RequestRegister{Claim: rig.token, Generation: generation, Session: "ses-fresh", SessionFile: "/tmp/fresh.jsonl"},
+		supervise.RequestReady{Claim: rig.token, Generation: generation, Session: "ses-fresh"})
+
+	c := rig.claim()
+	if !c.EndedWork.Tells() || !c.Abandoned.Tells() {
+		t.Fatalf("the relaunch left the record %+v and the abandoned session %+v, want both still to tell", c.EndedWork, c.Abandoned)
 	}
-	t.Fatalf("the store holds no claim %s", token)
-	return supervise.Claim{}
+	if c.Pending != nil {
+		t.Fatalf("the fresh architect holds %+v, want no delivery of the daemon's own: the abandoned session's sentence waits for its first task", c.Pending)
+	}
+	reasons := catchUpReasons(t, rig.pool)
+	if len(reasons) != 1 {
+		t.Fatalf("the outbox holds catch-ups %q, want the relaunch's one", reasons)
+	}
+	if strings.Contains(reasons[0], supervise.RelaunchSentence(c.EndedWork)) || !strings.Contains(reasons[0], "the tree of LEGION-208 at generation 1") {
+		t.Fatalf("the fresh architect's catch-up reads %q, want the tree with no sentence of what the relaunch ended", reasons[0])
+	}
 }
 
 // controllerReady connects launch's shim, registers its agent as session and says it is ready, as
 // the controller's pod does, and returns the shim the daemon prompts it on.
 func controllerReady(t *testing.T, d *daemon, record *built, launch runtime.SpawnSpec, session string) *shim {
 	t.Helper()
-	sh := dialShim(t, record.address, launch.BootToken)
-	testwait.Eventually(t, "the hello to reach the controller's machine", func() bool {
-		return d.claim(launch.Claim).State == string(supervise.StateShimConnected)
-	})
-	status, body := d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register the controller's launch as %s = %d; body %s", session, status, body)
-	}
-	var registration api.ControllerRegisterResponse
-	if err := json.Unmarshal(body, &registration); err != nil {
-		t.Fatalf("decode %s as the controller's registration: %v", body, err)
-	}
+	sh, registration := registeredLaunch(t, d, record, launch, session)
 	if status, body := d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: launch.Claim, SessionID: session, Secret: registration.Secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -361,10 +375,15 @@ func TestARelaunchSentenceGoesInFrontOfTheDaemonLaunchedControllersStartMessage(
 	}
 
 	workTurn(sh, prompt)
-	testwait.Eventually(t, "the start turn to tell the record and end with nothing left pending", func() bool {
+	testwait.Eventually(t, "the start turn to end with nothing left pending", func() bool {
 		c := d.claim(token)
-		return c.State == string(supervise.StateIdle) && c.Pending == nil && storedClaim(t, cfg, token).EndedWork.Told
+		return c.State == string(supervise.StateIdle) && c.Pending == nil
 	})
+	// The record is told by the confirmation's own write, at the turn's start, before the end
+	// that leaves the claim idle (supervise's confirm), so it is read once the turn is over.
+	if !storedClaim(t, cfg, token).EndedWork.Told {
+		t.Fatal("the start turn left the record untold, want it told by the turn that took the start message")
+	}
 }
 
 // A phase worker relaunched holding nothing is sent the daemon's own delivery of the sentence, and
@@ -381,7 +400,7 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 	rig.boot()
 
 	relaunch := rig.claim().Pending
-	if relaunch == nil || !strings.HasPrefix(relaunch.ID, relaunchDeliveryPrefix) {
+	if relaunch == nil || !relaunch.Relaunch() {
 		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's sentence", relaunch)
 	}
 	if rows := outboxRows(t, rig.pool); rows != 1 {
@@ -398,7 +417,7 @@ func TestARelaunchSentenceDeliveryLeavesAPhaseWorkerItsResumeTask(t *testing.T) 
 		t.Fatalf("the tester holds %+v after the resume task's row ran, want the acknowledged delivery of the sentence still", held)
 	}
 
-	rig.handleAll(supervise.StreamTurnStart{Claim: rig.token}, supervise.StreamTurnEnd{Claim: rig.token},
+	handleAll(t, rig.machine, supervise.StreamTurnStart{Claim: rig.token}, supervise.StreamTurnEnd{Claim: rig.token},
 		supervise.StreamPromptResult{Claim: rig.token, DeliveryID: relaunch.ID, AgentInvoked: true})
 	if c := rig.claim(); c.Pending != nil || !c.EndedWork.Told {
 		t.Fatalf("after the sentence's turn the tester holds %+v with record %+v, want nothing pending and the record told", c.Pending, c.EndedWork)
@@ -426,41 +445,39 @@ func TestARelaunchSentenceDeliveryGivesWayToAPhaseWorkersResumeTask(t *testing.T
 	rig.report("subagent")
 
 	rig.observe(runtime.Gone, false)
-	rig.conn.RefusePrompt(busyAnswer)
+	rig.conn.RefusePrompt(keptBusyRefusal)
 	rig.boot()
 	rig.conn.FailPrompt(nil)
 
 	relaunch := rig.claim().Pending
-	if relaunch == nil || !strings.HasPrefix(relaunch.ID, relaunchDeliveryPrefix) {
+	if relaunch == nil || !relaunch.Relaunch() {
 		t.Fatalf("the relaunched tester holds %+v, want the daemon's own delivery of the relaunch's sentence", relaunch)
 	}
 
+	// The resume task's row takes the place of the sentence's delivery, and nothing goes into the
+	// turn the busy answer named.
+	sentBefore := len(rig.conn.Prompts())
 	rig.run()
 	held := rig.claim().Pending
-	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || strings.HasPrefix(held.ID, relaunchDeliveryPrefix) {
+	if held == nil || held.Task != workflow.ResumePhaseTask(rig.issue) || held.Relaunch() {
 		t.Fatalf("after the resume task's row the tester holds %+v, want the resume task in the place of the sentence's delivery", held)
 	}
+	if sent := rig.conn.Prompts(); len(sent) != sentBefore {
+		t.Fatalf("the tester was sent %+v while the turn the busy answer named ran, want nothing more", sent[sentBefore:])
+	}
 
-	// The turn the busy answer named ends, and the resume task goes behind the sentence.
-	rig.handleAll(supervise.StreamTurnEnd{Claim: rig.token})
+	// The turn the busy answer named ends, and the resume task goes behind the sentence, once.
+	handleAll(t, rig.machine, supervise.StreamTurnEnd{Claim: rig.token})
 	prompts := rig.conn.Prompts()
-	sent := prompts[len(prompts)-1]
+	if len(prompts) != sentBefore+1 {
+		t.Fatalf("the tester was sent %+v once the turn ended, want the resume task alone", prompts[sentBefore:])
+	}
+	sent := prompts[sentBefore]
 	if sent.DeliveryID != held.ID || !strings.HasPrefix(sent.Message, "Your previous process ended because the process died") ||
 		!strings.Contains(sent.Message, "Each subagent that you started stopped with that process.") ||
 		!strings.HasSuffix(sent.Message, "\n\n"+workflow.ResumePhaseTask(rig.issue)) {
 		t.Fatalf("the resume task was sent as %+v, want it under %s behind the relaunch's sentence", sent, held.ID)
 	}
-}
-
-// handleAll hands the tester's machine its events in order and waits for what they set going.
-func (r *readyWorkerRig) handleAll(events ...supervise.Event) {
-	r.t.Helper()
-	for _, ev := range events {
-		if err := r.machine.Handle(context.Background(), ev); err != nil {
-			r.t.Fatalf("handle %T: %v", ev, err)
-		}
-	}
-	r.machine.Wait()
 }
 
 // dueNow brings every outbox row's next attempt to now, so the next pass runs a row that waited.

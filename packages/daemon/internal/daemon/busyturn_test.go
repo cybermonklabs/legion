@@ -18,10 +18,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// busyAnswer is Oh My Pi's refusal of a prompt that reaches a session already in a prompt
-// (supervise's agentBusy).
-const busyAnswer = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
-
 // aliveObservation is the runtime's sweep finding the claim's process running, as the daemon
 // posts it.
 func aliveObservation(m *supervise.Machine) supervise.RuntimeObservation {
@@ -30,24 +26,23 @@ func aliveObservation(m *supervise.Machine) supervise.RuntimeObservation {
 
 // A claim a busy answer recorded working holds the issue's working copy for its turn as any working
 // claim does (claimInTurn), so the tester's phase task waits behind it. That turn's end is posted to
-// the issue's other claims whichever way it comes: the agent's own agent_end, as before, or the
-// sweep's ask finding the agent in no prompt (supervise's askTurnOver), which reaches the machine
-// on an observation rather than a turn end and is told by the count of turns the machine has ended
+// the issue's other claims whichever way it comes: the agent's own agent_end, or the sweep's ask
+// finding the agent in no prompt (supervise's askTurnOver), which reaches the machine on an
+// observation rather than a turn end and is told by the count of turns the machine has ended
 // (supervise.Machine.TurnsEnded, wakeIssue). The tester's task is sent then, and not a sweep later.
 func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 	for _, tc := range []struct {
 		name string
-		// end ends the implementer's turn through the supervisor's own feed, which is where the
-		// worker stream and the runtime's sweep post their events.
-		end func(rig *issueRig, implementer claim.Token, writing *supervise.Machine, conn *fake.Conn)
+		// end is what ends the implementer's turn once its agent stops streaming, posted through
+		// the supervisor's own feed, which is where the worker stream and the runtime's sweep post
+		// their events.
+		end func(implementer claim.Token, writing *supervise.Machine) supervise.Event
 	}{
-		{name: "by the agent's own end of it", end: func(rig *issueRig, implementer claim.Token, _ *supervise.Machine, conn *fake.Conn) {
-			conn.SetStreaming(false)
-			rig.sup.post(implementer, supervise.StreamTurnEnd{Claim: implementer})
+		{name: "by the agent's own end of it", end: func(implementer claim.Token, _ *supervise.Machine) supervise.Event {
+			return supervise.StreamTurnEnd{Claim: implementer}
 		}},
-		{name: "by the sweep's ask", end: func(rig *issueRig, implementer claim.Token, writing *supervise.Machine, conn *fake.Conn) {
-			conn.SetStreaming(false)
-			rig.sup.post(implementer, aliveObservation(writing))
+		{name: "by the sweep's ask", end: func(_ claim.Token, writing *supervise.Machine) supervise.Event {
+			return aliveObservation(writing)
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -66,7 +61,7 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 			// The implementer's agent is in a turn of its own, whose start the daemon never read,
 			// and its phase task is answered busy: the claim is recorded working for that turn.
 			implementerConn.SetStreaming(true)
-			implementerConn.RefusePrompt(busyAnswer)
+			implementerConn.RefusePrompt(keptBusyRefusal)
 			if err := writing.Handle(rig.ctx, supervise.RequestDeliver{Claim: implementer, Task: "implement the plan", ID: "outbox:1",
 				Phase: phase.Implementing, Generation: 1}); err != nil {
 				t.Fatalf("deliver the implementer's task: %v", err)
@@ -97,7 +92,8 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 				t.Fatalf("the tester was prompted %+v while the implementer's agent was still streaming; want its task held", prompts)
 			}
 
-			tc.end(rig, implementer, writing, implementerConn)
+			implementerConn.SetStreaming(false)
+			rig.sup.post(implementer, tc.end(implementer, writing))
 
 			testwait.Eventually(t, "the tester's task to be sent once the implementer's turn ended", func() bool {
 				return len(testerConn.Prompts()) == 1
@@ -108,6 +104,8 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 			if view := writing.View(); view.State != supervise.StateIdle {
 				t.Fatalf("the implementer is %s after its turn ended, want it idle", view.State)
 			}
+			// A send the turn's end made would run on the machine's send goroutine: wait for it.
+			writing.Wait()
 			if sent := implementerConn.Prompts(); len(sent) != 1 {
 				t.Fatalf("the implementer was sent %+v, want only the send its busy answer refused: its turn finished the phase that task was for", sent)
 			}
@@ -133,7 +131,7 @@ func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
 	}
 	conn := fake.NewConn()
 	conn.SetStreaming(true)
-	conn.RefusePrompt(busyAnswer)
+	conn.RefusePrompt(keptBusyRefusal)
 	rig.sup.deps.Conns.(*fake.Conns).Register(idle.Token, conn)
 
 	if err := m.Handle(context.Background(), supervise.RequestDeliver{Claim: idle.Token, Task: "work the phase", ID: "outbox:3"}); err != nil {
@@ -195,7 +193,7 @@ func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
 	// The daemon's sweep finds the idle implementer's process alive and sends it its phase's task,
 	// and Oh My Pi answers the send busy.
 	conn := fake.NewConn()
-	conn.RefusePrompt(busyAnswer)
+	conn.RefusePrompt(keptBusyRefusal)
 	rig.sup.deps.Conns.(*fake.Conns).Register(rig.token, conn)
 	if err := rig.machine.Handle(ctx, aliveObservation(rig.machine)); err != nil {
 		t.Fatalf("the sweep over the idle implementer: %v", err)

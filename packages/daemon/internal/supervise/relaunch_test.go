@@ -1,11 +1,10 @@
 package supervise
 
 // The sentence a relaunched process is told of what the last let-go of its process ended
-// (dispatch://INFRA-3276 R3, plan task T5): in front of the task the claim holds, as the whole of
-// a delivery of the daemon's own when it holds none, behind the abandoned session's sentence's
-// precedence and in front of a provider error's, and told only when a turn takes a prompt that
-// carried it. The daemon package drives the same against the real workflow (its
-// TestARelaunchSentence… tests).
+// (dispatch://INFRA-3276 R3): in front of the task the claim holds, as the whole of a delivery of
+// the daemon's own when it holds none, behind the abandoned session's sentence's precedence and in
+// front of a provider error's, and told only when a turn takes a prompt that carried it. The
+// daemon package drives the same against the real workflow (its TestARelaunchSentence… tests).
 
 import (
 	"errors"
@@ -15,10 +14,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
-
-// agentBusyAnswer is Oh My Pi's own answer to a prompt it will not run because a turn of its own
-// is already in progress (table.go's agentBusy reads it).
-const agentBusyAnswer = "Agent is already processing a prompt"
 
 // wantTold is whether the claim's record of what its last let-go ended has been told, as the
 // machine holds it and as the store holds it: confirm writes the mark with the confirmation.
@@ -141,7 +136,7 @@ func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
 	}
 	h.wantTold(false, "at the acknowledgement")
 
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: p.ID, Error: agentBusyAnswer})
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: p.ID, Error: busyAnswer})
 	rotated := h.pending()
 	if rotated.ID == p.ID || !relaunchTask(rotated.ID) {
 		t.Fatalf("the busy answer took the delivery back as %s, want a new id that is still the relaunch's", rotated.ID)
@@ -215,9 +210,6 @@ func TestARelaunchSentenceComesBeforeAProviderErrorNote(t *testing.T) {
 		t.Fatalf("the task was re-sent as %q, want %q", sent.Message, want)
 	}
 	wantSays(t, sent.Message, "Each background job that you started stopped with that process.")
-	if strings.Index(sent.Message, "Your previous process ended") > strings.Index(sent.Message, p.ProviderErrorNote) {
-		t.Errorf("the prompt %q puts the provider's sentence before the relaunch's", sent.Message)
-	}
 }
 
 // The record is told at the confirmation of a prompt that carried it, and only there. Oh My Pi
@@ -245,7 +237,7 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 		}
 		h.wantTold(false, "at the acknowledgement")
 
-		h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: agentBusyAnswer})
+		h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: busyAnswer})
 		h.wantTold(false, "after the busy answer")
 
 		h.mustQuiet(StreamTurnEnd{Claim: testToken})
@@ -310,7 +302,7 @@ func TestARelaunchSentenceDeliveryGivesWayToANewerTask(t *testing.T) {
 	t.Run("no prompt of it waits on a result", func(t *testing.T) {
 		h := relaunchedHoldingNothing(t)
 		// The relaunched agent is in a turn of its own and answers the delivery busy at the send.
-		h.conn.RefusePrompt(agentBusyAnswer)
+		h.conn.RefusePrompt(busyAnswer)
 		h.relaunched()
 		h.conn.FailPrompt(nil)
 		relaunch := h.pending()

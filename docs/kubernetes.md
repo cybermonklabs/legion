@@ -1009,6 +1009,7 @@ This save is best effort: at the 9 s floor of `worker_stop_timeout_seconds`, a w
 A hard kill (a node lost, a SIGKILL) makes no last save.
 The table then holds what the last committed save left: the transcript up to a newline, without at most the lines of its last 2 s.
 The daemon sends an interrupted task again, behind a sentence that names what the relaunch ended (the turn, its tool calls and each kind of background work the process last reported), so the worker checks what that turn did and does the rest again.
+A process that left no activity report is told instead that the daemon has no report of its background work, so every subagent and background job it started is gone.
 
 The recreated-workspace notice reaches a Claude Code role too:
 its own MCP server (`packages/claude-envoy`) reads `LEGION_WORKSPACE_RECREATED` at start and writes the same text into the session over the bridge's inbox, once per launch, recorded beside the phase reminder's state so a restarted server does not repeat it.
@@ -4450,6 +4451,7 @@ How many update rounds run at once is the project's to cap, with two optional to
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).
 An issue holds one of those slots while a claim of it holds the round over the pod its claims record, or while its claims record two pods with a round open, which is a replacement in flight (`holdsOpenRound`).
 A round over a pod the claims no longer record holds none, since that pod is gone and the same sweep ends the round, and neither does a round whose claims record no pod at all.
+A round this daemon opened at an earlier sweep that no claim of the issue records yet holds a slot too, since it is an opening all the same: the post that carries a round to a machine is asynchronous, and a machine in a relaunch can take minutes to take it (`podUpdateOpenings`).
 A key the file leaves out is no limit at all, and there is no default:
 one change to the pod template drifts every pod of the project at once, and the first sweep after it would otherwise ask every worker of the fleet to stop what it is doing and push.
 Neither limit ends a round, pauses one, or holds back the re-ask of one that is open:

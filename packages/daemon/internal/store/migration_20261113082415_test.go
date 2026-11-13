@@ -121,8 +121,14 @@ func TestARelaunchRecordsItsEndedWorkOnTheClaimRow(t *testing.T) {
 			t.Fatalf("migrate through the ended-work record: %v", err)
 		}
 
-		read := onlyClaim(t, store)
-		if read.EndedWork.Cause != "" || read.EndedWork.Tells() {
+		var null bool
+		if err := store.Pool().QueryRow(ctx, "select ended_work is null from claims where token = $1", token).Scan(&null); err != nil {
+			t.Fatalf("read the column after the migration: %v", err)
+		}
+		if !null {
+			t.Error("the stored claim holds a record after the migration, want null")
+		}
+		if read := onlyClaim(t, store); read.EndedWork.Cause != "" {
 			t.Errorf("the stored claim reads the record %+v after the migration, want none", read.EndedWork)
 		}
 	})

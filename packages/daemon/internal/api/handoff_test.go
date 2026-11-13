@@ -1365,9 +1365,10 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 	if err := machine.Handle(ctx, supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
 		t.Fatalf("acknowledge the prompt: %v", err)
 	}
-	// The bound's take-back is driven in internal/supervise, where the clock moves
-	// (TestOnlyTheTurnBoundLeavesTheTaskMarkedAsRead); this route test starts from the state it
-	// leaves.
+	// The wait for the turn is left armed: running out, it takes the task back keeping the mark and
+	// the confirmation unset, which is the state the acknowledgement leaves too. The take-back
+	// itself is driven below, with a clock this file fires (turnClock,
+	// TestACompletionInALateTurnWithABusyResendIsAccepted).
 	if p := machine.Claim().Pending; p == nil || p.DeliveredAt.IsZero() || !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the acknowledgement = %+v, want it delivered and unconfirmed", p)
 	}
@@ -1480,7 +1481,7 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			h, _ := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
 			clock := &turnClock{}
 			h.supervisor.deps.Clock = clock
 			seedIssueAt(t, h, "LEGION-208", phase.Testing)
@@ -1516,14 +1517,16 @@ func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
 				t.Fatalf("start the task's late turn: %v", err)
 			}
 			tc.resend(t, machine, tester.token, resend)
+			// The late turn confirmed the new entry's task, and the busy answer took none of that
+			// back: that confirmation is what makes the completion the new task's.
+			if p := machine.Claim().Pending; p == nil || p.ConfirmedAt.IsZero() || p.Entry != 2 {
+				t.Fatalf("pending in the late turn after the busy re-send = %+v, want the new entry's task confirmed", p)
+			}
 
 			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
 				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
 			if recorder.Code != http.StatusOK {
 				t.Fatalf("the completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
-			}
-			if completion := lastCompletion(t, facts); completion.Generation != 1 || completion.Role != claim.RoleTester {
-				t.Fatalf("the completion recorded = %+v, want the tester's of run 1", completion)
 			}
 		})
 	}

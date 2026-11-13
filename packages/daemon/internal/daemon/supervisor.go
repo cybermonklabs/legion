@@ -117,8 +117,9 @@ func (s *supervisor) claimInTurn(issue string, except claim.Token) (claim.Token,
 // than beside it, because a claim woken before that decision published its end would read the
 // turn as still running and hold the task until the next sweep. The end is the agent's own
 // agent_end, or its answer to the sweep's question that it is in no prompt, which ends a turn a
-// busy answer recorded (supervise's askTurnOver): the feed (add) posts this for every decision
-// that recorded an end, which the machine counts (supervise.Machine.TurnsEnded).
+// busy answer recorded or a restored claim's turn an earlier daemon saw start (supervise's
+// askTurnOver): the feed (add) posts this for every decision that recorded an end, which the
+// machine counts (supervise.Machine.TurnsEnded).
 func (s *supervisor) wakeIssue(token claim.Token) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

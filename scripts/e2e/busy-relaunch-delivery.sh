@@ -14,9 +14,9 @@
 # keep the next from running, and the run fails when any step failed.
 #
 #   busy-late-turn               a phase worker's task whose prompt waits on a held recall past the
-#                                daemon's five-second wait for its turn: one busy answer, the late
-#                                turn confirms the task, its result retires it, nothing is sent
-#                                after it, and no prompt result of the claim is dropped as stale
+#                                daemon's five-second wait for its turn: at most one busy answer,
+#                                the late turn confirms the task, its result retires it, nothing is
+#                                sent after it, and no prompt result of the claim is dropped as stale
 #   busy-own-turn                a task queued while a turn of Oh My Pi's own runs — the one an
 #                                `async` bash job's result starts — is answered busy at most once
 #                                and sent only after that turn ends
@@ -43,7 +43,9 @@
 # service, a devbox container and a pod's own embedded PostgreSQL all satisfy it on a loopback
 # address, and this script starts none. That server must be this machine's: prerequisites reads
 # the DSN with lib/loopback-dsn.sh's require_loopback_dsn and refuses a host that is not
-# 127.0.0.1, localhost or ::1 with exit 2, before it builds or starts anything.
+# 127.0.0.1, localhost or ::1 with exit 2, before it builds or starts anything; with
+# --base-commit the same guard runs first, before the base tree is taken, and a refusal of the base
+# run is this script's exit 2 as well.
 # The broker is the run's own: a nats-server from LEGION_E2E_NATS_BIN, or the pinned
 # one this script installs with `go install` into a GOBIN of its own, started with JetStream on a
 # port of the run's own and stopped on any exit. BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR (default a
@@ -55,22 +57,26 @@
 # no kube context and no tmux — the panes are child process groups of the driver — so it runs in a
 # Legion pod and on a devbox alike. The run around the driver is lib/live-daemon-proof.sh's.
 #
-# --base-commit <rev> is the negative control. The tree of <rev> is taken with `git archive` into a
-# directory of the run's own under TMPDIR (removed on any exit), this checkout's driver file is laid
-# over it, `bun install --frozen-lockfile` gives it node_modules of its own, and the same run is
-# made there: the driver, `legion` and both plugins are built from that tree. The driver names no
-# Go symbol the base lacks — it reads the new claim column through SQL and the relaunch sentence as
-# literals — so it builds there. The control passes when that run fails and each of five steps
-# fails at the assertion it names: busy-late-turn at stale-result (the base drops the late turn's
-# result and sends the task again), newer-task at accepted (`a delivery is already pending`),
-# relaunch-subagent-worker and relaunch-subagent-architect at sentence (the base names no work in
-# what it sends a relaunched process), and relaunch-task at claim-row (the base's schema has no
-# ended_work); what busy-own-turn and idle-control did there is printed as it came. Its last line
-# is `busy relaunch delivery negative control: PASS|FAIL …` with the base run's evidence directory.
+# --base-commit <rev> is the negative control, and an empty <rev> is refused with exit 2. The tree
+# of <rev> is taken with `git archive` into a directory of the run's own under TMPDIR (removed on
+# any exit), this checkout's driver file is laid over it, `bun install --frozen-lockfile` gives it
+# node_modules of its own, and the same run is made there: the driver, `legion` and both plugins
+# are built from that tree. The driver names no Go symbol the base lacks — it reads the new claim
+# column through SQL and the relaunch sentence as literals — so it builds there. The control passes
+# when that run fails and each of five steps fails at the assertion it names: busy-late-turn at
+# stale-result (the base drops the late turn's result and sends the task again), newer-task at
+# accepted (`a delivery is already pending`), relaunch-subagent-worker and
+# relaunch-subagent-architect at sentence (the base names no work in what it sends a relaunched
+# process), and relaunch-task at claim-row (the base's schema has no ended_work); what
+# busy-own-turn and idle-control did there is printed as it came. A proof.log an earlier run left
+# in BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR is removed before the base run, so only that run's steps
+# are read. Its last line is `busy relaunch delivery negative control: PASS|FAIL …` with the base
+# run's evidence directory.
 set -euo pipefail
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
 base_commit=''
+base_given=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --base-commit)
@@ -79,10 +85,12 @@ while [ $# -gt 0 ]; do
         exit 2
       fi
       base_commit=$2
+      base_given=true
       shift 2
       ;;
     --base-commit=*)
       base_commit=${1#--base-commit=}
+      base_given=true
       shift
       ;;
     *)
@@ -91,6 +99,10 @@ while [ $# -gt 0 ]; do
       ;;
   esac
 done
+if [ "$base_given" = true ] && [ -z "$base_commit" ]; then
+  echo "FAIL setup: --base-commit was given an empty commit; it takes the commit the negative control's tree is taken from" >&2
+  exit 2
+fi
 if [ -z "${LEGION_OMP_PATH:-}" ]; then
   echo "FAIL setup: LEGION_OMP_PATH is required: it names the Oh My Pi every pane of this proof runs (an absolute executable path). This proof launches real agents and guesses no build." >&2
   exit 1
@@ -132,7 +144,7 @@ control_cleanup() {
 # ends the shell it runs in, and its EXIT trap is that subshell's — and then reads the base run's
 # proof.log for each step's own failure.
 negative_control() {
-  local base_sha status expected step assertion line detail tool
+  local base_sha status expected step assertion line detail tool db_host
   started=$SECONDS
   base_evidence=${BUSY_RELAUNCH_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-busy-relaunch-delivery-base-evidence.XXXXXXXX")}
   mkdir -p "$base_evidence"
@@ -140,9 +152,18 @@ negative_control() {
   transcript_to "$base_evidence/negative-control.log"
 
   begin base-tree
-  for tool in git tar bun; do
+  # The base run's own prerequisites read the DSN too, but only after the archive and the install
+  # below; a DSN it would refuse is refused here first, with the same guard and the same exit 2.
+  [ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+    refuse "LEGION_TEST_PG_DSN is required: it names the PostgreSQL the daemon migrates and runs on (postgres://<user>@<host>:<port>/<database>?sslmode=disable). This script starts no database."
+  for tool in git tar bun python3; do
     command -v "$tool" >/dev/null || fail "$tool is not on PATH"
   done
+  # require_loopback_dsn in lib/loopback-dsn.sh says why a caller of the loopback guard clears
+  # these three, and why the call comes after the tool check above.
+  unset PGHOSTADDR PGSERVICE PGSERVICEFILE
+  require_loopback_dsn db_host LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "this run creates and drops a database there" ||
+    refuse "$db_host"
   base_sha=$(git -C "$root" rev-parse --verify "$base_commit^{commit}" 2>/dev/null) ||
     refuse "--base-commit '$base_commit' names no commit of this repository"
   base_work=$(mktemp -d "${TMPDIR:-/tmp}/legion-e2e-busy-relaunch-delivery-base.XXXXXXXX")
@@ -155,6 +176,9 @@ negative_control() {
   note "the tree of $base_sha in $base_work, with this checkout's $driver_file laid over it and node_modules of its own"
   pass
 
+  # The evidence directory may be one an earlier run used: its proof.log would answer for steps
+  # this run never reached.
+  rm -f "$base_evidence/proof.log"
   set +e
   (
     set -e
@@ -163,6 +187,12 @@ negative_control() {
   )
   status=$?
   set -e
+  # A refusal of the caller's input inside the base run is this script's refusal too, not a
+  # failure of the base; the refusal's own line is in the base run's transcript.
+  if [ "$status" -eq 2 ]; then
+    check=base-run
+    exit 2
+  fi
 
   begin negative-control
   [ "$status" -ne 0 ] || fail "the run over $base_sha passed every step, so this proof tells it from this checkout in nothing"

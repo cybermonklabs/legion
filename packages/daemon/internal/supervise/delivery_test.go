@@ -637,6 +637,12 @@ func TestAReplayedTurnStartIsFencedOnItsDeliveryID(t *testing.T) {
 // bound charged it, and the end of the running turn sends the task again — unless the issue has
 // left the phase the task was queued for meanwhile, which drops the task rather than hand the
 // worker the task of a phase that is over (sendPending).
+//
+// So the three cases assert: a late turn that is the prompt's own, whose result retires the task
+// with no prompt after it; a late turn the prompt's result shows was foreign, after which the task
+// is sent again while the issue holds its phase; and the same turn once the issue has left the
+// phase, after which nothing is sent. The name speaks of the last two alone: it is the name the
+// acceptance check of dispatch://INFRA-3276 R4 (c-r4-tests) runs the test by, so it stays.
 func TestALateForeignTurnResendsTheTaskUnlessTheIssueLeftThePhase(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -726,7 +732,6 @@ func TestALateForeignTurnResendsTheTaskUnlessTheIssueLeftThePhase(t *testing.T) 
 // result dropped as stale; before, the result was dropped and the task sent again at the turn's
 // end, which is what kept the loop going until the claim's budget retired it.
 func TestALateTurnOfAnOutstandingPromptSettlesItsTask(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
@@ -738,7 +743,7 @@ func TestALateTurnOfAnOutstandingPromptSettlesItsTask(t *testing.T) {
 	if resend == first {
 		t.Fatalf("the re-send went under the first id %s, want an id of its own", first)
 	}
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busy})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyAnswer})
 	if p := h.pending(); p.ID == resend || !p.ConfirmedAt.IsZero() {
 		t.Fatalf("pending after the busy answer = %+v, want the re-send taken back under an id of its own, unconfirmed", p)
 	}
@@ -777,14 +782,13 @@ func TestALateTurnOfAnOutstandingPromptSettlesItsTask(t *testing.T) {
 // goes into the running turn, and it is sent once the turn ends. The first prompt's result,
 // arriving behind that end, names a task the claim no longer holds and decides nothing.
 func TestANewerTaskTakesTheLateTurnsTaskPlace(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
 	first := h.wantPrompts(1)[0].DeliveryID
 	h.advance(testRPC)
 	h.observe(runtime.Alive)
-	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.wantPrompts(2)[1].DeliveryID, Error: busy})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: h.wantPrompts(2)[1].DeliveryID, Error: busyAnswer})
 	h.must(StreamTurnStart{Claim: testToken}) // the first prompt's turn, late
 
 	if err := h.handle(RequestDeliver{Claim: testToken, Task: "the next task", ID: "outbox:2", Generation: 8}); err != nil {
@@ -884,7 +888,6 @@ func TestALateRoundAskTurnEndIsTheAnswer(t *testing.T) {
 // prompt, outstanding all along, is the one the late turn is matched to, and its result still
 // settles the task.
 func TestABusyAnswerBeforeItsOwnAcknowledgementAddsNothing(t *testing.T) {
-	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
 	h := newHarness(t)
 	h.reach(StateReady)
 	h.must(RequestDeliver{Claim: testToken, Task: "the task", Generation: 7})
@@ -897,7 +900,7 @@ func TestABusyAnswerBeforeItsOwnAcknowledgementAddsNothing(t *testing.T) {
 		t.Fatal(err)
 	}
 	resend := waitFor(t, "the re-send", gated.entered)
-	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busy}); err != nil {
+	if err := h.m.Handle(h.ctx, StreamPromptResult{Claim: testToken, DeliveryID: resend, Error: busyAnswer}); err != nil {
 		t.Fatal(err)
 	}
 	if p := h.pending(); p.ID == resend {

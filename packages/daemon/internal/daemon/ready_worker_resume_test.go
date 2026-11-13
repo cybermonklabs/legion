@@ -158,15 +158,22 @@ func (r *readyWorkerRig) workTheTask() {
 	r.report()
 }
 
-// report is the tester's session reporting what of its own runs, through the store's own write
-// onto the launch it runs now (the activity route's PutClaimActivity): the kinds named, or nothing
-// running when it names none.
+// report is the tester's session reporting what of its own runs (putActivity): the kinds named,
+// or nothing running when it names none.
 func (r *readyWorkerRig) report(kinds ...string) {
 	r.t.Helper()
-	known, err := r.st.PutClaimActivity(context.Background(), r.token, r.claim().Generation, claim.SessionActivity{
+	putActivity(r.t, r.st, r.token, r.claim().Generation, kinds...)
+}
+
+// putActivity is token's session reporting what of its own runs, through the store's own write
+// onto launch, the launch it runs now (the activity route's PutClaimActivity): background work of
+// the kinds named, or nothing running when it names none.
+func putActivity(t *testing.T, st *store.Store, token claim.Token, launch uint64, kinds ...string) {
+	t.Helper()
+	known, err := st.PutClaimActivity(context.Background(), token, launch, claim.SessionActivity{
 		At: time.Now(), BackgroundWork: claim.BackgroundWork{Running: len(kinds) > 0, Kinds: kinds}})
 	if err != nil || !known {
-		r.t.Fatalf("report the tester's activity: known=%v, %v", known, err)
+		t.Fatalf("report the activity of %s: known=%v, %v", token, known, err)
 	}
 }
 

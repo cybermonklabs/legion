@@ -712,7 +712,9 @@ func (h *harness) post(ev Event, result bool) error {
 // no turn, a busy answer or a late refusal: Oh My Pi answers a prompt once, a failure or a result,
 // and the machine stops waiting for that prompt's result at exactly the moment it takes that
 // answer (Machine.outstanding). A prompt whose wait for its turn ran out is still outstanding, and
-// its turn, starting late, still reports it.
+// its turn, starting late, reports it only while it is the last prompt the connection accepted:
+// the fake connection keeps that one alone (fake.Conn's TakePromptResult), so a test whose task
+// was sent again since posts the first prompt's result itself.
 func (h *harness) promptInTurn() string {
 	conn, ok := h.conns.Conn(h.token)
 	if !ok {
@@ -723,7 +725,10 @@ func (h *harness) promptInTurn() string {
 		return ""
 	}
 	delivery, _ := reporter.TakePromptResult()
-	if !slices.Contains(h.outstanding(), delivery) {
+	h.m.mu.Lock()
+	held := slices.Contains(h.m.outstanding, delivery)
+	h.m.mu.Unlock()
+	if !held {
 		return ""
 	}
 	return delivery

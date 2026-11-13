@@ -319,7 +319,8 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 			"delivery", m.claim.Pending.ID)
 		// The compaction aborts whatever run its session had, so no prompt of the task is left
 		// outstanding for a turn of its own (Machine.outstanding).
-		if err := m.takeBackPending(ctx, taskRead, false); err != nil {
+		m.outstanding = nil
+		if err := m.takeBackPending(ctx, taskRead); err != nil {
 			return err
 		}
 	}

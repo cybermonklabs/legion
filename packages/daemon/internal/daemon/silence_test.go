@@ -263,8 +263,7 @@ func (r *podUpdateRig) takesRelaunchSentence(role claim.Role, says string) {
 		return c.Pending != nil && !c.Pending.DeliveredAt.IsZero()
 	})
 	r.handle(role, supervise.StreamTurnStart{Claim: token})
-	r.handle(role, supervise.StreamTurnEnd{Claim: token})
-	r.handle(role, supervise.StreamPromptResult{Claim: token, DeliveryID: sent.DeliveryID, AgentInvoked: true})
+	r.endTurn(role, sent.DeliveryID)
 	r.awaitClaim(role, "the sentence's turn to retire its delivery", func(c supervise.Claim) bool {
 		return c.Pending == nil && c.State == supervise.StateIdle && c.EndedWork.Told
 	})
@@ -312,11 +311,11 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	}
 	rig.awaitReplacement(1, "once both its workers had answered")
 	rig.awaitSwept(worker, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })
-	// The pod that replaced it brings the worker back on its own session, which is what the
-	// daemon's displaced path does, and the replacement registers and readies.
 	// Its session said at that turn's end that nothing of its own runs, so the replacement is
 	// told of nothing its pod's end took.
 	rig.reportsNothingRunning(worker)
+	// The pod that replaced it brings the worker back on its own session, which is what the
+	// daemon's displaced path does, and the replacement registers and readies.
 	rig.displacedInto(worker, podUpdateReplacementPod)
 	conn, beside := rig.workers[worker], rig.workers[healthy]
 	before, besideBefore := len(conn.Prompts()), len(beside.Prompts())
@@ -807,8 +806,9 @@ func aBackgroundStalledWorker(t *testing.T, beside ...podUpdateRole) *podUpdateR
 // reportsBackgroundWork is role's own session reporting, at the clock's moment, that background
 // work of its own is running, straight through the store's narrow call, which is where the
 // route's own write lands (api's claims activity route, store's PutClaimActivity), onto the
-// claim's current launch as the route writes it. A session sends such a report only when its
-// reading changes, so one report stands until the work it names ends.
+// claim's current launch as the route writes it. A session sends a report when its reading
+// changes and at each turn's end, so a worker that takes no turn leaves one report standing until
+// the work it names ends.
 func (r *podUpdateRig) reportsBackgroundWork(role claim.Role, kinds ...string) time.Time {
 	r.t.Helper()
 	at := r.clock.Now().UTC()
@@ -1039,8 +1039,9 @@ func TestWorkerBackgroundOfARoleWhoseCompletionWasAcceptedTellsNobody(t *testing
 // A worker whose process reported background work of its own and then died with its pod comes
 // back in a replacement process that reports nothing until its first turn ends: a Claude Code
 // worker reports its activity at the Stop hook alone (packages/claude-envoy/src/legion-phase-hook.ts,
-// sendActivity), and nothing prompts it to a first turn. The report the dead process left is
-// then the claim's only activity record, and it describes a job the pod replacement killed. The
+// sendActivity). Here the replacement's one turn is the relaunch's own sentence, at whose end
+// this rig reports nothing, and nothing else prompts it. The report the dead process left is then
+// the claim's only activity record, and it describes a job the pod replacement killed. The
 // worker is the one this issue is about — up, between turns, holding no task, quiet past the
 // bound — so the sweep sends it its phase's task again, well inside the background bound: a
 // rule that read the stale report as work still running would leave it for the four hours of
@@ -1178,11 +1179,11 @@ func TestSilentPhaseWorkerWhoseReminderReArmedAfterTheSweepReadGetsItsTaskOnceIt
 // A dead process's report of background work can reach the store after the relaunch that
 // replaced it: the route authenticated it just before the launch and writes it just after the
 // launch's clear. Written, it would stand on the new launch as the replacement's own report, and
-// a Claude Code replacement, which reports only at its Stop hook and is prompted to no first
-// turn, would never be repaired, its architect told instead, at the background bound, of a job
-// the pod replacement killed. The store writes a report only onto the launch it belongs to
-// (store's PutClaimActivity), so the sweep reads the replacement as a session that has reported
-// nothing and sends it its phase's task at the silence bound.
+// a Claude Code replacement, which reports only at its Stop hook, and whose one turn here is the
+// relaunch's own sentence, would never be repaired, its architect told instead, at the background
+// bound, of a job the pod replacement killed. The store writes a report only onto the launch it
+// belongs to (store's PutClaimActivity), so the sweep reads the replacement as a session that has
+// reported nothing and sends it its phase's task at the silence bound.
 func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTaskAgain(t *testing.T) {
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer
