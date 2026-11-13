@@ -16,13 +16,16 @@ import (
 )
 
 // regressCase is one line of the regression cases: a body written for the test and the verdict
-// each named sentence of it must get.
+// each listed sentence of it must get. internal/dispatch/writingcheck/eval/regress-cases.jsonl
+// holds the reader's development cases in this shape.
 type regressCase struct {
-	ID       string           `json:"id"`
-	Field    string           `json:"field"`
-	Text     string           `json:"text"`
-	Expected []regressVerdict `json:"expected"`
+	ID     string           `json:"id"`
+	Body   string           `json:"body"`
+	Expect []regressVerdict `json:"expect"`
 }
+
+// regressField is the field name a case's body is read as.
+const regressField = "body"
 
 type regressVerdict struct {
 	Sentence string `json:"sentence"`
@@ -134,16 +137,13 @@ func readRegressCases(path string) ([]regressCase, error) {
 		if err := json.Unmarshal(line, &c); err != nil {
 			return err
 		}
-		if c.ID == "" || len(c.Expected) == 0 {
+		if c.ID == "" || len(c.Expect) == 0 {
 			return errors.New("a case needs an id and at least one expected verdict")
 		}
-		if c.Field == "" {
-			c.Field = "body"
-		}
-		ps := prose.ProseSentences(c.Field, c.Text)
-		for _, e := range c.Expected {
+		ps := prose.ProseSentences(regressField, c.Body)
+		for _, e := range c.Expect {
 			if !slices.ContainsFunc(ps, func(s prose.Sentence) bool { return s.Text == e.Sentence }) {
-				return fmt.Errorf("case %s: %q is no prose sentence of its text", c.ID, e.Sentence)
+				return fmt.Errorf("case %s: %q is no prose sentence of its body", c.ID, e.Sentence)
 			}
 		}
 		cases = append(cases, c)
@@ -161,7 +161,7 @@ func readRegressCases(path string) ([]regressCase, error) {
 // vacuous. A reader fault disagrees on every expected sentence of the case, since it gives none
 // a verdict.
 func regressOne(ctx context.Context, o *observedReader, c regressCase) ([]regressMiss, [2]int) {
-	cands := candidates.Find(prose.ProseSentences(c.Field, c.Text), candidates.Options{})
+	cands := candidates.Find(prose.ProseSentences(regressField, c.Body), candidates.Options{})
 	called := map[string]bool{}
 	got := ""
 	if len(cands) > 0 {
@@ -181,7 +181,7 @@ func regressOne(ctx context.Context, o *observedReader, c regressCase) ([]regres
 	}
 	var misses []regressMiss
 	var counts [2]int
-	for _, e := range c.Expected {
+	for _, e := range c.Expect {
 		counts[classIndex(e.Vacuous)]++
 		switch {
 		case got != "":

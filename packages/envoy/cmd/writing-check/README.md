@@ -595,7 +595,7 @@ written for the test and compares each named sentence's verdict with the expecte
 
 | Flag | Meaning |
 | --- | --- |
-| `--cases` | A JSONL file of `{"id", "field" (default "body"), "text", "expected": [{"sentence", "vacuous"}]}`. Each expected sentence must be a prose sentence of its text. |
+| `--cases` | A JSONL file of `{"id", "body", "expect": [{"sentence", "vacuous"}]}`. The body is read as the field `body`. Each expected sentence must be a prose sentence of its body. The reader's development cases are `internal/dispatch/writingcheck/eval/regress-cases.jsonl`, and a test of that package checks that each of their expected sentences is a candidate of the code stage. |
 | `--repeat-bound` | The repeatability bound: the largest share of each class that may disagree. |
 | `--out` | A JSON file for the report. |
 | reader flags | As `score`. |

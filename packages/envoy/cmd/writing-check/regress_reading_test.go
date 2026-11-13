@@ -11,9 +11,9 @@ import (
 func TestRegressBoundsEachClassDisagreement(t *testing.T) {
 	dir := t.TempDir()
 	cases := []regressCase{
-		{ID: "r1", Text: sentA + " " + sentB, Expected: []regressVerdict{{sentA, true}, {sentB, false}}},
-		{ID: "r2", Text: sentH, Expected: []regressVerdict{{sentH, false}}},
-		{ID: "r3", Text: sentC + "\n\n" + sentM, Expected: []regressVerdict{{sentC, true}, {sentM, false}}},
+		{ID: "r1", Body: sentA + " " + sentB, Expect: []regressVerdict{{sentA, true}, {sentB, false}}},
+		{ID: "r2", Body: sentH, Expect: []regressVerdict{{sentH, false}}},
+		{ID: "r3", Body: sentC + "\n\n" + sentM, Expect: []regressVerdict{{sentC, true}, {sentM, false}}},
 	}
 	path := filepath.Join(dir, "cases.jsonl")
 	if _, err := writeJSONL(path, cases); err != nil {
@@ -44,13 +44,23 @@ func TestRegressBoundsEachClassDisagreement(t *testing.T) {
 	if code != 1 || !strings.Contains(stdout, "reader_error") {
 		t.Errorf("a reader fault: exit %d\n%s", code, stdout)
 	}
-	// An expected sentence that is not a sentence of its text is refused.
+	// An expected sentence that is not a sentence of its body is refused.
 	bad := filepath.Join(dir, "bad.jsonl")
-	if _, err := writeJSONL(bad, []regressCase{{ID: "x", Text: sentA, Expected: []regressVerdict{{sentB, false}}}}); err != nil {
+	if _, err := writeJSONL(bad, []regressCase{{ID: "x", Body: sentA, Expect: []regressVerdict{{sentB, false}}}}); err != nil {
 		t.Fatal(err)
 	}
 	if code, _, stderr := runCmd(t, append([]string{"regress", "--cases", bad, "--repeat-bound", "0.1"}, stub.args(t, dir)...)...); code != 2 || !strings.Contains(stderr, "no prose sentence") {
 		t.Errorf("a bad case: exit %d: %s", code, stderr)
+	}
+}
+
+func TestRegressReadsTheReadersDevelopmentCases(t *testing.T) {
+	cases, err := readRegressCases(filepath.Join("..", "..", "internal", "dispatch", "writingcheck", "eval", "regress-cases.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cases) < 60 {
+		t.Errorf("%d development cases, want at least 60", len(cases))
 	}
 }
 
