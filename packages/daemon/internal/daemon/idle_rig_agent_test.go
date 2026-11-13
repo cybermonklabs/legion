@@ -242,7 +242,7 @@ func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
 // under Messages would read as one the session was given, which is the list
 // ARoleMessageThatKeepsNothingStillWakesTheRole reads for a woken session that was given nothing.
 func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
-	var request struct{ Pod, Role, Kind, ID, Delivery, Text string }
+	var request struct{ Pod, Role, Kind, ID, Delivery, Text, Identity string }
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -259,7 +259,7 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 	case "prompt":
 		seen.Prompts = append(seen.Prompts, message)
 	case "adopt":
-		seen.Adoptions = append(seen.Adoptions, idleRigAdoption{ID: request.ID, Identity: request.Text, Ahead: len(seen.Prompts)})
+		seen.Adoptions = append(seen.Adoptions, idleRigAdoption{ID: request.ID, Identity: request.Identity, Ahead: len(seen.Prompts)})
 	default:
 		seen.Messages = append(seen.Messages, message)
 	}
@@ -758,7 +758,7 @@ func (p *idleRigRoleProcess) serve() error {
 // answer a frame the record lacks: a count of these frames must never miss one.
 func (p *idleRigRoleProcess) adopted(adopt shimwire.AdoptWorkingCopy) error {
 	if err := p.post(p.rig+"/agent/record", map[string]any{
-		"pod": p.pod, "role": p.role, "kind": "adopt", "id": adopt.ID, "text": adopt.JJUser + " <" + adopt.JJEmail + ">",
+		"pod": p.pod, "role": p.role, "kind": "adopt", "id": adopt.ID, "identity": adopt.JJUser + " <" + adopt.JJEmail + ">",
 	}, nil); err != nil {
 		return err
 	}

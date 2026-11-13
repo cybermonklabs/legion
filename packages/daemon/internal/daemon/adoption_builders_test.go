@@ -105,7 +105,7 @@ func newAdoptionRig(t *testing.T) *adoptionRig {
 	sup.deps.PhaseHolds = answers.phaseHolds
 	sup.deps.RootHears = answers.rootHears
 	sup.deps.RootTask = answers.rootTask
-	adoptingAsTheDaemonDoes(sup, &sup.deps)
+	adoptingAsTheDaemonDoes(sup)
 	sup.OnDurableState(answers.terminal)
 	return &adoptionRig{
 		t: t, ctx: ctx, pool: pool, records: records, st: st, engine: engine, admission: admission, sup: sup, rt: rt,
@@ -145,14 +145,20 @@ func (r *adoptionRig) openTree(root string) {
 	}
 }
 
+// adoptionSession is the session the agent of issue's role registers and the file it keeps it in:
+// the one a live claim is seeded with, and the one a claim that keeps none boots on.
+func adoptionSession(issue string, role claim.Role) (session, file string) {
+	return "ses_" + issue + "_" + string(role), "/sessions/" + issue + "-" + string(role) + ".jsonl"
+}
+
 // live is the claim of issue's role as a running agent leaves it between turns: launched in tree,
 // registered and ready on its session, holding nothing.
 func (r *adoptionRig) live(tree, issue string, role claim.Role) supervise.Claim {
 	r.t.Helper()
 	token := r.token(issue, role)
+	session, file := adoptionSession(issue, role)
 	return supervise.Claim{Token: token, Project: "legion", Tree: tree, Issue: issue, Role: role, Generation: 1,
-		State: supervise.StateReady, Session: "ses_" + issue + "_" + string(role),
-		SessionFile:    "/sessions/" + issue + "-" + string(role) + ".jsonl",
+		State: supervise.StateReady, Session: session, SessionFile: file,
 		PluginContract: r.sup.deps.PluginContract, Locator: workingPane(token)}
 }
 
@@ -290,7 +296,7 @@ func (r *adoptionRig) boot(issue string, role claim.Role) {
 	c := r.claimOf(issue, role)
 	session, file := c.Session, c.SessionFile
 	if session == "" {
-		session, file = "ses_"+issue+"_"+string(role), "/sessions/"+issue+"-"+string(role)+".jsonl"
+		session, file = adoptionSession(issue, role)
 	}
 	for _, ev := range []supervise.Event{
 		supervise.StreamHello{Claim: token, Generation: c.Generation},
@@ -318,21 +324,6 @@ func (r *adoptionRig) delivered(issue string, role claim.Role) []string {
 	return ids
 }
 
-// adoptions is the App git name of every adoption of the working copy the runtime was asked to
-// make for the claim of issue's role, in order. An adoption runs in the claim's own process, so
-// the locator it is made over names that claim.
-func (r *adoptionRig) adoptions(issue string, role claim.Role) []string {
-	r.t.Helper()
-	token := r.token(issue, role)
-	var made []string
-	for _, call := range r.rt.CallsOf("AdoptWorkingCopy") {
-		if call.Locator.Claim == token {
-			made = append(made, call.Identity.Name)
-		}
-	}
-	return made
-}
-
 // wantSent holds issue's role to one prompt, of the task delivered as id, and to exactly the
 // adoptions named for its claim, by the App git name each was made as: none for a task that names
 // no phase, its own App once for a phase task.
@@ -341,7 +332,7 @@ func (r *adoptionRig) wantSent(issue string, role claim.Role, id string, adopted
 	if got := r.delivered(issue, role); !slices.Equal(got, []string{id}) {
 		r.t.Errorf("%s's %s was prompted with %v, want its task %s once", issue, role, got, id)
 	}
-	if made := r.adoptions(issue, role); !slices.Equal(made, adopted) {
+	if made := adoptionsOf(r.rt, r.token(issue, role)); !slices.Equal(made, adopted) {
 		r.t.Errorf("%s's %s had the working copy adopted as %v for its task %s, want %v", issue, role, made, id, adopted)
 	}
 }
@@ -356,7 +347,7 @@ func (r *adoptionRig) wantNothingSent(issue string, role claim.Role) {
 	if got := r.delivered(issue, role); len(got) != 0 {
 		r.t.Errorf("%s's %s was prompted with %v, want nothing sent", issue, role, got)
 	}
-	if made := r.adoptions(issue, role); len(made) != 0 {
+	if made := adoptionsOf(r.rt, r.token(issue, role)); len(made) != 0 {
 		r.t.Errorf("%s's %s had the working copy adopted as %v, want no adoption", issue, role, made)
 	}
 }
@@ -563,7 +554,7 @@ func aPhaseStartWaitsOutATurn(r *adoptionRig) {
 	if want := fmt.Sprintf("%s%d", outboxDeliveryPrefix, start.row.ID); task.ID != want {
 		r.t.Fatalf("the implementer holds %+v, want the task of the transition's start row, %s", task, want)
 	}
-	if got, made := r.delivered(issue.Key, claim.RoleImplementer), r.adoptions(issue.Key, claim.RoleImplementer); len(got) != 0 || len(made) != 0 {
+	if got, made := r.delivered(issue.Key, claim.RoleImplementer), adoptionsOf(r.rt, r.token(issue.Key, claim.RoleImplementer)); len(got) != 0 || len(made) != 0 {
 		r.t.Errorf("while the planner was in a turn the implementer was prompted with %v and had the working copy adopted as %v; want its phase task held, unsent and unadopted, until that turn ends",
 			got, made)
 	}
@@ -576,7 +567,7 @@ func aPhaseStartWaitsOutATurn(r *adoptionRig) {
 	})
 	r.settle()
 	r.wantSent(issue.Key, claim.RoleImplementer, task.ID, "legion-implementer[bot]")
-	if made := r.adoptions(issue.Key, claim.RolePlanner); len(made) != 0 {
+	if made := adoptionsOf(r.rt, planner); len(made) != 0 {
 		r.t.Errorf("the planner had the working copy adopted as %v, want no adoption: it was sent no task", made)
 	}
 }

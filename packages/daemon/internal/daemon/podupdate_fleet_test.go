@@ -118,7 +118,7 @@ type fleetRig struct {
 // fleetWiring sets a dependency of the daemon's on a fleet rig's supervisor before the rig
 // restores its claims. A machine takes its Deps when it is made (supervise.NewMachine), so a
 // dependency set after the rig is built reaches none of its machines.
-type fleetWiring func(sup *supervisor, deps *supervise.Deps)
+type fleetWiring func(sup *supervisor)
 
 // adoptingAsTheDaemonDoes wires the two dependencies the daemon gives its supervisor for the
 // working copy an issue's roles share (daemon.go): an App identity per role, under which a phase
@@ -126,11 +126,11 @@ type fleetWiring func(sup *supervisor, deps *supervise.Deps)
 // which claim of an issue is in a turn (claimInTurn), which holds such a send while another role
 // works there. The identity stands in for the one adoptIdentity mints, named for the role's App,
 // as newIssueRig's is.
-func adoptingAsTheDaemonDoes(sup *supervisor, deps *supervise.Deps) {
-	deps.Identity = func(_ context.Context, role claim.Role, _ string) (runtime.GitIdentity, error) {
+func adoptingAsTheDaemonDoes(sup *supervisor) {
+	sup.deps.Identity = func(_ context.Context, role claim.Role, _ string) (runtime.GitIdentity, error) {
 		return runtime.GitIdentity{Name: "legion-" + string(role) + "[bot]", Email: string(role) + "@example.invalid"}, nil
 	}
-	deps.IssueInTurn = sup.claimInTurn
+	sup.deps.IssueInTurn = sup.claimInTurn
 }
 
 func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
@@ -195,7 +195,7 @@ func newWiredFleetRig(t *testing.T, wire fleetWiring, issues ...fleetIssue) *fle
 		RefreshGate:     supervise.NewRefreshGate(0),
 	}
 	if wire != nil {
-		wire(sup, &sup.deps)
+		wire(sup)
 	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
@@ -289,7 +289,7 @@ func (r *fleetRig) restart() *fleetRig {
 	// The copy carries the first supervisor's wiring, whose answers read that supervisor's
 	// machines, so it is set again over this one's.
 	if r.wire != nil {
-		r.wire(sup, &sup.deps)
+		r.wire(sup)
 	}
 	r.t.Cleanup(sup.stop)
 	stored, err := sup.Claims(r.ctx)
@@ -333,11 +333,7 @@ func (r *fleetRig) token(issue string, role claim.Role) claim.Token {
 // claimOf is the claim as its machine holds it, which is what the next tick reads from the store.
 func (r *fleetRig) claimOf(issue string, role claim.Role) supervise.Claim {
 	r.t.Helper()
-	m, ok := r.sup.Machine(r.token(issue, role))
-	if !ok {
-		r.t.Fatalf("%s's %s is not supervised", issue, role)
-	}
-	return m.Claim()
+	return r.machineOf(issue, role).Claim()
 }
 
 // round is the pod round the sweep opens over issue.
@@ -361,8 +357,8 @@ func (r *fleetRig) awaitRound(issue string, role claim.Role) supervise.Claim {
 // signal is the worker answering ready_for_update, as api's claims/ready-for-update posts it.
 func (r *fleetRig) signal(issue string, role claim.Role, head string) {
 	r.t.Helper()
-	c := r.claimOf(issue, role)
-	m, _ := r.sup.Machine(c.Token)
+	m := r.machineOf(issue, role)
+	c := m.Claim()
 	if err := m.Handle(r.ctx, supervise.PodUpdateSignalled{
 		Claim: c.Token, Generation: c.Generation, Session: c.Session, Round: c.UpdateRound, Head: head,
 	}); err != nil {
@@ -401,21 +397,6 @@ func (r *fleetRig) machineOf(issue string, role claim.Role) *supervise.Machine {
 func (r *fleetRig) prompts(issue string, role claim.Role) []fake.Prompt {
 	r.t.Helper()
 	return r.workers[r.token(issue, role)].Prompts()
-}
-
-// adoptionsFor is the App git name of every adoption of the working copy the runtime was asked to
-// make for the claim of issue's role, in order. An adoption runs in the claim's own process, so
-// the locator it is made over names that claim.
-func (r *fleetRig) adoptionsFor(issue string, role claim.Role) []string {
-	r.t.Helper()
-	token := r.token(issue, role)
-	var made []string
-	for _, call := range r.rt.CallsOf("AdoptWorkingCopy") {
-		if call.Locator.Claim == token {
-			made = append(made, call.Identity.Name)
-		}
-	}
-	return made
 }
 
 // fleetHandoffs is the Dispatch the completion route reads a handoff record back from: the
@@ -801,15 +782,18 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 
 	// The implementer is in the turn of its own phase task, as it is while it writes the plan's
 	// work. That task adopts the working copy under the implementer's App, and it is the one task
-	// here that may: no other claim of the issue was in a turn when it went.
+	// here that may: no other claim of the issue was in a turn when it went. It is handed to the
+	// machine directly as setup, since the rig runs no outbox; what the test checks, the round's
+	// asks, the real sweep builds.
+	const phaseTask = "outbox:1"
 	rig.handle(fleetIssueA, claim.RoleImplementer, supervise.RequestDeliver{Claim: implementer,
-		Task: "implement the plan", ID: "outbox:1", Phase: phase.Implementing, Generation: 1})
+		Task: "implement the plan", ID: phaseTask, Phase: phase.Implementing, Generation: 1})
 	rig.sent(fleetIssueA, claim.RoleImplementer)
 	rig.handle(fleetIssueA, claim.RoleImplementer, supervise.StreamTurnStart{Claim: implementer})
 	if c := rig.claimOf(fleetIssueA, claim.RoleImplementer); c.State != supervise.StateWorking {
 		t.Fatalf("the implementer is %s once its turn started, want working", c.State)
 	}
-	own := rig.adoptionsFor(fleetIssueA, claim.RoleImplementer)
+	own := adoptionsOf(rig.rt, implementer)
 	if len(own) != 1 || own[0] != "legion-implementer[bot]" {
 		t.Fatalf("the implementer's phase task adopted the working copy as %v, want once, as the implementer's App", own)
 	}
@@ -833,7 +817,7 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 			t.Errorf("%s's %s was prompted %+v while the implementer was in a turn, want its round's ask %s sent at once rather than held behind that turn",
 				fleetIssueA, role, prompts, c.Pending.ID)
 		}
-		if made := rig.adoptionsFor(fleetIssueA, role); len(made) != 0 {
+		if made := adoptionsOf(rig.rt, rig.token(fleetIssueA, role)); len(made) != 0 {
 			t.Errorf("%s's %s adopted the working copy as %v while the implementer was in a turn; the round's ask adopts nothing",
 				fleetIssueA, role, made)
 		}
@@ -844,7 +828,7 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 	testwait.Eventually(t, "the implementer to be in the round of "+fleetIssueA, func() bool {
 		return rig.claimOf(fleetIssueA, claim.RoleImplementer).UpdateRound == round
 	})
-	if c := rig.claimOf(fleetIssueA, claim.RoleImplementer); c.UpdateTaskedAt != nil || c.Pending == nil || c.Pending.ID != "outbox:1" {
+	if c := rig.claimOf(fleetIssueA, claim.RoleImplementer); c.UpdateTaskedAt != nil || c.Pending == nil || c.Pending.ID != phaseTask {
 		t.Fatalf("the implementer in its turn was asked at %v and holds %+v, want it asked nothing yet and holding its own task",
 			c.UpdateTaskedAt, c.Pending)
 	}
@@ -854,23 +838,23 @@ func TestPodUpdateTheRoundsAsksAdoptNothingWhileTheImplementerIsInATurn(t *testi
 	// result of the prompt whose turn it was, which retires the phase task. The slot that frees is
 	// the round's (takeSlotForUpdate), and its ask goes with no adoption either.
 	rig.sup.post(implementer, supervise.StreamTurnEnd{Claim: implementer})
-	rig.sup.post(implementer, supervise.StreamPromptResult{Claim: implementer, DeliveryID: "outbox:1", AgentInvoked: true})
+	rig.sup.post(implementer, supervise.StreamPromptResult{Claim: implementer, DeliveryID: phaseTask, AgentInvoked: true})
 	testwait.Eventually(t, "the implementer's round ask to take the slot its turn freed", func() bool {
 		c := rig.claimOf(fleetIssueA, claim.RoleImplementer)
 		return c.Pending != nil && strings.HasPrefix(c.Pending.ID, ask) && c.UpdateTaskedAt != nil
 	})
 	rig.sent(fleetIssueA, claim.RoleImplementer)
 	if prompts := rig.prompts(fleetIssueA, claim.RoleImplementer); len(prompts) != 2 ||
-		prompts[0].DeliveryID != "outbox:1" || !strings.HasPrefix(prompts[1].DeliveryID, ask) {
+		prompts[0].DeliveryID != phaseTask || !strings.HasPrefix(prompts[1].DeliveryID, ask) {
 		t.Errorf("the implementer was prompted %+v by the end of its turn, want its phase task and then its round's ask", prompts)
 	}
-	if made := rig.adoptionsFor(fleetIssueA, claim.RoleImplementer); len(made) != 1 {
+	if made := adoptionsOf(rig.rt, implementer); len(made) != 1 {
 		t.Errorf("the implementer adopted the working copy as %v by the time its round's ask was sent, want only the one adoption its phase task made",
 			made)
 	}
 	for _, role := range others {
 		rig.sent(fleetIssueA, role)
-		if made := rig.adoptionsFor(fleetIssueA, role); len(made) != 0 {
+		if made := adoptionsOf(rig.rt, rig.token(fleetIssueA, role)); len(made) != 0 {
 			t.Errorf("%s's %s adopted the working copy as %v by the end of the implementer's turn; the round's ask adopts nothing",
 				fleetIssueA, role, made)
 		}

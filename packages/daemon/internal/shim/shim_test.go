@@ -1335,15 +1335,16 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 		t.Fatalf("jj is required: %v", err)
 	}
 	for _, tc := range []struct {
-		name   string
-		leave  []string // what the previous role ran once README.md was written, nil for nothing
-		pushed string   // the previous role's described commit before the adoption, "" for none
-		empty  bool     // whether the working copy the previous role left holds no change
-		ran    string
+		name       string
+		leave      []string // what the previous role ran once README.md was written, nil for nothing
+		pushed     string   // the previous role's described commit before the adoption, "" for none
+		empty      bool     // whether the working copy the previous role left holds no change
+		reauthored bool     // whether the adoption re-authors that working copy rather than start a fresh one
+		ran        string
 	}{
 		{name: "a described working copy", leave: []string{"describe", "-m", "feat: the pushed change"}, pushed: "@", ran: "log\nnew\n"},
-		{name: "an undescribed working copy", ran: "log\nmetaedit\n"},
-		{name: "an empty working copy a split left", leave: []string{"split", "-m", "feat: the pushed change", "README.md"}, pushed: "@-", empty: true, ran: "log\nmetaedit\n"},
+		{name: "an undescribed working copy", reauthored: true, ran: "log\nmetaedit\n"},
+		{name: "an empty working copy a split left", leave: []string{"split", "-m", "feat: the pushed change", "README.md"}, pushed: "@-", empty: true, reauthored: true, ran: "log\nmetaedit\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The test process's environment (a devbox's jj configuration, a pod's workspace and
@@ -1374,7 +1375,10 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			if tc.leave != nil {
 				jjAs("implementer", tc.leave...)
 			}
-			change := jjAs("implementer", "log", "-r", "@", "--no-graph", "-T", "change_id")
+			var change string
+			if tc.reauthored {
+				change = jjAs("implementer", "log", "-r", "@", "--no-graph", "-T", "change_id")
+			}
 			var pushed string
 			if tc.pushed != "" {
 				pushed = jjAs("implementer", "log", "-r", tc.pushed, "--no-graph", "-T", "commit_id")
@@ -1410,7 +1414,7 @@ func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t 
 			if author != "tester|" {
 				t.Fatalf("the working copy after adoption is %q, want an undescribed commit authored by tester", author)
 			}
-			if tc.ran == "log\nmetaedit\n" {
+			if tc.reauthored {
 				want := fmt.Sprintf("%s %t", change, tc.empty)
 				if got := jjAs("implementer", "log", "-r", "@", "--no-graph", "-T", `change_id ++ " " ++ empty`); got != want {
 					t.Fatalf("the re-authored working copy is %q (change id, empty), want %q: the change the previous role left, holding what it held", got, want)
