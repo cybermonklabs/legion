@@ -292,8 +292,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go holds
 			// that half), and with each issue's `assignments` gone, the experiment answers
 			// contract 99 added (withoutAssignments). Every row that reaches here is below all of
-			// them, so those twenty-nine keys, the twenty-nine stateFor names, go whatever the row
-			// is.
+			// them, so each of those keys, the keys stateFor names, goes whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)

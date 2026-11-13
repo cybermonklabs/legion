@@ -1416,19 +1416,16 @@ package api
 // not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
 // contract below 99 is served the state without the field (api's stateFor,
-// withoutAssignments), as a caller below 49 is served it without the memory fields; a caller at
-// 49 through 98 is served the three memory fields and no assignments, whatever else its own
-// band gives it — one at 73 or above is served `claimsToRefresh` too, one at 75 or above the
-// record fields, one at 85 or above the `why` answer and the waiting line's own fields the 85
-// entry added, one at 87 or above the claim views' `leakCheckCause` the 87 entry added, one at
-// 94 or above each issue's `phaseEntry` and `givenEntry` the 94 entry added, and one at 98
-// `admission.held` the 98 entry added, so a caller at 87 to 93 is served all of those but the
-// two entry numbers and `admission.held`, a caller at 94 to 97 all of them but
-// `admission.held`, a caller at 98 all of them, and each still no assignments — and a caller
-// below 49 neither. The 86 entry above adds no narrowing of its own, so a caller at 86 is served
-// what one at 85 is: the `why` answer and the line's own fields, and neither `leakCheckCause`,
-// nor the two entry numbers, nor `admission.held`, nor assignments. With this entry's narrowing
-// the route's strips are sixteen, and they compose as the fifteen did. The number is held in
+// withoutAssignments), as a caller below 49 is served it without the memory fields; a caller
+// from 49 to below this contract is served the three memory fields and no assignments, whatever
+// else its own band gives it — each band is served what the narrowing at its lower edge and
+// every narrowing below it added and none of what a narrowing above it added (api's
+// stateNarrowings, held band by band by TestTheStateRouteServesAPodItsPluginContractsIssues),
+// and each still no assignments — and a caller below 49 neither. The 86 entry above adds no
+// narrowing of its own, so a caller at 86 is served what one at 85 is: the `why` answer and the
+// line's own fields, and neither `leakCheckCause`, nor the two entry numbers, nor
+// `admission.held`, nor assignments. With this entry's narrowing the route's strips compose as
+// the strips before it did. The number is held in
 // four files that move together: this one,
 // `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and
 // `packages/claude-envoy/package.json`. The answers are the rows of `experiment_assignments`,
@@ -1457,6 +1454,6 @@ package api
 // .github/scripts/check-daemon-api-contract.sh refuses a number at or below the base's, which is
 // the one collision a renumber has to answer. At the forward merge that brought main in at
 // 045ee076, #3677's own, main declared 94; at the forward merge that brought main in at
-// b7a2f926, #3708's own, main declares 98, the entry right above this one, still below 99, so
-// the number holds.)
+// b7a2f926, #3708's own, main declared 98, the entry then right above this one, still below 99,
+// so the number held.)
 const DaemonAPIVersion = 99

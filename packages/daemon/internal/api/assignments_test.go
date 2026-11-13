@@ -64,8 +64,9 @@ func TestTheStateShowsEveryIssueTheExperimentsItRunsUnder(t *testing.T) {
 }
 
 // A caller below the contract that added the assignments is served the state without them, and
-// the three memory fields of contract 49 stand beside it untouched: a pod at 49 through 98 reads
-// its tree's memory group as it always has and no assignment, and a pod below 49 reads neither.
+// the three memory fields of contract 49 stand beside it untouched: a pod from memoryContract to
+// below assignmentsContract reads its tree's memory group as it always has and no assignment, and
+// a pod below 49 reads neither.
 // The gates are two, so one does not answer for the other.
 func TestTheStateServedBelowTheAssignmentsContractKeepsTheMemoryFields(t *testing.T) {
 	for _, tc := range []struct {

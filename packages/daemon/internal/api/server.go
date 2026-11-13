@@ -664,12 +664,12 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // is served it without `admission.held` (withoutHeld); and a caller below assignmentsContract,
 // the contract that added the experiment answers each issue runs under, is served every issue
 // without `assignments` (withoutAssignments).
-// The sixteen compose: each is applied when the state carries something of its own, so a
+// The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the twenty-nine keys, the line's own fields being fields of a view such a
+// carrying none of the keys they take, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all twenty-nine keys as
+// retired entry under `strandedClaims`. Every later reader takes each of those keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
 // `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry` and `assignments`, the workers'
@@ -741,7 +741,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the sixteen narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -753,7 +753,7 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the sixteen, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the narrowings, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
 // needs no reading of the rows before it. One pair does touch one key, and it is the reason
@@ -763,7 +763,7 @@ type stateNarrowing struct {
 // below both is served no `waitingLine` at all whichever runs first — the later one then finds
 // the key gone and does nothing — and a caller below only the higher one keeps the field with
 // its `place` and its `length`, which is what the lower row's own contract describes. A
-// seventeenth row that takes something out of a field an earlier row drops whole is sound on
+// further row that takes something out of a field an earlier row drops whole is sound on
 // those same terms; one that puts a key back, or reads what an earlier row left, is not, and
 // this table is the wrong shape for it. The order is kept beyond that so a reader of this
 // table and a reader of version.go walk the contracts the same way.
@@ -859,10 +859,10 @@ const backwardMovesContract = 62
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
 // whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract and
-// assignmentsContract stand above it now, so a caller in a pod at 73 or 74 is served the count
-// and neither the decided record's keys, nor each issue's answer with the line's own fields, nor
-// a claim view's `leakCheckCause`, nor the two entry numbers, nor `admission.held`, nor the
-// issues' `assignments`.
+// assignmentsContract stand above it now, so a caller in a pod from it to below
+// recordFieldsContract is served the count and neither the decided record's keys, nor each
+// issue's answer with the line's own fields, nor a claim view's `leakCheckCause`, nor the two
+// entry numbers, nor `admission.held`, nor the issues' `assignments`.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -912,19 +912,20 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. It is the third highest of the sixteen bands, below heldContract's and
-// assignmentsContract's, the latter this daemon's own contract, so a caller in a pod at 94
-// through 97 is served the two keys and neither `admission.held` nor `assignments`, a caller at
-// 98 the two keys and `admission.held` and no `assignments`, and a caller at 99 all of them.
+// reading at all. Its band stands below heldContract's and assignmentsContract's, the latter
+// this daemon's own contract, so a caller in a pod from it to below heldContract is served the
+// two keys and neither `admission.held` nor `assignments`, a caller from heldContract to below
+// assignmentsContract the two keys and `admission.held` and no `assignments`, and a caller at
+// 99 all of them.
 const phaseEntriesContract = 94
 
 // assignmentsContract is the daemon contract that added each issue's experiment assignments to
 // the state (version.go's 99). A plugin before it is served the state without the field: one
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the key instead. The three memory
-// fields keep their own gate at memoryContract beside this one, so a caller at 49 through 98 is
-// served the one experiment's answer in the three keys it has read since 49 and no assignments,
-// whatever else its own band gives it, and a caller below 49 neither.
+// fields keep their own gate at memoryContract beside this one, so a caller from memoryContract
+// to below this one is served the one experiment's answer in the three keys it has read since 49
+// and no assignments, whatever else its own band gives it, and a caller below 49 neither.
 const assignmentsContract = 99
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -972,9 +973,9 @@ func carriesAssignments(state State) bool {
 // issue's `tree`. It carries `admission.trees` whatever the daemon holds, since the admission
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
-// is true of every state the route writes; it is asked beside the other fifteen all the same,
-// because stateFor puts the same question to the sixteen and because a later contract that
-// stops writing `trees` on every body answers it here.
+// is true of every state the route writes; it is asked beside the other rows' questions all the
+// same, because stateFor puts the same question to every row of stateNarrowings and because a
+// later contract that stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
 
 // carriesHeld is whether state carries the key heldContract added: `admission.held`, the issues
@@ -982,18 +983,18 @@ func carriesTrees(State) bool { return true }
 // carries that key whatever the daemon holds, since the admission block writes it on every body,
 // empty rather than null (Admission.MarshalJSON), and the strict reader before the contract
 // refuses the empty key as surely as one naming an issue. So this is true of every state the
-// route writes; it is asked beside the other fifteen all the same, because stateFor puts the
-// same question to the sixteen and because a later contract that stops writing `held` on every
-// body answers it here.
+// route writes; it is asked beside the other rows' questions all the same, because stateFor
+// puts the same question to every row of stateNarrowings and because a later contract that
+// stops writing `held` on every body answers it here.
 func carriesHeld(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
-// every state the route writes; it is asked beside the other fifteen all the same, because
-// stateFor puts the same question to the sixteen and because a later contract that stops
-// writing `wakesWaiting` on every body answers it here.
+// every state the route writes; it is asked beside the other rows' questions all the same,
+// because stateFor puts the same question to every row of stateNarrowings and because a later
+// contract that stops writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
 // carriesClaimsToRefresh is whether state carries the key claimsToRefreshContract added:
@@ -1001,9 +1002,9 @@ func carriesWakesWaiting(State) bool { return true }
 // whatever the daemon holds, since the state writes the number on every body, 0 rather than
 // absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
 // is 0 as surely as when it names a number. So this is true of every state the route writes, as
-// carriesWakesWaiting is; it is asked beside the other fifteen all the same, because stateFor
-// puts the same question to the sixteen and because a later contract that stops writing
-// `claimsToRefresh` on every body answers it here.
+// carriesWakesWaiting is; it is asked beside the other rows' questions all the same, because
+// stateFor puts the same question to every row of stateNarrowings and because a later contract
+// that stops writing `claimsToRefresh` on every body answers it here.
 func carriesClaimsToRefresh(State) bool { return true }
 
 // carriesGatedSteps is whether any issue of state carries the deployment's gated steps.
@@ -1030,9 +1031,9 @@ func carriesStallRecord(state State) bool {
 // `heldFrom`, `lingerUntil` or `ancestry`. It carries the mark whatever the daemon holds, since
 // stateFor writes it on every body before it narrows one (ContractView), and the strict reader
 // before the contract refuses that key as surely as the nine. So this is true of every state the
-// route puts the question to; it is asked beside the other fifteen all the same, because
-// stateFor puts the same question to the sixteen and because a later contract that stops
-// writing the mark on every body answers it here, as carriesTrees answers for
+// route puts the question to; it is asked beside the other rows' questions all the same,
+// because stateFor puts the same question to every row of stateNarrowings and because a later
+// contract that stops writing the mark on every body answers it here, as carriesTrees answers for
 // `admission.trees`. The question the mark pre-empts is issueCarriesRecordFields, which that
 // contract would ask of every issue here and which the strip below reads one issue at a time.
 func carriesRecordFields(State) bool { return true }

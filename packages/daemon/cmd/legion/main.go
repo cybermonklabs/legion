@@ -819,7 +819,7 @@ const waitingLineNamedCap = 10
 // declared: its group, `memory` or `none`, is the arm and its mode the mode. Such a daemon's
 // settings carry the `memory` block and no `experiments` key, and a daemon that serves no
 // settings carries neither, so the list above declares the `memory` experiment alone and the
-// line is the one the `legion` of contract 94 or 98 prints for the same body. A daemon of this
+// line is the one the previous release's `legion` prints for the same body. A daemon of this
 // release serves the memory fields only where an issue's `memory` row records a draw, and serves
 // that row in `assignments` as well to every caller but a pod below contract 99 (api's stateFor),
 // so in the body it serves `legion state` an issue with no `assignments` carries no `memoryGroup`

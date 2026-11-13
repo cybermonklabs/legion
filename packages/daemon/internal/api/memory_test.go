@@ -33,7 +33,7 @@ var planDrawnAt = time.Date(2026, 9, 21, 18, 42, 11, 0, time.UTC)
 // line's own fields beside that place, every issue of it that is not working now carries its
 // answer under `why`, the two issues whose current phase names a phase worker role carry the
 // entry that role stands on and the entry it was given, and the issues of its drawn tree carry
-// the experiment answers they hold, so one state proves all sixteen downgrades and that they
+// the experiment answers they hold, so one state proves every downgrade and that they
 // compose.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
@@ -106,32 +106,14 @@ var (
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the
-// last strict reader before it knows, and the rest of the body as it is. The sixteen downgrades
-// compose, band by band: a pod at 46 to 48 is served the update rounds it reads and none of the
-// memory draws, the trees, the wakes the pacing holds, the gated steps, the retired stranded
-// entries, the step records, the places in the admission line, the counts of the moves back, the
-// count of claims the refresh lane has left, the failure record, the issues' answers, the leak
-// check's cause, the two entry numbers, the held list and the experiment assignments; a pod at
-// 49 or 50 the memory draws as well, and still none of the rest; a pod at 51 or 52 the trees
-// too; a pod at 53 or 54 the wakes too; a pod at 55 the steps too, and still none of the retired
-// entries, the step records, the places, the counts of the moves back, the refresh count, the
-// failure record, the answers, the cause, the entry numbers, the held list and the assignments;
-// a pod at 56 the retired entries too; a pod at 57 the step records too; a pod at 58 to 61 the
-// places too, and neither count, nor the record, nor the answers, nor the cause, nor the entry
-// numbers, nor the held list, nor the assignments; a pod from 62 to 72 the counts of the moves
-// back too, and still no refresh count; a pod at 73 or 74 the refresh count too, and neither the
-// nine keys the decided record added, nor the answers, nor the cause, nor the entry numbers, nor
-// the held list, nor the assignments; a pod from 75 to 84 those nine keys too, and no issue's
-// answer, no field of the line beside its place and its length, no claim view's
-// `leakCheckCause`, neither entry number, no held list and no assignments; a pod at 85 or 86 the
-// answers and the line's own fields too, and still neither the cause, nor the entry numbers, nor
-// the held list, nor the assignments; a pod from 87 to 93 the cause too, and neither the entry
-// numbers, nor the held list, nor the assignments; a pod from 94 to 97 the entry numbers too, and
-// neither the held list nor the assignments; a pod at 98 the held list too, and the assignments
-// are then the one field still held back; a pod below 46 none of the sixteen; and a pod at 99,
-// this daemon's declared contract, a pod whose claims record no contract and a caller in no pod
-// — the operator's `legion state`, whose memory line reads the draws, whose experiment lines
-// read the assignments, whose queue line reads the wakes and whose tool-call line reads the step
+// last strict reader before it knows, and the rest of the body as it is. The downgrades
+// compose, band by band: a pod whose claims record a contract from one row of stateNarrowings to
+// below the next is served what that row and every row below it added and none of what a row
+// above it added, and the table below holds a pod in each band; a pod below
+// supervise.PodUpdateContract is served none of them; and a pod at 99, this daemon's declared
+// contract, a pod whose claims record no contract and a caller in no pod — the operator's
+// `legion state`, whose memory line reads the draws, whose experiment lines read the
+// assignments, whose queue line reads the wakes and whose tool-call line reads the step
 // records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
@@ -270,10 +252,10 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// claim views' `leakCheckCause` is served too, and the two entry numbers, the held list
 		// and the assignments are held back.
 		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true},
-		// The band from 94 to 97, from phaseEntriesContract to below heldContract: the two entry
+		// The band from phaseEntriesContract to below heldContract: the two entry
 		// numbers are served too, and the held list and the assignments are held back.
 		{name: "a pod at phaseEntriesContract", remote: statePodAddr + ":41000", claims: podClaims(phaseEntriesContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true},
-		// The band at 98 alone, from heldContract to below assignmentsContract, the last band
+		// The band from heldContract to below assignmentsContract, the last band
 		// under the declared contract: the held list is served too, and the assignments are the
 		// one key held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
@@ -390,7 +372,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 				delete(want["admission"].(map[string]any), "trees")
 			}
 			// A pod below heldContract is served no `admission.held`, the one key that contract
-			// added (api's withoutHeld), which is every pod of every band below the one at 98.
+			// added (api's withoutHeld), which is every pod of every band below heldContract's.
 			if !tc.held {
 				delete(want["admission"].(map[string]any), "held")
 			}
