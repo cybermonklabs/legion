@@ -328,6 +328,27 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     const inbox = await runDispatch(["inbox"], home, token);
     expect(inbox.code, `${inbox.stdout}${inbox.stderr}`).toBe(0);
     const sections = printedSections(inbox.stdout);
+    const printedRequests = section(sections, "Credential requests");
+
+    // 2. The counts, read off the sidebar rather than summed here, and taken while the page is
+    // still on Settings: the Inbox's reading pane selects its first row and marks that thread
+    // read (`features/inbox/pane-selection.ts`, `ThreadRowCard`), so a count read after the Inbox
+    // opens races that mark and can take one thread fewer than the command printed.
+    //
+    // The rail carries one number for the Inbox and no `Replies` entry at all
+    // (`features/sidebar/Sidebar.tsx`, `features/inbox/useInboxCount.ts`): the work waiting on
+    // the reader plus the threads they have not caught up with, which is the command's
+    // `Needs you` and `Unread threads` together. The seed leaves two threads unread, so the
+    // thread term is load-bearing rather than a zero that would pass either way.
+    const needsYou = section(sections, "Needs you").count;
+    const unreadThreads = section(sections, "Unread threads").count;
+    expect(needsYou).toBe(section(sections, "Needs you").rows.length + printedRequests.count);
+    expect(unreadThreads).toBeGreaterThan(0);
+    expect(unreadThreads).toBe(
+      (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
+    );
+    await expect.poll(() => railCount(page, /^Inbox/)).toBe(needsYou + unreadThreads);
+    expect(await railCount(page, /^Replies/)).toBeUndefined();
 
     await page.goto("/");
     await expect(inboxRow(page, seeded.ordinaryAsk)).toBeVisible();
@@ -362,7 +383,6 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
     // The credential requests, line for line: the page lists one row per request the command
     // prints, each naming the same secret.
     const requests = page.getByRole("region", { name: "Credential requests" });
-    const printedRequests = section(sections, "Credential requests");
     expect(printedRequests.count).toBe(printedRequests.rows.length);
     await expect(requests.getByRole("listitem")).toHaveCount(printedRequests.rows.length);
     for (const [index, row] of printedRequests.rows.entries()) {
@@ -370,24 +390,6 @@ test("dispatch inbox under the person's own token lists the Inbox page's own row
       expect(identifiers).not.toBe("");
       await expect(requests.getByRole("listitem").nth(index)).toContainText(identifiers);
     }
-
-    // 2. The counts, read off the sidebar rather than summed here.
-    //
-    // The rail carries one number for the Inbox and no `Replies` entry at all
-    // (`features/sidebar/Sidebar.tsx`, `features/inbox/useInboxCount.ts`): the work waiting on
-    // the reader plus the threads they have not caught up with, which is the command's
-    // `Needs you` and `Unread threads` together. The seed leaves two threads unread, so the
-    // thread term is load-bearing rather than a zero that would pass either way.
-    const needsYou = section(sections, "Needs you").count;
-    const unreadThreads = section(sections, "Unread threads").count;
-    const inboxEntry = await railCount(page, /^Inbox/);
-    expect(await railCount(page, /^Replies/)).toBeUndefined();
-    expect(needsYou).toBe(section(sections, "Needs you").rows.length + printedRequests.count);
-    expect(unreadThreads).toBeGreaterThan(0);
-    expect(unreadThreads).toBe(
-      (await listMyReplies({ kind: ["reply", "agent"] }, { login: "alice" })).total
-    );
-    expect(needsYou + unreadThreads).toBe(inboxEntry);
 
     // 3. An answer the agent makes with the token is the person's answer, with the agent beside
     // it. The reading column keeps a question the reader had begun answering when it is answered
