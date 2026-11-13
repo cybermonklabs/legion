@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -245,6 +246,12 @@ func ParseNode(value string) (kind, id string, err error) {
 // nothing. It refuses, confirmed or not, while a document's live text holds the erased bytes
 // where its markdown spells them otherwise (Unredacted), since its seed would keep them.
 //
+// It refuses a type node, a supertag or an attribute, before it opens a connection: a type is
+// data the block schema seeds (migration 20261109051232, pmdoc/schemanodes), and no route and no
+// command creates, retitles or deletes one (R6). Such a node holds no text anybody wrote, so no
+// erasure is owed for it, and deleting one would take a type out of the schema every server
+// installs.
+//
 // What it did goes into `graph_erasures`: what was removed, who ran it and when, and no erased
 // text. Nobody addresses that row and no read of the graph answers it.
 //
@@ -252,6 +259,9 @@ func ParseNode(value string) (kind, id string, err error) {
 // once more (sweepTrees). An error there comes back beside the Erasure, which is then Applied:
 // the erase stands, and what the sweep could not do is the error's to say.
 func Erase(ctx context.Context, databaseURL, kind, id string, confirmed bool, stores Stores) (*Erasure, error) {
+	if kind == schemanodes.KindSupertag || kind == schemanodes.KindAttribute {
+		return nil, fmt.Errorf("the erase refuses %s:%s: a type node is data the block schema seeds, and no command deletes it", kind, id)
+	}
 	if stores.LiveText == nil || stores.TermStatistics == nil {
 		return nil, errors.New("the erase needs the writers of the live documents and the term statistics (Stores)")
 	}
