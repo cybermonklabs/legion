@@ -1572,6 +1572,9 @@ test("a selection over the broadcast limit says so and never asks the server", a
     const send = composer.getByRole("button", { name: "Send to 101" });
     await expect(send).toBeDisabled();
     await send.click({ force: true });
+    // A forced press lands on whatever the page leaves at that point, so it is read where it
+    // landed: a refused Send that holds the focus is the Send that was pressed.
+    await expect(send).toBeFocused();
     // A selection over the limit asks nothing of the server, and a request that never leaves
     // marks nothing to wait on: `ABSENCE_MARGIN_MS` is the window a POST made in the forced
     // click's own task would show in, taken in Node so the page's clock cannot skip it.
