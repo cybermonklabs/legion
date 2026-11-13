@@ -1392,7 +1392,7 @@ package api
 // this branch took 96, the lowest number above main's own and above every open head; main's
 // #3677 then landed INFRA-2800's phase entries at 94, the entry right above this one, again
 // without these shapes, and the forward merge that brought main in at bc52296a74c2 keeps 96,
-// the number above main's 94. Read main's own number and every open pull request again at the
+// above main's 94. Read main's own number and every open pull request again at the
 // next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says, and note that main's own 64 entry reads this pull request at 60 and its 68 entry reads

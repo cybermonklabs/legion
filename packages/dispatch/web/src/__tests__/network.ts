@@ -68,7 +68,7 @@ const shellHandlers: RequestHandler[] = [
   // asserts on project content spies that method above MSW.
   http.get("/api/v1/projects", () => Response.json([])),
   // Three pages read every project's Legion setting with no `enabled` guard, so the read happens
-  // wherever one of them is drawn: the Delivery page's Legion section (`LegionSection.tsx:244`),
+  // wherever one of them is drawn: the Delivery page's Legion section (`LegionSection.tsx:245`),
   // the Issues page's view selector, which asks whether this project has a Legion view
   // (`ProjectPage.tsx:101`), and the Settings page's daemon section
   // (`LegionDaemonsSection.tsx:116`). An empty list is a deployment where no project names a
