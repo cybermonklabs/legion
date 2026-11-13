@@ -269,10 +269,11 @@ func populatedState(t *testing.T) State {
 			// started it (record.KeepsSlot), so its `holdsSlot` is true and its sentence ends in
 			// the holder's clause rather than in one about queuing for a free slot. LEGION-218 and
 			// LEGION-219 are the two reviewing roots whose round waits on GitHub's merge state, and
-			// each holds a slot of its own, which is why the cap is five.
+			// each holds a slot of its own, which the cap counts.
 			Waiting: []string{"LEGION-212", "LEGION-211"},
-			// The roots of the live trees, which the slots no longer name: LEGION-207 closed, and
-			// each of the other six roots a tree of its own.
+			// The roots of the live trees, which the slots no longer name: LEGION-207 closed,
+			// LEGION-214 is held with its Legion label off and so stands in no live tree, and every
+			// other root of the fixture is a tree of its own, each named below.
 			Trees: []string{"LEGION-208", "LEGION-210", "LEGION-211", "LEGION-212", "LEGION-218", "LEGION-219"},
 			// LEGION-211 is the waiting root admission skips, so it is in `waiting` too;
 			// LEGION-209 is a child of LEGION-208's tree the workflow holds at `admitted`, which

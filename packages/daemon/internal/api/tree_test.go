@@ -9,9 +9,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// The state the fixture builds (populatedState) names six live trees and gives every issue it
-// records the root of its own, so one state proves both keys treeContract added and that they
-// come off the wire together.
+// The state the fixture builds (populatedState) names its live trees in `admission.trees` and gives
+// every issue it records the root of its own, so one state proves both keys treeContract added and
+// that they come off the wire together.
 
 // treesServed is the `admission.trees` of a state body — the roots it names, and whether the key
 // is on the wire at all, which an empty array is not — and the key of every issue whose record

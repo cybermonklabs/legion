@@ -1381,7 +1381,7 @@ package api
 // the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
 // mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one
 // rule the engine reads to decide whether to ask GitHub about a round at all, so the object is on
-// the view for every round the daemon is reading for and for no other). Its seven fields are
+// the view for every round the daemon is reading for and for no other). Its fields are
 // `waitsOn`, the head the round waits on, which is the pull request's current head and the head
 // the reviewer's approval stands on; `mergeState`, the merge state the record holds for that head
 // in GitHub's own lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent
@@ -1407,40 +1407,29 @@ package api
 // counts of the moves back, one below 58 the issues without their place in the admission line, one
 // below 57 the claim views with no `step`, one below 56 the stranded report without its retired
 // entries, one below 55 the issues without the gated steps, one below 53 a body with no
-// `wakesWaiting` and one below 49 one with no memory draw; the bands compose, and every reader from
-// this contract on takes the object as optional. The daemon makes no read of GitHub of its
+// `wakesWaiting`, one below 51 the issues without the admission's trees, one below 49 one with no
+// memory draw and one below 46 the claim views without their update rounds; the bands compose, and
+// every reader from this contract on takes the object as optional. The daemon makes no read of
+// GitHub of its
 // own for any of it: every field is the record as the daemon's own reads of the pull request have
 // left it, so a state request costs no GitHub call and the object says how old the daemon's
-// knowledge of the head is rather than what GitHub would answer now. (Read at
-// 2026-11-12T22:42Z, of `const DaemonAPIVersion` at refs/pull/<n>/head for each of the 151 open
-// pull requests of this repository: main declares 86, #3939 87, #3730 88, #3519 and #3659 89,
-// #3575 and #3830 90, #3573 and #3712 91, and #3715 92, so 93 is the lowest number above the
-// base's that no other open head has claimed, and this change takes it. Earlier readings on the
-// same day took 83 at 11:00Z, 85 at 12:42Z, which two other pull requests had declared by
-// 15:32Z, 86 at 15:32Z, which the lane itself then declared and main now carries, 90 at 18:57Z,
-// which two other pull requests had declared by 20:30Z, and 91 at 20:30Z, which two other pull
-// requests had declared by 22:42Z. That is why the number is a census of every open head at the
-// moment it is written and never the base's number plus one. A sixth reading, the tester's at
-// 2026-11-12T23:38Z, found #3575 and #3677 on 93 as well, and this change keeps 93 all the same,
-// by the architect's decision: check-daemon-api-contract.sh compares a change with its base,
-// main at 86, so 93 passes, a renumber costs a push, a full check run and a test round each time
-// while the open heads move the free number again within the hour, and the change that lands
-// second is the one renumbered (AGENTS.md). If main declares this change's number or a higher one
-// before it merges, it takes the free number then, in one push. A seventh reading, at the forward
-// merge of 2026-11-13T04:21Z over the 139 open pull requests, found main at 87
-// (dispatch://INFRA-3219's entry above), #3730 88, #3659 89, #3830 90, #3519, #3573 and #3712 91,
-// #3715 92, #3677 93 beside this change, #3708 94 and #3575 95; main carries no 93, so this change
-// keeps it. An eighth reading, at the forward merge of 2026-11-13T08:10Z over the 140 open pull
-// requests, found main at 94 (dispatch://INFRA-2800's entry above: #3677 landed at 94, not at the
-// 93 it held at the seventh), #3830 90, #3715 92, #3519 and #3712 95, #2731 and #3573 96, #3708 98
-// and #3575 99. For check-daemon-api-contract.sh a base above this change's number is the base
-// taking it, so this change takes 97, the lowest number above the base's that no other open head
-// declares. A ninth reading, at the forward merge of 2026-11-13T12:54Z over the 141 open pull
-// requests, found main at 98 (dispatch://INFRA-3107's entry above, landed by #3708), #2731 96,
-// #3575 99, #3573 and #3715 100, #3712 101, #3730 102, and #3519 and #3830 103; the base stands
-// above 97, so this change takes 104, the lowest number above the base's that no other open head
-// declares. The entries above keep the numbers they were read at. Read the base's own number and
-// every open head again at the next merge rather than from this line, as
+// knowledge of the head is rather than what GitHub would answer now.
+// The number is a census of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull
+// request of this repository, taken at the moment the sites are written and never the base's number
+// plus one, because the open heads move the free number within the hour. The reading that chose
+// this one was taken at 2026-11-13T12:54Z, at the forward merge of main b7a2f926, over the 141 open
+// pull requests: main declares 98 (dispatch://INFRA-3107's entry above), and the open heads above
+// it declare 99 (#3575), 100 (#3573 and #3715), 101 (#3712), 102 (#3730) and 103 (#3519 and #3830),
+// and none declares 104 or above, so 104 is the lowest number above the base's that no other open
+// head declares. This change keeps its number while it stands above its base, even when another
+// open head declares the same one: check-daemon-api-contract.sh compares a change with its base
+// alone, a renumber costs a push, a full check run and a test round, and the change that lands
+// second is the one renumbered (AGENTS.md). When the base declares this change's number or a higher
+// one, the base has taken it, and this change takes the free number at its next forward merge, from
+// a census read then, in one push. The readings that chose this change's earlier numbers are in its
+// implement handoffs on dispatch://INFRA-3027 rather than here, since each merge would make them
+// false, and the entries above keep the numbers they were read at. Read the base's own number and
+// every open head again at the next merge rather than from this entry, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
-// says.)
+// says.
 const DaemonAPIVersion = 104

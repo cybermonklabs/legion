@@ -1,13 +1,8 @@
-// The harness this package's whole-daemon live proofs share: child_adoption_live_test.go,
-// conflict_no_takeover_live_test.go, merge_wait_readable_live_test.go,
-// handoff_records_live_test.go, the three that drive real Oh My Pi panes through liveAgentProof
-// (claim_compaction_live_test.go, provider_error_retry_live_test.go and
-// role_prompt_rule_live_test.go) and admission_issues_live_test.go. The first seven are built with
-// `-tags e2e` by scripts of their own (scripts/e2e/child-adoption.sh,
-// scripts/e2e/conflict-no-takeover.sh, scripts/e2e/merge-wait-readable.sh,
-// scripts/e2e/handoff-records.sh, scripts/e2e/claim-compaction.sh,
-// scripts/e2e/provider-error-retry.sh and scripts/e2e/role-prompt-rule.sh), which make the same
-// run around them through scripts/e2e/lib/live-daemon-proof.sh; the eighth runs in the ordinary
+// The harness this package's whole-daemon live proofs share: every *_live_test.go of this package
+// that embeds liveProof, those that drive real Oh My Pi panes through liveAgentProof among them.
+// Each one carrying the `e2e` build tag is built by a script of its own under scripts/e2e, which
+// makes the same run around it through scripts/e2e/lib/live-daemon-proof.sh;
+// admission_issues_live_test.go, which carries no build tag, runs in the ordinary
 // `go test ./internal/daemon/` on the broker that package's other tests take (newLiveProofOn over
 // workflowNATS), which is why this file carries no build tag of its own.
 //
