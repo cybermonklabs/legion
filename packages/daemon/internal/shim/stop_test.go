@@ -185,6 +185,11 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		case <-time.After(stopLimit):
 			t.Fatalf("the shim was still running %v after the agent was killed at the end of its grace; log:\n%s", stopLimit, r.log)
 		}
+		// The drain's bound ran out with the command's jj still ignoring its SIGTERM, so the shim
+		// left it running, and the pane's last lines are where a person reads that it did.
+		if n := r.log.count("a command the daemon asked for is still running"); n != 1 {
+			t.Errorf("the shim logged %d time(s) that a command the daemon asked for is still running, want once: its drain's bound ran out with the command's jj still in flight; log:\n%s", n, r.log)
+		}
 	})
 
 	t.Run("the daemon's shutdown, with the commands' whole stop span spent inside the agent's grace", func(t *testing.T) {

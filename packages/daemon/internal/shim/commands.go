@@ -30,7 +30,6 @@ import (
 // lowered first, so a count of 0 means every command has returned and nothing but the
 // goroutines' own last line is left.
 func (s *shim) answer(command func()) {
-	s.commandStarted.Store(true)
 	s.commandsInFlight.Add(1)
 	s.commandRuns.Add(1)
 	go func() {
@@ -72,12 +71,11 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // commandsInFlight is 0 once every command answered has returned, which is the ordinary end of
 // the daemon's `shutdown`: the commands are ended at the agent's SIGTERM and the agent then has
 // its whole grace, so an agent that spends the stop span below inside that grace leaves this
-// drain a bound of 0 as well. commandStarted cannot stand in for that count — it stays true for
-// every command ever answered, the working copy's adoption at the start of the pane included —
-// so a drain that took its select on that alone would be choosing between a timer of 0 that has
-// already fired and a goroutine that has not yet closed its channel. Such a select takes the
-// timer: the pane's last lines would say that a command the daemon asked for is still running,
-// seconds after it returned, which is the line a person reads while diagnosing that very stop.
+// drain a bound of 0 as well. A drain that took its select whatever that count read would then be
+// choosing between a timer of 0 that has already fired and a goroutine that has not yet closed its
+// channel. Such a select takes the timer: the pane's last lines would say that a command the
+// daemon asked for is still running, seconds after it returned, which is the line a person reads
+// while diagnosing that very stop. A shim that answered no such frame has nothing in flight either.
 //
 // The wait is bounded by that stop's own span, procgroup.StopGrace plus the procgroup.WaitDelay
 // exec then waits for anything still holding the command's pipes — counted from the moment the
@@ -89,8 +87,7 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // which deployments are accepted and not this wait's to make. A command still running past the
 // bound has escaped its group — a descendant of its own that called setsid, which neither signal
 // reaches — so no further waiting would end it: it is logged and left, and the shim's exit reaches
-// the daemon rather than being held past the stop grace at which the launcher kills it. A shim
-// that answered no such frame waits for nothing and registers no wait on its clock.
+// the daemon rather than being held past the stop grace at which the launcher kills it.
 //
 // The two readings the bound is built from are on two clocks, because they have to be: the wait
 // itself is taken from the shim's own clock (s.clock, which a test drives step by step), and
@@ -99,13 +96,10 @@ func (s *shim) sinceCommandsEnded() time.Duration {
 // a wall clock stepped mid-stop from making that span negative, which would stretch this wait
 // past the bound it means to give, or enormous, which would leave no wait at all.
 func (s *shim) drainCommands() {
-	if !s.commandStarted.Load() {
-		return
-	}
-	s.endCommands()
 	if s.commandsInFlight.Load() == 0 {
 		return
 	}
+	s.endCommands()
 	returned := make(chan struct{})
 	go func() {
 		s.commandRuns.Wait()

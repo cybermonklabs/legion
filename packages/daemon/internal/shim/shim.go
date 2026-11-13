@@ -251,14 +251,10 @@ type shim struct {
 	// starts counting.
 	commandsEnded atomic.Int64
 	// commandRuns is every goroutine answer started, which drainCommands waits for.
-	// commandStarted is set before the first of them and read by drainCommands, which otherwise
-	// returns at once, so a shim that answered no such frame registers no wait on its clock.
 	// commandsInFlight is how many of those goroutines have not returned yet — raised in answer,
 	// lowered in the goroutine's own defer — which is what decides whether there is anything to
-	// wait for: commandStarted stays true for every command ever answered, so a drain that read
-	// it alone would take a wait for commands that are long gone (drainCommands).
+	// wait for (drainCommands).
 	commandRuns      sync.WaitGroup
-	commandStarted   atomic.Bool
 	commandsInFlight atomic.Int64
 
 	mu          sync.Mutex
