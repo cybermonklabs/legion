@@ -554,6 +554,16 @@ for form in "(( 1 + 1 ))" "echo \$(( 2 + 3 ))" "cat <(printf x)" \
     case_result "a form the admitted list does not name is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
 done
 
+# 38. Arithmetic in its other spelling. afdaf9863e refuses $(( )) by its opening text, but
+# bash also reads $[ ] as an arithmetic expansion, and `echo $[2+3]` and `X=$[0]` were
+# admitted at that head. The header refuses arithmetic as a form the evaluator does not
+# admit, so each spelling of it is refused. No row of claims.jsonl holds `$[`.
+for form in "echo \$[2+3]" "X=\$[0]"; do
+    dir="$(fresh "arith-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    plant_behaviour "$dir" "$form; printf 'ran once\\n'" '{"contains":"ran once"}'
+    case_result "arithmetic written as \$[ ] is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
