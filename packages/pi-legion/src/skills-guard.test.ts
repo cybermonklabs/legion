@@ -593,6 +593,20 @@ test("a derived result satisfies the passages that judge or record a check's evi
   );
 });
 
+// A `ci_check` that no run of its name answers is a defect of the check's words, which the
+// architect corrects, and no role sends that to an implementer who cannot cure it
+// (`ci-checks.md`, "A name that no run answers"). Retro's step that sends a CI check with no pass
+// back names that case and gives it to the architect, so the two texts say the same thing
+// (dispatch://INFRA-3204, tester round 5).
+test("retro gives a ci_check that no run answers to the architect, not to the implementer", () => {
+  const retro = collapsed(path.join(staged, "legion-retro", "SKILL.md"));
+  const sentences = retro.split(/(?<=\.)\s+/);
+  const absent = sentences.filter((sentence) => sentence.includes("`absent`"));
+  expect(absent.length).toBeGreaterThan(0);
+  expect(absent.some((sentence) => sentence.includes("architect"))).toBe(true);
+  expect(absent.some((sentence) => sentence.includes("to: implementing"))).toBe(false);
+});
+
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
 // a file and a symbol, or text quoted from it, read at the head the pull request commits, never a
 // line number the next edit above it moves.
