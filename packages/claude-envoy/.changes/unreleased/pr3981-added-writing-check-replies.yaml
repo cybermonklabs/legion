@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  When Dispatch's writing check refuses a fork's answer to a person, the refusal goes back to a
+  new fork with its findings, and then to the main session, and no message quotes the refused
+  text. Text the plugin writes itself (a slash command's output, its own error replies) is sent
+  with `override_writing_check: "generated"`.

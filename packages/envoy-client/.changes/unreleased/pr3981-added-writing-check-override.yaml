@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  The `dispatch` CLI sends `override_writing_check: "agent"` when `--override-writing-check` is
+  given, keeps a writing-check refusal's findings on `DispatchServiceError`, and names its own
+  session on `dispatch send-to-agent`, which now runs without an issue. `postDeliveryReply`
+  returns a writing-check refusal to its caller instead of throwing it.

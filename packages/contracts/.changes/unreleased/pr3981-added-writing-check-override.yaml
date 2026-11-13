@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The covered `dispatch` write commands take `override_writing_check` (CLI
+  `--override-writing-check`), and `DispatchServiceErrorShape` carries a writing-check refusal's
+  `findings` and `override_field`. A `!command` report sets the command line in a code fence.

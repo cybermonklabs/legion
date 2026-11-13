@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `agentloop`: each `Step` carries the model id the provider says served the call (`Step.Model`),
+  and a `Request.Temperature` is sent when it is set.

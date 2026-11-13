@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  Dispatch reads the prose of every write an agent makes and refuses a write that breaks an
+  enabled STE100 structure rule (`phrasal-verb`, `nominalization`, `dangling-conjunction`) with
+  `422 WRITING_CHECK_REFUSED`, naming each field, rule, sentence and a plain rewrite. A person's
+  own write, the Legion daemon's write and a system write are not read. The field
+  `override_writing_check` (`agent` or `generated`) sends a refused write through, and each forced
+  or exempted write is recorded in `writing_check_events` for 90 days. `DISPATCH_WRITING_CHECK`
+  turns the check on (it is off by default), `DISPATCH_WRITING_CHECK_RULES_OFF` turns rules off,
+  and `GET /api/v1/writing-check` and `GET /api/v1/writing-check/counts?day=` read its state and a
+  day's counts. The vacuous-verb-phrase detector and its model settings
+  (`DISPATCH_WRITING_CHECK_AZURE_*`) ship off until their final test passes.
