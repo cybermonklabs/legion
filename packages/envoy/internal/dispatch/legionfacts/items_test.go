@@ -61,25 +61,50 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 		seeded.fixture.To.Format(time.RFC3339), withHours, withoutHours)
 }
 
-// compareItemColumns reads each column of one row against the stored value it comes from: the ten
-// every row carries, and one `hours_<phase>` column for each phase the issue has hours in and no
-// other.
+// compareItemColumns reads each column of one row against the stored value it comes from: the
+// twenty every row carries, one `hours_<phase>` column for each phase the issue has hours in and
+// no other, six `bar_<role>` columns for each of the seven bars, and one `idle_<role>` for each
+// of the six roles.
 func compareItemColumns(t *testing.T, row Row, columns map[string]any) {
 	t.Helper()
 	want := map[string]any{
-		ColumnOpenedAt:      row.OpenedAt,
-		ColumnClosedAt:      row.ClosedAt,
-		ColumnWorkHours:     row.WorkHours,
-		ColumnReviewRounds:  row.ReviewRounds,
-		ColumnRootKey:       row.RootKey,
-		ColumnTreeDepth:     row.TreeDepth,
-		ColumnSlotHours:     row.SlotHours,
-		ColumnWaitingReason: row.WaitingReason,
-		ColumnWorkFirstAt:   row.WorkFirstAt,
-		ColumnWorkLastAt:    row.WorkLastAt,
+		ColumnOpenedAt:                     row.OpenedAt,
+		ColumnClosedAt:                     row.ClosedAt,
+		ColumnWorkHours:                    row.WorkHours,
+		ColumnReviewRounds:                 row.ReviewRounds,
+		ColumnRootKey:                      row.RootKey,
+		ColumnTreeDepth:                    row.TreeDepth,
+		ColumnSlotHours:                    row.SlotHours,
+		ColumnWaitingReason:                row.WaitingReason,
+		ColumnWorkFirstAt:                  row.WorkFirstAt,
+		ColumnWorkLastAt:                   row.WorkLastAt,
+		ColumnParkedHours:                  row.ParkedHours,
+		ColumnQueuedHours:                  row.QueuedHours,
+		ColumnStartedAt:                    row.StartedAt,
+		ColumnMergedAt:                     row.MergedAt,
+		ColumnSlotWaitHours:                row.SlotWaitHours,
+		ColumnSentBack:                     row.SentBack,
+		ColumnImplementingAfterFirstReview: row.ImplementingAfterFirstReview,
+		ColumnTestingAfterFirstReview:      row.TestingAfterFirstReview,
+		ColumnChildren:                     row.Children,
+		ColumnRepo:                         row.Repo,
 	}
 	for phase, hours := range row.HoursByPhase {
 		want[ColumnHoursPrefix+phase] = hours
+	}
+	if len(row.Bars) != 7 || len(row.IdleByRole) != 6 {
+		t.Errorf("%s holds %d bars and %d roles' idle hours, want all 7 and all 6", row.Issue, len(row.Bars), len(row.IdleByRole))
+	}
+	for role, bar := range row.Bars {
+		want[ColumnBarPrefix+role] = bar.Hours
+		want[ColumnBarPrefix+role+"_waiting_on_person"] = bar.Segments.WaitingOnPerson
+		want[ColumnBarPrefix+role+"_in_a_turn"] = bar.Segments.InATurn
+		want[ColumnBarPrefix+role+"_ci_wait"] = bar.Segments.CIWait
+		want[ColumnBarPrefix+role+"_waiting_on_children"] = bar.Segments.WaitingOnChildren
+		want[ColumnBarPrefix+role+"_idle"] = bar.Segments.Idle
+	}
+	for role, hours := range row.IdleByRole {
+		want[ColumnIdlePrefix+role] = hours
 	}
 	if names := slices.Sorted(maps.Keys(columns)); !slices.Equal(names, slices.Sorted(maps.Keys(want))) {
 		t.Errorf("%s carries the columns %v, want %v", row.Issue, names, slices.Sorted(maps.Keys(want)))

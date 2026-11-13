@@ -166,11 +166,16 @@ func inATurnSpans(view *issueView) []Span {
 		if !strings.HasPrefix(field, legion.ClaimFieldPrefix) {
 			continue
 		}
-		spans = append(spans, markSpans(marks, view.end, func(value string) bool {
-			return legion.JSONString([]byte(value)) == "working"
-		})...)
+		spans = append(spans, markSpans(marks, view.end, claimWorking)...)
 	}
 	return spans
+}
+
+// claimWorking is whether a `claim.<role>` observation reads `working`: the role is in a turn.
+// It is the one reading of that field, which the in-a-turn segment and the idle hours by role
+// (idleByRole) both take.
+func claimWorking(value string) bool {
+	return legion.JSONString([]byte(value)) == "working"
 }
 
 // ciWaitSpans is segment 3: "the pull request was open, its base branch requires a check, and the

@@ -1,6 +1,10 @@
 package legionfacts
 
-import "time"
+import (
+	"time"
+
+	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
+)
 
 // items.go turns the stored rows into the rows an eval's issue list serves (dispatch://INFRA-2915,
 // R5). dispatch://INFRA-2916 mounts `GET /api/v1/projects/{key}/evals/{slug}/items`; this file
@@ -20,22 +24,39 @@ const ItemSource = "legionfacts"
 // issue_facts column of the same name, so a reader of a column and a reader of the table read one
 // word for one number.
 const (
-	ColumnOpenedAt      = "opened_at"
-	ColumnClosedAt      = "closed_at"
-	ColumnWorkHours     = "work_hours"
-	ColumnReviewRounds  = "review_rounds"
-	ColumnRootKey       = "root_key"
-	ColumnTreeDepth     = "tree_depth"
-	ColumnSlotHours     = "slot_hours"
-	ColumnWaitingReason = "waiting_reason"
-	ColumnWorkFirstAt   = "work_first_at"
-	ColumnWorkLastAt    = "work_last_at"
+	ColumnOpenedAt                     = "opened_at"
+	ColumnClosedAt                     = "closed_at"
+	ColumnWorkHours                    = "work_hours"
+	ColumnReviewRounds                 = "review_rounds"
+	ColumnRootKey                      = "root_key"
+	ColumnTreeDepth                    = "tree_depth"
+	ColumnSlotHours                    = "slot_hours"
+	ColumnWaitingReason                = "waiting_reason"
+	ColumnWorkFirstAt                  = "work_first_at"
+	ColumnWorkLastAt                   = "work_last_at"
+	ColumnParkedHours                  = "parked_hours"
+	ColumnQueuedHours                  = "queued_hours"
+	ColumnStartedAt                    = "started_at"
+	ColumnMergedAt                     = "merged_at"
+	ColumnSlotWaitHours                = "slot_wait_hours"
+	ColumnSentBack                     = "sent_back"
+	ColumnImplementingAfterFirstReview = "implementing_after_first_review"
+	ColumnTestingAfterFirstReview      = "testing_after_first_review"
+	ColumnChildren                     = "children"
+	ColumnRepo                         = "repo"
 	// ColumnHoursPrefix starts the column of one phase's hours: `hours_implementing`,
 	// `hours_awaiting_person`. The stored row holds the hours as a map of the board's column
 	// ids, and an eval names one column and reads one number, so each phase's hours is a column
 	// of its own rather than a map under one name. A phase with no hours has no column, as the
 	// stored row holds no entry for it.
 	ColumnHoursPrefix = "hours_"
+	// ColumnBarPrefix starts the columns of one bar of phase time, for the same reason:
+	// `bar_implementer` is the bar's hours and `bar_implementer_in_a_turn` one segment of them,
+	// one of each for every bar the stored row holds, which is all seven.
+	ColumnBarPrefix = "bar_"
+	// ColumnIdlePrefix starts the column of one role's idle hours, `idle_reviewer`, one for each
+	// of the six roles the stored row holds.
+	ColumnIdlePrefix = "idle_"
 )
 
 // ItemRow is one row of an eval's items answer: the issue, its stored Legion facts as columns,
@@ -84,23 +105,56 @@ func ItemRows(rows []Row) []ItemRow {
 	return items
 }
 
-// itemColumns is one row's facts by column name: the ten columns every issue's row carries, and
-// one column for each phase the issue has hours in.
+// itemColumns is one row's facts by column name: the twenty columns every issue's row carries,
+// one column for each phase the issue has hours in, six for each of the seven bars (its hours and
+// its five segments) and one for each role's idle hours. A bar's holds_hours is no column: it is
+// what a fold counts a bar's issues by, and no issue list shows it.
 func itemColumns(row Row) map[string]any {
 	columns := map[string]any{
-		ColumnOpenedAt:      row.OpenedAt,
-		ColumnClosedAt:      row.ClosedAt,
-		ColumnWorkHours:     row.WorkHours,
-		ColumnReviewRounds:  row.ReviewRounds,
-		ColumnRootKey:       row.RootKey,
-		ColumnTreeDepth:     row.TreeDepth,
-		ColumnSlotHours:     row.SlotHours,
-		ColumnWaitingReason: row.WaitingReason,
-		ColumnWorkFirstAt:   row.WorkFirstAt,
-		ColumnWorkLastAt:    row.WorkLastAt,
+		ColumnOpenedAt:                     row.OpenedAt,
+		ColumnClosedAt:                     row.ClosedAt,
+		ColumnWorkHours:                    row.WorkHours,
+		ColumnReviewRounds:                 row.ReviewRounds,
+		ColumnRootKey:                      row.RootKey,
+		ColumnTreeDepth:                    row.TreeDepth,
+		ColumnSlotHours:                    row.SlotHours,
+		ColumnWaitingReason:                row.WaitingReason,
+		ColumnWorkFirstAt:                  row.WorkFirstAt,
+		ColumnWorkLastAt:                   row.WorkLastAt,
+		ColumnParkedHours:                  row.ParkedHours,
+		ColumnQueuedHours:                  row.QueuedHours,
+		ColumnStartedAt:                    row.StartedAt,
+		ColumnMergedAt:                     row.MergedAt,
+		ColumnSlotWaitHours:                row.SlotWaitHours,
+		ColumnSentBack:                     row.SentBack,
+		ColumnImplementingAfterFirstReview: row.ImplementingAfterFirstReview,
+		ColumnTestingAfterFirstReview:      row.TestingAfterFirstReview,
+		ColumnChildren:                     row.Children,
+		ColumnRepo:                         row.Repo,
 	}
 	for phase, hours := range row.HoursByPhase {
 		columns[ColumnHoursPrefix+phase] = hours
 	}
+	for role, bar := range row.Bars {
+		for name, hours := range barColumns(bar) {
+			columns[ColumnBarPrefix+role+name] = hours
+		}
+	}
+	for role, hours := range row.IdleByRole {
+		columns[ColumnIdlePrefix+role] = hours
+	}
 	return columns
+}
+
+// barColumns is one bar's numbers by the suffix of their column: "" for the bar's hours, and
+// `_<segment>` for each of its five segments, by the segment's own name (metrics.Segment).
+func barColumns(bar metrics.BarPart) map[string]float64 {
+	return map[string]float64{
+		"": bar.Hours,
+		"_" + string(metrics.SegmentWaitingOnPerson):   bar.Segments.WaitingOnPerson,
+		"_" + string(metrics.SegmentInATurn):           bar.Segments.InATurn,
+		"_" + string(metrics.SegmentCIWait):            bar.Segments.CIWait,
+		"_" + string(metrics.SegmentWaitingOnChildren): bar.Segments.WaitingOnChildren,
+		"_" + string(metrics.SegmentIdle):              bar.Segments.Idle,
+	}
 }

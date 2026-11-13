@@ -127,6 +127,17 @@ type RoleBar struct {
 	Segments            Segments `json:"segments"`
 }
 
+// BarPart is one issue's part of one bar of metric 2: its hours on the bar and their five
+// segments, and whether any of its bar spans fall on the bar at all (HoldsHours), which is what
+// RoleBar.Issues counts. A bar's whole time is the sum of its parts' segments, and its median
+// per issue is the median of its parts' segment totals, one per finished issue (barPartsOf,
+// phaseTime). Hours is that total rounded as every number of a report is.
+type BarPart struct {
+	Hours      float64  `json:"hours"`
+	HoldsHours bool     `json:"holds_hours"`
+	Segments   Segments `json:"segments"`
+}
+
 // Rework is metric 3.
 type Rework struct {
 	MedianReviewRounds float64 `json:"median_review_rounds"`
@@ -195,15 +206,7 @@ type FiledIssue struct {
 // Compute is the metrics answer for a population. It reads nothing: the route and the live hub
 // both call it over a population Read gathered, so a live push and a GET answer the same numbers.
 func Compute(population *Population, scope Scope, now time.Time) Report {
-	computed := &computation{
-		population: population,
-		scope:      scope,
-		phases:     map[string]phaseTimeline{},
-		views:      map[string]*issueView{},
-		roots:      map[string]string{},
-		workTimes:  map[string]workTimeRow{},
-		barSpans:   map[string][]Span{},
-	}
+	computed := newComputation(population, scope)
 	finished := computed.finished()
 	return Report{
 		Project:    population.Project,
@@ -233,6 +236,20 @@ type computation struct {
 	roots     map[string]string
 	workTimes map[string]workTimeRow
 	barSpans  map[string][]Span
+}
+
+// newComputation is an empty computation over population under scope, with its memoised maps
+// made: what Compute, ProjectFacts and ProjectFilings each start from.
+func newComputation(population *Population, scope Scope) *computation {
+	return &computation{
+		population: population,
+		scope:      scope,
+		phases:     map[string]phaseTimeline{},
+		views:      map[string]*issueView{},
+		roots:      map[string]string{},
+		workTimes:  map[string]workTimeRow{},
+		barSpans:   map[string][]Span{},
+	}
 }
 
 // phaseTimeline is one issue's phase timeline with where it came from: the daemon's own
@@ -514,19 +531,17 @@ func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 		perIssue[index] = make([]float64, 0, len(finished))
 	}
 	for _, issue := range finished {
-		view := c.viewOf(issue)
-		shared := c.barSpansOf(issue)
+		parts := c.barPartsOf(issue)
 		for index, bar := range bars {
-			spans := intersect(phaseSpansOf(view.timeline, bar.Phases...), shared)
-			segments := view.split(spans)
+			part := parts[bar.Role]
 			// Every issue of the population counts towards each bar's median, one the role
 			// never worked as a zero, so the seven medians describe one population and not
 			// seven.
-			perIssue[index] = append(perIssue[index], segments.total())
-			if len(spans) == 0 {
+			perIssue[index] = append(perIssue[index], part.Segments.total())
+			if !part.HoldsHours {
 				continue
 			}
-			metric.Bars[index].Segments.addSegments(segments)
+			metric.Bars[index].Segments.addSegments(part.Segments)
 			metric.Bars[index].Issues++
 		}
 	}
@@ -545,6 +560,25 @@ func (c *computation) phaseTime(finished []*Issue) PhaseTime {
 	return metric
 }
 
+// barPartsOf is one issue's part of metric 2, keyed by role: its time on each of the seven bars
+// (bars), shared out over the five segments. phaseTime adds these parts up across the finished
+// issues, and the per-issue facts store them (ProjectFacts), so the two read one rule.
+//
+// A bar's spans are the issue's bar spans (barSpansOf) in the phases the bar holds. HoldsHours
+// is whether there are any, which is what RoleBar.Issues counts, kept apart from Hours because
+// a span of a fraction of a second holds the bar while its hours round to nothing.
+func (c *computation) barPartsOf(issue *Issue) map[string]BarPart {
+	view := c.viewOf(issue)
+	shared := c.barSpansOf(issue)
+	parts := make(map[string]BarPart, len(bars))
+	for _, bar := range bars {
+		spans := intersect(phaseSpansOf(view.timeline, bar.Phases...), shared)
+		segments := view.split(spans)
+		parts[bar.Role] = BarPart{Hours: round(segments.total()), HoldsHours: len(spans) > 0, Segments: segments}
+	}
+	return parts
+}
+
 // rework is metric 3: review rounds, the share of issues sent back, and the implementing and
 // testing hours after the first review.
 func (c *computation) rework(finished []*Issue) Rework {
@@ -552,14 +586,7 @@ func (c *computation) rework(finished []*Issue) Rework {
 	rounds, afterReview := make([]float64, 0, len(finished)), make([]float64, 0, len(finished))
 	var sentBack int
 	for _, issue := range finished {
-		phases := c.timelineOf(issue)
-		timeline := phases.spans
-		row := ReworkIssue{Key: issue.Key, ReviewRounds: reviewRounds(issue, phases), SentBack: sentBackOnce(issue, phases)}
-		if at, reviewed := firstReview(issue, phases); reviewed {
-			after := intersect(c.barSpansOf(issue), []Span{{From: at, To: c.population.issueEnd(issue)}})
-			row.ImplementingHoursAfterFirst = hours(totalOf(intersect(phaseSpansOf(timeline, legion.PhaseImplementing), after)))
-			row.TestingHoursAfterFirst = hours(totalOf(intersect(phaseSpansOf(timeline, legion.PhaseTesting), after)))
-		}
+		row := c.reworkOf(issue)
 		if row.SentBack {
 			sentBack++
 		}
@@ -576,6 +603,71 @@ func (c *computation) rework(finished []*Issue) Rework {
 		metric.SentBackShare = round(float64(sentBack) / float64(len(finished)))
 	}
 	return metric
+}
+
+// reworkOf is one issue's part of metric 3: its review rounds, whether it was sent back, and its
+// implementing and testing hours after the first review, which are the measure of its bar spans
+// from that review on. rework adds these parts up across the finished issues, and the per-issue
+// facts store them (ProjectFacts).
+func (c *computation) reworkOf(issue *Issue) ReworkIssue {
+	phases := c.timelineOf(issue)
+	row := ReworkIssue{Key: issue.Key, ReviewRounds: reviewRounds(issue, phases), SentBack: sentBackOnce(issue, phases)}
+	if at, reviewed := firstReview(issue, phases); reviewed {
+		after := intersect(c.barSpansOf(issue), []Span{{From: at, To: c.population.issueEnd(issue)}})
+		row.ImplementingHoursAfterFirst = hours(totalOf(intersect(phaseSpansOf(phases.spans, legion.PhaseImplementing), after)))
+		row.TestingHoursAfterFirst = hours(totalOf(intersect(phaseSpansOf(phases.spans, legion.PhaseTesting), after)))
+	}
+	return row
+}
+
+// slotWaitHours is the issue's slot wait (dispatch://INFRA-2916, D3): "the hours of the issue's
+// observed life in which its phase is `admitted` and it holds no slot, over the whole life, with
+// parked hours left out".
+//
+// The phase is the observed one alone, the timeline the sampler's own `phase` observations draw
+// (sampledPhases), whose `queued` stretches are the admitted hours in which the issue held no
+// slot of its own: the one queue definition the work time subtracts too (queuedSpans). Work time
+// counts that queue from the first worker event on; this counts it over the whole life, from the
+// issue's creation to its end, because a wait for a slot before any worker started is a wait all
+// the same. The parked hours are the ones the work time leaves out (parkedSpans). An issue the
+// sampler never saw has no observed phase, and so no slot wait.
+func (c *computation) slotWaitHours(issue *Issue, sampled []PhaseSpan) float64 {
+	life := []Span{{From: issue.CreatedAt, To: c.population.issueEnd(issue)}}
+	waited := intersect(phaseSpansOf(sampled, phaseQueued), life)
+	return hours(totalOf(subtract(waited, c.population.parkedSpans(issue))))
+}
+
+// idleByRole is the issue's idle hours by role (dispatch://INFRA-2916, D3): for role R, "the hours
+// of the issue's worked spans (life − parked − queued) in which the issue holds its own slot, its
+// observed phase is in R's bar ..., and R's newest observed claim state is not `working` (no claim
+// counts as not working)". Each of the six roles has an entry, zero where no hour qualifies.
+//
+// The worked spans are the ones the work time counts (workedSpansOf). The slot is the issue's own
+// `slot` observations (slotSpans), never the daemon's admission block. R's bar is the bar phase
+// time draws for R (bars): the architect's is `design` and `accepting`, where `design` is the
+// daemon's `admitted` while the issue holds a slot of its own, which is how the timeline names
+// that stretch (sampledPhases); the merger's is legion.MergerPhases, `retro`, `merging` and
+// `awaiting_merge`. The phase is the observed one alone (sampledPhases), so an hour before the
+// sampler first saw the issue is in no bar. R's claim is its `claim.<R>` observations: a stretch
+// whose newest mark reads `working` is a turn, as the in-a-turn segment reads the same field
+// (claimWorking), and every other stretch, the one before the first mark included, is not.
+//
+// It is not phase time's idle segment, which is the hours of a bar no other segment claimed: an
+// hour of R's bar with R out of a turn is idle here whether or not CI, a person or a child held
+// it.
+func (c *computation) idleByRole(issue *Issue, sampled []PhaseSpan) map[string]float64 {
+	end := c.population.issueEnd(issue)
+	holding := intersect(c.workedSpansOf(issue), c.population.slotSpans(issue, end))
+	idle := make(map[string]float64, len(bars)-1)
+	for _, bar := range bars {
+		if bar.Role == barNoRole {
+			continue
+		}
+		inBar := intersect(holding, phaseSpansOf(sampled, bar.Phases...))
+		working := markSpans(issue.Observed[legion.ClaimFieldPrefix+bar.Role], end, claimWorking)
+		idle[bar.Role] = hours(totalOf(subtract(inBar, working)))
+	}
+	return idle
 }
 
 // reviewRounds is "entries into `reviewing`, or into status `needs_review` before observations".

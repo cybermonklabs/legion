@@ -242,7 +242,7 @@ func sameRow(got, want Row) bool {
 // where they hold the same facts. It is where the field list is stated, so a check that counts
 // differing rows and a check that prints one read the same comparison.
 //
-// The hours of want are read as the table stores them (storedHours), because the one caller that
+// The maps of want are read as the table stores them (storedMap), because the one caller that
 // compares a computed row to a stored one answers an empty map where the computation answered a
 // nil one.
 func rowDifference(got, want Row) string {
@@ -256,7 +256,7 @@ func rowDifference(got, want Row) string {
 		{"the issue", got.Issue == want.Issue, got.Issue, want.Issue},
 		{"opened_at", got.OpenedAt.Equal(want.OpenedAt), got.OpenedAt.UTC(), want.OpenedAt.UTC()},
 		{"closed_at", sameTime(got.ClosedAt, want.ClosedAt), utc(got.ClosedAt), utc(want.ClosedAt)},
-		{"hours_by_phase", maps.Equal(got.HoursByPhase, storedHours(want.HoursByPhase)), got.HoursByPhase, want.HoursByPhase},
+		{"hours_by_phase", maps.Equal(got.HoursByPhase, storedMap(want.HoursByPhase)), got.HoursByPhase, want.HoursByPhase},
 		{"work_hours", got.WorkHours == want.WorkHours, got.WorkHours, want.WorkHours},
 		{"review_rounds", got.ReviewRounds == want.ReviewRounds, got.ReviewRounds, want.ReviewRounds},
 		{"root_key", got.RootKey == want.RootKey, got.RootKey, want.RootKey},
@@ -265,6 +265,20 @@ func rowDifference(got, want Row) string {
 		{"waiting_reason", got.WaitingReason == want.WaitingReason, got.WaitingReason, want.WaitingReason},
 		{"work_first_at", sameTime(got.WorkFirstAt, want.WorkFirstAt), utc(got.WorkFirstAt), utc(want.WorkFirstAt)},
 		{"work_last_at", sameTime(got.WorkLastAt, want.WorkLastAt), utc(got.WorkLastAt), utc(want.WorkLastAt)},
+		{"parked_hours", got.ParkedHours == want.ParkedHours, got.ParkedHours, want.ParkedHours},
+		{"queued_hours", got.QueuedHours == want.QueuedHours, got.QueuedHours, want.QueuedHours},
+		{"started_at", sameTime(got.StartedAt, want.StartedAt), utc(got.StartedAt), utc(want.StartedAt)},
+		{"merged_at", sameTime(got.MergedAt, want.MergedAt), utc(got.MergedAt), utc(want.MergedAt)},
+		{"bars", maps.Equal(got.Bars, storedMap(want.Bars)), got.Bars, want.Bars},
+		{"idle_by_role", maps.Equal(got.IdleByRole, storedMap(want.IdleByRole)), got.IdleByRole, want.IdleByRole},
+		{"slot_wait_hours", got.SlotWaitHours == want.SlotWaitHours, got.SlotWaitHours, want.SlotWaitHours},
+		{"sent_back", got.SentBack == want.SentBack, got.SentBack, want.SentBack},
+		{"implementing_after_first_review", got.ImplementingAfterFirstReview == want.ImplementingAfterFirstReview,
+			got.ImplementingAfterFirstReview, want.ImplementingAfterFirstReview},
+		{"testing_after_first_review", got.TestingAfterFirstReview == want.TestingAfterFirstReview,
+			got.TestingAfterFirstReview, want.TestingAfterFirstReview},
+		{"children", got.Children == want.Children, got.Children, want.Children},
+		{"repo", got.Repo == want.Repo, got.Repo, want.Repo},
 		{"updated_at", got.UpdatedAt.Equal(want.UpdatedAt), got.UpdatedAt.UTC(), want.UpdatedAt.UTC()},
 	}
 	for _, field := range fields {
@@ -285,10 +299,14 @@ func sameTime(got, want *time.Time) bool {
 
 // show is one row written for a failure message, its times in UTC so two zones read alike.
 func show(row Row) string {
-	return fmt.Sprintf("opened %s closed %v hours %v work %g rounds %d root %s depth %d slot %g waiting %q work %v to %v updated %s",
+	return fmt.Sprintf("opened %s closed %v hours %v work %g rounds %d root %s depth %d slot %g waiting %q work %v to %v "+
+		"parked %g queued %g started %v merged %v bars %v idle %v slot wait %g sent back %t after review %g+%g children %d repo %q updated %s",
 		row.OpenedAt.UTC(), utc(row.ClosedAt), row.HoursByPhase, row.WorkHours, row.ReviewRounds,
 		row.RootKey, row.TreeDepth, row.SlotHours, row.WaitingReason,
-		utc(row.WorkFirstAt), utc(row.WorkLastAt), row.UpdatedAt.UTC())
+		utc(row.WorkFirstAt), utc(row.WorkLastAt), row.ParkedHours, row.QueuedHours,
+		utc(row.StartedAt), utc(row.MergedAt), row.Bars, row.IdleByRole, row.SlotWaitHours, row.SentBack,
+		row.ImplementingAfterFirstReview, row.TestingAfterFirstReview, row.Children, row.Repo,
+		row.UpdatedAt.UTC())
 }
 
 func utc(at *time.Time) any {

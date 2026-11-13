@@ -86,8 +86,12 @@ func (c *computation) issueParts(issue *Issue) (map[string]time.Duration, time.D
 // IssueFacts is one issue's Legion facts: when it opened and closed, the hours by breakdown part
 // (the board's column ids), the work time those hours are shared out of, the review rounds,
 // whether the issue is its tree's root, which tree it is in and how deep in it, how long it held
-// an admission slot, and the first and last moment of its measured work. One issue with Legion
-// phase work, open or closed, has one of these, whatever its hours are.
+// an admission slot, and the first and last moment of its measured work. Beside them are the
+// per-issue parts every Legion measure folds (dispatch://INFRA-2916, R17): each is the very part
+// the window aggregation of compute.go takes from the issue (workTimeOf, barPartsOf, reworkOf,
+// the children splitting counts for a root), and the two rules of D3 (slotWaitHours and
+// idleByRole). One issue with Legion phase work, open or closed, has one of these, whatever its
+// hours are.
 type IssueFacts struct {
 	// OpenedAt and ClosedAt are the issue's own row: when it was created, and when it closed or
 	// nil while it is open.
@@ -114,6 +118,36 @@ type IssueFacts struct {
 	// work took no measured time. They name the days an issue's work falls in.
 	WorkFirstAt *time.Time `json:"work_first_at"`
 	WorkLastAt  *time.Time `json:"work_last_at"`
+
+	// ParkedHours and QueuedHours are what the work time took out of the issue's life, and
+	// StartedAt and MergedAt are its first worker event and its pull request's merge: the rest of
+	// metric 1's row (WorkTimeIssue). StartedAt is nil for an issue with no work time, and
+	// MergedAt for one whose merge Dispatch holds none of.
+	ParkedHours float64    `json:"parked_hours"`
+	QueuedHours float64    `json:"queued_hours"`
+	StartedAt   *time.Time `json:"started_at"`
+	MergedAt    *time.Time `json:"merged_at"`
+
+	// Bars is the issue's part of each of the seven bars of metric 2, keyed by role, every bar
+	// present (barPartsOf).
+	Bars map[string]BarPart `json:"bars"`
+
+	// SentBack and the two hours after the first review are the rest of metric 3's row
+	// (reworkOf), whose review rounds are ReviewRounds above.
+	SentBack                          bool    `json:"sent_back"`
+	ImplementingHoursAfterFirstReview float64 `json:"implementing_hours_after_first_review"`
+	TestingHoursAfterFirstReview      float64 `json:"testing_hours_after_first_review"`
+
+	// Children is how many issues of the project have this issue as their tree root, which is
+	// what metric 4 counts for a root that finished (Issue.Children).
+	Children int `json:"children"`
+
+	// SlotWaitHours is the hours of the issue's observed life it stood admitted with no slot of
+	// its own, parked hours left out (slotWaitHours), and IdleByRole the hours of its worked spans
+	// it held its own slot in a role's bar with that role out of a turn, for each of the six roles
+	// (idleByRole).
+	SlotWaitHours float64            `json:"slot_wait_hours"`
+	IdleByRole    map[string]float64 `json:"idle_by_role"`
 }
 
 // ProjectFacts is every issue of the population with Legion phase work, open or closed, and its
@@ -124,15 +158,7 @@ type IssueFacts struct {
 // time; the entry itself is there, so "has an entry" is the same question as "Legion worked it"
 // (Population.hasPhaseWork).
 func ProjectFacts(population *Population) map[string]IssueFacts {
-	c := &computation{
-		population: population,
-		scope:      ScopeAll,
-		phases:     map[string]phaseTimeline{},
-		views:      map[string]*issueView{},
-		roots:      map[string]string{},
-		workTimes:  map[string]workTimeRow{},
-		barSpans:   map[string][]Span{},
-	}
+	c := newComputation(population, ScopeAll)
 	out := map[string]IssueFacts{}
 	for _, key := range population.Keys {
 		issue := population.Issues[key]
@@ -146,16 +172,32 @@ func ProjectFacts(population *Population) map[string]IssueFacts {
 				parts[id] = hours(here)
 			}
 		}
+		work := c.workedOf(issue)
+		rework := c.reworkOf(issue)
+		sampled := population.sampledPhases(issue)
 		facts := IssueFacts{
-			OpenedAt:     issue.CreatedAt,
-			ClosedAt:     issue.ClosedAt,
-			PhaseHours:   parts,
-			WorkHours:    c.workedOf(issue).row.Hours,
-			ReviewRounds: reviewRounds(issue, c.timelineOf(issue)),
-			Root:         c.isRoot(key),
-			Tree:         c.treeRoot(key),
-			TreeDepth:    c.treeDepth(key),
-			SlotHours:    hours(totalOf(population.slotSpans(issue, population.To))),
+			OpenedAt:                          issue.CreatedAt,
+			ClosedAt:                          issue.ClosedAt,
+			PhaseHours:                        parts,
+			WorkHours:                         work.row.Hours,
+			ReviewRounds:                      rework.ReviewRounds,
+			Root:                              c.isRoot(key),
+			Tree:                              c.treeRoot(key),
+			TreeDepth:                         c.treeDepth(key),
+			SlotHours:                         hours(totalOf(population.slotSpans(issue, population.To))),
+			ParkedHours:                       work.row.ParkedHours,
+			QueuedHours:                       work.row.QueuedHours,
+			Bars:                              c.barPartsOf(issue),
+			SentBack:                          rework.SentBack,
+			ImplementingHoursAfterFirstReview: rework.ImplementingHoursAfterFirst,
+			TestingHoursAfterFirstReview:      rework.TestingHoursAfterFirst,
+			Children:                          len(issue.Children),
+			SlotWaitHours:                     c.slotWaitHours(issue, sampled),
+			IdleByRole:                        c.idleByRole(issue, sampled),
+		}
+		if work.ok {
+			started := work.row.StartedAt
+			facts.StartedAt, facts.MergedAt = &started, work.row.MergedAt
 		}
 		if bars := normalize(c.barSpansOf(issue)); len(bars) > 0 {
 			first, last := bars[0].From, bars[len(bars)-1].To
@@ -164,4 +206,27 @@ func ProjectFacts(population *Population) map[string]IssueFacts {
 		out[key] = facts
 	}
 	return out
+}
+
+// IssueFiling is one issue a Legion session of the population's project filed, as the stored
+// filings hold it (dispatch://INFRA-2916, R17): the row metric 4's table names it by (classify)
+// and the filed issue's tree root as it stands now, which is what the roots and children cuts
+// read a filing by (inScope). A filed issue the project does not hold is the root of a tree of
+// its own here, as metric 4 counts it.
+type IssueFiling struct {
+	FiledIssue
+	Root string `json:"root"`
+}
+
+// ProjectFilings is every filing the population read (Population.Filed), each classified by the
+// rule metric 4 classifies it by. The class and the filer's phase read the filer's own issue, so
+// the population must hold that issue's timeline: ReadProject and ReadIssues both read the
+// filers of the filings they read.
+func ProjectFilings(population *Population) []IssueFiling {
+	c := newComputation(population, ScopeAll)
+	filings := make([]IssueFiling, 0, len(population.Filed))
+	for _, filed := range population.Filed {
+		filings = append(filings, IssueFiling{FiledIssue: c.classify(filed), Root: c.treeRoot(filed.Key)})
+	}
+	return filings
 }

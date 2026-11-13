@@ -157,6 +157,12 @@ var serverSchedule = schedule{
 //     rows whose issue carries no Legion phase work any more, which no feed names at all
 //     (staleStoredRows).
 //
+// The same passes keep each project's filings (issue_filings): an `issue.created` event a Legion
+// session wrote is a new filing of that session's project (readEventPage), and a stored filing
+// is computed again whenever the pass computes its filed issue or its filer's issue
+// (filingsToCompute), so its class, its filer's phase and its root move with the inputs the
+// rows move with.
+//
 // A pass that fails logs and leaves its cursors where they were, so the next pass reads the same
 // rows again. Every pass is safe to run twice: a row whose values did not move is not rewritten
 // (Upsert), and a cursor moves only in the transaction that wrote the rows it covers (passPage).
@@ -315,7 +321,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 			return nil
 		}
 		if work[project] == nil {
-			work[project] = &projectWork{keys: map[string]bool{}, moved: map[string]bool{}}
+			work[project] = &projectWork{keys: map[string]bool{}, moved: map[string]bool{}, filed: map[string]bool{}}
 		}
 		return work[project]
 	}
@@ -326,6 +332,20 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 				if touched.moved {
 					project.moved[touched.issue] = true
 				}
+			}
+		}
+	}
+	// A filing is the filer's project's, wherever the filed issue lives (legion.SessionTitle's
+	// OfProject, the rule metrics reads a filing by), so it is owed to that project and to no
+	// other. One project at most answers it: a project's key is upper case, and OfProject
+	// compares it ignoring case.
+	for _, filed := range read.events.filings {
+		for project := range projects {
+			if !filed.filer.OfProject(project) {
+				continue
+			}
+			if work := needed(project); work != nil {
+				work.filed[filed.issue] = true
 			}
 		}
 	}
@@ -361,13 +381,13 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 	// project whose issues have all lost their Legion phase work answers no row at all and
 	// still owes the deletion of the stale rows its stated set holds, which is the one pass
 	// that takes those rows away.
-	computed := []ProjectWrite{}
+	computed := []projectPass{}
 	for _, project := range slices.Sorted(maps.Keys(work)) {
-		rows, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
+		one, err := computeProjectWork(ctx, deps.Pool, project, work[project], now)
 		if err != nil {
 			return nil, false, err
 		}
-		computed = append(computed, rows)
+		computed = append(computed, one)
 	}
 
 	positions := map[string]int64{
@@ -383,50 +403,70 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 }
 
 // projectWork is what one page owes one project: the issues its feeds named, those of them a
-// row moved between trees (touch), and whether the project is to be computed whole (a
-// backfill).
+// row moved between trees (touch), the issues its events say a Legion session of the project
+// filed (feed.filings), and whether the project is to be computed whole (a backfill).
 type projectWork struct {
 	keys     map[string]bool
 	moved    map[string]bool
+	filed    map[string]bool
 	backfill bool
 }
 
-// computeProjectWork computes the rows one project owes and answers them as the write of that
-// project (ProjectWrite): the rows, the set the pass stated for them, and whether the pass read
-// the project whole. A backfill reads the whole project (ComputeProject) and the keys its
-// feeds named are left out of the call, because the whole project already holds them: its
-// stated set is the project itself. Every other project is computed over the rows its changes
-// touch (rowsToCompute), and no row outside that set is written or deleted.
-func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (ProjectWrite, error) {
+// projectPass is what one page computed for one project: the write of its rows and the write of
+// its filings, which writePass makes in one transaction.
+type projectPass struct {
+	facts   ProjectWrite
+	filings FilingsWrite
+}
+
+// computeProjectWork computes the rows and the filings one project owes and answers them as the
+// writes of that project (ProjectWrite, FilingsWrite): the rows and the filings, the sets the
+// pass stated for them, and whether the pass read the project whole. A backfill reads the whole
+// project (computeWhole) and the keys its feeds named are left out of the call, because the
+// whole project already holds them: its stated set is the project itself, and its filings are
+// every filing a Legion session of the project made. Every other project is computed over the
+// rows its changes touch (rowsToCompute) and the filings those rows and its new filings name
+// (filingsToCompute), and no row or filing outside those sets is written or deleted.
+func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectPass, error) {
 	if work.backfill {
-		rows, err := ComputeProject(ctx, pool, project, now)
+		rows, filings, err := computeWhole(ctx, pool, project, now)
 		if err != nil {
-			return ProjectWrite{}, err
+			return projectPass{}, err
 		}
-		return ProjectWrite{Project: project, Whole: true, Rows: rows}, nil
+		return projectPass{
+			facts:   ProjectWrite{Project: project, Whole: true, Rows: rows},
+			filings: FilingsWrite{Project: project, Whole: true, Filings: filings},
+		}, nil
 	}
 	above, err := metrics.TreeLinks(ctx, pool, project)
 	if err != nil {
-		return ProjectWrite{}, err
+		return projectPass{}, err
 	}
 	keys, err := rowsToCompute(ctx, pool, project, slices.Sorted(maps.Keys(work.keys)), work.moved, above)
 	if err != nil {
-		return ProjectWrite{}, err
+		return projectPass{}, err
 	}
-	rows, err := Compute(ctx, pool, project, keys, now)
+	filed, err := filingsToCompute(ctx, pool, project, keys, work.filed)
 	if err != nil {
-		return ProjectWrite{}, err
+		return projectPass{}, err
 	}
-	return ProjectWrite{Project: project, Stated: keys, Rows: rows}, nil
+	rows, filings, err := computeKeys(ctx, pool, project, keys, filed, now)
+	if err != nil {
+		return projectPass{}, err
+	}
+	return projectPass{
+		facts:   ProjectWrite{Project: project, Stated: keys, Rows: rows},
+		filings: FilingsWrite{Project: project, Stated: filed, Filings: filings},
+	}, nil
 }
 
-// writePass writes every project's rows, deletes the stale rows inside the set each project's
-// pass stated, records the projects it computed whole and moves the three cursors, all in one
-// transaction. It answers the keys whose stored rows changed, the deleted keys among them,
-// because a row that went is a change of the stored facts as much as a row that moved. A
-// failure leaves the cursors and the marks where they were, so the next pass reads the same
-// rows again.
-func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, positions map[string]int64, now time.Time, build string) ([]string, error) {
+// writePass writes every project's rows and filings, deletes the stale rows and filings inside
+// the sets each project's pass stated, records the projects it computed whole and moves the
+// three cursors, all in one transaction. It answers the keys whose stored rows changed, the
+// deleted keys among them, because a row that went is a change of the stored facts as much as a
+// row that moved. A failure leaves the cursors and the marks where they were, so the next pass
+// reads the same rows again.
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -434,11 +474,14 @@ func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, p
 	defer func() { _ = tx.Rollback(context.Background()) }()
 	changed := []string{}
 	for _, project := range computed {
-		written, err := WriteProject(ctx, tx, project)
+		written, err := WriteProject(ctx, tx, project.facts)
 		if err != nil {
 			return nil, err
 		}
 		changed = append(changed, written...)
+		if err := WriteFilings(ctx, tx, project.filings); err != nil {
+			return nil, err
+		}
 	}
 	if err := markComputedWhole(ctx, tx, computed, now, build); err != nil {
 		return nil, err
@@ -467,15 +510,15 @@ func writePass(ctx context.Context, pool *store.Pool, computed []ProjectWrite, p
 // this project to a whole read compared against (legionProjects). The pass carries that one
 // value through both steps rather than reading it a second time, so a project read whole is
 // marked as read whole by the build that read it and the next pass of that build sweeps it.
-func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []ProjectWrite, now time.Time, build string) error {
+func markComputedWhole(ctx context.Context, tx pgx.Tx, computed []projectPass, now time.Time, build string) error {
 	projects := []string{}
 	answered := []int32{}
-	for _, write := range computed {
-		if !write.Whole {
+	for _, one := range computed {
+		if !one.facts.Whole {
 			continue
 		}
-		projects = append(projects, write.Project)
-		answered = append(answered, int32(len(write.Rows)))
+		projects = append(projects, one.facts.Project)
+		answered = append(answered, int32(len(one.facts.Rows)))
 	}
 	if len(projects) == 0 {
 		return nil

@@ -137,7 +137,9 @@ type Population struct {
 	Issues map[string]*Issue
 	Keys   []string
 
-	// Filed is every issue a Legion session created in the window, in creation order.
+	// Filed is every issue a Legion session of the project created that the read covers, in
+	// creation order: the window's (Read), the whole history's (ReadProject) or the named filed
+	// issues' (ReadIssues).
 	Filed []Filed
 
 	// reported is every issue of the project the daemon reports — the issues the sampler
@@ -165,46 +167,55 @@ type Population struct {
 // github may be nil, and a GitHub read that fails is not an error: a merge time Dispatch cannot
 // reach leaves that issue with none, since no metric's rule is written in terms of one.
 func Read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, from, to, func(p *Population) []string {
+	return read(ctx, pool, github, project, from, to, func(ctx context.Context, p *Population) error {
+		return p.readFiled(ctx, pool, project, from, to)
+	}, func(p *Population) []string {
 		return p.scopeKeys(from, to)
-	}, true)
+	})
 }
 
 // ReadProject is the population of every issue of the project, open or closed, up to now: what
 // the per-issue facts read (ProjectFacts). Its window runs from the beginning to now, so an open
 // issue's hours run to now, and its scope is every issue of the project rather than the issues a
-// window names. It reads none of the window's filings, for the reason ReadIssues gives.
+// window names. Its filings are every issue a Legion session of the project ever filed
+// (ProjectFilings), whose filers are issues of the project and so inside that scope.
 func ReadProject(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, now time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
+	return read(ctx, pool, github, project, time.Time{}, now, func(ctx context.Context, p *Population) error {
+		return p.readFiled(ctx, pool, project, time.Time{}, now)
+	}, func(p *Population) []string {
 		return p.Keys
-	}, false)
+	})
 }
 
 // ReadIssues is the population the facts of the named issues are recomputed from, so a consumer
 // can recompute one issue without reading a whole project's event history. Its scope is wider
 // than the keys asked for: it is every issue the trees of those keys reach by the one tree rule
 // (treeScopeKeys), because an issue's own hours read the issues above it and the issues below it
-// (segments.go measures a root's waiting on children from its children's spans). It reads none
-// of the window's filings, whose one reader is metric 4 (Splitting), and no facts computation
-// calls that. The project's own reads stay, because they are what places an issue in a tree and
-// they are cheap.
-func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, keys []string, now time.Time) (*Population, error) {
-	return read(ctx, pool, github, project, time.Time{}, now, func(p *Population) []string {
-		return p.treeScopeKeys(keys)
-	}, false)
+// (segments.go measures a root's waiting on children from its children's spans). The project's
+// own reads stay, because they are what places an issue in a tree and they are cheap.
+//
+// filed names the filed issues whose filings are read with it (readFiledIssues), the ones a
+// Legion session of the project filed among them, and the scope holds the issue each filer was
+// working as well, because a filing's class and its filer's phase read that issue's timeline
+// (classify). The facts of the keys asked for are the same whatever the scope adds around them.
+func ReadIssues(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, keys, filed []string, now time.Time) (*Population, error) {
+	return read(ctx, pool, github, project, time.Time{}, now, func(ctx context.Context, p *Population) error {
+		return p.readFiledIssues(ctx, pool, project, filed)
+	}, func(p *Population) []string {
+		return p.treeScopeKeys(slices.Concat(keys, p.filerKeys()))
+	})
 }
 
-// read is the body the three readers share. scope names which issues the seven detail reads
-// cover, and filed says whether the window's filings are read.
-func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, scope func(*Population) []string, filed bool) (*Population, error) {
+// read is the body the three readers share. filed reads the population's filings, before the
+// scope is chosen because the scope holds each filer's issue, and scope names which issues the
+// seven detail reads cover.
+func read(ctx context.Context, pool *store.Pool, github *githubapp.Client, project string, from, to time.Time, filed func(ctx context.Context, p *Population) error, scope func(*Population) []string) (*Population, error) {
 	population := &Population{Project: project, From: from, To: to, Issues: map[string]*Issue{}}
 	if err := population.readIssues(ctx, pool, project); err != nil {
 		return nil, err
 	}
-	if filed {
-		if err := population.readFiled(ctx, pool, project, from, to); err != nil {
-			return nil, err
-		}
+	if err := filed(ctx, population); err != nil {
+		return nil, err
 	}
 	// readReported runs here, before the scope is chosen, and not in the group below. It takes
 	// no keys — it reads what the daemon reports of every issue of the project — and the scope
@@ -292,7 +303,7 @@ func (p *Population) readIssues(ctx context.Context, pool *store.Pool, project s
 // the new issue belongs to — an issue filed out of the filer's tree is one of metric 4's
 // classes — and keeps the ones a Legion session of this project filed.
 func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project string, from, to time.Time) error {
-	rows, err := pool.Query(ctx, `
+	return p.readFilings(ctx, pool, project, `
 		select coalesce(events.issue_key, ''), coalesce(issues.title, ''), events.created_at,
 			coalesce(events.actor->>'id', ''), coalesce(events.payload->>'parent', ''),
 			coalesce(events.payload->'ancestors', '[]'::jsonb)
@@ -303,8 +314,38 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 			and events.created_at >= $1 and events.created_at < $2
 		order by events.created_at, events.id
 	`, from, to)
+}
+
+// readFiledIssues reads the `issue.created` event a session wrote of each named issue, whatever
+// project it belongs to, and keeps the ones a Legion session of this project filed: readFiled's
+// rule over a set of filed issues rather than a window, which is the filings a consumer that
+// recomputes some issues recomputes with them. The events are read by their issue, so the read
+// is the issues' own and never the whole log's.
+func (p *Population) readFiledIssues(ctx context.Context, pool *store.Pool, project string, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return p.readFilings(ctx, pool, project, `
+		select coalesce(events.issue_key, ''), coalesce(issues.title, ''), events.created_at,
+			coalesce(events.actor->>'id', ''), coalesce(events.payload->>'parent', ''),
+			coalesce(events.payload->'ancestors', '[]'::jsonb)
+		from events
+		left join issues on issues.key = events.issue_key
+		where events.issue_key = any($1)
+			and events.type = 'issue.created'
+			and events.actor->>'kind' = 'session'
+		order by events.created_at, events.id
+	`, keys)
+}
+
+// readFilings is the body the two reads of filings share: it runs statement, which answers the
+// filed issue, its title, the moment, the session, and the parent and ancestors the event
+// carried, resolves each session's newest title, and keeps the filings whose session is a Legion
+// session of this project, in the order the statement answered them.
+func (p *Population) readFilings(ctx context.Context, pool *store.Pool, project, statement string, args ...any) error {
+	rows, err := pool.Query(ctx, statement, args...)
 	if err != nil {
-		return fmt.Errorf("read the issues filed in the window: %w", err)
+		return fmt.Errorf("read the issues Legion sessions of %s filed: %w", project, err)
 	}
 	defer rows.Close()
 	var filed []Filed
@@ -325,7 +366,7 @@ func (p *Population) readFiled(ctx context.Context, pool *store.Pool, project st
 		sessions[one.Session] = true
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read the issues filed in the window: %w", err)
+		return fmt.Errorf("read the issues Legion sessions of %s filed: %w", project, err)
 	}
 	titles, err := resolveTitles(ctx, pool, sessions)
 	if err != nil {
@@ -354,12 +395,19 @@ func (p *Population) scopeKeys(from, to time.Time) []string {
 			seeds = append(seeds, key)
 		}
 	}
+	return p.treeScopeKeys(append(seeds, p.filerKeys()...))
+}
+
+// filerKeys is the issue each filing's filer was working, for every filing the population read,
+// and none for a filing by the controller, which works no issue.
+func (p *Population) filerKeys() []string {
+	keys := make([]string, 0, len(p.Filed))
 	for _, filed := range p.Filed {
 		if filed.Filer.Issue != "" {
-			seeds = append(seeds, filed.Filer.Issue)
+			keys = append(keys, filed.Filer.Issue)
 		}
 	}
-	return p.treeScopeKeys(seeds)
+	return keys
 }
 
 // treeScopeKeys is the scope the seeds reach, by the one tree step (legion.TreeAbove): each

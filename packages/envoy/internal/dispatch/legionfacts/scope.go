@@ -247,6 +247,46 @@ func rowsToCompute(ctx context.Context, q Querier, project string, keys []string
 	return slices.Sorted(maps.Keys(whole)), nil
 }
 
+// filingsToCompute is the set of filed issues one pass computes the project's filings over,
+// sorted: the filings its events say a Legion session of the project made (filed, from
+// feed.filings), and the project's stored filings whose filed issue or filer's issue is in keys,
+// the set the pass states for the rows (rowsToCompute). It is the set the pass states for the
+// filings, and it writes or deletes no filing outside it (deleteStaleFilings).
+//
+// A stored filing moves with the inputs of the rows that set already holds. The filed issue's
+// tree root moves with a move of that issue or of an issue above it, and rowsTouchedBy puts the
+// issues below a moved issue in the set. The class and the filer's phase move with the filer's
+// own events and observations and with its tree, which name the filer's issue. A filing session
+// that writes under a new title names, through sessionIssues, the issues it wrote on that hold a
+// stored row, its old filer's issue among them. The stored filing is read back from the table
+// because the event that made it is long past the cursor, as leftTrees reads a moved issue's
+// old tree from the stored rows.
+func filingsToCompute(ctx context.Context, q Querier, project string, keys []string, filed map[string]bool) ([]string, error) {
+	set := make(map[string]bool, len(filed))
+	maps.Copy(set, filed)
+	if len(keys) > 0 {
+		rows, err := q.Query(ctx, `
+			select issue_key from issue_filings
+			where project_key = $1 and (issue_key = any($2::text[]) or filer_issue = any($2::text[]))
+		`, project, keys)
+		if err != nil {
+			return nil, fmt.Errorf("read the stored filings of %d issues of %s: %w", len(keys), project, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var key string
+			if err := rows.Scan(&key); err != nil {
+				return nil, fmt.Errorf("read the stored filings of %d issues of %s: %w", len(keys), project, err)
+			}
+			set[key] = true
+		}
+		if err := rows.Err(); err != nil {
+			return nil, fmt.Errorf("read the stored filings of %d issues of %s: %w", len(keys), project, err)
+		}
+	}
+	return slices.Sorted(maps.Keys(set)), nil
+}
+
 // leftTrees is every stored row of the tree a moved issue left, sorted. An issue a move took
 // out of one tree and into another takes its own hours with it, so the old tree's root goes on
 // counting the time it waited while that issue worked until its row is computed again. A closed

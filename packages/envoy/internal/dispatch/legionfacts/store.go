@@ -36,7 +36,8 @@ type ProjectWrite struct {
 //
 // It is the one write of the facts: the consumer's pass makes it for each project of the pass,
 // inside the transaction that moves the cursors (consumer.go's writePass), and a caller that
-// holds one project's rows makes it alone.
+// holds one project's rows makes it alone. It writes no filing (WriteFilings), so a caller that
+// holds rows alone cannot take a filing away.
 func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string, error) {
 	written, err := upsert(ctx, q, write.Project, write.Rows)
 	if err != nil {
@@ -53,6 +54,31 @@ func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string,
 		return nil, err
 	}
 	return append(written, deleted...), nil
+}
+
+// FilingsWrite is one project's computed filings and the set the pass that computed them
+// stated: what WriteFilings writes in one call, beside the same pass's ProjectWrite. Stated is
+// the filed issues the pass computed filings over, inside which it may delete a stale filing,
+// and Whole says the pass read every filing a Legion session of the project made
+// (ComputeProject's population), whose Stated is therefore empty.
+type FilingsWrite struct {
+	Project string
+	Filings []Filing
+	Stated  []string
+	Whole   bool
+}
+
+// WriteFilings writes one project's computed filings, as WriteProject writes its rows: it upserts
+// the filings the computation answered (upsertFilings) and deletes the project's stored filings
+// inside the stated set the computation answered none for (deleteStaleFilings). A stored filing
+// goes when the session that filed it is no Legion session of the project any more, as its
+// newest title reads, and its row moves when its class, its filer's phase or the filed issue's
+// tree does. The consumer's pass makes it in the transaction that writes the same pass's rows.
+func WriteFilings(ctx context.Context, q Querier, write FilingsWrite) error {
+	if err := upsertFilings(ctx, q, write.Project, write.Filings); err != nil {
+		return err
+	}
+	return deleteStaleFilings(ctx, q, write)
 }
 
 // computedKeys is the issue of each row: the keys the computation answered a row for, which the
@@ -79,13 +105,15 @@ func computedKeys(rows []Row) []string {
 // RecordObservations), and the conflict's `do update` carries the whole row's comparison in its
 // where clause, so Postgres decides what changed and `returning` answers exactly the rows it
 // touched. updated_at moves only with a row that changed, because an unchanged row is never
-// updated at all. The hours are compared as jsonb, so a Go encoding that ordered an object's keys
-// differently from jsonb cannot read as a change.
+// updated at all. The comparison holds every column but updated_at, the ones migration
+// 20261113111231 added among them, so a row an earlier build wrote without them is rewritten by
+// the first pass that computes it. The hours, the bars and the idle hours are compared as jsonb,
+// so a Go encoding that ordered an object's keys differently from jsonb cannot read as a change.
 //
 // updated_at is the row's own UpdatedAt, the moment its facts were computed as of; a row that
 // carries none takes the moment this write started. A waiting reason of "" is stored as null, the
 // column's "waits on nothing": the rule never answers an empty reason, so the two cannot be
-// confused.
+// confused. A repository of "" is stored as null the same way, the column's "none resolves".
 func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]string, error) {
 	if len(rows) == 0 {
 		return nil, nil
@@ -104,11 +132,31 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 	workFirstAt := make([]*time.Time, len(rows))
 	workLastAt := make([]*time.Time, len(rows))
 	updatedAt := make([]time.Time, len(rows))
+	parkedHours := make([]float64, len(rows))
+	queuedHours := make([]float64, len(rows))
+	startedAt := make([]*time.Time, len(rows))
+	mergedAt := make([]*time.Time, len(rows))
+	bars := make([]string, len(rows))
+	idleByRole := make([]string, len(rows))
+	slotWaitHours := make([]float64, len(rows))
+	sentBack := make([]bool, len(rows))
+	implementingAfter := make([]float64, len(rows))
+	testingAfter := make([]float64, len(rows))
+	children := make([]int32, len(rows))
+	repos := make([]string, len(rows))
 	for index, row := range rows {
 		if row.Project != project {
 			return nil, fmt.Errorf("write the Legion facts: %s and %s are two projects in one write", project, row.Project)
 		}
-		hours, err := json.Marshal(storedHours(row.HoursByPhase))
+		hours, err := json.Marshal(storedMap(row.HoursByPhase))
+		if err != nil {
+			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
+		}
+		barParts, err := json.Marshal(storedMap(row.Bars))
+		if err != nil {
+			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
+		}
+		idle, err := json.Marshal(storedMap(row.IdleByRole))
 		if err != nil {
 			return nil, fmt.Errorf("write the Legion facts of %s: %w", row.Issue, err)
 		}
@@ -127,23 +175,49 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 		if row.UpdatedAt.IsZero() {
 			updatedAt[index] = started
 		}
+		parkedHours[index] = row.ParkedHours
+		queuedHours[index] = row.QueuedHours
+		startedAt[index] = row.StartedAt
+		mergedAt[index] = row.MergedAt
+		bars[index] = string(barParts)
+		idleByRole[index] = string(idle)
+		slotWaitHours[index] = row.SlotWaitHours
+		sentBack[index] = row.SentBack
+		implementingAfter[index] = row.ImplementingAfterFirstReview
+		testingAfter[index] = row.TestingAfterFirstReview
+		children[index] = int32(row.Children)
+		repos[index] = row.Repo
 	}
 	result, err := q.Query(ctx, `
 		insert into issue_facts (
 			project_key, issue_key, opened_at, closed_at, hours_by_phase, work_hours,
 			review_rounds, root_key, tree_depth, slot_hours, waiting_reason,
-			work_first_at, work_last_at, updated_at)
+			work_first_at, work_last_at, updated_at,
+			parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+			slot_wait_hours, sent_back, implementing_after_first_review,
+			testing_after_first_review, children, repo)
 		select $1, given.issue_key, given.opened_at, given.closed_at, given.hours_by_phase::jsonb,
 		       given.work_hours, given.review_rounds, given.root_key, given.tree_depth,
 		       given.slot_hours, nullif(given.waiting_reason, ''), given.work_first_at,
-		       given.work_last_at, given.updated_at
+		       given.work_last_at, given.updated_at,
+		       given.parked_hours, given.queued_hours, given.started_at, given.merged_at,
+		       given.bars::jsonb, given.idle_by_role::jsonb, given.slot_wait_hours,
+		       given.sent_back, given.implementing_after_first_review,
+		       given.testing_after_first_review, given.children, nullif(given.repo, '')
 		from unnest($2::text[], $3::timestamptz[], $4::timestamptz[], $5::text[],
 		            $6::double precision[], $7::integer[], $8::text[], $9::integer[],
 		            $10::double precision[], $11::text[], $12::timestamptz[], $13::timestamptz[],
-		            $14::timestamptz[])
+		            $14::timestamptz[],
+		            $15::double precision[], $16::double precision[], $17::timestamptz[],
+		            $18::timestamptz[], $19::text[], $20::text[], $21::double precision[],
+		            $22::boolean[], $23::double precision[], $24::double precision[],
+		            $25::integer[], $26::text[])
 			as given(issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 			         root_key, tree_depth, slot_hours, waiting_reason, work_first_at, work_last_at,
-			         updated_at)
+			         updated_at,
+			         parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+			         slot_wait_hours, sent_back, implementing_after_first_review,
+			         testing_after_first_review, children, repo)
 		on conflict (project_key, issue_key) do update set
 			opened_at = excluded.opened_at,
 			closed_at = excluded.closed_at,
@@ -156,19 +230,43 @@ func upsert(ctx context.Context, q Querier, project string, rows []Row) ([]strin
 			waiting_reason = excluded.waiting_reason,
 			work_first_at = excluded.work_first_at,
 			work_last_at = excluded.work_last_at,
+			parked_hours = excluded.parked_hours,
+			queued_hours = excluded.queued_hours,
+			started_at = excluded.started_at,
+			merged_at = excluded.merged_at,
+			bars = excluded.bars,
+			idle_by_role = excluded.idle_by_role,
+			slot_wait_hours = excluded.slot_wait_hours,
+			sent_back = excluded.sent_back,
+			implementing_after_first_review = excluded.implementing_after_first_review,
+			testing_after_first_review = excluded.testing_after_first_review,
+			children = excluded.children,
+			repo = excluded.repo,
 			updated_at = excluded.updated_at
 		where (issue_facts.opened_at, issue_facts.closed_at, issue_facts.hours_by_phase,
 		       issue_facts.work_hours, issue_facts.review_rounds, issue_facts.root_key,
 		       issue_facts.tree_depth, issue_facts.slot_hours, issue_facts.waiting_reason,
-		       issue_facts.work_first_at, issue_facts.work_last_at)
+		       issue_facts.work_first_at, issue_facts.work_last_at,
+		       issue_facts.parked_hours, issue_facts.queued_hours, issue_facts.started_at,
+		       issue_facts.merged_at, issue_facts.bars, issue_facts.idle_by_role,
+		       issue_facts.slot_wait_hours, issue_facts.sent_back,
+		       issue_facts.implementing_after_first_review, issue_facts.testing_after_first_review,
+		       issue_facts.children, issue_facts.repo)
 		  is distinct from
 		      (excluded.opened_at, excluded.closed_at, excluded.hours_by_phase,
 		       excluded.work_hours, excluded.review_rounds, excluded.root_key,
 		       excluded.tree_depth, excluded.slot_hours, excluded.waiting_reason,
-		       excluded.work_first_at, excluded.work_last_at)
+		       excluded.work_first_at, excluded.work_last_at,
+		       excluded.parked_hours, excluded.queued_hours, excluded.started_at,
+		       excluded.merged_at, excluded.bars, excluded.idle_by_role,
+		       excluded.slot_wait_hours, excluded.sent_back,
+		       excluded.implementing_after_first_review, excluded.testing_after_first_review,
+		       excluded.children, excluded.repo)
 		returning issue_key
 	`, project, keys, openedAt, closedAt, hoursByPhase, workHours, reviewRounds, rootKeys,
-		treeDepth, slotHours, waitingReason, workFirstAt, workLastAt, updatedAt)
+		treeDepth, slotHours, waitingReason, workFirstAt, workLastAt, updatedAt,
+		parkedHours, queuedHours, startedAt, mergedAt, bars, idleByRole, slotWaitHours, sentBack,
+		implementingAfter, testingAfter, children, repos)
 	if err != nil {
 		return nil, fmt.Errorf("write the Legion facts of %s: %w", project, err)
 	}
@@ -251,13 +349,14 @@ func deleteRows(ctx context.Context, q Querier, project, statement string, args 
 	return deleted, nil
 }
 
-// storedHours is the hours an issue's row stores: a nil map is written as the empty object, which
-// is what an issue whose work took no measured time holds, and never as the JSON null.
-func storedHours(hours map[string]float64) map[string]float64 {
-	if hours == nil {
-		return map[string]float64{}
+// storedMap is a map as its jsonb column stores it: a nil map is written as the empty object,
+// which is what an issue whose work took no measured time holds in hours_by_phase, and never as
+// the JSON null.
+func storedMap[V any](values map[string]V) map[string]V {
+	if values == nil {
+		return map[string]V{}
 	}
-	return hours
+	return values
 }
 
 // Read answers the stored rows of a project, by issue key. It is the read every consumer of the
@@ -267,7 +366,10 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 	result, err := q.Query(ctx, `
 		select issue_key, opened_at, closed_at, hours_by_phase, work_hours, review_rounds,
 		       root_key, tree_depth, slot_hours, coalesce(waiting_reason, ''),
-		       work_first_at, work_last_at, updated_at
+		       work_first_at, work_last_at, updated_at,
+		       parked_hours, queued_hours, started_at, merged_at, bars, idle_by_role,
+		       slot_wait_hours, sent_back, implementing_after_first_review,
+		       testing_after_first_review, children, coalesce(repo, '')
 		from issue_facts
 		where project_key = $1`, project)
 	if err != nil {
@@ -279,17 +381,25 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 		row := Row{Project: project}
 		// opened_at is a nullable column, which a row this package wrote always fills.
 		var opened *time.Time
-		var hours []byte
+		var hours, bars, idle []byte
 		if err := result.Scan(&row.Issue, &opened, &row.ClosedAt, &hours, &row.WorkHours,
 			&row.ReviewRounds, &row.RootKey, &row.TreeDepth, &row.SlotHours, &row.WaitingReason,
-			&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt); err != nil {
+			&row.WorkFirstAt, &row.WorkLastAt, &row.UpdatedAt,
+			&row.ParkedHours, &row.QueuedHours, &row.StartedAt, &row.MergedAt, &bars, &idle,
+			&row.SlotWaitHours, &row.SentBack, &row.ImplementingAfterFirstReview,
+			&row.TestingAfterFirstReview, &row.Children, &row.Repo); err != nil {
 			return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 		}
 		if opened != nil {
 			row.OpenedAt = *opened
 		}
-		if err := json.Unmarshal(hours, &row.HoursByPhase); err != nil {
-			return nil, fmt.Errorf("read the Legion facts of %s: %w", row.Issue, err)
+		for _, column := range []struct {
+			stored []byte
+			into   any
+		}{{hours, &row.HoursByPhase}, {bars, &row.Bars}, {idle, &row.IdleByRole}} {
+			if err := json.Unmarshal(column.stored, column.into); err != nil {
+				return nil, fmt.Errorf("read the Legion facts of %s: %w", row.Issue, err)
+			}
 		}
 		rows[row.Issue] = row
 	}
@@ -297,4 +407,125 @@ func Read(ctx context.Context, q Querier, project string) (map[string]Row, error
 		return nil, fmt.Errorf("read the Legion facts of %s: %w", project, err)
 	}
 	return rows, nil
+}
+
+// upsertFilings writes the filings of the project, in one statement as upsert writes the rows. A
+// filing whose stored values already match is left alone, and a filing a session of another
+// project made of the same issue before is moved to this one, since issue_key is the table's
+// identity and the newest title of the filing session is what says whose filing it is.
+func upsertFilings(ctx context.Context, q Querier, project string, filings []Filing) error {
+	if len(filings) == 0 {
+		return nil
+	}
+	keys := make([]string, len(filings))
+	filedAt := make([]time.Time, len(filings))
+	roles := make([]string, len(filings))
+	filers := make([]string, len(filings))
+	phases := make([]string, len(filings))
+	classes := make([]string, len(filings))
+	roots := make([]string, len(filings))
+	for index, filing := range filings {
+		if filing.Project != project {
+			return fmt.Errorf("write the Legion filings: %s and %s are two projects in one write", project, filing.Project)
+		}
+		keys[index] = filing.Issue
+		filedAt[index] = filing.FiledAt
+		roles[index] = filing.FilerRole
+		filers[index] = filing.FilerIssue
+		phases[index] = filing.FilerPhase
+		classes[index] = filing.Class
+		roots[index] = filing.RootKey
+	}
+	if err := exec(ctx, q, `
+		insert into issue_filings (issue_key, project_key, filed_at, filer_role, filer_issue,
+			filer_phase, class, root_key)
+		select given.issue_key, $1, given.filed_at, given.filer_role, given.filer_issue,
+		       given.filer_phase, given.class, given.root_key
+		from unnest($2::text[], $3::timestamptz[], $4::text[], $5::text[], $6::text[],
+		            $7::text[], $8::text[])
+			as given(issue_key, filed_at, filer_role, filer_issue, filer_phase, class, root_key)
+		on conflict (issue_key) do update set
+			project_key = excluded.project_key,
+			filed_at = excluded.filed_at,
+			filer_role = excluded.filer_role,
+			filer_issue = excluded.filer_issue,
+			filer_phase = excluded.filer_phase,
+			class = excluded.class,
+			root_key = excluded.root_key
+		where (issue_filings.project_key, issue_filings.filed_at, issue_filings.filer_role,
+		       issue_filings.filer_issue, issue_filings.filer_phase, issue_filings.class,
+		       issue_filings.root_key)
+		  is distinct from
+		      (excluded.project_key, excluded.filed_at, excluded.filer_role,
+		       excluded.filer_issue, excluded.filer_phase, excluded.class, excluded.root_key)
+	`, project, keys, filedAt, roles, filers, phases, classes, roots); err != nil {
+		return fmt.Errorf("write the Legion filings of %s: %w", project, err)
+	}
+	return nil
+}
+
+// exec runs a statement that answers no row. A Querier offers Query alone, and the rows it opens
+// hold the connection, or the transaction a pass writes in, until they close, so exec closes them
+// before it returns and the next statement finds the connection free.
+func exec(ctx context.Context, q Querier, statement string, args ...any) error {
+	rows, err := q.Query(ctx, statement, args...)
+	if err != nil {
+		return err
+	}
+	rows.Close()
+	return rows.Err()
+}
+
+// deleteStaleFilings deletes the project's stored filings inside the set the pass stated that
+// its computation answered none for, by the rule the two deletions of the rows keep: a pass
+// deletes only inside what it computed over. A pass that read every filing of the project
+// stated all of them; any other stated the filed issues it was given (filingsToCompute). A
+// filing another project's session made is that project's row, which this never reads.
+func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) error {
+	kept := make([]string, len(write.Filings))
+	for index, filing := range write.Filings {
+		kept[index] = filing.Issue
+	}
+	var err error
+	switch {
+	case write.Whole:
+		err = exec(ctx, q, `
+			delete from issue_filings where project_key = $1 and not (issue_key = any($2))
+		`, write.Project, kept)
+	case len(write.Stated) > 0:
+		err = exec(ctx, q, `
+			delete from issue_filings
+			where project_key = $1 and issue_key = any($2) and not (issue_key = any($3))
+		`, write.Project, write.Stated, kept)
+	}
+	if err != nil {
+		return fmt.Errorf("delete the stale Legion filings of %s: %w", write.Project, err)
+	}
+	return nil
+}
+
+// ReadFilings answers the stored filings of a project, by filed issue: the filings a Legion
+// session of the project made, wherever the filed issue lives.
+func ReadFilings(ctx context.Context, q Querier, project string) (map[string]Filing, error) {
+	result, err := q.Query(ctx, `
+		select issue_key, filed_at, filer_role, filer_issue, filer_phase, class, root_key
+		from issue_filings
+		where project_key = $1`, project)
+	if err != nil {
+		return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)
+	}
+	defer result.Close()
+	filings := map[string]Filing{}
+	for result.Next() {
+		filing := Filing{Project: project}
+		if err := result.Scan(&filing.Issue, &filing.FiledAt, &filing.FilerRole, &filing.FilerIssue,
+			&filing.FilerPhase, &filing.Class, &filing.RootKey); err != nil {
+			return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)
+		}
+		filings[filing.Issue] = filing
+	}
+	if err := result.Err(); err != nil {
+		return nil, fmt.Errorf("read the Legion filings of %s: %w", project, err)
+	}
+	return filings, nil
 }

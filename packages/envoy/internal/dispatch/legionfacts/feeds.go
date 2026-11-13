@@ -116,12 +116,21 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64) (pages, error) {
 	}, nil
 }
 
-// feed is what one page of one feed read: where that feed now stands, the issues it named and
-// whether the page was full.
+// feed is what one page of one feed read: where that feed now stands, the issues it named, the
+// filings it read (the events feed alone reads any), and whether the page was full.
 type feed struct {
 	position int64
 	touches  []touch
+	filings  []filing
 	full     bool
+}
+
+// filing is one issue an event of the page says a Legion session filed: the issue whose
+// `issue.created` event a session wrote, and that session's newest title
+// (legion.ParseSessionTitle), which says whose filing it is (newFilings).
+type filing struct {
+	issue string
+	filer legion.SessionTitle
 }
 
 // touch is one issue a feed named: the project it belongs to, the issue itself, and whether the
@@ -163,13 +172,19 @@ type touch struct {
 // its own title can give work to or take it from, and no issue of its own names it. The event's
 // own project is not the work: the issues are read from the session and from the title the
 // event carries (sessionIssues).
+//
+// An `issue.created` event a session wrote is a filing, which the filer's project owes a row of
+// issue_filings (newFilings). The filed issue may belong to another project than the filer's,
+// and the filer's project is the one that counts it, so the page answers the filing with the
+// filer it names and the pass gives it to that project (passPage).
 func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int) (feed, error) {
 	rows, err := q.Query(ctx, `
 		select event.id, coalesce(issue.project_key, ''), coalesce(event.issue_key, ''),
 		       coalesce(event.payload -> 'changed' @> '["parent"]', false),
 		       case when event.actor ->> 'kind' = 'session' then coalesce(event.actor ->> 'id', '') else '' end,
 		       case when event.actor ->> 'kind' = 'session'
-		            then coalesce(event.actor -> 'origin' ->> 'session_title', '') else '' end
+		            then coalesce(event.actor -> 'origin' ->> 'session_title', '') else '' end,
+		       event.type = 'issue.created'
 		from events event
 		left join issues issue on issue.key = event.issue_key
 		where event.id > $1 and event.id <= $2
@@ -184,10 +199,12 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 	count := 0
 	sessions := map[string]bool{}
 	titles := map[string]bool{}
+	created := map[string]string{}
 	for rows.Next() {
 		var touched touch
 		var session, title string
-		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session, &title); err != nil {
+		var creates bool
+		if err := rows.Scan(&page.position, &touched.project, &touched.issue, &touched.moved, &session, &title, &creates); err != nil {
 			return feed{}, fmt.Errorf("read the events after %d: %w", after, err)
 		}
 		count++
@@ -196,6 +213,9 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		}
 		if title != "" {
 			titles[title] = true
+		}
+		if creates && session != "" && touched.issue != "" {
+			created[touched.issue] = session
 		}
 		if touched.project != "" {
 			page.touches = append(page.touches, touched)
@@ -210,7 +230,35 @@ func readEventPage(ctx context.Context, q Querier, after, safe int64, limit int)
 		return feed{}, err
 	}
 	page.touches = append(page.touches, worked...)
+	if page.filings, err = newFilings(ctx, q, created); err != nil {
+		return feed{}, err
+	}
 	return page, nil
+}
+
+// newFilings is the filings among the page's `issue.created` events, each the filed issue and the
+// filing session's newest title, read by primary key (delivery.ResolveSessionTitles) because
+// that title, and not the one the event carried, is what metrics classifies a filing by. A
+// session whose newest title is no Legion title filed nothing Legion counts.
+func newFilings(ctx context.Context, q Querier, created map[string]string) ([]filing, error) {
+	if len(created) == 0 {
+		return nil, nil
+	}
+	sessions := map[string]bool{}
+	for _, session := range created {
+		sessions[session] = true
+	}
+	titles, err := delivery.ResolveSessionTitles(ctx, q, slices.Sorted(maps.Keys(sessions)))
+	if err != nil {
+		return nil, fmt.Errorf("resolve the titles of %d filing sessions: %w", len(sessions), err)
+	}
+	filings := []filing{}
+	for _, issue := range slices.Sorted(maps.Keys(created)) {
+		if filer, legionSession := legion.ParseSessionTitle(titles[created[issue]]); legionSession {
+			filings = append(filings, filing{issue: issue, filer: filer})
+		}
+	}
+	return filings, nil
 }
 
 // sessionIssues is what one page of events can have moved through the titles its sessions

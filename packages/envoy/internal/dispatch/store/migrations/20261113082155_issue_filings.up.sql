@@ -5,7 +5,11 @@
 -- row when the filing's `issue.created` event reaches it, classified by the rule legion/metrics
 -- classifies a filing by, so a day row is built from stored rows and no read walks the event log.
 --   issue_key       the filed issue, and the row's identity.
---   project_key     the project the filed issue belongs to.
+--   project_key     the project whose Legion session filed it: the project a phase worker's
+--                   issue belongs to, or the controller's own project (legion.SessionTitle's
+--                   OfProject). Splitting counts a filing for that project, wherever the filed
+--                   issue lives, so an issue filed into another project is a filing of the
+--                   filer's project, classified there, and no filing of the project holding it.
 --   filed_at        when it was filed: the time of its `issue.created` event.
 --   filer_role      the Legion role whose session filed it, or controller.
 --   filer_issue     the issue that role was working, empty for the controller, which works none.

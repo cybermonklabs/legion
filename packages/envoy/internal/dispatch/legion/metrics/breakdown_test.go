@@ -161,7 +161,7 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 		t.Fatalf("read the project: %v", err)
 	}
 	startedIssues := time.Now()
-	named, err := ReadIssues(t.Context(), database.Pool, nil, fixture.Project, keys, now)
+	named, err := ReadIssues(t.Context(), database.Pool, nil, fixture.Project, keys, nil, now)
 	issuesRead := time.Since(startedIssues)
 	if err != nil {
 		t.Fatalf("read the named issues: %v", err)
