@@ -1,5 +1,6 @@
-/** The marks a leaf block keeps, read in a past version of the spec: the engine's parse of what
- *  the server stored, drawn from one fixed answer, so it runs against a recording
+/** The marks a leaf block keeps, read in a past version of the spec: the tree the server read that
+ *  version's markdown into, drawn by the engine from one fixed answer, so it runs against a
+ *  recording
  *  (packages/dispatch/AGENTS.md, "The stubbed layer").
  */
 import { expect, type Locator } from "@playwright/test";
@@ -16,9 +17,10 @@ import { stubbed } from "./stub/stub-test";
 // mark may wrap it: the server's reader holds emphasis, strong, strikethrough and link marks on
 // text alone, and the browser's engine reads them the same way. An inline HTML declaration (`<!`
 // and an ASCII letter) is raw HTML to both readers. One reader of that answer needs a browser and
-// the rest do not: a past version hands the stored markdown to the live Milkdown editor
-// (VersionView.tsx's `setMarkdown`), so this row is the editor's own parse of what the server
-// stored, and it reads its document from the one fixture table. The spec editor binds to the Yjs
+// the rest do not: a past version draws the tree the server read that version's markdown into
+// (VersionView.tsx, which feeds the read-only editor `markdown_tree` and parses nothing in the
+// browser), so this row is the server's own reading drawn by the engine, and it reads its
+// document from the one fixture table. The spec editor binds to the Yjs
 // fragment the server writes, which `fixtures.json` pins without a browser (`pm_json`,
 // `yjs_update_v1_b64`); the comment's headless parse, with this reader of its leaves, is
 // `web/src/features/refs/fixture-table-readings.test.ts`'s, which runs it over both leaf-mark

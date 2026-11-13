@@ -35,7 +35,7 @@ import (
 
 // phaseEntryMigration is the version of the migration this upgrade runs
 // (internal/store/migrations/20261111225552_phase_entry.up.sql), so the fixture below migrates
-// through everything under it whatever lands beside it.
+// through everything but it whatever lands beside it.
 const phaseEntryMigration = 20261111225552
 
 // upgradeProject is the Dispatch project of the tree the upgrade is read on, and upgradeRoot its
@@ -47,9 +47,14 @@ const (
 )
 
 // preEntryStore is a database carrying the schema of the release before the phase entry: every
-// embedded migration under phaseEntryMigration, each applied as Store.Migrate applies one — the
+// embedded migration but phaseEntryMigration, each applied as Store.Migrate applies one — the
 // migration's SQL, the widening of schema_version for a timestamped version, and the version row
-// — and that migration itself withheld, for the test's own Store.Migrate to run.
+// — and that migration itself withheld, for the test's own Store.Migrate to run. The migrations
+// above it are the fixture's too, because the release before this one records them: the one
+// standing there, 20261112180548_claim_leak_check_cause, is the contract 87 release's own, so a
+// database that release migrated holds its row and its claims.leak_check_cause before the phase
+// entry runs, and Store.Migrate, which decides each migration on its own row, then applies the
+// phase entry alone. That column is one no statement of the phase entry reads or writes.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -70,8 +75,8 @@ func preEntryStore(t *testing.T) *store.Store {
 	}
 	widened := false
 	for _, migration := range all {
-		if migration.Version >= phaseEntryMigration {
-			break
+		if migration.Version == phaseEntryMigration {
+			continue
 		}
 		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
@@ -385,7 +390,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 		t.Fatalf("run the upgrade: %v", err)
 	}
 	if applied != 1 {
-		t.Fatalf("the upgrade applied %d migrations, want the one phase entry migration: everything under it is the fixture's own", applied)
+		t.Fatalf("the upgrade applied %d migrations, want the one phase entry migration: every other migration is the fixture's own", applied)
 	}
 
 	// What the fill left, which is what every send below is decided on: a role that release had

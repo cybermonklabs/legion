@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 93,
-    "caller": 93
+    "daemon": 96,
+    "caller": 96
   },
   "admission": {
     "cap": 3,
@@ -290,7 +290,8 @@
                 "promptRetires": 0
               }
             },
-            "pendingCause": "died"
+            "pendingCause": "died",
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
           },
           "pass": 1,
           "rounds": 1

@@ -89,24 +89,25 @@
 -- versionRecorded asks `select exists (select 1 from schema_version where version = $1::bigint)`
 -- (internal/store/store.go) — so deleting one row leaves this one migration unapplied and every
 -- other migration recorded and untouched, and the older daemon never asks for this version at
--- all, its embedded set holding no such file. All the missing row costs while that image runs is
--- the number the state read reports (internal/daemon's state source, Store.SchemaVersionTx, the
--- highest row recorded), which then reads the version below this one — which is the truth about
--- the image that is running. When the newer image comes back, Migrate finds no row of
+-- all, its embedded set holding no such file. The missing row does not move the number the state
+-- read reports while that image runs (internal/daemon's state source, Store.SchemaVersionTx, the
+-- highest row recorded): every database this release migrated records
+-- 20261112180548_claim_leak_check_cause, that older daemon's own newest migration, above this
+-- version, so the number reads 20261112180548 before the delete and after it, which is the truth
+-- about the image that is running. When the newer image comes back, Migrate finds no row of
 -- 20261111225552 and runs this file again from its first statement. The six columns have to go
 -- with the row because those first statements add them and `add column` on a column that already
 -- stands fails, so dropping them is what lets the file run a second time.
 --
--- Both of those hold while 20261111225552 is the newest migration recorded, on any table. A
--- migration recorded after it keeps its own row through the delete, so it never runs again,
--- while the six drops take with them whatever index or constraint it built on the six columns;
--- and the version the state read reports is that migration's, not the one below this. The bound
--- is every table rather than the three this migration touches because that read is `select
--- coalesce(max(version), 0)::bigint from schema_version` (internal/store/store.go,
--- schemaVersion), which weighs every row of the table whatever the migration it records
--- altered. The strip of the assignment key this header expects in the release after this one is
--- such a migration, and a migration on outbox, which is none of the three. Where one stands,
--- reverse it by its own way back first, and run this block after it.
+-- The re-arm asks nothing of the other rows: store.apply reads this migration's own row and no
+-- other, so the delete leaves it unapplied whatever version stands highest. What the block does
+-- need is that no migration recorded after this one builds on the six columns it drops. Such a
+-- migration keeps its own row through the delete, so it never runs again, while the six drops take
+-- with them whatever it built on those columns, an index or a constraint on phases.entry, say.
+-- Where one stands, reverse it by its own way back first, and run this block after it. The one
+-- migration recorded above this one at this release, 20261112180548_claim_leak_check_cause, adds
+-- claims.leak_check_cause and touches none of the six, so the block holds over it and leaves it
+-- and its column standing.
 --
 -- What the second run fills from is the record the older daemon kept current while it ran. That
 -- daemon moves every issue on by the token it mints at each phase change, writing it onto the

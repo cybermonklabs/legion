@@ -251,31 +251,33 @@ func wayBackBlockDifference(header, guide string) string {
 // its claim read (internal/store/claims.go, claimSelect), which joins the pending delivery and
 // is the one read that names both dropped columns of the claim side; its phases read
 // (internal/record/store.go, Postgres.Phases); and the delivery read its retirement makes
-// (RetireDelivery). The release this rollback targets is the one after it, contract 86 at
-// commit a4c0ff99, which is the release docs/kubernetes.md tells an operator to roll back to,
-// and two of these three copies are not word for word what that release reads. Its claimSelect
-// names, past every column copied here, c.last_turn_start, c.last_turn_end, c.last_death_cause,
-// c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session and d.prompted; its
-// phases read names pass and names no merge_note; and its record.SuperviseRequest carries
-// FreshSession besides (preEntrySuperviseRequest below). The recovery answers for that release
-// all the same, and that is why these copies stand: every one of those columns is added by a
-// migration cybermonklabs/legion#2539 brought with it — 20261029120000_phase_pass,
-// 20261029120100_claim_turn_times, 20261029121000_claim_death_and_start_causes,
-// 20261029121100_claim_turn_outcomes and 20261029121200_claim_abandoned_session — this way back
-// adds, drops and strips nothing of theirs, and what it does touch, the three assignment
-// columns and the two payload keys, both releases read alike. The delivery read stands word for
-// word at both commits, and at e90c078559, the commit that declared contract 68. The claim read
-// copied here names c.failure_cause, c.failed_at and c.pending_cause, the columns
-// cybermonklabs/legion#3662 added: migration 20261111212544 adds those three and this way back
-// leaves them alone too. Each read must answer a row, and the columns the recovery brought back
-// must read as the empty string their default leaves, which is the whole reason the header can
-// say the older daemon's fence compares nothing and refuses none of the completions in flight.
+// (RetireDelivery). The release this rollback targets is a later one, contract 87 at commit
+// 0b297211, which is the release docs/kubernetes.md tells an operator to roll back to, and two
+// of these three copies are not word for word what that release reads. Its claimSelect names,
+// past every column copied here, c.last_turn_start, c.last_turn_end, c.last_death_cause,
+// c.last_start_failure, c.last_ready, c.turn_outcomes, c.abandoned_session, c.leak_check_cause
+// and d.prompted; its phases read names pass and names no merge_note; and its
+// record.SuperviseRequest carries FreshSession besides (preEntrySuperviseRequest below). The
+// recovery answers for that release all the same, and that is why these copies stand: every one
+// of those columns is added by a migration that release carries and fbe970ee does not —
+// cybermonklabs/legion#2539's 20261029120000_phase_pass, 20261029120100_claim_turn_times,
+// 20261029121000_claim_death_and_start_causes, 20261029121100_claim_turn_outcomes and
+// 20261029121200_claim_abandoned_session, and cybermonklabs/legion#3939's
+// 20261112180548_claim_leak_check_cause — this way back adds, drops and strips nothing of
+// theirs, and what it does touch, the three assignment columns and the two payload keys, both
+// releases read alike. The delivery read stands word for word at both commits, and at
+// e90c078559, the commit that declared contract 68. The claim read copied here names
+// c.failure_cause, c.failed_at and c.pending_cause, the columns cybermonklabs/legion#3662
+// added: migration 20261111212544 adds those three and this way back leaves them alone too.
+// Each read must answer a row, and the columns the recovery brought back must read as the empty
+// string their default leaves, which is the whole reason the header can say the older daemon's
+// fence compares nothing and refuses none of the completions in flight.
 //
 // The fourth statement is the strip of this release's own payload keys, and what it leaves is
 // read the same way: every supervise payload still in the outbox is decoded strictly, with
 // DisallowUnknownFields, which is the decoder record.DecodeOutboxPayload builds, against
 // preEntrySuperviseRequest, the request shape fbe970ee declares. That shape is the stricter of
-// the two, knowing one field fewer than a4c0ff99's, so a payload it accepts the release an
+// the two, knowing one field fewer than 0b297211's, so a payload it accepts the release an
 // operator comes back to accepts as well. A key the decoder does not know refuses the row, and
 // record.Postgres.RoleRuns decodes every supervise row of the issues an admission pass reads,
 // so one such row would retry for ever and fail every pass of its issue besides.
@@ -574,13 +576,14 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 	}
 }
 
-// preEntrySuperviseRequest is record.SuperviseRequest as commit fbe970ee declares it, one
-// release before the one this rollback targets: every field of this release's shape but the
-// three added since — Entry and ResendEntry, which this release adds, and FreshSession, which
-// cybermonklabs/legion#2539 added at a4c0ff99, the contract 86 release an operator comes back
-// to. It is a copy because neither release's own type is in the tree. Judging the payloads the
-// strip leaves by this shape answers for a4c0ff99 too: that release's decoder knows every key
-// this struct knows and freshSession besides, so a payload this one accepts it accepts.
+// preEntrySuperviseRequest is record.SuperviseRequest as commit fbe970ee declares it, an earlier
+// release than the one this rollback targets: every field of this release's shape but the three
+// added since — Entry and ResendEntry, which this release adds, and FreshSession, which
+// cybermonklabs/legion#2539 added at a4c0ff99 and which 0b297211, the contract 87 release an
+// operator comes back to, declares as well. It is a copy because neither release's own type is
+// in the tree. Judging the payloads the strip leaves by this shape answers for 0b297211 too:
+// that release's decoder knows every key this struct knows and freshSession besides, so a
+// payload this one accepts it accepts.
 type preEntrySuperviseRequest struct {
 	Op            record.SuperviseOp    `json:"op"`
 	Tree          string                `json:"tree"`
