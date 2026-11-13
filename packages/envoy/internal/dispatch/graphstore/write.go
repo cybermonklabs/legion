@@ -213,10 +213,10 @@ func statesAttribute(base []Tuple, own map[baseAttribute]struct{}, node Node, at
 // tuple at the sentinel is appended unconditionally.
 func appendTuples(ctx context.Context, tx pgx.Tx, tuples []Tuple) error {
 	relations, values := splitTuples(tuples)
-	if err := appendTupleRows(ctx, tx, tupleInsert(1)+relationRepeatKey, relations); err != nil {
+	if err := appendTupleRows(ctx, tx, tupleInsert(1, "")+relationRepeatKey, relations); err != nil {
 		return fmt.Errorf("append graph relations: %w", err)
 	}
-	if err := appendTupleRows(ctx, tx, tupleInsert(1)+valueRepeatKey, values); err != nil {
+	if err := appendTupleRows(ctx, tx, tupleInsert(1, "")+valueRepeatKey, values); err != nil {
 		return fmt.Errorf("append graph attributes: %w", err)
 	}
 	return nil

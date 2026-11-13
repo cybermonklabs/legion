@@ -47,6 +47,10 @@ type Claim struct {
 // Each arm is repeat-safe on its own: the nodes are upserted `do nothing`, since a node another
 // write already made is that write's to describe, and the tuples take the two partial repeat
 // keys (20261109013400), under which a second run of one event's record appends nothing.
+//
+// The arms keep the store's lock order: the node rows are written first, in ascending (kind, id),
+// and every tuple after them, because each tuple arm of a write that has nodes reads the node
+// arm before its first row (nodesWrittenFirst).
 func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string, []any, error) {
 	relations, values := splitTuples(tuples)
 	if len(nodes) == 0 && len(relations) == 0 && len(values) == 0 && len(claims) == 0 {
@@ -60,12 +64,16 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 		arms = append(arms, arm(first+len(params)))
 		params = append(params, args...)
 	}
+	// The condition every tuple arm reads its rows under: none for a write with no node, and
+	// nodesWrittenFirst for one with nodes.
+	after := ""
 	if len(nodes) > 0 {
 		args, err := nodeParams(nodes)
 		if err != nil {
 			return "", nil, err
 		}
 		add(nodeArm, args)
+		after = nodesWrittenFirst
 	}
 	if len(relations) > 0 {
 		args, err := tupleParams(relations)
@@ -74,7 +82,7 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 		}
 		add(func(at int) string {
 			return `graph_relations_appended as (
-	` + tupleInsert(at) + relationRepeatKey + `
+	` + tupleInsert(at, after) + relationRepeatKey + `
 )`
 		}, args)
 	}
@@ -85,7 +93,7 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 		}
 		add(func(at int) string {
 			return `graph_values_appended as (
-	` + tupleInsert(at) + valueRepeatKey + `
+	` + tupleInsert(at, after) + valueRepeatKey + `
 )`
 		}, args)
 	}
@@ -94,10 +102,21 @@ func WriteArms(first int, nodes []Node, tuples []Tuple, claims []Claim) (string,
 		if err != nil {
 			return "", nil, err
 		}
-		add(claimArms, args)
+		add(func(at int) string { return claimArms(at, after) }, args)
 	}
 	return strings.Join(arms, ",\n"), params, nil
 }
+
+// nodesWrittenFirst is the condition every tuple arm of a write that has nodes reads its rows
+// under. Postgres runs a data-modifying arm the statement does not read after the statement's
+// own query, the later arms of the with list first, so a tuple arm that read nothing of the node
+// arm would append its tuples before the nodes they are about: outside the lock order on
+// api/inbox_read.go's markInboxReadThreads, and, on a repeat key another transaction holds, a
+// wait that holds none of the node rows yet. The count is true whatever the node arm wrote, and
+// reading it runs that arm to its end first, so the nodes are written, and their rows locked,
+// before the first tuple is. It is a filter rather than a join because a node arm that wrote no
+// row - every node was already there - must still let every tuple through.
+const nodesWrittenFirst = `(select count(*) from graph_nodes_written) >= 0`
 
 // nodeArm writes the nodes and states the two base attributes of each node it made. The node
 // rows arrive in ascending (kind, id), as every write of this store takes them (writeNodes), and
@@ -131,8 +150,12 @@ graph_node_attributes as (
 // through graph_tuples_current, and the insert states a retraction of every far end the claim is
 // no longer at before the assertion of the one it is at, in the order the caller gave its claims.
 // A claim with no far end (ToID empty) retracts what the node holds and asserts nothing in its
-// place, which is a role read unclaimed.
-func claimArms(first int) string {
+// place, which is a role read unclaimed. where is the condition its insert reads its rows under,
+// as tupleInsert takes it.
+func claimArms(first int, where string) string {
+	if where != "" {
+		where = "\n\twhere " + where
+	}
 	return `graph_claims as (
 	select * from unnest(` + claimArrays(first) + `)
 		with ordinality as claim(from_kind, from_id, kind, to_kind, to_id, at, who, source_event, position)
@@ -166,7 +189,7 @@ graph_claims_written as (
 			where held.position = claim.position
 				and held.to_kind = claim.to_kind and held.to_id = claim.to_id
 		)
-	) stated (` + tupleWriteColumns + `, position, step)
+	) stated (` + tupleWriteColumns + `, position, step)` + where + `
 	order by position, step` + relationRepeatKey + `
 )`
 }
@@ -211,12 +234,17 @@ func nodeRows(first int) string {
 
 // tupleInsert appends tuples in the order the caller stated them (with ordinality, order by
 // position), so the sequence the log is read back in is the order a caller stated its facts.
-func tupleInsert(first int) string {
+// where is a condition the rows are read under, or empty for none: a tuple arm of WriteArms
+// passes nodesWrittenFirst, and Write, whose statements run one after another, passes none.
+func tupleInsert(first int, where string) string {
 	arrays := arrayList(first, "text", "text", "text", "text", "text", "timestamptz", "jsonb", "bigint", "bigint", "boolean")
+	if where != "" {
+		where = "\n\twhere " + where
+	}
 	return `insert into graph_tuples (` + tupleWriteColumns + `)
 	select ` + tupleWriteColumns + `
 	from unnest(` + arrays + `)
-		with ordinality as tuple(` + tupleWriteColumns + `, position)
+		with ordinality as tuple(` + tupleWriteColumns + `, position)` + where + `
 	order by position`
 }
 
