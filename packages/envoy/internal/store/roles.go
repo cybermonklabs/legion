@@ -413,23 +413,32 @@ type RoleClaimRepairReport struct {
 	TookOut int
 	// Completed is how many whole reads of the bucket have completed since Open.
 	Completed int
+	// Age is how long before the report that read completed, on the registry's clock, and zero
+	// when no read has completed. It is the age RoleClaimRepairErr judges against
+	// RoleClaimRepairBound, so a reader that reports it beside that error (/healthz) reads the one
+	// clock the error was judged on.
+	Age time.Duration
 }
 
 // RoleClaimRepair reports the role claim watcher's last whole read of the bucket that completed:
-// when, and what it put back and took out of the copy. Every read that completes counts - the
-// start's, a rewatch's, a re-read after a timed-out scan or a recreate, and the scheduled read
-// roleClaimRepairInterval after each of them - so the time is the copy's last repair however it
-// came. It makes no bucket call, so a report of the repair never waits on the bus.
+// when, how long ago, and what it put back and took out of the copy. Every read that completes
+// counts - the start's, a rewatch's, a re-read after a timed-out scan or a recreate, and the
+// scheduled read roleClaimRepairInterval after each of them - so the time is the copy's last repair
+// however it came. It makes no bucket call, so a report of the repair never waits on the bus.
 func (r *Registry) RoleClaimRepair() RoleClaimRepairReport {
 	r.holdersMu.RLock()
 	defer r.holdersMu.RUnlock()
 	repair := &r.roleRepair
-	return RoleClaimRepairReport{
+	report := RoleClaimRepairReport{
 		CompletedAt: repair.completedAt,
 		PutBack:     repair.last.putBack,
 		TookOut:     repair.last.tookOut,
 		Completed:   repair.completed,
 	}
+	if report.Completed > 0 {
+		report.Age = r.now().Sub(report.CompletedAt)
+	}
+	return report
 }
 
 // RoleClaimRepairErr is nil while the role claim watcher's last whole read of the bucket completed
@@ -445,9 +454,9 @@ func (r *Registry) RoleClaimRepairErr() error {
 	if report.Completed == 0 {
 		return errors.New("no whole read of the role claims has completed")
 	}
-	if age := r.now().Sub(report.CompletedAt); age > RoleClaimRepairBound {
+	if report.Age > RoleClaimRepairBound {
 		return fmt.Errorf("the last whole read of the role claims completed %s ago, past the %s bound",
-			age.Round(time.Millisecond), RoleClaimRepairBound)
+			report.Age.Round(time.Millisecond), RoleClaimRepairBound)
 	}
 	return nil
 }
