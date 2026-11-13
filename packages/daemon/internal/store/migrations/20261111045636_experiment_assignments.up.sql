@@ -98,7 +98,7 @@ select key, 'memory', 'tree',
 from issues
 where memory_drawn_at is not null or memory_carried;
 
--- Rolling back onto a release at daemon API contract 104 (legion-v20.11.2, read 2026-11-13, is
+-- Rolling back onto a release at daemon API contract 111 (legion-v20.13.0, read 2026-11-13, is
 -- one, and the tree the places cited here were read in). That release draws into
 -- issues.memory_* only where it creates a tree's lifecycle row
 -- (internal/admit/admit.go, the `if lifecycle.Created` branch of (*Admission).promoteHolds), and

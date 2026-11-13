@@ -203,6 +203,10 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "HandoutSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeclaredSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeclaredAt", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "MovedAt", Column: ColumnWithheld,
+		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
+	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
+		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

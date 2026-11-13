@@ -713,6 +713,18 @@ const legionIssue = z.object({
    * takes both as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
+  /** When the daemon last saw anything of this issue's tree move, and how long that tree has
+   * been still at this read, in hours (contract 111). The pair is the tree's and not the issue's,
+   * so every issue of one tree carries the same two values — an issue past its own review, which
+   * holds no admission slot, and a done child recorded under a live tree among them. Both are
+   * absent together for an issue whose tree is not live and for an issue the workflow does not
+   * record, and a daemon before contract 111 writes neither at all, which is why a reader takes
+   * them as optional. A tree the record shows no movement for is measured from the zero time,
+   * where the daemon's duration saturates, so `quietHours` reads 2562047.788 — 292 years, the
+   * largest span it holds. That is "this tree has never moved", not a fault to refuse the body
+   * over, which is why the bound here is `nonnegative` and no ceiling. */
+  treeMovedAt: timestamp.optional(),
+  quietHours: z.number().nonnegative().optional(),
   /** Every experiment answer that applies to the issue (contract 113): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
    * order the project's file declares the experiments. That is the `memory` block's experiment
@@ -768,7 +780,8 @@ const legionBlockedIssue = z.object({
 
 /**
  * `record.HeldReason` — the eleven words of `admission.held`, in `record.HeldReasons`' order.
- * `at_work` names no issue today; `record.HeldAtWork` says why.
+ * `at_work` names an issue past its review, which keeps no admission slot; `record.HeldAtWork`
+ * says which issues read it.
  */
 export const LEGION_HELD_REASONS = [
   "tree_closed",
@@ -804,16 +817,17 @@ const legionHeldIssue = z.object({
  * is capped on issues, never on workers: there is no worker queue on this wire. Since contract 51
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
  * `active` is every issue holding a slot and `waiting` the admission line, children as much as
- * roots, so one tree with three started children holds three slots. An issue takes its slot when
- * the daemon starts it and keeps it until it is done or leaves the workflow, so `active` carries
- * an issue waiting on a person, one in `accepting`, one `held`, a merger at work in `merging`,
- * one in `merging` whose start a closed design gate holds, and a merged root standing in
- * `merging` while the rest of its tree runs, while an issue whose phase has left the workflow —
- * `done`, or a status Dispatch took it out of the workflow with — is in neither list. An issue
- * holding a slot is in `waiting` as well while its work comes back to it, an answered root until
- * the pass that resumes it. `trees` is the root of every live tree, sorted, which a reader needs
- * because a running tree may hold no slot at all — the controller reads it where it read
- * `active` as the running
+ * roots, so one tree with three started children holds three slots. An issue holds one of the
+ * cap's slots from the moment the daemon starts it until its work is past its review —
+ * `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out
+ * of the workflow, so `active` carries an issue at work, one `held` and one waiting on a
+ * person, while an issue past its review — a merger at work in `merging`, one in `merging`
+ * whose start a closed design gate holds, a merged root standing in `merging` while the rest
+ * of its tree runs — and one whose phase has left the workflow, `done` or a status Dispatch
+ * took it out of the workflow with, are in neither list. An issue holding a slot is
+ * in `waiting` as well while its work comes back to it, an answered root until the pass that
+ * resumes it. `trees` is the root of every live tree, sorted, which a reader needs because a running
+ * tree may hold no slot at all — the controller reads it where it read `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
  * optional here only because that daemon leaves it off one body: a reader before 51 refuses the
  * key outright, so the route strips `trees` and the issues' `tree` for a caller in a pod whose

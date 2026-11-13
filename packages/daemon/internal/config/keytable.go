@@ -337,6 +337,11 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.PodUpdateNotice = v }),
 		},
 		{
+			Name: "stalled_tree_notice_hours", Default: "`6`", RequiredBy: "no",
+			Description: "How many hours a tree this daemon runs may be quiet — no issue of it moving and no agent of it stepping — before the project's controller is told once that the tree has stopped; decimals allowed. A tree with a role at work is never told, and neither is one whose every quiet issue waits by design while the project's line can still move.",
+			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.StalledTreeNotice = v }),
+		},
+		{
 			Name: "pod_update_max_open_rounds", Default: "no limit at all: the daemon opens a round for any number of issues at once", RequiredBy: "no",
 			Description: "How many issues may hold an open pod-update round at once, a round being the ask to every worker of its issue to push and wait.",
 			Read:        reads(roundCap, func(f *fileConfig, v *int) { f.PodUpdateMaxOpenRounds = v }),

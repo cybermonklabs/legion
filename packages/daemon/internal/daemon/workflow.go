@@ -436,6 +436,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// the memory experiment all the same, at mode off, whose draw records each new tree at no
 	// variant (config.Project.ExperimentsDeclared).
 	w.admission.UseExperiments(cfg.ExperimentsDeclared())
+	// `stalled_tree_notice_hours` is the bound the admission pass tells the controller a tree
+	// has stopped at: the loader gives six hours to a file that names no key, so the pass
+	// always runs under a number somebody chose.
+	w.admission.UseStalledTreeNotice(cfg.StalledTreeNotice)
 	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).

@@ -89,7 +89,7 @@ func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 			 memory_group, memory_draw_mode, memory_drawn_at, memory_carried)
 			values ($1, $1, 'LEGION', 'root', 'admitted', 1, 'in_progress', 'A', 1, $2, $3, $4, $5)`,
 			tree.key, tree.group, tree.mode, tree.at, tree.carried); err != nil {
-			t.Fatalf("record %s as the previous release leaves it: %v", tree.key, err)
+			t.Fatalf("record %s as a release without this change leaves it: %v", tree.key, err)
 		}
 		if !tree.lifecycle {
 			continue
@@ -159,7 +159,7 @@ func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 		wantGroup, wantMode, wantAt := baseMemoryFields(group, oldMode, oldAt)
 		gotGroup, gotMode, gotAt := projectedMemoryFields(holds, variant, mode, at)
 		if gotGroup != wantGroup || gotMode != wantMode || !sameInstant(gotAt, wantAt) {
-			t.Errorf("%s reads back as group %q drawn as %q at %v, want the %q, %q, %v the release before this one answered",
+			t.Errorf("%s reads back as group %q drawn as %q at %v, want the %q, %q, %v a release without this change answered",
 				tree.key, gotGroup, gotMode, gotAt, wantGroup, wantMode, wantAt)
 		}
 	}

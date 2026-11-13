@@ -794,7 +794,9 @@ func statementBound(bound time.Duration) int64 {
 // entry the issue's current phase stands on and the entry its role was given, is served it
 // without `phaseEntry` and `givenEntry` (withoutPhaseEntries); a caller below heldContract, the
 // contract that named the issues the daemon's record holds in the workflow and queues nowhere,
-// is served it without `admission.held` (withoutHeld); and a caller below assignmentsContract,
+// is served it without `admission.held` (withoutHeld); a caller below quietTimeContract, the
+// contract that added each issue's measure of its tree's quiet time, is served it without
+// `treeMovedAt` and `quietHours` (withoutQuietTime); and a caller below assignmentsContract,
 // the contract that added the experiment answers each issue runs under, is served every issue
 // without `assignments` (withoutAssignments).
 // The narrowings compose: each is applied when the state carries something of its own, so a
@@ -805,11 +807,11 @@ func statementBound(bound time.Duration) int64 {
 // retired entry under `strandedClaims`. Every later reader takes each of those keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
-// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry` and `assignments`, the workers'
-// counts of the moves back, the claim views' `step` and `leakCheckCause`, each of the nine the
-// decided record added and `contract` itself optional for exactly these bodies. Any other caller
-// — a pod at this contract, the operator's `legion state`, a tmux pane — is served the state as
-// this contract writes it.
+// `gatedSteps`, `waitingLine`, `why`, `phaseEntry`, `givenEntry`, `treeMovedAt`, `quietHours`
+// and `assignments`, the workers' counts of the moves back, the claim views' `step` and
+// `leakCheckCause`, each of the nine the decided record added and `contract` itself optional
+// for exactly these bodies. Any other caller — a pod at this contract, the operator's `legion
+// state`, a tmux pane — is served the state as this contract writes it.
 //
 // Each narrowing is written to the daemon's own log as it is applied, one line naming the
 // caller, the contract that caller's pod records, the contract this daemon declares and what
@@ -919,6 +921,7 @@ var stateNarrowings = []stateNarrowing{
 	{leakCheckCauseContract, carriesLeakCheckCause, withoutLeakCheckCause, "the claim views' leakCheckCause"},
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
+	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
 	{assignmentsContract, carriesAssignments, withoutAssignments, "the issues' assignments"},
 }
 
@@ -991,11 +994,12 @@ const backwardMovesContract = 62
 // one built after strips the key instead, so the strip is what keeps the count from a caller
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
-// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract and
-// assignmentsContract stand above it now, so a caller in a pod from it to below
-// recordFieldsContract is served the count and neither the decided record's keys, nor each
-// issue's answer with the line's own fields, nor a claim view's `leakCheckCause`, nor the two
-// entry numbers, nor `admission.held`, nor the issues' `assignments`.
+// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract, heldContract,
+// quietTimeContract and assignmentsContract stand above it now, so a caller in a pod from it to
+// below recordFieldsContract is served the count and neither the decided record's keys, nor
+// each issue's answer with the line's own fields, nor a claim view's `leakCheckCause`, nor the
+// two entry numbers, nor `admission.held`, nor the tree's quiet time, nor the issues'
+// `assignments`.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -1045,12 +1049,27 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. Its band stands below heldContract's and assignmentsContract's, the latter
-// this daemon's own contract, so a caller in a pod from it to below heldContract is served the
-// two keys and neither `admission.held` nor `assignments`, a caller from heldContract to below
-// assignmentsContract the two keys and `admission.held` and no `assignments`, and a caller at
-// 113 all of them.
+// reading at all. Its band stands below heldContract's, quietTimeContract's and
+// assignmentsContract's, the last this daemon's own contract, so a caller in a pod from it to
+// below heldContract is served the two keys and none of `admission.held`, the tree's quiet time
+// and `assignments`, a caller from heldContract to below quietTimeContract the two keys and
+// `admission.held` and neither the quiet time nor `assignments`, a caller from
+// quietTimeContract to below assignmentsContract all of those but `assignments`, and a caller at
+// assignmentsContract all of them.
 const phaseEntriesContract = 94
+
+// quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
+// time to the state (version.go's 111): `treeMovedAt`, the newest movement the daemon has seen
+// anywhere in that tree, and `quietHours`, how long it has been still. A plugin before it is
+// served the state without the two keys: one built before sjawhar/legion#2788 reads it with a
+// strict schema and would refuse the whole body for a key it does not name, and one built after
+// strips them instead, so the strip is what keeps the pair from a caller that did not ask for
+// it rather than what keeps such a caller reading at all. The two are one gate because they are
+// one measure: a caller served the movement without the quiet time beside it, or the other way
+// about, would hold half of what one read of the tree said. Its band stands below
+// assignmentsContract's, this daemon's own contract, so a caller from it to below
+// assignmentsContract is served the measure and no `assignments`.
+const quietTimeContract = 111
 
 // assignmentsContract is the daemon contract that added each issue's experiment assignments to
 // the state (version.go's 113). A plugin before it is served the state without the field: one
@@ -1307,6 +1326,31 @@ func withoutPhaseEntries(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.PhaseEntry, issue.GivenEntry = 0, 0
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesQuietTime is whether any issue of state carries its tree's quiet time, either half of
+// it: the projection writes the two together, and a state carrying one alone is still a state
+// the reader before the contract refuses.
+func carriesQuietTime(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.TreeMovedAt != nil || issue.QuietHours != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutQuietTime is state with no issue carrying `treeMovedAt` or `quietHours`, the two fields
+// quietTimeContract added to the state; nothing else of that contract is on the route. The issue
+// map is copied, so the state the source answered is left as it was.
+func withoutQuietTime(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.TreeMovedAt, issue.QuietHours = nil, nil
 		issues[key] = issue
 	}
 	state.Issues = issues
