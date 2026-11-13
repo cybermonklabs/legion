@@ -2,18 +2,22 @@ package supervise
 
 // The sentence a relaunched process is told of what the last let-go of its process ended
 // (dispatch://INFRA-3276 R3): in front of the task the claim holds, as the whole of a delivery of
-// the daemon's own when it holds none, behind the abandoned session's sentence's precedence and in
-// front of a provider error's, told only when a turn takes a prompt that carried it, and told again
-// when that turn turns out to be another's. The daemon package drives the same against the real
-// workflow (its TestARelaunchSentence… tests).
+// the daemon's own when it holds none, never to a fresh session for the old session's process and
+// behind the abandoned session's sentence for the fresh session's own, in front of a provider
+// error's, told only when a turn takes a prompt that carried it, and told again when that turn
+// turns out to be another's. The daemon package drives the same against the real workflow (its
+// TestARelaunchSentence… tests).
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
@@ -178,33 +182,280 @@ func TestARelaunchSentenceIsTheWholeOfTheRelaunchDelivery(t *testing.T) {
 	}
 }
 
-// A fresh session's own sentence takes precedence: it says that everything of the abandoned
-// session is gone, so the claim gets no delivery of the daemon's own at its ready, and its first
-// task carries the abandoned session's sentence and not the record's. The turn that takes that
-// task tells the record too, since the sentence it carried stood in for the record's.
+// wantToldByTheForget is the claim's record of what its last let-go ended marked told by no
+// delivery, as the machine holds it and as the store holds it: the abandonment of a session ends
+// the old session's record so (forgetSession), and no take-back of a confirmation untells it.
+func (h *harness) wantToldByTheForget(when string) {
+	h.t.Helper()
+	for where, got := range map[string]EndedWork{"the machine": h.claim().EndedWork, "the store": h.store.load(h.token).EndedWork} {
+		if got.Cause == "" {
+			h.t.Fatalf("%s: %s holds no record of the let-go, want one", when, where)
+		}
+		if !got.Told || got.ToldBy != "" {
+			h.t.Fatalf("%s: %s records the let-go told=%v by %q, want it told by no delivery: the abandonment of the session ended it", when, where, got.Told, got.ToldBy)
+		}
+	}
+}
+
+// wantNoRecordSentence fails the test where prompt carries any sentence of a record of a let-go.
+func wantNoRecordSentence(t *testing.T, prompt, which string) {
+	t.Helper()
+	for _, sentence := range []string{"Your previous process ended", "Your process ended", "interrupted", "No result of that work will come to you."} {
+		if strings.Contains(prompt, sentence) {
+			t.Errorf("%s %q carries %q, want no sentence of the old session's record beside the abandoned session's", which, prompt, sentence)
+		}
+	}
+}
+
+// A fresh session is not told the old session's record of what the last let-go of its process
+// ended: the operator's forget of the session ends that record, told by no delivery
+// (forgetSession), and the abandoned session's sentence says that everything of the old session
+// is gone. So the claim gets no delivery of the daemon's own at its ready, and its first task
+// carries the abandoned session's sentence and not the record's. The turn that takes that task
+// tells the abandonment and leaves the record as the forget left it.
 func TestARelaunchSentenceGivesWayToTheAbandonedSession(t *testing.T) {
 	c := queuedClaim()
+	c.Session, c.SessionFile = "ses-old", "/sessions/old.jsonl"
 	c.EndedWork = EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true,
 		Background: true, Kinds: []string{"subagent"}, Reported: true}
-	c.Abandoned = AbandonedSession{Session: "ses-old", SessionFile: "/sessions/old.jsonl",
-		Why: "the retry asked for a new session", At: epoch}
 	h := newHarnessOf(t, c)
+	h.must(RequestForgetSession{Claim: testToken, Session: "ses-old"})
+	h.wantToldByTheForget("at the forget")
 	h.reach(StateReady)
 	h.wantPrompts(0)
 
 	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
 
-	sent := h.wantPrompts(1)[0].Message
+	first := h.wantPrompts(1)[0]
+	sent := first.Message
 	if want := abandonedTask(h.claim()) + "implement the plan"; sent != want {
 		t.Fatalf("the fresh session's first task was sent as %q, want %q", sent, want)
 	}
 	if strings.Contains(sent, "Your previous process ended") || strings.Contains(sent, "Your process ended") {
 		t.Errorf("the fresh session's first task %q carries the record's sentence beside the abandoned session's", sent)
 	}
-	h.wantTold(false, "before the task's turn")
+	h.wantToldByTheForget("before the task's turn")
 
 	h.must(StreamTurnStart{Claim: testToken})
-	h.wantTold(true, "once the task's turn began")
+	h.wantToldByTheForget("once the task's turn began")
+	h.wantAbandonedToldBy(first.DeliveryID, "once the task's turn began")
+}
+
+// A claim whose record of its last let-go still tells is given a fresh session, and that session
+// is never told the record (forgetSession). The relaunch that finds its session in no store
+// forgets it in the launch itself (startFresh), after the launch let the old process go and
+// recorded what it ended; the forget marks that record told by no delivery, in memory and in the
+// store.
+//
+// A claim that holds a task — the one its death took back from its turn — sends it to the fresh
+// agent behind the abandoned session's sentence alone: not the record's, nor the note of the old
+// session's interrupted turn. Oh My Pi acknowledges that prompt and then answers it busy: the
+// abandonment is still untold, and the task sent after the agent's own turn ends names it again,
+// and still carries no record sentence, because the record ended at the forget rather than
+// waiting on a confirmation the busy answer never gave.
+//
+// A claim that holds the daemon's own delivery of the record when its session is forgotten holds
+// a delivery with nothing left to say: the fresh agent's ready retires it rather than send it,
+// and gives it no new one.
+func TestARelaunchSentenceIsNotToldToAFreshSession(t *testing.T) {
+	lost := fake.SpawnResult{Err: fmt.Errorf("resume %s: %w: no OMP session anywhere", testToken, runtime.ErrSessionFileMissing)}
+
+	t.Run("a claim holding a task", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateReady)
+		h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Generation: 5})
+		h.must(StreamTurnStart{Claim: testToken})
+		h.reportActivity("subagent")
+		h.rt.ScriptResume(lost)
+
+		h.observe(runtime.Gone)
+
+		h.wantState(StateLaunching)
+		if got := h.claim().Abandoned; got.Session != session || !got.Tells() {
+			t.Fatalf("the relaunch left the abandoned session %+v, want %q still to tell", got, session)
+		}
+		if ended := h.claim().EndedWork; !ended.TaskTurn || len(ended.Kinds) != 1 {
+			t.Fatalf("the death recorded %+v, want the record of the task's turn and its subagent", ended)
+		}
+		h.wantToldByTheForget("after the launch forgot the session")
+		if p := h.pending(); !p.Interrupted || p.Task != "implement the plan" {
+			t.Fatalf("the fresh claim holds %+v, want the task the death took back", p)
+		}
+
+		base := len(h.prompts())
+		h.registerFresh()
+		first := h.wantPrompts(base + 1)[base]
+		if relaunchTask(first.DeliveryID) {
+			t.Fatalf("the fresh agent was sent %s, want its task", first.DeliveryID)
+		}
+		want := abandonedTask(h.claim()) + "implement the plan"
+		if first.Message != want {
+			t.Fatalf("the fresh agent's first prompt is %q, want %q: the abandoned session's sentence alone in front of the task", first.Message, want)
+		}
+		wantNoRecordSentence(t, first.Message, "the fresh agent's first prompt")
+		if p := h.pending(); p.DeliveredAt.IsZero() || p.MarkedBy != first.DeliveryID {
+			t.Fatalf("the first prompt left %+v, want it acknowledged", p)
+		}
+
+		h.must(StreamLateRefusal{Claim: testToken, DeliveryID: first.DeliveryID, Error: busyAnswer})
+		h.wantToldByTheForget("after the busy answer")
+		h.wantAbandonedToldBy("", "after the busy answer")
+
+		h.mustQuiet(StreamTurnEnd{Claim: testToken})
+		second := h.wantPrompts(base + 2)[base+1]
+		if second.Message != want {
+			t.Fatalf("the prompt after the busy answer is %q, want %q: the abandonment again, and no record", second.Message, want)
+		}
+		wantNoRecordSentence(t, second.Message, "the prompt after the busy answer")
+
+		h.must(StreamTurnStart{Claim: testToken})
+		h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
+		h.wantToldByTheForget("once the task's turn began")
+	})
+
+	t.Run("a claim holding the daemon's own delivery of the record", func(t *testing.T) {
+		h := newHarness(t)
+		h.reach(StateIdle)
+		h.reportActivity("subagent")
+		h.observe(runtime.Gone)
+		h.relaunched()
+		relaunch := h.pending()
+		if !relaunchTask(relaunch.ID) {
+			t.Fatalf("the relaunched claim holds %+v, want the daemon's own delivery of the record", relaunch)
+		}
+		sent := len(h.wantPrompts(2))
+		h.rt.ScriptResume(lost)
+
+		h.observe(runtime.Gone)
+
+		h.wantState(StateLaunching)
+		h.wantToldByTheForget("after the launch forgot the session")
+		if p := h.pending(); p.ID != relaunch.ID {
+			t.Fatalf("the fresh claim holds %+v, want the delivery of the record it held when the session was forgotten", p)
+		}
+
+		h.registerFresh()
+
+		h.wantPrompts(sent)
+		if p := h.claim().Pending; p != nil {
+			t.Fatalf("the fresh agent's ready left %+v pending, want the delivery of the ended record retired", p)
+		}
+		if _, held := h.store.delivery(testToken); held {
+			t.Fatal("the store still holds the delivery of the ended record, want it retired")
+		}
+		if lines := h.logs.lines("the daemon's own delivery of a relaunch's record has nothing to say", relaunch.ID); len(lines) != 1 {
+			t.Errorf("the retirement logged %q, want one line naming %s", lines, relaunch.ID)
+		}
+		h.wantToldByTheForget("after the fresh agent's ready")
+	})
+}
+
+// After a forget, a record that tells is one of the fresh session's own processes, and the fresh
+// agent is told it behind the abandoned session's sentence. Here the fresh agent is in a turn of
+// its own, which no prompt of the daemon's began, so nothing has told it the abandonment yet, and
+// its process dies in that turn: the death writes a record of the fresh process, the next prompt
+// carries the abandoned session's sentence and then that record's, and the turn that takes it
+// tells both. A claim holding nothing is sent the daemon's own delivery of the record
+// (queueRelaunch); one holding a task sends the task behind both sentences.
+func TestARelaunchSentenceOfTheFreshProcessFollowsTheAbandonedSentence(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		task string
+	}{
+		{name: "a claim holding nothing"},
+		{name: "a claim holding a task", task: "implement the plan"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			h.must(RequestStop{Claim: testToken})
+			h.must(RequestRetry{Claim: testToken, FreshSession: true})
+			h.wantState(StateLaunching)
+			h.registerFresh()
+			fresh := h.generation()
+			base := len(h.prompts())
+			h.must(StreamTurnStart{Claim: testToken})
+
+			h.observe(runtime.Gone)
+			if tc.task != "" {
+				h.must(RequestDeliver{Claim: testToken, Task: tc.task, Generation: 5})
+			}
+			h.registerFresh()
+
+			ended := h.claim().EndedWork
+			if !ended.Tells() || ended.Generation != fresh || !ended.Turn {
+				t.Fatalf("the fresh process's death recorded %+v, want an untold record of launch %d's turn", ended, fresh)
+			}
+			if !h.claim().Abandoned.Tells() {
+				t.Fatalf("the claim records the abandoned session %+v, want it still to tell", h.claim().Abandoned)
+			}
+			next := h.wantPrompts(base + 1)[base]
+			want := abandonedTask(h.claim()) + RelaunchSentence(ended)
+			if tc.task != "" {
+				want = abandonedTask(h.claim()) + relaunchSentence(ended, true) + "\n\n" + tc.task
+			}
+			if next.Message != want {
+				t.Fatalf("the next prompt is %q, want %q: the abandoned session's sentence, then the fresh process's record", next.Message, want)
+			}
+			if relaunchTask(next.DeliveryID) != (tc.task == "") {
+				t.Fatalf("the next prompt went as %s, want the daemon's own delivery only for a claim holding nothing", next.DeliveryID)
+			}
+			h.wantToldBy("", "before the prompt's turn")
+			h.wantAbandonedToldBy("", "before the prompt's turn")
+
+			h.must(StreamTurnStart{Claim: testToken})
+			h.wantToldBy(next.DeliveryID, "once the prompt's turn began")
+			h.wantAbandonedToldBy(next.DeliveryID, "once the prompt's turn began")
+		})
+	}
+}
+
+// A relaunched claim whose record tells holds a task whose phase the issue has left. The ready
+// queues the daemon's own delivery only for a claim that holds nothing (queueRelaunch), and this
+// one holds the task; the ready's send then drops it rather than send it (sendPending). The drop
+// leaves the claim holding nothing, so it is given the daemon's own delivery of the record and
+// sent it there, rather than leave the sentence for whatever task comes next (relaunchAfterDrop).
+func TestARelaunchSentenceGoesAloneWhenTheHeldTaskIsDropped(t *testing.T) {
+	h := newBareHarness(t)
+	holds := true
+	h.deps.PhaseHolds = func(context.Context, string, phase.Phase, uint64) (bool, error) { return holds, nil }
+	if err := h.store.PutClaim(h.ctx, queuedClaim()); err != nil {
+		t.Fatal(err)
+	}
+	h.start(queuedClaim())
+	h.reach(StateReady)
+	h.must(RequestDeliver{Claim: testToken, Task: "implement the plan", Phase: phase.Implementing, Generation: 5})
+	h.must(StreamTurnStart{Claim: testToken})
+	h.reportActivity("subagent")
+
+	h.observe(runtime.Gone)
+	if p := h.pending(); !p.Interrupted || p.Phase != phase.Implementing {
+		t.Fatalf("the relaunching claim holds %+v, want the phase task its death took back", p)
+	}
+	holds = false
+	h.relaunched()
+
+	ended := h.claim().EndedWork
+	if !ended.Tells() || !ended.TaskTurn {
+		t.Fatalf("the death recorded %+v, want an untold record of the task's turn", ended)
+	}
+	p := h.pending()
+	if !relaunchTask(p.ID) || p.Task != RelaunchSentence(ended) || p.Phase != "" {
+		t.Fatalf("after the drop the claim holds %+v, want the daemon's own delivery of the record", p)
+	}
+	if stored, held := h.store.delivery(testToken); !held || stored.ID != p.ID {
+		t.Fatalf("the store holds %+v (held %v), want the daemon's own delivery %s", stored, held, p.ID)
+	}
+	sent := h.wantPrompts(2)[1]
+	if sent.DeliveryID != p.ID || sent.Message != RelaunchSentence(ended) {
+		t.Fatalf("the relaunched claim was sent %+v, want the record's sentence alone under %s", sent, p.ID)
+	}
+	if lines := h.logs.lines("the issue has left the phase this task was queued for"); len(lines) != 1 {
+		t.Errorf("the drop logged %q, want one line", lines)
+	}
+
+	h.must(StreamTurnStart{Claim: testToken})
+	h.wantToldBy(p.ID, "once the delivery's turn began")
 }
 
 // A task a provider error took back carries its own sentence behind the record's: the agent reads

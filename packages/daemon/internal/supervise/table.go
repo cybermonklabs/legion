@@ -2534,7 +2534,9 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 // is the point: the report is the workflow's ready, read in its own transaction while this
 // decision runs (Machine.OnDurableState, the daemon's applyTerminal), and it must find the claim
 // holding nothing, or a phase worker's ready would queue no resume task (workflow's
-// readyWorkerTask). A claim that holds a delivery is sent it with the sentence in front.
+// readyWorkerTask). A claim that holds a delivery is sent it with the sentence in front, and one
+// whose held task that send drops instead is given the daemon's own delivery there
+// (sendPending's relaunchAfterDrop).
 func finishReady(m *Machine, ctx context.Context) error {
 	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
 		return err

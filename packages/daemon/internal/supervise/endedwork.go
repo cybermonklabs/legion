@@ -62,8 +62,10 @@ type EndedWork struct {
 	// confirmation told it. Both follow the one rule confirm states for the two records a prompt
 	// tells: told at the confirmation of a prompt that carried the sentence, never at its
 	// acknowledgement, and back to untold when that confirmation is taken back as another turn's
-	// (moveTelling). A record not yet told is replaced by a newer one only as the union of the two
-	// (joined), so what the earlier let-go ended is not lost before anyone reads it.
+	// (moveTelling). The one record told anywhere else is an old session's, which the abandonment of
+	// that session ends by no delivery (forgetSession), since the fresh session is told everything of
+	// the old one is gone. A record not yet told is replaced by a newer one only as the union of the
+	// two (joined), so what the earlier let-go ended is not lost before anyone reads it.
 	Told   bool   `json:"told,omitempty"`
 	ToldBy string `json:"toldBy,omitempty"`
 }

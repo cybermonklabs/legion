@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/intake"
@@ -86,6 +88,52 @@ func TestARelaunchSentenceDeliveryHoldsNoRootsWaitOnAPerson(t *testing.T) {
 			if tc.person {
 				view.Asks[0].PersonSeq = 7
 			}
+			if got := decideAwait(view); got.Act != tc.want || !strings.Contains(got.Why, tc.why) {
+				t.Fatalf("decideAwait = %+v, want act %v because %q", got, tc.want, tc.why)
+			}
+		})
+	}
+}
+
+// The same rule over the store, as the awaiting pass reads the root's role run (the record
+// store's RoleRuns): the claim's pending delivery comes back with its id, which is all that says a
+// delivery is the daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch). A
+// read that left the id behind would hand owed every pending delivery as a task the architect had
+// not taken, so a root holding only the relaunch's sentence would never enter its wait.
+func TestARelaunchDeliveryHoldsNoRootsWaitOnAPersonOverTheStore(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		id   string
+		want act
+		why  string
+	}{
+		{"the relaunch's sentence alone", "relaunch:WORD", actEnter, "awaiting an answer"},
+		{"a task not yet taken, the control", "outbox:7", actStay, "not taken its task"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			token := seedPhaseWorker(t, pool, "LEGION-208", claim.RoleArchitect, "")
+			if _, err := pool.Exec(t.Context(), `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at)
+				values ($1, $2, 'Decide it.', now())`, string(token), tc.id); err != nil {
+				t.Fatalf("seed the architect's delivery %s: %v", tc.id, err)
+			}
+			var run record.RoleRun
+			if err := pgx.BeginFunc(t.Context(), pool, func(tx pgx.Tx) error {
+				var err error
+				run, err = record.NewStore().RoleRun(t.Context(), tx, token, "LEGION-208", claim.RoleArchitect, 1)
+				return err
+			}); err != nil {
+				t.Fatalf("read the architect's role run: %v", err)
+			}
+			if run.Claim == nil || run.Claim.Pending == nil {
+				t.Fatalf("the store read the role run's claim as %+v, want it holding the delivery %s", run.Claim, tc.id)
+			}
+			if got := run.Claim.Pending.ID; got != tc.id {
+				t.Errorf("the store read the claim's pending delivery as %q, want its id %s", got, tc.id)
+			}
+
+			view := awaitRootView()
+			view.Run = run
 			if got := decideAwait(view); got.Act != tc.want || !strings.Contains(got.Why, tc.why) {
 				t.Fatalf("decideAwait = %+v, want act %v because %q", got, tc.want, tc.why)
 			}

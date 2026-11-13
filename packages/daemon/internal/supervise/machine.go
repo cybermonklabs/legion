@@ -1192,8 +1192,8 @@ type Machine struct {
 	cutTurnOf string
 	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
 	// current process carried the sentence of (sentences, Delivery.message): the session the claim
-	// abandoned, and what its last let-go ended — the abandoned session's sentence counting for
-	// both where it stands in place of the other. It is what confirm reads to mark each record
+	// abandoned, and what its last let-go ended, each marked only where the prompt's text carries
+	// that record's own sentence. It is what confirm reads to mark each record
 	// told, so a turn whose prompt went out before a record existed — the takeover of a process
 	// another runtime still runs, whose relaunch the pacing parks — tells nothing of it. It is set
 	// where the send goes out (startSend), and goes with the process (letGo) and, for the record of
@@ -2700,6 +2700,27 @@ func (m *Machine) sessionGone() {
 // nothing of. The session is recorded as abandoned, with why it was, since nothing else keeps
 // where it went and the fresh agent is told of it in its first task.
 //
+// A fresh session is not told the old session's record of what the last let-go of its process
+// ended (EndedWork), and this is the one place that rule is written. When it records the
+// abandoned session, it ends that record too: a record that still tells is marked told, by no
+// delivery (ToldBy empty), so no take-back of a confirmation ever untells it (moveTelling). The
+// abandoned session's sentence (abandonedTask) already says that the turns, tool calls,
+// subagents and background jobs of the old session are gone, and the fresh agent started none of
+// them, so the record's sentence would tell it that work it never had has stopped. A record that
+// tells beside an abandoned session that tells is therefore always one of the fresh session's own
+// processes, and each reader tells both: the prompt's composer (Delivery.message), the delivery
+// of the record alone (queueRelaunch), and the ready's sentence for a root architect's catch-up
+// (the daemon's applyTerminal). A delivery of the record alone that the claim still holds has
+// nothing left to say, and its next send retires it (sendPending).
+//
+// Every caller runs it after the old process's record is written, so no let-go writes a record of
+// that process later: the launch's startFresh runs after the launch let the old process go
+// (launchNow, letGo), and retry's fresh session and the operator's forget-session reach only a
+// claim that runs nothing — queued, suspended, failed or retired — whose process the suspension,
+// the failure or the retirement already let go (suspended, fail, retire), or that never had one. A
+// let-go records nothing for a claim that records no process (recordEnd), so the next record
+// written is of the fresh session's own process.
+//
 // It puts the claim's run of provider-error turns back to zero as well (Claim.ProviderErrorRun).
 // The run counts the turns one session had refused in a row, and the new session has had none,
 // so the project's controller can be told again if the new one goes the same way — which is what
@@ -2710,6 +2731,11 @@ func (m *Machine) forgetSession(why string) {
 	if m.claim.Session != "" {
 		m.claim.Abandoned = AbandonedSession{
 			Session: m.claim.Session, SessionFile: m.claim.SessionFile, Why: why, At: m.deps.Clock.Now(),
+		}
+		if e := &m.claim.EndedWork; e.Tells() {
+			e.Told, e.ToldBy = true, ""
+			m.log.Info("supervise: the claim abandons its session, so the record of what the old session's process ended is not told to the fresh agent; the abandoned session's sentence says that work is gone",
+				"session", m.claim.Session, "cause", e.Cause, "ended", e.Generation)
 		}
 	}
 	m.claim.Session, m.claim.SessionFile = "", ""

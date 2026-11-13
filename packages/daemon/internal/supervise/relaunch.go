@@ -143,7 +143,8 @@ func relaunchTask(id string) bool { return strings.HasPrefix(id, relaunchTaskPre
 // Relaunch is whether d is the daemon's own delivery of a relaunch's record (queueRelaunch): no
 // work of the claim's — no phase, no run, no entry — only the sentence of what the last
 // let-go of its process ended. A reader that asks whether a claim still owes work it was given
-// reads such a delivery as none (workflow's owed), as a death's charge does (chargeDeath).
+// reads such a delivery as none (workflow's owed and readyWorkerTask, api's freshSession), as a
+// death's charge does (chargeDeath).
 func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 
 // queueRelaunch gives a claim that holds no delivery at its ready a delivery of the daemon's own
@@ -163,20 +164,24 @@ func (d Delivery) Relaunch() bool { return relaunchTask(d.ID) }
 // synchronously (Machine.OnDurableState, the daemon's applyTerminal): the workflow's ready reads
 // the claim holding nothing, so a phase worker is still queued its resume task
 // (workflow's readyWorkerTask), and that task takes this delivery's place while no prompt of it is
-// waiting on a result, or waits for its turn to end (queue, replaceable).
+// waiting on a result, or waits for its turn to end (queue, replaceable). It is queued again where
+// sendPending drops the task a claim held and leaves it holding nothing (relaunchAfterDrop), since
+// the task that would have carried the sentence is gone.
 //
-// Two claims are given none. The daemon-launched controller's keeper sends its start message at
+// One claim is given none: the daemon-launched controller. Its keeper sends its start message at
 // every ready and only logs a refusal of it (the daemon's controllerKeeper.ready), so a delivery
 // queued here would make the start procedure wait behind a sentence; the start message is a
-// delivery, which carries the sentence in front of it instead. And a claim whose fresh session has
-// not yet told the session it abandoned (Claim.Abandoned): that sentence takes precedence, says
-// that everything of the old session is gone, and waits for the first task, as it always has.
+// delivery, which carries the sentence in front of it instead. A claim whose fresh session has not
+// yet told the session it abandoned (Claim.Abandoned) is given one as any other is: the record of
+// the old session's process was ended where the session was abandoned (forgetSession, where that
+// rule is written), so a record that tells here is one of the fresh session's own processes, and
+// the delivery carries the abandoned session's sentence and then the record's (Delivery.message).
 func (m *Machine) queueRelaunch(ctx context.Context) error {
 	ended := m.claim.EndedWork
-	if !ended.Tells() || m.claim.Pending != nil || m.claim.Role == claim.RoleController || m.claim.Abandoned.Tells() {
+	if !ended.Tells() || m.claim.Pending != nil || m.claim.Role == claim.RoleController {
 		return nil
 	}
-	m.log.Info("supervise: the claim holds no task at its ready; a delivery of the daemon's own tells its agent what the relaunch ended",
+	m.log.Info("supervise: the claim holds no task; a delivery of the daemon's own tells its agent what the relaunch ended",
 		"cause", ended.Cause, "ended", ended.Generation)
 	return m.queue(ctx, RequestDeliver{Claim: m.claim.Token, ID: relaunchTaskID(), Task: RelaunchSentence(ended)})
 }

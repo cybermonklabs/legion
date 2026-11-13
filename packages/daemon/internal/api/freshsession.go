@@ -435,9 +435,13 @@ func (s *server) freshSession(w http.ResponseWriter, r *http.Request, m *supervi
 	// the agent and nothing more, so without it a tester waiting on CI, or a worker an idle
 	// release suspended, comes back in a new session with nothing to do. A claim that still
 	// owes a task keeps it — the resume sends that one — and an architect is never started
-	// through a phase at all.
+	// through a phase at all. The daemon's own delivery of a relaunch's record
+	// (supervise.Delivery.Relaunch) is no task it owes: it carries no run, phase or entry, only
+	// the sentence of what a relaunch ended, so a claim holding that alone is read as owing
+	// nothing, as workflow's owed and readyWorkerTask read it and the death's charge does
+	// (supervise's chargeDeath). The phase's task takes its place (supervise's queue).
 	status = http.StatusOK
-	if m.Claim().Pending == nil {
+	if held := m.Claim().Pending; held == nil || held.Relaunch() {
 		if phaseStatus, refusal, restarted := s.restartWorkedPhase(r, token, m.Claim(), false); restarted {
 			status = phaseStatus
 			if refusal != "" {

@@ -1233,12 +1233,12 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 //
 // The ready carries the sentence the claim's untold record of what its last let-go ended is told
 // in (supervise.RelaunchSentence, intake.ClaimReady.Relaunch), read from the claim the ready
-// wrote, so a root architect's catch-up opens with it (workflow's QueueCatchUp). A claim whose
-// fresh session has not yet told the session it abandoned (supervise.Claim.Abandoned) carries
-// none: that sentence takes precedence wherever the machine tells the record (supervise's
-// Delivery.message, queueRelaunch), and says that everything of the old session is gone, so the
-// catch-up does not describe to the fresh session a transcript it never had. The boot's replay of
-// a ready reads the stored claim, whose record is persisted, and carries what is still untold.
+// wrote, so a root architect's catch-up opens with it (workflow's QueueCatchUp). A fresh session
+// is not told the old session's record: the machine ends that record where it abandons the
+// session (supervise's forgetSession, where that rule is written), so a record that still tells
+// here, beside an abandoned session still to tell, is one of the fresh session's own processes,
+// and the catch-up opens with its sentence as it would for any claim. The boot's replay of a ready
+// reads the stored claim, whose record is persisted, and carries what is still untold.
 //
 // The failure carries what a notice of it says beside the sentence: the cause the site that
 // failed the claim chose, the claim's budgets as that failure left them, and the limits those
@@ -1253,7 +1253,7 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 	switch state {
 	case supervise.StateReady:
 		ready := intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
-		if c.EndedWork.Tells() && !c.Abandoned.Tells() {
+		if c.EndedWork.Tells() {
 			ready.Relaunch = supervise.RelaunchSentence(c.EndedWork)
 		}
 		fact = ready

@@ -264,13 +264,12 @@ func TestARelaunchSentenceReachesARootArchitectRelaunchedHoldingNothing(t *testi
 }
 
 // A root architect whose relaunch also lost its session — the resume found the session in no
-// store, so a fresh agent runs in its place (supervise's startFresh) — has two things to be told:
-// what the relaunch ended, and the session it abandoned. The abandoned session's sentence takes
-// precedence, as it does in every prompt the claim's machine sends (supervise's Delivery.message,
-// queueRelaunch): it says that everything of the old session is gone, and the fresh session has
-// no transcript of the work the relaunch's sentence describes. So the catch-up its ready queues
-// states the tree with no relaunch sentence in front of it, and the claim is given no delivery of
-// the daemon's own.
+// store, so a fresh agent runs in its place (supervise's startFresh) — is not told the old
+// session's record of what the relaunch ended: the forget of that session ends the record, told by
+// no delivery (supervise's forgetSession), since the abandoned session's sentence says that
+// everything of the old session is gone and the fresh session has no transcript of the work the
+// record describes. So the catch-up its ready queues states the tree with no relaunch sentence in
+// front of it, and the claim is given no delivery of the daemon's own.
 func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T) {
 	rig := newRootArchitectRig(t)
 	rig.report()
@@ -285,11 +284,18 @@ func TestARelaunchSentenceGivesWayToTheAbandonedSessionInTheCatchUp(t *testing.T
 		supervise.RequestReady{Claim: rig.token, Generation: generation, Session: "ses-fresh"})
 
 	c := rig.claim()
-	if !c.EndedWork.Tells() || !c.Abandoned.Tells() {
-		t.Fatalf("the relaunch left the record %+v and the abandoned session %+v, want both still to tell", c.EndedWork, c.Abandoned)
+	if c.EndedWork.Cause == "" || !c.EndedWork.Told || c.EndedWork.ToldBy != "" || !c.Abandoned.Tells() {
+		t.Fatalf("the relaunch left the record %+v and the abandoned session %+v, want the record ended by the forget, told by no delivery, and the abandoned session still to tell", c.EndedWork, c.Abandoned)
+	}
+	stored, err := rig.st.Claims(context.Background())
+	if err != nil {
+		t.Fatalf("read the claims: %v", err)
+	}
+	if ended := storedOf(t, stored, rig.token).EndedWork; !ended.Told || ended.ToldBy != "" {
+		t.Fatalf("the store holds the record %+v, want it ended by the forget, told by no delivery", ended)
 	}
 	if c.Pending != nil {
-		t.Fatalf("the fresh architect holds %+v, want no delivery of the daemon's own: the abandoned session's sentence waits for its first task", c.Pending)
+		t.Fatalf("the fresh architect holds %+v, want no delivery of the daemon's own: the old session's record is ended and the abandoned session's sentence waits for its first task", c.Pending)
 	}
 	reasons := catchUpReasons(t, rig.pool)
 	if len(reasons) != 1 {

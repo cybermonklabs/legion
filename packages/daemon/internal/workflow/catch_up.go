@@ -173,9 +173,18 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // one claim: the issue is this project's and in the workflow, its phase's role (RoleFor) is this
 // claim's, its tree does not linger, and its phase's own terminating fact has not arrived
 // (PhaseFinished) — a merged root stands in merging for as long as the rest of its tree runs, and
-// its merger must not be handed merging again at every launch. A claim that holds any task is left
+// its merger must not be handed merging again at every launch. A claim that holds a task is left
 // alone: it has work, and a second task would be a second prompt for work under way. So is a role
 // a queued row already covers (queuedRowCovers).
+//
+// The daemon's own delivery of a relaunch's record (supervise.Delivery.Relaunch) is no task: it
+// carries no run, phase or entry, only the sentence of what the relaunch ended, so a claim that
+// holds that alone is read as holding nothing, as owed reads it (awaiting_reconcile.go) and as the
+// death's charge does (supervise's chargeDeath). The phase's task that this queues takes that
+// delivery's place while no prompt of it waits on a result, or waits for its turn to end
+// (supervise's queue), and carries the sentence in front of itself while the record is untold.
+// A worker that came back holding only that delivery — its ready found it holding one from an
+// earlier launch its agent never read — would otherwise be given no phase task at all.
 //
 // What such a claim is sent is decided by the entry its role's phases row names
 // (record.PhaseRow.Entry), read here as admission reads it for the same decision (admit's
@@ -225,7 +234,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	if held := run.Claim; held == nil || held.Pending != nil {
+	// A claim holding only the daemon's own delivery of a relaunch's record holds no task (above).
+	if held := run.Claim; held == nil || (held.Pending != nil && !held.Pending.Relaunch()) {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
