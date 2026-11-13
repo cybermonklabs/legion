@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -71,7 +72,7 @@ func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
 	rig.awaitReported(token, "")
 	rig.awaitReleased(issue)
 
-	records := rig.storedReleaseRecords()
+	records := rig.awaitReleaseRecords(issue)
 	release := idleRigReleaseOf(t, records, issue)
 	streak := false
 	for _, hold := range records.Holds {
@@ -111,7 +112,7 @@ func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
 
 	rig.awaitReleased(issue)
 
-	records := rig.storedReleaseRecords()
+	records := rig.awaitReleaseRecords(issue)
 	release := idleRigReleaseOf(t, records, issue)
 	if len(release.Roles) != 1 || release.Roles[0] != string(issue.role) {
 		t.Errorf("the release of %s suspended %v, want its one role %s", issue.key, release.Roles, issue.role)
@@ -188,11 +189,16 @@ func (r *idleWakeRig) awaitReported(token claim.Token, kinds string) {
 	})
 }
 
-// storedReleaseRecords is every release, resume and hold of the rig's project as the store holds
-// them: the read behind the route releaseRecords posts to (store.Store.PodReleaseRecords). It is
-// read from the store and not through that route because the route authenticates by a live
-// claim, and every claim of a released pod is suspended.
-func (r *idleWakeRig) storedReleaseRecords() store.PodReleaseRecords {
+// awaitReleaseRecords is every release, resume and hold of the rig's project as the store holds
+// them, once they hold the release of issue's pod: the read behind the route releaseRecords posts
+// to (store.Store.PodReleaseRecords). It is read from the store and not through that route
+// because the route authenticates by a live claim, and every claim of a released pod is
+// suspended. The release writes its record only after the runtime has deleted the pod and its
+// Sandbox and its claims read suspended (the outbox's releaseIssue: SuspendIssue, then
+// recordPodRelease), which is what awaitReleased reads, so the record is waited for rather than
+// read once: a read at that moment can find no release yet. One store is opened for the whole
+// wait, not one a poll.
+func (r *idleWakeRig) awaitReleaseRecords(issue idleRigIssue) store.PodReleaseRecords {
 	r.t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(ctx, r.cfg.PostgresDSN)
@@ -200,10 +206,15 @@ func (r *idleWakeRig) storedReleaseRecords() store.PodReleaseRecords {
 		r.t.Fatalf("open the store to read the release records: %v", err)
 	}
 	defer st.Close()
-	records, err := st.PodReleaseRecords(ctx, r.project, time.Time{})
-	if err != nil {
-		r.t.Fatalf("read the release records: %v", err)
-	}
+	var records store.PodReleaseRecords
+	idleRigEventually(r.t, idleRigRecordWait, "the record of the release of "+issue.key+"'s pod", func() bool {
+		read, err := st.PodReleaseRecords(ctx, r.project, time.Time{})
+		if err != nil {
+			r.t.Fatalf("read the release records: %v", err)
+		}
+		records = read
+		return slices.ContainsFunc(read.Releases, func(release store.PodRelease) bool { return release.Issue == issue.key })
+	})
 	return records
 }
 
