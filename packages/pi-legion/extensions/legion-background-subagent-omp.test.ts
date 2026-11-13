@@ -7,9 +7,12 @@ import {
   type Block,
   type Cleanup,
   call,
+  deliveryFor,
   messageStream,
+  ompNatsGuard,
   ompRoot,
   type Request,
+  sendRelayFrame,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
@@ -29,22 +32,11 @@ import {
 // `async` or `bash` settings in the profile, so the pin's own `--mode rpc` defaults decide.
 // LEGION_TEST_OMP names the binary and LEGION_TEST_NATS_URL the NATS server, as in
 // controller-start-omp.test.ts. A run without both skips, except on GitHub Actions, where the
-// pi-legion job supplies both (GITHUB_ACTIONS, not CI: agent harnesses on the devbox export
-// CI=true). The message is published over the core NATS client protocol on a socket rather than
-// through the `nats` package: extensions/legion.test.ts and extensions/legion-role-claim.test.ts
-// replace `nats` for their whole process, and a socket keeps this case green in a run that loads
-// them.
-const omp = process.env.LEGION_TEST_OMP;
-const natsUrl = process.env.LEGION_TEST_NATS_URL;
-const onActions = process.env.GITHUB_ACTIONS === "true";
-const skip = (omp === undefined || natsUrl === undefined) && !onActions;
-
-/** The binary and NATS server the case runs against; throws on GitHub Actions without them. */
-function setup(): { readonly binary: string; readonly nats: string } {
-  if (omp === undefined) throw new Error("LEGION_TEST_OMP is unset on GitHub Actions");
-  if (natsUrl === undefined) throw new Error("LEGION_TEST_NATS_URL is unset on GitHub Actions");
-  return { binary: omp, nats: natsUrl };
-}
+// pi-legion job supplies both (`ompNatsGuard`). The message is published over the core NATS
+// client protocol on a socket rather than through the `nats` package: extensions/legion.test.ts
+// and extensions/legion-role-claim.test.ts replace `nats` for their whole process, and a socket
+// keeps this case green in a run that loads them.
+const { skip, setup } = ompNatsGuard();
 
 /** The pane's role, tree and issue; the daemon's state below moves the issue past this phase. */
 const ROLE = "implementer";
@@ -144,10 +136,11 @@ interface Held {
 
 /**
  * A role-lane message as the Envoy listener forwards it to the role holder's agent subject: the
- * envelope keeps the role topic, so the session would acknowledge it on the request's reply inbox
- * (`expectsLaneReceipt`, packages/envoy-client/src/delivery.ts). This one is published with no
- * reply inbox — nothing here reads the receipt, and the case's stamp is the publish — under a
- * dedupe key minted per label as pi-envoy's card-delivery-omp.test.ts builds it.
+ * envelope keeps the role topic. The listener forwards each role message once from one shared
+ * role-lane queue group, stored only, with no receipt
+ * (.dispatch/architecture/envoy-listener.md), so this one is published with no reply inbox and
+ * the case's stamp is the publish, under a dedupe key minted per label as pi-envoy's
+ * card-delivery-omp.test.ts builds it.
  */
 function forwardedRoleEnvelope(summary: string, label: string): string {
   const minted = createHash("sha256").update(label).digest("hex").slice(0, 32);
@@ -164,31 +157,71 @@ function forwardedRoleEnvelope(summary: string, label: string): string {
 }
 
 /**
- * A core NATS client on a socket: CONNECT, then one PUB per message, each followed by a PING the
- * server answers with PONG, so a publish that returns has reached the server. The `nats` package
- * is deliberately not imported (see the file header). The stamp returned is the moment the PUB
- * went out, which is the message's arrival: it is earlier than any receipt, so measuring the
- * role's next turn against it is the stronger of the two readings.
+ * A core NATS client on a socket, which relays one frame of the session's consumer as the
+ * listener does. The `nats` package is deliberately not imported (see the file header), so the
+ * socket is written here; what a relay frame is, and what counts as the session taking one, is
+ * not written here at all. This implements the one call `sendRelayFrame` needs of a connection
+ * (`RelayConnection`, packages/pi-shared/test/omp-harness.ts) - one request on a reply inbox of
+ * its own, answered with the session's own word - and that shared helper does the rest: the
+ * header block, the resend while the pane has not subscribed its deliver subject yet, the
+ * deadline, and the refusal by name of a `nak` or any other word that is no take. A rig that
+ * read the arrival of any reply as a take would read a closed session's refusal as one.
+ *
+ * A session takes its messages from that relay alone now (INFRA-771), so nothing reaches it on
+ * its agent subject. The stamp returned is the moment the answered send went out, which is the
+ * message's arrival: it is earlier than the session's own reply, so measuring the role's next
+ * turn against it is the stronger of the two readings.
  */
-async function natsPublisher(
-  url: string
-): Promise<(subject: string, payload: string) => Promise<Moment>> {
+async function natsRelay(
+  url: string,
+  /** The pane's own ending: its error fails a send at once, rather than at the bound. */
+  stopped: { readonly error?: unknown }
+): Promise<(sessionID: string, payload: string, seq: number) => Promise<Moment>> {
   const address = new URL(url);
-  const pongs: (() => void)[] = [];
-  let buffered = "";
+  const inbox = `_INBOX.bgsub.${randomUUID()}`;
+  // One waiter per request, under the inbox subject that request named: the socket hands it the
+  // first answer on that subject and forgets it.
+  const waiting = new Map<string, (answer: { word: string; noResponders: boolean }) => void>();
+  let requests = 0;
+  let buffered = Buffer.alloc(0);
   const socket = await Bun.connect({
     hostname: address.hostname,
     port: Number(address.port),
     socket: {
-      data(connection, chunk) {
-        buffered += chunk.toString();
-        for (let end = buffered.indexOf("\r\n"); end !== -1; end = buffered.indexOf("\r\n")) {
-          const line = buffered.slice(0, end);
-          buffered = buffered.slice(end + 2);
-          // INFO and the rest of the server's protocol are of no interest here: this client only
-          // publishes, so it subscribes to nothing and reads no MSG.
-          if (line.startsWith("PING")) connection.write("PONG\r\n");
-          if (line.startsWith("PONG")) pongs.shift()?.();
+      data(nats, chunk) {
+        buffered = Buffer.concat([buffered, chunk]);
+        for (;;) {
+          const end = buffered.indexOf("\r\n");
+          if (end === -1) return;
+          const line = buffered.subarray(0, end).toString();
+          // A MSG's payload follows its line and can hold anything, so its byte count — the
+          // line's last field — is what says where the next line starts.
+          if (line.startsWith("MSG ") || line.startsWith("HMSG ")) {
+            // MSG <subject> <sid> [reply] <bytes>, and HMSG the same with <header bytes> before
+            // <bytes>: the last field says where the next line starts, and for an HMSG the one
+            // before it says how much of that is the header block.
+            const fields = line.split(" ");
+            const bytes = Number(fields[fields.length - 1]);
+            if (buffered.length < end + 2 + bytes + 2) return;
+            const read = buffered.subarray(end + 2, end + 2 + bytes).toString();
+            buffered = buffered.subarray(end + 2 + bytes + 2);
+            const headerBytes = line.startsWith("HMSG ") ? Number(fields[fields.length - 2]) : 0;
+            const subject = fields[1] ?? "";
+            const answer = waiting.get(subject);
+            if (answer !== undefined) {
+              waiting.delete(subject);
+              // The server answers a request nobody is subscribed for itself, with a header
+              // block carrying 503 and no body at all (`no_responders` in the CONNECT below).
+              // A session's own answer is its word, with no header block.
+              answer({
+                word: read.slice(headerBytes),
+                noResponders: read.slice(0, headerBytes).includes(" 503"),
+              });
+            }
+            continue;
+          }
+          buffered = buffered.subarray(end + 2);
+          if (line.startsWith("PING")) nats.write("PONG\r\n");
         }
       },
     },
@@ -196,15 +229,83 @@ async function natsPublisher(
   cleanup.push(async () => {
     socket.end();
   });
-  socket.write('CONNECT {"verbose":false,"pedantic":false,"protocol":1}\r\n');
-  return async (subject, payload) => {
-    const bytes = Buffer.byteLength(payload);
-    const published = moment();
-    socket.write(`PUB ${subject} ${bytes}\r\n${payload}\r\nPING\r\n`);
-    const flushed = Promise.withResolvers<void>();
-    pongs.push(flushed.resolve);
-    await flushed.promise;
-    return published;
+  // `no_responders` is what makes a frame sent before the session subscribed fail at once
+  // rather than at the request's own timeout, so the helper sends it again straight away.
+  socket.write(
+    'CONNECT {"verbose":false,"pedantic":false,"protocol":1,"headers":true,"no_responders":true}\r\n'
+  );
+  socket.write(`SUB ${inbox}.* 1\r\n`);
+
+  /** The header set `sendRelayFrame` fills, which this writes out as the wire block it sends. */
+  interface FrameHeaders {
+    set(name: string, value: string): void;
+    /** The header block as the wire carries it, its trailing blank line included. */
+    block(): string;
+  }
+  const newHeaders = (): FrameHeaders => {
+    const held: string[] = [];
+    return {
+      set(name: string, value: string): void {
+        held.push(`${name}: ${value}\r\n`);
+      },
+      block(): string {
+        return `NATS/1.0\r\n${held.join("")}\r\n`;
+      },
+    };
+  };
+  // One connection view per send, each writing the moment of its own requests into that send's
+  // own variable: nothing is shared between sends, so two running at once would still each read
+  // the send the session answered.
+  const connectionStamping = (stamp: (at: Moment) => void) => ({
+    request(
+      subject: string,
+      payload: Uint8Array,
+      options: { readonly timeout: number; readonly headers: FrameHeaders }
+    ): Promise<{ readonly data: Uint8Array }> {
+      requests += 1;
+      const reply = `${inbox}.${requests}`;
+      const headers = options.headers.block();
+      const headerBytes = Buffer.byteLength(headers);
+      const total = headerBytes + payload.byteLength;
+      const answered = Promise.withResolvers<{ readonly data: Uint8Array }>();
+      // The one real timer here: the server says nothing at all about a send no session has
+      // subscribed for, so only this bound tells the helper to send the frame again.
+      const timer = setTimeout(() => {
+        waiting.delete(reply);
+        answered.reject(new Error(`no answer on ${reply} within ${options.timeout} ms`));
+      }, options.timeout);
+      waiting.set(reply, ({ word, noResponders }) => {
+        clearTimeout(timer);
+        if (noResponders) {
+          answered.reject(new Error(`no responder on ${subject}`));
+          return;
+        }
+        answered.resolve({ data: new TextEncoder().encode(word) });
+      });
+      stamp(moment());
+      socket.write(
+        `HPUB ${subject} ${reply} ${headerBytes} ${total}\r\n${headers}${Buffer.from(payload).toString()}\r\n`
+      );
+      return answered.promise;
+    },
+  });
+  return async (sessionID, payload, seq) => {
+    // The moment of the send the session answered: the helper resends until one is answered, and
+    // each request of this send writes its own moment here as it goes out.
+    let sent = moment();
+    await sendRelayFrame({
+      connection: connectionStamping((at) => {
+        sent = at;
+      }),
+      newHeaders,
+      sessionID,
+      subject: `notifications.agent.${sessionID}`,
+      payload: new TextEncoder().encode(payload),
+      seq,
+      withinMs: DEADLINE_MS,
+      stopped,
+    });
+    return sent;
   };
 }
 
@@ -228,13 +329,13 @@ async function until<T>(
 interface RolePane {
   /** Every Messages request the stand-in holds, in arrival order. */
   readonly held: readonly Held[];
-  /** The session id the pane registered with the listener, whose agent subject carries messages. */
+  /** The session id the pane registered with the listener, whose consumer the relay frames feed. */
   readonly sessionId: string;
   /** When the host printed its first `agent_end` frame, once it has. */
   firstAgentEnd(): Moment | undefined;
   /** Waits for a held Messages request `match` accepts that the case has not taken yet. */
   next(what: string, match: (request: Request) => boolean): Promise<Held>;
-  /** Publishes `payload` on the pane's agent subject, returning the publish's stamp. */
+  /** Relays `payload` to the pane as its consumer's frame, returning the frame's stamp. */
   publish(payload: string): Promise<Moment>;
   /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
   until<T>(what: string, probe: () => T | undefined): Promise<T>;
@@ -319,7 +420,9 @@ async function startRolePane(): Promise<RolePane> {
     }
     // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
     // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
-    // does not serve, and it is refused.
+    // does not serve, and it is refused. A registration is answered a consumer on the session's
+    // own relay subject, the one path a message reaches a session by (INFRA-771); an answer
+    // without one leaves the pane deaf and its claim boot fails.
     if (!url.pathname.startsWith("/v1/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
@@ -328,6 +431,7 @@ async function startRolePane(): Promise<RolePane> {
       machine_id: "bgsub-machine",
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, "ses_bgsub"),
     });
   });
   // A request still held when the case ends is answered, so the stand-in stops at once.
@@ -392,7 +496,9 @@ async function startRolePane(): Promise<RolePane> {
     },
     closed
   );
-  const publish = await natsPublisher(nats);
+  const relay = await natsRelay(nats, closed);
+  // The stand-in stream's sequence: one case is one stream, so its frames are ordered by this.
+  let seq = 1;
 
   const taken = new Set<Held>();
   return {
@@ -408,7 +514,7 @@ async function startRolePane(): Promise<RolePane> {
       taken.add(request);
       return request;
     },
-    publish: (payload) => publish(`notifications.agent.${sessionId}`, payload),
+    publish: (payload) => relay(sessionId, payload, seq++),
     until: (what, probe) => until(what, probe, closed),
   };
 }

@@ -1212,6 +1212,13 @@ const eventsByType: Record<EventType, DispatchEvent> = {
     ask_id: "ask-1",
   }),
   "artifact.created": event("artifact.created", { artifact: { id: "artifact-3" } }),
+  "artifact.renamed": event("artifact.renamed", {
+    artifact: { id: "artifact-3", name: "Launch notes" },
+    previous_name: "Lanuch notes",
+  }),
+  "artifact.removed": event("artifact.removed", {
+    artifact: { id: "artifact-3", name: "Launch notes" },
+  }),
   "artifact.version": event("artifact.version", { artifact_id: "artifact-3" }),
   "artifact.human_edited": event("artifact.human_edited", {
     artifact_id: "artifact-3",

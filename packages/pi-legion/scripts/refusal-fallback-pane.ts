@@ -4,8 +4,8 @@
 // run at the same time, since each needs the whole twelve minutes and a pod holds three `omp --mode
 // rpc` children at once; every line a pane prints names the pane, so the three read apart.
 //
-//   LEGION_OMP_PATH=<omp> bun packages/pi-legion/scripts/refusal-fallback-pane.ts \
-//     <cooldown-ms> <drive-ms> <evidence-dir>
+//   LEGION_OMP_PATH=<omp> REFUSAL_FALLBACK_NATS_URL=<nats://host:port> \
+//     bun packages/pi-legion/scripts/refusal-fallback-pane.ts <cooldown-ms> <drive-ms> <evidence-dir>
 //
 // The entry script owns the three numbers: the plugin's cooldown (LEGION_REFUSAL_COOLDOWN_MS), how
 // long each pane keeps asking, and where the transcripts are kept. They are arguments rather than
@@ -44,18 +44,23 @@ import {
 } from "@legion/pi-shared/fallback-cooldown";
 import {
   type Cleanup,
+  deliveryFor,
   ompRoot,
-  refusingNats,
   serveStandin,
   spawnRpc,
 } from "@legion/pi-shared/test/omp-harness";
 
 const [cooldownArg, driveArg, evidence] = process.argv.slice(2);
 const binary = process.env.LEGION_OMP_PATH ?? "";
+/** The JetStream server every pane's Envoy extension connects to, which the entry script starts
+ * and names: a session a listener can give no consumer receives nothing and its claim boot ends
+ * it, so a pane with no reachable NATS never reaches the turns this proof measures. */
+const natsUrl = process.env.REFUSAL_FALLBACK_NATS_URL ?? "";
 const cooldownMs = Number(cooldownArg);
 const driveMs = Number(driveArg);
 if (
   binary === "" ||
+  natsUrl === "" ||
   evidence === undefined ||
   evidence === "" ||
   !Number.isInteger(cooldownMs) ||
@@ -64,7 +69,7 @@ if (
   driveMs <= 0
 ) {
   process.stderr.write(
-    "usage: LEGION_OMP_PATH=<omp> bun packages/pi-legion/scripts/refusal-fallback-pane.ts <cooldown-ms> <drive-ms> <evidence-dir>\n"
+    "usage: LEGION_OMP_PATH=<omp> REFUSAL_FALLBACK_NATS_URL=<nats://host:port> bun packages/pi-legion/scripts/refusal-fallback-pane.ts <cooldown-ms> <drive-ms> <evidence-dir>\n"
   );
   process.exit(2);
 }
@@ -503,7 +508,9 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
     }
     // The Envoy listener, which serves `/v1/` and nothing else: registration, the role claim, and
     // any other `/v1/` read answer with an interest. A path outside it is a route this stand-in
-    // does not serve, and it is refused.
+    // does not serve, and it is refused. A registration is answered the session's own consumer
+    // (deliveryFor): a session given none receives nothing and its claim boot ends it, so a pane
+    // with no consumer would never reach the turns this proof measures.
     if (!url.pathname.startsWith("/v1/")) {
       return Response.json({ error: `no stand-in route ${url.pathname}` }, { status: 404 });
     }
@@ -512,6 +519,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
       machine_id: `${run.label}-machine`,
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, run.key),
     });
   });
   await writeProfile(home, base);
@@ -527,7 +535,7 @@ async function runPane(run: Run, pane: Pane, cleanup: Cleanup): Promise<void> {
       sessions,
       env: {
         ENVOY_URL: base,
-        ENVOY_NATS_URL: refusingNats(cleanup),
+        ENVOY_NATS_URL: natsUrl,
         LEGION_DAEMON_URL: base,
         LEGION_ROLE: "architect",
         LEGION_TREE: run.key,
