@@ -114,8 +114,8 @@ export function ProjectPage(): ReactNode {
   if (route.kind === "project") {
     // The open-on rule: a project with an architecture source opens on its Architecture; one
     // without (the list is empty) opens on Issues, the filter parameters forwarded. A failed
-    // read is shown, never quietly turned into Issues. `replace` keeps Back sane; sidebar links
-    // stay on the bare path.
+    // read is shown, never quietly turned into Issues. `AddressRedirect` replaces the entry, so
+    // Back leaves for the page before; sidebar links stay on the bare path.
     if (sources.isPending) {
       return null;
     }

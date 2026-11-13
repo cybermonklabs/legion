@@ -44,8 +44,9 @@ import {
  *   a reader who picks four facets and then presses Back expects to leave the page, not to walk
  *   back through four picks, and a reader typing in a search box would otherwise push one entry
  *   per letter. Every write below passes `{ replace: true }`. The one way to push an entry is
- *   `useAddressNavigate`'s explicit `{ replace: false }`, for a move the reader means to walk
- *   back out of - picking an artifact's version, which has always pushed.
+ *   `useAddressNavigate`'s explicit `{ replace: false }`, for a move that has always pushed:
+ *   picking an artifact's version, so Back returns to the version the reader came from, and the
+ *   move off a document the reader has just removed.
  * - **A parameter is absent until the reader sets it.** A control at its default writes nothing,
  *   so a shared link carries only what was changed and an address that arrives naming nothing is
  *   the page as it opens.
@@ -130,10 +131,10 @@ export interface AddressRedirectProps {
 /**
  * Leaving this address for another as the page renders, rather than from a handler: the bare
  * project path opening on its Architecture or its Issues, a document address rewritten with the
- * whole id a short one stood for. Like every other write here it replaces the history entry, so
- * Back leaves for the page the reader came from instead of returning to an address that only
- * sends them on again. It is React Router's `<Navigate>`, which no page of the six features
- * draws for itself.
+ * whole id a short one stood for. Like every write here that does not ask to push, it replaces
+ * the history entry, so Back leaves for the page the reader came from instead of returning to an
+ * address that only sends them on again. It is React Router's `<Navigate>`, which no page of the
+ * six features draws for itself.
  */
 export function AddressRedirect({ keepQuery = false, to }: AddressRedirectProps): ReactElement {
   const { search } = usePageAddress();
@@ -344,8 +345,8 @@ export function useAddressParam<T>(
 const CAPPED_TEXT = cappedTextParam();
 
 /** A free-text `?<name>=` parameter, cut at `SEARCH_QUERY_MAX` on the way in
- *  (`cappedTextParam`): the project page's `?q=`, the Agents page's `?q=` and `?machine=`, and
- *  the machine page's `?window=` all go through this one hook. */
+ *  (`cappedTextParam`): the Artifacts tab's `?q=` and the machine page's `?window=` go through
+ *  this hook; a page with more than one parameter reads them through `useAddressFields`. */
 export function useCappedAddressParam(name: string): readonly [string, (next: string) => void] {
   return useAddressParam(name, CAPPED_TEXT);
 }

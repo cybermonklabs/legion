@@ -235,7 +235,8 @@ export function ArtifactHeader({
                       // The route stays on the document the issue no longer holds, so the
                       // artifacts panel's own branch says it is gone rather than failing to
                       // load. A version route is normalised away first: the version the person
-                      // was reading went with the document.
+                      // was reading went with the document. Pushed, as this move always was, so
+                      // Back returns to the address the reader removed the document from.
                       navigate(
                         buildIssuePath({ key: issueKey, kind: "artifact", slug: artifact.slug }),
                         { replace: false }

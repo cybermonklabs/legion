@@ -22,7 +22,7 @@ import { stripComments } from "../__tests__/strip-comments";
 
 const FEATURES_ROOT = join(import.meta.dir, "..", "features");
 
-/** What the six marks are, in the words the failure uses. */
+/** One mark: what it matches, and what the failure says. */
 interface Mark {
   /** What was found, and what to draw instead. */
   readonly what: string;
