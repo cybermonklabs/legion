@@ -69,8 +69,8 @@ export function uploadErrorMessage(error: unknown): string {
   return "Could not upload the artifact.";
 }
 
-/** Refreshes the lists an upload to `owner` adds a row to. */
-function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
+/** Refreshes the lists a write to `owner` adds a row to: an upload's, and a new document's. */
+export function refreshOwnerArtifacts(queryClient: QueryClient, owner: ArtifactOwner): void {
   if ("issue" in owner) {
     void queryClient.invalidateQueries({ queryKey: ["artifacts", owner.issue] });
     void queryClient.invalidateQueries({ queryKey: ["issue", owner.issue] });
@@ -349,8 +349,18 @@ export function useArtifactUpload(
   };
 }
 
-export function ArtifactUploadRow({ upload }: { upload: ArtifactUpload }): ReactNode {
-  const refusalId = useId();
+/** The upload control of a strip: its button, and, while a file is staged, that file's name, its
+ *  summary and the two presses that store or discard it. `refusalShownBy` is the id of a line the
+ *  host already shows the refusal on - the one line a closed issue's strip shows for every control
+ *  in it; without it the row shows its own. */
+export function ArtifactUploadRow({
+  refusalShownBy,
+  upload,
+}: {
+  readonly refusalShownBy?: string;
+  readonly upload: ArtifactUpload;
+}): ReactNode {
+  const ownRefusalId = useId();
   return (
     // The host owns the strip this sits in, so the row carries no divider of its own: idle it
     // is one button beside the filter, staging a file it takes the line.
@@ -364,12 +374,12 @@ export function ArtifactUploadRow({ upload }: { upload: ArtifactUpload }): React
             look="secondary-compact"
             onPress={upload.openPicker}
             refusal={upload.refusal}
-            refusalShownBy={upload.refusal === null ? undefined : refusalId}
+            refusalShownBy={upload.refusal === null ? undefined : (refusalShownBy ?? ownRefusalId)}
           >
             Upload
           </RefusableButton>
-          {upload.refusal === null ? null : (
-            <span className={`text-xs ${textMutedOnSurface}`} id={refusalId}>
+          {upload.refusal === null || refusalShownBy !== undefined ? null : (
+            <span className={`text-xs ${textMutedOnSurface}`} id={ownRefusalId}>
               {upload.refusal}
             </span>
           )}

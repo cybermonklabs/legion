@@ -9,6 +9,7 @@ import {
 } from "../api/client";
 import type {
   AnswerAskInput,
+  Artifact,
   Ask,
   AskSnooze,
   Comment,
@@ -325,6 +326,20 @@ export const answerArtifactComments = () =>
   answerRoute<(id: string, input: CreateCommentInput, bounds: WriteBounds) => Promise<Comment>>(
     "POST",
     "/api/v1/artifacts/*/comments"
+  );
+
+/** `PATCH /api/v1/artifacts/{id}` (`artifactRenameRequest`): a document's title corrected. */
+export const answerArtifactRenames = () =>
+  answerRoute<(id: string, input: { name: string }, bounds: WriteBounds) => Promise<Artifact>>(
+    "PATCH",
+    "/api/v1/artifacts/*"
+  );
+
+/** `DELETE /api/v1/artifacts/{id}` (`artifactDeleteRequest`): a document removed. */
+export const answerArtifactRemovals = () =>
+  answerRoute<(id: string, body: undefined, bounds: WriteBounds) => Promise<unknown>>(
+    "DELETE",
+    "/api/v1/artifacts/*"
   );
 
 /** One comment action: `POST /api/v1/comments/{id}/<kind>` (`commentResolveRequest` and its

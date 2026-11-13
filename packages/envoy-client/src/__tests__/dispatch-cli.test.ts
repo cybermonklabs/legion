@@ -816,8 +816,9 @@ describe("the dispatch CLI", () => {
     expect(requests).toEqual([]);
   });
 
-  // --content and --content-file store their text as a Markdown document, so under a .jsonl name
-  // the call is refused before any request, dry run included, naming --path.
+  // --content and --content-file store their text as a Markdown document, and a create with
+  // neither makes an empty one, so under a .jsonl name the call is refused before any request,
+  // dry run included, naming --path.
   test("artifact refuses --content-file under a name that is not Markdown, naming --path", async () => {
     const argv = ["artifact", "--issue", "DSP-1", "--name", "rows.jsonl", "--content-file", "-"];
     for (const call of [[...argv, "--dry-run"], argv]) {
@@ -825,7 +826,7 @@ describe("the dispatch CLI", () => {
       expect(code, call.join(" ")).toBe(2);
       expect(stdout.split("\n").slice(0, 2)).toEqual([
         "dispatch artifact was not called: 1 problem",
-        `- content is stored as a Markdown document, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; content takes a name ending in .md or .markdown or with no extension.`,
+        `- a document holds Markdown, which rewrites other text (a JSONL file's lines come back joined into one paragraph), and "rows.jsonl" is not a Markdown name. Upload the file under the same name with path (--path <file>), which stores a file whose path does not end in .md or .markdown as its bytes, unchanged; a document takes a name ending in .md or .markdown or with no extension.`,
       ]);
     }
     expect(requests).toEqual([]);

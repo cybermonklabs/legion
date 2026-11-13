@@ -11,7 +11,7 @@ import { shippedSources } from "../../__tests__/source-scan";
  * `comment:<id>`) rather than ordering its own presses. So this file reads those three modules
  * and names any queue of their own in one - a pending slot, a chained snapshot, a drain of
  * pending submits, a per-row action map, a press held in hand - and it reads every
- * `useSubmitGuard` the app ships and holds that set to the fourteen controls that refuse a
+ * `useSubmitGuard` the app ships and holds that set to the sixteen controls that refuse a
  * second press of their own control, which is a refusal and not an order.
  *
  * Three mechanisms order writes of different rows, which no line of one row can, and the rows
@@ -81,14 +81,17 @@ test("each engine names the line of the row it writes", () => {
 });
 
 // A guard that refuses a second press of its own control while its write is out is a refusal and
-// not an order, so these fourteen stay as they are.
-test("the fourteen controls that refuse a second press of their own keep their guard", () => {
+// not an order, so these sixteen stay as they are. One module holds two of them:
+// `DocumentWayBack.tsx`'s title correction and its removal each guard their own press.
+test("the sixteen controls that refuse a second press of their own keep their guard", () => {
   const guarded = shippedSources().filter(
     (path) => path !== "hooks/useSubmitGuard.ts" && sourceOf(path).includes("useSubmitGuard()")
   );
   expect(guarded).toEqual([
     "features/agents/BroadcastSends.tsx",
     "features/artifacts/ArtifactUpload.tsx",
+    "features/artifacts/CreateDocument.tsx",
+    "features/artifacts/DocumentWayBack.tsx",
     "features/conversation/ConversationTab.tsx",
     "features/credentials/MachineLoginPage.tsx",
     "features/credentials/RevocableList.tsx",
@@ -98,7 +101,6 @@ test("the fourteen controls that refuse a second press of their own keep their g
     "features/inbox/useAskAnswerForm.ts",
     "features/issue/CreateIssueDialog.tsx",
     "features/issue/IssueHeader.tsx",
-    "features/project/DocumentList.tsx",
     "features/settings/ArchitectureSourcesSection.tsx",
     "features/settings/ProjectsSection.tsx",
   ]);

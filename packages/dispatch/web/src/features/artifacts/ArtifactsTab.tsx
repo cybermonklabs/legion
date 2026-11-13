@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { type ReactNode, useMemo, useState } from "react";
+import { type ReactNode, useId, useMemo, useState } from "react";
 import { Link, useLocation } from "react-router-dom";
 
 import { api } from "../../api/client";
@@ -30,12 +30,9 @@ import {
 } from "../refs/routes";
 import { Timestamp } from "../refs/Timestamp";
 import { artifactVersionUrl, formatArtifactBytes, versionsNewestFirst } from "./ArtifactHeader";
-import {
-  ArtifactDropZone,
-  ArtifactUploadRow,
-  CLOSED_ISSUE_UPLOAD_REFUSAL,
-  useArtifactUpload,
-} from "./ArtifactUpload";
+import { ArtifactDropZone, ArtifactUploadRow, useArtifactUpload } from "./ArtifactUpload";
+import { CLOSED_ISSUE_DOCUMENT_REFUSAL, CreateDocument } from "./CreateDocument";
+import { CLOSED_ISSUE_REMOVE_REFUSAL, RemoveDocument, removalIsOffered } from "./DocumentWayBack";
 
 function kindIcon(kind: Artifact["kind"]): ReactNode {
   const common = {
@@ -155,10 +152,12 @@ function References({ references }: { references: IssueReferences }): ReactNode 
 function ArtifactRow({
   artifact,
   highlighted,
+  isClosed,
   issueKey,
 }: {
   artifact: Artifact;
   highlighted: boolean;
+  isClosed: boolean;
   issueKey: string;
 }): ReactNode {
   const versions = versionsNewestFirst(artifact.versions);
@@ -220,21 +219,33 @@ function ArtifactRow({
           Download version {latestVersion.number}
         </a>
       )}
+      {/* A removal is offered only where the server can take one: a document of this issue that
+          is neither its spec nor a document that plays a role, since those are refused whatever
+          state they are in (`removalIsOffered`). Every other refusal is the server's, shown on
+          the row. */}
+      {removalIsOffered(artifact) ? (
+        <RemoveDocument
+          artifact={artifact}
+          refusal={isClosed ? CLOSED_ISSUE_REMOVE_REFUSAL : null}
+        />
+      ) : null}
     </li>
   );
 }
 
-/** The issue's artifacts, with an upload that a closed issue refuses before a file is picked. */
+/** The issue's artifacts: a control that makes a document, an upload that a closed issue refuses
+ *  before a file is picked, and every artifact the issue holds. */
 export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): ReactNode {
   const { pathname } = useLocation();
   const route = parseIssuePath(pathname);
   const issueKey = route?.key;
   const highlightedSlug = route?.kind === "artifact" ? route.slug : undefined;
   const [filter, setFilter] = useState("");
-  const upload = useArtifactUpload(
-    { issue: issueKey ?? "" },
-    { refusal: isClosed ? CLOSED_ISSUE_UPLOAD_REFUSAL : null }
-  );
+  // One sentence covers every control of the strip: a closed issue takes neither a new document
+  // nor an upload, and both controls are described by this line.
+  const closedRefusalId = useId();
+  const closedRefusal = isClosed ? CLOSED_ISSUE_DOCUMENT_REFUSAL : null;
+  const upload = useArtifactUpload({ issue: issueKey ?? "" }, { refusal: closedRefusal });
   const artifacts = useQuery({
     enabled: issueKey !== undefined,
     queryKey: ["artifacts", issueKey],
@@ -304,7 +315,18 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
             value={filter}
           />
         </label>
-        <ArtifactUploadRow upload={upload} />
+        <CreateDocument
+          documents={orderedArtifacts}
+          owner={{ issue: issueKey }}
+          refusal={closedRefusal}
+          refusalShownBy={closedRefusalId}
+        />
+        <ArtifactUploadRow refusalShownBy={closedRefusalId} upload={upload} />
+        {closedRefusal === null ? null : (
+          <span className={`text-xs ${textMutedOnSurface}`} id={closedRefusalId}>
+            {closedRefusal}
+          </span>
+        )}
       </div>
       {references.data === undefined ? null : <References references={references.data} />}
       <ArtifactDropZone upload={upload}>
@@ -320,6 +342,7 @@ export function ArtifactsTab({ isClosed }: { readonly isClosed: boolean }): Reac
               <ArtifactRow
                 artifact={artifact}
                 highlighted={artifact.slug === highlightedSlug}
+                isClosed={isClosed}
                 issueKey={issueKey}
                 key={artifact.id}
               />

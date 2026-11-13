@@ -209,7 +209,8 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   checks). A line is `<row type>:<row id>` - `issue:<KEY>`, `pin:<KEY>` (the header's pin and the
   Conversation's and Activity tab's, one row on one line), `comment:<id>` (its actions and the
   composer's edit send), `ask:<id>` (its answer, its decline, its clarification, its snooze and
-  the write that gives it to another person), `document:<id>` (the decisions writes),
+  the write that gives it to another person), `document:<id>` (the decisions writes, a
+  document's title correction and its removal),
   `project:<KEY>` for a write that adds a row to a project (the issue create),
   `agent-token:<id>` and `agent-tokens:me`, `repo-mapping:<repo>`,
   `architecture-source:<project>/<repo>` (`sourceLine`), `settings:delivery` - or, for a read
@@ -224,7 +225,7 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   waiting per comment), each with a submit guard over it - press every pick, draft save and
   comment action as its own write of the row's line and let the line order them, and
   `features/writes/no-outside-queues.test.ts` reads those three modules for anything of that
-  kind and holds the `useSubmitGuard` call sites to the fourteen controls that keep one: each
+  kind and holds the `useSubmitGuard` call sites to the sixteen controls that keep one: each
   refuses a second press of its own control while its write is out, which is a refusal and not
   an order. Three mechanisms that order writes of *different* rows stay with it: the issues
   table's bounded fan-out across rows, the board's mutation scope (`board:<project>`, so a
@@ -233,19 +234,20 @@ dependency in its body. For the image-pin comparison and `/healthz` deployment e
   keeps two behaviours of the queue it replaces, both read from the store's own rows: one on
   another comment waits for the one in flight, and a refusal clears the actions still waiting,
   which leave the store unsent and show nothing.
-  A write on a line is made from its request alone, so each has a builder beside its client
-  method (`api/client.ts`, `api/write-requests.test.ts`), and a reload makes it again - under its
+  A write on a line is made from its request alone, so each has a builder of its own
+  (`api/client.ts`, `api/write-requests.test.ts`), and a reload makes it again - under its
   key for a `POST` or a `PATCH`, and as the state it names for a `PUT`, as the pin is - with two
   exceptions, each kept for its order while the page lives and dropped rather than sent again
   (`droppedOnReload`). A `DELETE` on a line, whichever one it is (the claim release, the session
-  unsubscribe, the ask un-snooze, the agent-token revoke, the repository-mapping removal, the
-  architecture-source removal): such a route carries no idempotency key (`goesUnderKey`), so a
-  repeat could undo what another person did in between. And a write whose answer carries
-  something shown once and never again, which says so where it is made, with its reason in its
-  own value (`WriteSpec.answerShownOnce`, kept as `KeptWrite.answerShownOnce`) - today the
-  agent-token mint (`AgentTokensSection.tsx`): a repeat of a mint that never reached Dispatch
-  would make a token with no press left to take its answer, so its one-time secret would be
-  shown on no page and the person would hold a live token they must find and revoke.
+  unsubscribe, the ask un-snooze, the document removal, the agent-token revoke, the
+  repository-mapping removal, the architecture-source removal): such a route carries no
+  idempotency key (`goesUnderKey`), so a repeat could undo what another person did in between.
+  And a write whose answer carries something shown once and never again, which says so where it
+  is made, with its reason in its own value (`WriteSpec.answerShownOnce`, kept as
+  `KeptWrite.answerShownOnce`) - today the agent-token mint (`AgentTokensSection.tsx`): a repeat
+  of a mint that never reached Dispatch would make a token with no press left to take its
+  answer, so its one-time secret would be shown on no page and the person would hold a live
+  token they must find and revoke.
 - `POST /auth/logout` is the one page `POST` outside that content-write path: it carries no
   `Idempotency-Key`, because ending the current session cannot create content twice. `PUT` and
   `DELETE` use the store but carry no key, because repeating either applies the same change.

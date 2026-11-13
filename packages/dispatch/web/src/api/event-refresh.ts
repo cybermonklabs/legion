@@ -475,8 +475,9 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
 }
 
 /**
- * Every event whose server path rewrites the issue's own reference edges: a document version or
- * upload, an ask's creation or edit (a settled ask block among them), a comment or message body -
+ * Every event whose server path rewrites the issue's own reference edges: a document version,
+ * upload or title correction, which moves the title every reference to the document shows; an
+ * ask's creation or edit (a settled ask block among them), a comment or message body -
  * an answer's reply body is indexed like any other - an anchor refresh, a follower change, a child
  * link, and an issue write that moved a structural edge (its parent, its blockers, its components)
  * or the title every one of them shows as its excerpt.
@@ -484,6 +485,7 @@ function issueChanges(event: DispatchEvent): ReadonlySet<string> | undefined {
 function changesReferenceGraph(event: DispatchEvent): boolean {
   switch (event.type) {
     case "artifact.created":
+    case "artifact.renamed":
     case "artifact.version":
     case "ask.anchor_refreshed":
     case "ask.edited":
@@ -702,9 +704,14 @@ function documentTargets(event: DispatchEvent, viewer: string | undefined): Refr
   if (changesQuestionMaps(event)) {
     targets.push(EVERY_QUESTION_MAP);
   }
-  // A reference to the document shows its name, kind and latest version. A new document can be
-  // the one a reference that found nothing named (no data to test), so it refreshes those too.
-  if (event.type === "artifact.version" || event.type === "artifact.created") {
+  // A reference to the document shows its name, kind and latest version. A correction moves the
+  // name it shows. A new document can be the one a reference that found nothing named (no data
+  // to test), so it refreshes those too.
+  if (
+    event.type === "artifact.version" ||
+    event.type === "artifact.created" ||
+    event.type === "artifact.renamed"
+  ) {
     const created = event.type === "artifact.created";
     targets.push({
       queryKey: ["doc-summary", event.project],
@@ -921,6 +928,19 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       // An uploaded document is an `attached_to` edge into its issue.
       targets.push(referencePanel(issueReference));
     }
+    return targets;
+  }
+  if (event.type === "artifact.renamed" || event.type === "artifact.removed") {
+    // A correction moves the title the issue's document list, the document's own read and every
+    // reference to it show; a removal takes the row out of them. Both name the document itself,
+    // and both move the `attached_to` edge the issue's backlink panel lists. Neither touches a
+    // version, so the coverage and the results stand.
+    targets.push(
+      { queryKey: ["artifacts", key] },
+      { queryKey: ["artifact", event.payload.artifact.id] },
+      issueSummaryOf(key, event),
+      referencePanel(issueReference)
+    );
     return targets;
   }
   if (event.type === "artifact.approved" || event.type === "artifact.changes_requested") {

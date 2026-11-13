@@ -8,6 +8,8 @@ import {
   architectureSourceRequest,
   architectureSourceSyncRequest,
   artifactCommentRequest,
+  artifactDeleteRequest,
+  artifactRenameRequest,
   askAnswerRequest,
   askDeclineRequest,
   askHandOnRequest,
@@ -51,6 +53,8 @@ const requests: readonly { readonly what: string; readonly made: WriteRequest }[
     made: artifactCommentRequest("doc-1", { ask_id: "ask-1", body: "Ask back" }),
     what: "a clarification on a document's ask",
   },
+  { made: artifactRenameRequest("doc-1", { name: "Launch notes" }), what: "the title correction" },
+  { made: artifactDeleteRequest("doc-1"), what: "the document removal" },
   { made: commentResolveRequest("comment-1"), what: "the comment resolve" },
   { made: commentReopenRequest("comment-1"), what: "the comment reopen" },
   { made: commentAcceptRequest("comment-1"), what: "the suggestion accept" },
@@ -103,6 +107,8 @@ test("every lined write's builder makes the request its route takes", () => {
     "the header's pin: PUT /api/v1/me/issues/CORE-1/state",
     "the decisions change: POST /api/v1/issues/CORE-1/comments",
     "a clarification on a document's ask: POST /api/v1/artifacts/doc-1/comments",
+    "the title correction: PATCH /api/v1/artifacts/doc-1",
+    "the document removal: DELETE /api/v1/artifacts/doc-1",
     "the comment resolve: POST /api/v1/comments/comment-1/resolve",
     "the comment reopen: POST /api/v1/comments/comment-1/reopen",
     "the suggestion accept: POST /api/v1/comments/comment-1/accept",
@@ -135,6 +141,7 @@ test("only the POSTs and PATCHes among the lined writes go under a key", () => {
     "the claim release",
     "the session unsubscribe",
     "the header's pin",
+    "the document removal",
     "the ask snooze",
     "the ask un-snooze",
     "the ask hand-on",
@@ -147,12 +154,18 @@ test("only the POSTs and PATCHes among the lined writes go under a key", () => {
   ]);
   expect(keyed).toContain("the ask answer");
   expect(keyed).toContain("the issue create");
+  expect(keyed).toContain("the title correction");
 });
 
 // The body is the one the route takes, so a write made from its request alone writes what the
 // route reads.
 test("each builder carries the body its route takes", () => {
   expect(issueStateRequest("CORE-1", { pinned: true }).body).toEqual({ pinned: true });
+  expect(artifactRenameRequest("doc-1", { name: "Launch notes" }).body).toEqual({
+    name: "Launch notes",
+  });
+  // The removal route takes no body at all.
+  expect(artifactDeleteRequest("doc-1").body).toBeUndefined();
   expect(askHandOnRequest("ask-1", "sami@theorem.dev").body).toEqual({
     asked_of: "sami@theorem.dev",
   });
