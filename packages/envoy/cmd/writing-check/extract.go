@@ -44,7 +44,8 @@ const (
 // Case is one prose field of one checked agent write, as fetch writes it and group reads it.
 // Group is empty until group gives it one. Copy and Tag are set only on the cases plant writes:
 // Copy names the planted copy of the write, and Tag is "planted", so no other eval reads the
-// copy as real work.
+// copy as real work. Reader and ReaderRule are set only by readers: the person who read the
+// write when it was made ("" for nobody), and the server's reader rule that named them.
 type Case struct {
 	EventID      int64  `json:"event_id"`
 	EventType    string `json:"event_type"`
@@ -68,6 +69,10 @@ type Case struct {
 	Group string `json:"group,omitempty"`
 	Copy  string `json:"copy,omitempty"`
 	Tag   string `json:"tag,omitempty"`
+	// Reader is nil until readers sets it, so a case it has not read is told from one that no
+	// person reads.
+	Reader     *string `json:"reader,omitempty"`
+	ReaderRule string  `json:"reader_rule,omitempty"`
 }
 
 // event is one row of GET /api/v1/events/log.
@@ -83,9 +88,10 @@ type event struct {
 }
 
 type eventActor struct {
-	Kind string `json:"kind"`
-	ID   string `json:"id"`
-	Act  *struct {
+	Kind  string  `json:"kind"`
+	ID    string  `json:"id"`
+	Owner *string `json:"owner"`
+	Act   *struct {
 		Session string `json:"session"`
 	} `json:"act"`
 }

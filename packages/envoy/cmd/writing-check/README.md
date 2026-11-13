@@ -10,6 +10,7 @@ a repository.
 go run ./cmd/writing-check probe-model --kind <kind> --endpoint <url> --deployment <id> [flags]
 go run ./cmd/writing-check fetch --after <event id> --through <event id> --out <cases.jsonl> [--resume]
 go run ./cmd/writing-check group --in <cases.jsonl> --out <groups.jsonl>
+go run ./cmd/writing-check readers --in <cases.jsonl> --log-after <event id> --log-through <event id> --out <cases.jsonl> [--state <file>]
 go run ./cmd/writing-check rule-cost --in <cases.jsonl> --seed N --out <dir> [--writes 500] [--min-per-surface 30] [--plant <rule id>]
 go run ./cmd/writing-check split --in <grouped.jsonl> --cut-a <event id> --cut-b <event id> --out <dir>
 go run ./cmd/writing-check plant --in <manifest.jsonl> --corpus <cases.jsonl> --seed N --out <dir> [--per-shape 40] [--nolist 40] [--controls]
@@ -227,6 +228,82 @@ A planted sentence goes in as its own paragraph at a paragraph start of the main
 paragraph start is the start of the text (after front matter), the start of a line that follows
 a blank line, opens with no white space and is outside a fenced code block, and the end of a text
 that does not end inside a fence.
+
+## readers
+
+`readers` gives each case the person who read its write when the write was made: `reader` (a
+login, or `""` when no person reads it) and `reader_rule`. The writing check reads only a write
+that a person reads, so the measurements draw only from cases whose `reader` is not empty.
+
+The rule is the server's: `writingCheckReader` with its table `writingCheckReaderRules`
+(`internal/dispatch/api/writing_check_reader.go`). `reader_rule` is the name the table gives the
+rule, and `TestEveryReaderRuleNameIsTheServers` holds the names to that file. A rule reads records:
+an issue's assignee, a project's default assignee, the person an ask was handed to (`asked_of`),
+the author of a comment, message or ask, and the person who opened a direct conversation.
+`readers` reads each record as it stood just before the write. An issue's create is read as it
+stood after the create, because the server decides that reader from the request.
+
+| Event of the case | Route that wrote it | `reader_rule` | Reader |
+| --- | --- | --- | --- |
+| `issue.created` | `POST /api/v1/issues` | `new_issue` | the assignee the issue was created with; with none, the person the credential acts for, the parent's assignee, then the project's default |
+| `issue.updated` | `PATCH /api/v1/issues/{key}` | `issue` | the issue's assignee, else the project's default |
+| `comment.created` | `POST .../comments` | `comment` | the author of the comment (`answers`, else `reply_to`) or the ask (`ask_id`) it answers, when a person wrote it; else the reader of its issue or document |
+| `comment.answered` | `POST /api/v1/comments/{id}/reply` | `comment_reply` | the author of the comment it answers when a person wrote it; else that comment's issue or document reader |
+| `comment.edited` | `PATCH /api/v1/comments/{id}` | `comment_edit` | as `comment`, from the stored comment |
+| `message.*` with a `broadcast_id` | `POST /api/v1/broadcasts` | `none` | nobody |
+| `message.*` on no issue, not a session's reply in its own conversation | `POST /api/v1/agents/{session_id}/messages` | `none` | nobody |
+| `message.answered` whose target is its author's own session | `POST /api/v1/messages/{id}/reply` | `message_reply` | the author of the message it answers when a person wrote it; else its issue's reader; else, on no issue, the person who opened the thread, and nobody when a session did |
+| `message.*` on an issue | `POST /api/v1/issues/{key}/messages` | `message` | the author of the message it answers when a person wrote it; else the issue's reader |
+| `ask.opened` | `POST .../asks` | `issue`, or `document` for an ask on a document, an approval request or a document's `:::ask` block | the reader of the issue or the document |
+| `ask.edited` | `PATCH /api/v1/asks/{id}` | `ask` (`document` for an approval request or a block ask) | the person the ask was handed to, else its issue's or document's reader |
+| `ask.answered`, `ask.resolved` | `POST /api/v1/asks/{id}/answer`, `/decline`, `/resolve` | `ask_reply` | the ask's author when a person wrote it; else its issue's or document's reader |
+| `artifact.created` | the upload routes | `issue`, `project` or `conversation`, by the document's owner | the issue's reader; the project's default; the person in the conversation |
+| `artifact.version`, `artifact.approved`, `artifact.changes_requested` | `POST /api/v1/artifacts/{id}/...` | `document` | the reader of the document's owner, as above |
+| `result.recorded` | `POST /api/v1/issues/{key}/results` | `issue` | the issue's reader |
+
+An issue's reader is its assignee, else its project's default assignee, else nobody. The server
+reads the owner of an answered comment or ask through the comment's or ask's own `issue_key`. A
+comment or ask on a document has none, so the owner is the project's default even where the
+document belongs to an issue. `readers` does the same.
+
+`readers` replays the event log (`GET /api/v1/events/log`, 500 events a page, oldest first) from
+the event after `--log-after` (0: the first event the server keeps) through `--log-through`. It
+keeps:
+
+- each issue's project, parent and assignee history, from every `issue.*` event that carries the
+  issue (each carries the whole issue), and each issue's primary document, which the create makes
+  with no `artifact.created` of its own;
+- each project's default assignee history, from `settings.project_default_assignee.updated`;
+- each ask's author, issue, document, approval document, whether a block holds it, and the
+  history of `asked_of` (every `ask.*` event carries the whole ask);
+- each comment's author, issue, document, the comment it answers and its ask;
+- each message's author, issue, the message it answers, whether it is a broadcast copy, and
+  whether it is a session's reply in its own conversation;
+- each document's issue, project or session;
+- for each session, the people who opened an issue-less thread to it, in order.
+
+`--state` names a file for that state. When the file exists and was replayed from the same
+`--log-after`, `readers` reads it and pages the log only after the last event it holds, so a
+second run over the same window reads no log. A case outside the replayed window is refused.
+
+Some history is not in the log:
+
+- A project's default assignee changes only through `PUT /api/v1/projects/{key}/default-assignee`,
+  which writes `settings.project_default_assignee.updated`. Before the first such event,
+  `readers` uses the default that event replaced. A project the log records no default for has
+  none. Migration `20261111210103_projects_default_assignee_not_null` fills every default
+  without writing an event; a run over a window after that migration is deployed has to give
+  those projects the filled default, which `readers` does not know.
+- `asked_of` is in ask payloads from migration `20261109221325_asks_asked_of` on. An ask with no
+  `asked_of` waits on its issue's assignee, which is what the server reads too.
+- `answers` is in comment payloads from migration `20261105014808_comments_answers` on. A
+  comment written before it carries only `reply_to`, the head of its thread, which `readers`
+  takes as the comment it answers.
+
+`readers` prints the cases and the writes with and without a person reader, in all, by family
+(the families above; a write's cases count under its family) and by project; the writes by rule;
+the writes by reader, with each reader's share of all writes; and the count of reads of a record
+the replay does not hold (the server answers no reader for a record that does not exist).
 
 ## rule-cost
 
