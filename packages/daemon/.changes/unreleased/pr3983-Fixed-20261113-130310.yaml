@@ -1,0 +1,5 @@
+kind: Fixed
+body: 'A worker whose turn starts after the daemon waited five seconds for it, or that answers a prompt busy, is no longer sent its task again every few seconds: the late turn confirms the task, its result retires it, and a completion in that turn is accepted. A relaunch, a suspension or a failure records on the claim (the new `ended_work` column) what it ended of the agent''s turn and background work, and the next process reads a sentence that names it. An update round over a pod that is gone ends at the next sweep and no longer holds a `pod_update_max_open_rounds` slot.'
+time: 2026-11-13T13:03:10.832520841Z
+custom:
+    Issue: pr3983
