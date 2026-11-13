@@ -515,6 +515,10 @@ prepare_env() {
 #   xargs running a program            4  xargs's status carries the program's
 #   xargs -0                           3  xargs reads its input split at NUL bytes
 #   xargs -n                           3  xargs passes at most N arguments to each run
+#   uv run --no-project                4  uv run reads no project of the working directory
+#   uv run --python                    4  uv run runs the python version named
+#   uv run --with                      4  uv run installs the package named into its environment
+#   uv run python                      4  uv run's python, whose status uv run exits with
 #   sh running a script file           1  the script's status reaches the row as sh's
 #   true                               6  a command whose status is no read
 #   $NAME or ${NAME}                 362  a parameter, its name in braces or not
@@ -525,20 +529,22 @@ prepare_env() {
 # Each program the table names is wrapped in a function of that name that records its
 # status, a builtin among them; a program variable points at a shim that does the same;
 # true's status is no read. A program name the table holds no entry for is refused, a
-# builtin or not. The program xargs runs is one of the table's programs, held with its
-# arguments to every rule a command word and its arguments are held to.
+# builtin or not. The program xargs runs is one of the table's programs, and the program
+# uv run runs is one of uv run's own entries; each is held with its arguments to every
+# rule a command word and its arguments are held to.
 #
 # The names the gate records with, which no row may touch. The list below is the reader's
-# RESERVED, which reader_py builds from PROGRAM_VARIABLES and RUNNER_PREFIXES, the two
-# variables the shims and the runner are written from; --admitted holds these lines as it
-# holds the table, and fails a name the runner or a shim records with that no prefix
-# covers. A row is refused by name when it assigns one, alone, before a command, in an
-# argument such as export's, or as a for loop's variable; when it reads one other than
-# IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's words or a
-# redirection target, such as >"$__ioc_failed", a program variable as a command word
-# excepted; and when it passes one to printf -v, which is refused whole. The one
-# assignment admitted is IOC_EXPECT_STATUS=<n> written before one command word. A word is
-# read without its quotes, so a quoted pattern that holds a reserved name is refused too.
+# RESERVED, which reader_py builds from PROGRAM_VARIABLES, RUNNER_PREFIXES and
+# RUNNER_READS, the variables the shims and the runner are written from; --admitted holds
+# these lines as it holds the table, and fails a name the runner or a shim records with
+# that no prefix covers. A row is refused by name when it assigns one, alone, before a
+# command, in an argument such as export's, or as a for loop's variable; when it reads
+# one other than IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's
+# words or a redirection target, such as >"$__ioc_failed", a program variable as a
+# command word excepted; and when it passes one to printf as an argument of its own. The
+# one assignment admitted is IOC_EXPECT_STATUS=<n> written before one command word. A
+# word is read without its quotes, so a quoted pattern that holds a reserved name is
+# refused too.
 #
 #   reserved name                         what it is
 #   __ioc*                                a name the runner or a shim records with
@@ -548,6 +554,7 @@ prepare_env() {
 #   IOC_MASLAB_CTL                        a program variable, which points at its shim
 #   IOC_MASLAB_WHEEL_CTL                  a program variable, which points at its shim
 #   IOC_TC_PY                             a program variable, which points at its shim
+#   PATH                                  a name of the shell the runner finds each program by
 #   IOC_EXPECT_STATUS                     the declared status, written only before one command
 #
 # What the table is checked against. The classifier is a parser of the forms the rows use,
@@ -557,26 +564,33 @@ prepare_env() {
 # context that could hide a read in another is what the planted cases of check.test.sh are
 # for.
 #
-# Refused by name, among every other form: every program name the table holds no entry
-# for, such as unset, export and head; a word in command position that holds a / or is a
-# variable other than the five; the output of a substitution as a command word; command,
-# builtin, exec, eval, source, time, function definitions and the keywords if, while,
-# until, case and select, each named with why; a shell given a string with -c, a shell
-# reading its commands from its input or from a script under /dev/ or /proc/, such as
-# /dev/stdin, a shell given an option, and a shell other than sh; env running a program,
-# and env run by xargs, whose input can name one; xargs with no program, with an option
-# the table holds no entry for, or running a program by a form no command word may take;
-# printf -v, which assigns a variable; find, whose -exec would run a program past its
-# function; an input redirection, a here-document, an output redirection other than >, 2>
-# and 2>&1, a background &, process substitution <( ) and >( ), whose code runs beside
-# the row and ends after it is read, a substitution written with backticks, arithmetic
-# (( )), $(( )) and $[ ]; every special parameter but $? written bare, such as $1, $@,
-# $#, $$, $!, $0, $- and $*, and ${?} among them; every other $ form, $' ', $" " and ${ }
-# holding anything but a name among them, such as ${X:-y}; a for loop with no in; an
-# assignment to an array element or by +=; IOC_EXPECT_STATUS written as a statement of
-# its own; and declare, local, typeset and readonly, which a wrapping function would make
-# local to it. A row that needs a new form or program adds its entry to ADMITTED and its
-# line to the table above, with a case of check.test.sh, in the same commit.
+# Refused by name, among every other form: a command holding a character bash reads as
+# part of a word where the tokenizer would split, a carriage return, any other control
+# character but tab and newline, DEL, and every space bash does not split at, such as
+# U+00A0; every program name the table holds no entry for, such as unset, export and
+# head; a word in command position that holds a / or is a variable other than the five;
+# the output of a substitution as a command word; command, builtin, exec, eval, source,
+# time, function definitions and the keywords if, while, until, case and select, each
+# named with why; a shell given a string with -c, a shell reading its commands from its
+# input or from a script under /dev/ or /proc/, such as /dev/stdin, a shell given an
+# option, and a shell other than sh; env given any option, env running a program, and env
+# run by xargs, whose input can name one; xargs with no program, with an option the table
+# holds no entry for, or running a program by a form no command word may take; uv given
+# an option before its subcommand, and uv run with an option or a program the table holds
+# no entry for, or with none; printf -v, which assigns a variable, printf with a format
+# that is not a literal word, holds a $ or a substitution or starts with -, which could
+# expand to -v, and printf given a reserved name as an argument; find, whose -exec would
+# run a program past its function; an input redirection, a here-document, an output
+# redirection other than >, 2> and 2>&1, a background &, process substitution <( ) and
+# >( ), whose code runs beside the row and ends after it is read, a substitution written
+# with backticks, arithmetic (( )), $(( )) and $[ ]; every special parameter but $?
+# written bare, such as $1, $@, $#, $$, $!, $0, $- and $*, and ${?} among them; every
+# other $ form, $' ', $" " and ${ } holding anything but a name among them, such as
+# ${X:-y}; a for loop with no in; an assignment to an array element or by +=;
+# IOC_EXPECT_STATUS written as a statement of its own; and declare, local, typeset and
+# readonly, which a wrapping function would make local to it. A row that needs a new
+# form or program adds its entry to ADMITTED and its line to the table above, with a
+# case of check.test.sh, in the same commit.
 #
 # What the evaluator refuses in an admitted row, read after it runs:
 #
@@ -606,22 +620,31 @@ prepare_env() {
 # system() or a program run with the arguments xargs's input adds, and what a script a
 # row runs does inside it, whose status reaches the row only through that script's own.
 # A script's path is held to a literal file or one under $IOC_EVID, ending in .sh, and
-# any other path is refused. A person reading every row at review covers the rest, as
-# for install-pinned.
+# any other path is refused. A row written on purpose to defeat the runner is outside
+# what the gate checks: one that deletes, overwrites, redirects into or re-points the
+# runner's own files (its record, its shims, its scratch), or that makes an admitted
+# program run a command its own arguments supply and swallow that command's failure, as
+# a git alias written git -c alias.x='!cmd; true' does. The gate guards against a read
+# that fails by accident, not against a row written to slip past it. A person reading
+# every row at review covers the rest, as for install-pinned.
 
 # The programs a row may name through a variable, each with the program it names. env.sh
 # sets each to one executable; during a run each is pointed at a shim that runs that
 # executable and records its status, as the functions below record a program named by a
 # bare word. This is the one list of them: reader_py writes it into the reader, which
 # builds from it the classifier's entries "variable $<name>" of ADMITTED, install-pinned's
-# RESOLVABLE, which holds each word to the rules of the program it names, and the names
-# no row may touch.
+# resolve(), which holds each word to the rules of the program it names, and the names no
+# row may touch.
 PROGRAM_VARIABLES="IOC_PY:python IOC_MASLAB_PY:python IOC_MASLAB_CTL:mas-ctl IOC_MASLAB_WHEEL_CTL:mas-ctl IOC_TC_PY:python"
 # The prefixes of every name the runner and the shims below record with: __ioc_failed,
 # __ioc_record, __ioc_s, __ioc_stages and __IOC_FAILED. reader_py writes them into the
 # reader, which refuses a row that touches a name with one, and --admitted fails a name
 # of the runner that starts with none of them.
 RUNNER_PREFIXES="__ioc __IOC"
+# The names of the shell the runner's functions read: PATH, on which each function's
+# `command <name>` finds the program it wraps. reader_py writes them into the reader,
+# which refuses a row that touches one, as it refuses a name of the runner.
+RUNNER_READS="PATH"
 
 program_shims() {
     # Writes one shim per program variable env.sh set, once per run, and prints the
@@ -677,12 +700,6 @@ run_recorded() {
         printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; printf "%s\t%s\t%s\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%s " "$@" | tr "\n\t" "  ")" >>"$__ioc_failed"; }'
         while IFS= read -r name; do
             [ -n "$name" ] || continue
-            # The classifier admits only names of this pattern, so one that does not
-            # match is refused here rather than dropped, which would pass it unread.
-            if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_.+-]*$ ]]; then
-                printf '%s, a program name the runner cannot wrap\n' "$name" >>"$out.unread"
-                continue
-            fi
             printf '%s() { command %s "$@"; local __ioc_s=$?; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" %s "$@"; return "$__ioc_s"; }\n' "$name" "$name" "$name"
         done < <(printf '%s\n' "$names" | grep -v '^UNREAD')
         program_shims
@@ -853,17 +870,18 @@ github_budget() {
 # of command position over one tokenizer. The install reader (commands, command_words,
 # KEYWORDS, CONTROL and WRAPPERS) finds every runner, inside forms the evaluator refuses
 # too; the classifier (Parser, classify_word and check_simple) admits a command only
-# through ADMITTED. The four rules both read are each written once and read by both:
+# through ADMITTED. The rules both read are each written once and read by both:
 # XARGS_OPTIONS and xargs_program for xargs's options, shell_string for a shell given -c,
-# variable_name for a variable command word, and ASSIGNMENT for an assignment. Its last
+# variable_name for a variable command word, ASSIGNMENT for an assignment, and
+# foreign_character for a character bash does not read as this tokenizer would. Its last
 # argument selects what it prints: "installs" reads claims.jsonl on stdin and prints each
 # refusal as <id><TAB><what it runs>; "names" reads one command on stdin and prints each
 # program name the classifier admits in command position, one per line, or one UNREAD
 # line naming the refusal; "stages" reads one command and prints the command of each
 # stage of its final pipeline; "admitted" reads claims.jsonl on stdin and prints each
 # refused row, each entry of ADMITTED with the number of rows that use it and each
-# reserved name, which --admitted reads. The reader's first lines are PROGRAM_VARIABLES
-# and RUNNER_PREFIXES, written from the two variables above program_shims.
+# reserved name, which --admitted reads. The reader's first lines are PROGRAM_VARIABLES,
+# RUNNER_PREFIXES and RUNNER_READS, written from the three variables above program_shims.
 reader_py() {
     local v
     printf 'PROGRAM_VARIABLES = {'
@@ -872,6 +890,10 @@ reader_py() {
     done
     printf '}\nRUNNER_PREFIXES = ('
     for v in $RUNNER_PREFIXES; do
+        printf '"%s", ' "$v"
+    done
+    printf ')\nRUNNER_READS = ('
+    for v in $RUNNER_READS; do
         printf '"%s", ' "$v"
     done
     printf ')\n'
@@ -908,7 +930,22 @@ PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", 
             "git", "go", "grep", "jq", "mkdir", "mktemp", "printf", "python3", "rm", "sed",
             "sh", "sha256sum", "sort", "stat", "tail", "tr", "uniq", "uv", "uvx", "wc", "xargs")
 
-# The four rules the install reader and the classifier both read, each written once.
+# uv run runs the program its arguments name, as xargs does, and exits with its status.
+# Its options the rows use, each to whether it takes a value and what it is, and the
+# programs the rows run with it. Each is an entry "uv run <option>" or "uv run <program>"
+# of ADMITTED; any other option or program is refused by name, and the program is held
+# with its arguments to every rule check_program holds a command word to. Its programs
+# are not PROGRAMS: uv run finds python itself, and the runner wraps none of them.
+UV_RUN_OPTIONS = {
+    "--no-project": (False, "uv run reads no project of the working directory"),
+    "--python": (True, "uv run runs the python version named"),
+    "--with": (True, "uv run installs the package named into its environment"),
+}
+UV_RUN_PROGRAMS = {
+    "python": "uv run's python, whose status uv run exits with",
+}
+
+# The rules the install reader and the classifier both read, each written once.
 #
 # xargs's options the rows use, each to whether it takes a value and what it is. Each is
 # an entry "xargs <option>" of ADMITTED. Both readers step over these to reach the program
@@ -953,19 +990,34 @@ def variable_name(word):
 # a plain one, a name and =; a subscript or += is a form of its own.
 ASSIGNMENT = re.compile(r"^([A-Za-z_][A-Za-z0-9_]*)(\[[^]]*\])?(\+?)=")
 
+def foreign_character(text):
+    # The first character of text that bash does not read as the tokenizer below reads
+    # it, as U+XXXX, or None. bash splits words at space, tab and newline alone, so a
+    # carriage return, any other control character and DEL, and every character Python
+    # counts as a space that bash does not (U+000B, U+000C, U+001C to U+001F, U+0085,
+    # U+00A0, U+2028 and the rest) stand inside a word, where the tokenizer would split.
+    for ch in text:
+        if ch in "\t\n":
+            continue
+        if ord(ch) < 32 or ord(ch) == 127 or (ch.isspace() and ch != " "):
+            return "U+%04X" % ord(ch)
+    return None
+
 # The names the gate records with, which no row may touch: every name of the runner, which
-# starts with one of RUNNER_PREFIXES, the program variables, and the declared status. A
-# row may write the declared status only as an assignment before one command, and a
-# program variable only as a command word.
+# starts with one of RUNNER_PREFIXES, the names of the shell the runner reads, the program
+# variables, and the declared status. A row may write the declared status only as an
+# assignment before one command, and a program variable only as a command word.
 EXPECT_STATUS = "IOC_EXPECT_STATUS"
 RESERVED = {
     **{prefix + "*": "a name the runner or a shim records with" for prefix in RUNNER_PREFIXES},
     **{name: "a program variable, which points at its shim" for name in PROGRAM_VARIABLES},
+    **{name: "a name of the shell the runner finds each program by" for name in RUNNER_READS},
     EXPECT_STATUS: "the declared status, written only before one command",
 }
 
 def reserved(name):
-    return name.startswith(RUNNER_PREFIXES) or name in PROGRAM_VARIABLES or name == EXPECT_STATUS
+    return (name.startswith(RUNNER_PREFIXES) or name in RUNNER_READS or name in PROGRAM_VARIABLES
+            or name == EXPECT_STATUS)
 
 READS = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 SETS = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?\+?=")
@@ -988,8 +1040,9 @@ def refuse_touch(word, where, sets=True):
 # uses, so the table is exactly the forms the rows use. check.sh's header above
 # run_recorded holds the table with those counts. One entry holds two spellings: a
 # parameter, written $NAME or ${NAME}, which the shell expands alike. The entries of the
-# programs, the program variables and xargs's options are built from PROGRAMS,
-# PROGRAM_VARIABLES and XARGS_OPTIONS, one each.
+# programs, the program variables, xargs's options and uv run's options and programs are
+# built from PROGRAMS, PROGRAM_VARIABLES, XARGS_OPTIONS, UV_RUN_OPTIONS and
+# UV_RUN_PROGRAMS, one each.
 ADMITTED = {
     # Operators and separators.
     "&&": "runs the next pipeline when this one exits 0",
@@ -1024,6 +1077,8 @@ ADMITTED = {
     **{"variable $" + name: "a program variable, whose shim records its status" for name in PROGRAM_VARIABLES},
     "xargs running a program": "xargs's status carries the program's",
     **{"xargs " + option: what for option, (_, what) in XARGS_OPTIONS.items()},
+    **{"uv run " + option: what for option, (_, what) in UV_RUN_OPTIONS.items()},
+    **{"uv run " + name: what for name, what in UV_RUN_PROGRAMS.items()},
     "sh running a script file": "the script's status reaches the row as sh's",
     "true": "a command whose status is no read",
     # $ forms.
@@ -1045,9 +1100,11 @@ def admit(key, refusal=None):
 
 def tokenize(text):
     # Words and operators, quotes respected; an unquoted newline is an operator of its own,
-    # which the parser reads as a separator like ;.
+    # which the parser reads as a separator like ;. Words are split at space and tab, as
+    # bash splits them; a command holding a character foreign_character names is refused
+    # before it is split.
     lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>\n")
-    lexer.whitespace = " \t\r"
+    lexer.whitespace = " \t"
     lexer.whitespace_split = True
     lexer.commenters = ""
     try:
@@ -1242,12 +1299,6 @@ def without_substitutions(text):
     pieces.append(text[last:])
     return "".join(pieces)
 
-# The install-pinned reader's closed allow-list of variables a command word may be written
-# with: PROGRAM_VARIABLES, the programs env.sh builds and pins, each naming one executable.
-# Each resolves to the program PROGRAM_VARIABLES names for it, and the word is then held to
-# every rule a literal word is held to. A variable with a path after it, and any other
-# variable, may not stand in command position.
-RESOLVABLE = PROGRAM_VARIABLES
 # The words the install-pinned reader steps over to reach a command word, and the wrappers
 # whose command it reads. They admit nothing: they let that reader find runners inside
 # forms the evaluator refuses, and the evaluator's admissions are ADMITTED's alone.
@@ -1258,13 +1309,18 @@ WRAPPERS = {"env", "nohup", "nice", "timeout", "command", "exec", "sudo", "stdbu
 WRAPPER_VALUE = {"nice": {"-n"}, "timeout": {"-s", "-k", "--signal", "--kill-after"},
                  "sudo": {"-u", "-g", "-C"}, "stdbuf": {"-i", "-o", "-e"}, "env": {"-u", "-C", "-S"}}
 
+# The install-pinned reader resolves a command word written as a variable through
+# PROGRAM_VARIABLES alone, the programs env.sh builds and pins, each naming one
+# executable: each resolves to the program PROGRAM_VARIABLES names for it, and the word
+# is then held to every rule a literal word is held to. A variable with a path after it,
+# and any other variable, may not stand in command position.
 def resolve(word):
     # The program a command word names, or None when this reader cannot resolve it.
     if SUBST_WORD in word or "`" in word:
         return None
     if "$" not in word:
         return word.rsplit("/", 1)[-1]
-    return RESOLVABLE.get(variable_name(word))
+    return PROGRAM_VARIABLES.get(variable_name(word))
 
 def runner_name(word):
     # The program a word names, as every runner rule below matches it: the resolved
@@ -1373,6 +1429,10 @@ def read_command(command, depth=0):
     # split into commands, so a heredoc is refused rather than read as words.
     if re.search(r"<<-?\s*[\x27\x22]?[A-Za-z_]", command):
         return ["a heredoc, whose body this reader does not read"]
+    # A character bash keeps inside a word, where the tokenizer would split, makes the
+    # words this reader reads differ from those bash runs, so the command is refused.
+    if foreign_character(command):
+        return ["a command holding the character " + foreign_character(command) + ", which bash reads as part of a word"]
     # A command substitution runs whether or not it stands inside double quotes, and a
     # backtick pair may span two words, so it is read in the text before the split.
     for _, _, code in substitutions(command):
@@ -1711,10 +1771,10 @@ def classify_word(words):
 
 SCRIPT_PATH = re.compile(r"(\$IOC_EVID/|\./)?[A-Za-z0-9_][A-Za-z0-9_./-]*\.sh")
 
-def check_program(name, args, by_xargs=False):
+def check_program(name, args):
     # Refuses the forms of a program and its arguments whose program the evaluator would
-    # not see, by the same rules whether the program is a command word or the program
-    # xargs runs; by_xargs says it is the latter, whose arguments xargs's input extends.
+    # not see, by the same rules whether the program is a command word, the program xargs
+    # runs or the program uv run runs.
     if name in SHELLS:
         if shell_string(args) is not None:
             raise Refused(name + " -c, a command given to a shell as a string")
@@ -1734,11 +1794,27 @@ def check_program(name, args, by_xargs=False):
             raise Refused(name + " " + args[0] + ", a script path that is no literal file and not under $IOC_EVID")
         else:
             admit(name + " running a script file")
-    elif name == "env" and (by_xargs or any(not a.startswith("-") and not ASSIGNMENT.match(a) for a in args)):
-        # Run by xargs, env runs whatever program xargs's input names after its arguments.
-        raise Refused("env running a program, which runs it past the function that records it")
-    elif name == "printf" and args and args[0].startswith("-v"):
-        raise Refused("printf " + args[0] + ", which assigns a variable rather than printing")
+    elif name == "env":
+        # An option of env can hand it a command, as -S does, so env takes none; and a
+        # word that is no assignment is a program env runs.
+        for a in args:
+            if a.startswith("-"):
+                raise Refused("env " + a + ", an option of env the evaluator does not admit")
+        if any(not ASSIGNMENT.match(a) for a in args):
+            raise Refused("env running a program, which runs it past the function that records it")
+    elif name == "printf":
+        # printf -v assigns a variable, and a format that is not a literal word can expand
+        # to -v, so the format is a literal word, read as written, that starts with no -.
+        if args and args[0].startswith("-v"):
+            raise Refused("printf " + args[0] + ", which assigns a variable rather than printing")
+        if not args:
+            raise Refused("printf with no format, a form the evaluator does not admit")
+        if args[0].startswith("-") or "$" in args[0] or SUBST_WORD in args[0] or "`" in args[0]:
+            shown = "the output of a substitution" if SUBST_WORD in args[0] else args[0]
+            raise Refused("printf " + shown + ", a format that is no literal word or starts with -, which could make printf assign a variable")
+        for a in args:
+            if NAME_RE.fullmatch(a) and reserved(a):
+                raise Refused("printf " + a + ", an argument that is " + a + ", a name the gate records with")
     elif name == "xargs":
         # xargs exits non-zero when the program it runs does, so its own record reads the
         # program. That program and its arguments are held to every rule a command word
@@ -1753,8 +1829,31 @@ def check_program(name, args, by_xargs=False):
         inner, _ = classify_word(args[j:])
         if inner[0] != "program":
             raise Refused("xargs " + args[j] + ", a program xargs runs that is no plain program")
-        check_program(inner[1], args[j + 1:], by_xargs=True)
+        if inner[1] == "env":
+            # env runs whatever program xargs's input names after its arguments.
+            raise Refused("env running a program, which runs it past the function that records it")
+        check_program(inner[1], args[j + 1:])
         admit("xargs running a program")
+    elif name == "uv" and args and args[0].startswith("-"):
+        # An option before the subcommand could stand before run, which runs a program.
+        raise Refused("uv " + args[0] + ", an option of uv before its subcommand the evaluator does not admit")
+    elif name == "uv" and args and args[0] == "run":
+        # uv run exits with the status of the program it runs. Its options are read from
+        # UV_RUN_OPTIONS and any other is refused by name, since which word is the program
+        # rests on them; the program is held with its arguments to every rule above, and
+        # is one UV_RUN_PROGRAMS holds.
+        rest, j = args[1:], 0
+        while j < len(rest) and rest[j].startswith("-"):
+            if rest[j] not in UV_RUN_OPTIONS:
+                raise Refused("uv run " + rest[j] + ", an option of uv run the evaluator does not admit")
+            admit("uv run " + rest[j])
+            j += 2 if UV_RUN_OPTIONS[rest[j]][0] else 1
+        if j >= len(rest):
+            raise Refused("uv run with no program, a form the evaluator does not admit")
+        program = rest[j]
+        check_program(program, rest[j + 1:])
+        admit("uv run " + program if program in UV_RUN_PROGRAMS else None,
+              "uv run " + program + ", a program uv run runs that the evaluator does not admit")
 
 
 def check_simple(words):
@@ -1784,6 +1883,8 @@ def classify(command, depth=0):
     # admits is admitted through admit, which records it in USED.
     if depth > 3:
         return ("refused", "a command nested too deep")
+    if foreign_character(command):
+        return ("refused", "the character " + foreign_character(command) + ", which bash reads as part of a word where the evaluator would split it")
     try:
         # Every $ form of the command is read first, quotes respected, and admitted only
         # when ADMITTED holds its key.
@@ -1886,9 +1987,9 @@ reserved_line() { printf '%-37s %s' "$1" "$2"; }
 # per entry with the number of rows that use it. It fails an entry no row uses, a row the
 # classifier refuses, and a line of the header's table that differs from the one measured.
 # It fails as well a header list of reserved names that differs from the reader's, which
-# the reader builds from PROGRAM_VARIABLES and RUNNER_PREFIXES, and a name the runner or
-# the shims record with that starts with none of RUNNER_PREFIXES, which no row would be
-# kept from touching.
+# the reader builds from PROGRAM_VARIABLES, RUNNER_PREFIXES and RUNNER_READS, and a name
+# the runner or the shims record with that starts with none of RUNNER_PREFIXES, which no
+# row would be kept from touching.
 mode_admitted() {
     local kind a b c line measured=() header=() reserved=() refused=0 differ=0
     while IFS=$'\t' read -r kind a b c; do

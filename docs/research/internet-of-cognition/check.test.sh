@@ -638,31 +638,30 @@ honest_result "a name that starts with _, \$_x, is a parameter and passes" repla
 # 6f3da565d1, which ran the program or the form unrecorded; each is now refused, and the
 # case asks for the refusal by name. Where the review wrote the read with ls, which no row
 # runs and the gate now refuses, the review's form is planted as it wrote it and again
-# with cat, so that the case tests the rule it plants. refused_read <name> <command>
-# <refusal, an extended regular expression> [python] plants one; admitted_read <name>
-# <command> [python] plants the honest form beside it, which passes. With python the run
-# sets IOC_PY, which env.sh sets and the fixture does not.
-refused_read() {
-    local dir out
-    dir="$(fresh "$1")"
-    plant_behaviour "$dir" "$2" '{"contains":"ran once"}'
-    if [ "${4:-}" = python ]; then
-        out="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
-    else
-        out="$(fixture_run "$dir" --replay)"
-    fi
-    case_result "a failed read is refused by name: $2" "replay-command: f-behaviour-1 runs $3" "$out"
-}
-admitted_read() {
-    local dir out
+# with cat, so that the case tests the rule it plants. planted_run <name> <command>
+# [python] plants a command into a fresh fixture and sets PLANTED_OUT to the gate's
+# --replay output, planting in this shell so that a command that cannot be planted stops
+# the run; with python the run sets IOC_PY, which env.sh sets and the fixture does not.
+# refused_read <name> <command> <refusal, an extended regular expression> [python] plants
+# one fault; admitted_read <name> <command> [python] plants the honest form beside it,
+# which passes.
+planted_run() {
+    local dir
     dir="$(fresh "$1")"
     plant_behaviour "$dir" "$2" '{"contains":"ran once"}'
     if [ "${3:-}" = python ]; then
-        out="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
+        PLANTED_OUT="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
     else
-        out="$(fixture_run "$dir" --replay)"
+        PLANTED_OUT="$(fixture_run "$dir" --replay)"
     fi
-    honest_result "the admitted form passes: $2" replay-command "$out"
+}
+refused_read() {
+    planted_run "$1" "$2" "${4:-}"
+    case_result "a failed read is refused by name: $2" "replay-command: f-behaviour-1 runs $3" "$PLANTED_OUT"
+}
+admitted_read() {
+    planted_run "$1" "$2" "${3:-}"
+    honest_result "the admitted form passes: $2" replay-command "$PLANTED_OUT"
 }
 
 # 44. The program xargs runs is held to every rule a command word is held to. At
@@ -728,7 +727,7 @@ refused_read head-unused "head -c 0 /nonexistent-ioc 2>/dev/null; printf 'ran on
 
 # 50-51 break a scratch copy of check.sh, as 41-42 do. The names the gate records with are
 # held in one place each: PROGRAM_VARIABLES, from which the shims, the classifier's
-# entries, install-pinned's RESOLVABLE and the reserved names are built, and
+# entries, install-pinned's resolve() and the reserved names are built, and
 # RUNNER_PREFIXES, which every name of the runner starts with.
 #
 # 50. A program variable taken out of PROGRAM_VARIABLES leaves the header's list of
@@ -750,6 +749,53 @@ case_result "a name of the runner that no reserved prefix covers fails --admitte
 # The expected text is an extended regular expression, so each $ of the message is a dot.
 refused_read sh-variable-path "X=/dev/stdin; printf 'cat /nonexistent-ioc 2>/dev/null; true\\n' | sh \"\$X\"; printf 'ran once\\n'" 'sh .X, a script path that is no literal file and not under .IOC_EVID'
 admitted_read sh-evid-script "IOC_EVID=\"\$PWD\"; printf 'true\\n' > \"\$IOC_EVID/ioc-script.sh\"; sh \"\$IOC_EVID/ioc-script.sh\"; printf 'ran once\\n'"
+
+# 53-57 come from the sixth review of the pull request. Each fault plants a failed read
+# the gate must catch, and each is now refused by name; each but the second form of 56
+# passed the gate at 0da660be6e.
+#
+# 53. printf -v assigns a variable, and 0da660be6e refused it only when -v stood as a
+# literal first argument. A format that expands to -v, from a variable or a substitution,
+# pointed the record at /dev/null or set the declared status for the rest of the row. A
+# format is now a literal word that starts with no - and holds no $ or substitution; the
+# substitution's own printf -- is refused by the same rule, before the format it makes.
+refused_read printf-variable-option "X=-v; printf \$X __ioc_failed /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .X, a format that is no literal word'
+refused_read printf-variable-joined "X=-v__ioc_failed; printf \$X /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .X, a format that is no literal word'
+refused_read printf-substitution-option "printf \"\$(printf -- -v)\" __ioc_failed /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf --, a format that is no literal word'
+refused_read printf-variable-status "X=-v; printf \$X IOC_EXPECT_STATUS 1; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .X, a format that is no literal word'
+admitted_read printf-literal-format "printf '%s %s\\n' ran once"
+
+# 54. env -S hands env a command line of its own, which ran a shell string past every
+# function at 0da660be6e, since every word that started with - was read as an option.
+# env now takes no option; the one row that runs env, with none, passes.
+refused_read env-split-string "env \"-Ssh -c 'cat /nonexistent-ioc 2>/dev/null; true'\"; printf 'ran once\\n'" 'env -Ssh -c .cat /nonexistent-ioc 2>/dev/null; true., an option of env'
+admitted_read env-alone "env | grep -c . >/dev/null; printf 'ran once\\n'"
+
+# 55. uv run runs the program its arguments name, and at 0da660be6e uv was admitted with
+# any arguments, so uv run ran a shell string unread. Its program is now held to every
+# rule a command word is held to, its options are read from the closed table of those
+# the rows use, and its program is one of those the rows run with it, python alone. The
+# honest form runs python through uv run, as the four rows do.
+refused_read uv-run-sh "uv run --no-project sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'sh -c, a command given to a shell'
+refused_read uv-run-option "uv run --no-project --directory . sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'uv run --directory, an option of uv run the evaluator does not admit'
+refused_read uv-run-wrapper "uv run --no-project nohup sh -c 'cat /nonexistent-ioc 2>/dev/null; true'; printf 'ran once\\n'" 'uv run nohup, a program uv run runs that the evaluator does not admit'
+admitted_read uv-run-python "uv run --no-project python -c \"print('ran once')\""
+
+# 56. bash splits words at space, tab and newline alone. The tokenizer of 0da660be6e
+# split at a carriage return too, so cat followed by one was admitted as cat, while bash
+# ran a program named cat and a carriage return, which no function wraps, and its 127
+# was recorded by nobody. A command holding a character bash keeps inside a word, a
+# control character or a space Python counts and bash does not, such as U+00A0, is now
+# refused by name. (0da660be6e split at no U+00A0, so it refused the second form as a
+# program named by a path; it is planted for a reader that splits where Python's
+# whitespace does.)
+refused_read carriage-return "cat"$'\r'" /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'the character U.000D, which bash reads as part of a word'
+refused_read no-break-space "cat"$'\xc2\xa0'"/nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'the character U.00A0, which bash reads as part of a word'
+
+# 57. Each function finds the program it wraps on PATH, and at 0da660be6e a row could
+# set PATH, so cat found a copy of true and the read of cat passed. PATH is a reserved
+# name, from RUNNER_READS, and assigning it is refused by name.
+refused_read path-assigned "d=\$(mktemp -d); cp /bin/true \"\$d/cat\"; PATH=\"\$d:\$PATH\"; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'PATH=.d:.PATH, an assignment to PATH'
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
