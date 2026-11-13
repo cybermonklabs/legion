@@ -40,13 +40,10 @@ test("each preset's address is the one its tab carries", () => {
 });
 
 // Two of the conversation's four states are addresses of their own, so picking one is
-// navigation - but only from an address those two can stand in for. From a preset the move
-// would drop the preset, the `?q=` that narrows it and the document it has open, so there the
-// state is the panel's alone (R19).
+// navigation - but only from an address those two can stand in for, which is one another. From
+// every other address, the issue's own among them, the move would drop the preset, the `?q=`
+// that narrows it and the document it has open, so there the state is the panel's alone (R19).
 test("a picked state opens an address only where the state is the address", () => {
-  expect(conversationStatePath({ key: "CORE-1", kind: "issue" }, "everything")).toBe(
-    "/issues/CORE-1/activity"
-  );
   expect(conversationStatePath({ key: "CORE-1", kind: "activity" }, "words")).toBe(
     "/issues/CORE-1/conversation"
   );
@@ -54,10 +51,14 @@ test("a picked state opens an address only where the state is the address", () =
     "/issues/CORE-1/activity"
   );
   // The two states that name no address never open one, wherever they are picked.
-  expect(conversationStatePath({ key: "CORE-1", kind: "issue" }, "questions")).toBeUndefined();
   expect(conversationStatePath({ key: "CORE-1", kind: "activity" }, "pinned")).toBeUndefined();
-  // Every address that opens something besides the conversation keeps it, in every state.
+  expect(
+    conversationStatePath({ key: "CORE-1", kind: "conversation" }, "questions")
+  ).toBeUndefined();
+  // Every address that opens something besides the conversation keeps it, in every state: the
+  // issue's own draws the spec beside the tree, and an entry's own is that one entry.
   const elsewhere = [
+    { key: "CORE-1", kind: "issue" },
     { key: "CORE-1", kind: "spec" },
     { key: "CORE-1", kind: "plan" },
     { key: "CORE-1", kind: "verification" },
@@ -66,12 +67,32 @@ test("a picked state opens an address only where the state is the address", () =
     { key: "CORE-1", kind: "collaborators" },
     { key: "CORE-1", kind: "artifacts" },
     { key: "CORE-1", kind: "artifact", slug: "plan-md" },
+    { id: "comment-7", key: "CORE-1", kind: "comment" },
+    { id: "message-7", key: "CORE-1", kind: "message" },
+    { id: "ask-9", key: "CORE-1", kind: "ask" },
   ] as const;
   for (const route of elsewhere) {
     for (const state of ["everything", "pinned", "questions", "words"] as const) {
       expect(conversationStatePath(route, state), `${route.kind} at ${state}`).toBeUndefined();
     }
   }
+});
+
+// An address names a state where it names something the state holds: its own state for the two
+// that are one, and what people said for one entry of the conversation, which every entry is a
+// part of. Every other address names none, and the panel opens in the state the reader kept
+// (R13) - a kept Questions or Pinned outranking an entry's own address hid the entry it named.
+test("the address names the conversation's state only where it names what that state holds", () => {
+  const named = (route: Parameters<typeof issueAddress>[0]) =>
+    issueAddress(route, "", "", false).conversation;
+  expect(named({ key: "CORE-1", kind: "activity" })).toBe("everything");
+  expect(named({ key: "CORE-1", kind: "conversation" })).toBe("words");
+  expect(named({ id: "comment-7", key: "CORE-1", kind: "comment" })).toBe("words");
+  expect(named({ id: "message-7", key: "CORE-1", kind: "message" })).toBe("words");
+  expect(named({ id: "ask-9", key: "CORE-1", kind: "ask" })).toBe("words");
+  expect(named({ key: "CORE-1", kind: "issue" })).toBeUndefined();
+  expect(named({ key: "CORE-1", kind: "spec" })).toBeUndefined();
+  expect(named({ key: "CORE-1", kind: "artifact", slug: "plan-md" })).toBeUndefined();
 });
 
 test("the address says which preset it opens and which node it names", () => {

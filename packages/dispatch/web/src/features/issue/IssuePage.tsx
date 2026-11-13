@@ -46,7 +46,7 @@ import { IssueHeader } from "./IssueHeader";
 import { IssueMarginCards, IssueMarginPanel } from "./IssueMargin";
 import { IssuePresetPanels } from "./IssuePresetPanels";
 import { ItemMatchList } from "./ItemMatchList";
-import { conversationStatePath, issueAddress, ROUTE_CONVERSATION_STATES } from "./issue-address";
+import { conversationStatePath, issueAddress } from "./issue-address";
 import { artifactsBySlug, documentOfNode } from "./issue-artifacts";
 import { PresetToolbar } from "./PresetToolbar";
 import {
@@ -75,8 +75,8 @@ export function IssuePage(): ReactNode {
   // key={route.key}: switching to a different issue remounts IssueDetail
   // fresh (discarding any unsaved local drafts); switching tabs within the
   // same issue keeps route.key unchanged, so it only re-renders. The focus provider is above
-  // it, so the page can read what the focus is on and hand it to the panel, which the shell's
-  // margin draws outside this tree (`focused-node.tsx`).
+  // it because the page itself reads what the focus is on: the panel draws that node's facts,
+  // and the preset row draws its document's toolbar (`focused-node.tsx`).
   return (
     <FocusedNodeProvider key={route.key}>
       <DocumentStages>
@@ -174,16 +174,18 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
     readConversationState,
     writeConversationState
   );
-  // Two addresses name a state of their own - `/conversation` and `/activity` - and arriving at
-  // one of them is the reader asking for that state, so there the address outranks what they
-  // kept. Only until they pick again on that same address: picking Questions on `/activity`
-  // opens no address of its own (`issue-address.ts`'s `conversationStatePath`) and leaves them
-  // where they are, and that pick is the later word.
+  // An address that names a state outranks what the reader kept, because arriving there is the
+  // reader asking for it: `/conversation` and `/activity` name a state of their own, and an
+  // address naming one comment, message or ask names what people said, which holds that entry
+  // whatever was kept - a kept Questions or Pinned drew the list without it, and the link
+  // landed nowhere (R19, `issue-address.ts`). Only until the reader picks again on that
+  // address: picking Questions on `/activity` opens no address of its own
+  // (`conversationStatePath`) and leaves them where they are, and that pick is the later word
+  // for as long as they stay there. Leaving the address lets the pick go, so the next arrival
+  // at `/activity` is asking for Everything again and draws its history.
   const [pickedAt, setPickedAt] = useState<string | undefined>(undefined);
-  const conversationState =
-    pickedAt === pathname || ROUTE_CONVERSATION_STATES[route.kind] === undefined
-      ? kept
-      : address.conversation;
+  if (pickedAt !== undefined && pickedAt !== pathname) setPickedAt(undefined);
+  const conversationState = pickedAt === pathname ? kept : (address.conversation ?? kept);
 
   // The issue page's own root is the frame the shell draws around this column and the margin
   // beside it: the identity block, the body and the panel's properties are one page, however the
@@ -229,18 +231,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const details = issue.data;
   const focusedNode = useFocusedNode();
   // Nothing has the focus until the tree lands, and a reader on no node is reading the issue,
-  // so the issue itself is what the panel draws the facts of. Held across renders, because the
-  // panel the margin draws is registered under this value.
-  const focused = useMemo<FocusedNode>(
-    () =>
-      focusedNode ?? {
-        id: route.key,
-        state: details === undefined ? undefined : statusText(details.status),
-        title: details?.title ?? route.key,
-        type: "issue",
-      },
-    [details, focusedNode, route.key]
-  );
+  // so the issue itself is what the panel draws the facts of.
+  const focused: FocusedNode = focusedNode ?? {
+    id: route.key,
+    state: details === undefined ? undefined : statusText(details.status),
+    title: details?.title ?? route.key,
+    type: "issue",
+  };
   // Where the reader was when they left this address, taken before the move: the tablist used
   // to say so before it changed tab (`onBeforeTabChange`), and the presets are navigation, so
   // every control that leaves an address says so first. Taken afterwards it would be the
@@ -254,17 +251,17 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   }, [activeTab]);
 
   // Which address a picked state opens, where it opens one at all: the two states that are
-  // addresses of their own, picked from an address they can stand in for
-  // (`issue-address.ts`'s `conversationStatePath`). Everywhere else the state is the panel's
-  // own and is held for the address the reader is on, which keeps their preset, their `?q=`
-  // and the document they have open; a move that does open an address carries that `?q=`
-  // with it.
+  // addresses of their own, picked from the other's address (`issue-address.ts`'s
+  // `conversationStatePath`), which is the state that address names. Everywhere else the state
+  // is the panel's own and is held for the address the reader is on, which keeps their preset,
+  // their `?q=`, their `#b-` and the document they have open; a move that does open an address
+  // carries that `?q=` with it.
   const pickState = useCallback(
     (next: ConversationState) => {
       const to = conversationStatePath(route, next);
       keep(next);
-      setPickedAt(to ?? pathname);
       if (to === undefined || to === pathname) {
+        setPickedAt(pathname);
         // Nothing navigates, so the list this state narrows is mounted here: a reader who has
         // never opened the conversation would otherwise pick a state with nothing under it.
         setActivatedTabs((open) => (open.conversation ? open : { ...open, conversation: true }));

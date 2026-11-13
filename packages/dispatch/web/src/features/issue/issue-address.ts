@@ -44,7 +44,9 @@ export type AddressTarget =
 
 /** What one address of the issue page opens. */
 export interface IssueAddress {
-  readonly conversation: ConversationState;
+  /** The conversation's state the address names, or undefined for one that names none, where
+   *  the panel opens in the state the reader kept (`IssuePage`, R13). */
+  readonly conversation: ConversationState | undefined;
   /** What `?q=` narrows the preset to; `""` for an address that narrows nothing. */
   readonly filter: string;
   /** Whether the address opens the node menu, which `/artifacts` does (R16). */
@@ -73,13 +75,19 @@ export function presetPath(key: string, preset: Preset): string {
   return buildIssuePath({ key, kind: preset });
 }
 
-/** The conversation's state each address names; every other address names none and the panel
- *  opens in the state the reader kept (`IssuePage`, R13), which starts as what people said -
- *  the conversation the `/conversation` address always meant. */
-export const ROUTE_CONVERSATION_STATES: Readonly<Record<string, ConversationState>> = {
-  activity: "everything",
-  conversation: "words",
-};
+/** The conversation's state each address names. `/activity` and `/conversation` are a state of
+ *  their own, and an address naming one entry of the conversation names what people said,
+ *  because the entry is in that list whatever the reader kept: a kept Questions or Pinned drew
+ *  the conversation without the comment or message a link was sent to (R19). Every other
+ *  address names none. */
+const ROUTE_CONVERSATION_STATES: Readonly<Partial<Record<IssueRoute["kind"], ConversationState>>> =
+  {
+    activity: "everything",
+    ask: "words",
+    comment: "words",
+    conversation: "words",
+    message: "words",
+  };
 
 /**
  * The address picking `state` opens from `route`, or undefined where picking it opens no
@@ -87,12 +95,13 @@ export const ROUTE_CONVERSATION_STATES: Readonly<Record<string, ConversationStat
  *
  * Two of the four states are addresses of their own, and the page draws more at them than the
  * panel does: `/activity` puts the issue's whole history in the page's column. Picking one of
- * those is navigation only from an address those two can stand in for - the issue's own, and
- * the two they already name - because every other address opens something besides the
- * conversation: a preset's document, the children, the collaborators, one turn. Picking a
- * state there would drop the preset, the `?q=` and the document the reader has open, so there
- * the state is the panel's alone (R19; picking Questions used to send a reader of the Spec
- * preset to the bare `/conversation`, and picking Words or Everything still did).
+ * those is navigation only from the other of the two, which is all either can stand in for:
+ * every other address opens something besides the conversation - a preset's document, the
+ * spec the issue's own address draws beside the tree, the children, the collaborators, one
+ * entry. Picking a state there would drop the preset, the `?q=`, the `#b-` and the document the
+ * reader has open, so there the state is the panel's alone (R19; picking Questions used to send
+ * a reader of the Spec preset to the bare `/conversation`, and picking Words or Everything on
+ * the issue's own address still closed its spec).
  */
 export function conversationStatePath(
   route: IssueRoute,
@@ -100,9 +109,7 @@ export function conversationStatePath(
 ): string | undefined {
   const kind = state === "everything" ? "activity" : state === "words" ? "conversation" : undefined;
   if (kind === undefined) return undefined;
-  const ownsTheState =
-    route.kind === "issue" || ROUTE_CONVERSATION_STATES[route.kind] !== undefined;
-  if (!ownsTheState) return undefined;
+  if (route.kind !== "activity" && route.kind !== "conversation") return undefined;
   return buildIssuePath({ key: route.key, kind });
 }
 
@@ -161,7 +168,7 @@ export function issueAddress(
           kind: "block",
         };
   return {
-    conversation: ROUTE_CONVERSATION_STATES[route.kind] ?? "words",
+    conversation: ROUTE_CONVERSATION_STATES[route.kind],
     filter: query.get("q") ?? "",
     nodeMenu: route.kind === "artifacts",
     preset: isPrimaryDocument ? "spec" : (ROUTE_PRESETS[route.kind] ?? "tree"),

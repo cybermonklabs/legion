@@ -161,6 +161,7 @@ export function IssueBody({
         artifacts={artifacts}
         context={view.context}
         emptyLine={EMPTY_STATE_LINES[address.preset]}
+        filtering={view.filtering}
         focusReveal={address.preset !== "spec" && targetKind !== "node" && targetKind !== "turn"}
         isClosed={isClosed}
         onEditing={onEditing}
@@ -168,7 +169,6 @@ export function IssueBody({
         openBody={opened}
         reveal={reveal}
         root={view.root}
-        unfolded={view.opened}
       />
       {isPhoneViewport && toolbar !== undefined ? (
         <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">{toolbar}</div>

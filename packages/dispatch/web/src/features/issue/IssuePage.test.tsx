@@ -25,10 +25,12 @@ import type {
   Ask,
   GraphReferences,
   InboxRow,
+  IssueAskThreadRow,
   IssueCheckResults,
   IssueCoverage,
   IssueDetails,
   IssueReferences,
+  Message,
   Project,
   ReferenceTargets,
   Subscriber,
@@ -39,8 +41,12 @@ import { MarginProvider } from "../margin/margin-context";
 import { FilledMarginSlot, MarginSlotProvider, useMarginSlotFill } from "../margin/margin-slot";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap } from "../shell/keymap";
+import { userPreferenceStorageKey } from "../shell/userPreference";
 import { IssuePage } from "./IssuePage";
 import { HELP_LINES } from "./page-structure";
+
+/** Where this browser keeps the conversation state the file's signed-in reader last picked. */
+const KEPT_STATE = userPreferenceStorageKey("alice", "issue.conversation-state");
 
 const issue = {
   route_status: null,
@@ -316,7 +322,9 @@ beforeEach(answerIssuePageReads);
 
 function CurrentRoute() {
   const location = useLocation();
-  return <output data-testid="current-route">{`${location.pathname}${location.search}`}</output>;
+  return (
+    <output data-testid="current-route">{`${location.pathname}${location.search}${location.hash}`}</output>
+  );
 }
 
 /** A stand-in for the shell's margin, which draws whatever the page put in the slot the way
@@ -1471,11 +1479,12 @@ test("IssuePage preserves an in-progress Conversation composer draft across a pr
     expect(composer.value).toBe("Draft in progress");
 
     await openPreset("Spec");
-    // From a preset the panel's own control opens no address: it would drop the preset, the
-    // filter and the document the reader has open (R19). The way back to the conversation's
-    // own address is the Tree preset that address belongs to, and then the control.
+    // A state picked in the panel opens no address from a preset: it would drop the preset, the
+    // filter and the document the reader has open (R19), and the issue's own address is a
+    // preset's address too. The way back to the conversation's own address is its chord.
     await openPreset("Tree");
-    await user.click(screen.getByRole("option", { name: "What people said" }));
+    await user.keyboard("t");
+    await user.keyboard("c");
     await waitFor(() =>
       expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/conversation")
     );
@@ -2820,12 +2829,12 @@ test("IssuePage keeps the preset and the filter when a conversation state is pic
   }
 });
 
-// From the Tree preset's own addresses the state is still in the path, because those three
-// addresses are what carries it - and the filter goes with it.
+// `/conversation` and `/activity` are the two addresses that are a state of their own, so from
+// one of them picking the other's state opens it - and the filter goes with it.
 test("IssuePage carries the filter into the address a conversation state names", async () => {
   const user = userEvent.setup();
   const restore = stubIssuePage(issue);
-  const view = renderIssuePage("/issues/CORE-1?q=socket");
+  const view = renderIssuePage("/issues/CORE-1/conversation?q=socket");
 
   try {
     const states = await screen.findByRole("listbox", { name: "Conversation" });
@@ -2839,6 +2848,44 @@ test("IssuePage carries the filter into the address a conversation state names",
   } finally {
     view.unmount();
     restore();
+  }
+});
+
+// The issue's own address draws the spec beside the tree, and a `#b-` there names a block of
+// it, so it is a preset's address like the others and a picked state keeps it whole: the spec,
+// the fragment and the filter. This row used to pin the opposite - Everything and Words, the
+// latter already the selected state, sent the reader to `/activity` and `/conversation`, which
+// closed the spec and dropped the `#b-` - and nothing the reader asked for needed that (R19).
+test("IssuePage keeps the issue's own address, its spec and its fragment when a state is picked", async () => {
+  const user = userEvent.setup();
+  window.localStorage.removeItem(KEPT_STATE);
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1?q=socket#b-r1");
+
+  try {
+    await expectPreset("Tree");
+    const spec = document.getElementById("issue-spec-panel") as HTMLElement;
+    expect(spec).not.toHaveAttribute("hidden");
+    for (const name of ["Everything", "What people said"]) {
+      const states = await screen.findByRole("listbox", { name: "Conversation" });
+      await user.click(within(states).getByRole("option", { name }));
+
+      expect(screen.getByTestId("current-route").textContent, `${name} left the address`).toBe(
+        "/issues/CORE-1?q=socket#b-r1"
+      );
+      await expectPreset("Tree");
+      expect(document.getElementById("issue-spec-panel"), `${name} closed the spec`).toBe(spec);
+      expect(spec, `${name} hid the spec`).not.toHaveAttribute("hidden");
+      expect(
+        within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+          name,
+        })
+      ).toHaveAttribute("aria-selected", "true");
+    }
+  } finally {
+    view.unmount();
+    restore();
+    window.localStorage.removeItem(KEPT_STATE);
   }
 });
 
@@ -2902,6 +2949,140 @@ test("IssuePage hides the activity list when a state other than Everything is pi
   } finally {
     view.unmount();
     restore();
+  }
+});
+
+// A pick on `/activity` holds while the reader stays on that address and no longer. They pick
+// Questions there, leave for the Spec preset and come back: the address is theirs to read
+// again, and it names Everything and the history Everything draws there. The pick used to stay
+// tied to the address for the life of the page, so every later return showed no history.
+test("IssuePage draws the activity again when the reader comes back to /activity after a pick there", async () => {
+  const user = userEvent.setup();
+  window.localStorage.removeItem(KEPT_STATE);
+  const restore = stubIssuePage(issue);
+  const view = renderIssuePage("/issues/CORE-1/activity", "/issues/CORE-1/spec");
+
+  try {
+    await screen.findByTestId("issue-header");
+    const activity = document.getElementById("issue-activity-panel") as HTMLElement;
+    const states = await screen.findByRole("listbox", { name: "Conversation" });
+    await user.click(within(states).getByRole("option", { name: "Questions" }));
+    expect(activity).toHaveAttribute("hidden");
+
+    await user.click(screen.getByRole("link", { name: "Navigate to test route" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/spec")
+    );
+    await expectPreset("Spec");
+    // Elsewhere the kept pick is the state the panel opens in (R13).
+    expect(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Questions",
+      })
+    ).toHaveAttribute("aria-selected", "true");
+
+    await user.keyboard("t");
+    await user.keyboard("v");
+    await waitFor(() =>
+      expect(screen.getByTestId("current-route").textContent).toBe("/issues/CORE-1/activity")
+    );
+    expect(
+      within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+        name: "Everything",
+      })
+    ).toHaveAttribute("aria-selected", "true");
+    expect(
+      activity,
+      "/activity shows no history after a pick made there earlier"
+    ).not.toHaveAttribute("hidden");
+  } finally {
+    view.unmount();
+    restore();
+    window.localStorage.removeItem(KEPT_STATE);
+  }
+});
+
+/** The ask a landing row's `/asks/<id>` names, as the conversation lists it. */
+const landingAsk: IssueAskThreadRow = {
+  ...openIssueAsk,
+  last_reply: null,
+  thread: {
+    answers: [],
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  },
+};
+
+/** The message a landing row's `/messages/<id>` names. */
+const landingMessage: Message = {
+  author: { id: "alice", kind: "user" },
+  body: "A message the link names.",
+  broadcast_id: null,
+  created_at: "2026-09-11T00:00:00Z",
+  deliveries: [],
+  id: "message-landing",
+  in_reply_to: null,
+  issue_key: "CORE-1",
+  reply_block: null,
+  target: null,
+};
+
+/** The comment a landing row's `/comments/<id>` names: unanchored, so it lands on its turn. */
+const landingComment = { ...itemComment, anchor: null, id: "comment-landing" };
+
+// R19: every address resolves to what it names, and a comment, message or ask link names one
+// entry of the conversation. Questions keeps the asks alone and Pinned what the reader pinned,
+// so while the kept pick outranked these addresses the entry was not in the list at all: the
+// page scrolled to nothing, opened no thread, and every later link from the Inbox, Replies or
+// search landed nowhere for that login. The address names what people said, which holds the
+// entry whatever the reader kept.
+test("IssuePage lands a comment, message or ask link whatever conversation state the reader kept", async () => {
+  const links = [
+    { path: `/issues/CORE-1/comments/${landingComment.id}`, turn: `comment:${landingComment.id}` },
+    { path: `/issues/CORE-1/messages/${landingMessage.id}`, turn: `message:${landingMessage.id}` },
+    { path: `/issues/CORE-1/asks/${landingAsk.id}`, turn: `ask:${landingAsk.id}` },
+  ];
+  for (const kept of ["questions", "pinned"] as const) {
+    for (const { path, turn } of links) {
+      window.localStorage.setItem(KEPT_STATE, kept);
+      const restore = stubIssuePage(issue);
+      api.listComments = async () => [landingComment];
+      api.listIssueMessages = async () => [{ message: landingMessage, replies: [] }];
+      api.listIssueAskThreads = async () => [landingAsk];
+      const reads = [
+        spyOn(api, "getComment").mockResolvedValue({ comment: landingComment, replies: [] }),
+        spyOn(api, "getMessage").mockResolvedValue({ message: landingMessage, replies: [] }),
+        spyOn(api, "getAsk").mockResolvedValue({ ...landingAsk.thread, ask: landingAsk }),
+      ];
+      const view = renderIssuePage(path);
+
+      try {
+        await waitFor(
+          () =>
+            expect(
+              document.querySelector(`li[data-turn="${turn}"]`)?.getAttribute("aria-current"),
+              `${path} with ${kept} kept does not land on its entry`
+            ).toBe("true"),
+          { timeout: 5_000 }
+        );
+        expect(
+          within(await screen.findByRole("listbox", { name: "Conversation" })).getByRole("option", {
+            name: "What people said",
+          })
+        ).toHaveAttribute("aria-selected", "true");
+      } finally {
+        view.unmount();
+        for (const read of reads) read.mockRestore();
+        restore();
+        window.localStorage.removeItem(KEPT_STATE);
+      }
+    }
   }
 });
 

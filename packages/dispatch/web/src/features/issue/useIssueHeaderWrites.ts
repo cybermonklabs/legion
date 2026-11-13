@@ -7,7 +7,7 @@ import type { Issue, IssueDetails, UserIssueState, UserState } from "../../api/t
 import { type SubmitGuard, useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { type KeyedWriteResult, useKeyedWrite } from "../writes/useKeyedWrite";
 import { PROPERTY_LABELS } from "./page-structure";
-import { CONTROL_LABELS } from "./page-words";
+import { CONTROL_LABELS, issueStatusWord } from "./page-words";
 import { stateForIssue } from "./pins";
 import { type IssueDrafts, type IssueUpdateInput, useIssueDrafts } from "./useIssueDrafts";
 
@@ -33,20 +33,17 @@ const WRITTEN_FIELD_NAMES: Readonly<Record<keyof IssueUpdateInput, string>> = {
 
 /**
  * What the shell's indicator names one header write of `key`: the page's own name for every
- * field the write carries, never the schema's token for one (dispatch://INFRA-1196 R21). A
- * write of two fields names both, because the first key of the input is no more the write than
- * the second.
+ * field the write carries, and the page's own word for a status it sets (`issueStatusWord`,
+ * "Todo"), never the schema's token for either (dispatch://INFRA-1196 R21). A write of two
+ * fields names both, because the first key of the input is no more the write than the second.
  *
- * A status is named by the value the write carries, and not by the page's word for it
- * (`issueStatusWord`, "Todo"). The line this builds is drawn in the shell's own indicator
- * (`features/writes/PendingWritesIndicator.tsx`), which stands over every page and says what
- * is out to Dispatch; the page's words are for what the page draws - the status pill the pick
- * is made in, and the word beside a child's row. Spelling the status the page's way here
- * renamed a line of the shell's chrome, which this change's scope, the issue page, does not
- * reach (`e2e/keyed-writes.e2e.ts` reads that line).
+ * The shell's indicator (`features/writes/PendingWritesIndicator.tsx`) only draws the line it
+ * is handed; this hook, the issue page's own, composes it. A word is the page's that composes
+ * it, whichever element draws it, so the line says what this page says
+ * (`e2e/keyed-writes.e2e.ts` reads it).
  */
 export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
-  if (input.status !== undefined) return `${key} set to ${input.status}`;
+  if (input.status !== undefined) return `${key} set to ${issueStatusWord(input.status)}`;
   const fields = (Object.keys(input) as (keyof IssueUpdateInput)[]).map(
     (field) => WRITTEN_FIELD_NAMES[field]
   );
@@ -64,10 +61,10 @@ export function issueUpdateLabel(key: string, input: IssueUpdateInput): string {
  * takes the same landing as the fields here (`landIssueWrite`), so what a write leaves in the
  * cache does not depend on which row drew the control.
  *
- * The rows that draw them hold no write of their own, so a field moved from one row to another -
- * or into the panel - changes where a control is drawn and nothing about how it is saved. Each
- * write is one write of the page's one store (`features/writes/`), so every one of them is
- * keyed, shown in the shell's indicator and kept across a reload.
+ * The rows of the identity block that draw these fields hold no write of their own, so moving
+ * one of them from row to row changes where its control is drawn and nothing about how it is
+ * saved. Each write is one write of the page's one store (`features/writes/`), so every one of
+ * them is keyed, shown in the shell's indicator and kept across a reload.
  */
 export interface IssueHeaderWrites {
   /** The drafts of the title, the route and the parent, and the submits that save them. */

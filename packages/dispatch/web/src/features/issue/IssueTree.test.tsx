@@ -122,13 +122,13 @@ function renderTree(
               artifacts={new Map(artifacts.map((artifact) => [artifact.slug, artifact]))}
               context={new Set()}
               emptyLine="Nothing here."
+              filtering={false}
               focusReveal={false}
               isClosed={false}
               onEditing={(artifactId) => edited.push(artifactId)}
               onReport={(report) => reports.push(report)}
               reveal={undefined}
               root={root}
-              unfolded={new Set()}
             />
           </MarginProvider>
         </KeymapProvider>

@@ -262,9 +262,13 @@ test("a write whose key has expired stops and offers a new write @webkit @firefo
     // waiting out a backoff on a page timer the jump fires; the one that follows it is refused
     // before it goes out, so this count is the last.
     const spent = attempts.length;
+    // The page's word for the status, `Todo`, and not the token the write carries: the shell's
+    // indicator draws this line, but the issue page's own write hook composes it
+    // (`useIssueHeaderWrites.ts`'s `issueUpdateLabel`), and a word the page composes is the
+    // page's (dispatch://INFRA-1196 R21). Reworded on purpose from `set to todo`.
     await runClockUntil(
       page,
-      expect(indicator).toContainText(`Not saved: ${issue.key} set to todo`)
+      expect(indicator).toContainText(`Not saved: ${issue.key} set to Todo`)
     );
 
     await expect(indicator).toContainText(expiredRetryNote("saved"));

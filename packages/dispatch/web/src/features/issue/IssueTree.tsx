@@ -8,7 +8,6 @@ import { firstLineOf, type TreeNode } from "./issue-tree";
 import { PHONE_ONE_LINE_MEASURE, WIDE_ONE_LINE_MEASURE } from "./NodeRow";
 import { authorText, pageChrome } from "./page-structure";
 import { CONTROL_LABELS, nodeStateWord } from "./page-words";
-import { openedWithMatches } from "./presets";
 import { CYCLE_STATES, EVERYTHING, TreeRows } from "./TreeRows";
 import {
   NOTHING_OPENED,
@@ -46,6 +45,7 @@ export function IssueTree({
   artifacts,
   context,
   emptyLine,
+  filtering,
   focusReveal,
   isClosed,
   onEditing,
@@ -53,7 +53,6 @@ export function IssueTree({
   openBody,
   reveal,
   root,
-  unfolded,
 }: {
   /** Each artifact of the issue by its slug, which is how a node names the document it is or
    *  belongs to (`issue-artifacts.ts`). */
@@ -62,6 +61,10 @@ export function IssueTree({
   context: ReadonlySet<string>;
   /** What the page says where the preset's query matched nothing under the issue. */
   emptyLine: string;
+  /** Whether the preset or its query filters the tree (`presets.ts`'s `PresetView.filtering`):
+   *  while one does, every branch of the view it left is drawn open, and while nothing filters
+   *  the fold is the frontier's alone. */
+  filtering: boolean;
   /** Whether the node the address names is the tree's to put the focus on. It is not when the
    *  preset's own document is open on that node - a comment anchored in it, an ask indexed from
    *  one of its blocks, a block named by a fragment - because the document lands on it there,
@@ -86,11 +89,6 @@ export function IssueTree({
   reveal: readonly TreeNode[] | undefined;
   /** The tree as the preset left it. */
   root: TreeNode;
-  /** The ids an active filter opens: the path down to each of its matches (`presets.ts`'s
-   *  `PresetView.opened`). A filter exists to show what it matched, so while one is on its
-   *  matches are drawn, the way the frontier's own path is - and empty while nothing filters,
-   *  where the fold is the frontier's alone. */
-  unfolded: ReadonlySet<string>;
 }): ReactNode {
   const [opened, setOpened] = useState<OpenedBranches>(NOTHING_OPENED);
   const [focused, setFocused] = useState<string | undefined>(undefined);
@@ -123,10 +121,26 @@ export function IssueTree({
   });
 
   const target = reveal?.at(-1);
-  // What a filter opens: the path down to each of its matches, so a filtered view draws what it
-  // matched rather than its context rows alone (`presets.ts`'s `openedWithMatches`). The
-  // reader's own hand outranks it, so a branch they folded shut stays shut.
-  const filtered = openedWithMatches(opened, unfolded);
+  // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
+  // on a phone sees the whole issue and can reach any branch of it; an address that names a
+  // node opens it on that node's parent, so the node the address named is one of the rows.
+  const on = zoom ?? (target === undefined ? root.id : (reveal?.at(-2) ?? root).id);
+  // A reader who zoomed into a node reads the tree from there: the node is the tree's root,
+  // the path above it the breadcrumb, and everything below it folded as it was. At 1024 px and
+  // below the tree is always zoomed, one node at a time, which is `zoomedRows`.
+  const rootedPath = (zoom === undefined || zoom === root.id ? undefined : pathTo(root, zoom)) ?? [
+    root,
+  ];
+  const rooted = rootedPath.at(-1) ?? root;
+  // What a filter opens: every branch of the view it left, since the view holds only its
+  // matches and the chain above each, so each branch is the path down to a match and the view
+  // draws what it matched rather than its context rows alone. It opens them at every depth, as
+  // the address's own path is, so a match below the drawn levels is a row of its own rather
+  // than a count (`tree-fold.ts`'s `DRAWN_LEVELS`). The reader's own hand outranks it, so a
+  // branch they folded shut stays shut.
+  const filtered: OpenedBranches = filtering
+    ? { ...everythingOpened(rooted), closed: opened.closed }
+    : opened;
   // The address's own node is unfolded to whatever the reader has opened by hand, at every
   // depth: a `#b-` fragment names a block of a document the page opens folded. A branch of
   // that path the reader folded shut is opened again, since the row the address names is
@@ -143,17 +157,6 @@ export function IssueTree({
           ),
           deeper: new Set([...filtered.deeper, ...path.map((above) => above.id)]),
         };
-  // Where the zoomed tree is rooted. Nothing chosen opens it on the issue itself, so a reader
-  // on a phone sees the whole issue and can reach any branch of it; an address that names a
-  // node opens it on that node's parent, so the node the address named is one of the rows.
-  const on = zoom ?? (target === undefined ? root.id : (reveal?.at(-2) ?? root).id);
-  // A reader who zoomed into a node reads the tree from there: the node is the tree's root,
-  // the path above it the breadcrumb, and everything below it folded as it was. At 1024 px and
-  // below the tree is always zoomed, one node at a time, which is `zoomedRows`.
-  const rootedPath = (zoom === undefined || zoom === root.id ? undefined : pathTo(root, zoom)) ?? [
-    root,
-  ];
-  const rooted = rootedPath.at(-1) ?? root;
   // The fold is seeded with the path the breadcrumb holds, so a row is keyed by its path from
   // the issue whether or not the reader has zoomed: a body they pinned, the row they are
   // editing and the tree's one tab stop are held by that key, and a zoom either way leaves

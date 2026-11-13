@@ -26,9 +26,9 @@ const FocusedNodeContext = createContext<FocusedNode | undefined>(undefined);
 const SetFocusedNodeContext = createContext<(node: FocusedNode | undefined) => void>(() => {});
 
 /**
- * Holds the focused node for one issue page, above the page itself: the page reads it and hands
- * it to the panel, because the panel is drawn where the shell's margin is
- * (`features/margin/margin-slot.tsx`) and so sits outside the page's own React tree.
+ * Holds the focused node for one issue page, above the page itself: the tree sets it, and the
+ * page reads it and hands it to the panel, whose facts are that node's, and to the preset row,
+ * which draws the toolbar of the document holding it.
  */
 export function FocusedNodeProvider({ children }: { children: ReactNode }): ReactNode {
   const [focused, setFocused] = useState<FocusedNode | undefined>(undefined);

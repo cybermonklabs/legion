@@ -115,13 +115,12 @@ export function IssueMarginPanel({
   conversationList?: ReactNode;
   /** Which state the conversation is in, which the address names and these controls move. */
   conversationState: ConversationState;
-  /** What the reader's focus is on, which the page reads and hands over: the panel was drawn
-   *  where the margin is before it had one parent, and it still takes every fact it draws as a
-   *  prop (`focused-node.tsx`). */
+  /** What the reader's focus is on, which the page reads and hands over (`focused-node.tsx`). */
   focused: FocusedNode;
   isClosed: boolean;
   issue: IssueDetails;
-  /** Takes the state a reader picked, which the page turns into its address. */
+  /** Takes the state a reader picked, which the page holds for the address they are on, or
+   *  opens the address of where that state is one (`IssuePage`'s `pickState`). */
   onConversationState: (state: ConversationState) => void;
   /** Whether the People section opens with the issue's collaborators drawn, which is what
    *  `/issues/<key>/collaborators` - the address the Collaborators tab answered - names
@@ -137,7 +136,8 @@ export function IssueMarginPanel({
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // The address opens the list; closing it again is the reader's, so this only ever opens.
   // The panel outlives a move between the issue's addresses, so seeding the state is not
-  // enough: the `t o` chord navigates under a panel that is already mounted.
+  // enough: a link to `/collaborators` followed from another of the issue's addresses arrives
+  // under a panel that is already mounted.
   useEffect(() => {
     if (openCollaborators) setCollaboratorsOpen(true);
   }, [openCollaborators]);

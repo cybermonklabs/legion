@@ -2,8 +2,9 @@ import { expect, test } from "bun:test";
 
 import type { TreeNode } from "./issue-tree";
 import type { NodeType, Preset } from "./page-words";
-import { openedWithMatches, presetView } from "./presets";
+import { presetView } from "./presets";
 import { type DrawnRow, NOTHING_OPENED, treeRows } from "./tree-fold";
+import { everythingOpened } from "./tree-keys";
 
 /**
  * A preset as a filter over the one tree (dispatch://INFRA-1196 R1, R3): what it keeps, and what
@@ -57,10 +58,13 @@ function issue(): TreeNode {
   ]);
 }
 
-/** The rows the page draws for `preset` under `query`, with `opened` as the reader left it. */
+/** The rows the page draws for `preset` under `query`, with `opened` as the reader left it. A
+ *  filtered view is drawn with every branch it kept open - each is the path down to a match -
+ *  and the reader's own folds outranking that, which is the fold `IssueTree.tsx` draws. */
 function drawn(root: TreeNode, preset: Preset, query = "", opened = NOTHING_OPENED): string[] {
   const view = presetView(root, preset, query);
-  return idsOf(treeRows(view.root, openedWithMatches(opened, view.opened)));
+  const fold = view.filtering ? { ...everythingOpened(view.root), closed: opened.closed } : opened;
+  return idsOf(treeRows(view.root, fold));
 }
 
 test("a filter draws its matches, and a branch the reader closed stays closed", () => {
@@ -70,6 +74,7 @@ test("a filter draws its matches, and a branch the reader closed stays closed", 
   // and neither match.
   const view = presetView(root, "plan", "");
   expect(view.matches).toBe(2);
+  expect(view.filtering).toBe(true);
   expect([...view.context]).toEqual(["plan-md", "CORE-1"]);
   expect(idsOf(treeRows(view.root))).toEqual(["CORE-1", "plan-md"]);
 
@@ -88,7 +93,7 @@ test("a filter draws its matches, and a branch the reader closed stays closed", 
 test("the unfiltered view opens nothing of its own and folds to the frontier", () => {
   const root = issue();
   const view = presetView(root, "tree", "");
-  expect([...view.opened]).toEqual([]);
+  expect(view.filtering).toBe(false);
   // Exactly the fold the page draws with no preset and no query: the path to the open question,
   // and the plan folded to one row with a count of what it holds.
   expect(drawn(root, "tree")).toEqual(idsOf(treeRows(root)));

@@ -187,9 +187,12 @@ test("a new card arriving while the reader is on another preset leaves the conve
       "a card arriving while the reader was on another preset moved the panel"
     ).toBe(0);
 
-    // And they come back to the place they left, with the new card in the list behind it.
-    await page.getByRole("tab", { exact: true, name: "Tree" }).click();
-    await page.getByRole("option", { name: "What people said" }).click();
+    // And they come back to the place they left, with the new card in the list behind it. A
+    // state picked in the panel keeps every preset's address, the issue's own among them
+    // (R19), so the way back to the conversation's own address is Back, which moves inside the
+    // page as the tab did. Its chord would do it too, but a chord scrolls the panel to the
+    // control it focuses, which is a move of the reader's place this row would then read.
+    await page.goBack();
     await expect(page).toHaveURL(new RegExp(`/issues/${issue.key}/conversation$`, "u"));
     await expect(conversation(page).getByText("Arrived while away")).toBeAttached();
     expect(

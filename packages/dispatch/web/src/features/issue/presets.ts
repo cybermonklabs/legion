@@ -1,6 +1,5 @@
 import type { TreeNode } from "./issue-tree";
 import type { NodeType, Preset } from "./page-words";
-import type { OpenedBranches } from "./tree-fold";
 
 /**
  * The five presets as queries over the one tree (dispatch://INFRA-1196 R3,
@@ -48,17 +47,16 @@ const EMPTY: ReadonlySet<string> = new Set();
 export interface PresetView {
   /** The ids of the rows drawn only as the ancestor of a match. */
   readonly context: ReadonlySet<string>;
+  /** Whether this view is a filter at all: false for the Tree preset with no query, which keeps
+   *  every node, so nothing was filtered for and the frontier alone says what is open (R1).
+   *  While one is on, every branch the view kept is drawn open (`IssueTree.tsx`): the view holds
+   *  only the matches and the chain above each one, so each of its branches is the path down to
+   *  a match, and a filter exists to show what it matched - the fold is the unfiltered page's
+   *  own rule (`tree-fold.ts`) and may not hide the thing the reader filtered for. */
+  readonly filtering: boolean;
   /** How many distinct nodes the preset's query matched: a node drawn under two requirements is
    *  one node, so this is what the preset's own count says. */
   readonly matches: number;
-  /** The ids of the nodes a filter opens: every node of this view that holds a match below it,
-   *  which is the path down to each match. A filter exists to show what it matched, so while one
-   *  is on, its matches are drawn - the fold is the unfiltered page's own rule (`tree-fold.ts`)
-   *  and may not hide the thing the reader filtered for. The reader's own hand still outranks
-   *  it, as it outranks the frontier: a branch they folded shut stays shut
-   *  (`IssueTree.tsx`'s `shown`). Empty while nothing filters - the Tree preset with no query,
-   *  where every node is a match and the frontier alone says what is open (R1). */
-  readonly opened: ReadonlySet<string>;
   /** The tree as the preset leaves it: every match with the chain above it, and nothing else. */
   readonly root: TreeNode;
 }
@@ -76,8 +74,6 @@ export function presetView(
 ): PresetView {
   const types = PRESET_TYPES[preset];
   const wanted = query.trim().toLowerCase();
-  // Whether this view is a filter at all: the Tree preset with no query keeps every node, so
-  // nothing was filtered for and the fold is the frontier's alone.
   const filtering = types !== undefined || wanted !== "";
   const keeps = (node: TreeNode): boolean =>
     named.has(node.id) ||
@@ -85,7 +81,6 @@ export function presetView(
       (wanted === "" || node.text.toLowerCase().includes(wanted)));
   const context = new Set<string>();
   const matched = new Set<string>();
-  const opened = new Set<string>();
   const prune = (node: TreeNode): TreeNode | undefined => {
     const children = node.children
       .map(prune)
@@ -94,47 +89,15 @@ export function presetView(
     if (!own && children.length === 0) return undefined;
     if (own) matched.add(node.id);
     else context.add(node.id);
-    // The path down to each match, read off the walk that found them: a node holds a match
-    // below it when a child of it is one or holds one itself, and the children are pruned
-    // before their parent, so each is already in `matched` or in `opened` by here.
-    if (filtering && children.some((child) => matched.has(child.id) || opened.has(child.id))) {
-      opened.add(node.id);
-    }
     return { ...node, children, held: children.reduce((held, child) => held + child.held + 1, 0) };
   };
   const pruned = prune(root);
   if (pruned !== undefined) {
-    return { context, matches: matched.size, opened, root: pruned };
+    return { context, filtering, matches: matched.size, root: pruned };
   }
   // Nothing under the issue matched, so the preset is the issue alone, drawn as context.
   context.add(root.id);
-  return { context, matches: 0, opened, root: { ...root, children: [], held: 0 } };
-}
-
-/**
- * The fold the page draws a filtered view with: the reader's own opens and closes
- * (`OpenedBranches`), and the path down to each match opened beside them (`PresetView.opened`).
- *
- * A filter exists to show what it matched, so while one is on its matches are drawn: the
- * frontier's rule - every branch folded until something open runs through it - is the
- * unfiltered page's own, and left to itself it hides the very rows the reader filtered for.
- * The path is opened at every depth, as the address's own path is, so a match below the drawn
- * levels is a row of its own rather than a count (`tree-fold.ts`'s `DRAWN_LEVELS`).
- *
- * The reader's hand outranks it, which is the one way it differs from the address's path: a
- * branch they folded shut stays shut, because `closed` is left as they left it and the fold
- * reads that first.
- */
-export function openedWithMatches(
-  opened: OpenedBranches,
-  unfolded: ReadonlySet<string>
-): OpenedBranches {
-  if (unfolded.size === 0) return opened;
-  return {
-    branches: new Set([...opened.branches, ...unfolded]),
-    closed: opened.closed,
-    deeper: new Set([...opened.deeper, ...unfolded]),
-  };
+  return { context, filtering, matches: 0, root: { ...root, children: [], held: 0 } };
 }
 
 /** How many nodes each preset holds under `query`, which is the count its own tab draws. */
