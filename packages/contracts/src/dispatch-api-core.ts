@@ -259,16 +259,6 @@ export const ProjectSchema = z
   })
   .readonly();
 
-/**
- * A project's default assignee: the last step of an issue create's assignee chain, reached when
- * the create named nobody, the session acts for nobody, and no parent carries one. `assignee` is
- * a person's lowercase email, or null for a project that names nobody — which
- * `GET /api/v1/settings/project-default-assignees` leaves out of its list entirely.
- */
-export const ProjectDefaultAssigneeSchema = z
-  .strictObject({ project: z.string(), assignee: z.string().nullable() })
-  .readonly();
-
 export const RepoProjectSchema = z
   .strictObject({
     repo: z.string(),
@@ -318,9 +308,20 @@ export const RepoProjectUpdatedEventPayloadSchema = z
 
 export type RepoProjectUpdatedEventPayload = z.output<typeof RepoProjectUpdatedEventPayloadSchema>;
 
-/** `settings.project_default_assignee.updated`: a human set or cleared a project's default
- *  assignee. The payload is the stored row, so a clear carries `assignee: null`. */
-export const ProjectDefaultAssigneeUpdatedEventPayloadSchema = ProjectDefaultAssigneeSchema;
+/** `settings.project_default_assignee.updated`: a person moved a project's default assignee to
+ *  another person. The payload is the stored row - no write clears a default, so `assignee`
+ *  names somebody - plus `thread_logins`, the previous default and the new one, sorted and each
+ *  named once. A project's default is the last step of the chain that decides who a question
+ *  reaches, so the move carries every question on an issue nobody holds between those two
+ *  Inboxes, and a reader refreshes the lists of both. An event retained from before every
+ *  project named a default can record a clear, `assignee: null`, and names no `thread_logins`. */
+export const ProjectDefaultAssigneeUpdatedEventPayloadSchema = z
+  .strictObject({
+    project: z.string(),
+    assignee: z.string().nullable(),
+    thread_logins: z.array(z.string()).optional(),
+  })
+  .readonly();
 
 export type ProjectDefaultAssigneeUpdatedEventPayload = z.output<
   typeof ProjectDefaultAssigneeUpdatedEventPayloadSchema

@@ -42,13 +42,14 @@ import (
 // login), narrowed to one issue ($2, empty for any) or one project document ($3, null for any),
 // less an open ask the Inbox already lists in Waiting on you, whose row there shows its reply
 // (api/inbox.go). What that leaves out is an open ask on an open issue that waits on the caller,
-// which askedOfPersonExpression decides: the person the ask was handed to, and the assignee of
-// its issue until somebody hands it on. The issue is reached by a left join, deliberately, so an
-// ask on a project document is still tested: one nobody was handed waits on nobody, so it is a
-// Reply row, and one handed to the caller is their Inbox row instead. An ask on an unassigned
-// issue or on another person's is a Reply row here the same way. A close withdraws its issue's
-// open asks, so an open ask on a closed issue is one a close by an older release left during a
-// roll; it stays too.
+// which askedOfPersonExpression decides: the person the ask was handed to, the assignee of its
+// issue until somebody hands it on, and its project's default assignee while the issue holds
+// nobody. The issue is reached by a left join, deliberately, and so are the ask's own document
+// and their project, so an ask on a project document is tested too: it waits on the person it
+// was handed to, else on that project's default, and either way it is that person's Inbox row
+// and not their Reply row. An ask on another person's issue is a Reply row here the same way. A
+// close withdraws its issue's open asks, so an open ask on a closed issue is one a close by an
+// older release left during a roll; it stays too.
 //
 // The ask is excluded by a test keyed on the thread's own id rather than by two left joins over
 // the row's kind and issue, so every column this filter reads of user_threads is one the state's
@@ -60,7 +61,7 @@ const myRepliesOwner = `
 	  and ($2::text = '' or u.issue_key = $2::text)
 	  and ($3::uuid is null or u.artifact_id = $3::uuid)
 	  and not exists (
-		select 1 from asks a left join issues i on i.key = a.issue_key
+		select 1 from asks a` + askedOfPersonJoins + `
 		where a.id = u.thread_id and a.state = 'open' and i.closed_at is null
 		  and ` + askedOfPersonExpression + ` = $1
 	  )`

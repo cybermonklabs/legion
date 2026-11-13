@@ -24,7 +24,8 @@ const (
 func seedIssueWithSpec(t *testing.T, ctx context.Context, store *Store, number int, title, spec string) string {
 	t.Helper()
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core') on conflict do nothing
+		insert into projects (key, name)
+		select 'CORE', 'Core' where not exists (select 1 from projects where key = 'CORE')
 	`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -90,6 +91,7 @@ func TestIssuesSearchSpecMigrationReindexesTheIssuesStoredBeforeIt(t *testing.T)
 		t.Fatalf("read the spec-less issue's vector: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("apply the issue-spec search migrations: %v", err)
 	}
@@ -120,6 +122,7 @@ func TestTheIssuesSearchTriggerIndexesAVersionWrittenAfterIt(t *testing.T) {
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate: %v", err)
 	}
+	seedCoreWithADefaultAssignee(t, store)
 	key := seedIssueWithSpec(t, ctx, store, 1, "Tide tables for the equinox", "Nothing of note.\n")
 	if matchesIssue(t, ctx, store, key, "Tyrrhenian") {
 		t.Fatal("the issue matched a word no version of its document holds")

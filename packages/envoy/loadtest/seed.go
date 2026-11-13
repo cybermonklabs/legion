@@ -119,10 +119,13 @@ func runSeed(args []string) error {
 // seed creates the projects, issues and comments, then routes issue i (in key order) to session
 // i. Content is deterministic: each issue's generator is seeded by its project and number, never
 // the clock, so which worker writes it does not change it.
+//
+// The projects are created as seedPerson, who each of them then names as its default assignee;
+// everything else is written as a session, as it has always been.
 func seed(ctx context.Context, a *api, comments, workers int) (seedFile, error) {
 	var sf seedFile
 	for _, p := range seedProjects {
-		res := a.callRetry(ctx, "POST", "/api/v1/projects", who{}, map[string]any{"key": p.key, "name": "Load " + p.key, "actor": sessionActor("ses-seed")})
+		res := a.callRetry(ctx, "POST", "/api/v1/projects", who{person: seedPerson}, map[string]any{"key": p.key, "name": "Load " + p.key})
 		if !res.ok() && res.status != 409 {
 			return sf, fmt.Errorf("create project %s: %d %s %v", p.key, res.status, trunc(res.body), res.err)
 		}

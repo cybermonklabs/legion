@@ -787,6 +787,7 @@ func TestMigrate0015BackfillsIssueRanksByProjectCreationOrder(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed pre-rank issues: %v", err)
 	}
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0015: %v", err)
 	}
@@ -835,6 +836,7 @@ func TestMigrate0009BackfillsProjectAndRefKeyFrom0007(t *testing.T) {
 	migrateThrough(t, store, 7)
 	seedGraphAt0007(t, store)
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0009: %v", err)
 	}
@@ -895,6 +897,7 @@ func TestMigrate0009DropsMalformedArtifactReferences(t *testing.T) {
 		t.Fatalf("seed malformed artifact reference: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate malformed artifact reference: %v", err)
 	}
@@ -928,7 +931,7 @@ func TestMigrateMarksLegacyNonNotifyingEventsPublished(t *testing.T) {
 		t.Fatalf("forget backfill migration: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Legacy', '{"kind":"session","id":"s"}', 'U');
 		insert into events (issue_key, seq, type, actor, payload, notify)
@@ -980,6 +983,7 @@ func TestMigrate0031RewritesNullAskOptionsToEmptyArrays(t *testing.T) {
 		t.Fatalf("seed null options: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0031: %v", err)
 	}
@@ -1027,6 +1031,7 @@ func TestMigrate0035FoldsActionAsksIntoQuestions(t *testing.T) {
 		t.Fatalf("seed action ask: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("migrate through 0035: %v", err)
 	}
@@ -1067,7 +1072,7 @@ func TestMigrate0053RefusesAnApprovalOnAnyAskButAnApprovalAsk(t *testing.T) {
 		t.Fatalf("migrate: %v", err)
 	}
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice@d.example');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');
 	`); err != nil {

@@ -50,7 +50,7 @@
 #                read by neither rule and reported by neither line. The documents write
 #                Temporal's `workflow.Sleep` and their own file names the same way, so
 #                nothing in such a span says whether a file was meant.
-#   Literal      (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ASSIGNMENT"`)
+#   Literal      (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ENTRY"`)
 #                The first of those two shapes with the second span double-quoted. It
 #                resolves on the exact quoted text being in that file. This is the form
 #                for a refusal code or any other token that is no declaration. Its path
@@ -941,7 +941,7 @@ A file that does not hold the identifier it is cited with:
 A path the repository does not hold:
 (`packages/daemon/internal/record/no_such_file.go`, `record.Postgres.Enqueue`).
 An identifier the file holds only as a string, cited in the code form:
-(`packages/daemon/internal/api/handoff.go`, `api.HANDOFF_STALE_ASSIGNMENT`).
+(`packages/daemon/internal/api/handoff.go`, `api.HANDOFF_STALE_ENTRY`).
 A table no migration creates: the `no_such_table_of_infra_1546` table.
 A column no migration declares: the `no_such_column_of_infra_1546` column of `outbox`.
 A dispatch reference that does not read:
@@ -970,7 +970,7 @@ well_formed_fixture() {
 	cat <<'EOF'
 Code: (`packages/daemon/internal/record/store.go`, `record.Postgres.Enqueue`).
 Code, the other way round: `supervise.Delivery` (`packages/daemon/internal/supervise/delivery.go`).
-Literal: (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ASSIGNMENT"`).
+Literal: (`packages/daemon/internal/api/handoff.go`, `"HANDOFF_STALE_ENTRY"`).
 Stored state: the `lease_token` column of `outbox`, and the `pending_task_deliveries` table.
 Dispatch: dispatch://INFRA-1546.
 Web: https://docs.temporal.io/evaluate/development-production-features (read 2026-11-07)

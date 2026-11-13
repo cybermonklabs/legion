@@ -1493,7 +1493,8 @@ type Ask struct {
 	ApprovalArtifact *AskAnchorArtifact `json:"approval_artifact,omitempty"`
 	// AskedOf is the person this ask waits on: the canonical login of somebody who has signed in
 	// to Dispatch. It is empty until a person hands the ask on, and an empty field means the ask
-	// waits on the assignee of its issue, which is where every ask starts.
+	// waits on the assignee of its issue, or on its project's default assignee while the issue
+	// holds nobody, which is where every ask starts.
 	AskedOf *string `json:"asked_of"`
 	// AskedOfBy is the person who last handed the ask on and AskedOfAt when they did; both are
 	// empty until somebody first hands the ask on. A hand-on to the assignee of the ask's own
@@ -1505,11 +1506,11 @@ type Ask struct {
 	// a reply newer than the one it answered decides it. Set on ask reads only (inbox rows, ask lists,
 	// the ask detail), never on the ask.* event payloads; empty for answered and resolved asks.
 	WaitingOn string `json:"waiting_on,omitempty"`
-	// WaitingOnPerson is the person an ask waits on: AskedOf once somebody has handed the ask on,
-	// and the assignee of its issue until then (api.askedOfPersonExpression). Set on ask reads
-	// only (inbox rows, ask lists, the ask detail), never on the ask.* event payloads; empty when
-	// nobody waits on it, which is an ask on a project document or an unassigned issue that
-	// nobody was handed.
+	// WaitingOnPerson is the person an ask waits on, in three steps: AskedOf once somebody has
+	// handed the ask on, then the assignee of its issue, then the default assignee of its
+	// project (api.askedOfPersonExpression), which every project names, so every ask names a
+	// person. Set on ask reads only (inbox rows, ask lists, the ask detail), never on the ask.*
+	// event payloads.
 	WaitingOnPerson string `json:"waiting_on_person,omitempty"`
 }
 

@@ -1580,7 +1580,7 @@ describe("dispatchToolSpecs", () => {
     [
       "dispatch_issue",
       "assignee",
-      "else the project's default assignee when it still names a person who has signed in, else unassigned.",
+      "else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one.",
     ],
     [
       "dispatch_read",

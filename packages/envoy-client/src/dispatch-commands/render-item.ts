@@ -148,22 +148,36 @@ function openAskAge(ageSeconds: number): string {
   return `${days}d${hours % 24 === 0 ? "" : ` ${hours % 24}h`}`;
 }
 
-/** The person an open ask is asked of, as the server resolved it (`waiting_on_person`: whoever
- *  the ask was handed to, and the assignee of its issue until somebody hands it on), and
- *  `nobody` where the server names none — an ask on a project document, or on an issue nobody
- *  holds, that nobody was handed. */
-function openAskAskedOf(ask: OpenAsk): string {
-  const person = ask.waiting_on_person;
-  return person === undefined || person === "" ? "nobody" : person;
+/** A person a Dispatch answer names, or undefined where it names none: the field absent, or
+ *  empty. Every line that prints a person reads it through this, so none prints an empty name. */
+export function namedPerson(person: string | undefined): string | undefined {
+  return person === undefined || person === "" ? undefined : person;
+}
+
+/** The person a question reaches, for every line that names one: an open-asks row, and the
+ *  answers of the two writes that carry a question, the ask create's and the approval request's.
+ *  It is the server's `waiting_on_person`, the one rule every read of that person shares
+ *  (`askedOfPersonExpression` in `packages/envoy/internal/dispatch/api/ask_rows.go`): the person
+ *  the question was handed to, else the issue's assignee, else the project's default assignee.
+ *  Every project names a default assignee, so the server names a person for every question it
+ *  stores. It is undefined only from a Dispatch older than that rule, and the line then names
+ *  nobody rather than claiming a person. */
+export function waitsOnPerson(ask: { readonly waiting_on_person?: string }): string | undefined {
+  return namedPerson(ask.waiting_on_person);
 }
 
 /** One row of `dispatch open-asks`, in both of the listing's groups: the person it is asked of
- *  is on every row, since one row renderer is one rule. The word is the ask card's own, `asked
- *  of`, rather than `waiting on`, because a row under `Waiting on agent (N):` waits on the
- *  agent - the next move there is the agent's, and naming the person must not claim otherwise. */
+ *  is on every row, since one row renderer is one rule. That person is the server's
+ *  `waiting_on_person`, resolved as the ask is read: the person it was handed to, else the
+ *  assignee of its issue, else the default assignee of its project, which every project names,
+ *  so the server names a person for every ask, an ask on a project document included. The word
+ *  is the ask card's own, `asked of`, rather than `waiting on`, because a row under `Waiting on
+ *  agent (N):` waits on the agent - the next move there is the agent's, and naming the person
+ *  must not claim otherwise. A Dispatch older than that rule answers no person, and the row
+ *  then says nobody rather than printing an empty name (`waitsOnPerson`). */
 function openAskLine(ask: OpenAsk, baseUrl: string): string {
   const priority = ask.priority === null ? "" : `P${ask.priority} · `;
-  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${openAskAskedOf(ask)} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
+  return `- ${openAskAge(ask.age_seconds)} · ${priority}${ownerTitle(ask.owner)} · asked of ${waitsOnPerson(ask) ?? "nobody"} · ${ask.question} · ${new URL(ask.ref, baseUrl).toString()}`;
 }
 
 export function formatOpenAsksSummary(response: OpenAsksResponse, baseUrl: string): string {
