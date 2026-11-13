@@ -930,7 +930,15 @@ The daemon adopts only for a task that names a phase, and only for the role that
 - the phase start that a move into the phase sends to its role;
 
 - the resume task of the phase owner.
-  The daemon sends it when the owner comes back ready with no task, when a boot resumes an owner that the daemon suspended, when a tree is re-admitted in the middle of a phase, and when it repairs a slot whose worker has no task or a worker that went silent.
+  The daemon sends it in these cases:
+
+  - the owner comes back ready with no task;
+
+  - a boot resumes an owner that the daemon suspended;
+
+  - a tree is re-admitted in the middle of a phase;
+
+  - the daemon repairs a slot whose worker has no task, or a worker that went silent.
 
 These tasks adopt nothing:
 
@@ -952,7 +960,7 @@ Notices, hooks, phase-ended messages and phase reminders reach the agent through
 The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
 It sends the task when that turn ends, and the adoption runs then.
 
-**Three lines in the daemon's log show what each adoption did.**
+**Four lines in the daemon's log show what each adoption did.**
 Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
 So search the daemon's own log for the key and the `-` after it, without regard to case: the `-` keeps out the lines of a longer key, such as `WIDGETS-120` for `WIDGETS-12`.
 Read the log of the daemon's pod under Kubernetes, or the output of `legion start` under tmux:
@@ -960,11 +968,18 @@ Read the log of the daemon's pod under Kubernetes, or the output of `legion star
 ```sh
 kubectl -n <namespace> logs <the daemon's pod> > daemon.log
 grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
-  -e 'rather than adopt the working copy' -e 'refused to adopt the working copy'
+  -e 'rather than adopt the working copy' -e 'refused to adopt the working copy' \
+  -e 'lost to the transport'
 ```
 
+`kubectl logs` gives only the log file that the node keeps now, for the daemon's pod that runs now.
+On a busy daemon, that file can hold only the last minutes, and a new daemon pod starts with an empty log.
+Read the time of the first line.
+If the wrong commit is older than that line, read the daemon's lines from the log store of your cluster.
+A search that finds no line for a time before the first line does not show that no adoption occurred.
+
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
-  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`.
+  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`, in nanoseconds.
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
@@ -972,6 +987,11 @@ grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
   The task stays queued, and the refusal counts against the prompt budget of the claim.
+
+- `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
+  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon sent the adoption to the shim, and the answer did not come back: the connection closed, or the daemon stopped its wait.
+  The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
+  The task stays queued.
 
 Compare the time of the wrong commit with these lines.
 An adoption line for another role of the issue just before the commit shows that the adoption moved the author.

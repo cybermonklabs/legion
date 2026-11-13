@@ -127,10 +127,11 @@ func TestIdleReleaseAndWake(t *testing.T) {
 	// Machine.adopts), so each wake's task reaches its role with no adopt-working-copy frame ahead
 	// of it, nor any since the release. A role-message wake whose task adopted the working copy is
 	// what LINUX-1529 and BET-846 at 04:54Z recorded on a release before cybermonklabs/legion#2539:
-	// the woken role's adoption ran `jj new` under whichever role was working in the issue's one
-	// workspace (dispatch://INFRA-2695). The five-wake pass waited for every one of these tasks,
-	// and the daemon sends a frame before the task it is for and that task only once the frame is
-	// answered, so every frame a wake brought is on the record by now.
+	// the woken role's adoption ran its jj commands, `jj metaedit --update-author` or `jj new`, on
+	// the `@` of whichever role was working in the issue's one workspace (dispatch://INFRA-2695).
+	// The five-wake pass waited for every one of these tasks, and the daemon sends a frame before
+	// the task it is for and that task only once the frame is answered, so every frame a wake
+	// brought is on the record by now.
 	t.Run("ATaskWithNoPhaseReachesItsRoleWithNoAdoption", func(t *testing.T) {
 		for _, wake := range idleRigWakes(rig) {
 			if idleRigCount(rig.newPrompts(wake.issue), wake.task) == 0 {

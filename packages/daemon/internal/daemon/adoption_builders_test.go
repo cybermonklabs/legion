@@ -1,8 +1,9 @@
 package daemon
 
-// Every role of an issue works one jj workspace, and a task that adopts it runs `jj new` under
-// whichever role is working there. So the daemon adopts the working copy only for a task that names
-// a phase, and holds such a task while another claim of the issue is in a turn
+// Every role of an issue works one jj workspace, and a task that adopts it snapshots that workspace
+// and then runs `jj metaedit --update-author` or `jj new` on its `@` under whichever role is
+// working there. So the daemon adopts the working copy only for a task that names a phase, and
+// holds such a task while another claim of the issue is in a turn
 // (cybermonklabs/legion#2539). That rule is one predicate, supervise's adopts, and it reads one
 // field: the delivery's Phase. No builder of a task decides whether its task adopts. Each writes an
 // outbox row, and the outbox copies the row's Phase onto the delivery it hands the claim (the
