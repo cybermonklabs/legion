@@ -141,7 +141,10 @@ The hub refuses these before it registers anything, with an error naming the inp
   `DispatchPermissions(dispatchMachineId)`. Give it that listener's `machineId`, since the set
   names its durable consumer and queue group.
 - `daemon: true`: the dedicated user of one Legion daemon, granted `DaemonPermissions()` (see
-  [Permission sets](../README.md#permission-sets)). Its seed belongs only to that daemon.
+  [Permission sets](../README.md#permission-sets)). Its seed belongs only to that daemon. Beside
+  the notification stream's calls, the set creates, reads, writes and watches the task bucket
+  `legion_tasks`, whose one writer is the daemon: JetStream's account info, the info, create and
+  update of the bucket's stream, its gets, `$KV.legion_tasks.>` and its watch's consumer calls.
 - `permissions`: `{publish, subscribe}`, each a `nats:Rules`, an `allow` list and an optional
   `deny` list of subject patterns, for any other client.
 
@@ -175,6 +178,14 @@ every registration that asks for consumer delivery `503 no_grant`, so a session 
 through it is not registered at all and receives nothing until its listener's grant carries the
 session consumers. Every set above subscribes to the role lanes in the queue group every listener
 shares, `envoy-roles`, beside the machine's own, since each user runs a listener.
+
+`ListenerPermissions` and `ListenerHostPermissions`, and no other set, also hold the reads of the
+task bucket `legion_tasks`, the delivered copy of each Legion daemon's record of each claim's
+current task: its stream's info, its direct and stored-message gets, its watch's consumer create
+and delete and their flow-control replies, with which a listener that gives consumer delivery
+relays each claim's value to the session holding the claim's role. They hold no create, update or
+write of the bucket, which the daemon alone writes. The bucket is not one of the listener's
+buckets, so a `machineId`, `dispatchMachineId` or `sessionUser` user holds nothing of it.
 
 `nkey` is the public key `envoy-infra seed generate` prints, and the seed stays in the secret
 store it wrote (see [NATS seeds](../README.md#nats-seeds)): a host's listener reads it from there

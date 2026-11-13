@@ -9,6 +9,7 @@ import (
 	"github.com/sjawhar/envoy/daemonpermissions"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/legiontasks"
 )
 
 // Permissions are one NATS user's publish and subscribe rules, as a User takes them.
@@ -30,10 +31,11 @@ const (
 const inboxes = nats.InboxPrefix + ">"
 
 // listenerGrant is the grant every user that runs envoy-listener holds as machine machineID, built
-// from Envoy's own names: ListenerPermissions adds the session consumers' calls to it
-// (sessionConsumerCalls), ListenerHostPermissions those and the subscribe to every notification
-// topic, DispatchPermissions what Dispatch itself needs, and HostPermissions the session's
-// entries. Publish, in this order:
+// from Envoy's own names: ListenerPermissions adds the session consumers' calls
+// (sessionConsumerCalls) and the task bucket's reads (taskBucketReads) to it,
+// ListenerHostPermissions those and the subscribe to every notification topic,
+// DispatchPermissions what Dispatch itself needs, and HostPermissions the session's entries.
+// Publish, in this order:
 //   - every notification topic (bus.NotificationTopicPrefix): the stream's subjects, the role
 //     lanes, every exception lane, the session relay subjects (bus.DeliverSubjectPrefix), and any
 //     other topic the listener publishes over core NATS, a role lane's forward among them
@@ -107,25 +109,51 @@ func sessionConsumerCalls() []string {
 	}
 }
 
+// taskBucketReads are the calls the listener's task relay makes on the Legion daemons' task bucket
+// (legiontasks.Bucket), which it opens and watches but never creates or writes: the bucket's
+// stream info (the open, and the epoch it reads, the stream's creation time), its direct and
+// stored-message gets (a key's current value, read when the key's role changes holder), its
+// watch's consumer create and delete, and their flow-control replies. The watch delivers on a
+// reply inbox, which the listener grant's subscribe already admits. The daemon is the bucket's
+// one writer (daemonpermissions.Grant), so these hold no account info, no create or update of the
+// stream and no publish to its keys: a listener that tried any of them is refused. Only the sets
+// of a user no session shares hold them (ListenerPermissions, and through it
+// ListenerHostPermissions), the sets of the listeners that give their sessions consumer delivery
+// and so relay their tasks; the bucket is not one of bus.ListenerBuckets, so listenerGrant, and
+// HostPermissions, DispatchPermissions and SessionPermissions with it, hold none of them.
+func taskBucketReads() []string {
+	return []string{
+		jsAPI + "STREAM.INFO." + legiontasks.Stream,
+		jsAPI + "DIRECT.GET." + legiontasks.Stream + ".>",
+		jsAPI + "STREAM.MSG.GET." + legiontasks.Stream,
+		jsAPI + "CONSUMER.CREATE." + legiontasks.Stream + ".>",
+		jsAPI + "CONSUMER.DELETE." + legiontasks.Stream + ".>",
+		jsFlow + legiontasks.Stream + ".>",
+	}
+}
+
 // ListenerPermissions is the grant envoy-listener needs as machine machineID: the listener grant
-// (listenerGrant), then the session consumers' calls (sessionConsumerCalls), which only this set
-// and ListenerHostPermissions hold. A hub that renders this set for its own listener gives that
-// listener consumer delivery; a listener connecting as a host or Dispatch user does not have it,
-// and has no session of its own registered at all: every registration it cannot give a consumer
-// is refused by name and writes nothing.
+// (listenerGrant), then the session consumers' calls (sessionConsumerCalls) and the task bucket's
+// reads (taskBucketReads), which only this set and ListenerHostPermissions hold. A hub that
+// renders this set for its own listener gives that listener consumer delivery and the task relay;
+// a listener connecting as a host or Dispatch user has neither, and has no session of its own
+// registered at all: every registration it cannot give a consumer is refused by name and writes
+// nothing.
 func ListenerPermissions(machineID string) Permissions {
 	grant := listenerGrant(machineID)
 	grant.Publish.Allow = append(grant.Publish.Allow, sessionConsumerCalls()...)
+	grant.Publish.Allow = append(grant.Publish.Allow, taskBucketReads()...)
 	return grant
 }
 
 // ListenerHostPermissions is the grant of a listener's own NATS user, one no session shares, as
-// machine machineID: the listener's set (ListenerPermissions), the session consumers' calls
-// included, then a subscribe to every notification topic (bus.NotificationTopicPrefix) that
-// nothing now uses. It existed for the opt-in that had a listener hold a core subscription on
-// notifications.> for the sessions it served, and that opt-in went with the listener's push to
-// a session's serving port (dispatch://INFRA-889), so this set grants the listener's set and the
-// one subscribe nothing reads. It keeps the subscribe rather than dropping it, and so stays a
+// machine machineID: the listener's set (ListenerPermissions), the session consumers' calls and
+// the task bucket's reads included, then a subscribe to every notification topic
+// (bus.NotificationTopicPrefix) that nothing now uses. It existed for the opt-in that had a
+// listener hold a core subscription on notifications.> for the sessions it served, and that
+// opt-in went with the listener's push to a session's serving port (dispatch://INFRA-889), so
+// this set grants the listener's set and the one subscribe nothing reads. It keeps the subscribe
+// rather than dropping it, and so stays a
 // set of its own rather than an alias, because a change to a set rewrites every hub's rendered
 // authorization: it replaces a VM hub's instance and reaches a clustered hub only as a live
 // reload, which dispatch://INFRA-429's non-goals leave to dispatch://INFRA-551. No grant code

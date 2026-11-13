@@ -157,18 +157,17 @@ env:
     packages/broker-client/ packages/pi-legion/agents/ skills/
     scripts/third-party-notices.ts scripts/pi-plugin-prepack.sh patches/
   # The Go `legion`. The binary embeds its prompts (internal/prompts/roles and go), so a docs:
-  # commit there still releases. It also compiles in the two packages/envoy packages that
-  # `go list -deps ./cmd/legion` in packages/daemon names, listenfd and roleholder, so a change to
-  # either changes the binary. The notices scripts and the target list are runtime inputs of the
+  # commit there still releases. The notices scripts and the target list are runtime inputs of the
   # release archives and worker image, so any change to one needs a new tag rather than a CI-only
   # rebuild. The envoy packages below are every package `go list -deps ./cmd/legion` reaches
-  # through the module's `replace` on ../envoy — its five public packages, and the internal ones
-  # they pull in with them: the splitter, parser, contracts and text reader behind
-  # `dispatchbody`, and the token client, its wire and the identity reader behind `brokerclient`
-  # — so a change to any of them changes the binary and must release one, and the envoy module's
-  # own go.mod and go.sum decide which versions of their dependencies it links. That list is
-  # written here by hand; this is the command that prints it, to be run from packages/daemon
-  # whenever what the binary links moves:
+  # through the module's `replace` on ../envoy — its public packages (brokerclient, dispatchbody,
+  # legiontasks, listenfd, migrationid, roleholder, sessiontiming), and the internal ones they pull
+  # in with them: the splitter, parser, contracts, text reader and cache behind `dispatchbody`, and
+  # the token client, its wire and the identity reader behind `brokerclient` — so a change to any
+  # of them changes the binary and must release one, and the envoy module's own go.mod and go.sum
+  # decide which versions of their dependencies it links.
+  # That list is written here by hand; this is the command that prints it, to be run from
+  # packages/daemon whenever what the binary links moves:
   #   go list -deps ./cmd/legion | grep '^github.com/sjawhar/envoy' |
   #     sed 's#^github.com/sjawhar/envoy#packages/envoy#' | sort
   LEGION_VERSION_ARGS: >-
@@ -176,10 +175,12 @@ env:
     --patch-path scripts/go-third-party-notices.sh --patch-path scripts/assemble-third-party-notices.sh
     --patch-path .github/go-release-targets.json
     -- packages/daemon/ packages/daemon/internal/prompts/roles/ packages/daemon/internal/prompts/go/
-    packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/listenfd/
-    packages/envoy/migrationid/ packages/envoy/roleholder/ packages/envoy/sessiontiming/
+    packages/envoy/brokerclient/ packages/envoy/dispatchbody/ packages/envoy/legiontasks/
+    packages/envoy/listenfd/ packages/envoy/migrationid/ packages/envoy/roleholder/
+    packages/envoy/sessiontiming/
     packages/envoy/internal/broker/oauthwire/ packages/envoy/internal/brokerclient/
-    packages/envoy/internal/contracts/ packages/envoy/internal/dispatch/itemblocks/
+    packages/envoy/internal/contracts/ packages/envoy/internal/dispatch/bytelru/
+    packages/envoy/internal/dispatch/itemblocks/
     packages/envoy/internal/dispatch/model/ packages/envoy/internal/dispatch/pmdoc/
     packages/envoy/internal/dispatch/text/ packages/envoy/internal/googleidentity/
     packages/envoy/go.mod packages/envoy/go.sum

@@ -447,6 +447,9 @@ jobs:
               - 'packages/envoy/internal/testnats/*'
               # storetest's DatabaseURL makes a test's own database with internal/testpg.
               - 'packages/envoy/internal/testpg/*'
+              # The task bucket's names, which daemonpermissions' grant is built from: the daemon's
+              # real-server grant test (internal/daemon/nats_permissions_test.go) compiles both.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/listenfd/*'
               - 'packages/envoy/migrationid/*'
               # The reasons the listener refuses a publish to a role no session holds, which the
@@ -1460,6 +1463,8 @@ jobs:
               - *dispatch_server
               - *listener_command
               - 'packages/envoy/daemonpermissions/*'
+              # The task bucket's names, which infra/core's grants and daemonpermissions import.
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/internal/cmdtest/*'
               - 'packages/envoy/internal/contracts/**'
               - 'packages/envoy/internal/dispatch/githubapp/**'
@@ -1794,6 +1799,9 @@ jobs:
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/migrationid/**'
               - 'packages/envoy/roleholder/**'
+              # The Dockerfile copies it, and infra/core's grants and daemonpermissions, which the
+              # infra steps below compile, import it.
+              - 'packages/envoy/legiontasks/**'
               - 'packages/envoy/docker/rds-global-bundle.pem'
               # TestSmoke compiles in the root workspace.
               - 'go.work'
@@ -1923,6 +1931,7 @@ jobs:
               - 'packages/envoy/docs/**'
               - 'packages/envoy/going/**'
               - 'packages/envoy/internal/**'
+              - 'packages/envoy/legiontasks/**'
               - 'packages/envoy/listenfd/**'
               - 'packages/envoy/loadtest/**'
               - 'packages/envoy/migrationid/**'
@@ -2015,6 +2024,7 @@ jobs:
               - 'packages/envoy/cmd/agent-secrets-helper/*'
               - *listener_command
               - 'packages/envoy/daemonpermissions/*'
+              - 'packages/envoy/legiontasks/*'
               - 'packages/envoy/infra/go.mod'
               - 'packages/envoy/infra/go.sum'
               - 'packages/envoy/infra/go.work'

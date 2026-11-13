@@ -115,6 +115,9 @@ COPY packages/envoy/going ./going
 COPY packages/envoy/migrationid ./migrationid
 # roleholder: the no-holder reasons envoy-listener's role publish refusal names.
 COPY packages/envoy/roleholder ./roleholder
+# legiontasks: the Legion task bucket's name, key rule, value and relay frame headers, which
+# envoy-listener's task relay reads and the Legion daemon writes.
+COPY packages/envoy/legiontasks ./legiontasks
 # The Go contracts file is generated from packages/contracts/schemas; never
 # trust the copy checked into the tree over a fresh regeneration.
 COPY --from=web /repo/packages/envoy/internal/contracts/generated.go ./internal/contracts/generated.go
