@@ -361,10 +361,19 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 // calls — the fixture's noticeListener, which the daemon itself publishes its notices to, serves
 // the publish route alone and 404s the rest. It answers as the plugins' own pane harness does
 // (packages/pi-shared/test/omp-harness.ts, runLegionPane's stand-in): the session, a machine and
-// no topics, for every path.
+// no topics, for every path, and for a registration (`POST /v1/interests/subscribe`) a consumer
+// of the session's own as well. A registration has needed one since cybermonklabs/legion#2603
+// (dispatch://INFRA-771): pi-envoy's client refuses an answer with no `delivery`
+// (packages/envoy-client/src/transport.ts, parseSubscribeAnswer: "the listener answered no
+// delivery for <session>: it predates session consumers"), and the claim boot then ends the
+// session, so every pane of a proof built on this listener died at its registration and was
+// launched again until its claim failed. The answer is the one the plugins' stand-in listeners
+// build (packages/envoy-client/test/subscribe-answer.ts, consumerDelivery): consumer mode on the
+// session's own deliver subject, with no gap.
 //
-// Nothing the proof reads comes from here. What an architect or the controller is told is read
-// from the daemon's own listener, which is the fixture's and another server.
+// Nothing the proof reads comes from here, and no frame is relayed on that subject. What an
+// architect or the controller is told is read from the daemon's own listener, which is the
+// fixture's and another server.
 func newPaneListener(t *testing.T) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
@@ -381,13 +390,20 @@ func newPaneListener(t *testing.T) string {
 		if dir == "" {
 			dir = "/"
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
+		answer := map[string]any{
 			"session_id": sent.SessionID,
 			"machine_id": "live-agent-proof",
 			"dir":        dir,
 			"topics":     []string{},
-		})
+		}
+		if req.URL.Path == "/v1/interests/subscribe" {
+			answer["delivery"] = map[string]any{
+				"mode": "consumer", "subject": "notifications.envoy.deliver." + sent.SessionID,
+				"stream_id": "live-agent-proof", "gap": false,
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL

@@ -1144,8 +1144,9 @@ func subagentCall(marker string) map[string]any {
 // (`notifications.envoy.deliver.<session>`, consumer-delivery.ts's deliverSubject), with no gap. No
 // frame is ever relayed on it: nothing this proof reads reaches a pane through Envoy.
 //
-// It is this file's own rather than a change to newPaneListener because the driver is built over
-// the base commit too, whose newPaneListener answers no consumer either.
+// newPaneListener answers the same since this change, which is what the other live proofs register
+// through. This copy is the driver's own all the same, because the driver is built over the base
+// commit too, whose newPaneListener answers no consumer.
 func newConsumerPaneListener(t *testing.T) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
