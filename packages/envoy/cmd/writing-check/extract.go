@@ -42,7 +42,9 @@ const (
 )
 
 // Case is one prose field of one checked agent write, as fetch writes it and group reads it.
-// Group is empty until group gives it one.
+// Group is empty until group gives it one. Copy and Tag are set only on the cases plant writes:
+// Copy names the planted copy of the write, and Tag is "planted", so no other eval reads the
+// copy as real work.
 type Case struct {
 	EventID      int64  `json:"event_id"`
 	EventType    string `json:"event_type"`
@@ -64,6 +66,8 @@ type Case struct {
 	// carried.
 	Cut   bool   `json:"cut,omitempty"`
 	Group string `json:"group,omitempty"`
+	Copy  string `json:"copy,omitempty"`
+	Tag   string `json:"tag,omitempty"`
 }
 
 // event is one row of GET /api/v1/events/log.
