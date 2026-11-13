@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  A Legion role that completes after the daemon has moved its issue on, such as a reviewer whose
+  own review moved the issue to implementing before its handoff_complete arrived, now names the
+  handoff record of the phase it left, so the daemon records its handoff rather than refusing it
+  for want of a record. A role completing in a phase it runs reports what it did before.

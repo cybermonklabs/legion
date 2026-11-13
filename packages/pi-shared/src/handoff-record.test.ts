@@ -77,13 +77,50 @@ test("the planner, the tester and the reviewer report their phase's newest recor
   }
 });
 
+// The race the review webhook wins: the reviewer's own request for changes moves `reviewing` to
+// `implementing`, and its approval of a mergeable head moves it to `accepting`, while the reviewer
+// is still in its turn. The daemon records that late completion and requires the record of the
+// phase the role left (engine.go's `leftPhase`), as it does for one completing on time.
+test("a role completing after the issue left its phase reports the newest record of the phase it left", async () => {
+  for (const [phase, role, word] of [
+    ["implementing", "reviewer", "review"],
+    ["accepting", "reviewer", "review"],
+    ["implementing", "planner", "plan"],
+    ["implementing", "tester", "test"],
+  ] as const) {
+    const { jj, calls } = fakeJj();
+    const { latestHandoff, reads } = recordingDispatch();
+    await expect(findHandoffReport({ phase, role, env, jj, latestHandoff })).resolves.toEqual({
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    });
+    expect(reads).toEqual([`LEGION-208 ${word}`]);
+    expect(calls).toEqual([]);
+  }
+});
+
+test("an implementer completing after the issue left implementing reports its implement record and pushed tip", async () => {
+  const { jj, calls } = fakeJj();
+  const { latestHandoff, reads } = recordingDispatch();
+  await expect(
+    findHandoffReport({ phase: "reviewing", role: "implementer", env, jj, latestHandoff })
+  ).resolves.toEqual({ commit: TIP, handoffId: RECORD.id, handoffVersion: RECORD.version });
+  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(calls).toEqual([
+    ["log", "-r", "@-", "--no-graph", "-T", "commit_id"],
+    ["log", "-r", `${REMOTE} & ${STANDING}::`, "--no-graph", "-T", "commit_id"],
+  ]);
+});
+
 test("every other completion reports the commit the workspace stands on, and reads no record", async () => {
-  // Retro and the merger's READY write no record; a role reporting a phase it does not run reports
-  // @- too, and the daemon refuses it naming whose phase it is.
+  // Retro and the merger's READY write no record, whether the issue still stands in that phase or
+  // has left it: the implementer in merging has left retro (past it in the workflow's line), not
+  // implementing. The architect leaves no phase, and the daemon refuses its completion.
   for (const [phase, role] of [
     ["retro", "implementer"],
+    ["merging", "implementer"],
     ["merging", "merger"],
-    ["implementing", "tester"],
+    ["reviewing", "merger"],
     ["admitted", "architect"],
   ] as const) {
     const { jj, calls } = fakeJj();

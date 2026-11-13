@@ -975,14 +975,23 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
   expect(reads).toEqual(["LEGION-208 implement"]);
   expect(completed).toEqual(["ses_208"]);
 
-  // A role that does not work the issue's phase reports the commit the workspace stands on and no
-  // record, and the daemon refuses it naming whose phase it is: the tester at implementing, the
-  // merger, and a sub-architect, each posting @-. The verdict travels as given.
+  // A role completing after the issue left its phase names the newest record of the phase it
+  // left, as the daemon requires of a late completion (engine.go's `leftPhase`): the tester at
+  // implementing posts its test record and no commit. The verdict travels as given.
   await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Red.", verdict: "fail", commit: STANDING },
+    {
+      grantId: "grant-208",
+      summary: "Red.",
+      verdict: "fail",
+      handoffId: RECORD.id,
+      handoffVersion: RECORD.version,
+    },
   ]);
+  // A role that leaves no record-backed phase reports the commit the workspace stands on and no
+  // record: the merger, and a sub-architect, which leaves no phase and which the daemon refuses
+  // naming whose phase it is.
   await run(claimSession("merger"), { op: "handoff_complete", summary: "Merged." });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
@@ -1002,7 +1011,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, post
     },
   ]);
   expect(completed).toEqual(["ses_208", "ses_208", "ses_208", "ses_208"]);
-  expect(reads).toEqual(["LEGION-208 implement"]);
+  expect(reads).toEqual(["LEGION-208 implement", "LEGION-208 test"]);
 
   // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
   // verdict of the wrong shape; and a phase, which the daemon knows from the grant.

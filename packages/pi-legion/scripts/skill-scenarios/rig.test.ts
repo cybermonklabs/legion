@@ -1190,12 +1190,13 @@ describe("run_threads_closed", () => {
 // builds run directories as a batch leaves them: named as cmd_run names a run, with an out.txt
 // and a daemon.log that each stand-in of the run opened with its own line before its agent's.
 describe("health", () => {
-  const complete = (status: number, code?: string, role?: string) => ({
+  const complete = (status: number, code?: string, role?: string, phase?: string) => ({
     at: "2026-11-13T18:00:00.000Z",
     path: "/legion/v1/handoff/complete",
     status,
     ...(code === undefined ? {} : { code }),
     ...(role === undefined ? {} : { role }),
+    ...(phase === undefined ? {} : { phase }),
   });
   const NOT_CURRENT = "HANDOFF_NOT_CURRENT_PHASE";
   /** A run directory named `name`, under a directory of its own, whose daemon.log holds one
@@ -1302,6 +1303,53 @@ describe("health", () => {
       "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_NOT_CURRENT_PHASE, which the head label's daemon"
     );
     expect(stdout).toEndWith("health: 1 of 2 runs unhealthy\n");
+  });
+
+  // Catches: the head route's own refusal of a late reviewer in `accepting` read as unhealthy,
+  // and the same code read as allowed wherever it was answered. The head plugin names the review
+  // record of the phase the reviewer left, and the route refuses a record named in a phase that
+  // writes none 409 HANDOFF_RECORD_MISMATCH: a threads-closed reviewer stands in `accepting`
+  // after its approval of the fix head, or is booted there in code-defect. The route also
+  // answers that code to a record of another issue, phase or version in a record-backed phase,
+  // which no world gives, so the same answer in `reviewing`, or on a line that names no phase,
+  // is a broken world. reviewer-text-findings' world holds its head BLOCKED, so its reviewer never
+  // stands in `accepting`, and the answer is a refusal its world should not have given there.
+  test("a head reviewer refused record-mismatch is healthy in threads-closed's accepting alone", () => {
+    const MISMATCH = "HANDOFF_RECORD_MISMATCH";
+    const fixes = run("threads-closed-text-fixes-head-4", [
+      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
+      [
+        complete(200, undefined, "reviewer", "reviewing"),
+        complete(409, MISMATCH, "reviewer", "accepting"),
+      ],
+    ]);
+    const defect = run("threads-closed-code-defect-head-1", [
+      [complete(409, NOT_CURRENT, "implementer", "accepting")],
+      [complete(409, MISMATCH, "reviewer", "accepting")],
+    ]);
+    const reviewing = run("threads-closed-text-fixes-head-5", [
+      [complete(409, NOT_CURRENT, "implementer", "reviewing")],
+      [complete(409, MISMATCH, "reviewer", "reviewing")],
+    ]);
+    const unphased = run("threads-closed-code-defect-head-2", [
+      [complete(409, NOT_CURRENT, "implementer")],
+      [complete(409, MISMATCH, "reviewer")],
+    ]);
+    const review = run("reviewer-text-findings-text-only-head-3", [
+      [
+        complete(200, undefined, "reviewer", "reviewing"),
+        complete(409, MISMATCH, "reviewer", "accepting"),
+      ],
+    ]);
+    const { code, stdout } = health(fixes, defect, reviewing, unphased, review);
+    expect(code).toBe(1);
+    expect(verdict(stdout, fixes)).toBe("threads-closed-text-fixes-head-4  healthy");
+    expect(verdict(stdout, defect)).toBe("threads-closed-code-defect-head-1  healthy");
+    const refused =
+      "unhealthy: refused completion: POST /legion/v1/handoff/complete of the reviewer answered 409 HANDOFF_RECORD_MISMATCH, which the head label's daemon does not answer it with in this world";
+    for (const dir of [reviewing, unphased, review])
+      expect(verdict(stdout, dir)).toBe(`${path.basename(dir)}  ${refused}`);
+    expect(stdout).toEndWith("health: 3 of 5 runs unhealthy\n");
   });
 
   // Catches: a code outside the run's own entry read as allowed because some entry allows it.

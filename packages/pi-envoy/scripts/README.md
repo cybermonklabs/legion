@@ -483,6 +483,16 @@ token, from an owner-only file that is removed when the judge ends. On the provi
 profile's models.yml is the block as the operator wrote it, `!cat` command included, so no key is
 copied anywhere: the container mounts the directory of the file that command reads, read-only.
 
+`rig.sh health <run dir>...` says whether each run's world could take what its agents did. It
+reads three things: the run finished (its `out.txt` ends with an `exit=` line); every completion
+the daemon stand-in refused was answered as `completion-answers.ts`'s `ANSWERS` table allows for
+the run's scenario, label and completing role; and a reviewer-text-findings world took the
+reviewer's completion at least once. It scores nothing and writes nothing: it prints
+`<run>  healthy` or `<run>  unhealthy: <reason>` for each run, then a count. It exits 0 when every
+run is healthy, 1 when one is not, and 2, printing no run, for no argument or for a path that is
+not a run of a scenario and label the table names. Start a batch only once a run of each label in
+each scenario case is healthy.
+
 Two tools read production Dispatch, with GET requests only, as the calling session does (its
 envoy.json, or `DISPATCH_URL` with a token): `fetch-spec-sources.ts`, which writes a source's input
 into the work directory for the spec scenarios, and `label-comments.ts`, which labels the comments

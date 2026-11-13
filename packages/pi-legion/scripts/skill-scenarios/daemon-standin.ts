@@ -2,7 +2,10 @@
 /**
  * A stand-in for the Legion daemon that serves exactly the routes a phase worker's `legion` tool
  * hits in a skill scenario: the worker's claim registration (`claims/register`, `claims/ready`,
- * the daemon's claim routes the plugin boots through), the grant the tool mints in-process before
+ * the daemon's claim routes the plugin boots through), the session's activity report
+ * (`claims/activity`, which the plugin posts after each turn and the daemon answers 204 once the
+ * claim's secret authenticates it, as `claims/ready` is: `s.activity` in
+ * packages/daemon/internal/api/claims.go), the grant the tool mints in-process before
  * each of its own daemon calls (`grants`), the issue's record (`GET /legion/v1/state`, the tool's
  * `read_record`), the phase completion (`handoff/complete`, the tool's `handoff_complete`) and
  * the return of the issue to an earlier phase (`phase/backward`, the tool's
@@ -56,11 +59,12 @@
  * (score.ts testerProof).
  *
  * Every request appends one JSON line to the log file: `{at, path, status, role, code?, grantId?,
- * sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?}`, the run's record of
- * what reached the daemon, each line naming the role this stand-in serves, which is what tells
- * one half's completion from the other's in the one log a run keeps (completion-answers.ts);
- * a refusal's line carries its code where the answer has one, a
- * completion's line carries the record it named, and a backward move's the phase it
+ * sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?, phase?}`, the run's
+ * record of what reached the daemon, each line naming the role this stand-in serves, which is
+ * what tells one half's completion from the other's in the one log a run keeps
+ * (completion-answers.ts); a refusal's line carries its code where the answer has one, a
+ * completion's line carries the record it named and the phase it was answered on (`served()`
+ * then), and a backward move's the phase it
  * asked for and why (score.ts threadsClosed). The record opens with one line of its own,
  * `{at, opened}`, written when this starts listening, as record-publishes.ts writes its
  * `recording` line: a log holding that line alone is a run whose agent never reached the
@@ -393,6 +397,7 @@ interface LogLine {
   readonly handoffVersion?: number;
   readonly to?: string;
   readonly reason?: string;
+  readonly phase?: string;
 }
 
 const expectedBootToken = (await Bun.file(bootTokenFile).text()).trim();
@@ -464,7 +469,12 @@ function resolveGrant(grantId: string): Response | undefined {
   return undefined;
 }
 
-function handle(path: string, body: unknown): { response: Response; mintedGrantId?: string } {
+/** Answers one POST: the response, the grant it minted, and, for a completion that reached the
+ * phase read, the phase it was answered on. */
+function handle(
+  path: string,
+  body: unknown
+): { response: Response; mintedGrantId?: string; phase?: string } {
   switch (path) {
     case "/legion/v1/claims/register": {
       if (stringField(body, "bootToken") !== expectedBootToken) {
@@ -483,6 +493,12 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       };
     }
     case "/legion/v1/claims/ready": {
+      if (stringField(body, "secret") !== SESSION_SECRET) {
+        return { response: forbidden("Invalid session secret") };
+      }
+      return { response: new Response(null, { status: 204 }) };
+    }
+    case "/legion/v1/claims/activity": {
       if (stringField(body, "secret") !== SESSION_SECRET) {
         return { response: forbidden("Invalid session secret") };
       }
@@ -521,6 +537,7 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
         if (handoffId === undefined || handoffVersion === undefined) {
           const write = `\`dispatch handoff-write --issue ${issue} --phase ${HANDOFF_WORD} --body-file <file>\``;
           return {
+            phase,
             response: failure(
               400,
               "HANDOFF_RECORD_REQUIRED",
@@ -533,6 +550,7 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
         (handoffId !== undefined || handoffVersion !== undefined)
       ) {
         return {
+          phase,
           response: failure(
             409,
             "HANDOFF_RECORD_MISMATCH",
@@ -549,6 +567,7 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
           if (NOT_CURRENT_PHASE === undefined)
             throw new Error(`no refusal was read at boot for ${role}'s completion in ${phase}`);
           return {
+            phase,
             response: failure(
               409,
               NOT_CURRENT_PHASE.code,
@@ -560,6 +579,7 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
         // role's own), and a phase that ends with a record requires the record it names.
         if (HANDOFF_WORD !== "" && handoffId === undefined) {
           return {
+            phase,
             response: failure(
               409,
               "HANDOFF_RECORD_REQUIRED",
@@ -572,7 +592,7 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       // and it moves nothing: the review decides the round, and the record moves when the world
       // reports a decision that ends it (`servedPhase`, `roundOutcome`).
       if (commit !== undefined) HANDOFF_COMMITS.add(role);
-      return { response: json(200, {}) };
+      return { response: json(200, {}), phase };
     }
     case "/legion/v1/phase/backward": {
       const parsed = LegionPhaseBackwardRequest.safeParse(body);
@@ -608,7 +628,7 @@ const server = Bun.serve({
         body = undefined;
       }
     }
-    const { response, mintedGrantId } =
+    const { response, mintedGrantId, phase } =
       request.method === "POST"
         ? handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
@@ -617,7 +637,9 @@ const server = Bun.serve({
     // A refusal's line carries its code, the daemon's `Failure` code where the answer has one, so
     // a reader of the log can tell the daemon's own answer to a run (HANDOFF_NOT_CURRENT_PHASE)
     // from a body this stand-in could not take at all, whose 400 has none (score.ts's
-    // `unscored`).
+    // `unscored`). A completion's line carries the phase it was answered on, since one code can
+    // be the daemon's answer in one phase and a broken world's in another (completion-answers.ts's
+    // `ANSWERS`).
     const refusal: unknown = response.status >= 400 ? await response.clone().json() : undefined;
     const line: LogLine = {
       at: new Date().toISOString(),
@@ -632,6 +654,7 @@ const server = Bun.serve({
       ...carried("handoffVersion", numberField(body, "handoffVersion")),
       ...carried("to", stringField(body, "to")),
       ...carried("reason", stringField(body, "reason")),
+      ...carried("phase", phase),
     };
     await appendFile(logFile, `${JSON.stringify(line)}\n`);
     return response;

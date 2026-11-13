@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { DISPATCH_KEY_PATTERN, type LegionRole } from "@legion/contracts";
+import { DISPATCH_KEY_PATTERN, type LegionRole, roleForPhase } from "@legion/contracts";
 import type { LegionPhase } from "@legion/contracts/legion-api";
 import { DispatchClient, DispatchServiceError } from "@legion/envoy-client/dispatch-http";
 import { messageFor } from "@legion/envoy-client/errors";
@@ -16,17 +16,22 @@ import { staleGitLockNote } from "./git-lock";
  * The daemon reads the record back from Dispatch and holds it to the issue, the phase, the version
  * and the claim's session; this module compares no session itself.
  *
- * A file-backed phase the session's role works (`FILE_BACKED`: the phase from the issue record,
- * the role from the session) ends with a handoff record on the issue, which the worker writes with
- * `dispatch handoff-write`; its completion reports the newest record of the phase's word,
- * `handoffId` and `handoffVersion`, read from Dispatch here. No record is refused naming the
- * command that writes one; a Dispatch that does not answer, or refuses the read, is refused with
- * its answer. The implementer's implementing round also reports `commit`, the commit
- * `legion/<issue>@origin` names in the pane's jj (its pushed tip, the head of the pull request), and
- * is refused when `@-` is not on that branch yet, naming the push. The planner, the tester and the
- * reviewer report no commit. Every other completion — retro, the merger's, a role reporting
- * a phase it does not run (which the daemon refuses naming whose phase it is) — reports the commit
- * the workspace stands on, `@-`, and no record. The implementer's report on its closed issue's
+ * A completion reports a phase: the issue's own phase (from the issue record) when the session's
+ * role runs it, and otherwise the phase the role has left (`LEFT_PHASE`), as the daemon reads it:
+ * a role mid-turn when the daemon moved the issue on without it (a reviewer whose request for
+ * changes moved `reviewing` to `implementing`, or whose approval moved it to `accepting`) still
+ * completes, and the daemon then requires the record of the phase it left.
+ *
+ * A reported phase that is file-backed (`FILE_BACKED`) ends with a handoff record on the issue,
+ * which the worker writes with `dispatch handoff-write`; its completion reports the newest record
+ * of the phase's word, `handoffId` and `handoffVersion`, read from Dispatch here. No record is
+ * refused naming the command that writes one; a Dispatch that does not answer, or refuses the
+ * read, is refused with its answer. The implementer's implementing round also reports `commit`,
+ * the commit `legion/<issue>@origin` names in the pane's jj (its pushed tip, the head of the pull
+ * request), and is refused when `@-` is not on that branch yet, naming the push. The planner, the
+ * tester and the reviewer report no commit. Every other completion — retro, the merger's, the
+ * architect's (which leaves no phase, and which the daemon refuses) — reports the commit the
+ * workspace stands on, `@-`, and no record. The implementer's report on its closed issue's
  * production check resolves neither: `legion-phase-ops.ts` never asks this module for one.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
@@ -74,6 +79,32 @@ const FILE_BACKED: Readonly<Partial<Record<LegionPhase, { word: string; role: Le
   implementing: { word: "implement", role: "implementer" },
   testing: { word: "test", role: "tester" },
   reviewing: { word: "review", role: "reviewer" },
+};
+
+/** The workflow's forward line, the daemon's `phase.Order`
+ * (packages/daemon/internal/phase/phase.go), which `LEFT_PHASE` reads the implementer's two phases
+ * against. */
+const ORDER: readonly LegionPhase[] = [
+  "planning",
+  "implementing",
+  "testing",
+  "reviewing",
+  "accepting",
+  "retro",
+  "merging",
+];
+
+/** The phase a role has left when the issue stands in a phase the role does not run, by role: the
+ * daemon's `leftPhase` (packages/daemon/internal/workflow/engine.go), which is `RoleFor`
+ * (`roleForPhase` here) read the other way round. The implementer works two, so it has left retro
+ * once the issue stands past retro and implementing otherwise (`phase.MovesBack`); the architect
+ * completes nothing and leaves none. */
+const LEFT_PHASE: Readonly<Partial<Record<LegionRole, (at: LegionPhase) => LegionPhase>>> = {
+  planner: () => "planning",
+  implementer: (at) => (ORDER.indexOf(at) > ORDER.indexOf("retro") ? "retro" : "implementing"),
+  tester: () => "testing",
+  reviewer: () => "reviewing",
+  merger: () => "merging",
 };
 
 const execFileAsync = promisify(execFile);
@@ -192,12 +223,15 @@ export async function findPushedBranchHead(input: {
   return jj(["log", "-r", pushedBranch(bookmark), "--no-graph", "-T", "commit_id"], workspace);
 }
 
-/** What a completion of `phase` by `role` reports. */
+/** What a completion by `role` of an issue standing in `phase` reports. */
 export async function findHandoffReport(input: HandoffReportInput): Promise<HandoffReport> {
   const { phase, role, env } = input;
   const jj = input.jj ?? pathJj;
-  const handoff = FILE_BACKED[phase];
-  if (handoff === undefined || handoff.role !== role) {
+  // The phase the completion is of, as the daemon's `handoff` reads it: the issue's own when this
+  // role runs it, else the one this role has left.
+  const reported = roleForPhase(phase) === role ? phase : LEFT_PHASE[role]?.(phase);
+  const handoff = reported === undefined ? undefined : FILE_BACKED[reported];
+  if (handoff === undefined) {
     return { commit: await jj(STANDING, requiredVariable(env, "LEGION_WORKSPACE", FOR_HANDOFF)) };
   }
   const { issue, bookmark } = issueBranch(env, FOR_HANDOFF);

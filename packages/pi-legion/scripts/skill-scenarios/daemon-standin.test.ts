@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
-import { LegionStateResponse } from "@legion/contracts/legion-api";
+import { LegionActivityRequest, LegionStateResponse } from "@legion/contracts/legion-api";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { z } from "zod";
@@ -123,13 +123,16 @@ async function standin(
       }),
     });
   };
+  /** A POST of `payload` to the stand-in's `route`. */
+  const post = (route: string, payload: unknown) =>
+    fetch(`${url}${route}`, { method: "POST", body: JSON.stringify(payload) });
   /** Every line of this stand-in's log, parsed, in the order it wrote them. */
   const logged = () =>
     readFileSync(log, "utf8")
       .split("\n")
       .filter((line) => line !== "")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { dir, body, phase, record, complete, settings, logged, stop: () => child.kill() };
+  return { dir, body, phase, record, complete, post, settings, logged, stop: () => child.kill() };
 }
 
 /** Runs git in `dir` under an identity of its own and no configuration of the host's. */
@@ -633,6 +636,35 @@ test.skipIf(skip)(
   600_000
 );
 
+// Catches: a completion's log line that does not say which phase it was answered on. Health
+// allows the head reviewer's 409 HANDOFF_RECORD_MISMATCH in `accepting` alone, since the route
+// gives that code a record of another issue, phase or version in a record-backed phase too
+// (completion-answers.ts's `ANSWERS`), so the line must name the phase the answer was given on,
+// which is the one the stand-in served then and not the one its role was booted in.
+test.skipIf(skip)(
+  "a completion's log line names the phase it was answered on",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      expect((await daemon.complete(true)).status).toBe(200);
+      pullRequest(daemon.dir).approve();
+      expect((await daemon.complete(true)).status).toBe(409);
+      expect(
+        daemon
+          .logged()
+          .filter((line) => line.path === "/legion/v1/handoff/complete")
+          .map((line) => [line.status, line.code, line.phase])
+      ).toEqual([
+        [200, undefined, "reviewing"],
+        [409, "HANDOFF_RECORD_MISMATCH", "accepting"],
+      ]);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
 // Catches: a base-label stand-in answered as this checkout's engine answers. Main `ff2a10ef`
 // has no `leftItsPhase`: its `handoff` refuses every completion from a role that does not run
 // the issue's phase 409 HANDOFF_NOT_CURRENT_PHASE, whatever record it names, once the route,
@@ -665,6 +697,50 @@ test.skipIf(skip)(
       expect(await named.json()).toMatchObject({ code: "HANDOFF_RECORD_MISMATCH" });
     } finally {
       approved.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in with no `claims/activity` route, which answers the report the agents'
+// plugin posts after each turn 404 where the daemon answers it 204 (`s.activity` in
+// packages/daemon/internal/api/claims.go). The daemon authenticates the report by the claim's
+// secret, as it does `claims/ready`, and refuses a wrong one with claim.InvalidSecret.
+test.skipIf(skip)(
+  "a registered claim's activity report is answered as the daemon answers it",
+  async () => {
+    const daemon = await standin("implementer");
+    try {
+      const registered = z.object({ claimToken: z.string(), secret: z.string() }).parse(
+        await (
+          await daemon.post("/legion/v1/claims/register", {
+            bootToken: "rig-boot-token",
+            sessionId: "01a0f2cc",
+          })
+        ).json()
+      );
+      const report = LegionActivityRequest.parse({
+        claimToken: registered.claimToken,
+        sessionId: "01a0f2cc",
+        secret: registered.secret,
+        activity: {
+          at: "2026-11-13T18:00:00.000Z",
+          backgroundWork: { running: false, kinds: [] },
+          phase: { nextReminderAt: null },
+        },
+      });
+      const answered = await daemon.post("/legion/v1/claims/activity", report);
+      expect([answered.status, await answered.text()]).toEqual([204, ""]);
+      const wrong = await daemon.post("/legion/v1/claims/activity", {
+        ...report,
+        secret: "not-the-secret",
+      });
+      expect([wrong.status, await wrong.json()]).toEqual([
+        403,
+        { error: "Invalid session secret" },
+      ]);
+    } finally {
+      daemon.stop();
     }
   },
   600_000

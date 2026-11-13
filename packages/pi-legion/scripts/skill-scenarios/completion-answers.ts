@@ -18,13 +18,16 @@ export const DAEMON_LOG = "daemon.log";
 export const COMPLETE_PATH = "/legion/v1/handoff/complete";
 /** The daemon's refusal of a completion from a role that does not run the issue's phase. */
 export const NOT_CURRENT_PHASE = "HANDOFF_NOT_CURRENT_PHASE";
+/** The route's refusal of a completion naming a handoff record in a phase that writes none. */
+const RECORD_MISMATCH = "HANDOFF_RECORD_MISMATCH";
 
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
  * answered, with the refusal's code where the answer carried one; the role of the agent the
- * stand-in served; a completion's line names the handoff record it reported, and a backward
- * move's the phase it asked for. The stand-in writes the reason that move gave beside it, which
- * no reader uses, so this does not name it. A log written before the stand-in named the role has
- * no `role` (`roleOf`). */
+ * stand-in served; a completion's line names the handoff record it reported and the phase the
+ * stand-in answered it on, and a backward move's the phase it asked for. The stand-in writes the
+ * reason that move gave beside it, which no reader uses, so this does not name it. A log written
+ * before the stand-in named the role has no `role` (`roleOf`), and one written before it named
+ * the phase has no `phase`. */
 export const DaemonLine = z.looseObject({
   at: z.string(),
   path: z.string(),
@@ -34,6 +37,7 @@ export const DaemonLine = z.looseObject({
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
   to: z.string().optional(),
+  phase: z.string().optional(),
 });
 export type DaemonLine = z.infer<typeof DaemonLine>;
 /** A line of the log with the agent whose stand-in wrote it: `boot` counts the stand-ins that
@@ -127,11 +131,23 @@ export function answerOf(line: Pick<DaemonLine, "status" | "code">): string {
   return line.code === undefined ? String(line.status) : `${line.status} ${line.code}`;
 }
 
+/** Whether `allowed` (an entry of `ANSWERS`) allows the answer `line` carries: the answer alone,
+ * or the answer `in <phase>` when the line names the phase it was answered on. A line naming no
+ * phase meets no phase-keyed entry. */
+function allows(allowed: readonly string[], line: DaemonLine): boolean {
+  return (
+    allowed.includes(answerOf(line)) ||
+    (line.phase !== undefined && allowed.includes(`${answerOf(line)} in ${line.phase}`))
+  );
+}
+
 /** What one scenario's world takes, for each label and each role the scenario boots:
  *   - `boots`, the roles rig.sh boots, in the order it boots them, which is the role of each
  *     stand-in's lines in a log written before the stand-in named the role (`roleOf`);
  *   - `answers`, for each label and role, every answer that label's daemon may give that role's
- *     completion in this world. A 4xx answer not in the entry is a refusal the world should not
+ *     completion in this world: `<status> <code>`, or `<status> <code> in <phase>` for an answer
+ *     the daemon gives in that phase alone, held to the phase the stand-in's line says it
+ *     answered on (`allows`). A 4xx answer not in the entry is a refusal the world should not
  *     have given (`refusedCompletion`);
  *   - `takes`, the role whose completion the world must take, at least once, with an answer in
  *     its entry (health's third rule). A scenario with no `takes` requires no completion.
@@ -142,21 +158,33 @@ export function answerOf(line: Pick<DaemonLine, "status" | "code">): string {
  * phase and is taken 200. Its review moves the issue (the stand-in's `roundOutcome`), and a
  * completion after that is a late one: `ff2a10ef` refuses it 409 HANDOFF_NOT_CURRENT_PHASE, which
  * is the base daemon taking the completion as it takes every late one. This checkout records it
- * 200 when it names the reviewing record. A head reviewer refused HANDOFF_RECORD_REQUIRED (the
- * plugin names no record once the issue has left `reviewing`) is a refusal this table does not
- * allow.
+ * 200 when it names the reviewing record, which the head label's plugin names for a late role:
+ * the record of the phase the role left (packages/pi-shared/src/handoff-record.ts,
+ * `findHandoffReport`). A head reviewer refused HANDOFF_RECORD_REQUIRED (a plugin that names no
+ * record once the issue has left `reviewing`) is a refusal this table does not allow. The review
+ * reaches `implementing` and never `accepting`: GitHub reports the world's head `BLOCKED`
+ * (rig.sh's review_world), so only a reviewer that pushes a head of its own, which is the world's
+ * own failure, and approves it could move the issue there.
  *
  * threads-closed boots the implementer, then the reviewer, in `reviewing` (text-fixes) or
  * `accepting` (code-defect) (rig.sh's run_threads_closed). The implementer's implementing round
  * already stands on its row, so either daemon refuses its completion there 409
- * HANDOFF_NOT_CURRENT_PHASE, the one deliberate refusal. The reviewer's completion is of its own
- * phase in `reviewing` and is taken 200. Once the round has moved it is late, which the base
- * daemon refuses 409 HANDOFF_NOT_CURRENT_PHASE. HANDOFF_STALE_ASSIGNMENT,
- * HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW are left out: the stand-in models no assignment, no
- * duplicate key and no earlier record of a role, so no run of this rig can get them. A late role
- * naming a record in `accepting`, which the route refuses 409 HANDOFF_RECORD_MISMATCH, is also
- * left out: neither label's plugin names a record outside the role's own file-backed phase
- * (packages/pi-shared/src/handoff-record.ts, `findHandoffReport`). */
+ * HANDOFF_NOT_CURRENT_PHASE, the one deliberate refusal of the implementer. The reviewer's
+ * completion is of its own phase in `reviewing` and is taken 200. Once the round has moved it is
+ * late, which the base daemon refuses 409 HANDOFF_NOT_CURRENT_PHASE. A late head reviewer stands
+ * in `accepting`: one that completes after its approval of the fix head moved text-fixes there, or
+ * a code-defect reviewer, which is booted there. The head label's plugin names its review record,
+ * the record of the phase it left, and the route refuses a record named in a phase that writes
+ * none 409 HANDOFF_RECORD_MISMATCH before the engine reads it
+ * (packages/daemon/internal/api/handoff.go, `handoffComplete`'s
+ * `case !handoffPhase && (req.HandoffID != "" || …)`). The
+ * stand-in answers it so, and it is the head daemon's own answer, so the table allows it, in
+ * `accepting` alone: the route also refuses 409 HANDOFF_RECORD_MISMATCH a record of another
+ * issue, phase or version in a record-backed phase (`handoffRecord`), which no world of this rig
+ * gives, so the same code answered in any other phase, or on a line naming no phase, is a broken
+ * world. HANDOFF_STALE_ASSIGNMENT, HANDOFF_ALREADY_RECORDED and HANDOFF_NOT_NEW are left out:
+ * the stand-in models no assignment, no duplicate key and no earlier record of a role, so no run
+ * of this rig can get them. */
 export const ANSWERS: Readonly<
   Record<
     string,
@@ -178,7 +206,10 @@ export const ANSWERS: Readonly<
   "threads-closed": {
     boots: ["implementer", "reviewer"],
     answers: {
-      head: { implementer: [`409 ${NOT_CURRENT_PHASE}`], reviewer: ["200"] },
+      head: {
+        implementer: [`409 ${NOT_CURRENT_PHASE}`],
+        reviewer: ["200", `409 ${RECORD_MISMATCH} in accepting`],
+      },
       base: {
         implementer: [`409 ${NOT_CURRENT_PHASE}`],
         reviewer: ["200", `409 ${NOT_CURRENT_PHASE}`],
@@ -230,7 +261,7 @@ export function refusedCompletion(
   for (const line of lines) {
     if (line.path !== COMPLETE_PATH || line.status < 400 || line.status >= 500) continue;
     const role = roleOf(line, scenario);
-    if (!allowedAnswers(scenario, label, role).includes(answerOf(line))) return { line, role };
+    if (!allows(allowedAnswers(scenario, label, role), line)) return { line, role };
   }
   return undefined;
 }
@@ -247,9 +278,7 @@ export function takenCompletions(
   const allowed = allowedAnswers(scenario, label, role);
   const count = lines.filter(
     (line) =>
-      line.path === COMPLETE_PATH &&
-      roleOf(line, scenario) === role &&
-      allowed.includes(answerOf(line))
+      line.path === COMPLETE_PATH && roleOf(line, scenario) === role && allows(allowed, line)
   ).length;
   return { role, count };
 }
