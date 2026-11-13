@@ -513,12 +513,79 @@ func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 			if !p.Interrupted {
 				t.Fatalf("the task after the death is %+v, want it taken back from the turn", p)
 			}
-			message := p.message(h.claim())
+			message, _ := p.message(h.claim())
 			switch {
 			case !row.reported && !strings.Contains(message, gone):
 				t.Errorf("the task taken back is sent as %q, want it to say %q", message, gone)
 			case row.reported && (strings.Contains(message, gone) || strings.Contains(message, "The daemon has no report")):
 				t.Errorf("the task taken back is sent as %q, want no word that the turn's background work is gone", message)
+			}
+		})
+	}
+}
+
+// A turn a busy answer recorded (recordBusyTurn) starts, for the claim, at that answer: the daemon
+// never read the turn's agent_start, so the busy answer is its first word that the turn exists
+// (Claim.LastTurnStart), and a report read before it says nothing of that turn, as a report read
+// before a start the daemon did read says nothing of its turn
+// (TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport). The process ran a turn and reported —
+// nothing running, or a subagent — and was then sent a task, which Oh My Pi answered busy: the
+// agent is in a turn of its own, an Envoy notice's, whose start the daemon never read. The process
+// dies in that turn. The record names the turn, says the daemon has no report (EndedWork.Reported
+// false) and takes none of the old report's background work, so the task the busy answer left
+// waiting is sent saying that the subagents and background jobs of that turn are gone. The control
+// is a report read after the busy answer, saying nothing runs: it is the turn's own, counted as a
+// report, and the task goes with no word that the turn's background work is gone.
+func TestARelaunchRecordsAReportOlderThanABusyAnswersTurnAsNoReport(t *testing.T) {
+	const gone = "So the subagents and background jobs of that turn are gone."
+	for _, row := range []struct {
+		name string
+		// before is whether the report is read before the busy answer.
+		before   bool
+		kinds    []string
+		reported bool
+	}{
+		{name: "a report before the busy answer said nothing runs", before: true},
+		{name: "a report before the busy answer named a subagent", before: true, kinds: []string{"subagent"}},
+		{name: "a report after the busy answer said nothing runs", reported: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			if row.before {
+				h.reportActivity(row.kinds...)
+				h.advance(time.Second)
+			}
+			h.conn.RefusePrompt(busyAnswer)
+			h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
+			h.wantState(StateWorking)
+			answered := h.clock.Now()
+			for where, start := range map[string]time.Time{"the machine": h.claim().LastTurnStart, "the store": h.store.load(h.token).LastTurnStart} {
+				if !start.Equal(answered) {
+					t.Errorf("%s dates the turn the busy answer recorded from %v, want the answer's %v", where, start, answered)
+				}
+			}
+			if !row.before {
+				h.advance(time.Second)
+				h.reportActivity(row.kinds...)
+			}
+			died, at := h.generation(), h.clock.Now()
+
+			h.observe(runtime.Gone)
+
+			h.wantState(StateLaunching)
+			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+				Generation: died, Turn: true, Reported: row.reported})
+			p := h.pending()
+			if p.Interrupted || !p.ConfirmedAt.IsZero() {
+				t.Fatalf("the task after the death is %+v, want the one the busy answer left waiting, in no turn", p)
+			}
+			message, _ := p.message(h.claim())
+			switch {
+			case !row.reported && !strings.Contains(message, gone):
+				t.Errorf("the task is sent as %q, want it to say %q", message, gone)
+			case row.reported && (strings.Contains(message, gone) || strings.Contains(message, "The daemon has no report")):
+				t.Errorf("the task is sent as %q, want no word that the turn's background work is gone", message)
 			}
 		})
 	}

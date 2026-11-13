@@ -47,6 +47,12 @@ func promptRetryDelay(attempt int) time.Duration {
 // and R2 forbids an attempt limit — so the claim counts its own run of such turns instead, and a
 // turn that ends with no error puts that run back to zero (promptResulted).
 //
+// What that turn's confirmation told goes back to untold with it (takeBackPending, moveTelling),
+// so the re-sent task carries the abandoned session's sentence or the record of the last let-go
+// again. A provider error is a model call that failed — often the turn's first, whose model never
+// read the prompt — so the sentence may have reached nobody, and where an earlier call of the
+// turn did read it, it is told twice rather than lost.
+//
 // The decision is made here, from this prompt's own result and nothing else
 // (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d): the status the provider
 // answered either holds the issue (holdsTheIssue) or the task goes to the same session again on

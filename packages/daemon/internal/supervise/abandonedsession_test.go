@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 const (
@@ -26,6 +27,21 @@ func (h *harness) registerFresh() {
 		PluginContract: h.deps.PluginContract,
 	})
 	h.must(RequestReady{Claim: h.token, Generation: h.generation(), Session: replacingSession})
+}
+
+// wantAbandonedToldBy is whether the claim's abandoned session has been told, and by the
+// confirmation of which delivery (AbandonedSession.ToldBy), as the machine holds it and as the
+// store holds it: "" is a session still untold, which names no delivery.
+func (h *harness) wantAbandonedToldBy(by, when string) {
+	h.t.Helper()
+	for where, got := range map[string]AbandonedSession{"the machine": h.claim().Abandoned, "the store": h.store.load(h.token).Abandoned} {
+		if got.Session == "" {
+			h.t.Fatalf("%s: %s records no abandoned session, want one", when, where)
+		}
+		if got.Told != (by != "") || got.ToldBy != by {
+			h.t.Fatalf("%s: %s records the abandonment told=%v by %q, want told=%v by %q", when, where, got.Told, got.ToldBy, by != "", by)
+		}
+	}
 }
 
 // abandonSession walks the claim to where the provider refused every turn of it out of its launch
@@ -121,10 +137,11 @@ func TestEveryAbandonmentIsRecordedWithItsOwnReason(t *testing.T) {
 
 // A prompt the agent refused reached nobody, so the abandoned session is still owed to the fresh
 // agent: the task goes back in the queue and the claim and the store both still record the
-// sentence as untold. The prompt the agent does acknowledge carries it again, and that
-// acknowledgement is what marks it told, so the task after it is the task alone. Marking it where
-// the send started instead left the first task the fresh session actually read without the
-// branch, the handoffs and the sentence that says an older session existed at all
+// sentence as untold. The prompt the agent does acknowledge carries it again, and the turn that
+// takes that prompt is what marks it told — not the acknowledgement, which Oh My Pi gives at a
+// prompt's admission and can still follow with a busy answer — so the task after it is the task
+// alone. Marking it where the send started instead left the first task the fresh session actually
+// read without the branch, the handoffs and the sentence that says an older session existed at all
 // (dispatch://INFRA-714).
 func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 	h := newHarness(t)
@@ -147,25 +164,81 @@ func TestARefusedPromptLeavesTheAbandonedSessionStillToBeTold(t *testing.T) {
 	h.conn.FailPrompt(nil)
 	h.must(StreamHello{Claim: h.token, Generation: h.generation()})
 
-	taken := h.wantPrompts(base + 2)[base+1].Message
+	acknowledged := h.wantPrompts(base + 2)[base+1]
 	for _, want := range []string{session, "abandoned", refusal, "legion/LEGION-209",
 		"dispatch handoff-read --issue LEGION-209 --phase", handoffWordsClause()} {
-		if !strings.Contains(taken, want) {
-			t.Errorf("the task the agent acknowledged does not name %q:\n%s", want, taken)
+		if !strings.Contains(acknowledged.Message, want) {
+			t.Errorf("the task the agent acknowledged does not name %q:\n%s", want, acknowledged.Message)
 		}
 	}
-	if told, stored := h.claim().Abandoned.Told, h.store.load(h.token).Abandoned.Told; !told || !stored {
-		t.Fatalf("after the acknowledgement the claim records the abandonment told = %v and the store %v, want it told in both", told, stored)
-	}
+	h.wantAbandonedToldBy("", "at the acknowledgement")
 
-	// That task's turn is over, so the one after it is the task alone.
+	// That task's turn takes it, which tells the abandonment, and once it is over the one after it
+	// is the task alone.
 	h.must(StreamTurnStart{Claim: h.token})
+	h.wantAbandonedToldBy(acknowledged.DeliveryID, "once the task's turn began")
 	h.must(StreamTurnEnd{Claim: h.token})
 
 	h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
 
 	if next := h.wantPrompts(base + 3)[base+2].Message; next != "the next task" {
 		t.Errorf("the task after the one the agent acknowledged is %q, want the task alone", next)
+	}
+}
+
+// The abandoned session's sentence is told at the confirmation of the prompt that carried it, by
+// the rule the record of a let-go follows (confirm). The pinned Oh My Pi acknowledges a prompt at
+// its admission and can then answer it busy (lateRefused): the fresh agent is in a turn of its own
+// and never read that prompt, so the abandonment is still untold and the task the turn's end sends
+// names the session again. The turn that takes that prompt tells it, by that delivery. A late busy
+// answer to the same prompt then says that turn was another's: the confirmation goes back, and the
+// telling with it, so the next prompt names the session again, and the turn that takes it tells it.
+func TestAnAbandonedSessionsSentenceIsToldAtConfirmation(t *testing.T) {
+	h := newHarness(t)
+	refusal := "the provider ended the turn with an error at 226k tokens of context"
+	h.abandonSession(refusal)
+	h.registerFresh()
+	base := len(h.prompts())
+	names := func(prompt fake.Prompt, which string) {
+		t.Helper()
+		for _, want := range []string{session, "abandoned", refusal, "legion/LEGION-209"} {
+			if !strings.Contains(prompt.Message, want) {
+				t.Fatalf("%s does not name %q:\n%s", which, want, prompt.Message)
+			}
+		}
+	}
+
+	h.must(RequestDeliver{Claim: h.token, Task: "Continue Workflow. Issue: LEGION-209. Phase: implementing."})
+	first := h.wantPrompts(base + 1)[base]
+	names(first, "the fresh session's first task")
+	h.wantAbandonedToldBy("", "at the acknowledgement")
+
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: first.DeliveryID, Error: busyAnswer})
+	h.wantAbandonedToldBy("", "after the busy answer")
+
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	second := h.wantPrompts(base + 2)[base+1]
+	names(second, "the task the agent's own turn end sent")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.wantAbandonedToldBy(second.DeliveryID, "once the task's turn began")
+
+	// Oh My Pi answers that prompt busy after all: the turn that confirmed it was another input's.
+	h.must(StreamLateRefusal{Claim: h.token, DeliveryID: second.DeliveryID, Error: busyAnswer})
+	if p := h.pending(); !p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending after the late busy answer = %+v, want the confirmation taken back", p)
+	}
+	h.wantAbandonedToldBy("", "after the confirmation that told it was taken back")
+
+	h.mustQuiet(StreamTurnEnd{Claim: h.token})
+	third := h.wantPrompts(base + 3)[base+2]
+	names(third, "the task sent after the other input's turn")
+	h.must(StreamTurnStart{Claim: h.token})
+	h.wantAbandonedToldBy(third.DeliveryID, "once the task's own turn began")
+	h.must(StreamTurnEnd{Claim: h.token})
+
+	h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
+	if next := h.wantPrompts(base + 4)[base+3].Message; next != "the next task" {
+		t.Errorf("the task after the one whose turn told the abandonment is %q, want the task alone", next)
 	}
 }
 

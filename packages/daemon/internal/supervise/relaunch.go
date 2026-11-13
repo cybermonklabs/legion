@@ -31,9 +31,11 @@ func RelaunchSentence(ended EndedWork) string { return relaunchSentence(ended, f
 //   - whether a turn was cut off, and that its tool calls in flight were never answered, or that
 //     the agent was in no turn;
 //   - each kind of background work the process's own last report named, all of which ended with
-//     it, or — for a process that left no report (EndedWork.Reported) — that the daemon has no
-//     report of it, so the subagents and background jobs of the turn, and every other one the
-//     process started, are gone: unknown is said, never read as nothing;
+//     it, or — for a process the record holds no report of (EndedWork.Reported): one that left
+//     none, or whose newest report is older than the start of its last turn and so says nothing
+//     of that turn — that the daemon has no report of it, so the subagents and background jobs of
+//     the turn, and every other one the process started, are gone: unknown is said, never read as
+//     nothing;
 //   - that no result of that work will come, and that the transcript does not say so, since the
 //     resumed session shows neither a lost tool call nor a lost subagent as missing
 //     (dispatch://INFRA-714 R6);

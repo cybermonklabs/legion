@@ -370,7 +370,7 @@ func TestASuspendOverAProcessTheReadFoundGoneStopsTheDeadSessionAndKeepsTheEndsN
 				if verdict.outOfMemory {
 					want = relaunchSentence(ended, true) + "\n\n" + outOfMemoryTask + held.Task
 				}
-				if got := p.message(h.claim()); got != want {
+				if got, _ := p.message(h.claim()); got != want {
 					t.Errorf("the task taken back is sent as %q, want %q", got, want)
 				}
 				if stored := h.store.load(testToken).Pending; stored == nil || stored.OutOfMemory != verdict.outOfMemory {

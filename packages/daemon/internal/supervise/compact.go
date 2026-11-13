@@ -269,7 +269,12 @@ func (m *Machine) compactionLostProcess() {
 // (promptResulted, settle). Taken back it is unconfirmed under a new id, which the result of
 // the aborted prompt no longer names (Machine.fence), and the end of the compaction sends it.
 // A task re-sent after work that may have run is this operation's lesser fault, as it is at
-// every other send that may repeat one (sendPending).
+// every other send that may repeat one (sendPending). So is a sentence told again: what the
+// confirmation the take-back clears had told — the abandoned session, or what the last let-go
+// ended — goes back to untold with it (takeBackPending, moveTelling), and the re-sent task
+// carries it again. The aborted turn may have read it, and a sentence repeated in the next prompt
+// is the safe way round, where one marked told for a turn the compaction cut short may reach
+// nobody.
 //
 // A claim whose launch waits its turn in the wake pacing is taken for nothing either
 // (launchWaits). What becomes of the process its session runs on is already decided — the turn

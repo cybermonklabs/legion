@@ -58,13 +58,14 @@ type EndedWork struct {
 	// background work it ran is unknown, which is said rather than read as nothing
 	// (dispatch://INFRA-3276 R3, "unknown is not silence").
 	Reported bool `json:"reported"`
-	// Told is whether a prompt carrying the record's sentence has been confirmed by a turn of a
-	// later process (confirm, Machine.carriedEnd). It is set at the turn's start rather than at the
-	// prompt's acknowledgement, because Oh My Pi acknowledges a prompt at its admission and can then
-	// answer it busy, and a sentence marked told there would reach nobody. A record not yet told is
-	// replaced by a newer one only as the union of the two (joined), so what the earlier let-go
-	// ended is not lost before anyone reads it.
-	Told bool `json:"told,omitempty"`
+	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
+	// confirmation told it. Both follow the one rule confirm states for the two records a prompt
+	// tells: told at the confirmation of a prompt that carried the sentence, never at its
+	// acknowledgement, and back to untold when that confirmation is taken back as another turn's
+	// (moveTelling). A record not yet told is replaced by a newer one only as the union of the two
+	// (joined), so what the earlier let-go ended is not lost before anyone reads it.
+	Told   bool   `json:"told,omitempty"`
+	ToldBy string `json:"toldBy,omitempty"`
 }
 
 // Tells is whether the next prompt to this claim's agent must still carry the record: a let-go
@@ -162,8 +163,8 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // of the two (joined).
 //
 // A record written here is new words, so a prompt that carried the sentence of the record it
-// replaces carried none of this one: the mark of such a prompt goes (Machine.carriedEnd), and only
-// a prompt sent from here on tells this record when its turn begins (confirm).
+// replaces carried none of this one: the mark of such a prompt goes (Machine.carried), and only a
+// prompt sent from here on tells this record when its turn begins (confirm).
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, or the death's charge — carries it. So it costs the
@@ -185,10 +186,8 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	report, reported := m.launchActivity(ctx)
 	// A report read before the claim's last turn began has said nothing about that turn
 	// (pods.IdleClaim.Reported), so it is no report of it. LastTurnStart is when this daemon, or
-	// the one before it, read that turn's start (beginTurn). A turn a busy answer recorded working
-	// (recordBusyTurn) sets no start of its own: its start is its own agent_start, once the daemon
-	// reads one (turnStartedWhileBusy, beginTurn), and until then the claim holds the start of the
-	// turn before it, so a report read since that earlier start counts for the busy-recorded turn.
+	// the one before it, first learned that turn had begun: its agent_start (beginTurn), or the
+	// busy answer that recorded a turn whose start it never read (recordBusyTurn).
 	if reported && ranTurn && report.At.Before(m.claim.LastTurnStart) {
 		reported = false
 	}
@@ -207,7 +206,7 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	if held := m.claim.EndedWork; held.Tells() {
 		ended = held.joined(ended)
 	}
-	m.claim.EndedWork, m.carriedEnd = ended, false
+	m.claim.EndedWork, m.carried.ended = ended, false
 }
 
 // launchActivity is the activity report the store holds for the launch the claim records now

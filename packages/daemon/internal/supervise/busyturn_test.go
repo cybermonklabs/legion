@@ -428,8 +428,10 @@ func TestABusyRecordedClaimIsRestoredWorkingAndAskedAgain(t *testing.T) {
 // of it the daemon reads (turnStartedWhileBusy). It is decided and recorded as any start is — the
 // moment it began, the turn's step, a turn this daemon saw begin — but it writes no second start
 // line, since the record wrote the turn's one: one start line and one end line bracket the turn,
-// and the start writes a line of its own instead. It answers the record's question, so the sweep
-// stops asking, and the turn's agent_end ends it. A turn of the agent's own confirms nothing.
+// and the start writes a line of its own instead. The record dated the turn from the busy answer,
+// its first word of it (recordBusyTurn), and the start dates it again at its own moment. It
+// answers the record's question, so the sweep stops asking, and the turn's agent_end ends it. A
+// turn of the agent's own confirms nothing.
 func TestTheStartOfATurnABusyAnswerRecordedWritesNoSecondStartLine(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -438,7 +440,9 @@ func TestTheStartOfATurnABusyAnswerRecordedWritesNoSecondStartLine(t *testing.T)
 	if step := h.store.step(testToken); !step.TurnStartedAt.Equal(recorded) {
 		t.Fatalf("the step after the busy answer starts its turn at %v, want the record's %v", step.TurnStartedAt, recorded)
 	}
-
+	if start := h.claim().LastTurnStart; !start.Equal(recorded) {
+		t.Fatalf("the claim's turn began at %v after the busy answer, want the record's %v", start, recorded)
+	}
 	h.advance(time.Minute)
 	h.must(StreamTurnStart{Claim: testToken})
 	started := h.clock.Now()

@@ -241,9 +241,12 @@ type Claim struct {
 	PendingCause FailureCause
 	Pending      *Delivery
 	// LastTurnStart and LastTurnEnd are when the agent last began a turn and when it last ended
-	// one, each zero until that event happens. They are persisted, so a restart keeps them: they
-	// are what a reader has to tell a worker still making progress from one wedged in a turn or
-	// idle since yesterday, and a claim rebuilt without them would look as if it had never worked.
+	// one, each zero until that event happens. A turn's start is when the daemon first learned of
+	// it: its agent_start (beginTurn), or the busy answer that said the agent is in a turn whose
+	// start the daemon never read (recordBusyTurn), which that turn's own agent_start, read later,
+	// moves to its own moment. They are persisted, so a restart keeps them: they are what a reader
+	// has to tell a worker still making progress from one wedged in a turn or idle since
+	// yesterday, and a claim rebuilt without them would look as if it had never worked.
 	LastTurnStart time.Time
 	LastTurnEnd   time.Time
 	// TurnOutcomes are the newest turns the claim's agent ended that its backend's producer
@@ -1187,17 +1190,17 @@ type Machine struct {
 	// the process. It is memory only: a daemon restarted inside such a park records the end
 	// without it, from what the claim still holds.
 	cutTurnOf string
-	// carriedEnd is whether a prompt this machine sent to the claim's current process carried the
-	// sentence of the claim's untold record of what its last let-go ended (EndedWork,
-	// RelaunchSentence), or the abandoned session's sentence in its place (Delivery.message): the
-	// prompt was composed while the record still told. It is what confirm reads to mark the record
-	// told, so a turn whose prompt went out before the record existed — the takeover of a process
-	// another runtime still runs, whose relaunch the pacing parks — tells nothing. It is set where
-	// the send goes out (startSend), and goes with the process (letGo) and with the record it was
-	// for (recordEnd), since a newer record is words no earlier prompt carried. It is memory only:
-	// a daemon restarted inside the turn of such a prompt reads none, so the next prompt carries the
-	// sentence again — told twice rather than not at all.
-	carriedEnd bool
+	// carried is which of the claim's two untold records a prompt this machine sent to the claim's
+	// current process carried the sentence of (sentences, Delivery.message): the session the claim
+	// abandoned, and what its last let-go ended — the abandoned session's sentence counting for
+	// both where it stands in place of the other. It is what confirm reads to mark each record
+	// told, so a turn whose prompt went out before a record existed — the takeover of a process
+	// another runtime still runs, whose relaunch the pacing parks — tells nothing of it. It is set
+	// where the send goes out (startSend), and goes with the process (letGo) and, for the record of
+	// the let-go, with that record (recordEnd), since a newer record is words no earlier prompt
+	// carried. It is memory only: a daemon restarted inside the turn of such a prompt reads none,
+	// so the next prompt carries the sentence again — told twice rather than not at all.
+	carried sentences
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
 	// a turn that ends under a compaction leaves the claim where it is (turnEnded), and only
@@ -2662,15 +2665,17 @@ type AbandonedSession struct {
 	SessionFile string    `json:"sessionFile,omitempty"`
 	Why         string    `json:"why"`
 	At          time.Time `json:"at"`
-	// Told is set once the agent has acknowledged a prompt carrying the sentence (acked), so the
-	// agent that replaced the session is told of it in the first task it actually takes and in no
-	// later one. It is written where that acknowledgement is, rather than where its send started,
-	// because a prompt the agent refused reached nobody: the task goes back in the queue, and the
-	// fresh session still has to be told of its predecessor in whatever prompt does reach it
-	// (dispatch://INFRA-714). A turn whose start overtook its own acknowledgement leaves it
-	// unset, which costs the next task of that claim a sentence it repeats — the harmless way
-	// round, where losing it strands a worker reading an empty transcript as a fresh start.
-	Told bool `json:"told,omitempty"`
+	// Told is whether the agent that replaced the session has been told of it, so it is told in
+	// the first task it actually takes and in no later one, and ToldBy is the delivery whose
+	// confirmation told it. Both follow the one rule confirm states for the two records a prompt
+	// tells: told at the confirmation of a prompt that carried the sentence, and back to untold
+	// when that confirmation is taken back as another turn's (moveTelling). A prompt the agent
+	// refused, or acknowledged and then answered busy, reached nobody, so the fresh session is
+	// still told of its predecessor in whatever prompt does reach it (dispatch://INFRA-714); a
+	// sentence told twice is the harmless way round, where losing it strands a worker reading an
+	// empty transcript as a fresh start.
+	Told   bool   `json:"told,omitempty"`
+	ToldBy string `json:"toldBy,omitempty"`
 }
 
 // Tells is whether a prompt to this claim's agent must still name the session the claim
@@ -2850,8 +2855,8 @@ func (m *Machine) retire(ctx context.Context) error {
 // task's, and the background work its own activity report named. It is read here, first,
 // because everything it reads goes with the process below, and the launch that follows clears
 // the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
-// with the process too (cutTurnOf), and so does the mark of a prompt to it that carried the
-// record's sentence (carriedEnd): the next process has been sent nothing yet.
+// with the process too (cutTurnOf), and so do the marks of the sentences a prompt to it carried
+// (carried): the next process has been sent nothing yet.
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
@@ -2862,7 +2867,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.held = nil
 	m.staleRelaunch = nil
 	m.unseenTurn, m.busyTurn = false, false
-	m.turnsDelivery, m.cutTurnOf, m.carriedEnd = "", "", false
+	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
 	m.compacting = nil
 	m.processGone, m.goneOutOfMemory, m.goneCause, m.claim.DeathCharged = false, false, "", false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {
@@ -3146,8 +3151,10 @@ func (m *Machine) putDelivery(ctx context.Context, d Delivery) error {
 // row appended and whose delivery is not the claim's pending one until the store has taken both
 // — what it writes is ahead of memory rather than equal to it, so neither the delivery's mark nor
 // the claim write the machine may owe can be read off this write, and queue writes memory itself
-// once the store has answered — and putClaimAndPending, which passes memory's own claim with
-// memory's own pending delivery and is the call that settles both.
+// once the store has answered — takeBackPending, whose delivery is the pending one under the id
+// it takes only once the store has taken it, beside a claim whose telling that take-back moved
+// (moveTelling), so its saved mark is takeBackPending's own; and putClaimAndPending, which passes
+// memory's own claim with memory's own pending delivery and is the call that settles both.
 func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) error {
 	return m.write(ctx, func(ctx context.Context) error { return m.deps.Store.PutClaimAndDelivery(ctx, c, d) })
 }
@@ -3161,9 +3168,10 @@ func (m *Machine) putClaimAndDelivery(ctx context.Context, c Claim, d Delivery) 
 // settles. It marks nothing owed: the callers that owe their claim write say so themselves
 // (confirm, repair).
 //
-// Its three callers are the decisions that write both of memory's own rows: confirm, settle's
-// write of a delivery an earlier write left unsaved, and repair's branch for a claim that holds
-// a pending delivery. Each has a pending delivery by the time it calls, which is what this reads.
+// Its four callers are the decisions that write both of memory's own rows: confirm, refused where
+// the confirmation it takes back takes its telling back with it (moveTelling), settle's write of a
+// delivery an earlier write left unsaved, and repair's branch for a claim that holds a pending
+// delivery. Each has a pending delivery by the time it calls, which is what this reads.
 func (m *Machine) putClaimAndPending(ctx context.Context) error {
 	if err := m.putClaimAndDelivery(ctx, m.stored(), *m.claim.Pending); err != nil {
 		return err

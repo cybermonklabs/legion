@@ -1364,22 +1364,16 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // acknowledges a prompt at its admission, before its pre-turn work, and its turn is the session's
 // next whenever it starts, so a late start confirms the task (turnStarted) and the prompt's own
 // result settles it (fence, promptResulted).
-// It is also where the abandoned session's sentence becomes told, since this is the first word
-// the daemon has that a prompt carrying it reached the agent at all (AbandonedSession.Told): a
-// prompt the agent refused, or one the transport lost, goes back in the queue and must carry the
-// sentence again. The claim then goes in the delivery's own write, so a restart between the two
-// cannot read a claim that has told the sentence beside a task no prompt of which was ever
-// acknowledged, or the other way about.
+// It tells nothing of what the prompt carried, the abandoned session's sentence or the record of
+// the last let-go: an acknowledgement at admission can still be answered busy, so each is told at
+// the confirmation of the prompt that carried it (confirm, where the rule is), and this writes
+// the delivery alone, as for every other prompt.
 func acked(m *Machine, ctx context.Context, _ Event) error {
 	m.helloDuringSend = false
 	p := m.claim.Pending
 	m.awaitResult(p.ID)
 	m.markRead(p)
 	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
-	if m.claim.Abandoned.Tells() {
-		m.claim.Abandoned.Told = true
-		return m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p))
-	}
 	return m.putPending(ctx)
 }
 
@@ -1403,6 +1397,9 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // goes with it unless another prompt of the task is still outstanding (Machine.outstanding): the
 // pinned Oh My Pi refuses this send because it is preparing or running that prompt's turn, the
 // very turn whose start, with this send in flight, confirmed the task, so it stays the task's.
+// A confirmation that goes takes back what it told (moveTelling, confirm): the turn that confirmed
+// the task was another's, so the agent never read the sentence the task's prompt carried, and the
+// next prompt carries it again.
 //
 // Which failures cost budget is decided here, and this doc is where the split is stated.
 // Charged are the two answers the far side gave about this very workspace: a refused prompt and a
@@ -1445,7 +1442,8 @@ func ackedInTurn(m *Machine, _ context.Context, _ Event) error {
 // second budget, and the uncharged failures are exactly the ones it exists for: a transport loss
 // costs nothing and is retried for ever, so without it the only trace of a claim waiting days on
 // a send that never lands is a log line inside its pod. It rides out on the write this already
-// makes of the delivery, so one persist covers the taken-back confirmation and the record alike;
+// makes of the delivery, so one persist covers the taken-back confirmation and the record alike,
+// and the claim goes with them where that confirmation's telling went back (putClaimAndPending);
 // that write is unconditional because the record changes on every failed send, where the
 // confirmation it takes back is there to clear only on some.
 //
@@ -1469,13 +1467,21 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	resend := m.helloDuringSend
 	m.helloDuringSend = false
 	p := m.claim.Pending
+	untold := false
 	if !m.awaitsResult() {
 		p.ConfirmedAt = time.Time{}
+		untold = m.moveTelling(p.ID, "")
 	}
 	p.SendFailures++
 	p.LastSendFailureAt = m.deps.Clock.Now()
 	p.LastSendError = scrubSendError(r.Err.Error())
-	if err := m.putPending(ctx); err != nil {
+	var err error
+	if untold {
+		err = m.saved(m.putClaimAndPending(ctx))
+	} else {
+		err = m.putPending(ctx)
+	}
+	if err != nil {
 		m.log.Warn("supervise: the failed send was not recorded on the delivery; settle writes it again and the charge goes on",
 			"delivery", r.DeliveryID, "error", err)
 	}
@@ -1684,6 +1690,13 @@ func agentBusy(reason string) bool {
 // claim whose last step is past its role's bound (the daemon's backstopStalledTurns), and a worker
 // idle past that bound would otherwise be relaunched at the sweep before its turn starts.
 //
+// For the same reason the record dates the turn's start (Claim.LastTurnStart) at the busy answer,
+// the daemon's first word that the turn exists, rather than leaving the start of the turn before
+// it standing: a let-go of the process in this turn reads an activity report older than that
+// start as no report of the turn (recordEnd), where the turn before's start would have counted a
+// report made before this turn began as one of it. The turn's own agent_start, read later, dates
+// it again at its own moment (beginTurn).
+//
 // The mark it sets (busyTurn) is what ends the record when no frame of the turn is ever read: the
 // runtime's sweep asks the agent whether the turn is over and ends it through turnEnded once the
 // agent says it is in no prompt (observe, askTurnOver). So such a claim is bounded by one sweep
@@ -1693,7 +1706,7 @@ func (m *Machine) recordBusyTurn(ctx context.Context) error {
 	if state := m.claim.State; state != StateReady && state != StateIdle {
 		return nil
 	}
-	m.claim.State = StateWorking
+	m.claim.State, m.claim.LastTurnStart = StateWorking, m.deps.Clock.Now()
 	m.unseenTurn, m.busyTurn = true, true
 	m.log.Info("supervise: the agent's busy answer records the claim working; its task waits for the end of the turn the agent is in",
 		"delivery", pendingID(m.claim.Pending), "outstanding", m.outstanding)

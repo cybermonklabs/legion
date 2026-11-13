@@ -3,16 +3,19 @@ package supervise
 // The sentence a relaunched process is told of what the last let-go of its process ended
 // (dispatch://INFRA-3276 R3): in front of the task the claim holds, as the whole of a delivery of
 // the daemon's own when it holds none, behind the abandoned session's sentence's precedence and in
-// front of a provider error's, and told only when a turn takes a prompt that carried it. The
-// daemon package drives the same against the real workflow (its TestARelaunchSentence… tests).
+// front of a provider error's, told only when a turn takes a prompt that carried it, and told again
+// when that turn turns out to be another's. The daemon package drives the same against the real
+// workflow (its TestARelaunchSentence… tests).
 
 import (
 	"errors"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // wantTold is whether the claim's record of what its last let-go ended has been told, as the
@@ -25,6 +28,21 @@ func (h *harness) wantTold(want bool, when string) {
 		}
 		if got.Told != want {
 			h.t.Fatalf("%s: %s records the let-go told=%v, want %v", when, where, got.Told, want)
+		}
+	}
+}
+
+// wantToldBy is whether the claim's record of what its last let-go ended has been told, and by the
+// confirmation of which delivery (EndedWork.ToldBy), as the machine holds it and as the store holds
+// it: "" is a record still untold, which names no delivery.
+func (h *harness) wantToldBy(by, when string) {
+	h.t.Helper()
+	for where, got := range map[string]EndedWork{"the machine": h.claim().EndedWork, "the store": h.store.load(h.token).EndedWork} {
+		if got.Cause == "" {
+			h.t.Fatalf("%s: %s holds no record of the let-go, want one", when, where)
+		}
+		if got.Told != (by != "") || got.ToldBy != by {
+			h.t.Fatalf("%s: %s records the let-go told=%v by %q, want told=%v by %q", when, where, got.Told, got.ToldBy, by != "", by)
 		}
 	}
 }
@@ -284,6 +302,231 @@ func TestARelaunchSentenceIsToldOnlyAtConfirmation(t *testing.T) {
 			t.Fatalf("the next task was sent as %q, want %q: the sentence goes again until a prompt this daemon sent is taken", next.Message, want)
 		}
 	})
+}
+
+// heldAtRelaunch is a relaunched claim whose record of its last let-go still tells — launch 1's,
+// which cut off a turn of the agent's own and a subagent with it — holding a task that no cut turn
+// took back, so it is not Interrupted, queued before the ready of launch 2 that sends it. It
+// returns the prompt that task goes as: the record's sentence in front of the task.
+func heldAtRelaunch(t *testing.T, task string) (*harness, string) {
+	t.Helper()
+	c := queuedClaim()
+	c.Generation = 1
+	c.EndedWork = EndedWork{At: epoch, Cause: endDisplaced, Generation: 1, Turn: true,
+		Background: true, Kinds: []string{"subagent"}, Reported: true}
+	h := newHarnessOf(t, c)
+	h.launch()
+	h.connect()
+	h.register()
+	h.must(RequestDeliver{Claim: testToken, Task: task, Generation: 5})
+	if p := h.pending(); p.Interrupted {
+		t.Fatalf("the relaunched claim holds %+v, want a task no cut turn took back", p)
+	}
+	return h, relaunchSentence(c.EndedWork, true) + "\n\n" + task
+}
+
+// A confirmation taken back as another turn's takes back the telling it made (moveTelling), in the
+// order INFRA-264 showed: a relaunched worker holds a task that was not in the cut turn, so it is
+// not Interrupted, and the ready sends it behind the record's sentence. An Envoy notice starts a
+// turn while that prompt is on its way — in flight, or acknowledged and waiting for its turn — and
+// the start is taken for the task's, which confirms it and tells the record by that delivery. Oh My
+// Pi then answers the prompt busy, at the send or after its acknowledgement: the turn was the
+// notice's, so the confirmation goes, and the telling with it, in the store as in memory. The agent
+// read the notice and never the sentence, so the task the turn's end sends carries it again, and
+// the turn that takes that prompt tells it.
+func TestARelaunchSentenceIsToldAgainWhenItsConfirmationIsTakenBack(t *testing.T) {
+	const task = "implement the plan"
+	for _, tc := range []struct {
+		name string
+		// confirm makes the ready that sends the task and has the notice's turn confirm it. It
+		// returns the delivery that confirmation stands under, the connection the agent answers
+		// on, and refuse, which has Oh My Pi answer the task's prompt busy.
+		confirm func(t *testing.T, h *harness) (id string, conn *fake.Conn, refuse func())
+	}{
+		{name: "the send in flight is refused busy", confirm: func(t *testing.T, h *harness) (string, *fake.Conn, func()) {
+			gated := newGatedConn()
+			h.conns.Register(testToken, gated)
+			if err := h.m.Handle(h.ctx, RequestReady{Claim: testToken, Generation: h.generation(), Session: session}); err != nil {
+				t.Fatal(err)
+			}
+			id := waitFor(t, "the ready's send", gated.entered)
+			if err := h.m.Handle(h.ctx, StreamTurnStart{Claim: testToken}); err != nil {
+				t.Fatal(err)
+			}
+			return id, gated.Conn, func() {
+				gated.RefusePrompt(busyAnswer)
+				gated.release <- struct{}{}
+				h.m.Wait()
+				// Every later prompt goes straight through.
+				gated.FailPrompt(nil)
+				go func() {
+					for range gated.entered {
+						gated.release <- struct{}{}
+					}
+				}()
+			}
+		}},
+		{name: "the acknowledged prompt is refused busy late", confirm: func(t *testing.T, h *harness) (string, *fake.Conn, func()) {
+			h.ready()
+			id := h.wantPrompts(1)[0].DeliveryID
+			h.must(StreamTurnStart{Claim: testToken})
+			return id, h.conn, func() {
+				h.must(StreamLateRefusal{Claim: testToken, DeliveryID: id, Error: busyAnswer})
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, want := heldAtRelaunch(t, task)
+
+			id, conn, refuse := tc.confirm(t, h)
+			if p := h.pending(); p.ID != id || p.ConfirmedAt.IsZero() {
+				t.Fatalf("pending after the notice's turn began = %+v, want %s confirmed by it", p, id)
+			}
+			h.wantToldBy(id, "once the notice's turn confirmed the task")
+
+			refuse()
+			if p := h.pending(); !p.ConfirmedAt.IsZero() {
+				t.Fatalf("pending after the busy answer = %+v, want the confirmation taken back", p)
+			}
+			h.wantToldBy("", "after the busy answer took the confirmation back")
+
+			h.mustQuiet(StreamTurnEnd{Claim: testToken})
+			prompts := conn.Prompts()
+			if len(prompts) != 2 {
+				t.Fatalf("prompts sent = %+v, want the ready's and the one the notice's turn end sent", prompts)
+			}
+			if prompts[0].Message != want {
+				t.Fatalf("the ready sent the task as %q, want %q", prompts[0].Message, want)
+			}
+			again := prompts[1]
+			if again.Message != want {
+				t.Fatalf("the task after the notice's turn was sent as %q, want %q: the agent never read the sentence", again.Message, want)
+			}
+			h.wantToldBy("", "before the task's own turn")
+
+			h.must(StreamTurnStart{Claim: testToken})
+			h.wantToldBy(again.DeliveryID, "once the task's own turn began")
+		})
+	}
+}
+
+// A confirmation the take-back keeps keeps its telling too, under the id it moves the task to
+// (takeBackPending, moveTelling), so a later take-back of that same confirmation still finds it. The
+// ready's prompt of the task waits out its turn, and the sweep sends the task again under a new id,
+// both behind the record's sentence. The turn of the first prompt starts late and confirms the task,
+// which tells the record by the pending id. Oh My Pi answers the second prompt busy, because it is
+// running the first one's turn: that turn stays the task's, and only the id moves, the telling
+// with it. The first prompt's result is then a provider error, a model call that failed: the
+// confirmation goes, the telling with it, and the task the ladder sends again carries the sentence.
+func TestARelaunchSentenceToldByAKeptConfirmationMovesWithItsNewID(t *testing.T) {
+	const task = "implement the plan"
+	h, want := heldAtRelaunch(t, task)
+	h.ready()
+	first := h.wantPrompts(1)[0]
+	h.advance(testRPC)
+	h.observe(runtime.Alive)
+	second := h.wantPrompts(2)[1]
+	if first.Message != want || second.Message != want {
+		t.Fatalf("the task was sent as %q and %q, want %q both times", first.Message, second.Message, want)
+	}
+	h.must(StreamTurnStart{Claim: testToken})
+	h.wantToldBy(second.DeliveryID, "once the first prompt's turn confirmed the task")
+
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: second.DeliveryID, Error: busyAnswer})
+	moved := h.pending()
+	if moved.ID == second.DeliveryID || moved.ConfirmedAt.IsZero() {
+		t.Fatalf("pending after the busy answer = %+v, want it confirmed still, under a new id", moved)
+	}
+	h.wantToldBy(moved.ID, "after the busy answer moved the confirmation to a new id")
+
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: first.DeliveryID, AgentInvoked: true,
+		Error: "overloaded_error", HTTPStatus: 529})
+	if p := h.pending(); !p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending after the provider error = %+v, want the confirmation taken back", p)
+	}
+	h.wantToldBy("", "after the provider error took the confirmation back")
+
+	h.advance(promptRetryFirst)
+	again := h.wantPrompts(3)[2]
+	if !strings.HasPrefix(again.Message, relaunchSentence(h.claim().EndedWork, true)+"\n\n") {
+		t.Fatalf("the ladder sent the task as %q, want the record's sentence in front of it again", again.Message)
+	}
+	h.must(StreamTurnStart{Claim: testToken})
+	h.wantToldBy(again.DeliveryID, "once the re-sent task's turn began")
+}
+
+// A confirmation taken back from a turn that was the task's own and ran — its process died in it,
+// or a held suspension's deadline stopped it (interrupted) — keeps the telling it made: the agent
+// read the prompt that carried the sentence. The let-go that ends that turn writes a record of its
+// own, which is new words and untold, and the record it replaces is never read as untold first,
+// which would join the old record's subagent into the new one (recordEnd, joined): every claim
+// write from the confirmation on holds the old record told by that confirmation's delivery until
+// the new record takes its place, and the new record names only what the new let-go ended.
+func TestARelaunchSentenceStaysToldWhenTheTurnThatReadItIsInterrupted(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		cause string
+		// end ends the task's turn and lets the process go.
+		end func(t *testing.T, h *harness)
+	}{
+		{name: "the process dies in that turn", cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+			end: func(t *testing.T, h *harness) {
+				h.observe(runtime.Gone)
+			}},
+		{name: "a held suspension's deadline stops that turn", cause: endSuspended(SuspendedByOperator),
+			end: func(t *testing.T, h *harness) {
+				if err := h.handle(RequestSuspend{Claim: h.token, By: SuspendedByOperator}); !errors.Is(err, ErrSuspendHeld) {
+					t.Fatalf("suspend mid-turn = %v, want ErrSuspendHeld", err)
+				}
+				h.advance(testStop)
+				h.wantState(StateSuspended)
+			}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateWorking)
+			h.reportActivity("subagent")
+			h.observe(runtime.Gone)
+			h.relaunched()
+			told := h.claim().EndedWork
+			resent := h.wantPrompts(2)[1]
+			if want := relaunchSentence(told, true) + "\n\n" + "implement the plan"; resent.Message != want {
+				t.Fatalf("the task was re-sent as %q, want %q", resent.Message, want)
+			}
+			from := len(h.store.history())
+			h.must(StreamTurnStart{Claim: testToken})
+			h.wantToldBy(resent.DeliveryID, "once the task's turn began")
+			h.advance(time.Second)
+			h.reportActivity("async-job")
+			ended := h.generation()
+
+			tc.end(t, h)
+
+			heldTold := false
+			for i, put := range h.store.history()[from:] {
+				if e := put.EndedWork; e.Generation == told.Generation {
+					if !e.Told || e.ToldBy != resent.DeliveryID {
+						t.Errorf("claim write %d from the confirmation on holds the told record as %+v, want it told by %s", i, e, resent.DeliveryID)
+					}
+					heldTold = true
+				}
+			}
+			if !heldTold {
+				t.Error("no claim write from the confirmation on holds the told record, want the confirmation's own")
+			}
+			newer := h.claim().EndedWork
+			if newer.Generation != ended || newer.Cause != tc.cause || !newer.Tells() || !newer.TaskTurn {
+				t.Fatalf("the let-go recorded %+v, want an untold record of launch %d's task turn under %q", newer, ended, tc.cause)
+			}
+			if len(newer.Kinds) != 1 || newer.Kinds[0] != "async-job" {
+				t.Fatalf("the let-go recorded the kinds %v, want the job of launch %d alone: the told record of launch %d is not joined into it", newer.Kinds, ended, told.Generation)
+			}
+			if stored := h.store.load(h.token).EndedWork; stored.Generation != ended || stored.Told {
+				t.Fatalf("the store holds the record %+v, want the untold record of launch %d", stored, ended)
+			}
+		})
+	}
 }
 
 // A newer task takes the place of the daemon's own delivery of the relaunch's record while no

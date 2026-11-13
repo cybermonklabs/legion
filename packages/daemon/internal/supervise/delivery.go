@@ -208,25 +208,35 @@ func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState
 	return d.Generation == generation && d.Phase == p && (d.ConfirmedAt.IsZero() || state == StateWorking)
 }
 
-// message is the prompt a delivery is sent as: its task, behind the sentence the claim's state
-// gives it, at most one of three that say what became of the agent's earlier work, and then the
-// provider's. In order of precedence:
+// sentences is which of the claim's two untold records a prompt carries the sentence of: the
+// session the claim abandoned (AbandonedSession, abandonedTask), and what the last let-go of its
+// process ended (EndedWork, relaunchSentence). Delivery.message answers it beside the prompt it
+// composes, so what a prompt is marked as telling is what its text holds (Machine.carried), and a
+// record is told at the confirmation of a prompt that carried it (confirm, where the rule is).
+type sentences struct{ abandoned, ended bool }
+
+// message is the prompt a delivery is sent as, and which of the claim's two untold records it
+// tells (sentences): its task, behind the sentence the claim's state gives it, at most one of
+// three that say what became of the agent's earlier work, and then the provider's. In order of
+// precedence:
 //
 //   - The first task the agent that replaced an abandoned session is given names that session
 //     (abandonedTask). A fresh session cannot carry on a turn or a subagent it never had, and the
 //     sentence says that everything of the old session is gone, so it stands in place of either
-//     sentence below when a task is both.
+//     sentence below when a task is both, and tells the record of the let-go too.
 //   - While the claim's record of what its last let-go ended is untold (EndedWork.Tells), every
 //     prompt carries that record's sentence in front of its task (relaunchSentence): the cause,
 //     the turn and the background work that let-go cut off, whatever the task. It also says what
 //     interruptedTask would say of a task taken back from that turn — it begins with the turn of
 //     this task being interrupted where the record says the task was in it (EndedWork.TaskTurn) —
-//     so a task carries the one sentence and not both. The record is told at the confirmation of a
-//     prompt that carried it (confirm, Machine.carriedEnd).
+//     so a task carries the one sentence and not both.
 //   - A task taken back from a turn (Interrupted) whose record has been told, or that no record
 //     names, still says its turn was interrupted, under the cause the claim's record names
 //     (interruptedTask): the let-go that took it back, whichever path that was, rather than the
 //     last death's words.
+//
+// Each record a prompt tells is told at the confirmation of that prompt (confirm), never here: a
+// prompt composed is not a prompt read.
 //
 // Behind the interruption, when its end was the pod running out of memory, comes outOfMemoryTask
 // — the agent reads that its turn was interrupted, then why, then the task. A task a provider
@@ -243,20 +253,20 @@ func (d Delivery) StillWorked(generation uint64, p phase.Phase, state ClaimState
 // One case still sends a stale note: the previous release's upsert carries no out_of_memory
 // column, so if an image rollback takes a marked task back again for another end, the row keeps
 // the mark, and a roll-forward sends the note for that end.
-func (d Delivery) message(c Claim) string {
-	text := d.Task
+func (d Delivery) message(c Claim) (string, sentences) {
+	text, told := d.Task, sentences{}
 	relaunch := relaunchTask(d.ID)
 	if relaunch && c.EndedWork.Tells() {
-		text = RelaunchSentence(c.EndedWork)
+		text, told.ended = RelaunchSentence(c.EndedWork), true
 	}
 	var prefix string
 	switch {
 	case c.Abandoned.Tells():
-		prefix = abandonedTask(c)
+		prefix, told = abandonedTask(c), sentences{abandoned: true, ended: c.EndedWork.Tells()}
 	case relaunch:
 		// Its text is the record's sentence already.
 	case c.EndedWork.Tells():
-		prefix = relaunchSentence(c.EndedWork, true) + "\n\n"
+		prefix, told.ended = relaunchSentence(c.EndedWork, true)+"\n\n", true
 	case d.Interrupted:
 		prefix = interruptedTask(c.EndedWork.Cause)
 	}
@@ -266,7 +276,7 @@ func (d Delivery) message(c Claim) string {
 	if d.ProviderErrorNote != "" {
 		prefix += d.ProviderErrorNote + "\n\n"
 	}
-	return prefix + text
+	return prefix + text, told
 }
 
 // HashBootToken is the one hash a boot token is stored and looked up by. A launch mints the token
@@ -984,21 +994,19 @@ func (m *Machine) streaming(ctx context.Context, conn runtime.Conn) (streaming, 
 
 // startSend runs one prompt on its own goroutine and posts its outcome back to the machine. The
 // task is marked as put to the agent before the goroutine starts (Delivery.Prompted), whatever
-// the agent then answers: from here on, a prompt of it has gone out. The abandoned session's
-// sentence the prompt may carry is not marked told here, because this says only that a prompt
-// went out, not that one arrived (AbandonedSession.Told, acked). Nor is the record of what the
-// last let-go ended: a prompt composed while it tells carries its sentence, or the abandoned
-// session's in its place (message), and that is all this marks (Machine.carriedEnd); the record
-// is told when a turn confirms the task (confirm). Whether the send adopts the working copy first
-// is decided here, under the machine's lock, so the goroutine acts on the claim the hold in
+// the agent then answers: from here on, a prompt of it has gone out. Of the claim's two untold
+// records, the abandoned session and what the last let-go ended, this marks only which the prompt
+// carries the sentence of, as message composed it (Machine.carried), and tells neither: a prompt
+// that went out is not one that arrived, and each is told at the confirmation of the prompt that
+// carried it (confirm, where the rule is). Whether the send adopts the working copy first is
+// decided here, under the machine's lock, so the goroutine acts on the claim the hold in
 // sendPending was decided against.
 func (m *Machine) startSend(conn runtime.Conn, d Delivery) {
 	token, generation, role, loc := m.claim.Token, m.claim.Generation, m.claim.Role, m.claim.Locator
 	adopting := m.adopts(d)
-	prompt := d.message(m.claim)
-	if m.claim.EndedWork.Tells() {
-		m.carriedEnd = true
-	}
+	prompt, carried := d.message(m.claim)
+	m.carried.abandoned = m.carried.abandoned || carried.abandoned
+	m.carried.ended = m.carried.ended || carried.ended
 	if p := m.claim.Pending; p != nil && p.ID == d.ID {
 		p.Prompted = true
 	}
@@ -1111,16 +1119,21 @@ func (m *Machine) adopt(ctx context.Context, role claim.Role, loc *runtime.Locat
 // never one an earlier turn of the same task already got past. It is cleared on the delivery the
 // claim holds, which is the row putClaimAndPending writes, so the write below carries it.
 //
-// This is also where the claim's record of what its last let-go ended becomes told
-// (EndedWork.Told), when a prompt that carried its sentence went to this process
-// (Machine.carriedEnd): the turn starting is the agent reading that prompt. It is the claim's
-// field, so it goes in the same write as the confirmation, and a restart reads both or neither.
-// It is not marked at the prompt's acknowledgement (acked): the pinned Oh My Pi acknowledges a
-// prompt at its admission and can then answer it busy, and a sentence marked told there would
-// never reach the agent, since the prompt sent after the busy answer would carry none. A turn
-// whose prompt carried no sentence — one sent before the record was written, or one an earlier
-// daemon sent, of which this machine knows nothing — tells nothing, and the next prompt carries
-// the sentence again.
+// This is also where the claim's two records of what became of the agent's earlier work — the
+// session the claim abandoned (AbandonedSession) and what the last let-go of its process ended
+// (EndedWork) — become told, and it is the rule every other mention of their telling points to.
+// A record is told at the confirmation of a prompt that carried its sentence to this process
+// (Delivery.message, Machine.carried), since the turn starting is the agent reading that prompt,
+// and it records the delivery whose confirmation told it (ToldBy). A confirmation later taken
+// back as another turn's takes that telling back with it, so the next prompt carries the sentence
+// again (moveTelling); one taken back from a turn that was the task's own and ran keeps it
+// (interrupted). Neither is marked at the prompt's acknowledgement (acked): the pinned Oh My Pi
+// acknowledges a prompt at its admission and can then answer it busy, and a sentence marked told
+// there would never reach the agent, since the prompt sent after the busy answer would carry none.
+// A turn whose prompt carried no sentence — one sent before the record was written, or one an
+// earlier daemon sent, of which this machine knows nothing — tells nothing, and the next prompt
+// carries the sentence again: told twice, never not at all. Both records are the claim's fields,
+// so they go in the same write as the confirmation, and a restart reads both or neither.
 func (m *Machine) confirm(ctx context.Context) error {
 	p := m.claim.Pending
 	p.ConfirmedAt = m.deps.Clock.Now()
@@ -1128,10 +1141,15 @@ func (m *Machine) confirm(ctx context.Context) error {
 	m.askFirst = false
 	m.claim.Budgets.PromptFailures, m.claim.Budgets.PromptRetires = 0, 0
 	p.SendFailures, p.LastSendFailureAt, p.LastSendError = 0, time.Time{}, ""
-	if m.carriedEnd && m.claim.EndedWork.Tells() {
-		m.claim.EndedWork.Told = true
+	if a := &m.claim.Abandoned; m.carried.abandoned && a.Tells() {
+		a.Told, a.ToldBy = true, p.ID
+		m.log.Info("supervise: a turn took the prompt that told the agent of the session its claim abandoned",
+			"delivery", p.ID, "session", a.Session)
+	}
+	if e := &m.claim.EndedWork; m.carried.ended && e.Tells() {
+		e.Told, e.ToldBy = true, p.ID
 		m.log.Info("supervise: a turn took the prompt that told the agent what its relaunch ended",
-			"delivery", p.ID, "cause", m.claim.EndedWork.Cause, "ended", m.claim.EndedWork.Generation)
+			"delivery", p.ID, "cause", e.Cause, "ended", e.Generation)
 	}
 	if err := m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx))); err != nil {
 		return err
@@ -1305,6 +1323,11 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // A take-back that lands also marks the task, under its new id, as taken from a turn of the
 // process the claim records (Machine.cutTurnOf): the confirmation it clears is what the let-go
 // that follows would otherwise read that from, and that let-go records it (recordEnd).
+//
+// What the confirmation it clears told stays told (confirm): this is no confirmation taken back
+// as another turn's, which is what takes a telling back (moveTelling), but the end of a turn that
+// was the task's own and ran, so the agent read the prompt that carried the sentence. The record
+// of the let-go that cut the turn off is new words, and is told by a prompt of its own.
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
 	p := m.claim.Pending
 	if p == nil || p.ConfirmedAt.IsZero() {
@@ -1404,33 +1427,85 @@ func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 // apart: a provider error's result has ended the wait already (promptResulted), and a compaction
 // ends it itself (compactStart).
 //
+// A confirmation it clears was taken by a turn that was not the task's — another input's, or one
+// the prompt's own answer says came to nothing — so what it told goes back to untold with it, and
+// the next prompt carries that sentence again (moveTelling). Two callers clear a confirmation a
+// turn of the task itself may have taken, and the untelling is right for both: a provider error
+// (providerErrored) is a model call that failed, often the turn's first, so the agent never read
+// the prompt, and where an earlier call of the turn did, the sentence is told twice rather than
+// lost; a compaction (compactStart) aborts the turn, and the sentence repeated in the next prompt
+// is the safe way round. A confirmation kept for an outstanding prompt keeps its telling too,
+// moved with it to the new id, so that a later take-back of the same confirmation under that id
+// still finds it.
+//
 // The id moves either way: the prompt whose answer this is gets a new one, so its own late
 // acknowledgement is fenced out (fenceOutcome) and adds nothing outstanding, and the shim's
 // one-delivery record (shimwire's dedupe) is never asked to answer an old id again.
 //
 // The refusal or timeout behind it arrives once, and settle and ServingRun read the claim as memory
-// holds it, so what it established — not confirmed, and not read when taken back unread — holds at
-// once, whether or not the write recording it lands. Only the new id waits for the write, so the
-// claim's id is always one the store holds; a write that fails leaves the delivery unsaved, and
-// settle writes it again under the id it kept (saved). Where none is outstanding, the wait for the
+// holds it, so what it established — not confirmed, not read when taken back unread, and no longer
+// told by that confirmation — holds at once, whether or not the write recording it lands. Only the
+// new id waits for the write, and the telling moved to it with it, so the claim's id is always one
+// the store holds; a write that fails leaves the delivery unsaved, and settle writes it again
+// under the id it kept, with the claim (saved). Where none is outstanding, the wait for the
 // prompts' results is over before that write, which is safe here, where interrupted ends the wait
 // after its own write: this clears ConfirmedAt in memory first, so the claim a failed write leaves
 // is one settle reads as a task still waiting rather than as a turn that is over (turnOver,
-// resultPending).
+// resultPending). A telling that moved goes in the same write as the delivery, the claim and the
+// delivery together, so a restart never reads a record told by a confirmation the delivery no
+// longer holds.
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
 	p := m.claim.Pending
-	if !m.awaitsResult() {
+	id, kept := rotateTaskID(p.ID), m.awaitsResult()
+	var moved bool
+	if kept {
+		moved = m.moveTelling(p.ID, id)
+	} else {
 		p.ConfirmedAt = time.Time{}
 		if !read {
 			m.clearReadMark(p)
 		}
+		moved = m.moveTelling(p.ID, "")
 	}
 	next := *p
-	next.ID = rotateTaskID(p.ID)
-	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+	next.ID = id
+	var err error
+	if moved {
+		err = m.putClaimAndDelivery(ctx, m.stored(), next)
+	} else {
+		err = m.putDelivery(ctx, next)
+	}
+	if m.saved(err) != nil {
+		if kept && moved {
+			// The confirmation stays under the id the write could not move it from.
+			m.moveTelling(id, p.ID)
+		}
 		return err
 	}
-	p.ID = next.ID
+	p.ID = id
 	return nil
+}
+
+// moveTelling hands what the confirmation of delivery from told (confirm) to to, the id that
+// confirmation stands under from here on, and reports whether any record had a telling to hand:
+// each of the claim's two records whose ToldBy is from names to instead. to "" is the
+// confirmation taken back as another turn's, which tells nothing any more, so such a record goes
+// back to untold and the next prompt carries its sentence again. Its callers are the two places a
+// confirmation is taken back for that reason (refused, takeBackPending), read before the id
+// moves, and takeBackPending's move of a kept confirmation to the new id; each writes the claim
+// in the delivery's own write when this reports true.
+func (m *Machine) moveTelling(from, to string) bool {
+	moved := false
+	if a := &m.claim.Abandoned; a.Told && a.ToldBy == from {
+		a.Told, a.ToldBy, moved = to != "", to, true
+	}
+	if e := &m.claim.EndedWork; e.Told && e.ToldBy == from {
+		e.Told, e.ToldBy, moved = to != "", to, true
+	}
+	if moved && to == "" {
+		m.log.Info("supervise: the turn that took the prompt telling the agent what became of its earlier work was another's; the next prompt tells it again",
+			"delivery", from)
+	}
+	return moved
 }
