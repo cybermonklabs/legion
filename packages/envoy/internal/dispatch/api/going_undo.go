@@ -36,6 +36,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -52,8 +53,9 @@ const (
 	// codeGoingUndoChanged is a field another writer changed since the write: it is left as it
 	// is now, and the rest is undone.
 	codeGoingUndoChanged = "GOING_UNDO_CHANGED"
-	// codeGoingUndoNotCallers is a release of a claim the caller did not hold: taking it back
-	// would make the caller its holder, which is not what it was.
+	// codeGoingUndoNotCallers is a release of a claim the undo cannot take back for its holder:
+	// the claim it would make is recorded as its own claimant (goingUndoer.claimant), not as the
+	// holder the release released, so taking it would give the claim to one who never held it.
 	codeGoingUndoNotCallers = "GOING_UNDO_NOT_CALLERS_CLAIM"
 	// codeGoingUndoUnknown is a write whose action the catalogue no longer holds: no row states
 	// its undo, so none is tried.
@@ -76,6 +78,10 @@ const (
 	// codeClaimContended is the claim routes' refusal of a claim whose holder changed twice while
 	// the request ran (issue_claim.go), which asks the caller to read the issue and try again.
 	codeClaimContended = "CLAIM_CONTENDED"
+	// codeGoingLandingUnread is an undo request whose landing could not be read back
+	// (goingLandingUnread): the undo is answered the server's own failure and never recorded, so
+	// its claim stays and it is never made twice.
+	codeGoingLandingUnread = "GOING_LANDING_UNREAD"
 )
 
 // goingUndoInput is POST /api/v1/going/runs/{id}/undo's optional body: the reason an issue the
@@ -154,7 +160,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		if len(ids) == 0 {
 			break
 		}
-		err := s.claimGoingRunUndos(ctx, run.ID, caller.ID, ids, claimedAt)
+		err := s.claimGoingRunUndos(ctx, run.ID, caller.ID, ids, claimedAt, len(run.Undos))
 		if err == nil {
 			break
 		}
@@ -162,8 +168,9 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, fmt.Errorf("claim the going undo: %w", err))
 			return
 		}
-		// Refused: another undo claimed the run, or settled one of these writes, since the read,
-		// or the run is gone. The next read says which.
+		// Refused: another undo claimed the run, settled one of these writes or recorded an undo
+		// since the read, or the run is gone. The next read says which, and holds what any undo
+		// of these writes landed (goingUndoLandedBefore) as the claim finds it.
 	}
 	at := goingUndoClaimedAt(claimedAt)
 	// The writes the loop below has not reached yet, whose claims are given up when the handler
@@ -193,7 +200,14 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		unreached = unreached[1:]
+		undoer.landings = &goingLandings{s: s, run: run.ID, login: caller.ID, write: write.ID, undo: at}
 		line := undoer.undo(ctx, write, goingUndoLandedBefore(run, write.ID))
+		if line.Outcome.Code == codeGoingLandingUnread {
+			// Whether a request of the undo landed is unknown: its claim stays, so no undo of the
+			// run makes it a second time, and past the bound it is answered unsettled.
+			s.writeHandlerError(w, errors.New("read whether an undo's request landed"))
+			return
+		}
 		bookkeeping, done := goingBookkeeping(ctx)
 		err := s.recordGoingRunUndo(bookkeeping, run.ID, caller.ID, goingRunUndo{
 			WriteID: write.ID, Outcome: line.Outcome, Fields: line.Fields, At: time.Now().UTC(),
@@ -304,6 +318,8 @@ type goingUndoer struct {
 	login    string
 	session  string
 	reason   string
+	// landings is where the requests of the write's undo under way record that they landed.
+	landings *goingLandings
 }
 
 // undo undoes one write by the undo the catalogue row it went through states, as its record keeps
@@ -387,10 +403,14 @@ func (u goingUndoer) undo(ctx context.Context, write goingRunWrite, landed []goi
 	return line
 }
 
-// send makes one write of an undo through route, one of the routes the catalogue declares for the
-// undos (goingIssuePatchRoute and the rest), its placeholders filled from values, in-process as
-// the caller, and answers how it went.
-func (u goingUndoer) send(ctx context.Context, route string, values map[string]string, body any) goingWriteOutcome {
+// send makes request index of an undo through route, one of the routes the catalogue declares
+// for the undos (goingIssuePatchRoute and the rest), its placeholders filled from values,
+// in-process as the caller, and answers how it went. The request landed where it was answered
+// 2xx, or where its route's transaction committed, as the record it wrote there says
+// (goingLandings.landed), whatever its answer's status: a write back that committed and then
+// answered 5xx is undone and never made a second time. One whose landing could not be read back
+// is codeGoingLandingUnread.
+func (u goingUndoer) send(ctx context.Context, index int, route string, values map[string]string, body any) goingWriteOutcome {
 	method, pattern, _ := strings.Cut(route, " ")
 	path := goingPath(pattern, values)
 	spec := goingSend{method: method, path: path}
@@ -401,7 +421,7 @@ func (u goingUndoer) send(ctx context.Context, route string, values map[string]s
 		}
 		spec = encoded
 	}
-	request, err := spec.build(ctx, "")
+	request, err := spec.build(u.landings.on(ctx, index, method, path), "")
 	if err != nil {
 		return goingFailed(err)
 	}
@@ -411,7 +431,14 @@ func (u goingUndoer) send(ctx context.Context, route string, values map[string]s
 	}
 	defer response.Body.Close()
 	answer, _ := io.ReadAll(response.Body)
-	if response.StatusCode >= http.StatusMultipleChoices {
+	landed := response.StatusCode < http.StatusMultipleChoices
+	if !landed && u.landings != nil {
+		if landed, err = u.landings.landed(ctx, index); err != nil {
+			slog.Error("dispatch: read whether a going undo's request landed", "error", err)
+			return goingWriteOutcome{Status: http.StatusInternalServerError, Code: codeGoingLandingUnread, Message: "internal server error"}
+		}
+	}
+	if !landed {
 		return goingRefusalOf(response, answer).outcome()
 	}
 	return goingWriteOutcome{OK: true, Status: response.StatusCode}
@@ -450,7 +477,9 @@ const goingRank = "rank"
 // neighbours the issue stood between before the write (rankRestore), while the issue's rank is
 // still the one the write left; a neighbour that is no longer an issue of the project is passed
 // over, and with neither left the rank is refused, naming why. A failed read of the neighbours
-// fails the undo of the write, which leaves it undoable.
+// fails the undo of the write, which leaves it undoable. The update expects each field it writes
+// back to hold what the write left (updateIssueInput.Expect), its rank the rank string, so a
+// change another writer makes after the read is refused by the update itself.
 func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome, []goingUndoField) {
 	read := func(fields []string) (map[string]any, error) {
 		current, err := u.observer.issueFields(ctx, write.Target, fields)
@@ -476,7 +505,14 @@ func (u goingUndoer) issueFields(ctx context.Context, write goingRunWrite) (any,
 		}
 		return u.observer.rankRestore(ctx, write.Target, beforePlace)
 	}
-	return u.writeBack(ctx, write, read, goingIssuePatchRoute, map[string]string{"key": write.Target}, restoreOf)
+	expectOf := func(field string, after json.RawMessage) any {
+		var place goingRankPlace
+		if field == goingRank && json.Unmarshal(after, &place) == nil {
+			return place.Rank
+		}
+		return goingJSONOrNullRaw(after)
+	}
+	return u.writeBack(ctx, write, read, goingIssuePatchRoute, map[string]string{"key": write.Target}, restoreOf, expectOf, "ISSUE_CHANGED")
 }
 
 // rankRestore is how a write back puts an issue at the place it held: between the two neighbours
@@ -568,7 +604,8 @@ func goingJSONOrNullRaw(raw json.RawMessage) json.RawMessage {
 }
 
 // askFields writes back each part of the ask the edit changed that still holds what the edit
-// left, and names each one another writer changed since.
+// left, and names each one another writer changed since; the edit expects each part it writes
+// back to hold what the edit left (editAskInput.Expect).
 func (u goingUndoer) askFields(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome, []goingUndoField) {
 	read := func(fields []string) (map[string]any, error) {
 		current, err := u.observer.askFields(ctx, write.Target, fields)
@@ -581,18 +618,24 @@ func (u goingUndoer) askFields(ctx context.Context, write goingRunWrite) (any, g
 		}
 		return goingJSONOrNullRaw(before), "", nil
 	}
-	return u.writeBack(ctx, write, read, goingAskEditRoute, map[string]string{"id": write.Target}, restoreOf)
+	expectOf := func(_ string, after json.RawMessage) any { return goingJSONOrNullRaw(after) }
+	return u.writeBack(ctx, write, read, goingAskEditRoute, map[string]string{"id": write.Target}, restoreOf, expectOf, "ASK_CHANGED")
 }
 
 // writeBack is a write back of the fields one write changed, by one PATCH through route, its
 // placeholders filled from values: restoreOf says, from what each field holds now, held before
 // the write and was left by it, the value the PATCH writes back, or why the field is left as it
 // is - another writer changed it since - or fails, which fails the whole write back before
-// anything is sent. Every field's own outcome is answered beside the write's.
+// anything is sent. The PATCH expects each field it writes back to hold what the write left
+// (expectOf, the route's expect), decided under the lock the route takes, so a field another
+// writer changes between the read and the PATCH is never written over: the route's refusal of
+// it (changedCode) is the field changed, and nothing is written back. Every field's own outcome
+// is answered beside the write's.
 func (u goingUndoer) writeBack(
 	ctx context.Context, write goingRunWrite, read func([]string) (map[string]any, error),
 	route string, values map[string]string,
 	restoreOf func(field string, held, before, after json.RawMessage) (any, string, error),
+	expectOf func(field string, after json.RawMessage) any, changedCode string,
 ) (any, goingWriteOutcome, []goingUndoField) {
 	var before, after map[string]json.RawMessage
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -603,7 +646,7 @@ func (u goingUndoer) writeBack(
 	if err != nil {
 		return nil, goingFailed(err), nil
 	}
-	restore := map[string]any{}
+	restore, expect := map[string]any{}, map[string]any{}
 	var changes, restored []string
 	outcomes := make([]goingUndoField, 0, len(fields))
 	for _, field := range fields {
@@ -616,17 +659,25 @@ func (u goingUndoer) writeBack(
 			outcomes = append(outcomes, goingUndoField{Field: field, Message: why})
 			continue
 		}
-		restore[field] = value
+		restore[field], expect[field] = value, expectOf(field, after[field])
 		restored = append(restored, field)
 		outcomes = append(outcomes, goingUndoField{Field: field, OK: true})
 	}
 	if len(restore) > 0 {
-		if outcome := u.send(ctx, route, values, restore); !outcome.OK {
+		restore["expect"] = expect
+		if outcome := u.send(ctx, 0, route, values, restore); !outcome.OK {
+			if outcome.Code == changedCode {
+				// Another writer changed a field after the read: the route wrote nothing back.
+				outcome = goingChanged([]string{outcome.Message}, nil)
+			}
 			// Nothing was written back: every field is left with the route's refusal.
 			for index := range outcomes {
 				if outcomes[index].OK {
 					outcomes[index] = goingUndoField{Field: outcomes[index].Field, Message: outcome.Message}
 				}
+			}
+			if reread, err := read(fields); err == nil {
+				now = reread
 			}
 			return now, outcome, outcomes
 		}
@@ -642,7 +693,8 @@ func (u goingUndoer) writeBack(
 
 // document writes the content the document held before the edit back over it, as a further
 // version uploaded under the document's own name to its owner's route, where its content is still
-// what the edit left.
+// what the edit left: the upload expects it (jsonArtifactUpload.ExpectSHA256), decided under the
+// document's own lock, so an edit another writer makes after the read is never written over.
 func (u goingUndoer) document(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var before, after goingDocumentValue
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -656,21 +708,25 @@ func (u goingUndoer) document(ctx context.Context, write goingRunWrite) (any, go
 	if err != nil {
 		return nil, goingFailed(err)
 	}
+	changed := func(now goingDocumentValue) goingWriteOutcome {
+		return goingChanged([]string{fmt.Sprintf("content is at version %s now, written after this edit", goingVersionText(now.Version))}, nil)
+	}
 	if now.Content != after.Content {
-		return now, goingChanged([]string{fmt.Sprintf("content is at version %s now, written after this edit", goingVersionText(now.Version))}, nil)
+		return now, changed(now)
 	}
 	route, values := goingProjectUploadRoute, map[string]string{"key": artifact.Project}
 	if artifact.IssueKey != nil {
 		route, values = goingIssueUploadRoute, map[string]string{"key": *artifact.IssueKey}
 	}
-	outcome := u.send(ctx, route, values, map[string]any{
+	outcome := u.send(ctx, 0, route, values, map[string]any{
 		"name": artifact.Name, "content": before.Content, "summary": u.reason,
+		"expect_sha256": docs.MarkdownSHA256(after.Content),
 	})
-	if !outcome.OK {
-		return now, outcome
-	}
 	if read, err := u.observer.documentValue(ctx, artifact.ID); err == nil {
 		now = read
+	}
+	if outcome.Code == "DOCUMENT_CHANGED" {
+		return now, changed(now)
 	}
 	return now, outcome
 }
@@ -683,19 +739,29 @@ func goingVersionText(version *int) string {
 	return fmt.Sprint(*version)
 }
 
-// holds reports whether holder is the caller: the person themselves, or the session their
-// credential proved.
-func (u goingUndoer) holds(holder *goingHolder) bool {
+// claimant is the holder the claim route records the undo's own claim as: the session the
+// caller's credential proved, where it proved one, else the person.
+func (u goingUndoer) claimant() goingHolder {
+	if u.session != "" {
+		return goingHolder{Kind: "session", ID: u.session}
+	}
+	return goingHolder{Kind: "user", ID: u.login}
+}
+
+// claimsAs reports whether holder is the undo's claimant (claimant), so a claim the undo makes
+// puts back holder's own claim rather than handing the issue to another.
+func (u goingUndoer) claimsAs(holder *goingHolder) bool {
 	if holder == nil {
 		return false
 	}
-	switch holder.Kind {
-	case "user":
-		return model.CanonicalLogin(holder.ID) == model.CanonicalLogin(u.login)
-	case "session":
-		return u.session != "" && holder.ID == u.session
+	claimant := u.claimant()
+	if holder.Kind != claimant.Kind {
+		return false
 	}
-	return false
+	if holder.Kind == "user" {
+		return model.CanonicalLogin(holder.ID) == model.CanonicalLogin(claimant.ID)
+	}
+	return holder.ID == claimant.ID
 }
 
 // goingHolderText names a claim's holder as a claim refusal names one (claimHolder), or says
@@ -707,47 +773,57 @@ func goingHolderText(holder *goingHolder) string {
 	return claimHolder(model.Actor{Kind: holder.Kind, ID: holder.ID}, "")
 }
 
-// claim undoes a claim by releasing it, while the holder the claim left still holds it, and a
-// release by taking the claim back, only where the caller held it before the release and nobody
-// has taken it since. A claim or a release its route answered changed nothing
-// (goingRunWrite.Unchanged) - a claim of an issue its caller already held, a release of one
-// nobody held - is undone by nothing, whoever the read before the write saw: the claim may have
-// moved between that read and the route.
+// claim undoes a claim by releasing it and a release by taking the claim back, each decided by
+// the claim route in its own transaction, never from a read another writer may have overtaken. A
+// claim is released only while the holder it left - as its route answered it, in the claim's own
+// transaction - still holds it (releaseClaimInput.ExpectHolder); a release is taken back only for
+// the holder it released - as its route answered it, previous_claim - and only where the claim
+// the undo makes would be recorded as that very holder (claimsAs) and nobody holds the issue
+// (claimIssueInput.ExpectUnclaimed). A release of another's claim - a session's the person
+// released, another person's, or the person's own undone through a credential bound to a
+// session - is refused, 409 GOING_UNDO_NOT_CALLERS_CLAIM, settled, with nothing written: the bar
+// cannot claim for that holder, and claiming as the caller would give the caller a claim it never
+// held. Either route refusing its condition, 409 CLAIM_HOLDER_CHANGED, is the claim changed by
+// another writer since, and nothing is undone. A claim or a release its route answered changed
+// nothing (goingRunWrite.Unchanged) - a claim of an issue its caller already held, a release of
+// one nobody held - is undone by nothing.
 func (u goingUndoer) claim(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var before, after *goingHolder
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
 		return nil, goingFailed(fmt.Errorf("the write's record holds no claim to undo"))
 	}
-	current, _, err := u.observer.claimHolder(ctx, write.Target)
-	if err != nil {
-		return nil, goingFailed(err)
+	values := map[string]string{"key": write.Target}
+	// The claim as it stands once the undo is decided, for the line to show.
+	now := func() any {
+		current, _, err := u.observer.claimHolder(ctx, write.Target)
+		if err != nil || current == nil {
+			return nil
+		}
+		return current
+	}
+	changed := func(outcome goingWriteOutcome) goingWriteOutcome {
+		if outcome.Code == codeClaimHolderChanged {
+			return goingChanged([]string{outcome.Message}, nil)
+		}
+		return outcome
 	}
 	switch {
 	case write.Unchanged:
-		return current, goingWriteOutcome{OK: true, Status: http.StatusOK,
+		return now(), goingWriteOutcome{OK: true, Status: http.StatusOK,
 			Message: "the claim route answered that this write changed nothing - the claim already stood as it asked - so there is nothing to undo"}
 	case after != nil:
-		if current == nil || *current != *after {
-			return current, goingChanged([]string{"the claim is held by " + goingHolderText(current) + " now, not by the holder this claim left"}, nil)
-		}
-		outcome := u.send(ctx, goingReleaseRoute, map[string]string{"key": write.Target}, map[string]any{})
-		if outcome.OK {
-			current = nil
-		}
-		return current, outcome
+		outcome := u.send(ctx, 0, goingReleaseRoute, values, map[string]any{"expect_holder": after})
+		return now(), changed(outcome)
 	case before == nil:
-		return current, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "nobody held the claim before this release, so there is nothing to take back"}
-	case !u.holds(before):
-		return current, goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoNotCallers, Message: fmt.Sprintf(
-			"the claim was held by %s before this release, and taking it back would make you its holder, which it never was", goingHolderText(before))}
-	case current != nil:
-		return current, goingChanged([]string{"the claim is held by " + goingHolderText(current) + " now, taken after this release"}, nil)
+		return now(), goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "nobody held the claim before this release, so there is nothing to take back"}
+	case !u.claimsAs(before):
+		claimant := u.claimant()
+		return now(), goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoNotCallers, Message: fmt.Sprintf(
+			"this release released the claim of %s, which the bar cannot claim for them: its claim would be recorded as %s, which never held it, so nothing was taken back",
+			goingHolderText(before), goingHolderText(&claimant))}
 	}
-	outcome := u.send(ctx, goingClaimRoute, map[string]string{"key": write.Target}, map[string]any{})
-	if outcome.OK {
-		current, _, _ = u.observer.claimHolder(ctx, write.Target)
-	}
-	return current, outcome
+	outcome := u.send(ctx, 0, goingClaimRoute, values, map[string]any{"expect_unclaimed": true})
+	return now(), changed(outcome)
 }
 
 // follow undoes a follow by unfollowing and an unfollow by following again, while the session
@@ -772,7 +848,7 @@ func (u goingUndoer) follow(ctx context.Context, write goingRunWrite) (any, goin
 	if before.Following {
 		route = goingFollowRoute
 	}
-	outcome := u.send(ctx, route, map[string]string{"id": write.Target, "session_id": after.Session}, nil)
+	outcome := u.send(ctx, 0, route, map[string]string{"id": write.Target, "session_id": after.Session}, nil)
 	if outcome.OK {
 		now.Following = before.Following
 	}
@@ -796,7 +872,7 @@ func (u goingUndoer) comment(ctx context.Context, write goingRunWrite) (any, goi
 	case before == after:
 		return resolved, goingWriteOutcome{OK: true, Status: http.StatusOK, Message: "the thread was resolved before this write, so there is nothing to reopen"}
 	}
-	outcome := u.send(ctx, goingCommentReopenRoute, map[string]string{"id": write.Target}, nil)
+	outcome := u.send(ctx, 0, goingCommentReopenRoute, map[string]string{"id": write.Target}, nil)
 	if outcome.OK {
 		return false, outcome
 	}
@@ -839,7 +915,7 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 	if current.value != "open" {
 		return current.value, goingChanged([]string{fmt.Sprintf("the ask is %v now, so it is no longer open to retract", current.value)}, nil)
 	}
-	outcome := u.send(ctx, goingAskResolveRoute, map[string]string{"id": ask}, map[string]any{"kind": "retracted", "reason": u.reason})
+	outcome := u.send(ctx, 0, goingAskResolveRoute, map[string]string{"id": ask}, map[string]any{"kind": "retracted", "reason": u.reason})
 	if outcome.OK {
 		return "resolved", outcome
 	}
@@ -849,7 +925,9 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 // closeCreated closes an issue the turn created: the undo's reason posted on it as a message,
 // then its status set done, while it is still open, answering how each request went. Where an
 // earlier undo of the write posted the reason (landed) and its close was refused, the reason is
-// not posted again: the undo resumes at the close. It is the one undo that sends more than one
+// not posted again: the undo resumes at the close. A close refused after the reason landed is
+// answered as the route refused it, naming the reason that stands (goingRefusal.after), as a
+// write's refused line names what of it landed. It is the one undo that sends more than one
 // request; every other kind sends one, so a retry of it has nothing landed to skip.
 func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) (any, goingWriteOutcome, []goingWriteRequest) {
 	var issue struct {
@@ -865,7 +943,7 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 	values := map[string]string{"key": write.Target}
 	reason := goingUndoRequest(goingIssueMessageRoute, values)
 	if len(landed) == 0 || landed[0].Method != reason.Method || landed[0].Path != reason.Path {
-		reason.Outcome = u.send(ctx, goingIssueMessageRoute, values, map[string]any{"body": u.reason})
+		reason.Outcome = u.send(ctx, 0, goingIssueMessageRoute, values, map[string]any{"body": u.reason})
 	} else {
 		reason = landed[0]
 	}
@@ -874,12 +952,16 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 		return issue.Status, reason.Outcome, requests
 	}
 	closing := goingUndoRequest(goingIssuePatchRoute, values)
-	closing.Outcome = u.send(ctx, goingIssuePatchRoute, values, map[string]any{"status": "done"})
+	closing.Outcome = u.send(ctx, 1, goingIssuePatchRoute, values, map[string]any{"status": "done"})
 	requests = append(requests, closing)
 	if closing.Outcome.OK {
 		return "done", closing.Outcome, requests
 	}
-	return issue.Status, closing.Outcome, requests
+	if closing.Outcome.Code == codeGoingLandingUnread {
+		return issue.Status, closing.Outcome, requests
+	}
+	refused := goingRefusal{Status: closing.Outcome.Status, Code: closing.Outcome.Code, Message: closing.Outcome.Message}
+	return issue.Status, refused.after(requests[:1]).outcome(), requests
 }
 
 // goingUndoRequest is a request an undo sends through route, its placeholders filled from values,

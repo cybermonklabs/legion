@@ -389,17 +389,19 @@ func goingRouteUploadOwner(route GoingRoute, values map[string]string) (artifact
 	return artifactTarget{}, false
 }
 
-// goingUploadsOver reports whether an upload the write is about to send would write the next
-// version of a document only stored text named: the read before it (uploadedOver), made under
-// the owner its route writes to as the store stands when the write runs, found a document of its
-// name, and the person's typed words do not write that name (goingNamed.uploads, read again).
+// goingUploadsOver reports whether an upload the write is about to send would, or may, write the
+// next version of a document only stored text named: the read before it (uploadedOver), made
+// under the owner its route writes to as the store stands when the write runs, found a document of
+// its name, or could name no owner to read, which it holds as one that may, as the proposal holds
+// an owner it could not read (goingNamed.uploads); and the person's typed words do not write that
+// name.
 func goingUploadsOver(prepared goingPrepared, before goingObservation, words string) bool {
 	argument, uploads := goingUploadNames[prepared.action]
 	if !uploads {
 		return false
 	}
 	_, held := before.value.(goingUploadBefore)
-	return held && !goingWordsName(words, goingText(prepared.arguments, argument))
+	return (held || before.ownerUnnamed) && !goingWordsName(words, goingText(prepared.arguments, argument))
 }
 
 // goingIDOf is an item's id as the words and an argument are compared by, and whether value is an

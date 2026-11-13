@@ -716,7 +716,7 @@ func TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled(t *testing.T)
 	_, outcome, _ := undoer.writeBack(context.Background(), write, read, goingIssuePatchRoute, map[string]string{"key": issue},
 		func(string, json.RawMessage, json.RawMessage, json.RawMessage) (any, string, error) {
 			return nil, "", err
-		})
+		}, func(string, json.RawMessage) any { return nil }, "ISSUE_CHANGED")
 	if outcome.OK || outcome.Status != http.StatusInternalServerError || goingUndoSettles(outcome) {
 		t.Fatalf("the write back answered %+v, want the server's own 500, which settles nothing", outcome)
 	}

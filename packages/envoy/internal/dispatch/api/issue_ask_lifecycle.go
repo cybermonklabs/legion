@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // withdrawnResolution is the resolution kind an issue's close records on each ask it withdraws.
@@ -44,6 +45,12 @@ func withdrawnReason(issueKey string) string {
 // keyed request it still ends at the keyed run's bound (keyedRunLimit). issueSettleBudget
 // (docs.SettleIssueDocuments) bounds only the waits for the rooms' durable appends and whether a
 // retry starts, not a settlement already running.
+//
+// The settlement's transactions run outside the commit step the request's context carries
+// (store.WithoutBeforeCommit): they commit the documents' own bookkeeping before the close's
+// transaction, and a close refused after them made nothing, so neither a keyed request's mark
+// (markRequestKeyCommitted) nor a command-bar request's landing (goingLanding.step) may be taken
+// with them.
 func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 	if s.deps.Store == nil || s.deps.Store.Pool == nil {
 		return
@@ -51,7 +58,7 @@ func (s *server) settleIssueBeforeClose(ctx context.Context, issueKey string) {
 	if _, open, err := issueStatus(ctx, s.deps.Store.Pool, issueKey, ""); err != nil || !open {
 		return
 	}
-	if err := s.deps.Docs.SettleIssueDocuments(ctx, issueKey); err != nil {
+	if err := s.deps.Docs.SettleIssueDocuments(store.WithoutBeforeCommit(ctx), issueKey); err != nil {
 		slog.Warn("dispatch: close an issue whose documents did not all settle first", "issue", issueKey, "error", err)
 	}
 }

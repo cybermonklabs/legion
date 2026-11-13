@@ -79,6 +79,9 @@ type artifactUploadInput struct {
 	// already names a document or gives the slug of one Dispatch makes itself. A multipart
 	// upload always carries its bytes, so it never sets this.
 	blank bool
+	// expectSHA256 is a JSON upload's expect_sha256 (jsonArtifactUpload.ExpectSHA256), "" for
+	// none.
+	expectSHA256 string
 }
 
 // artifactTarget is the owner an upload or a slug lookup names: an issue (IssueKey), a project
@@ -120,7 +123,13 @@ type jsonArtifactUpload struct {
 	Content *string         `json:"content"`
 	Primary json.RawMessage `json:"primary"`
 	Summary string          `json:"summary"`
-	Actor   *model.Actor    `json:"actor"`
+	// ExpectSHA256 makes the upload conditional: the hex SHA-256 of the markdown the document of
+	// the name must hold when the upload takes its lock, or it is refused, 409 DOCUMENT_CHANGED,
+	// with nothing written; an upload that would make a new document is refused the same, since
+	// there is no document holding it. A write back undoing an edit puts the content back so
+	// only while the document still holds what that edit left.
+	ExpectSHA256 string       `json:"expect_sha256"`
+	Actor        *model.Actor `json:"actor"`
 }
 
 func (s *server) uploadArtifact(w http.ResponseWriter, r *http.Request) {
@@ -295,12 +304,13 @@ func (s *server) jsonArtifactUpload(w http.ResponseWriter, r *http.Request) (art
 		content = []byte(*body.Content)
 	}
 	return artifactUploadInput{
-		name:        strings.TrimSpace(body.Name),
-		content:     content,
-		contentType: "text/markdown; charset=utf-8",
-		summary:     strings.TrimSpace(body.Summary),
-		supplied:    body.Actor,
-		blank:       blank,
+		name:         strings.TrimSpace(body.Name),
+		content:      content,
+		contentType:  "text/markdown; charset=utf-8",
+		summary:      strings.TrimSpace(body.Summary),
+		supplied:     body.Actor,
+		blank:        blank,
+		expectSHA256: strings.TrimSpace(body.ExpectSHA256),
 	}, true
 }
 
@@ -487,6 +497,11 @@ func (s *server) storeArtifact(
 	var created bool
 	artifact, err = s.findArtifactByNameOrSlug(r.Context(), tx, target, input.name)
 	if errors.Is(err, pgx.ErrNoRows) {
+		if input.expectSHA256 != "" {
+			s.writeHandlerError(w, errorf(http.StatusConflict, "DOCUMENT_CHANGED",
+				"no document is named %q, so none holds the content expect_sha256 names, and nothing was written", input.name))
+			return
+		}
 		created = true
 		if refusal := newArtifactNameRefusal(input.name); refusal != nil {
 			s.writeHandlerError(w, refusal)
@@ -586,6 +601,8 @@ func (s *server) storeArtifact(
 	if kind == "doc" {
 		if created {
 			documentMarkdown, err = s.deps.Docs.SeedText(documentCtx, artifact.ID, string(input.content), actor)
+		} else if input.expectSHA256 != "" {
+			documentMarkdown, err = s.deps.Docs.ReplaceTextExpecting(documentCtx, artifact.ID, string(input.content), actor, input.expectSHA256)
 		} else {
 			documentMarkdown, err = s.deps.Docs.ReplaceText(documentCtx, artifact.ID, string(input.content), actor)
 		}

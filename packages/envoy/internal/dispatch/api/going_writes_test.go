@@ -835,7 +835,7 @@ func TestGoingWriteClaimedIsUnderWayUntilItsRecordCanNoLongerLand(t *testing.T) 
 	ctx := context.Background()
 	claimed := goingRunWrite{ID: uuid.NewString(), Action: "dispatch_comment", Invocation: 0, Approved: goingApprovedPerson,
 		At: time.Now().UTC().Add(-(rig.served.keyedRunLimit() + time.Second))}
-	if err := rig.served.claimGoingRunWrite(ctx, run, model.CanonicalLogin("alice"), claimed); err != nil {
+	if err := rig.served.claimGoingRunWrite(ctx, run, model.CanonicalLogin("alice"), claimed, ""); err != nil {
 		t.Fatalf("claim the write: %v", err)
 	}
 	write := map[string]any{"offer": "dispatch_comment", "invocation": 0, "approved": goingApprovedPerson}
@@ -1123,7 +1123,8 @@ func TestGoingWritesOfOneInvocationAtOnceMakeOneWrite(t *testing.T) {
 // TestGoingWriteThatLandedAndWasNotRecordedIsNotWrittenAgain: a write that landed and whose
 // record the database then refused stays claimed on the run, so a later press under a key of its
 // own writes nothing: it is told the write is under way while its request may still be running,
-// and that its outcome is unknown once it cannot be.
+// and once it cannot be, the record of the landing the comment's own transaction wrote says the
+// write landed, so the press answers it landed (round 4, principle 1) and still writes nothing.
 func TestGoingWriteThatLandedAndWasNotRecordedIsNotWrittenAgain(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Landed, not recorded", "The spec.\n").Key
@@ -1163,15 +1164,15 @@ func TestGoingWriteThatLandedAndWasNotRecordedIsNotWrittenAgain(t *testing.T) {
 	if _, err := rig.database.Pool.Exec(ctx, `update going_runs set writes = jsonb_set(writes, '{0,at}', '"2000-01-01T00:00:00Z"') where id = $1::uuid`, run); err != nil {
 		t.Fatalf("age the claim: %v", err)
 	}
-	late := rig.keyedWrite(t, run, "press-3", write)
-	if late.Code != http.StatusConflict || !strings.Contains(late.Body.String(), codeGoingWriteUnsettled) {
-		t.Fatalf("a press past the claim's bound answered %d %s, want 409 %s", late.Code, late.Body.String(), codeGoingWriteUnsettled)
+	late := goingLineOf(t, rig.keyedWrite(t, run, "press-3", write))
+	if !late.Outcome.OK {
+		t.Fatalf("a press past the claim's bound answered %+v, want the write landed", late)
 	}
 	if count := rig.goingCommentsSaying(t, issue, body); count != 1 {
 		t.Fatalf("the issue holds %d comments saying %q, want the one write that landed", count, body)
 	}
-	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || !writes[0].Pending {
-		t.Fatalf("the run keeps %+v, want the one write, pending", writes)
+	if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || writes[0].Pending || !writes[0].Outcome.OK || !writes[0].AfterUnread {
+		t.Fatalf("the run keeps %+v, want the one write, recorded landed with its value after unread", writes)
 	}
 }
 
@@ -1366,36 +1367,20 @@ func (rig goingWritesRig) requestsRecorded(t *testing.T, run string) []goingRequ
 	return writes
 }
 
-// goingMultiRequestRows is every row of the catalogue whose write sends a request before the
-// row's own (goingCall.first), with arguments that make it send one: a close with its reason,
-// which posts the reason as a message first. first is the request sent first and own the row's.
-var goingMultiRequestRows = []struct {
-	action    string
-	arguments func(issue string) map[string]any
-	first     func(issue string) string
-	own       func(issue string) string
-}{{
-	action: "dispatch_issue_update",
-	arguments: func(issue string) map[string]any {
-		return map[string]any{"issue": issue, "status": "done", "reason": "Shipped in the release."}
-	},
-	first: func(issue string) string { return http.MethodPost + " /api/v1/issues/" + issue + "/messages" },
-	own:   func(issue string) string { return http.MethodPatch + " /api/v1/issues/" + issue },
-}}
-
 // TestGoingWriteOfSeveralRequestsRecordsEachAndResumesUnderItsKey (review round 3, finding 1;
-// check c21): for every row whose write sends a request before its own, the first request lands
-// and the row's own is refused. Its line is the refusal, naming the request that landed, never
-// done; the run records each request's outcome; a refusal that says only this attempt was not
-// heard (5xx, 408, 429) leaves the write's key open, and the retry under it resumes at the row's
-// own request, sending the first no second time, and lands; a refusal the keyed layer keeps
-// (403, 409) is the write's final word, and the retry under the key replays it.
+// check c21): for every row whose write sends a request before its own, derived from the
+// catalogue (goingSeveralRequestRows), the first request lands and the row's own is refused. Its
+// line is the refusal, naming the request that landed, never done; the run records each
+// request's outcome; a refusal that says only this attempt was not heard (5xx, 408, 429) leaves
+// the write's key open, and the retry under it resumes at the row's own request, sending the
+// first no second time, and lands; a refusal the keyed layer keeps (403, 409) is the write's
+// final word, and the retry under the key replays it.
 func TestGoingWriteOfSeveralRequestsRecordsEachAndResumesUnderItsKey(t *testing.T) {
 	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	rows := goingSeveralRequestRows(t, rig)
 	inner := rig.served.inProcess
 	t.Cleanup(func() { rig.served.inProcess = inner })
-	for _, row := range goingMultiRequestRows {
+	for _, row := range rows {
 		for _, tc := range []struct {
 			status  int
 			code    string
@@ -1409,9 +1394,8 @@ func TestGoingWriteOfSeveralRequestsRecordsEachAndResumesUnderItsKey(t *testing.
 		} {
 			t.Run(row.action+" "+tc.code, func(t *testing.T) {
 				issue := rig.issue(t, "Half written "+tc.code)
-				arguments := row.arguments(issue)
+				arguments, first, own := row.on(t, rig, issue)
 				run := rig.proposed(t, "alice", false, row.action, arguments)
-				first, own := row.first(issue), row.own(issue)
 				sent := map[string]int{}
 				refused := false
 				rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1484,14 +1468,14 @@ func TestGoingWriteOfSeveralRequestsRecordsEachAndResumesUnderItsKey(t *testing.
 // key the next request for it arrives under: the reason is posted once, and the write lands.
 func TestGoingWriteOfSeveralRequestsResumesUnderANewKey(t *testing.T) {
 	rig := newGoingWritesRig(t)
-	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	rows := goingSeveralRequestRows(t, rig)
 	inner := rig.served.inProcess
 	t.Cleanup(func() { rig.served.inProcess = inner })
-	for _, row := range goingMultiRequestRows {
+	for _, row := range rows {
 		t.Run(row.action, func(t *testing.T) {
 			issue := rig.issue(t, "Half written, pressed again")
-			run := rig.proposed(t, "alice", false, row.action, row.arguments(issue))
-			first, own := row.first(issue), row.own(issue)
+			arguments, first, own := row.on(t, rig, issue)
+			run := rig.proposed(t, "alice", false, row.action, arguments)
 			sent := map[string]int{}
 			refused := false
 			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

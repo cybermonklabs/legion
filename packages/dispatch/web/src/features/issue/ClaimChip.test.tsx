@@ -144,6 +144,7 @@ test("a claimed issue names its holder and releases the claim from the header", 
     ...base,
     claim: null,
     claim_changed: true,
+    previous_claim: claim,
   });
   const view = header({ ...base, claim });
   try {

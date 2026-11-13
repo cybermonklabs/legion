@@ -133,8 +133,10 @@ func (r goingReader) get(ctx context.Context, path string, into any) error {
 
 // goingObservation is what a read before or after a write saw: the item, the fields of it the
 // write changes, the value, the issue the item is or belongs to, where it is one, for a send to
-// an agent the message's last delivery, and after a claim or a release whether its route
-// answered that it changed nothing (goingRunWrite.Unchanged).
+// an agent the message's last delivery, after a claim or a release whether its route answered
+// that it changed nothing (goingRunWrite.Unchanged), and where the write's route answered what
+// stood before it in its own transaction, that value (stood), which the record keeps over the
+// read before: another writer may move the item between that read and the write.
 type goingObservation struct {
 	target    string
 	fields    []string
@@ -142,6 +144,10 @@ type goingObservation struct {
 	issue     string
 	delivery  *goingDelivery
 	unchanged bool
+	stood     json.RawMessage
+	// ownerUnnamed is an upload whose route names no owner the read before could read
+	// (uploadedOver).
+	ownerUnnamed bool
 }
 
 // goingFields is the one field a write changes as an observation lists it, none for "".
@@ -206,18 +212,33 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 	case "dispatch_issue_update":
 		return o.issueFields(ctx, path["key"], goingIssueFieldsOf(arguments))
 	case "dispatch_claim":
-		observed, err := o.claim(ctx, path["key"])
-		if answer != nil {
-			// The claim route says whether it changed the claim (claimAnswer.ClaimChanged), which
-			// the reads on either side of it cannot: the claim may move between them and it.
-			var claimed struct {
-				ClaimChanged *bool `json:"claim_changed"`
-			}
-			if json.Unmarshal(answer, &claimed) == nil && claimed.ClaimChanged != nil {
-				observed.unchanged = !*claimed.ClaimChanged
-			}
+		if answer == nil {
+			return o.claim(ctx, path["key"])
 		}
-		return observed, err
+		// The claim route answers, from its own transaction, whether it changed the claim, the
+		// claim it left and the one it found (claimAnswer), which no read on either side of it can
+		// say: the claim may move between them and it. An answer that does not say whether it
+		// changed the claim is the value after unread, so the undo puts nothing back.
+		var claimed struct {
+			ClaimChanged *bool                        `json:"claim_changed"`
+			Claim        *struct{ Actor goingHolder } `json:"claim"`
+			Previous     *struct{ Actor goingHolder } `json:"previous_claim"`
+		}
+		observed := goingObservation{target: before.target, fields: before.fields, issue: before.issue, stood: json.RawMessage("null")}
+		if err := json.Unmarshal(answer, &claimed); err != nil {
+			return observed, fmt.Errorf("read the claim's answer: %w", err)
+		}
+		if claimed.ClaimChanged == nil {
+			return observed, errors.New("the claim's answer does not say whether the claim changed")
+		}
+		observed.unchanged = !*claimed.ClaimChanged
+		if claimed.Claim != nil {
+			observed.value = &claimed.Claim.Actor
+		}
+		if claimed.Previous != nil {
+			observed.stood = goingJSONOrNull(&claimed.Previous.Actor)
+		}
+		return observed, nil
 	case "dispatch_edit_ask":
 		return o.askFields(ctx, path["id"], goingAskFieldsOf(arguments))
 	case "dispatch_resolve_ask":
@@ -448,11 +469,13 @@ type goingUploadBefore struct {
 // route writes to (goingRouteUploadOwner) whose name or slug the name is, as the upload's own
 // lookup finds it (findArtifactByNameOrSlug), at its latest version, and no value where the owner
 // holds none, so the upload makes one. It is read from the store, as rankPlace is, since no route
-// answers a document by the name an upload gives it.
+// answers a document by the name an upload gives it. A route whose owner it cannot name is marked
+// so (ownerUnnamed): that owner may hold a document of the name, which nothing read rules out.
 func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared, fields []string, issue string) (goingObservation, error) {
 	observed := goingObservation{target: goingTargetOfPath(prepared.call.path), fields: fields, issue: issue}
 	owner, known := goingRouteUploadOwner(prepared.route, prepared.call.path)
 	if !known {
+		observed.ownerUnnamed = true
 		return observed, nil
 	}
 	name := strings.TrimSpace(goingText(prepared.arguments, "name"))
@@ -549,8 +572,7 @@ func (o goingObserver) readAsk(ctx context.Context, id string) (goingAskRead, er
 	return read, err
 }
 
-// askFields is the parts of the ask named, each as an edit writes it: an option as its label and
-// description, which an edit takes.
+// askFields is the parts of the ask named, each as an edit writes it (askFieldValue).
 func (o goingObserver) askFields(ctx context.Context, id string, fields []string) (goingObservation, error) {
 	read, err := o.readAsk(ctx, id)
 	observed := goingObservation{target: cmp.Or(read.Ask.ID, id), fields: fields, issue: deref(read.Ask.IssueKey)}
@@ -559,27 +581,35 @@ func (o goingObserver) askFields(ctx context.Context, id string, fields []string
 	}
 	values := make(map[string]any, len(fields))
 	for _, field := range fields {
-		switch field {
-		case "question":
-			values[field] = read.Ask.Question
-		case "options":
-			options := make([]map[string]any, 0, len(read.Ask.Options))
-			for _, option := range read.Ask.Options {
-				written := map[string]any{"label": option.Label}
-				if option.Description != "" {
-					written["description"] = option.Description
-				}
-				options = append(options, written)
-			}
-			values[field] = options
-		case "multiple":
-			values[field] = read.Ask.Multiple
-		case "urgency":
-			values[field] = read.Ask.Urgency
-		}
+		values[field] = askFieldValue(model.Ask{Question: read.Ask.Question, Options: read.Ask.Options,
+			Multiple: read.Ask.Multiple, Urgency: read.Ask.Urgency}, field)
 	}
 	observed.value = values
 	return observed, nil
+}
+
+// askFieldValue is one part of an ask as an edit writes it: an option as its label and
+// description, which an edit takes, and nil for a part no edit writes.
+func askFieldValue(ask model.Ask, field string) any {
+	switch field {
+	case "question":
+		return ask.Question
+	case "options":
+		options := make([]map[string]any, 0, len(ask.Options))
+		for _, option := range ask.Options {
+			written := map[string]any{"label": option.Label}
+			if option.Description != "" {
+				written["description"] = option.Description
+			}
+			options = append(options, written)
+		}
+		return options
+	case "multiple":
+		return ask.Multiple
+	case "urgency":
+		return ask.Urgency
+	}
+	return nil
 }
 
 // askState is the ask's state: open, answered or resolved.

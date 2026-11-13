@@ -148,7 +148,8 @@ type issueClaimedError struct {
 }
 
 // writeClaimError answers a claim refusal: the 409 ISSUE_CLAIMED body carries the claim
-// itself, and every other failure follows the usual handler mapping.
+// itself, as does 409 CLAIM_HOLDER_CHANGED, and every other failure follows the usual handler
+// mapping.
 func (s *server) writeClaimError(w http.ResponseWriter, err error) {
 	var conflict *claimConflict
 	if errors.As(err, &conflict) {
@@ -159,7 +160,33 @@ func (s *server) writeClaimError(w http.ResponseWriter, err error) {
 		})
 		return
 	}
+	var changed *claimHolderChanged
+	if errors.As(err, &changed) {
+		WriteJSON(w, http.StatusConflict, issueClaimedError{Claim: changed.claim, Code: codeClaimHolderChanged, Error: changed.Error()})
+		return
+	}
 	s.writeHandlerError(w, err)
+}
+
+// codeClaimHolderChanged is the refusal of a claim write made on a condition about the holder
+// that the claim no longer meets when the write takes the issue's lock (claimHolderChanged).
+const codeClaimHolderChanged = "CLAIM_HOLDER_CHANGED"
+
+// claimHolderChanged is a conditional claim write refused under the issue's row lock: a release
+// that expects a holder another holder or nobody replaced (expect_holder), or a claim that expects
+// nobody to hold the issue while someone does (expect_unclaimed). claim is the claim as it
+// stands, nil for none. The condition is decided in the claim's own transaction, so another
+// writer's claim is never released or taken over by a caller that only meant to put back its own.
+type claimHolderChanged struct {
+	key   string
+	claim *model.IssueClaim
+}
+
+func (e *claimHolderChanged) Error() string {
+	if e.claim == nil {
+		return "nobody holds the claim on " + e.key + " now, so the release that expected a holder changed nothing"
+	}
+	return claimHolder(e.claim.Actor, "") + " holds the claim on " + e.key + " now, which this write's condition did not expect, so it changed nothing"
 }
 
 // holderLiveness is what the listener answered about the claim's holder, read with no
@@ -445,22 +472,23 @@ type claimChange struct {
 }
 
 // claimApplied is the outcome of one locked attempt: the issue as it stands, whether the Legion
-// daemon owns its status, and the event to publish, which is the zero event when nothing was
-// written.
+// daemon owns its status, the claim the attempt found under the issue's lock (previous, nil for
+// none), and the event to publish, which is the zero event when nothing was written.
 type claimApplied struct {
 	issue model.Issue
 	// legionManagedStatus is nil when the walk failed: the claim still stands, so the answer
 	// says nothing rather than losing it (claimWrite).
 	legionManagedStatus *bool
+	previous            *model.IssueClaim
 	event               model.Event
 }
 
 // claimAnswer is what both claim routes write: the issue, flat, with whether the Legion daemon
-// owns its status and whether this request changed the claim beside it. The first is resolved on
-// read from the issue's labels and its parents', stored nowhere, and never part of an event
-// payload, which is why it sits beside Issue in the response rather than in it — model.Issue is
-// embedded in model.IssueEventPayload, the payload of every issue.* event. The JSON stays flat
-// because a caller merges the body straight into the issue it already holds.
+// owns its status, whether this request changed the claim, and the claim it found beside it. The
+// first is resolved on read from the issue's labels and its parents', stored nowhere, and never
+// part of an event payload, which is why it sits beside Issue in the response rather than in it —
+// model.Issue is embedded in model.IssueEventPayload, the payload of every issue.* event. The
+// JSON stays flat because a caller merges the body straight into the issue it already holds.
 //
 // The field is omitted when the walk failed (claimWrite logs that and keeps the claim), exactly
 // as writeAdvice.LegionManagedStatus is omitted when it was not asked (write_advice.go). A
@@ -469,13 +497,17 @@ type claimApplied struct {
 // suppressing it.
 //
 // ClaimChanged is false where the request changed nothing: a claim of an issue its caller
-// already held, which keeps the time work started, and a release of an issue nobody held. A
-// caller that undoes the request reads it here, since what it read of the claim before the
-// request may have moved before the request's own transaction.
+// already held, which keeps the time work started, and a release of an issue nobody held.
+// PreviousClaim is the claim that stood when the request took the issue's lock, null where none
+// did: the claim a claim replaced or a release released, and the caller's own where a claim found
+// it already held. A caller that undoes the request reads both here, with the claim the request
+// left (Issue.Claim), since what it read of the claim before or after the request may have moved
+// on either side of the request's own transaction.
 type claimAnswer struct {
 	model.Issue
-	LegionManagedStatus *bool `json:"legion_managed_status,omitempty"`
-	ClaimChanged        bool  `json:"claim_changed"`
+	LegionManagedStatus *bool             `json:"legion_managed_status,omitempty"`
+	ClaimChanged        bool              `json:"claim_changed"`
+	PreviousClaim       *model.IssueClaim `json:"previous_claim"`
 }
 
 // claimLegionManagedStatus answers whether Legion owns key's status for a claim answer, or nil
@@ -573,7 +605,7 @@ func (s *server) claimWrite(
 	// on a context no cancellation reaches, bounded by its own statement timeout, and a claim is
 	// what stops two sessions working one issue.
 	managed := claimLegionManagedStatus(ctx, tx, key)
-	applied := claimApplied{issue: before, legionManagedStatus: managed}
+	applied := claimApplied{issue: before, legionManagedStatus: managed, previous: before.Claim}
 	if change.changed {
 		if err := writeIssueClaim(ctx, tx, key, change.holder); err != nil {
 			return claimApplied{}, err
@@ -587,7 +619,7 @@ func (s *server) claimWrite(
 		if err != nil {
 			return claimApplied{}, err
 		}
-		applied = claimApplied{issue: after, legionManagedStatus: managed, event: event}
+		applied = claimApplied{issue: after, legionManagedStatus: managed, previous: before.Claim, event: event}
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return claimApplied{}, err
@@ -636,13 +668,17 @@ func (s *server) claimCycle(
 	if changed {
 		s.publish(r.Context(), applied.event)
 	}
-	WriteJSON(w, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus, ClaimChanged: changed})
+	WriteJSON(w, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus,
+		ClaimChanged: changed, PreviousClaim: applied.previous})
 }
 
-// claimIssueInput is the body of POST /api/v1/issues/{key}/claim.
+// claimIssueInput is the body of POST /api/v1/issues/{key}/claim. ExpectUnclaimed makes the claim
+// conditional: it is refused, 409 CLAIM_HOLDER_CHANGED, where anyone - the caller too - holds the
+// issue when the claim takes its lock.
 type claimIssueInput struct {
-	Actor *model.Actor `json:"actor"`
-	Force bool         `json:"force"`
+	Actor           *model.Actor `json:"actor"`
+	Force           bool         `json:"force"`
+	ExpectUnclaimed bool         `json:"expect_unclaimed"`
 }
 
 // claimIssue is POST /api/v1/issues/{key}/claim: this session (or human) takes the issue.
@@ -668,6 +704,9 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 		if before.ClosedAt != nil {
 			return claimChange{}, errorf(http.StatusConflict, "ISSUE_CLOSED", "issue is closed")
 		}
+		if input.ExpectUnclaimed && before.Claim != nil {
+			return claimChange{}, &claimHolderChanged{key: key, claim: before.Claim}
+		}
 		if blocked := claimBlockedBy(before.Claim, actor, rule, judged, time.Now()); blocked != nil {
 			return claimChange{}, blocked
 		}
@@ -692,6 +731,14 @@ func (s *server) claimIssue(w http.ResponseWriter, r *http.Request) {
 			changed:   true,
 		}, nil
 	})
+}
+
+// releaseClaimInput is the optional body of DELETE /api/v1/issues/{key}/claim: the session a
+// bearer acts for, and ExpectHolder, which makes the release conditional: it is refused, 409
+// CLAIM_HOLDER_CHANGED, unless that holder holds the issue when the release takes its lock.
+type releaseClaimInput struct {
+	Actor        *model.Actor `json:"actor"`
+	ExpectHolder *model.Actor `json:"expect_holder"`
 }
 
 // answerContendedClaim ends the bounded cycle: the holder changed twice while this request
@@ -725,9 +772,14 @@ func (s *server) releaseIssueClaim(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	if !human {
+	var input releaseClaimInput
+	if human {
+		// A person's release takes no body but the condition.
+		if !s.decodeOptionalJSON(w, r, &input) {
+			return
+		}
+	} else {
 		// A bearer names its own session in the body, as it does on every other write.
-		var input actorInput
 		if err := decodeJSON(r, &input); err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -745,6 +797,9 @@ func (s *server) releaseIssueClaim(w http.ResponseWriter, r *http.Request) {
 	// session it acts for.
 	rule := personRule{override: s.callerHoldsScope(r, model.ScopePerson)}
 	s.claimCycle(w, r, key, actor, rule, func(before model.Issue, judged judgement) (claimChange, error) {
+		if input.ExpectHolder != nil && (before.Claim == nil || !before.Claim.Actor.SameAs(*input.ExpectHolder)) {
+			return claimChange{}, &claimHolderChanged{key: key, claim: before.Claim}
+		}
 		if before.Claim == nil {
 			// Nothing to release, including on a closed issue, whose close already cleared
 			// the claim: the answer is the issue, so an agent releasing what it stopped

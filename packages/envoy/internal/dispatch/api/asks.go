@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -343,13 +345,37 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
 }
 
-// editAskInput is the body of PATCH /api/v1/asks/{id}.
+// editAskInput is the body of PATCH /api/v1/asks/{id}. Expect makes the edit conditional on the
+// parts it names - question, options, multiple, urgency - each of which must hold, when the edit
+// takes the ask's lock, the value given, as an edit writes it (askFieldValue), or the edit is
+// refused whole, 409 ASK_CHANGED, naming what each changed part holds now.
 type editAskInput struct {
-	Question *string            `json:"question"`
-	Options  *[]model.AskOption `json:"options"`
-	Multiple *bool              `json:"multiple"`
-	Urgency  *string            `json:"urgency"`
-	Actor    *model.Actor       `json:"actor"`
+	Question *string                    `json:"question"`
+	Options  *[]model.AskOption         `json:"options"`
+	Multiple *bool                      `json:"multiple"`
+	Urgency  *string                    `json:"urgency"`
+	Expect   map[string]json.RawMessage `json:"expect"`
+	Actor    *model.Actor               `json:"actor"`
+}
+
+// askExpectationRefusal is the refusal of an edit whose expect names a part the ask, as the
+// edit's transaction read it under the ask's lock, no longer holds as expected, nil where it holds
+// every one: a write back undoing another edit puts its words back only while the ask still
+// holds what that edit left, decided under the lock the edit itself takes.
+func askExpectationRefusal(ask model.Ask, expect map[string]json.RawMessage) error {
+	var changed []string
+	for _, field := range slices.Sorted(maps.Keys(expect)) {
+		if !slices.Contains(goingAskFields, field) {
+			return errorf(http.StatusBadRequest, "INVALID_ASK", "expect names %q, which is no part of an ask an edit writes", field)
+		}
+		if now := goingJSONOrNull(askFieldValue(ask, field)); !goingSameJSON(now, expect[field]) {
+			changed = append(changed, fmt.Sprintf("%s holds %s", field, now))
+		}
+	}
+	if len(changed) > 0 {
+		return errorf(http.StatusConflict, "ASK_CHANGED", "the ask no longer holds what expect names: %s", strings.Join(changed, "; "))
+	}
+	return nil
 }
 
 func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
@@ -477,6 +503,10 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		actor = *asThePerson
 	}
 
+	if refusal := askExpectationRefusal(ask, input.Expect); refusal != nil {
+		s.writeHandlerError(w, refusal)
+		return
+	}
 	previous := model.NewAskEditPrevious(ask)
 	if input.Question != nil {
 		ask.Question = *input.Question

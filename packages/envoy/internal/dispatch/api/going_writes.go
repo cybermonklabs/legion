@@ -27,6 +27,7 @@ import (
 	"maps"
 	"net/http"
 	"slices"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,11 +70,13 @@ func (s *server) goingDoer(r *http.Request) GoingDoer {
 // caller's own context, with three of its values taken off: the caller this request already
 // resolved, so the route resolves the copied credential itself (resolvedCallerKey); the caller's
 // Idempotency-Key claim, which belongs to the writes route and not to the routes it calls
-// (requestKeyClaimKey); and the claim's commit step (store.WithoutBeforeCommit). A write of the
-// bar may make several requests - a reasoned close posts its reason and then closes - so no one
-// of them is the write: the writes route's key is marked committed by the write's own record,
-// once every request of it landed (recordGoingRunWrite), and a request that landed before
-// another was refused leaves the key open for a retry that resumes after it.
+// (requestKeyClaimKey); and the claim's commit step (store.WithBeforeCommit). A write of the bar
+// may make several requests - a reasoned close posts its reason and then closes - so no one of
+// them is the write: the writes route's key is marked committed by the write's own record, once
+// the write reached a final outcome (recordGoingRunWrite). In its place a request that carries a
+// landing (goingLandings.on) takes the step that records it landed, in its route's own
+// transaction (goingLanding.step), for as long as the route runs: a delivery the route detached
+// commits after it, and is no landing of the request's.
 func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 	carried := goingCredentialHeaders
 	if d.identityHeader != "" {
@@ -90,6 +93,12 @@ func (d goingInProcess) Do(request *http.Request) (*http.Response, error) {
 	ctx := context.WithValue(request.Context(), resolvedCallerKey{}, nil)
 	ctx = context.WithValue(ctx, requestKeyClaimKey{}, nil)
 	ctx = store.WithoutBeforeCommit(ctx)
+	if landing, carries := ctx.Value(goingLandingKey{}).(goingLanding); carries {
+		running := &atomic.Bool{}
+		running.Store(true)
+		defer running.Store(false)
+		ctx = store.WithBeforeCommit(context.WithValue(ctx, goingLandingKey{}, nil), landing.step(running))
+	}
 	answer := &recordedAnswer{header: http.Header{}}
 	d.handler.ServeHTTP(answer, request.WithContext(ctx))
 	return answer.response(request), nil
@@ -215,31 +224,38 @@ type goingWriteLine struct {
 // (claimGoingRunWrite), in one statement that holds no lock and no connection past itself, so of
 // two requests for one invocation one claims it. A request for an invocation whose write went
 // through writes nothing and answers that write's line as the run recorded it; one whose write is
-// claimed and not yet recorded is 429 GOING_WRITE_IN_PROGRESS with a Retry-After, and once that
-// claim is older than any request can still be running (goingClaimBound) 409
-// GOING_WRITE_UNSETTLED, since it may have landed. A write that was refused does not stop
-// another. The run must have proposed or ended (409 GOING_RUN_UNPROPOSED), and the action and the
-// invocation must be in its proposal (409 GOING_NOT_PROPOSED). `auto` is refused, 409
-// GOING_APPROVAL_REQUIRED, for the two writes that always ask and for any but the action the
-// decision chose at or above the action threshold, 409 GOING_NOT_AUTOMATIC for an invocation the
-// proposal did not mark automatic (goingAutomatic), one sent with arguments replacing its own, and
-// an upload that would now write the next version of a document of its name its route's owner
-// holds and the words do not name (goingUploadsOver), and 409 GOING_CONFIRMATION_REQUIRED where
-// the caller turned confirm_writes on. The value before is read, the write performed and the value
-// after read, each in-process as the caller; the write, refused or not, is recorded in the place
-// of its claim, with how each request it sent went and the undo the row it went through states. A
-// refusal by the route the write ran through, or by a read the write needed, is answered as that
-// route answered it, status, code and all, and one of a request sent after another of the write
-// landed names what landed (goingRefusal.after).
+// claimed and not yet recorded is 429 GOING_WRITE_IN_PROGRESS with a Retry-After. Once that claim
+// is older than any request can still be running (goingClaimBound), a write whose record names a
+// request of it that landed is resumed after it, under that claim (adoptGoingRunWrite), and one
+// whose record names none is 409 GOING_WRITE_UNSETTLED, since its request may have run. A write
+// that was refused does not stop another. The run must have proposed or ended (409
+// GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
+// GOING_NOT_PROPOSED). `auto` is refused, 409 GOING_APPROVAL_REQUIRED, for the two writes that
+// always ask and for any but the action the decision chose at or above the action threshold, 409
+// GOING_NOT_AUTOMATIC for an invocation the proposal did not mark automatic (goingAutomatic), one
+// sent with arguments replacing its own, and an upload that would now write the next version of a
+// document of its name its route's owner holds, or whose owner it cannot name, and the words do
+// not name (goingUploadsOver), and 409 GOING_CONFIRMATION_REQUIRED where the caller turned
+// confirm_writes on. The value before is read, the write performed and the value after read, each
+// in-process as the caller; the write, refused or not, is recorded in the place of its claim, with
+// how each request it sent went and the undo the row it went through states. A refusal by the
+// route the write ran through, or by a read the write needed, is answered as that route answered
+// it, status, code and all, and one of a request sent after another of the write landed names what
+// landed (goingRefusal.after).
 //
-// A write of several requests - a reasoned close posts its reason, then closes - is one write to
-// its Idempotency-Key: the key is committed with the write's record once every request landed,
-// and the keyed layer keeps a refusal it stores (a 4xx but 401, 408 and 429) as the write's final
-// answer, which a repeat under the key is replayed, however much of the write landed. A refusal
-// it keeps no answer for (5xx, 401, 408, 429) leaves the key open. Any later request for the
-// invocation that runs - a repeat under the key, or the person's next submit, the bar's own retry
-// or another tab under a key of its own - resumes the write after the requests its run records as
-// landed (goingLandedBefore), sending none of them again.
+// A request of the write landed when its route's transaction committed, which the request records
+// on the run in that same transaction (going_landed.go): a route that committed and then answered
+// 5xx, or whose answer was lost, landed all the same, and is never sent again. A write whose every
+// request landed went through, whatever the last one answered; where that answer was no 2xx, the
+// value after it is not read (AfterUnread). A write of several requests - a reasoned close posts
+// its reason, then closes - is one write to its Idempotency-Key: the key is committed with the
+// write's record once the write reached a final outcome, every request landed or one refused with
+// a status the keyed layer stores (a 4xx but 401, 408 and 429), which a repeat under the key is
+// replayed, however much of the write landed. A refusal it keeps no answer for (5xx, 401, 408,
+// 429) leaves the key open. Any later request for the invocation that runs - a repeat under the
+// key, or the person's next submit, the bar's own retry or another tab under a key of its own -
+// resumes the write after the requests its run records as landed (goingLandedBefore), sending none
+// of them again.
 func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -294,18 +310,8 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	// no request is still making.
 	ctx, cancel := context.WithTimeout(r.Context(), s.keyedRunLimit())
 	defer cancel()
-	write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved, At: time.Now().UTC(),
-		Requests: goingLandedBefore(run, input)}
-	if err := s.claimGoingRunWrite(ctx, run.ID, caller.ID, write); err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			s.writeHandlerError(w, fmt.Errorf("claim the going write: %w", err))
-			return
-		}
-		// Another request claimed the invocation since the read, or the run is gone.
-		again, ok := s.readCallersGoingRun(w, r, caller.ID)
-		if ok && !s.answerGoingWriteClaimed(w, again, input) {
-			writeGoingWriteInProgress(w)
-		}
+	write, claimed := s.claimGoingWrite(ctx, w, r, run, caller.ID, input)
+	if !claimed {
 		return
 	}
 	claim := goingWriteClaim{s: s, w: w, ctx: ctx, run: run.ID, login: caller.ID, write: write}
@@ -319,7 +325,9 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		}
 		session = resolved
 	}
-	performer := GoingCaller{Catalogue: s.going, Session: session, Doer: doer}
+	performer := GoingCaller{Catalogue: s.going, Session: session, Doer: doer,
+		landings: &goingLandings{s: s, run: run.ID, login: caller.ID, write: write.ID},
+		resumes:  len(goingLanded(write.Requests)) > 0}
 	prepared, err := performer.prepare(ctx, input.Offer, arguments)
 	if err != nil {
 		claim.refuse(goingObservation{}, err)
@@ -336,49 +344,67 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		// Read now, under the owner the upload's route writes to: a document of its name may have
 		// been made since the proposal marked the upload automatic.
 		claim.refuse(before, errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"%s would write the next version of %q, a document its owner holds now and the words do not name, so it runs only when the person picks it: send it as approved person or confirmed",
+			"%s would write the next version of %q, a document its owner holds now, or may hold where the write cannot name its owner, and the words do not name, so it runs only when the person picks it: send it as approved person or confirmed",
 			input.Offer, goingText(arguments, goingUploadNames[input.Offer])))
 		return
 	}
 	response, requests, err := performer.send(ctx, prepared, claim.write.Requests)
 	claim.write.Requests = requests
+	var unread goingLandingUnread
+	if errors.As(err, &unread) {
+		// Whether the request landed is unknown: the claim stays, so it is not written again.
+		s.writeHandlerError(w, fmt.Errorf("perform %s in-process: %w", input.Offer, err))
+		return
+	}
 	if err != nil {
-		err = fmt.Errorf("perform %s in-process: %w", input.Offer, err)
-		if len(goingLanded(requests)) == 0 {
-			// Nothing was sent, so nothing landed: the invocation may be written again.
-			claim.refuse(before, err)
+		// A request could not be built or sent, so it never reached its route: the claim is given
+		// up where nothing of the write landed, and the record says what landed otherwise
+		// (goingWriteClaim.refuse), so a retry resumes after it.
+		claim.refuse(before, fmt.Errorf("perform %s in-process: %w", input.Offer, err))
+		return
+	}
+	var answer []byte
+	if response != nil {
+		answer, err = io.ReadAll(response.Body)
+		_ = response.Body.Close()
+		if err != nil {
+			// What the write did is unknown: the claim stays, so it is not written again.
+			s.writeHandlerError(w, fmt.Errorf("read what %s answered: %w", input.Offer, err))
 			return
 		}
-		// A request sent ahead of the row's own landed, and the next one never reached its route
-		// (the table called in-process answers every request it is sent): the record says what
-		// landed, so a retry under the key resumes after it.
-		slog.Error("dispatch: a going write's request could not be sent after one before it landed", "error", err)
-		claim.refuse(before, goingRefusal{Status: http.StatusInternalServerError, Code: codeInternal, Message: "internal server error"})
-		return
-	}
-	answer, err := io.ReadAll(response.Body)
-	_ = response.Body.Close()
-	if err != nil {
-		// What the write did is unknown: the claim stays, so it is not written again.
-		s.writeHandlerError(w, fmt.Errorf("read what %s answered: %w", input.Offer, err))
-		return
 	}
 	last := &claim.write.Requests[len(claim.write.Requests)-1]
-	if response.StatusCode >= http.StatusMultipleChoices {
+	if !last.Outcome.OK {
 		refusal := goingRefusalOf(response, answer)
 		last.Outcome = refusal.outcome()
 		claim.refuse(before, refusal)
 		return
 	}
-	claim.write.Outcome = goingWriteOutcome{OK: true, Status: response.StatusCode}
-	after, err := observer.observe(ctx, prepared, answer, before)
-	if err != nil {
-		// The write landed; only the read back of it failed, which the record says rather than
-		// losing the write, in the words goingFailed gives it, and marks, so its undo does not
-		// read the value it never read as nothing to put back.
-		after = goingObservation{target: before.target, fields: before.fields, issue: before.issue}
-		claim.write.Outcome.Message = "the write landed and the value after it could not be read: " + goingFailed(err).Message
+	claim.write.Outcome = goingWriteOutcome{OK: true, Status: last.Outcome.Status}
+	after := goingObservation{target: before.target, fields: before.fields, issue: before.issue}
+	switch {
+	case response == nil:
+		// Every request landed in an earlier attempt of the write, whose process ended before it
+		// recorded the write: what it left was never read.
+		claim.write.Outcome.Message = "the write landed in an earlier attempt that ended before recording it, so the value after it was not read"
 		claim.write.AfterUnread = true
+	case response.StatusCode >= http.StatusMultipleChoices:
+		// The route committed the write and then refused to say so: its answer describes no
+		// value it left.
+		claim.write.Outcome.Message = fmt.Sprintf("the write landed and its route then answered %d %s, so the value after it was not read",
+			response.StatusCode, goingRefusalOf(response, answer).Code)
+		claim.write.AfterUnread = true
+	default:
+		observed, err := observer.observe(ctx, prepared, answer, before)
+		if err != nil {
+			// The write landed; only the read back of it failed, which the record says rather than
+			// losing the write, in the words goingFailed gives it, and marks, so its undo does not
+			// read the value it never read as nothing to put back.
+			claim.write.Outcome.Message = "the write landed and the value after it could not be read: " + goingFailed(err).Message
+			claim.write.AfterUnread = true
+			break
+		}
+		after = observed
 	}
 	claim.write.Target, claim.write.Fields = cmp.Or(after.target, before.target), after.fields
 	if len(claim.write.Fields) == 0 {
@@ -386,21 +412,75 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	claim.write.Delivery, claim.write.Unchanged = after.delivery, after.unchanged
 	claim.write.Before, claim.write.After = goingJSONOrNull(before.value), goingJSONOrNull(after.value)
+	if after.stood != nil {
+		// What the route answered stood before it, in its own transaction, which no read before
+		// the write can say: another writer may have moved it between the two.
+		claim.write.Before = after.stood
+	}
 	if claim.record(cmp.Or(after.issue, before.issue)) {
 		WriteJSON(w, http.StatusOK, goingWriteLineOf(claim.write))
 	}
 }
 
-// goingLandedBefore is the requests an earlier write of this invocation landed, in the order
-// sent: those the run's latest write of the invocation - one refused, since one that went through
-// or is pending is answered before a write is claimed - landed before the first that did not,
-// whatever key it was sent under. A later write of the invocation resumes after them
-// (GoingCaller.send), so a request that landed is never sent a second time, by a retry under the
-// same key or by a new press under another.
-func goingLandedBefore(run goingRun, input goingWriteInput) []goingWriteRequest {
-	for _, write := range slices.Backward(run.Writes) {
+// goingWriteClaimTries is how often one write reads its run and claims its invocation again when
+// another request's write of the invocation is recorded between the two, before it answers the
+// invocation under way.
+const goingWriteClaimTries = 3
+
+// claimGoingWrite claims the invocation for this request's write, from the run as read, and
+// answers the write claimed, or answers the request and reports false. The write resumes after
+// the requests the run's latest write of the invocation landed - one refused, since one that went
+// through or is pending within goingClaimBound is answered before a write is claimed - whatever
+// key that write was sent under (GoingCaller.send), so a request that landed is never sent a
+// second time, by a retry under the same key or by a new press under another. The claim holds
+// only while that latest write is still the run's latest (claimGoingRunWrite), so what it landed
+// is read with the claim and never goes stale: a claim refused because another request recorded a
+// write of the invocation since the read reads the run again and claims from that, a few times
+// (goingWriteClaimTries), before it answers the invocation under way. A latest write still pending
+// past goingClaimBound whose record names a request of it that landed (answerGoingWriteClaimed
+// lets no other through) is taken over under its own claim, its landings standing
+// (adoptGoingRunWrite).
+func (s *server) claimGoingWrite(ctx context.Context, w http.ResponseWriter, r *http.Request, run goingRun, login string, input goingWriteInput) (goingRunWrite, bool) {
+	for tries := 1; ; tries++ {
+		write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved, At: time.Now().UTC()}
+		latest := goingLatestWrite(run, input)
+		var err error
+		switch {
+		case latest == nil:
+			err = s.claimGoingRunWrite(ctx, run.ID, login, write, "")
+		case latest.Pending:
+			write.ID, write.Requests = latest.ID, slices.Clone(goingLanded(latest.Requests))
+			err = s.adoptGoingRunWrite(ctx, run.ID, login, latest.ID, write.At)
+		default:
+			write.Requests = slices.Clone(goingLanded(latest.Requests))
+			err = s.claimGoingRunWrite(ctx, run.ID, login, write, latest.ID)
+		}
+		if err == nil {
+			return write, true
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			s.writeHandlerError(w, fmt.Errorf("claim the going write: %w", err))
+			return goingRunWrite{}, false
+		}
+		// Another request claimed the invocation, or recorded a write of it, since the read, or
+		// the run is gone.
+		again, ok := s.readCallersGoingRun(w, r, login)
+		if !ok || s.answerGoingWriteClaimed(w, again, input) {
+			return goingRunWrite{}, false
+		}
+		if tries == goingWriteClaimTries {
+			writeGoingWriteInProgress(w)
+			return goingRunWrite{}, false
+		}
+		run = again
+	}
+}
+
+// goingLatestWrite is the run's latest write of the invocation, nil for none.
+func goingLatestWrite(run goingRun, input goingWriteInput) *goingRunWrite {
+	for index, write := range slices.Backward(run.Writes) {
 		if write.Action == input.Offer && write.Invocation == input.Invocation {
-			return slices.Clone(goingLanded(write.Requests))
+			return &run.Writes[index]
 		}
 	}
 	return nil
@@ -418,7 +498,9 @@ func goingLanded(requests []goingWriteRequest) []goingWriteRequest {
 // answerGoingWriteClaimed answers a request for an invocation the run already holds a write of
 // that went through - that write's line - or one claimed and not yet recorded - 429
 // GOING_WRITE_IN_PROGRESS while the request that claimed it may still be running, and 409
-// GOING_WRITE_UNSETTLED once it cannot be - and reports whether it answered.
+// GOING_WRITE_UNSETTLED once it cannot be and its record names no request of it that landed - and
+// reports whether it answered. A claim past goingClaimBound whose record names a request that
+// landed is answered nothing: the request resumes the write after it (claimGoingWrite).
 func (s *server) answerGoingWriteClaimed(w http.ResponseWriter, run goingRun, input goingWriteInput) bool {
 	index := slices.IndexFunc(run.Writes, func(write goingRunWrite) bool {
 		return write.Action == input.Offer && write.Invocation == input.Invocation && (write.Outcome.OK || write.Pending)
@@ -432,6 +514,8 @@ func (s *server) answerGoingWriteClaimed(w http.ResponseWriter, run goingRun, in
 		WriteJSON(w, http.StatusOK, goingWriteLineOf(claimed))
 	case time.Since(claimed.At) < s.goingClaimBound():
 		writeGoingWriteInProgress(w)
+	case len(goingLanded(claimed.Requests)) > 0:
+		return false
 	default:
 		writeError(w, codeGoingWriteUnsettled, http.StatusConflict, fmt.Sprintf(
 			"this invocation's write was sent at %s and its outcome was never recorded, so it may have landed: it is not written again; read the item to see what it holds",
@@ -482,15 +566,23 @@ func (c goingWriteClaim) record(issue string) bool {
 // naming each request of the write that landed before it (goingRefusal.after) - and recorded as
 // the write's outcome, with how each request went; by its own schema or translation, 400
 // GOING_ARGUMENTS, which no route saw and the run does not record; or by the server's own failure.
-// Every one but a route's refusal sent nothing the run records, so its claim is given up and the
-// invocation may be written again. A refusal's record marks no Idempotency-Key committed
-// (store.WithoutBeforeCommit), and no request the write sent marked it (goingInProcess.Do): so a
-// refusal the keyed layer keeps no answer for - a 5xx, a 401, a 408 or a 429 (storedStatus) -
-// leaves the key open, and a later request for the invocation resumes after the requests that
-// landed (goingLandedBefore), while one it keeps is the key's answer, replayed to a repeat.
+// A failure of either of the last two kinds after a request of the write landed - an adopted
+// write, or a request that could not be sent after one that landed - is recorded as the server's
+// own 500, so the landings stand for the write that resumes after them. Every other one sent
+// nothing the run records, so its claim is given up and the invocation may be written again. A
+// refusal's record marks no Idempotency-Key committed (store.WithoutBeforeCommit), and no request
+// the write sent marked it (goingInProcess.Do): so a refusal the keyed layer keeps no answer for -
+// a 5xx, a 401, a 408 or a 429 (storedStatus) - leaves the key open, and a later request for the
+// invocation resumes after the requests that landed (claimGoingWrite), while one it keeps is the
+// key's answer, replayed to a repeat.
 func (c goingWriteClaim) refuse(before goingObservation, err error) {
 	var refusal goingRefusal
-	if errors.As(err, &refusal) {
+	refused := errors.As(err, &refusal)
+	if !refused && len(goingLanded(c.write.Requests)) > 0 {
+		slog.Error("dispatch: a going write failed after a request of it landed", "error", err)
+		refusal, refused = goingRefusal{Status: http.StatusInternalServerError, Code: codeInternal, Message: "internal server error"}, true
+	}
+	if refused {
 		refusal = refusal.after(goingLanded(c.write.Requests))
 		c.write.Target, c.write.Fields = before.target, before.fields
 		c.write.Before, c.write.After = goingJSONOrNull(before.value), json.RawMessage("null")

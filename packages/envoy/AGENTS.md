@@ -2528,8 +2528,12 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   nothing was applied, and nothing about that holder's liveness was established, so it is never `ISSUE_CLAIMED`.
   `DELETE /api/v1/issues/{key}/claim` releases it:
   the holder, any human, or anyone once the holding session is gone; releasing an unclaimed issue is a 200 no-op.
+  Either route takes a condition decided under the issue's row lock in the claim's own transaction: `expect_unclaimed: true` on the claim refuses it while anyone - the caller too - holds the issue, and `expect_holder` on the release (`releaseClaimInput`; a human's release reads that body too, which it otherwise has none of) refuses it unless that holder holds the issue, each `409 CLAIM_HOLDER_CHANGED` carrying the claim as it stands; a caller that sends neither condition is answered as before.
   Both answer `claimAnswer`: the issue flat, with `legion_managed_status` — whether Legion owns its status, the walk `claimLegionManagedStatus` runs under the issue's row lock before the claim is written
-  — beside it, omitted when that walk failed or timed out, which costs the field and never the claim.
+  — beside it, omitted when that walk failed or timed out, which costs the field and never the claim;
+  `claim_changed`, false where the request changed nothing (a claim of an issue its caller already held, a release of one nobody held);
+  and `previous_claim`, the claim that stood when the request took the issue's lock, null for none (the claim a claim replaced or a release released, the caller's own where its claim changed nothing).
+  The command bar's undo reads all three from the write's answer and never from a read around it, and undoes a claim or a release only through those conditions (`going_undo.go`, `goingUndoer.claim`).
 
 - Claiming and releasing never move the status, and no status write ever claims (a move to `done` is the one that touches a claim, clearing it), because humans may track work by the status;
   closing an issue is the one write that clears a claim, in the same `PATCH` (`issue_patch.go`) that closes it.
@@ -2721,6 +2725,9 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   the write is refused `409 ISSUE_CHANGED` when the issue's last event is no longer that one.
   The Legion daemon's hand-over writes `status: todo` with both, so a person's change after its read is never overwritten;
   a Dispatch that predates them refuses each by name (`400 INVALID_JSON`), which the daemon rides out until Dispatch is deployed.
+  `PATCH` takes `expect` too, a map of the issue's own fields (status, title, labels, priority, assignee, route, parent, blocked_by, components, repo, external_links, rank) to the value each must hold, as the issue's read answers it (`rank` its rank string, `components` `{mode, ids, reason}`), compared under the issue's row lock (`issueExpectationRefusal`): any field that holds another value refuses the whole write `409 ISSUE_CHANGED` naming what it holds now, and a field no update writes is `400 INVALID_ISSUE`.
+  `PATCH /api/v1/asks/{id}` takes the same `expect` over the ask's question, options, multiple and urgency (`askExpectationRefusal`, `409 ASK_CHANGED`), and a JSON upload over a document that exists takes `expect_sha256`, the hex SHA-256 of the markdown the live document must hold under the upload's own lock (`docs.Service.ReplaceTextExpecting`, `409 DOCUMENT_CHANGED`; an upload that would make a new document is refused the same).
+  These are how the command bar's undo writes a value back only while the item holds what the turn left, a compare-and-set the route decides and never a read and then a write.
   `GET /api/v1/issues?label=<label>` is repeatable, normalizes filter labels identically, and case-insensitively matches every supplied label.
 
 - A reply to an open ask (`ask_id` set on `POST /api/v1/issues/{key}/comments` or `POST /api/v1/artifacts/{id}/comments`) records `turn` (`comments.turn`, migration 0028): who holds the turn after it.

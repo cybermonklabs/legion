@@ -659,6 +659,14 @@ type GoingCaller struct {
 	// empty, and the rows needing one are passed over.
 	Session string
 	Doer    GoingDoer
+
+	// landings is where each write the call sends records that it landed, nil for a call to
+	// another server's table (goingLandings); with it, a write has landed when its route's
+	// transaction committed, whatever its answer said (send).
+	landings *goingLandings
+	// resumes is a call that resumes a write after requests an earlier attempt of it landed,
+	// which a translation's own refusal words for what of the write already stands.
+	resumes bool
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -720,7 +728,7 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	if !chosen {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
 	}
-	call, err := route.translate(ctx, c.reader(), goingCallInput{arguments: arguments, path: values, session: c.Session})
+	call, err := route.translate(ctx, c.reader(), goingCallInput{arguments: arguments, path: values, session: c.Session, resumes: c.resumes})
 	if err != nil {
 		var untranslatable goingUntranslatable
 		if errors.As(err, &untranslatable) {
@@ -732,12 +740,16 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 }
 
 // send sends a prepared call: each write that must land first, then the row's own, and answers
-// the answer of the request that ended it - the row's own, or one sent first that was refused -
-// beside how each request it sent went (goingWriteRequest). landed is the requests an earlier
-// write of the same invocation already landed (goingLandedBefore): each the call still starts
-// with, by method and path, is not sent again and stands in the record as it was, and the call
-// resumes at the first after them; the row's own request is always sent. A request that could
-// not be built or sent ends the call with its error and the requests before it.
+// the answer of the request that ended it - the row's own, or one sent first that did not land -
+// beside how each request it sent went (goingWriteRequest). A request landed where it was
+// answered below 300, or, for a call to the server's own table, where its route's transaction
+// committed, as the record it wrote in that transaction says (goingLandings.landed), whatever its
+// answer's status. landed is the requests an earlier write of the same invocation already landed
+// (claimGoingWrite): each the call still starts with, by method and path, is not sent again and
+// stands in the record as it was, and the call resumes at the first after them. A call every one
+// of whose requests landed before sends nothing and answers no response. A request that could not
+// be built or sent ends the call with its error and the requests before it, and one whose landing
+// could not be read back with goingLandingUnread.
 func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []goingWriteRequest) (*http.Response, []goingWriteRequest, error) {
 	requests, err := prepared.call.requests(prepared.route)
 	if err != nil {
@@ -746,13 +758,12 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 	sent := make([]goingWriteRequest, 0, len(requests))
 	resuming := true
 	for index, spec := range requests {
-		resuming = resuming && index < len(requests)-1 && index < len(landed) &&
-			landed[index].Method == spec.method && landed[index].Path == spec.path
+		resuming = resuming && index < len(landed) && landed[index].Method == spec.method && landed[index].Path == spec.path
 		if resuming {
 			sent = append(sent, landed[index])
 			continue
 		}
-		request, err := spec.build(ctx, c.BaseURL)
+		request, err := spec.build(c.landings.on(ctx, index, spec.method, spec.path), c.BaseURL)
 		if err != nil {
 			return nil, sent, err
 		}
@@ -762,15 +773,23 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 		}
 		record := goingWriteRequest{Method: spec.method, Path: spec.path,
 			Outcome: goingWriteOutcome{OK: response.StatusCode < http.StatusMultipleChoices, Status: response.StatusCode}}
+		if !record.Outcome.OK && c.landings != nil {
+			if record.Outcome.OK, err = c.landings.landed(ctx, index); err != nil {
+				_ = response.Body.Close()
+				return nil, append(sent, record), err
+			}
+		}
 		if index == len(requests)-1 || !record.Outcome.OK {
 			return response, append(sent, record), nil
 		}
 		answer, _ := io.ReadAll(response.Body)
 		_ = response.Body.Close()
-		record.Made = goingMadeID(answer)
+		if response.StatusCode < http.StatusMultipleChoices {
+			record.Made = goingMadeID(answer)
+		}
 		sent = append(sent, record)
 	}
-	return nil, sent, fmt.Errorf("%s: its translation made no request", prepared.action)
+	return nil, sent, nil
 }
 
 // reader is the reads a translation makes, through the caller's own Doer.

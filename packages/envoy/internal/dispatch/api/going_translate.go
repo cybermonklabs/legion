@@ -38,11 +38,13 @@ import (
 
 // goingCallInput is one call as its row's translation reads it: the arguments the action's
 // schema accepted, the value of each placeholder of the row's path as chooseGoingRoute filled
-// it, and the session the caller acts as ("" for none).
+// it, the session the caller acts as ("" for none), and whether the call resumes a write after
+// requests an earlier attempt of it landed (GoingCaller.resumes).
 type goingCallInput struct {
 	arguments map[string]any
 	path      map[string]string
 	session   string
+	resumes   bool
 }
 
 // goingTranslator is one row's translation: what the row's route takes of a call, read against
@@ -379,7 +381,8 @@ func goingTranslateClaim(_ context.Context, _ goingReader, call goingCallInput) 
 // and a `reason`, which the schema takes only beside a close, is posted on the issue as a message
 // before the close, as `dispatch issue-update --reason` posts it (updateIssueInput has no reason
 // field). An issue already closed is refused before its reason is posted, so no reason lands as
-// a stray message.
+// a stray message; a write that resumes after its reason landed is refused for the close alone,
+// and the refusal names the reason that stands (goingRefusal.after).
 func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
 	arguments, key := call.arguments, call.path["key"]
 	body := goingPick(arguments, "status", "title", "labels", "priority", "assignee", "route", "blocked_by", "components")
@@ -414,8 +417,12 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 		return goingCall{}, err
 	}
 	if reasoned && issue.ClosedAt != nil {
+		unsent := "the reason was not posted and the close was not sent"
+		if call.resumes {
+			unsent = "the close was not sent"
+		}
 		return goingCall{}, goingRefusal{Status: http.StatusConflict, Code: "ISSUE_CLOSED",
-			Message: fmt.Sprintf("%s closed at %s, so the reason was not posted and the close was not sent", key, *issue.ClosedAt)}
+			Message: fmt.Sprintf("%s closed at %s, so %s", key, *issue.ClosedAt, unsent)}
 	}
 	if linking && len(links) > 0 {
 		merged := slices.Clone(issue.ExternalLinks)

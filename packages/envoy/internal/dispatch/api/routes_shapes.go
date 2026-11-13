@@ -626,7 +626,7 @@ var routeShapes = map[string]routeShape{
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"DELETE /api/v1/issues/{key}/claim": {
-		Status: http.StatusOK, Response: claimAnswer{}, Request: actorInput{},
+		Status: http.StatusOK, Response: claimAnswer{}, Request: releaseClaimInput{},
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"GET /api/v1/issues/{key}/events": {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
