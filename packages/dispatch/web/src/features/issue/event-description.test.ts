@@ -294,6 +294,31 @@ test("eventDescription names the repository an architecture import came from; a 
   ]);
 });
 
+test("eventDescription names the person a project's default moved to; a retained clear reads as cleared", () => {
+  const base = {
+    actor: { id: "alice", kind: "user" },
+    created_at: "2026-10-25T00:00:00Z",
+    id: 4,
+    issue_key: null,
+    notify: false,
+    project: "CORE",
+    seq: 4,
+    type: "settings.project_default_assignee.updated",
+  } as const;
+
+  expect(
+    eventDescription({
+      ...base,
+      payload: { assignee: "bob", project: "CORE", thread_logins: ["alice", "bob"] },
+    })
+  ).toEqual(["Default assignee updated: CORE → bob"]);
+  // Written before every project named a default: the stored row of a clear, and no
+  // `thread_logins`.
+  expect(eventDescription({ ...base, payload: { assignee: null, project: "CORE" } })).toEqual([
+    "Default assignee cleared: CORE",
+  ]);
+});
+
 // The issue log names the same five movements, in its own voice: it has no actor column beside
 // the line, so a release says what happened and a takeover names who lost the claim.
 type ClaimLogEvent = Extract<DispatchEvent, { type: "issue.claimed" | "issue.released" }>;

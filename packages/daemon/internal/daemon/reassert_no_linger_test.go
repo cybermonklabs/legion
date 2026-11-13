@@ -16,12 +16,12 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -144,7 +144,7 @@ func TestTheCloseEventTakesTheIssueOutAfterItsWriteWasRefused(t *testing.T) {
 // storedIssueOf is the issue as the record holds it, failing the test when the record has none:
 // every caller here is asking where the issue stands, and a nil would read as "not in the
 // workflow", which is one of the answers under test.
-func storedIssueOf(t *testing.T, ctx context.Context, pool *pgxpool.Pool, records record.Store, key string) *record.Issue {
+func storedIssueOf(t *testing.T, ctx context.Context, pool *store.Pool, records record.Store, key string) *record.Issue {
 	t.Helper()
 	var stored *record.Issue
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {

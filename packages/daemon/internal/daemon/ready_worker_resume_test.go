@@ -14,8 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5/pgxpool"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -44,7 +42,7 @@ const taskWithinOfReady = 2 * time.Minute
 // which is what a relaunch records the work it ended from.
 type readyWorkerRig struct {
 	t       *testing.T
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	st      *store.Store
 	sup     *supervisor
 	rt      *fake.Runtime

@@ -34,9 +34,11 @@ export function waitingOnHuman<
 /** The one rule for work waiting on the reader themselves: an open ask whose turn is a
  *  person's and that they have not deferred (`waitingOnHuman`), waiting on them
  *  (`isMine`, the same rule the list's own filter reads, which reads the server's
- *  `waiting_on_person`: whoever the ask was handed to, and the assignee of its issue until
- *  somebody hands it on). A question nobody waits on - one on an issue nobody holds, or on a
- *  project document, that nobody was handed - is nobody's, so it waits on nobody here.
+ *  `waiting_on_person`: whoever the ask was handed to, the assignee of its issue until
+ *  somebody hands it on, and the default assignee of its project while the issue holds
+ *  nobody - a question on a project document included, which reaches that project's default
+ *  the same way). Every project names a default assignee, so every question is somebody's and
+ *  a question nobody waits on is one an older server answered.
  *  Nobody is the reader until the login resolves, so an unknown viewer is waited on by
  *  nothing: a list taken over the whole inbox while the shell loads would not be theirs.
  *  Every count of such work - the badges, the banner, the Agents page's first card number -

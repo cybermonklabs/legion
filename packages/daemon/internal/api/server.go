@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
@@ -38,12 +37,35 @@ import (
 // slow-header client holds a listener slot for as long as it likes.
 const readHeaderTimeout = 10 * time.Second
 
+// stateReadBound is how long the state route gives its whole read — its repeatable-read
+// transaction and the statements inside it — before it answers a failure and ends that
+// transaction (stateRoute, Options.StateReadBound). Until INFRA-3169 the route's only bound was
+// whether its client was still waiting, so a read that never finished held its connection for as
+// long as the client held the socket, and 32 of those are the whole pool.
+//
+// Sixty seconds, because the healthy read is already slow and grows with the project: it measured
+// 8.34 s and 4,055,424 bytes on the production deployment on 2026-11-12, so a bound under about
+// 30 seconds would cut a legitimate read of the very deployment this fixes, and 60 is seven times
+// today's healthy read.
+const stateReadBound = 60 * time.Second
+
+// stateRollbackBound is what the state route gives the rollback that ends its transaction once
+// the read is over, on a context of its own (stateRoute). Five seconds: the rollback is one
+// round trip to a server that just answered, so the only thing this waits out is a server that
+// has stopped answering altogether, and waiting longer on one of those would hold the very
+// connection the rollback is there to give back.
+const stateRollbackBound = 5 * time.Second
+
 // Options are what the routes answer from.
 type Options struct {
 	// State answers GET /legion/v1/state.
 	State StateSource
 	// StateTransactions opens the repeatable-read, read-only snapshot the state projection uses.
 	StateTransactions StateTransactions
+	// StateReadBound is how long the state route's read may take before it answers a failure and
+	// gives its connection back; zero is stateReadBound, which is the value the daemon runs. A
+	// test sets a smaller one so it need not wait out a minute.
+	StateReadBound time.Duration
 	// ConsumerLag reads the lag of the daemon's durable consumers from NATS (the daemon's
 	// intake.Consumers.Lag), which the state route reads after its transaction commits and serves as
 	// `consumers`. Nil, a daemon with no workflow and so no consumers, serves none.
@@ -109,6 +131,13 @@ type Options struct {
 	// plugin asked (stateFor). Nil is a runtime that runs no pods, whose every caller is served
 	// the state as this contract writes it.
 	CallerPod func(addr netip.Addr) (string, bool)
+	// Ready reads the daemon's readiness latch, which GET /readyz answers from: false until the
+	// daemon has built its runtime, installed its launcher acceptor and begun serving this API,
+	// true from that moment on, and never again false of itself (the daemon's servingLatch). It
+	// reads no database, no pool and nothing of the daemon's load, so the probe answers while
+	// every connection is busy. Nil is a server that is ready: a caller that sets no readiness
+	// option is serving by the time anything can ask it.
+	Ready func() bool
 	// Stopping is done once the daemon's stop begins, before the stop closes the worker stream
 	// connections no route holds (RouteDecisions): an operator's request that would change a claim
 	// is refused from then on (stopped), and a route whose decision fails logs it at Info
@@ -164,8 +193,12 @@ type Options struct {
 	// test points it at a stand-in.
 	GitHubAPI string
 	// Grants mints and redeems the daemon-local one-command credential handles.
-	Grants   *credential.Grants
-	Pool     *pgxpool.Pool
+	Grants *credential.Grants
+	// Pool is the daemon's guarded pool: the routes open their transactions on it, and a route
+	// that asks it for a second connection while it holds one is refused at that call
+	// (store.ErrNestedAcquire), which is why every route's context is marked where the mux is
+	// built (NewServer).
+	Pool     *store.Pool
 	Handlers []intake.Handler
 	// PrepareRepository readies what the workflow reads in memory of a Dispatch issue's repository
 	// before release_children applies its view of a child (the daemon's prepareObserved, handed the
@@ -255,9 +288,11 @@ type ClaimActivityStore interface {
 type server struct {
 	state             StateSource
 	stateTransactions StateTransactions
-	consumerLag       func(ctx context.Context) []intake.ConsumerLag
-	callerPod         func(addr netip.Addr) (string, bool)
-	supervisor        Supervisor
+	// stateBound is Options.StateReadBound, resolved: stateReadBound where the caller set none.
+	stateBound  time.Duration
+	consumerLag func(ctx context.Context) []intake.ConsumerLag
+	callerPod   func(addr netip.Addr) (string, bool)
+	supervisor  Supervisor
 	// podUpdateRounds is Options.PodUpdateRounds.
 	podUpdateRounds func() PodUpdateRounds
 	bootTokens      *BootTokens
@@ -299,7 +334,7 @@ type server struct {
 	memory     config.Memory
 	coin       func() (bool, error)
 	now        func() time.Time
-	pool       *pgxpool.Pool
+	pool       *store.Pool
 	handlers   []intake.Handler
 	prepare    func(ctx context.Context, issue intake.DispatchIssue) (intake.DispatchIssue, error)
 	unread     func(resolved string) bool
@@ -316,6 +351,9 @@ type server struct {
 	capabilityReported func(ctx context.Context, c supervise.Claim, report capabilities.Report)
 	releaseRecordStore ReleaseRecordStore
 	claimActivity      ClaimActivityStore
+	// readiness is Options.Ready: the daemon's readiness latch, which /readyz answers from. nil is
+	// a server that is ready, since a caller that sets no latch is serving already.
+	readiness func() bool
 	// stopping and drained are Options.Stopping and Options.Drained, decisions Options.Decisions.
 	stopping  context.Context
 	drained   context.Context
@@ -341,6 +379,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	s := &server{
 		state:              opts.State,
 		stateTransactions:  opts.StateTransactions,
+		stateBound:         opts.StateReadBound,
 		consumerLag:        opts.ConsumerLag,
 		callerPod:          opts.CallerPod,
 		supervisor:         opts.Supervisor,
@@ -379,6 +418,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 		capabilityReported: opts.CapabilityReported,
 		releaseRecordStore: opts.ReleaseRecords,
 		claimActivity:      opts.ClaimActivity,
+		readiness:          opts.Ready,
 		log:                opts.Log,
 		stopping:           opts.Stopping,
 		drained:            opts.Drained,
@@ -386,6 +426,9 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	}
 	if opts.OperatorToken != "" {
 		s.operatorSet, s.operatorHash = true, sha256.Sum256([]byte(opts.OperatorToken))
+	}
+	if s.stateBound == 0 {
+		s.stateBound = stateReadBound
 	}
 	if s.coin == nil {
 		s.coin = memorygroup.CryptoCoin
@@ -417,6 +460,7 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
+	mux.HandleFunc("GET /readyz", s.readyz)
 
 	mux.HandleFunc("POST /legion/v1/claims/register", s.register)
 	mux.HandleFunc("POST /legion/v1/claims/ready", s.ready)
@@ -461,8 +505,48 @@ func NewServer(bind string, port int, opts Options) *http.Server {
 
 	return &http.Server{
 		Addr:              net.JoinHostPort(bind, strconv.Itoa(port)),
-		Handler:           mux,
+		Handler:           trackTransactions(mux),
 		ReadHeaderTimeout: readHeaderTimeout,
+	}
+}
+
+// trackTransactions marks every request's context for the daemon's pool, in this one place
+// because every route is a caller of it: a route that asks the pool for a second connection
+// while it holds one — the state route's projection reading past its own transaction, say — is
+// refused at that call (store.ErrNestedAcquire) instead of waiting for a connection only its own
+// transaction can give back. A request handled on a goroutine of its own, outliving the request
+// or running beside it, takes a mark of its own (store.ForConcurrentWorker) rather than this one.
+func trackTransactions(handler http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handler.ServeHTTP(w, r.WithContext(store.WithTransactionTracking(r.Context())))
+	})
+}
+
+// readyz answers the kubelet's readiness probe, which carries no token, from the daemon's
+// readiness latch alone (Options.Ready): 503 `stopping` from the moment the daemon's stop begins
+// (Options.Stopping), to a request on a connection the server still holds through its drain (a new
+// connection gets no answer at all, since the drain closes the listener, which a probe reads as a
+// failure too); 503 `starting` while the daemon has not reached serving, naming what it waits for,
+// which only a request reaching the instant between the server starting and the latch being set
+// sees, since the server serves nothing before that; and 200 once it has. The stop is read first,
+// because a stop that begins before the daemon ever served is draining and not starting.
+// It reads no database, no pool and nothing of the daemon's load, so it answers while every
+// connection of the pool is busy.
+//
+// It is a readiness probe and never a liveness probe. The daemon's Kubernetes Service carries
+// this API's port and the worker stream's port under one selector, so a probe that failed while
+// the daemon was busy would take the worker stream out of the Service while every pod's launcher
+// was dialling it, and the deployment runs one replica under the Recreate strategy, so no second
+// pod answers in its place.
+func (s *server) readyz(w http.ResponseWriter, _ *http.Request) {
+	switch {
+	case s.stopping.Err() != nil:
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"status": "stopping"})
+	case s.readiness != nil && !s.readiness():
+		writeJSON(w, http.StatusServiceUnavailable,
+			map[string]string{"status": "starting", "waitingFor": "the daemon to serve"})
+	default:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
 
@@ -581,13 +665,35 @@ func (s *server) stopRefusal(request string) string {
 	return request + " refused: the daemon is stopping; ask again once it is back"
 }
 
+// stateRoute answers the state out of one repeatable-read, read-only snapshot, under a bound of
+// the daemon's own (stateReadBound, Options.StateReadBound). Before INFRA-3169 the only thing
+// that ended this read was the client giving up, so a read that never finished held its
+// connection as long as the client held its socket, and 32 of those are the whole pool.
+//
+// The bound is laid twice over the same work, because the two ends it has to catch are different
+// ones. The context deadline ends the handler's own waiting — on the Go work between statements
+// and on anything that is not a statement — and statement_timeout ends a statement that runs
+// long inside the transaction, a lock wait included, which no context deadline reaches until the
+// driver's cancel lands. It is `set local`, so it holds for this transaction alone and never for
+// the pool: a migration legitimately runs long DDL in one statement (internal/store's apply),
+// and a statement bound on the pool would cut it. The pool carries the idle bound instead, which
+// is the one that is true of every transaction (internal/store's idleBound).
+//
+// http.TimeoutHandler is not the way to do this and must not be added: it buffers the whole
+// response into a buffer of its own before writing it, and this route's body is buffered once
+// already — writeJSON hands the body to json.Marshal, which materialises all of it before a byte
+// is written — so the handler would hold a second full copy of a body that measured 4,055,424
+// bytes on the production deployment on 2026-11-12. One such copy per concurrent read is a
+// second resource failure inside the first one this bounds.
 func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	if s.stateTransactions == nil {
 		s.log.Error("api: state transaction source is unset")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	tx, err := s.stateTransactions.BeginTx(r.Context(), pgx.TxOptions{
+	reading, cancel := context.WithTimeout(r.Context(), s.stateBound)
+	defer cancel()
+	tx, err := s.stateTransactions.BeginTx(reading, pgx.TxOptions{
 		IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly,
 	})
 	if err != nil {
@@ -595,15 +701,29 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	defer func() { _ = tx.Rollback(r.Context()) }()
+	defer func() {
+		// The rollback runs on a context detached from the read's, with a little budget of its
+		// own: the moment the read's deadline passes is exactly the moment this has to reach the
+		// server, and a rollback asked for on the context that just expired is never sent at all,
+		// which gives the pool back a connection to throw away rather than one with its
+		// transaction ended.
+		ending, endRollback := context.WithTimeout(context.WithoutCancel(r.Context()), stateRollbackBound)
+		defer endRollback()
+		_ = tx.Rollback(ending)
+	}()
 
-	state, claims, err := s.state.State(r.Context(), tx)
+	if _, err := tx.Exec(reading, "set local statement_timeout = "+strconv.FormatInt(statementBound(s.stateBound), 10)); err != nil {
+		s.logRequestFailure(r, err, "api: bound the state transaction's statements failed")
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
+		return
+	}
+	state, claims, err := s.state.State(reading, tx)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: state source failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
 	}
-	if err := tx.Commit(r.Context()); err != nil {
+	if err := tx.Commit(reading); err != nil {
 		s.logRequestFailure(r, err, "api: commit state transaction failed")
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "state unavailable"})
 		return
@@ -611,9 +731,22 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 	// The consumers' lag is read from NATS after the commit, so a slow or silent NATS server holds
 	// no snapshot open; what it does not answer is each consumer's `unavailable`, never a refusal.
 	if s.consumerLag != nil {
-		state.Consumers = ConsumerLagViewsOf(s.consumerLag(r.Context()))
+		state.Consumers = ConsumerLagViewsOf(s.consumerLag(reading))
 	}
 	writeJSON(w, http.StatusOK, s.stateFor(r, state, claims))
+}
+
+// statementBound is bound as PostgreSQL's statement_timeout takes it: whole milliseconds, and
+// never the 0 a bound under a millisecond truncates to. In PostgreSQL 0 is no statement timeout
+// at all, which is the opposite of what a caller that set a bound asked for, so a non-zero bound
+// renders as the one millisecond that is still a bound. No caller sets a sub-millisecond bound
+// today (stateReadBound is 60 s); this is what keeps one that did from switching the bound off.
+func statementBound(bound time.Duration) int64 {
+	milliseconds := bound.Milliseconds()
+	if milliseconds == 0 && bound != 0 {
+		return 1
+	}
+	return milliseconds
 }
 
 // stateFor is state as the plugin that asked for it reads it, decided from claims, the project's
@@ -654,22 +787,24 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // waitingLineContract's own schema describes; a caller below leakCheckCauseContract, the
 // contract that added the sentence a claim's launch was refused with because the shared public
 // leak check could not be installed, is served every claim view without `leakCheckCause`
-// (withoutLeakCheckCause); and a caller below phaseEntriesContract, the contract that added the
+// (withoutLeakCheckCause); a caller below phaseEntriesContract, the contract that added the
 // entry the issue's current phase stands on and the entry its role was given, is served it
-// without `phaseEntry` and `givenEntry` (withoutPhaseEntries).
-// The fourteen compose: each is applied when the state carries something of its own, so a
+// without `phaseEntry` and `givenEntry` (withoutPhaseEntries); and a caller below heldContract,
+// the contract that named the issues the daemon's record holds in the workflow and queues
+// nowhere, is served it without `admission.held` (withoutHeld).
+// The fifteen compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
-// carrying none of the twenty-seven keys, the line's own fields being fields of a view such a
+// carrying none of the twenty-eight keys, the line's own fields being fields of a view such a
 // caller is served none of at all, each of them absent rather than empty, since a strict reader
 // before the contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all twenty-seven keys as
+// retired entry under `strandedClaims`. Every later reader takes all twenty-eight keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
-// `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the issues' `gatedSteps`,
-// `waitingLine`, `why`, `phaseEntry` and `givenEntry`, the workers' counts of the moves back,
-// the claim views' `step` and `leakCheckCause`, each of the nine the decided record added and
-// `contract` itself optional for exactly these bodies. Any other caller — a pod at this
-// contract, the operator's `legion state`, a tmux pane — is served the state as this contract
-// writes it.
+// `admission.trees`, `admission.held`, `wakesWaiting`, `claimsToRefresh`, the issues'
+// `gatedSteps`, `waitingLine`, `why`, `phaseEntry` and `givenEntry`, the workers' counts of the
+// moves back, the claim views' `step` and `leakCheckCause`, each of the nine the decided record
+// added and `contract` itself optional for exactly these bodies. Any other caller — a pod at
+// this contract, the operator's `legion state`, a tmux pane — is served the state as this
+// contract writes it.
 //
 // Each narrowing is written to the daemon's own log as it is applied, one line naming the
 // caller, the contract that caller's pod records, the contract this daemon declares and what
@@ -734,7 +869,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the fourteen narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the fifteen narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -746,7 +881,7 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the fourteen, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the fifteen, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
 // needs no reading of the rows before it. One pair does touch one key, and it is the reason
@@ -756,7 +891,7 @@ type stateNarrowing struct {
 // below both is served no `waitingLine` at all whichever runs first — the later one then finds
 // the key gone and does nothing — and a caller below only the higher one keeps the field with
 // its `place` and its `length`, which is what the lower row's own contract describes. A
-// fifteenth row that takes something out of a field an earlier row drops whole is sound on
+// sixteenth row that takes something out of a field an earlier row drops whole is sound on
 // those same terms; one that puts a key back, or reads what an earlier row left, is not, and
 // this table is the wrong shape for it. The order is kept beyond that so a reader of this
 // table and a reader of version.go walk the contracts the same way.
@@ -778,6 +913,7 @@ var stateNarrowings = []stateNarrowing{
 		"every field of the waiting line beside place and length"},
 	{leakCheckCauseContract, carriesLeakCheckCause, withoutLeakCheckCause, "the claim views' leakCheckCause"},
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
+	{heldContract, carriesHeld, withoutHeld, "admission.held"},
 }
 
 // memoryContract is the daemon contract that added the issues' memory group to the state
@@ -790,6 +926,12 @@ const memoryContract = 49
 // and each issue's `tree`, its own tree's root: a plugin before it reads the state with a strict
 // schema that knows neither key and refuses the whole body for one of them.
 const treeContract = 51
+
+// heldContract is the daemon contract that added `admission.held` to the state (version.go's
+// 98), the issues the daemon's record holds in the workflow that stand in neither `active` nor
+// `waiting`, each with the one word for why: a plugin before it reads the state with a strict
+// schema that knows no such key and refuses the whole body for it, empty as surely as filled.
+const heldContract = 98
 
 // wakesWaitingContract is the daemon contract that added `wakesWaiting` to the state (version.go's
 // 53): a plugin before it reads the state with a strict schema that knows no such key and refuses
@@ -843,10 +985,10 @@ const backwardMovesContract = 62
 // one built after strips the key instead, so the strip is what keeps the count from a caller
 // that did not ask for it rather than what keeps such a caller reading at all. It was the
 // highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
-// whyAndLineFieldsContract, leakCheckCauseContract and phaseEntriesContract stand above it now,
-// so a caller in a pod at 73 or 74 is served the count and neither the decided record's keys,
-// nor each issue's answer with the line's own fields, nor a claim view's `leakCheckCause`, nor
-// the two entry numbers.
+// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract and heldContract stand
+// above it now, so a caller in a pod at 73 or 74 is served the count and neither the decided
+// record's keys, nor each issue's answer with the line's own fields, nor a claim view's
+// `leakCheckCause`, nor the two entry numbers, nor `admission.held`.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -896,8 +1038,9 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. It is the highest of the fourteen bands, this daemon's own contract, so the
-// only caller served the two keys is one at it.
+// reading at all. It is the band below heldContract's band, which is the highest of the fifteen
+// and this daemon's own contract, so a caller in a pod at 94 through 97 is served the two keys
+// and not `admission.held`.
 const phaseEntriesContract = 94
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
@@ -930,23 +1073,27 @@ func carriesMemory(state State) bool {
 // issue's `tree`. It carries `admission.trees` whatever the daemon holds, since the admission
 // block writes that key on every body, empty rather than null (Admission.MarshalJSON), and the
 // strict reader before the contract refuses the empty key as surely as one naming a tree. So this
-// is true of every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine, carriesBackwardMoves, carriesClaimsToRefresh, carriesRecordFields,
-// carriesWhyAndLineFields, carriesLeakCheckCause and carriesPhaseEntries all the same, because
-// stateFor puts the same question to the fourteen and because a later contract that stops
-// writing `trees` on every body answers it here.
+// is true of every state the route writes; it is asked beside the other fourteen all the same,
+// because stateFor puts the same question to the fifteen and because a later contract that
+// stops writing `trees` on every body answers it here.
 func carriesTrees(State) bool { return true }
+
+// carriesHeld is whether state carries the key heldContract added: `admission.held`, the issues
+// the daemon's record holds in the workflow that stand in neither `active` nor `waiting`. It
+// carries that key whatever the daemon holds, since the admission block writes it on every body,
+// empty rather than null (Admission.MarshalJSON), and the strict reader before the contract
+// refuses the empty key as surely as one naming an issue. So this is true of every state the
+// route writes; it is asked beside the other fourteen all the same, because stateFor puts the
+// same question to the fifteen and because a later contract that stops writing `held` on every
+// body answers it here.
+func carriesHeld(State) bool { return true }
 
 // carriesWakesWaiting is whether state carries the key wakesWaitingContract added: `wakesWaiting`,
 // the wakes the pacing holds. It carries that key whatever the daemon holds, since the state
 // writes it on every body, empty rather than null (State.MarshalJSON), and the strict reader
 // before the contract refuses the empty key as surely as one naming a wake. So this is true of
-// every state the route writes; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesTrees, carriesGatedSteps, carriesRetiredStranded, carriesStallRecord,
-// carriesWaitingLine, carriesBackwardMoves, carriesClaimsToRefresh, carriesRecordFields,
-// carriesWhyAndLineFields, carriesLeakCheckCause and carriesPhaseEntries all the same, because
-// stateFor puts the same question to the fourteen and because a later contract that stops
+// every state the route writes; it is asked beside the other fourteen all the same, because
+// stateFor puts the same question to the fifteen and because a later contract that stops
 // writing `wakesWaiting` on every body answers it here.
 func carriesWakesWaiting(State) bool { return true }
 
@@ -955,8 +1102,8 @@ func carriesWakesWaiting(State) bool { return true }
 // whatever the daemon holds, since the state writes the number on every body, 0 rather than
 // absent (State.MarshalJSON), and the strict reader before the contract refuses the key when it
 // is 0 as surely as when it names a number. So this is true of every state the route writes, as
-// carriesWakesWaiting is; it is asked beside the other thirteen all the same, because stateFor
-// puts the same question to the fourteen and because a later contract that stops writing
+// carriesWakesWaiting is; it is asked beside the other fourteen all the same, because stateFor
+// puts the same question to the fifteen and because a later contract that stops writing
 // `claimsToRefresh` on every body answers it here.
 func carriesClaimsToRefresh(State) bool { return true }
 
@@ -984,11 +1131,8 @@ func carriesStallRecord(state State) bool {
 // `heldFrom`, `lingerUntil` or `ancestry`. It carries the mark whatever the daemon holds, since
 // stateFor writes it on every body before it narrows one (ContractView), and the strict reader
 // before the contract refuses that key as surely as the nine. So this is true of every state the
-// route puts the question to; it is asked beside carriesUpdateRounds, carriesMemory,
-// carriesTrees, carriesWakesWaiting, carriesGatedSteps, carriesRetiredStranded,
-// carriesStallRecord, carriesWaitingLine, carriesBackwardMoves, carriesClaimsToRefresh,
-// carriesWhyAndLineFields, carriesLeakCheckCause and carriesPhaseEntries all the same, because
-// stateFor puts the same question to the fourteen and because a later contract that stops
+// route puts the question to; it is asked beside the other fourteen all the same, because
+// stateFor puts the same question to the fifteen and because a later contract that stops
 // writing the mark on every body answers it here, as carriesTrees answers for
 // `admission.trees`. The question the mark pre-empts is issueCarriesRecordFields, which that
 // contract would ask of every issue here and which the strip below reads one issue at a time.
@@ -1206,6 +1350,17 @@ func withoutTrees(state State) State {
 		issues[key] = issue
 	}
 	state.Issues = issues
+	return state
+}
+
+// withoutHeld is state with no `admission.held`, the one key heldContract added; nothing else of
+// that contract is on the route. The key is left off rather than emptied, because the strict
+// reader before the contract refuses it as surely when it is empty as when it names an issue,
+// which is why Admission.MarshalJSON writes the key on every body but this one
+// (Admission.heldHidden), as it leaves off `trees` for withoutTrees. The admission block is a
+// value of the state's own, so the state the source answered is left as it was.
+func withoutHeld(state State) State {
+	state.Admission.Held, state.Admission.heldHidden = nil, true
 	return state
 }
 

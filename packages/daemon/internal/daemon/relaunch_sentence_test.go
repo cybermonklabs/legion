@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -47,7 +46,7 @@ const relaunchDeliveryPrefix = "relaunch:"
 // (supervise.Deps.ClaimActivity). rt is the faked runtime the claim's processes run on.
 type rootArchitectRig struct {
 	t       *testing.T
-	pool    *pgxpool.Pool
+	pool    *store.Pool
 	st      *store.Store
 	rt      *fake.Runtime
 	machine *supervise.Machine
@@ -158,7 +157,7 @@ func (r *rootArchitectRig) lastPrompt() fake.Prompt {
 
 // catchUpReasons is the reason of every catch-up notice the outbox holds, oldest first: the text
 // the architect reads of its catch-up.
-func catchUpReasons(t *testing.T, pool *pgxpool.Pool) []string {
+func catchUpReasons(t *testing.T, pool *store.Pool) []string {
 	t.Helper()
 	rows, err := pool.Query(context.Background(),
 		"select payload->>'reason' from outbox where kind = $1 and payload->>'kind' = 'catch-up' order by id", string(record.OutboxKindNotice))
@@ -174,7 +173,7 @@ func catchUpReasons(t *testing.T, pool *pgxpool.Pool) []string {
 
 // wantCatchUpOpensWith is the one catch-up the relaunch's ready queued, opening with sentence and
 // going on with the tree as the daemon records it.
-func wantCatchUpOpensWith(t *testing.T, pool *pgxpool.Pool, sentence string) {
+func wantCatchUpOpensWith(t *testing.T, pool *store.Pool, sentence string) {
 	t.Helper()
 	reasons := catchUpReasons(t, pool)
 	if len(reasons) != 1 {
