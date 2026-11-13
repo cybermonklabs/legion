@@ -52,8 +52,8 @@ check by three rules:
    and a test deleted from a suite takes its failure with it.
 
 On cybermonklabs/legion: `ci-ok` passes when the jobs it did not select were skipped
-(`.github/scripts/ci-ok.sh`). Eight slow suites and the full browser lane run only in the merge
-queue or under `full-ci`.
+(`.github/scripts/ci-ok.sh`), so never name `ci-ok`. Eight slow suites and the full browser lane
+run only in the merge queue or under `full-ci`.
 
 ## Show the surface before you ask
 

@@ -191,7 +191,7 @@ and decides there, the only gate on such an issue.
   `skill://legion-worker/references/conflicts-and-rewrites.md`) at the commit your results name
   and at the new head. Equal: re-run only the
   bare gates — the repository's CI green at the new head and its smoke check — and record each
-  check again at the new head, its `--observed` ending
+  check with no `ci_check` again at the new head, its `--observed` ending
   `forward-merge re-check <old-sha> → <new-sha>: fingerprint unchanged, bare gates only, class search of earlier findings clean`. A search that finds an instance is a failure, not a re-check: record it under `failures` and run a full test round. The
   real-surface verification is not repeated, except in a parent's last round, which the architect
   or the implementer's forward-merge comment names to you: then run a full test round. Different:
