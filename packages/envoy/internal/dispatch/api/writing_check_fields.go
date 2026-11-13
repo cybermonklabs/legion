@@ -45,6 +45,7 @@ var (
 	markQuote      = proseMark{why: "quotes text a document already holds, to find it; the write adds none of it"}
 	markSecret     = proseMark{why: "a code or a digest the server compares, never shown as text"}
 	markQuery      = proseMark{why: "a question or a draft the server reads to search and stores nothing of"}
+	markRoundTrip  = proseMark{why: "a draft the server parses and renders back, storing nothing of it"}
 	markConfig     = proseMark{why: "a repository, a branch, a path or a job name the server matches"}
 	markHandoff    = proseMark{why: "a handoff body is one JSON object a daemon reads, never shown as Markdown"}
 	markOverride   = proseMark{why: "the writing check's own override value: agent or generated"}
@@ -103,14 +104,17 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 		"check": markIdentifier, "role": markEnum, "surface": markEnum, "commit": markIdentifier,
 		"verdict": markEnum, "screenshots": markIdentifier,
 	},
+	reflect.TypeFor[checkResultRetractionInput](): {"reason": markProse},
 
 	// Documents.
 	reflect.TypeFor[jsonArtifactUpload](): {
 		"content": markProse, "summary": markProse, "name": markName, "primary": markRawPayload,
 	},
-	reflect.TypeFor[createVersionInput]():   {"summary": markProse},
-	reflect.TypeFor[rebuildArtifactInput](): {"markdown": markProse},
-	reflect.TypeFor[editArtifactInput]():    {"summary": markProse},
+	reflect.TypeFor[createVersionInput]():     {"summary": markProse},
+	reflect.TypeFor[rebuildArtifactInput]():   {"markdown": markProse},
+	reflect.TypeFor[editArtifactInput]():      {"summary": markProse},
+	reflect.TypeFor[renameArtifactInput]():    {"name": markName},
+	reflect.TypeFor[markdownRoundTripInput](): {"markdown": markRoundTrip},
 	reflect.TypeFor[model.EditOp](): {
 		"with": markProse, "markdown": markProse,
 		"op": markEnum, "find": markQuote, "after": markIdentifier, "before": markIdentifier,
@@ -186,7 +190,7 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 	},
 
 	// Settings, projects and credentials.
-	reflect.TypeFor[createProjectInput]():          {"key": markIdentifier, "name": markName},
+	reflect.TypeFor[createProjectInput]():          {"key": markIdentifier, "name": markName, "default_assignee": markPerson},
 	reflect.TypeFor[putRepoProjectInput]():         {"project": markIdentifier, "renamed_to": markConfig},
 	reflect.TypeFor[putArchitectureSourceInput]():  {"branch": markConfig},
 	reflect.TypeFor[projectDefaultAssigneeInput](): {"assignee": markPerson},

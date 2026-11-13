@@ -4,11 +4,13 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
+  ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
   dispatchToolSchema,
   dispatchToolSpecs,
   ISSUE_STATUSES,
   PROJECT_KEY_RULE,
+  pathKeepsBytesOf,
   SEARCH_QUERY_MAX,
 } from "./dispatch-tools";
 import { type SchemaApi, type SchemaNode, zodSchemaApi } from "./tool-schema";
@@ -538,6 +540,41 @@ describe("dispatchToolSpecs", () => {
     );
   });
 
+  test("dispatch_result records a result or retracts one, and never both at once", () => {
+    const schema = schemaFor("dispatch_result");
+    const record = validCalls.dispatch_result;
+    const refusal = (args: Record<string, unknown>) =>
+      schema.safeParse(args).error?.issues.map((issue) => issue.message);
+
+    expect(schema.safeParse(record).success).toBe(true);
+    expect(
+      schema.safeParse({ retract: "res-2", reason: "The run read a stale build." }).success
+    ).toBe(true);
+    // The writing check reads the reason, so a retraction takes the override as a record does.
+    expect(
+      schema.safeParse({
+        retract: "res-2",
+        reason: "The run read a stale build.",
+        override_writing_check: true,
+      }).success
+    ).toBe(true);
+    // A retraction says why. Without the reason the record would say a result is wrong and
+    // nothing more, which is what every later reader needs most.
+    expect(refusal({ retract: "res-2" })).toEqual([
+      "retract needs reason, the words that say why the result is wrong.",
+    ]);
+    expect(refusal({ retract: "res-2", reason: "Stale build.", ...record })).toEqual([
+      "retract takes reason alone, and this call also carries issue, check, role, verdict, commit. Retract the result, then record a new one with a call of its own.",
+    ]);
+    expect(refusal({ ...record, reason: "Stale build." })).toEqual([
+      "reason goes with retract, and this call carries no retract. Name the result to retract, or drop reason.",
+    ]);
+    const { role: _role, commit: _commit, ...partial } = record;
+    expect(refusal(partial)).toEqual([
+      "recording a result needs role, commit. Pass retract with the id of a result recorded before, and reason with why that result is wrong, to retract it.",
+    ]);
+  });
+
   test("dispatch_send_to_agent takes a session, a body and one delivery mode, and nothing else", () => {
     const schema = schemaFor("dispatch_send_to_agent");
     const call = { session: "sess-1", body: "DSP-1: please take this.", delivery: "aside" };
@@ -781,7 +818,8 @@ describe("dispatchToolSpecs", () => {
     const turn =
       "turn requires reply_to_ask: turn says who holds an open ask's thread after the reply. Pass reply_to_ask with the open ask's id, or drop turn.";
     const precondition = "A precondition selects exactly one of document or blocks.";
-    const source = "Exactly one of path or content is required.";
+    const source =
+      "Give at most one of path and content. A call with neither makes an empty document under the name, which a person or an agent writes in afterwards with dispatch doc-edit.";
     const artifactOwner =
       "Exactly one of issue and project is required; with project, artifact names the document.";
     const edit = { artifact: "spec.md", ops: [{ op: "delete", find: "x" }] };
@@ -795,9 +833,9 @@ describe("dispatchToolSpecs", () => {
       ["dispatch_comment", { body: "y" }, artifactOwner],
       ["dispatch_doc_edit", { issue: "DSP-1", ...edit, precondition: {} }, precondition],
       ["dispatch_doc_edit", { ...edit }, artifactOwner],
-      ["dispatch_artifact", { issue: "DSP-1", name: "n" }, source],
+      ["dispatch_artifact", { issue: "DSP-1", name: "n", path: "p", content: "c" }, source],
       ["dispatch_artifact", { name: "n", content: "c" }, artifactOwner],
-      ["dispatch_artifact", { name: "n" }, `${artifactOwner} ${source}`],
+      ["dispatch_artifact", { name: "n", path: "p", content: "c" }, `${artifactOwner} ${source}`],
       ["dispatch_read", { issue: "DSP-1", message: "m" }, readMessage],
       ["dispatch_read", {}, readOwner],
     ] as const) {
@@ -1106,16 +1144,53 @@ describe("dispatchToolSpecs", () => {
     ).toBe(false);
   });
 
-  test("requires exactly one artifact upload source", () => {
+  // A create takes at most one source: a file, inline text, or neither, which makes an empty
+  // document under the name. The name of a document is Markdown whichever of the three it is, so
+  // the Markdown-name rule holds a name-only create as it holds inline content.
+  test("takes at most one artifact upload source", () => {
     const schema = schemaFor("dispatch_artifact");
     const shared = { issue: "DSP-1", name: "spec.md" };
 
     expect(schema.safeParse({ ...shared, path: "spec.md" }).success).toBe(true);
     expect(schema.safeParse({ ...shared, content: "# Spec\n" }).success).toBe(true);
-    expect(schema.safeParse(shared).success).toBe(false);
+    expect(schema.safeParse(shared).success).toBe(true);
+    expect(schema.safeParse({ issue: "DSP-1", name: "Launch notes" }).success).toBe(true);
     expect(schema.safeParse({ ...shared, path: "spec.md", content: "# Spec\n" }).success).toBe(
       false
     );
+    expect(schema.safeParse({ issue: "DSP-1", name: "rows.jsonl" }).success).toBe(false);
+    expect(
+      schema.safeParse({ issue: "DSP-1", name: "rows.jsonl", path: "rows.jsonl" }).success
+    ).toBe(true);
+  });
+
+  // INFRA-1522 R15: the refusal of inline text the store would change names --path only where
+  // --path keeps the bytes, which is every name that is not Markdown. Dispatch parses and renders
+  // a Markdown name whichever flag sends it, so --path is no way out of one.
+  test("says which artifact names --path keeps the bytes of", () => {
+    for (const name of [
+      "rows.jsonl",
+      "notes.TXT",
+      "plan v1.2",
+      "Design notes",
+      "notes v2. draft",
+    ]) {
+      expect(pathKeepsBytesOf(name)).toBe(true);
+    }
+    for (const name of ["spec.md", "Plan.MD", "notes.markdown", "plan v1.2.md", " notes.md "]) {
+      expect(pathKeepsBytesOf(name)).toBe(false);
+    }
+  });
+
+  // The rule is what --help prints, so it holds for both kinds of name: the stored text for any
+  // name, and --path for a name that is not Markdown.
+  test("the stored-text rule names a way out for both kinds of name", () => {
+    expect(ARTIFACT_STORED_TEXT_RULE).toContain("The refusal prints the text Dispatch stores");
+    expect(ARTIFACT_STORED_TEXT_RULE).toContain(
+      "A name that does not end in .md or .markdown has a second way out"
+    );
+    const artifact = dispatchToolSpecs.find((spec) => spec.name === "dispatch_artifact");
+    expect(artifact?.description).toContain(ARTIFACT_STORED_TEXT_RULE);
   });
 
   test("accepts exactly one issue or project owner", () => {
@@ -1417,7 +1492,7 @@ describe("dispatchToolSpecs", () => {
     ],
     [
       "dispatch_artifact",
-      "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit. Uploading the same name again makes its next version, and so does uploading a document's slug (plan-md for plan.md).",
+      "Never upload a document's own name to change it (spec.md replaces the spec whole); edit it with dispatch doc-edit.",
     ],
     [
       "dispatch_ask",
@@ -1460,7 +1535,7 @@ describe("dispatchToolSpecs", () => {
     [
       "dispatch_issue",
       "assignee",
-      "else the project's default assignee when it still names a person who has signed in, else unassigned.",
+      "else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one.",
     ],
     [
       "dispatch_read",

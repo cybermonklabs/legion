@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -34,6 +35,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -47,6 +49,10 @@ const (
 	// pod_update_retask_hours and pod_update_notice_hours set them.
 	podUpdateRetask = 30 * time.Minute
 	podUpdateNotice = 4 * time.Hour
+	// podUpdateSilence is the third, as legion.yaml's worker_silence_minutes sets it: how long a
+	// phase worker's last recorded step may be in the past before the silence sweep reads that
+	// worker as one nothing will prompt (config.Config.WorkerSilence). It is the shipped default.
+	podUpdateSilence = 30 * time.Minute
 	// podUpdateDrift is the drift the fake runtime reports for the issue's pod.
 	podUpdateDrift = "image"
 	// podUpdateKeptDrift is a drift of the kind a launch keeps the pod for and starts its role
@@ -61,8 +67,9 @@ const (
 	// podUpdatePreviousPod is a pod of this issue that is already gone: the one a claim retired
 	// before the live ones still records a round over.
 	podUpdatePreviousPod = "f1a9c3d7-5e84-4b20-9c61-0d8a7f26b4e3"
-	// podUpdatePluginReasons is what a plugin round records, which carries ", " inside it.
-	podUpdatePluginReasons = "the process speaks plugin contract 42, and this daemon speaks 43"
+	// podUpdateTwoReasons is what a round records when two keys of its pod drifted at once,
+	// which carries ", " inside it.
+	podUpdateTwoReasons = "image legion-worker:v19.50.0, now legion-worker:v19.51.0"
 )
 
 // podUpdateStart is where the rig's clock stands when a test begins, and what a round seeded on a
@@ -76,7 +83,11 @@ var podUpdateStart = time.Date(2026, 10, 29, 9, 0, 0, 0, time.UTC)
 // the claim left when the daemon started it again in another pod than that round's own, as the
 // launch records it (supervise's leftPodRoundAt); pod names a pod of its own, for a claim that
 // records one the rest of the issue has left behind; suspendedBy is who suspended a claim seeded
-// suspended.
+// suspended; serving is the issue generation of the last confirmed task this claim retired, zero
+// for a claim that has retired none, which is what says which run of the issue its worker is on
+// (supervise.Claim.ServingRun, which the silence sweep reads); given is the phase entry the claim
+// was last given work of (supervise.Claim.GivenEntry), which a start weighs against the entry its
+// role's phases row names (workflow.OwedEntry).
 type podUpdateRole struct {
 	role        claim.Role
 	state       supervise.ClaimState
@@ -89,6 +100,8 @@ type podUpdateRole struct {
 	left        string
 	pod         string
 	suspendedBy supervise.SuspendSource
+	serving     uint64
+	given       int64
 }
 
 // readyWorker is the ordinary case: a registered worker of the issue's pod, on this daemon's
@@ -109,9 +122,17 @@ type podUpdateRig struct {
 	conns   *fake.Conns
 	workers map[claim.Role]*fake.Conn
 	tokens  map[claim.Role]claim.Token
+	// st is the daemon's store over the same Postgres, which the outbox runner a test builds for
+	// the lifecycle lane needs (silence_test.go's drain, outbox.trees), and through which a test
+	// writes what only a session's own route writes (its step, its activity report).
+	st *store.Store
 	// logs is what the sweep itself wrote, which is where a round the store refused to take a
-	// notice for is reported (tellUpdateStalled). The machines keep their own quiet logger.
+	// notice for is reported (tellUpdateStalled), and where the workflow engine of the facts this
+	// supervision applies writes its own record (workflow's warnOnCommit). The machines keep
+	// their own quiet logger.
 	logs *syncBuffer
+	// log is that logger, kept so a rig that builds a second engine writes into the same buffer.
+	log *slog.Logger
 }
 
 func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
@@ -127,6 +148,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		c := supervise.Claim{
 			Token: token, Project: podUpdateProject, Tree: podUpdateIssue, Issue: podUpdateIssue, Role: role.role,
 			Generation: 1, State: role.state, PluginContract: role.contract, SuspendedBy: role.suspendedBy,
+			ServingGeneration: role.serving, GivenEntry: role.given,
 		}
 		if role.session {
 			c.Session = "ses_" + string(role.role)
@@ -171,16 +193,20 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	// configuration knows (supervise.Deps.NoPluginInstall). A test that moves a role onto another
 	// backend writes rig.s.cfg, and the closure reads it when a registration asks.
 	logs := &syncBuffer{}
+	log := slog.New(slog.NewJSONHandler(logs, nil))
+	w := podUpdateWorkflow(pool, records, clock, log)
 	s := &supervision{
 		// The rig's claims run in an issue pod, so its configuration is a Kubernetes
 		// deployment's: that is what the Claude Code role's exemption from the stale-plugin
 		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
-			PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice},
-		log:     slog.New(slog.NewJSONHandler(logs, nil)),
+			PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice, WorkerSilence: podUpdateSilence},
+		log:     log,
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
-		enqueue: (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,
+		enqueue:         w.enqueueOutbox,
+		applySweepFacts: w.applySweepFacts,
+		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	sup.deps = supervise.Deps{
 		Runtime: rt, Conns: conns, Store: st, Specs: outboxSpecs{}, Clock: clock, Log: quietLogger(),
@@ -194,6 +220,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		PluginRelaunchable: true,
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		PodUpdateRetask:    podUpdateRetask,
+		RefreshGate:        supervise.NewRefreshGate(0),
 	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
@@ -204,7 +231,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		t.Fatalf("restore the seeded claims: %v", err)
 	}
 	rig := &podUpdateRig{t: t, ctx: ctx, s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
-		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, logs: logs}
+		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log}
 	for _, role := range roles {
 		if !role.session {
 			continue
@@ -214,6 +241,22 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		rig.workers[role.role] = conn
 	}
 	return rig
+}
+
+// podUpdateWorkflow is the workflow as these tests give it to supervision: the rig's own pool
+// and records, and one handler, a real engine over those same records. The engine alone is
+// handler enough for the facts this supervision applies, which are the silence sweep's: its
+// handler reads the record and writes its start row and its notice itself. Production runs
+// admission as a second handler, which promotes the waiting line for every fact whatever its
+// kind (admit's Apply, promote); this rig admits nothing and holds no line, so that pass would
+// read an empty waiting line and decide nothing (workflow.(*Engine).workerSilent). The engine
+// runs on the rig's clock, so the record it writes measures a silence from the moment the test
+// moved the clock to, and on the rig's logger, so the line it writes beside the notice is in
+// the buffer the test reads.
+func podUpdateWorkflow(pool *pgxpool.Pool, records record.Store, clock *heldClock, log *slog.Logger) *workflowRuntime {
+	engine := workflow.New(records, workflow.Config{Project: podUpdateProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps(), Clock: clock.Now}, log)
+	return &workflowRuntime{pool: pool, records: records, log: log, handlers: []intake.Handler{engine}}
 }
 
 // podUpdateLocator is one role process in an issue pod, as the Sandbox runtime records it. The
@@ -1293,8 +1336,19 @@ func (r *podGoneAfterTheDriftRead) PodDrift(ctx context.Context, k runtime.Known
 // retired with that turn, and the round held every task since. The pod the round was opened over
 // is gone whichever way the round ended — the replacement this round made, a pod that went
 // without its round, or a pod that went for a failure of its own and left the round's last tick
-// reading no drift over the pod that replaced it — so the worker comes back on a new session and
-// a new disk, where its launch is what starts it.
+// reading no drift over the pod that replaced it — so the worker comes back on the session it
+// kept and a disk built new, where its launch is what starts the process and nothing of the
+// round's end prompts the agent in it. What keeps that session is the launch's own
+// ResumeSessionFile (runtime.SpawnSpec), which only Resume sets, and the worker is told so in
+// the prompt every role reads (internal/prompts/go/worker-common.md, "Your process is shorter
+// than your session").
+//
+// What does prompt it is the daemon's silence sweep, a bound after that last turn: it finds a
+// phase worker nothing will prompt and sends the phase's task again
+// (TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement). The two tests are the two halves
+// of one truth — the round's end prompts nobody, and the sweep is what does — and neither
+// stands without the other: this one advances no clock and runs no sweep, so what it reads is
+// the end of the round alone.
 func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 	for name, tc := range map[string]struct {
 		roles        []podUpdateRole
@@ -1347,7 +1401,8 @@ func TestPodUpdateTellsItsWorkerNothingHoweverTheRoundEnds(t *testing.T) {
 				t.Fatalf("ReplacePod called %d times, want %d: this is not the end under test", len(calls), tc.replacements)
 			}
 			if sent := conn.Prompts()[before:]; len(sent) != 0 {
-				t.Fatalf("the worker was sent %+v after the round ended, want nothing: its pod is gone, and its launch is what starts it", sent)
+				t.Fatalf("the worker was sent %+v as the round ended, want nothing: the end of a round prompts nobody, and what prompts this worker is the silence sweep a bound later",
+					sent)
 			}
 		})
 	}
@@ -1423,9 +1478,11 @@ func (r *podUpdateRig) restart() *podUpdateRig {
 		workers[role] = conn
 	}
 	next := &podUpdateRig{t: r.t, ctx: r.ctx, sup: sup, rt: rt, pool: r.pool, records: r.records, clock: r.clock,
-		conns: conns, workers: workers, tokens: r.tokens}
+		conns: conns, workers: workers, tokens: r.tokens, st: st, logs: r.logs, log: r.log}
 	next.s = &supervision{
 		cfg: r.s.cfg, log: quietLogger(), plan: r.s.plan, runtime: rt, supervisor: sup, enqueue: r.s.enqueue,
+		applySweepFacts: r.s.applySweepFacts,
+		refreshGate:     supervise.NewRefreshGate(0),
 	}
 	return next
 }
@@ -1516,39 +1573,6 @@ func TestPodUpdateWaitsWhileNoClaimRecordsThePod(t *testing.T) {
 	}
 	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound {
 		t.Fatalf("the suspended claim's round = %q, want it still open: only the operator's resume ends this wait", c.UpdateRound)
-	}
-}
-
-// A plugin round whose worker has answered ends when the sweep reads that answer. Where the
-// claim's process is gone by then — an operator suspended it — the round ends and launches
-// nothing: starting that process again is the operator's to do, and the claim's next launch
-// installs this daemon's plugin anyway.
-func TestPodUpdatePluginRoundEndDoesNotRelaunchAnOperatorSuspendedClaim(t *testing.T) {
-	round := supervise.PluginRound(api.DaemonAPIVersion)
-	rig := newPodUpdateRig(t, podUpdateRole{
-		role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-		contract: api.DaemonAPIVersion - 1, round: round, reasons: podUpdatePluginReasons, signalled: true,
-	})
-
-	rig.handle(claim.RoleImplementer, supervise.RequestSuspend{
-		Claim: rig.tokens[claim.RoleImplementer], By: supervise.SuspendedByOperator,
-	})
-	rig.awaitClaim(claim.RoleImplementer, "the operator's suspension", func(c supervise.Claim) bool {
-		return c.State == supervise.StateSuspended
-	})
-
-	rig.tick()
-
-	ended := rig.awaitSwept(claim.RoleImplementer, "its plugin round to end", func(c supervise.Claim) bool {
-		return c.UpdateRound == ""
-	})
-	if ended.State != supervise.StateSuspended || ended.SuspendedBy != supervise.SuspendedByOperator {
-		t.Fatalf("the claim after its plugin round ended = %s suspended by %q, want it left as the operator suspended it",
-			ended.State, ended.SuspendedBy)
-	}
-	if resumes, spawns := rig.rt.CallsOf("Resume"), rig.rt.CallsOf("Spawn"); len(resumes)+len(spawns) != 0 {
-		t.Fatalf("the round's end started %d processes, want none: the operator's suspension holds this claim",
-			len(resumes)+len(spawns))
 	}
 }
 
@@ -1763,14 +1787,15 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 	wantAnswered(t, notices[0], claim.RoleImplementer)
 }
 
-// Every reason carries ", " inside it already — a moved address, a pod-shape drift, the two
-// contracts of a plugin round — so the notice carries what the round records, whole. A list built
-// by splitting that string cuts one reason into pieces that each read as a reason of their own.
+// Every reason carries ", " inside it already — a moved address, a pod-shape drift, two keys of
+// one pod that drifted at once — so the notice carries what the round records, whole. A list
+// built by splitting that string cuts one reason into pieces that each read as a reason of
+// their own.
 func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 	rig := newPodUpdateRig(t, podUpdateRole{
 		role: claim.RoleImplementer, state: supervise.StateReady, session: true, inPod: true,
-		contract: api.DaemonAPIVersion, round: supervise.PluginRound(api.DaemonAPIVersion),
-		reasons: podUpdatePluginReasons,
+		contract: api.DaemonAPIVersion, round: podUpdateRound,
+		reasons: podUpdateTwoReasons,
 	})
 
 	rig.clock.advance(podUpdateNotice)
@@ -1788,7 +1813,7 @@ func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 	if err := json.Unmarshal(rows[0].Payload, &payload); err != nil {
 		t.Fatalf("decode the notice: %v", err)
 	}
-	if got, want := string(payload.Update.Reasons), strconv.Quote(podUpdatePluginReasons); got != want {
+	if got, want := string(payload.Update.Reasons), strconv.Quote(podUpdateTwoReasons); got != want {
 		t.Fatalf("the notice carries reasons %s, want the one string the round records, %s", got, want)
 	}
 }
@@ -2504,8 +2529,9 @@ func (r *podUpdateRig) settleAll() {
 // the round was opened over, it is in no round, and it has answered nothing, which is the same
 // reading again.
 //
-// What each really left is the round's own record, written where the launch records the pod the
-// claim came up in: the round it left, and whether it had answered it by then.
+// What each really left is the round's own record: the launch, which records the pod the claim
+// came up in, writes the round the claim left, and the answer that round holds for it is the one
+// its own pod's process gave, if it gave one.
 func TestPodUpdateNamesOnlyTheRoundsOwnMembersAsHavingLostWork(t *testing.T) {
 	rig := newPodUpdateRig(t,
 		readyWorker(claim.RoleImplementer),

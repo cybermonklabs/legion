@@ -467,21 +467,30 @@ func TestADecisionBlockIsRefusedInABodyTheParserRefuses(t *testing.T) {
 	}
 }
 
-// Nothing a write path stores changed with the reading that closed the lone carriage return: the
-// rule reads a body whose line endings the browser reader ends a line at and this parser ends
-// none at over a copy of its own (itemblocks.Check), so a comment written in those line endings
-// and holding no decision block is stored and reads back byte for byte, every carriage return
-// where its writer put it.
-func TestACommentOfLoneCarriageReturnsIsStoredByteForByte(t *testing.T) {
+// Nothing the decision-block reading does changes what a write path stores: the rule reads a body
+// whose line endings the browser reader ends a line at and this parser ends none at over a copy of
+// its own (itemblocks.Check), so a comment of lone carriage returns holding no decision block is
+// stored and read back whole, with no character of it lost and one comment row written.
+//
+// What its line endings are is the comment write's own rule and not this reading's: a body reaches
+// the store the way text written into a document does, with one line ending (pmdoc.LineFeeds,
+// comment_create.go), so the carriage returns read back as line feeds.
+//
+// The row is main's, written in #3509 as TestACommentOfLoneCarriageReturnsIsStoredByteForByte,
+// where it asserted the body byte for byte: that was true until this branch gave the comment
+// write its line-ending rule, and the one assertion this branch changes is that one, to the line
+// feeds pmdoc.LineFeeds stores.
+func TestACommentOfLoneCarriageReturnsIsStoredWithLineFeeds(t *testing.T) {
 	f := newDecisionFixture(t)
 	before := f.stored(t)
 	body := "Which one?\r\r- REST: the platform's own\r- gRPC: streaming\r"
+	want := "Which one?\n\n- REST: the platform's own\n- gRPC: streaming\n"
 	created := createThreadComment(t, f.handler, f.issue, map[string]any{"body": body}, "alice")
 
 	read := decodeBody[commentRead](t, dispatchRequest(t, f.handler,
 		http.MethodGet, "/api/v1/comments/"+created.ID, nil, "alice"))
-	if read.Comment.Body != body {
-		t.Fatalf("the stored comment reads back %q, want the %q it was written with", read.Comment.Body, body)
+	if read.Comment.Body != want {
+		t.Fatalf("the stored comment reads back %q, want the %q its carriage returns are stored as", read.Comment.Body, want)
 	}
 	if after := f.stored(t); after.IssueComments != before.IssueComments+1 || after.CommentRows != before.CommentRows+1 {
 		t.Fatalf("the store holds %+v, want the one comment more than the %+v it found", after, before)

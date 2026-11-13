@@ -2,7 +2,6 @@ package workflow
 
 import (
 	"context"
-	"fmt"
 	"strconv"
 	"testing"
 
@@ -15,14 +14,19 @@ import (
 
 // noGateMoves is how many moves back this proof drives: ten times the review round cap it runs
 // under, and six times the every of its hook, so a build that stopped the work at any count the
-// daemon keeps would stop it well before the last move.
-const noGateMoves = 30
+// daemon keeps would stop it well before the last move. noGateReviews is how many of them are a
+// review's request for changes, the one kind that opens a review round (recordRound), which is
+// what the cap reads.
+const (
+	noGateMoves   = 30
+	noGateReviews = noGateMoves / 5
+)
 
-// startWriteMark is when the issue's start row was last written: the number
-// record.Store.ReplaceOwedStart takes afresh every time it rewrites that row. It is what tells
-// the start one move wrote from the start of the move before it, which it replaces in place
-// while no lane has delivered it, since the row keeps the id that holds the issue's place in the
-// waiting line.
+// startWriteMark is when the issue's start row was last written: the number an insert of an
+// outbox row takes, which the start record.Store.EnqueueStart writes in place of the one the
+// issue owes takes afresh with it. It is what tells the start one move wrote from the start of
+// the move before it, which it takes out while no lane has delivered it, carrying that row's
+// creation time, which holds the issue's place in the waiting line.
 func startWriteMark(t *testing.T, pool *pgxpool.Pool, id int64) int64 {
 	t.Helper()
 	var mark int64
@@ -36,9 +40,10 @@ func startWriteMark(t *testing.T, pool *pgxpool.Pool, id int64) int64 {
 // work to the next role and the issue goes on.
 //
 // Thirty moves back are driven here, of five kinds, under a review round cap of 3 and a hook
-// that fires every 3 moves back, so both counts are far past their numbers from the fourth move
-// on. Every move is read as it is made: the issue stands in the phase the move hands the work
-// to, and the row the outbox would deliver is a start of that phase's role, written by this move
+// that fires every 3 moves back, so the hook's count is past its number from the third move back
+// on and the cap's from the twelfth move, which is the third review. Every move is read as it is
+// made: the issue stands in the phase the move hands the work to, and the row the outbox would
+// deliver is a start of that phase's role, written by this move
 // and runnable at once. A build that stopped or held the work at any count leaves a move whose
 // start is still the one before it, or an issue in held, and fails at the move it stopped at — a
 // proof that read only the last move could not tell a stop at move 7 from no stop at all.
@@ -52,10 +57,10 @@ func TestNoCountGatesTheWork(t *testing.T) {
 		Roles:  []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer},
 		Prompt: saySoFar})
 	now := engine.now()
-	seedWorkBackIssue(t, pool, "h0")
+	seedWorkBackIssue(t, pool, headOne)
 	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0, AdmittedAt: now})
 
-	head, reds, mark := "h0", 0, int64(0)
+	mark := int64(0)
 	for move := 1; move <= noGateMoves; move++ {
 		var kind string
 		var to phase.Phase
@@ -65,7 +70,7 @@ func TestNoCountGatesTheWork(t *testing.T) {
 			testerFails(t, pool, engine, strconv.Itoa(move))
 		case 2:
 			kind, to = "a review's request for changes", phase.Implementing
-			reviewerRequestsChanges(t, pool, engine, strconv.Itoa(move), head)
+			reviewerRequestsChanges(t, pool, engine, strconv.Itoa(move), headOne)
 		case 3:
 			kind, to = "the architect's move back to testing", phase.Testing
 			architectMovesBack(t, pool, engine, phase.Testing)
@@ -73,11 +78,8 @@ func TestNoCountGatesTheWork(t *testing.T) {
 			kind, to = "the architect's move back to the plan", phase.Planning
 			architectMovesBack(t, pool, engine, phase.Planning)
 		case 0:
-			reds++
-			kind, to = "a red CI verdict at the head", phase.Implementing
-			pushed := fmt.Sprintf("h%d", reds)
-			ciTurnsRed(t, pool, engine, phase.Reviewing, "needs_review", head, pushed, reds)
-			head = pushed
+			kind, to = "the merger's own move back to the reviewer", phase.Reviewing
+			mergerMovesBack(t, pool, engine)
 		}
 
 		switch got := issuePhase(t, pool); {
@@ -97,8 +99,8 @@ func TestNoCountGatesTheWork(t *testing.T) {
 				move, kind, written, mark)
 		}
 		mark = written
-		if start.role != RoleFor(to) || start.stands != to || start.task == "" {
-			t.Fatalf("move %d, %s, wrote the start %+v, want the %s's, carrying a task and naming the %s phase it is for", move, kind, start, RoleFor(to), to)
+		if start.role != phase.RoleFor(to) || start.stands != to || start.task == "" {
+			t.Fatalf("move %d, %s, wrote the start %+v, want the %s's, carrying a task and naming the %s phase it is for", move, kind, start, phase.RoleFor(to), to)
 		}
 		if !start.claimable {
 			t.Fatalf("move %d, %s, wrote a start no lane may run: %+v. The issue holds its admission slot, so there is nothing left for its start to wait for",
@@ -107,10 +109,13 @@ func TestNoCountGatesTheWork(t *testing.T) {
 	}
 
 	// What the two counts did while the work went on: both were told, and neither stopped
-	// anything. The cap's message went once, at the round that reached 3, and the hook fired on
-	// every third move back of the thirty.
-	if rounds := implementerRounds(t, pool); rounds != noGateMoves {
-		t.Fatalf("the implementer's row counts %d rounds, want the %d moves back this proof drove", rounds, noGateMoves)
+	// anything. The cap's message went once, at the review round that reached 3, and the hook
+	// fired on every third move back of the thirty.
+	if pass := implementerPass(t, pool); pass != noGateMoves {
+		t.Fatalf("the implementer's row counts %d passes, want the %d moves back this proof drove: every move back raises the pass, whatever kind it is", pass, noGateMoves)
+	}
+	if rounds, conflicts := implementerRounds(t, pool), implementerConflictRounds(t, pool); rounds != noGateReviews || conflicts != 0 {
+		t.Fatalf("the implementer's row counts %d review rounds of which %d conflict rounds, want the %d reviews of the thirty moves and no conflict round: a review that requested changes is what opens a round (recordRound)", rounds, conflicts, noGateReviews)
 	}
 	if posted := firingMessages(t, pool); len(posted) != noGateMoves/3 {
 		t.Fatalf("the hook fired %d times over %d moves back, want %d: it fires every 3, and the firings are no gate either", len(posted), noGateMoves, noGateMoves/3)

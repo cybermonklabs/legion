@@ -278,9 +278,16 @@ begin seed
 # both builds then read one corpus.
 target_url=$head_url
 actor='"actor":{"kind":"session","id":"alpha"}'
-call POST /api/v1/projects "{\"key\":\"SRCH\",\"name\":\"Search\",$actor}" >/dev/null ||
+# Every project names the person its unowned work lands on, and the agent bearer acts for nobody,
+# so this build refuses its create naming no default_assignee (400 INVALID_PROJECT) or naming
+# somebody who has not signed in (400 ASSIGNEE_NOT_ALLOWED). The person signs in at this build's
+# dev sign-in first, which records them in `people`; the projects stay the session's writes.
+search_owner=search-owner@example.com
+sign_in "$search_owner" || fail "this build did not sign $search_owner in"
+assignee="\"default_assignee\":\"$search_owner\""
+call POST /api/v1/projects "{\"key\":\"SRCH\",\"name\":\"Search\",$assignee,$actor}" >/dev/null ||
   fail "this build refused the project SRCH"
-call POST /api/v1/projects "{\"key\":\"ALFA\",\"name\":\"Alfa\",$actor}" >/dev/null ||
+call POST /api/v1/projects "{\"key\":\"ALFA\",\"name\":\"Alfa\",$assignee,$actor}" >/dev/null ||
   fail "this build refused the project ALFA"
 # Both projects' next issue is 1042, so one bare number names an issue of each and
 # number_project is what decides which of them the page meant. One statement moves both, as the

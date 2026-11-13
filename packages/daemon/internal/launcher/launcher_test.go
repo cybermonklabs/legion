@@ -579,6 +579,13 @@ type fleet struct {
 // requireRoleNamespaces first.
 func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Helper()
+	return newFleetOf(t, Config{StopGrace: grace}, roles...)
+}
+
+// newFleetOf is newFleet of a launcher that carries cfg's own fields (its stop grace, its
+// leak-check directory) besides the fields every fleet's launcher is given.
+func newFleetOf(t *testing.T, cfg Config, roles ...string) *fleet {
+	t.Helper()
 	scratch := namespaceScratch(t)
 	f := &fleet{
 		t: t, rolesDir: filepath.Join(scratch, "roles"), home: filepath.Join(scratch, "home"),
@@ -614,11 +621,10 @@ func newFleet(t *testing.T, grace time.Duration, roles ...string) *fleet {
 	t.Cleanup(func() { _ = listener.Close() })
 	ctx, cancel := context.WithCancel(context.Background())
 	f.cancel = cancel
+	cfg.Connect, cfg.Sandbox, cfg.PodUID = "tcp://"+listener.Addr().String(), "legion-legion-legion-208", "pod-1"
+	cfg.RolesDir, cfg.Roles, cfg.Stdout, cfg.Stderr = f.rolesDir, roles, f.stderr, f.stderr
 	go func() {
-		f.result <- Run(ctx, Config{
-			Connect: "tcp://" + listener.Addr().String(), Sandbox: "legion-legion-legion-208", PodUID: "pod-1",
-			RolesDir: f.rolesDir, Roles: roles, Stdout: f.stderr, Stderr: f.stderr, StopGrace: grace,
-		})
+		f.result <- Run(ctx, cfg)
 	}()
 	t.Cleanup(func() {
 		cancel()

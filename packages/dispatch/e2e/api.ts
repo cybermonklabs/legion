@@ -443,6 +443,18 @@ export function recordCheckResult(
   return post("/api/v1/issues/{key}/results", { body: input, params: { key: issue } }, options);
 }
 
+/** `POST /api/v1/results/{id}/retract`: one recorded result marked wrong, with the reason it
+ *  is wrong. The result is neither updated nor deleted, and the retraction is a record of its
+ *  own. The seeded agent is the session that recorded the result, which is one of the three
+ *  callers the route admits. */
+export function retractCheckResult(
+  id: string,
+  input: Body<"/api/v1/results/{id}/retract", "post">,
+  options: ApiOptions = { as: "agent" }
+) {
+  return post("/api/v1/results/{id}/retract", { body: input, params: { id } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/results`: the checks of the issue's Verification document in
  *  document order, each with the results recorded against it. */
 export function getIssueResults(issue: string, options: ApiOptions = {}) {
@@ -600,6 +612,12 @@ export function createIssueArtifact(
   options: ApiOptions = {}
 ) {
   return post("/api/v1/issues/{key}/artifacts", { body: input, params: { key: issue } }, options);
+}
+
+/** `GET /api/v1/issues/{key}/artifacts`: every artifact the issue holds, as the Documents tab's
+ *  own `["artifacts", key]` read lists them, each with its role and its versions. */
+export function listIssueArtifacts(issue: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/artifacts", { params: { key: issue } }, options);
 }
 
 export function getProjectArtifact(project: string, slug: string, options: ApiOptions = {}) {
@@ -1071,7 +1089,9 @@ export function putArchitectureSource(
   );
 }
 
-/** Names the person a project's unowned new issues fall to, or clears it with `assignee: null`. */
+/** Moves the person a project's unowned new issues fall to, and whom a question on an issue
+ *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
+ *  blank is refused `400 INVALID_PROJECT`, so nothing here clears a default. */
 export function putProjectDefaultAssignee(
   project: string,
   input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
@@ -1084,7 +1104,8 @@ export function putProjectDefaultAssignee(
   );
 }
 
-/** Every project that names a default assignee, as the Settings page reads them. */
+/** Every project with the person it defaults to, as the Settings page reads them: each project
+ *  names somebody, so none is left out. */
 export function listProjectDefaultAssignees(options: ApiOptions = {}) {
   return get("/api/v1/settings/project-default-assignees", {}, options);
 }

@@ -42,8 +42,11 @@ export const ISSUE = "TEST-1";
 export const ARTIFACT = "artifact-1";
 export const ASK = "approval-1";
 
-const agent: Actor = { kind: "session", id: "session-a" };
-const human: Actor = { kind: "user", id: "alice" };
+// Every actor below goes into a frame's payload, and a frame states the kind it carries rather
+// than the plain string the route's own read of an actor allows, so each literal states its kind
+// and `satisfies Actor` holds the rest of it to the shape an actor has.
+const agent = { kind: "session", id: "session-a" } as const satisfies Actor;
+const human = { kind: "user", id: "alice" } as const satisfies Actor;
 const SUMMARY = "Proposes a nightly export.";
 const OPTIONS: AskOption[] = [
   { label: "Approve", description: "Approve this version of the document." },
@@ -61,27 +64,28 @@ function question(version: number, summary: string): string {
 
 /** The approval ask an `ask.*` event carries since #1671: `version` is the document version it
  * names, `requestedVersion` the version last handed to the human. */
-export function approvalAsk(version: number, requestedVersion: number, summary = SUMMARY): Ask {
+export function approvalAsk(version: number, requestedVersion: number, summary = SUMMARY) {
   return {
     id: ASK,
     issue_key: ISSUE,
     artifact_id: null,
     block_id: null,
     author: agent,
-    kind: "approval",
+    kind: "approval" as const,
     question: question(version, summary),
     options: OPTIONS,
     multiple: false,
-    urgency: "high",
+    urgency: "high" as const,
     anchor: null,
-    state: "open",
+    state: "open" as const,
     answer: null,
     opened_event_id: 1,
     created_at: recordedAt(1),
     edited_at: null,
     // The person this ask waits on, who handed it there and when: null on an ask nobody has
     // handed on, which is what these fixtures are. An empty asked_of waits on the issue's
-    // assignee, and every ask read carries all three.
+    // assignee, else, on an issue nobody holds, on the project's default assignee, and every ask
+    // read carries all three.
     asked_of: null,
     asked_of_by: null,
     asked_of_at: null,
@@ -90,14 +94,18 @@ export function approvalAsk(version: number, requestedVersion: number, summary =
       name: "spec.md",
       version,
       requested_version: requestedVersion,
-      // Null for a request covering this document alone; the server lists the others only
-      // when it covers more than one (model.AskApproval.Documents).
-      documents: null,
+      // The frame carries the list the request names, one entry per document it covers, and the
+      // four fields above repeat its first entry (model.AskApproval): a request covering this
+      // document alone names that document alone. Only the route's read of an approval leaves
+      // the list nilable.
+      documents: [
+        { artifact_id: ARTIFACT, name: "spec.md", version, requested_version: requestedVersion },
+      ],
     },
-  };
+  } satisfies Ask;
 }
 
-function recorded(seq: number, actor: Actor) {
+function recorded(seq: number, actor: ApprovalHistoryEvent["actor"]) {
   return {
     id: seq,
     issue_key: ISSUE,
@@ -233,7 +241,7 @@ export function approved(seq: number, version: number): ApprovalHistoryEvent[] {
 
 /** The decision block `block` in `artifact` (the request's document unless named), as the ask
  * Dispatch indexed from it. */
-export function blockAsk(block: string, artifact = ARTIFACT): Ask {
+export function blockAsk(block: string, artifact = ARTIFACT) {
   return {
     id: `block-ask-${block}`,
     issue_key: ISSUE,
@@ -245,13 +253,13 @@ export function blockAsk(block: string, artifact = ARTIFACT): Ask {
       primary: artifact === ARTIFACT,
     },
     author: agent,
-    kind: "question",
+    kind: "question" as const,
     question: "Should the export run nightly or hourly?",
     options: [{ label: "Nightly" }, { label: "Hourly" }],
     multiple: false,
-    urgency: "high",
+    urgency: "high" as const,
     anchor: null,
-    state: "open",
+    state: "open" as const,
     answer: null,
     opened_event_id: 1,
     created_at: recordedAt(1),
@@ -259,7 +267,7 @@ export function blockAsk(block: string, artifact = ARTIFACT): Ask {
     asked_of: null,
     asked_of_by: null,
     asked_of_at: null,
-  };
+  } satisfies Ask;
 }
 
 /** The human answers the decision block `block` in the request's document. */

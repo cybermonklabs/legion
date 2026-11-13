@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/writingcheck"
@@ -420,23 +419,31 @@ func (s *server) getWritingCheckCounts(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, counts)
 }
 
-// writingCheckSweepLease names the lease the daily sweep of writing_check_events runs under.
-const writingCheckSweepLease = "writing-check-events"
+// writingCheckSweepInterval is how often each process sweeps writing_check_events.
+const writingCheckSweepInterval = 24 * time.Hour
 
 // RunWritingCheckEventSweep deletes the writing_check_events rows older than
-// store.WritingCheckRetention once a day, under writingCheckSweepLease, so one process sweeps a
-// day however many serve the database. The first pass runs at start. It stops when ctx is done.
-func RunWritingCheckEventSweep(ctx context.Context, database *store.Store, leases duty.Leases) {
-	duty.RunLeased(ctx, leases, writingCheckSweepLease, 24*time.Hour, duty.TickAtStart, func(ctx context.Context) {
+// store.WritingCheckRetention once a day, the first pass at start, on the store's own pool. It
+// takes no lease: the pass is one idempotent delete by age, so every process runs it and a second
+// process's pass the same day deletes what the first left, which is nothing, and the sweep holds
+// no connection of the lease pool. It stops when ctx is done.
+func RunWritingCheckEventSweep(ctx context.Context, database *store.Store) {
+	ticker := time.NewTicker(writingCheckSweepInterval)
+	defer ticker.Stop()
+	for {
 		deleted, err := database.SweepWritingCheckEvents(ctx)
-		if err != nil {
+		switch {
+		case err != nil && ctx.Err() == nil:
 			slog.Warn("dispatch: writing check event sweep failed", "error", err)
-			return
-		}
-		if deleted > 0 {
+		case deleted > 0:
 			slog.Info("dispatch: swept writing check events past their retention", "deleted", deleted)
 		}
-	})
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 // addedMarkdownBlocks is the Markdown of the blocks of next that previous does not hold, compared

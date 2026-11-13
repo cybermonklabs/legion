@@ -6,7 +6,9 @@ GET /api/v1/agents/{session_id}/artifacts/{slug} any
 GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number} any
 GET /api/v1/agents/{session_id}/messages any
 POST /api/v1/agents/{session_id}/messages any
+DELETE /api/v1/artifacts/{id} any
 GET /api/v1/artifacts/{id} any
+PATCH /api/v1/artifacts/{id} any
 POST /api/v1/artifacts/{id}/approval-requests any
 GET /api/v1/artifacts/{id}/asks any
 POST /api/v1/artifacts/{id}/asks any
@@ -113,6 +115,7 @@ GET /api/v1/issues/{key}/summary any
 GET /api/v1/limits any
 GET /api/v1/machine-logins any
 POST /api/v1/machine-logins/{id}/revoke any
+POST /api/v1/markdown/round-trip any
 GET /api/v1/me/agent-tokens any
 POST /api/v1/me/agent-tokens any
 DELETE /api/v1/me/agent-tokens/{id} any
@@ -161,6 +164,7 @@ POST /api/v1/projects/{key}/related any
 GET /api/v1/references any
 GET /api/v1/references/questions any
 GET /api/v1/related-checks any
+POST /api/v1/results/{id}/retract any
 GET /api/v1/schema/blocks public
 GET /api/v1/search any
 GET /api/v1/search/coverage any

@@ -3,6 +3,7 @@ import { chmod, mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   type Cleanup,
+  deliveryFor,
   messageStream,
   ompRoot,
   type Request,
@@ -134,12 +135,17 @@ async function runSession(options: {
         urgency: "med",
         advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
       });
-    // The Envoy listener: registration and any read answer with an interest.
+    // The Envoy listener: registration and any read answer with an interest, and a registration
+    // is answered the consumer the listener gave the session (`deliveryFor`), as every stand-in
+    // listener of this repository answers one: the client refuses a registration answered no
+    // delivery, which would leave this session's Envoy inbound unavailable.
+    const id = typeof body.session_id === "string" ? body.session_id : "";
     return Response.json({
-      session_id: typeof body.session_id === "string" ? body.session_id : "",
+      session_id: id,
       machine_id: "askgate-machine",
       dir: workspace,
       topics: [],
+      ...deliveryFor(url.pathname, body, id),
     });
   });
   await writeStandinProfile(home, base, options.config ?? []);
@@ -342,6 +348,16 @@ test.skipIf(omp === undefined && !onActions)(
       port: 0,
       async fetch(request) {
         const route = new URL(request.url).pathname;
+        // The upload reads two things before it posts: the issue's own documents, so it can refuse
+        // a name the issue already carries, and the store's round trip of the markdown, so it can
+        // refuse text the store would change. An empty list and the text as given let it through.
+        if (request.method === "GET" && route === "/api/v1/issues/DSP-1/artifacts") {
+          return Response.json([]);
+        }
+        if (request.method === "POST" && route === "/api/v1/markdown/round-trip") {
+          const sent = (await request.json()) as { markdown?: string };
+          return Response.json({ markdown: sent.markdown });
+        }
         if (request.method === "POST" && route === "/api/v1/issues/DSP-1/artifacts") {
           const file = (await request.formData()).get("file");
           uploads.push(file instanceof Blob ? await file.text() : "");

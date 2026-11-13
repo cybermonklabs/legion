@@ -140,6 +140,9 @@ type testServerOptions struct {
 	// writingCheckOff runs the server with the writing check turned off, for a test about the
 	// server with the check off.
 	writingCheckOff bool
+	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
+	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
+	buildCommit string
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -272,6 +275,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
 		WritingCheck:           writingCheck,
+		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)
@@ -1999,6 +2003,10 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)
 	}
+	// A session cookie is issued at sign-in, and a sign-in records the person (people.Record, as
+	// the sign-in callback does), so alice is somebody who has signed in: a project she creates
+	// defaults to her, and that default is held to the people table like every other.
+	seedPeople(t, database, "alice@d.example")
 	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie("alice@d.example", generation, testSigningKey, true))
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)

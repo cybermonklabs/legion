@@ -85,6 +85,8 @@ var settingsEmitted = map[string]string{
 	"Config.ProductionCheckBound":                    "production_check_hours",
 	"Config.PodUpdateRetask":                         "pod_update_retask_hours",
 	"Config.PodUpdateNotice":                         "pod_update_notice_hours",
+	"Config.WorkerSilence":                           "worker_silence_minutes",
+	"Config.WorkerBackground":                        "worker_background_hours",
 	"Config.PodUpdateMaxOpenRounds":                  "pod_update_max_open_rounds",
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
@@ -141,16 +143,12 @@ var settingsEmitted = map[string]string{
 	"PluginsConfig.PiLegion":                         "runtime.kubernetes.plugins.pi_legion",
 	"PluginsConfig.PiEnvoy":                          "runtime.kubernetes.plugins.pi_envoy",
 	"ProviderKey.Env":                                "provider_keys[]",
-	"Project.MergeQueueRole":                         "projects.<KEY>.merge_queue_role",
-	"Project.Merge":                                  "projects.<KEY>.merge",
 	"Project.SlackChannels":                          "projects.<KEY>.slack_channels",
 	"Project.Memory":                                 "projects.<KEY>.memory",
 	"Project.ProductionCheck":                        "projects.<KEY>.production_check",
 	"Memory.Mode":                                    "projects.<KEY>.memory.mode",
 	"Memory.ConfigFiles":                             "projects.<KEY>.memory.config_files",
 	"Memory.InstructionsPath":                        "projects.<KEY>.memory.instructions",
-	"MergeRules.ByHand":                              "projects.<KEY>.merge.by_hand",
-	"PathPattern.Expression":                         "projects.<KEY>.merge.by_hand[]",
 	"Gates.Design":                                   "gates.design",
 	"GitHubApps.Implement":                           "github_apps.implement",
 	"GitHubApps.Review":                              "github_apps.review",
@@ -191,7 +189,6 @@ var settingsExcluded = map[string]string{
 	"PodConfig.VolumeMounts":          "runtime.kubernetes.pod: Kubernetes API types",
 	"PodConfig.ServiceAccount":        "runtime.kubernetes.pod: the operator's ServiceAccount, which every pod runs as and reads from its own spec",
 	"Kubernetes.PluginsFromBinary":    "derived: where the settled plugins pair came from, not a setting",
-	"PathPattern.Regexp":              "compiled from Expression, not a setting",
 	"Config.Warnings":                 "not a setting: the loader's own lines for the operator about a key the file still sets and this daemon no longer reads, the warned keys among them (config.warnedKeys), which `legion start` logs and `--check-config` prints",
 	"Project.CommitIssueTrailerRepos": "a deployment's own repositories, named by a route that authenticates nobody (GET /legion/v1/state)",
 	"Config.StallLimits":              "derived: the three LEGION_STALL_* numbers this daemon's own environment sets, which it passes to every session; no legion.yaml key names them",
@@ -311,8 +308,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit",
 		"worker_wakes_per_minute", "worker_wake_burst", "envoy_url", "nats_urls",
 		"dispatch_url", "projects", "gates", "github_apps", "linger_hours", "production_check_hours",
-		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
-		"pod_update_rounds_per_minute", "review_round_cap",
+		"pod_update_retask_hours", "pod_update_notice_hours", "worker_silence_minutes",
+		"worker_background_hours",
+		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
 		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
 		"hooks",
 	}
@@ -339,7 +337,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
-		"merge_queue_role", "merge", "slack_channels", "memory", "production_check", "deploys",
+		"slack_channels", "memory", "production_check", "deploys",
 	})
 
 	// (c) Nothing planted reaches the wire, and no key of a credential's shape does either.
@@ -384,12 +382,6 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	}
 	if settings.Runtime.Kubernetes.SessionStore != "postgres" {
 		t.Errorf("session_store = %q, want postgres", settings.Runtime.Kubernetes.SessionStore)
-	}
-	if want := []string{"^deploy/", `\.sql$`}; !slices.Equal(settings.Projects["WIDGETS"].Merge.ByHand, want) {
-		t.Errorf("projects.WIDGETS.merge.by_hand = %q, want %q", settings.Projects["WIDGETS"].Merge.ByHand, want)
-	}
-	if settings.Projects["WIDGETS"].MergeQueueRole != "merge-queue" {
-		t.Errorf("projects = %+v, want WIDGETS's merge queue role", settings.Projects)
 	}
 	// The project that names no `production_check` shows the default role, and the one that turns
 	// the check off shows that word, never the empty string the role takes for off.

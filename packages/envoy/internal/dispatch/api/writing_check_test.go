@@ -417,6 +417,9 @@ func proseRouteCases() []proseRouteCase {
 		}, http.StatusCreated},
 		{"POST /api/v1/issues/{key}/results", "run", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/results" },
 			field("run", "check", "no-such-check", "role", "tester", "commit", strings.Repeat("a", 40), "verdict", "pass")), 0},
+		{"POST /api/v1/results/{id}/retract", "reason", session(post, func(writingCheckFixture) string {
+			return "/api/v1/results/01234567-0000-4000-8000-0000000000aa/retract"
+		}, field("reason")), 0},
 		{"POST /api/v1/issues/{key}/messages", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/issues/" + f.issue + "/messages" }, field("body")), http.StatusCreated},
 		{"POST /api/v1/messages/{id}/reply", "body", session(post, func(f writingCheckFixture) string { return "/api/v1/messages/" + f.message + "/reply" }, field("body", "attempt", 1)), 0},
 		{"POST /api/v1/agents/{session_id}/messages", "body", token(http.MethodPost, func(writingCheckFixture) string { return "/api/v1/agents/s-reader/messages" }, field("body", "delivery", "btw")), 0},

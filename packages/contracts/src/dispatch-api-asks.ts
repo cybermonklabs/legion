@@ -1,0 +1,454 @@
+import { z } from "zod";
+import type {
+  AskAnswer,
+  AskEditPrevious,
+  AskEditWithTrees,
+  AskResolution,
+  AskWithTrees,
+} from "./dispatch-api.generated";
+import {
+  ActorActSchema,
+  ActorSchema,
+  AnchorSchema,
+  anchorFields,
+  anchorPositionFields,
+  InboundBySchema,
+  InboundWriterSchema,
+} from "./dispatch-api-core";
+import { AskApprovalDocumentSchema } from "./dispatch-api-documents";
+import { type IssueRouteReach, issueFields } from "./dispatch-api-issues";
+import { ASK_TURNS } from "./dispatch-api-limits";
+import { referenceChangesFields, threadLoginsFields } from "./dispatch-api-refs";
+import { ASK_URGENCIES } from "./dispatch-tools";
+
+/**
+ * The ask: the row every ask read answers with, the lists it appears in, and the payloads of
+ * every `ask.*` event. Each payload is `z.output` of the schema beside it, and each inbound
+ * reading is that schema with the keys, the optionality and the open strings a bus frame needs.
+ */
+
+export const AskKindSchema = z.enum(["question", "approval"]);
+
+export type AskKind = z.output<typeof AskKindSchema>;
+
+export const askOptionFields = {
+  /** The part this option is stored as: the block `dispatch://<key>/ask/<ask id>#b-<id>` names,
+   *  pinned to the ask's `revision` with `@v<N>`. Read-only, and carried by every read that shows
+   *  an ask's options; absent on a write's own answer, and while the ask's parts are not indexed
+   *  yet. A write that sends it back has it ignored: no caller mints or moves a part id. */
+  id: z.string().optional(),
+  label: z.string(),
+  description: z.string().optional(),
+};
+
+export const AskOptionSchema = z.strictObject(askOptionFields).readonly();
+
+export type AskOption = z.output<typeof AskOptionSchema>;
+
+export const askAnswerFields = {
+  /** The part the ask's current answer is stored as, read as an option's `id` is and never
+   *  written by a caller; a superseded answer, which no part of the ask holds, carries none. */
+  id: z.string().optional(),
+  user: z.string(),
+  selected: z.array(z.string()),
+  text: z.string().nullable(),
+  at: z.string(),
+  /** The agent that answered for the person `user` names, absent where the person answered
+   *  themselves. Whether the answer can carry an approval is read from its `scopes`. */
+  act: ActorActSchema.optional(),
+};
+
+export const AskAnswerSchema = z.strictObject(askAnswerFields).readonly();
+
+export const askResolutionFields = {
+  /** `withdrawn` is written by the server alone, when the ask's issue is closed; no caller can
+   *  resolve an ask with it, and reopening the issue opens the ask again. `declined` is a
+   *  person's own act, written by `POST /api/v1/asks/{id}/decline` alone: they chose not to
+   *  answer the question, so the ask closes with no answer. */
+  kind: z.enum(["retracted", "resolved", "withdrawn", "declined"]),
+  reason: z.string(),
+  /** What Dispatch wrote beside a decline for the asking agent, kept apart from `reason`, which
+   *  is the person's own note. Written on a `declined` resolution alone. */
+  dispatch_words: z.string().optional(),
+  actor: ActorSchema,
+  at: z.string(),
+};
+
+export const AskResolutionSchema = z.strictObject(askResolutionFields).readonly();
+
+export const askEditPreviousFields = {
+  question: z.string(),
+  options: z.array(AskOptionSchema),
+  multiple: z.boolean(),
+  urgency: z.enum(ASK_URGENCIES),
+};
+
+export const AskEditPreviousSchema = z.strictObject(askEditPreviousFields).readonly();
+
+/** One recorded rewording of an ask: what the question was before this edit, who edited, when. */
+export const AskEditSchema = z
+  .strictObject({ previous: AskEditPreviousSchema, edited_by: ActorSchema, at: z.string() })
+  .readonly();
+
+/** One recorded rewording as the route table holds it (`AskEditWithTrees`), with the content it
+ *  replaced back to the shape the bus payload carries. */
+export type AskEdit = Omit<AskEditWithTrees, "previous"> & { readonly previous: AskEditPrevious };
+
+export const askAnchorArtifactFields = {
+  project: z.string(),
+  slug: z.string(),
+  name: z.string(),
+  primary: z.boolean(),
+};
+
+export const AskAnchorArtifactSchema = z.strictObject(askAnchorArtifactFields).readonly();
+
+export type AskAnchorArtifact = z.output<typeof AskAnchorArtifactSchema>;
+
+export const AskBlockArtifactSchema = z
+  .strictObject({ id: z.string(), slug: z.string(), primary: z.boolean() })
+  .readonly();
+
+export type AskBlockArtifact = z.output<typeof AskBlockArtifactSchema>;
+
+export const AskLastReplySchema = z
+  .strictObject({ author: ActorSchema, created_at: z.string() })
+  .readonly();
+
+export const InboxDocumentSchema = z
+  .strictObject({ project: z.string(), slug: z.string(), name: z.string() })
+  .readonly();
+
+export type InboxDocument = z.output<typeof InboxDocumentSchema>;
+
+/** The approval an approval request follows: the version a human approved, when (RFC 3339 UTC,
+ *  the review's `created_at`) and who. */
+export const AskApprovalApprovedSchema = z
+  .strictObject({ version: z.number().int(), at: z.string(), by: ActorSchema })
+  .readonly();
+
+/** What an approval ask names: `documents`, one entry per document the request covers, each at
+ *  the version it names. A request opened on a spec with `include_verification` names the spec
+ *  and the issue's Verification document; every other request names one. A document's
+ *  `requested_version` is the version of it the agent last handed to the human; a lower value
+ *  means the agent is revising the moved request. `approved` names the first document's newest
+ *  approval when the request was opened, so a request to approve again says which approval it
+ *  follows; it is absent on a request for a document nobody has approved. A version move
+ *  re-encodes the whole approval, so it survives unchanged.
+ *
+ *  `artifact_id`, `name`, `version` and `requested_version` repeat `documents[0]`, the document
+ *  the request was opened on, so a client that reads one document reads that one. `documents` is
+ *  absent from a Dispatch older than the list. */
+export const AskApprovalSchema = z
+  .strictObject({
+    artifact_id: z.string(),
+    name: z.string(),
+    version: z.number().int(),
+    requested_version: z.number().int(),
+    approved: AskApprovalApprovedSchema.optional(),
+    documents: z.array(AskApprovalDocumentSchema).optional(),
+  })
+  .readonly();
+
+export const askFields = {
+  ...anchorPositionFields,
+  id: z.string(),
+  issue_key: z.string().nullable(),
+  artifact_id: z.string().nullable().optional(),
+  /** The source typed block; null for asks created outside a document. */
+  block_id: z.string().nullable().optional(),
+  /** The document named by `anchor`, present on ask reads and ask events. */
+  anchor_artifact: AskAnchorArtifactSchema.optional(),
+  /** The document that contains a typed ask block. */
+  block_artifact: AskBlockArtifactSchema.optional(),
+  author: ActorSchema,
+  /** `approval` asks are server-created document reviews; a `question`'s asker chooses its
+   *  options. */
+  kind: AskKindSchema,
+  question: z.string(),
+  options: z.array(AskOptionSchema),
+  multiple: z.boolean(),
+  urgency: z.enum(ASK_URGENCIES),
+  anchor: AnchorSchema.nullable(),
+  state: z.enum(["open", "answered", "resolved"]),
+  answer: AskAnswerSchema.nullable(),
+  resolution: AskResolutionSchema.optional(),
+  /** The canonical event ID of this ask's opening turn. */
+  opened_event_id: z.number().int().positive(),
+  created_at: z.string(),
+  /** Batches the current inbound graph-edge count for ask-list surfaces. */
+  referenced_by_count: z.number().int().optional(),
+  /** The current revision of the ask's parts: the number a reference to one of them pins
+   *  (`dispatch://<key>/ask/<id>#b-<part>@v<N>`). Batched beside the part ids of the options and
+   *  the answer, so it is absent on a write's own answer and while the ask's parts are not indexed
+   *  yet, where no revision can be pinned. */
+  revision: z.number().int().positive().optional(),
+  issue: z
+    .strictObject({
+      key: issueFields.key,
+      title: issueFields.title,
+      assignee: issueFields.assignee,
+    })
+    .readonly()
+    .optional(),
+  document: InboxDocumentSchema.optional(),
+  /** Inbox rows, the issue detail's `open_asks` and the issue ask list: the newest reply in the
+   *  ask's thread, or null when nobody has replied. Who spoke last; whose turn it is comes from
+   *  `waiting_on`. Absent on every other ask read. */
+  last_reply: AskLastReplySchema.nullable().optional(),
+  /** The three stored fields of a hand-on, carried by every ask read and by every ask payload as
+   *  the row carries them: whom the ask waits on, who handed it there and when. `asked_of` is
+   *  null until somebody hands the ask on, and a null one waits on the assignee of its issue,
+   *  else, while the issue holds nobody or the ask stands on a project document, on the default
+   *  assignee of its project, which every project names; a hand-on back to the issue's assignee
+   *  nulls it again and still writes `asked_of_by` and `asked_of_at`, so an ask card can say who
+   *  gave it back.
+   *
+   *  `waiting_on_person` - the person the server resolved the ask to, `asked_of`, else the
+   *  issue's assignee, else the project's default assignee - is deliberately absent: it is
+   *  read-time only, as `waiting_on` is, and this object is the base of the strict payload
+   *  schema, which Dispatch never writes it on. */
+  asked_of: z.string().nullable(),
+  asked_of_by: z.string().nullable(),
+  asked_of_at: z.string().nullable(),
+  /** Whose reply an open ask needs next. A moved approval request stays with its agent while
+   *  `requested_version` is below `version`; a hand-back (`ask.handed_back`) returns it to the
+   *  human until a reply newer than the one it answered decides it by its `turn`. Present on every
+   *  open-ask read (inbox rows, ask lists, the ask detail, the issue detail's `open_asks`); absent
+   *  on closed asks and on `ask.*` event payloads. */
+  waiting_on: z.enum(ASK_TURNS).optional(),
+  edited_at: z.string().nullable(),
+  /** Present only on a server-created approval ask. */
+  approval: AskApprovalSchema.optional(),
+  /** The document `approval.artifact_id` names, hydrated live like `anchor_artifact` and
+   *  `block_artifact`: its current slug and primary flag, not a snapshot from when the request
+   *  opened. Present only alongside `approval`. */
+  approval_artifact: AskAnchorArtifactSchema.optional(),
+};
+
+export const AskSchema = z.strictObject(askFields).readonly();
+
+/** The ask row without the trees a dashboard read carries: the body the route table holds
+ *  (`AskWithTrees`) with each shaped field back to the shape the bus payload carries. One family,
+ *  so an `Ask` is an `AskWithTrees` wherever one is wanted and the zod schemas above stay the
+ *  reading of a frame rather than a second spelling of the row. */
+export type Ask = Omit<AskWithTrees, "question_tree" | "options" | "answer" | "resolution"> & {
+  readonly options: AskOption[] | null;
+  readonly answer: AskAnswer | null;
+  readonly resolution?: AskResolution;
+};
+
+/** Whom besides the followers a person's answer and replies on an ask reach, as every ask read
+ *  carries it: the single-ask read (`AskRead`) and each list row's thread (`AskThread`).
+ *
+ *  The inherited `route_status` and `route_holder` are the issue reads' `IssueRouteReach` for
+ *  `route`, resolved per read from one listener read and stored nowhere: `route_holder` is the
+ *  live session `route` reaches right now (the routed session while the Envoy listener lists it,
+ *  or the session holding the role), so a reader can count each session once (the claimant may be
+ *  the same session). `route_status` tells a route nobody holds (`no_holder`) from one Dispatch
+ *  cannot judge because the listener is unconfigured or did not answer (`unknown`); both leave
+ *  `route_holder` null. Both are null when there is no route, and on a project document's ask. */
+export interface AskReach extends IssueRouteReach {
+  /** The session holding the claim on the ask's issue: a person's answer and replies on the ask
+   *  reach it (Dispatch's claimant route) as well as the route and the followers. Null while
+   *  nobody or a person holds the claim, and on a project document's ask, which has no issue. */
+  readonly claimant: string | null;
+  /** The ask's issue's route (`session:<id>` or `role:<name>`): a person's answer and replies on
+   *  the ask reach that session or role holder as well as the claimant and the followers. Null
+   *  when the issue has no route, and on a project document's ask. */
+  readonly route: string | null;
+}
+
+/**
+ * A session that receives an ask's answer, edits, resolution, and replies on its own
+ * agent topic: the asker, every session that replied, and any session a human added.
+ * A session may leave (or rejoin) only itself; a human may add or remove any session.
+ */
+export const AskFollowerSchema = z
+  .strictObject({ session_id: z.string(), since: z.string() })
+  .readonly();
+
+/** Every `ask.*` event payload is the ask row, flat, plus what the write moved in the reference
+ *  graph. `restored` is true on the `ask.opened` or `ask.answered` settlement appends when an edit
+ *  restores a decision block it retracted: the ask returns to the state it had, and no one answered
+ *  anything new. A restore the release before Dispatch kept the mark writes - every one already in
+ *  the event log, and one written during a rollout or an image rollback - carries no mark, so a
+ *  missing `restored` does not prove an event is a new answer. `thread_logins` (the ask's own
+ *  thread) is carried by `ask.opened`, `ask.answered` and `ask.resolved`; on `ask.asked_of` it
+ *  is the two people the hand-on moved the ask between instead, since no reader of the thread
+ *  changes list there. */
+export const askEventPayloadFields = {
+  ...askFields,
+  ...referenceChangesFields,
+  ...threadLoginsFields,
+  restored: z.boolean().optional(),
+};
+
+export const WrittenAskEventPayloadSchema = z.strictObject(askEventPayloadFields).readonly();
+
+export type AskEventPayload = z.output<typeof WrittenAskEventPayloadSchema>;
+
+/** An `ask.answered` payload. `previous_answer` is present when the answer replaced an earlier
+ *  one; the asker and every follower receive it as they received the first. */
+export const AskAnsweredEventPayloadSchema = z
+  .strictObject({ ...askEventPayloadFields, previous_answer: AskAnswerSchema.optional() })
+  .readonly();
+
+export type AskAnsweredEventPayload = z.output<typeof AskAnsweredEventPayloadSchema>;
+
+export const WrittenAskEditEventPayloadSchema = z
+  .strictObject({
+    ...askEventPayloadFields,
+    previous: AskEditPreviousSchema,
+    edited_by: ActorSchema,
+    /** A version move of an approval request that follows an earlier move since the request was
+     *  opened or last handed back: before this move, its `requested_version` was already below the
+     *  version it named. The payload's `approval.version` is the version after the move, so the
+     *  first move satisfies `requested_version < version` too and is not quiet. A quiet move changes
+     *  only the version the request names, so its event, like a human's unnamed `artifact.version`,
+     *  carries `notify: false` and reaches no follower. Absent on every other edit, the first move
+     *  after an opening or a hand-back included, even when a thread reply left the request waiting
+     *  on its agent. */
+    quiet: z.literal(true).optional(),
+  })
+  .readonly();
+
+export type AskEditEventPayload = z.output<typeof WrittenAskEditEventPayloadSchema>;
+
+/**
+ * The fields a reader of the bus makes of an `ask.*` payload: the ones Dispatch clients render,
+ * each optional because an event retained from before a field existed carries none.
+ *
+ * `kind` stays an open string: JetStream retains `ask.*` envelopes for 72 h, so a renderer may
+ * still see a kind the server no longer writes (the removed `action`). The outbound `AskKind`
+ * stays narrow.
+ */
+const inboundAskEventPayloadFields = {
+  id: askFields.id.optional(),
+  opened_event_id: askFields.opened_event_id,
+  kind: z.string().optional(),
+  question: askFields.question.optional(),
+  // An option and the answer carry the part id of the block each is stored as, and the payload the
+  // ask's part revision, as every other read of the ask carries them; a payload the ask has moved
+  // past carries no id, and one of an ask whose parts are not indexed yet no revision either.
+  options: z
+    .array(z.object({ id: askOptionFields.id, label: askOptionFields.label.optional() }))
+    .optional(),
+  revision: askFields.revision,
+  answer: z
+    .object({
+      id: askAnswerFields.id,
+      selected: askAnswerFields.selected.nullish(),
+      text: askAnswerFields.text.optional(),
+    })
+    .nullish(),
+  previous_answer: z
+    .object({
+      user: askAnswerFields.user.optional(),
+      selected: askAnswerFields.selected.nullish(),
+      text: askAnswerFields.text.optional(),
+      at: askAnswerFields.at.optional(),
+    })
+    .nullish(),
+  restored: askEventPayloadFields.restored,
+  anchor: z
+    .object({
+      quote: anchorFields.quote.optional(),
+      mark_id: anchorFields.mark_id.optional(),
+      block_id: anchorFields.block_id.optional(),
+    })
+    .passthrough()
+    .nullish(),
+  anchor_artifact: z
+    .object({
+      project: askAnchorArtifactFields.project.optional(),
+      slug: askAnchorArtifactFields.slug.optional(),
+      name: askAnchorArtifactFields.name.optional(),
+      primary: askAnchorArtifactFields.primary.optional(),
+    })
+    .optional(),
+  resolution: z
+    .object({
+      // The kind is a plain string rather than the list of kinds the server writes today
+      // (`askResolutionFields.kind`), for the reason the ask's own `kind` is one: this object
+      // strips what it does not declare, so a closed list would make the next kind cost every
+      // older reader the whole card, and the kind is the part a reader prints first.
+      kind: z.string().optional(),
+      reason: askResolutionFields.reason.optional(),
+      // `dispatch_words` is declared for the same reason the other way round: a reader keeps
+      // only the parts its schema names, so the words Dispatch writes beside a decline reach
+      // only a reader built with this change, and they stay apart from `reason`, the person's
+      // own note.
+      dispatch_words: askResolutionFields.dispatch_words,
+      // The resolver of a frame retained from an earlier release may name neither kind nor id.
+      actor: z
+        .object({ kind: z.string().optional(), id: z.string().optional() })
+        .passthrough()
+        .optional(),
+      at: askResolutionFields.at.optional(),
+    })
+    .nullish(),
+  // The three stored fields of a hand-on, as the row carries them: whom the ask waits on, who
+  // handed it there and when. A frame retained from before the hand-on existed carries none of
+  // them, so each is read as optional as well as nullable. `waiting_on_person` is deliberately
+  // absent: it is read-time only (the ask row never stores it), as `waiting_on` is, and this
+  // object keeps only the keys it declares, so a payload that somehow carried it would reach no
+  // reader with it.
+  asked_of: askFields.asked_of.optional(),
+  asked_of_by: askFields.asked_of_by.optional(),
+  asked_of_at: askFields.asked_of_at.optional(),
+  thread_logins: threadLoginsFields.thread_logins,
+};
+
+export const AskEventPayloadSchema = z.intersection(
+  z.object(inboundAskEventPayloadFields),
+  z.object({
+    previous: z.never().optional(),
+    edited_by: z.never().optional(),
+  })
+);
+
+/**
+ * What a reader of the bus makes of an `ask.edited` payload: the ask fields above plus the
+ * rewording, with `urgency` an open string for the same reason `kind` is one.
+ */
+export const AskEditEventPayloadSchema = z.object({
+  ...inboundAskEventPayloadFields,
+  multiple: askFields.multiple,
+  urgency: z.string(),
+  edited_at: askFields.edited_at.optional(),
+  previous: z.object({
+    question: askEditPreviousFields.question,
+    options: z.array(z.object({ label: askOptionFields.label.optional() })),
+    multiple: askEditPreviousFields.multiple,
+    urgency: z.string(),
+  }),
+  edited_by: InboundWriterSchema,
+});
+
+/** `ask.edited` carries an `AskEditEventPayload`, under the name the event type spells: one
+ *  payload, two spellings. This alias is the name every reader of the bus already imports. */
+export const AskEditedEventPayloadSchema = AskEditEventPayloadSchema;
+
+// AskFollowerEventPayload is the wire payload of ask.follower_added and
+// ask.follower_removed: which session joined or left which ask, and who did it. The
+// removed event also reaches the removed session's own topic directly.
+export const askFollowerEventPayloadFields = {
+  ask_id: z.string(),
+  session_id: z.string(),
+  by: ActorSchema,
+};
+
+export const WrittenAskFollowerEventPayloadSchema = z
+  .strictObject(askFollowerEventPayloadFields)
+  .readonly();
+
+export type AskFollowerEventPayload = z.output<typeof WrittenAskFollowerEventPayloadSchema>;
+
+/** What a reader of the bus makes of an `ask.follower_added` or `ask.follower_removed` payload:
+ *  every field optional, and the writer read as a frame may carry it. */
+export const AskFollowerEventPayloadSchema = z.object({
+  ask_id: askFollowerEventPayloadFields.ask_id.optional(),
+  session_id: askFollowerEventPayloadFields.session_id.optional(),
+  by: InboundBySchema.optional(),
+});

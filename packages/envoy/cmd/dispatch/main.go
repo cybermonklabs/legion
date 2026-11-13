@@ -47,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/startup"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/texttreefill"
 	"github.com/sjawhar/envoy/internal/envconf"
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -501,6 +502,7 @@ func main() {
 		WebDistDir:     webDistDir,
 		AssetStore:     dashboard.NewStore(database.Pool),
 		DashboardEntry: dashboardBuild.Entry,
+		BuildCommit:    buildCommit,
 		People:         people,
 		Sessions:       sessions,
 		Identity:       requestIdentity,
@@ -584,10 +586,13 @@ func main() {
 	//     the server process registry (processes.RunPrune, every minute, which joinRegistry starts
 	//     below), the keyed writes' maintenance sweep (api.RunMaintenanceSweep, every minute), the
 	//     document compaction sweep (docs.Service.RunCompactionSweep, every hour from a tick at
-	//     start, with or without NATS) and the writing check's event sweep
-	//     (api.RunWritingCheckEventSweep, every day from a tick at start), each recording its
-	//     passes in duty_passes like the timers above; each tick sends its statements whether or
-	//     not anything is owed.
+	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
+	//     from a tick at start, whose first pass of a display parser version runs until every
+	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
+	//     above; each tick sends its statements whether or not anything is owed. The writing
+	//     check's event sweep (api.RunWritingCheckEventSweep, every day from a tick at start)
+	//     polls too, with no lease and no duty_passes row: its pass is one delete by age, which
+	//     every process may run.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -639,7 +644,7 @@ func main() {
 	met := metrics.New()
 	outboxPublishFailures := met.NewCounter(
 		"envoy_dispatch_outbox_publish_failures_total",
-		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the answer never came: the role holder's receipt, or, for a holder whose entry an earlier listener stored with a port, the stream's acknowledgement of the stored copy) or failed (every other failure)",
+		"Destinations of an outbox publish attempt that were not reached, by reason: denied (the server refused the send under the connection's own publish permissions), refused (NATS refuses it however often it is retried), unanswered (NATS took the forward and the stream did not acknowledge the copy it stored, which is the whole of a forward's answer) or failed (every other failure)",
 	)
 	// The holds beside the failures: a role-routed event whose holder is not answering is waiting
 	// for that session, with nothing sent and nothing failed, so it is counted here rather than
@@ -772,6 +777,11 @@ func main() {
 	// dropped from one - fold within an hour of coming due, whether or not NATS is configured
 	// (INFRA-593).
 	go documentService.RunCompactionSweep(ctx, leases)
+	// Every stored text written before INFRA-635 stored display trees, and every stored text at
+	// all after a deploy raises pmdoc.DisplayTreeVersion, gets its tree without waiting for a
+	// reader to open it; the same pass drops the trees of every version before the two newest,
+	// which is what lets a rolling deploy and a rollback read each other's rows.
+	go texttreefill.Run(ctx, database.Pool, leases)
 	// Each document's edit notice goes once its quiet window after a person's last
 	// settled version ends, as one artifact.human_edited event; the window is a row, so a notice
 	// still pending when this process stops is sent by the next sweep of either process. The sweep
@@ -901,10 +911,11 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, leases, background.ResumeDeliveries)
-	// The writing check's decisions past their 90 days, once a day across the processes under
-	// the writing-check-events lease, the first pass at start. It runs whether the check is on or
-	// off, so rows a deployment wrote before it turned the check off still age out.
-	go api.RunWritingCheckEventSweep(ctx, database, leases)
+	// The writing check's decisions past their 90 days, once a day in every process, the first
+	// pass at start, with no lease: the delete by age is the same whichever process runs it. It
+	// runs whether the check is on or off, so rows a deployment wrote before it turned the check
+	// off still age out.
+	go api.RunWritingCheckEventSweep(ctx, database)
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
