@@ -1106,9 +1106,9 @@ function remedyFor(limit: WallClockLimit): string {
  *  with. */
 function waitingRemedy(limit: WallClockLimit): string {
   return (
-    `state \`rowLimit(...)\` naming the bounded children the ${limit.kind} waits for - as its ` +
-    "own limit, or as the file's `setDefaultTimeout` - so the limit is read from their bounds, " +
-    "fires after theirs and moves when they move."
+    `state \`rowLimit(...)\` naming the bounded children and the polls the ${limit.kind} waits ` +
+    "for - as its own limit, or as the file's `setDefaultTimeout` - so the limit is read from " +
+    "their bounds, fires after theirs and moves when they move."
   );
 }
 
@@ -1123,9 +1123,9 @@ function shortOfBound(limit: WallClockLimit, total: number | undefined): string 
   return (
     `${total} ms, and waits for ${limit.waitsFor.join(" and ")}, under the \`${limit.bound}\` ` +
     `bound of ${bounds[limit.bound]} ms: the ${limit.kind} needs \`rowLimit("${limit.bound}")\`, ` +
-    `${needed} ms, at the least, or its own clock fires before that child's bound and the ` +
-    `failure names no child. Name in \`rowLimit(...)\` every bounded child the ${limit.kind} ` +
-    "waits for, so the limit is read from their bounds."
+    `${needed} ms, at the least, or its own clock fires before the bound of that child or poll ` +
+    `and the failure names neither. Name in \`rowLimit(...)\` every bounded child and every poll ` +
+    `the ${limit.kind} waits for, so the limit is read from their bounds.`
   );
 }
 

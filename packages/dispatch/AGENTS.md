@@ -2750,7 +2750,10 @@ run with `bun` against any Dispatch under a bearer (`--url`, `--token-file`, `--
 wait to open, `LIVE_SOCKET_SILENT_MS` unless given, and that first connection, when it does not
 open by then or is refused, ends the probe with exit 1, while a later one is dialled again): it
 writes one JSON line per frame, applies each with the page's own `applyDelta` and `applyRevs`,
-and reconnects and resumes as `api/live-socket.ts` does. `POST /api/v1/live/_test/disconnect`
+and reconnects and resumes as `api/live-socket.ts` does.
+It writes an `end` line, `{ at, type: "end" }`, when `--minutes` is up, and none when a signal, a
+refusal or a failure ends the watch.
+`POST /api/v1/live/_test/disconnect`
 closes its socket as a restart would, and `POST /api/v1/live/_test/rotate` exercises a 4001
 rotation. With `--compare`, the probe reads the GET routes for the last window it applied and
 writes whether the pull request ids, run ids and every measure are equal, exiting 1 when one does

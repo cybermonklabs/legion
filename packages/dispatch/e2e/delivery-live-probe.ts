@@ -9,9 +9,9 @@
  *    has not opened by then fails the watch, and a first connection that is refused or closed
  *    fails it at once. A later connection that is refused or never opens is dialled again.
  *  - After the first open, `--minutes` counted from that open, which ends the watch cleanly and
- *    writes an `end` line. The `open` and `end` lines read one clock, so `end.at - open.at` is
- *    the watch's length and never less than `--minutes`. A reconnect's open does not count it
- *    again.
+ *    writes an `end` line. The first `open` line and the `end` line read one clock, so the `end`
+ *    line's `at` less the first `open` line's `at` is the watch's length and never less than
+ *    `--minutes`. A reconnect's open does not count it again.
  *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
  *    (4001), up to `RECONNECT_SPREAD_MS` (2 s) after Dispatch's restart close (1012), and up to
  *    30 s with backoff after any other close. `--minutes` ends the watch during that delay as
@@ -484,28 +484,29 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   liveUrl.protocol = options.url.protocol === "https:" ? "wss:" : "ws:";
   let held: ProbeHeld | null = null;
   let socket: WebSocket | null = null;
-  let opened = false;
   let attempt = 0;
   let lastFrameAt = 0;
   let cancelReconnect: (() => void) | undefined;
   // Armed at the first dial for `--open-within`, which fails the watch; the first open arms it
   // again for `--minutes` from then, which ends the watch cleanly.
   let timer: Timer | undefined;
-  // The first open, by the clock its `open` line and the `end` line both read.
-  let openedAt = 0;
+  // The first open, by the clock its `open` line and the `end` line both read; undefined until
+  // that open.
+  let openedAt: number | undefined;
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();
   const fail = (reason: string) => ended.resolve(new Error(reason));
   const stop = () => ended.resolve(undefined);
-  // `--minutes` is up only once that much of this clock has passed since the first open; a timer
-  // that fires early is armed again for what is left.
-  const timeUp = () => {
-    const left = openedAt + options.minutesMs - Date.now();
+  // `--minutes` is up only once that much of this clock has passed since the first open, at
+  // `from`; a timer that fires early is armed again for what is left.
+  const timeUp = (from: number) => {
+    const at = Date.now();
+    const left = from + options.minutesMs - at;
     if (left > 0) {
-      timer = setTimeout(timeUp, left);
+      timer = setTimeout(timeUp, left, from);
       return;
     }
-    write({ at: now(), type: "end" });
+    write({ at: new Date(at).toISOString(), type: "end" });
     stop();
   };
 
@@ -578,12 +579,11 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     next.addEventListener("open", () => {
       if (socket !== next) return;
       const at = Date.now();
-      if (!opened) {
+      if (openedAt === undefined) {
         clearTimeout(timer);
         openedAt = at;
-        timer = setTimeout(timeUp, options.minutesMs);
+        timer = setTimeout(timeUp, options.minutesMs, at);
       }
-      opened = true;
       lastFrameAt = at;
       write({ at: new Date(at).toISOString(), resume: held?.seq ?? null, type: "open" });
       next.send(JSON.stringify(subscribeFrame()));
@@ -598,7 +598,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
-    if (!opened) {
+    if (openedAt === undefined) {
       write({ at: now(), code, reason, retry_ms: null, type: "close" });
       fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
       return;
@@ -623,7 +623,13 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   // After the first open, a socket that carried no frame for three heartbeats is dead without
   // knowing it: replace it. Before the first open, `--open-within` judges the dial.
   const silence = setInterval(() => {
-    if (!opened || socket === null || Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS) return;
+    if (
+      openedAt === undefined ||
+      socket === null ||
+      Date.now() - lastFrameAt <= LIVE_SOCKET_SILENT_MS
+    ) {
+      return;
+    }
     const silent = socket;
     socket = null;
     const reason = `no frame for ${LIVE_SOCKET_SILENT_MS / 1000} s`;

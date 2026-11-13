@@ -26,6 +26,7 @@ import type {
 import type {
   ProbeCloseLine,
   ProbeCompareLine,
+  ProbeEndLine,
   ProbeHeld,
   ProbeLine,
   ProbeOpenLine,
@@ -188,13 +189,17 @@ function runProbeToEnd(args: readonly string[]) {
   });
 }
 
-/** The `open` lines of the probe's whole stdout. */
-function opensOf(stdout: string): ProbeOpenLine[] {
+/** Every line of the probe's whole stdout, each the JSON object it writes on one line. */
+function linesOf(stdout: string): ProbeLine[] {
   return stdout
     .split("\n")
     .filter((line) => line !== "")
-    .map((line) => JSON.parse(line) as ProbeLine)
-    .filter((line): line is ProbeOpenLine => line.type === "open");
+    .map((line) => JSON.parse(line) as ProbeLine);
+}
+
+/** The `open` lines of the probe's whole stdout. */
+function opensOf(stdout: string): ProbeOpenLine[] {
+  return linesOf(stdout).filter((line): line is ProbeOpenLine => line.type === "open");
 }
 
 function args(dispatch: { readonly url: string }, token = TOKEN, minutes = "1"): string[] {
@@ -529,6 +534,10 @@ test(
     expect(run.code).toBe(1);
     expect(dispatch.upgrades).toEqual(["Bearer not-the-token"]);
     expect(run.stderr).toContain("Dispatch refused the connection to ws://127.0.0.1:");
+    expect(
+      linesOf(run.stdout).filter((line) => line.type === "end"),
+      "the probe wrote an end line when Dispatch refused its connection"
+    ).toEqual([]);
   },
   rowLimit("short")
 );
@@ -553,50 +562,30 @@ test(
     expect(run.stderr).toContain(
       "Dispatch refused the view: INVALID_QUERY: window is wider than 84 days"
     );
+    expect(
+      linesOf(run.stdout).filter((line) => line.type === "end"),
+      "the probe wrote an end line when Dispatch refused its view"
+    ).toEqual([]);
   },
   rowLimit("short")
 );
 
-test(
-  "the watch ends on its own after --minutes",
-  async () => {
-    const dispatch = probeDispatch({ onSubscribe() {} });
-    // 0.01 minutes is 600 ms of the probe's own clock, in another process, which no fake timer
-    // here reaches. A reading taken here once the process has ended counts its exit and the drain
-    // of its pipes as watch, so the row below reads the watch's length from the probe's own
-    // `open` and `end` lines. This row holds that the watch ends by itself, cleanly, on one open.
-    const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
-    expect(run.code).toBe(0);
-    expect(opensOf(run.stdout)).toHaveLength(1);
-    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
-  },
-  rowLimit("short")
-);
-
-// RED TEST of the testing phase, dispatch://INFRA-3082, 2026-11-13. `--minutes` is the length of
-// the watch from its socket's first open, so the probe's own clock must say when the watch ended:
-// a reading the test takes after the process has exited and its pipes have drained counts that
-// time as watch. Measured in this issue's pod on 2026-11-13, a probe that stopped 540 ms after its
-// open passed the row above 4 of 5 times under six busy loops. The probe writes an `end` line
-// when its watch stops, and that line's time comes no sooner than `--minutes` after its open.
+// `--minutes` counts from the first open, and the row reads the probe's own `open` and `end` lines.
 test(
   "the probe's own end line comes no sooner than --minutes after its open",
   async () => {
     const dispatch = probeDispatch({ onSubscribe() {} });
     const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
     expect(run.code).toBe(0);
-    const written = run.stdout
-      .split("\n")
-      .filter((line) => line !== "")
-      .map((line) => JSON.parse(line) as { readonly at: string; readonly type: string });
-    const opens = written.filter((line) => line.type === "open");
-    const ends = written.filter((line) => line.type === "end");
+    const opens = opensOf(run.stdout);
+    const ends = linesOf(run.stdout).filter((line): line is ProbeEndLine => line.type === "end");
     expect(opens).toHaveLength(1);
     expect(ends, "the probe wrote no end line when its watch stopped").toHaveLength(1);
     expect(
       Date.parse(ends[0].at) - Date.parse(opens[0].at),
       "the probe's own clock says its watch ended before 600 ms had passed since its open"
     ).toBeGreaterThanOrEqual(600);
+    expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
   },
   rowLimit("short")
 );
@@ -634,8 +623,9 @@ function heldDispatch(holdMs: number) {
 // still gets its whole watch. The Dispatch here holds the upgrade for 2.5 s from the moment the
 // probe asks for it, so the open comes at least 2.5 s after the dial, well past the 600 ms of
 // `--minutes 0.01`, however fast the pod runs the probe. The row reads from the probe's own
-// `open` line that the open came after the hold was let go, and proves the watch still
-// subscribes, and still ends on its own with exit 0.
+// `open` line that the open came after the hold was let go, and from its `end` line that the
+// watch ran at least 600 ms past that open; and it proves the watch still subscribes, and still
+// ends on its own with exit 0.
 test(
   "the watch subscribes and ends on its own when its socket opens late",
   async () => {
@@ -643,9 +633,15 @@ test(
     const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
     expect(run.code).toBe(0);
     const opens = opensOf(run.stdout);
+    const ends = linesOf(run.stdout).filter((line): line is ProbeEndLine => line.type === "end");
     expect(dispatch.released).toHaveLength(1);
     expect(opens).toHaveLength(1);
     expect(Date.parse(opens[0].at)).toBeGreaterThanOrEqual(dispatch.released[0]);
+    expect(ends, "the probe wrote no end line when its late-opening watch stopped").toHaveLength(1);
+    expect(
+      Date.parse(ends[0].at) - Date.parse(opens[0].at),
+      "the probe's own clock says its late-opening watch ended before 600 ms had passed since its open"
+    ).toBeGreaterThanOrEqual(600);
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
   },
   rowLimit("short")
@@ -670,6 +666,10 @@ test(
       argv.push("--open-within", "1");
       const run = await runProbeToEnd(argv);
       expect(run.code).toBe(1);
+      expect(
+        linesOf(run.stdout).filter((line) => line.type === "end"),
+        "the probe wrote an end line when its socket never opened"
+      ).toEqual([]);
     } finally {
       silent.stop(true);
     }
