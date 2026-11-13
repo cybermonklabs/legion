@@ -50,7 +50,10 @@ func systemPath(path string) string { return filepath.Join(roleSystemRoot, path)
 // (roleCoverFor), role-init carries it (RoleInitConfig), every sweep's deleter is given it
 // (trimDeleteLaunch, VolumeTrimDelete), one table registers its flags on both command lines and
 // writes them back out (roleCoverFlags), and both namespaces are built from the paths it names
-// (RoleCover.replaced). So a directory added to it is one edit.
+// (RoleCover.replaced). What the one table guarantees is that both command lines write and read
+// the same directories. A directory added to it is still several edits: its field here, its row
+// of roleCoverFlags, its value in roleCoverFor and in the probe's cover (CheckRoleNamespaces),
+// and its row of RoleCover.replaced.
 type RoleCover struct {
 	RolesDir   string `json:"rolesDir"`
 	Home       string `json:"home"`
@@ -175,6 +178,10 @@ type roleReplacement struct {
 	// from is where a roleBound is bound from: the role's own directory under the roles
 	// directory, or its own directory under the role-homes directory.
 	from func(role, homes string) string
+	// inHomes is a roleBound whose source is role-init's own directory under the role-homes
+	// directory, which role-init makes before it binds it (prepareRoleNamespace). Every other
+	// source is under the roles directory, where the pod mounts it.
+	inHomes bool
 	// carried holds every mount strictly under path — an operator's volume under /tmp, say —
 	// aside and binds it back on top of what the role is given there (carryOver).
 	carried bool
@@ -187,8 +194,12 @@ type roleReplacement struct {
 // replaces with something of the role's, in the order role-init makes them: every bind whose
 // source is under the roles directory before the cover goes over it, and the namespace's own
 // /proc last. prepareRoleNamespace walks this list to build a role's namespace and
-// containDeletions walks it to build the deleter's, so neither holds a list of its own and a
-// path added here is given to a role and covered for the deleter in one edit.
+// containDeletions walks it to build the deleter's, so neither holds a list of its own. A
+// temporary(...) path added here is given to a role and covered for the deleter in one edit:
+// role-init makes its source under the role-homes directory. A fixed(...) path also needs the
+// volume the pod mounts at its source under each role's directory (runtime/sandbox/podkind.go,
+// launcherContainer), since role-init refuses a required source it cannot find; the probe makes
+// that source from this list (CheckRoleNamespaces).
 //
 // Every path in it is a directory. The one name a role's namespace replaces that is not —
 // /dev/ptmx, which opens into the role's own pseudo-terminals — is left to the kind that replaces
@@ -204,7 +215,7 @@ func (c RoleCover) replaced() []roleReplacement {
 	}
 	temporary := func(path, own string) roleReplacement {
 		return roleReplacement{
-			path: systemPath(path), kind: roleBound, carried: true,
+			path: systemPath(path), kind: roleBound, carried: true, inHomes: true,
 			from: func(_, homes string) string { return filepath.Join(homes, own) },
 		}
 	}
@@ -366,11 +377,16 @@ func CheckRoleNamespaces(dir string, shim ...string) error {
 		Role: role, Generation: 1, Argv: shim,
 	}
 	// Every path of the probe's own layout a role's namespace replaces, which the image lays out
-	// for a role and dir holds for the probe: a path added to that list is made here too. The
-	// image's own paths, which lie outside dir, are the machine's.
+	// for a role and dir holds for the probe, and the source of every required bind of that list
+	// under the roles directory, which the pod mounts for a role: a path or a bind added to that
+	// list is made here too. The sources under the role-homes directory role-init makes itself
+	// (inHomes), and the image's own paths, which lie outside dir, are the machine's.
 	dirs := cfg.requiredUnder(dir)
-	for _, name := range []string{RoleGHDir, RolePrivateDir, RoleStateDir} {
-		dirs = append(dirs, filepath.Join(cfg.RolesDir, role, name))
+	own, homes := filepath.Join(cfg.RolesDir, role), filepath.Join(cfg.RolesDir, RoleHomesDir, role)
+	for _, replaced := range cfg.replaced() {
+		if replaced.kind == roleBound && !replaced.optional && !replaced.inHomes {
+			dirs = append(dirs, replaced.from(own, homes))
+		}
 	}
 	for _, path := range dirs {
 		if err := os.MkdirAll(path, 0o755); err != nil {

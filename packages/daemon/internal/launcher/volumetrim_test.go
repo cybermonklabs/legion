@@ -1852,24 +1852,34 @@ func (f *trimFixture) oldestDirectory() *fixtureEntry {
 // placeProcess puts one more process into a /proc a case has already built, naming one path
 // through its working directory: the cases below need a process that appears while a sweep is
 // running, and the six entries it could appear through are driven one at a time above.
-func placeProcess(t *testing.T, proc string, pid int, cwd string) {
+func placeProcess(t *testing.T, proc string, pid int, cwd string) int {
 	t.Helper()
+	// The used-path reader passes over its own process (readUsedPaths, pid == self), and self is
+	// this test binary's real pid, so a fake process given that number would be read as the
+	// trimmer itself and skipped. A pod that has run for a while hands the test binary pids in
+	// the very ranges these cases stage, which made the two-hundred-process case count 199 about
+	// once a run on 2026-11-13. A fake process never takes the test's own number.
+	if pid == os.Getpid() {
+		pid += 100000
+	}
 	dir := filepath.Join(proc, strconv.Itoa(pid))
 	mkdirFixture(t, dir)
 	if err := os.Symlink(cwd, filepath.Join(dir, "cwd")); err != nil {
 		t.Fatal(err)
 	}
+	return pid
 }
 
 // placeRefusedProcess puts in a process whose /proc the kernel refuses, staged as a regular file
 // where the fd directory belongs, which refuses every reader including root (writeProcFixture's
-// fdIsFile).
-func placeRefusedProcess(t *testing.T, proc string, pid int, cwd string) {
+// fdIsFile). It answers the pid it placed, which placeProcess may have moved off the test's own.
+func placeRefusedProcess(t *testing.T, proc string, pid int, cwd string) int {
 	t.Helper()
-	placeProcess(t, proc, pid, cwd)
+	pid = placeProcess(t, proc, pid, cwd)
 	if err := os.WriteFile(filepath.Join(proc, strconv.Itoa(pid), "fd"), nil, 0o644); err != nil {
 		t.Fatal(err)
 	}
+	return pid
 }
 
 // A process that starts using an entry after the sweep has begun still protects it: the
@@ -2166,7 +2176,7 @@ func TestTheSweepDeletesThroughTheDirectoriesItListedAndNotThroughLinksPutInThei
 func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 	t.Run("on the first read of the sweep", func(t *testing.T) {
 		f := newTrimFixture(t, 3)
-		placeRefusedProcess(t, f.proc, 5101, filepath.Join(f.root, "scratch"))
+		refused := strconv.Itoa(placeRefusedProcess(t, f.proc, 5101, filepath.Join(f.root, "scratch")))
 		f.useVolume(steady(90))
 		f.setSettings(trimSettings())
 
@@ -2176,8 +2186,8 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 		if out.deletions != 0 || len(f.gone()) != 0 {
 			t.Errorf("the sweep deleted %d entries after a refused first read of /proc, want none", out.deletions)
 		}
-		if len(out.refused) != 1 || !strings.Contains(out.refused[0], "5101") {
-			t.Errorf("the sweep reported the refusals %v, want exactly the process 5101 this case made unreadable", out.refused)
+		if len(out.refused) != 1 || !strings.Contains(out.refused[0], refused) {
+			t.Errorf("the sweep reported the refusals %v, want exactly the process %s this case made unreadable", out.refused, refused)
 		}
 		if !strings.Contains(out.reason, "refused") {
 			t.Errorf("the sweep stopped because %q, want the refusal named", out.reason)
@@ -2191,12 +2201,13 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 		f := newTrimFixture(t, 6)
 		first := f.oldestFirst()[0]
 		placed := false
+		var refused string
 		f.clock.setHook(func(clock *fakeClock) {
 			if placed || f.exists(first.path) {
 				return
 			}
 			placed = true
-			placeRefusedProcess(t, f.proc, 5202, filepath.Join(f.root, "scratch"))
+			refused = strconv.Itoa(placeRefusedProcess(t, f.proc, 5202, filepath.Join(f.root, "scratch")))
 			clock.advance(volumeUsedPathsMaxAge + time.Millisecond)
 		})
 		f.useVolume(steady(90))
@@ -2214,8 +2225,8 @@ func TestARefusedProcReadStopsTheSweepAndNamesTheProcess(t *testing.T) {
 		if out.deletions >= len(f.entries) {
 			t.Errorf("the sweep deleted all %d entries, want it to stop at the first entry boundary after the refusal", out.deletions)
 		}
-		if len(out.refused) != 1 || !strings.Contains(out.refused[0], "5202") {
-			t.Errorf("the sweep reported the refusals %v, want the process 5202 named", out.refused)
+		if len(out.refused) != 1 || !strings.Contains(out.refused[0], refused) {
+			t.Errorf("the sweep reported the refusals %v, want the process %s named", out.refused, refused)
 		}
 		if !strings.Contains(out.reason, "refused") {
 			t.Errorf("the sweep stopped because %q, want the refusal named", out.reason)

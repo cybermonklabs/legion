@@ -92,16 +92,14 @@ func prepareRoleNamespace(cfg RoleInitConfig) error {
 	if err := os.RemoveAll(stage); err != nil {
 		return fmt.Errorf("clear the role's stage: %w", err)
 	}
-	// The role's own directory of every path the list binds from under the role-homes directory
-	// (RoleCover.replaced), its temporary directories among them, so a path added to that list
-	// is given its directory here with no edit of this one.
+	// The role's own directory of every path the list binds from role-init's own directory under
+	// the role-homes directory (roleReplacement.inHomes, RoleCover.replaced), its temporary
+	// directories among them, so a path added to that list is given its directory here with no
+	// edit of this one.
 	dirs := []string{filepath.Join(homes, "upper"), work, stage}
 	for _, replaced := range cfg.replaced() {
-		if replaced.kind != roleBound {
-			continue
-		}
-		if own := replaced.from(role, homes); strings.HasPrefix(own, homes+string(filepath.Separator)) {
-			dirs = append(dirs, own)
+		if replaced.inHomes {
+			dirs = append(dirs, replaced.from(role, homes))
 		}
 	}
 	for _, dir := range dirs {

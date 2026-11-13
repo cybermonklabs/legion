@@ -71,12 +71,17 @@ import (
 // (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles, where the
 // image's own paths are a tree of the case's own, since nothing can plant a file in the
 // machine's /proc). The rest are covered because a role's namespace replaces them. That case
-// aims its link at every path of the list, each by its own name, so the recursion opens what the
-// deleter is shown there rather than stopping at the cover's mount point, and it reads every bait
-// back after each swap: a cover dropped from the list, or one that shows the container's own
-// files at its path, is that path's bait deleted and named. The fixed root's private mount point
-// bound onto itself in place of its cover turned it red at that path's own trial, on 2026-11-13,
-// kernel 4.19.0-gvisor, under go1.27.3.
+// aims its link at every path of the list, each by its own name but /proc, so the recursion opens
+// what the deleter is shown there rather than stopping at the cover's mount point, and it reads
+// every bait back after each swap: a cover dropped from the list, or one that shows the
+// container's own files at its path, is that path's bait deleted and named. At /proc the link
+// names a directory inside it instead (replacedBait.within, volumedeletecover_test.go): the
+// deleter's /proc is a procfs of its own, whose /proc/1/root and /proc/1/cwd name the deleter's
+// own root, so a removal let into it would go on into all the deleter sees. That the deleter
+// still deletes what the sweep lists with its own procfs over the image's /proc is
+// TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists. The fixed root's private mount
+// point bound onto itself in place of its cover turned the swap case red at that path's own
+// trial, on 2026-11-13, kernel 4.19.0-gvisor, under go1.27.3.
 //
 // Two were measured against the deleter before this change rather than against a cover of its
 // own: the container's /tmp, and the launcher's working directory reached through
