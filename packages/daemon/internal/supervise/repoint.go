@@ -3,6 +3,7 @@ package supervise
 import (
 	"context"
 	"errors"
+	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -80,13 +81,13 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // outside it (runtime.PodEndNotOurs): an eviction, a preemption, a node going down, or a delete no
 // act of the daemon's accounts for. Such an end is continued uncharged (displaced) and counted
 // (Budgets.PodEndsNotOurs). At launch_failure_limit such ends in a row, with no turn of the claim
-// completed between them (turnEnded resets the count, and so does the end of the task it was
-// counted against, retirePending), the end is charged as the claim's own death (died), and so is
-// every such end after it until the run is reset: a pod that uses more
-// memory than it requested can drive its own node into pressure, and that eviction carries the
-// same DisruptionTarget condition a neighbour's does. An outcome the daemon cannot read is
-// charged, and a claim that keeps ending its own pod that way is bounded as a crash loop is,
-// rather than relaunched for ever.
+// completed between them (turnEnded resets the count, and so do the end of the task it was
+// counted against, retirePending, and an agent that becomes ready with no work outstanding,
+// ready), the end is charged as the claim's own death (died), and so is every such end after it
+// until the run is reset: a pod that uses more memory than it requested can drive its own node
+// into pressure, and that eviction carries the same DisruptionTarget condition a neighbour's
+// does. An outcome the daemon cannot read is charged, and a claim that keeps ending its own pod
+// that way is bounded as a crash loop is, rather than relaunched for ever.
 //
 // One ended process is counted once, however often the runtime reports it gone, by the record
 // died keeps for the same purpose (Claim.DeathCharged): the report that counts the end writes
@@ -97,22 +98,37 @@ func (m *Machine) displaced(ctx context.Context, observation runtime.Observation
 // it (died states why). At the limit the charge is died's whole, so a second report of the end it
 // charged is died's second report and charged nothing more.
 //
-// An end that finds the claim with no work outstanding — no task held and no turn open, or an
-// agent that never became ready (workOutstanding) — is neither counted nor charged: it is
-// displaced as it always was, and the count stays where it stood. The rule is about work that
-// keeps ending its own pod, and a death is charged only while there is work for one to be charged
-// against (chargeDeath reads the same condition). A claim idle between assignments completes no
-// turn, so a count it could still raise would only grow, and a pod the cluster repacks once a
-// week would cost that claim a launch failure and a backoff from its third repacking on, for work
-// it was not doing.
+// An end that finds the claim's agent not yet ready (unready) is counted too, whether or not the
+// claim holds a task: the start the claim is making is the work such an end interrupts, and it is
+// the end died charges a launch failure for when the runtime reads it neither way
+// (relaunchAfterFailure). A pod's own start — the workspace's restore and six agents starting at
+// once in a Burstable pod — can drive its node into memory pressure, and that eviction carries
+// DisruptionTarget, so a start that keeps ending its own pod would otherwise be relaunched for
+// ever, holding a task it never reaches. At the limit such an end goes to died as any other does,
+// and died charges an agent not yet ready a launch failure rather than a death (chargeDeath reads
+// workOutstanding): the launch failures then bound the loop, and only a ready agent ends them.
+// The run is counted against that start, so an agent that becomes ready with no work outstanding
+// ends it there (ready): its start is over and nothing is left for the run to count against. One
+// that becomes ready holding its task keeps its run, which that task's completed turn or its end
+// resets.
 //
-// An end that is counted ends the turn it interrupted (Claim.LastTurnEnd), as a charged death
-// does (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is gone
-// and never ends it, so without that record every later end of the relaunched agent, idle with
-// nothing pending, would find the dead turn open and be counted against it. At the limit the
-// turn is left for died's charge to end, since that charge reads the same open turn.
+// An end that finds the agent ready with no work outstanding — no task held and no turn open
+// (workOutstanding) — is neither counted nor charged: it is displaced as it always was, and the
+// count stays where it stood. The rule is about work that keeps ending its own pod, and a death
+// is charged only while there is work for one to be charged against (chargeDeath reads the same
+// condition). A claim idle between assignments completes no turn, so a count it could still
+// raise would only grow, and a pod the cluster repacks once a week would cost that claim a launch
+// failure and a backoff from its third repacking on, for work it was not doing.
+//
+// An end counted on a ready agent ends the turn it interrupted (Claim.LastTurnEnd), as a charged
+// death does (chargeDeath), for the reason chargeDeath gives: the agent that turn belonged to is
+// gone and never ends it, so without that record every later end of the relaunched agent, idle
+// with nothing pending, would find the dead turn open and be counted against it. An agent not yet
+// ready was in no turn, so an end before its ready records none. At the limit the turn is left
+// for died's charge to end, since that charge reads the same open turn.
 func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Observation) error {
-	if !m.workOutstanding() {
+	starting := slices.Contains(unready, m.claim.State)
+	if !starting && !m.workOutstanding() {
 		return m.displaced(ctx, observation)
 	}
 	if !m.claim.DeathCharged {
@@ -120,11 +136,14 @@ func (m *Machine) endedFromOutside(ctx context.Context, observation runtime.Obse
 	}
 	if m.claim.Budgets.PodEndsNotOurs >= m.deps.Limits.LaunchFailures {
 		m.log.Warn("supervise: the claim's pod ended from outside it again with no turn completed since; charging this end as the claim's own death",
-			"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "limit", m.deps.Limits.LaunchFailures, "detail", observation.Detail)
+			"podEndsNotOurs", m.claim.Budgets.PodEndsNotOurs, "limit", m.deps.Limits.LaunchFailures,
+			"starting", starting, "detail", observation.Detail)
 		return m.died(ctx, observation)
 	}
 	m.claim.DeathCharged = true
-	m.claim.LastTurnEnd = m.deps.Clock.Now()
+	if !starting {
+		m.claim.LastTurnEnd = m.deps.Clock.Now()
+	}
 	return errors.Join(m.persist(ctx), m.displaced(ctx, observation))
 }
 

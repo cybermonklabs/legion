@@ -30,16 +30,19 @@ import (
 //     never by the relaunch itself — a claim that keeps acknowledging and never turning runs out.
 //   - PodEndsNotOurs: ends of the claim's pod in a row that the runtime read as made by something
 //     outside the pod (runtime.PodEndNotOurs), with no turn of the claim completed between them,
-//     counted only while the claim has work outstanding (workOutstanding), as Deaths is charged.
-//     Each such end is continued uncharged until this reaches the launch failure limit; from
-//     there every such end is charged as the claim's own death (died), until a turn completes
-//     (turnEnded) or the task it was counted against ends (retirePending, as Deaths does), either
-//     of which resets it. A pod that uses more memory than it requested can drive its own node
-//     into pressure, and the eviction that follows carries DisruptionTarget exactly as a
-//     neighbour's does, so the reading cannot tell the two apart; a claim whose work keeps ending
-//     its pod that way would otherwise be relaunched for ever, which is the outcome every other
-//     budget here exists to stop. It is durable, as the other four are, so a daemon restart
-//     between two such ends does not start the run again.
+//     counted while the claim's agent is not yet ready, and once it is ready only while the claim
+//     has work outstanding (workOutstanding), as Deaths is charged. Each such end is continued
+//     uncharged until this reaches the launch failure limit; from there every such end is charged
+//     as the claim's own death (died) — a launch failure for an agent not yet ready, a death for
+//     a ready one with work outstanding — until a turn completes (turnEnded), the task it was
+//     counted against ends (retirePending, as Deaths does), or the agent becomes ready with no
+//     work outstanding (ready), any of which resets it. A pod that uses more memory than it
+//     requested can drive its own node into pressure, a pod's start (the workspace's restore and
+//     six agents starting at once) as much as its work, and the eviction that follows carries
+//     DisruptionTarget exactly as a neighbour's does, so the reading cannot tell the two apart; a
+//     claim whose start or work keeps ending its pod that way would otherwise be relaunched for
+//     ever, which is the outcome every other budget here exists to stop. It is durable, as the
+//     other four are, so a daemon restart between two such ends does not start the run again.
 type Budgets struct {
 	LaunchFailures int
 	Deaths         int
@@ -166,9 +169,11 @@ func (m *Machine) chargeDeath() bool {
 
 // workOutstanding is whether the claim's agent was ready with work outstanding — a task, or a turn
 // of its that was open at the end (turnOpen) — which is the one state a death is charged in
-// (chargeDeath) and an end from outside the pod is counted in (endedFromOutside). Both budgets
-// bound work that keeps ending its own process, and a claim whose agent never became ready, or
-// that holds no task and has no turn open, has no work for such a loop to be about.
+// (chargeDeath): a process that ends before its agent is ready is a launch failure instead
+// (relaunchAfterFailure), and the death of an agent that holds no task and has no turn open is
+// the environment's, with no work for it to be about. An end from outside the pod is counted in
+// this state and before the agent is ready (endedFromOutside), and an agent that becomes ready
+// outside this state ends that count (ready).
 func (m *Machine) workOutstanding() bool {
 	if slices.Contains(unready, m.claim.State) {
 		return false

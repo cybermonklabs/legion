@@ -3,8 +3,9 @@ package sandbox
 // What the daemon reads about the cause of a pod's end (runtime.Observation.PodEnd): the reading
 // is captured where the informer delivers the end (capturePodEnd), because neither fact it rests
 // on survives the object leaving the store, and every claim of that pod carries it from there.
-// An end something outside the pod made is continued uncharged by the supervisor (its judge); an
-// end the daemon's own record names, and one of neither reading, are charged as they always were.
+// An end something outside the pod made is continued uncharged by the supervisor (its judge) until
+// such ends run out their count; an end the daemon's own record names, and one of neither reading,
+// are charged as they always were.
 
 import (
 	"context"
@@ -324,6 +325,39 @@ func TestAPodEvictedOverItsOwnLimitIsObservedAsNeitherReadingUnderADeletionTimes
 	}
 }
 
+// An eviction is the pod's own only where the DisruptionTarget condition is not on it, and
+// selfEvicted reads that condition itself, so it never agrees with disruption about a pod: an
+// eviction under node pressure carries the same `Evicted` reason a pod over its own limit gets,
+// and the condition is all that tells them apart. Read from the reason alone, selfEvicted would
+// call a neighbour's pressure the pod's own, and any order of capturePodEnd's cases that asked it
+// before disruption, or any other caller of it, would have every role of that pod charged.
+func TestAnEvictionIsThePodsOwnOnlyWithNoDisruptionTargetWhateverAsksFirst(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		reason     string
+		conditions []corev1.PodCondition
+		want       bool
+	}{
+		{name: "Evicted with no condition", reason: evictedReason, want: true},
+		{name: "Evicted with the condition not set true", reason: evictedReason,
+			conditions: []corev1.PodCondition{{Type: corev1.DisruptionTarget, Status: corev1.ConditionFalse}}, want: true},
+		{name: "Evicted under node pressure, a disruption target", reason: evictedReason,
+			conditions: []corev1.PodCondition{disruptionTarget("TerminationByKubelet")}},
+		{name: "a disruption target with no reason", conditions: []corev1.PodCondition{disruptionTarget("EvictionByEvictionAPI")}},
+		{name: "a reason that is none of the cluster's own", reason: "UnexpectedAdmissionError"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pod := &corev1.Pod{Status: endedPodStatus(tc.reason, tc.conditions...)}
+			if got := selfEvicted(pod); got != tc.want {
+				t.Errorf("selfEvicted = %v, want %v", got, tc.want)
+			}
+			if _, _, disrupted := disruption(pod); disrupted && selfEvicted(pod) {
+				t.Errorf("the pod is read both as a disruption and as evicted for its own use; the two must never both hold")
+			}
+		})
+	}
+}
+
 // A record of an end the daemon meant to make but never made — the Sandbox patched, the patch not
 // taking, the pod running on — must not answer for the pod's next genuine end: it would make that
 // end read as the daemon's own for ever after. The record stands for podEndRecordLife and no
@@ -372,9 +406,9 @@ func TestAnIntendedEndThatNeverCameExpiresSoTheNextDeathIsCharged(t *testing.T) 
 }
 
 // One line per pod end, not one per role: it names the pod, which of the two readings was made,
-// the reason the cluster gave, and every role of that pod the runtime watches — the roles the
-// supervisor continues uncharged. Both roles of this issue pod run in the one container, so both
-// are named by the one line their shared pod's end gets.
+// the reason the cluster gave, and every role of that pod the runtime watches, each of which the
+// end ended. Both roles of this issue pod run in the one container, so both are named by the one
+// line their shared pod's end gets.
 func TestOneLineNamesThePodTheReadingTheReasonAndEachRoleObserved(t *testing.T) {
 	logs := &lockedLog{}
 	g := newRig(t, nil, withLog(logs))
@@ -448,12 +482,12 @@ func TestAnEndReadNeitherWayIsRememberedSoALaterDeletionIsNotObservedAsOneFromOu
 	}
 }
 
-// The line is the record of the roles an end continued, so a pod this runtime watches no claim of
-// gets none. The pods informer carries the image probe's pod and each repository cache's pod
+// The line is the record of the watched roles an end ended, so a pod this runtime watches no claim
+// of gets none. The pods informer carries the image probe's pod and each repository cache's pod
 // beside the issue and controller pods, and a probe pod ends at every boot: with no such rule
-// every boot would write, at warning level, that the roles of a pod_end_not_ours end are
-// continued uncharged, with roles=[]. The reading itself is made all the same, since a claim of
-// the pod may be watched by the time the end is evaluated.
+// every boot would write, at warning level, a line for an end from outside the pod that names
+// roles=[]. The reading itself is made all the same, since a claim of the pod may be watched by
+// the time the end is evaluated.
 func TestNoLineIsWrittenForTheEvictedPodNoWatchedClaimRunsIn(t *testing.T) {
 	logs := &lockedLog{}
 	g := runningIssuePod(t, withLog(logs))
@@ -467,6 +501,6 @@ func TestNoLineIsWrittenForTheEvictedPodNoWatchedClaimRunsIn(t *testing.T) {
 		t.Fatalf("read %+v of the evicted pod, want %s: the reading is made whether or not a line is written", end, runtime.PodEndNotOurs)
 	}
 	if strings.Contains(logs.String(), podEndLine) {
-		t.Errorf("the end of a pod no watched claim runs in was logged as roles continued uncharged:\n%s", logs.String())
+		t.Errorf("the end of a pod no watched claim runs in was logged, with no role of it watched:\n%s", logs.String())
 	}
 }

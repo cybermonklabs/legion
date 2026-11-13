@@ -2203,12 +2203,26 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 // ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
 // since it is what dates the two causes beside it — a death and a failed start are both older
 // than the agent that is running now (machine.go's Claim).
+//
+// An agent that becomes ready with no work outstanding — no task pending and no turn open
+// (workOutstanding) — ends the claim's run of pod ends from outside it (Budgets.PodEndsNotOurs,
+// endedFromOutside): the ends before this ready were counted against the start it completes, and
+// that start is over. A claim that holds no task completes no turn, so a run it kept would only
+// grow, by one end each time the cluster repacks its pod while it starts, until such an end weeks
+// later charged it a launch failure for a start that came up. One that becomes ready holding its
+// task keeps its run, which that task's completed turn or its end resets (turnEnded,
+// retirePending). The run is cleared before the write below, as the launch failures are, so the
+// reset is stored with the ready.
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	m.claim.LastReady = m.deps.Clock.Now()
 	// The pending cause goes with the launch failures it names: the episode they measure ended
 	// when this agent came up (Claim.PendingCause).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	if run := m.claim.Budgets.PodEndsNotOurs; run != 0 && !m.workOutstanding() {
+		m.log.Info("supervise: the agent is ready with no work outstanding; the run of pod ends from outside the pod is over", "podEndsNotOurs", run)
+		m.claim.Budgets.PodEndsNotOurs = 0
+	}
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)

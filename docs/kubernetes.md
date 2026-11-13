@@ -4316,15 +4316,16 @@ Every end of an issue pod is therefore the end of that pod's disk, and the ends 
   The daemon continues the roles of such a pod uncharged where it read the end as one from outside the pod, and charges a death where it did not (below).
 
 **An end from outside the pod.**
-The daemon reads what ended each watched pod once, where its informer delivers the end, and writes one line for it (`capturePodEnd`, `internal/runtime/sandbox/observe.go`):
-`sandbox runtime: read what ended a watched pod; the roles of a pod_end_not_ours end are continued uncharged`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and every role of the pod it continued.
+The daemon reads what ended each watched pod once, where its informer delivers the end, and writes one line for it (`capturePodEnd`, `internal/runtime/sandbox/pod_end.go`):
+`sandbox runtime: read what ended a watched pod`, naming the pod, the reading, the words that reading was made from, the reason the cluster gave, and every role of the pod it ended.
+The line says what the end was read as and nothing of what any role is charged for it, which the daemon decides for each claim (below).
 Two readings say something outside the pod ended it:
 
 - the informer saw the pod carrying a deletion timestamp that no act of the daemon's own accounts for.
   The daemon deletes no pod itself — it writes the pod's Sandbox, and the Agent Sandbox controller deletes the pod — and it records each such act of its own before it makes it, so an end no record of its own answers for was made by something else;
 
 - the pod ended carrying a `DisruptionTarget` condition, which the control plane and the kubelet set on a pod they are ending, or with one of three reasons on its own status:
-  `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `observe.go`).
+  `Terminated`, `NodeShutdown` or `Preempted` (`clusterEndedReasons`, `pod_end.go`).
   A pod whose status reason is `Evicted` is such an end only with the condition, which the kubelet sets when it evicts a pod because its node is under pressure.
 
 An end of either reading costs its roles nothing.
@@ -4332,13 +4333,17 @@ The daemon continues each role of that pod in that role's own session, charges n
 The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
 
 The third such end in a row is charged all the same.
-When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own, and so every such end after it until a turn completes (`launch_failure_limit`, 3 by default).
+When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own, and so every such end after it until the run ends (`launch_failure_limit`, 3 by default).
 A pod that uses more memory than it requested can drive its own node into pressure, and that eviction carries `DisruptionTarget` exactly as a neighbour's does, so the condition cannot tell the two apart.
 A completed turn starts the count again, and so does the end of the task the run was counted against, however that task ends: a suspension or a phase change that retires it ends the run with it, as it ends the claim's deaths.
 The count is kept in the claim's row (`claims.pod_ends_not_ours`), so a daemon restart does not start it again.
-Only an end that finds the claim's agent ready with work outstanding is counted, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
-A counted end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it.
-An end of a claim with no work outstanding, idle between assignments, is neither counted nor charged, and leaves the count where it was, since a claim that completes no turn would otherwise be charged for a pod the cluster repacks now and then.
+An end that finds the claim's agent ready is counted only with work outstanding, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
+Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it.
+An end that finds the agent not yet ready is counted too, whether or not the claim holds a task, since a pod's own start, with the workspace's restore and six agents starting at once, can drive its node into pressure as well;
+the end of such a start that reaches the limit is charged as the end of any process whose agent never came up is, as a launch failure, so a start the cluster ends every time fails its claim once its launch failures run out rather than being relaunched for ever.
+A claim whose agent becomes ready with no work outstanding ends its run there, since the start the run was counted against is over and nothing is left to count it against;
+one that becomes ready holding its task keeps its run.
+An end that finds the agent ready with no work outstanding, idle between assignments, is neither counted nor charged, since a claim that completes no turn would otherwise be charged for a pod the cluster repacks now and then.
 
 An end of neither reading is charged as a death exactly as before, so a pod that fails by itself still ends its claim once that claim's deaths run out ([Liveness rules](#liveness-rules)).
 `Evicted` with no `DisruptionTarget` condition is such an end:
@@ -4353,7 +4358,7 @@ Three ends differ in what reaches the issue's next pod, and this is how a reader
   The disk goes with the pod, as it does at every end.
   What comes back is the newer of the issue's two saved copies, restored before any role starts:
   the work of the last turn that ended, or of a turn still running up to its last copy, which the cadence bounds at 5 minutes ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
-  Each role keeps its session, keeps the task it owed and is charged no death, until such ends reach `launch_failure_limit` in a row while it holds work, with no turn completed between them (above).
+  Each role keeps its session, keeps the task it owed and is charged no death, until such ends reach `launch_failure_limit` in a row while it holds work or before its agent is ready, with no turn completed between them (above).
   What no copy holds goes with the disk:
   the issue's scratch, each role's temporary directory and logs, every ignored file and the workspace's CodeGraph index;
 
