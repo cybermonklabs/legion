@@ -28,9 +28,10 @@ var operatorServedUnder = map[string][]string{
 
 // operatorWithheld is every field of the agents column the operator route does not carry, which
 // is what the OperatorClaim doc states and what this test holds it to: the route is the live
-// machine's and the agent surfaces are the store's, and these four reach an agent and no
-// operator.
-var operatorWithheld = []string{"ServingGeneration", "PendingCause", "ProviderErrorRun", "UpdateReasons"}
+// machine's and the agent surfaces are the store's, and these five reach an agent and no
+// operator. `GivenEntry` is among them because the surface that serves it is the issue's own
+// view (api.Issue.GivenEntry) and no claim's.
+var operatorWithheld = []string{"ServingGeneration", "PendingCause", "ProviderErrorRun", "UpdateReasons", "GivenEntry"}
 
 // wireOf is value as this wire carries it: marshalled and read back, so a view and the keys the
 // decision table names are compared in one shape rather than in two Go types.
@@ -93,7 +94,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		Token: token, Project: "OTHER", Tree: "LEGION-500", Issue: "LEGION-500", Role: claim.RoleImplementer,
 		Generation: 3, TreeEpoch: 2,
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
-		ServingGeneration: 2, ServingAssignmentID: "assignment-7",
+		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
 		ServingCheckLook: supervise.CheckLook{Look: 2, OpenedAt: openedAt},
 		LastStartRow:     811, DeliveredRows: []int64{809, 811},
 		Locator: &runtime.Locator{
@@ -111,7 +112,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 		LeakCheckCause: "the shared public leak check could not be installed: the tarball of theorem-labs/agent-infra at leak-check-v3 holds no leak-check directory",
 		Pending: &supervise.Delivery{
 			ID: "dlv-9", Task: "implement the change, which no agent surface carries",
-			Generation: 3, Assignment: "assignment-8", Phase: phase.Implementing, QueuedAt: queuedAt,
+			Generation: 3, Entry: 8, Phase: phase.Implementing, QueuedAt: queuedAt,
 			SendFailures: 2, LastSendFailureAt: at.Add(-5 * time.Minute),
 			LastSendError: "post to the worker stream: connection refused",
 		},
@@ -141,6 +142,8 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 			Tool: "bash", CallID: "toolu_impl_11", ArgsBytes: 128, ArgsHash: "9b2e45c0d1f8a673",
 			StartedAt: at.Add(-time.Minute), EndedAt: at.Add(-30 * time.Second),
 		},
+		ActivityAt: at.Add(-3 * time.Minute), ActivityBackground: true,
+		ActivityKinds: []string{"async-job"}, ActivityNextReminderAt: at.Add(10 * time.Minute),
 	}
 	fields := reflect.ValueOf(current)
 	for i := range fields.NumField() {

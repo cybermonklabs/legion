@@ -405,11 +405,14 @@ its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregis
 
 ## A parked tree did not come back after a decision
 
-A root in `backlog` or `icebox` runs again when a person sets it to `todo`, or when the controller
-parked it for a hold of its own and judges that a person's decision gives its work a next step. The
-controller marks such a park with a comment on the root that begins `Parked by Legion while it
-waits on:`. First find whether the daemon relayed the decision. Its JSON log names the issue and
-the root on each of these lines:
+A root in `backlog` or `icebox` runs again when a person sets it to `todo` with its `legion` label
+on, when a person asks the controller to start it, when a person approves its spec and it keeps its
+`legion` label and has no parent (the daemon then sets it to `todo` itself; an approval Dispatch
+carries from an earlier one does not count), or, when the controller parked it for a hold of its
+own, once the controller judges that a person's decision gives its work a next step or its walk
+finds the hold's cause gone or its event happened. The controller marks such a park with a comment
+on the root that begins `Parked by Legion while it waits on:`. First find whether the daemon relayed
+the decision. Its JSON log names the issue and the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
@@ -447,15 +450,17 @@ the root on each of these lines:
   resolution on a parked tree is not relayed`, or `workflow: a session's decision on a tree waiting
   for its slot is not kept`: an agent wrote it. It stays on the ask for the person who asked.
 
-Then read the controller's comment that begins `Parked decision read:`, on the root and on the
-issue where the decision was made. For a question, it is a reply on the question's own ask, which
-answers it or says that `todo` on the root brings the architect back to answer. It says what the
-controller judged. The tree stays parked when the park is not the controller's own hold, the park
-with its `Parked by Legion while it waits on:` comment beside it: a person's park, another agent's
-session's, or an operator's `legion status` (the comment names who, and the tree runs when they set
-it to `todo`). It stays parked too when the decision is older than the park, when the root is
-`done` or `triage`, or when the decision only questions the work. When the controller was down,
-its next start walks the parked roots. That walk reads only the last 10 events of each issue.
+Then read the controller's comment that begins `Parked decision read:`, on the root and on the issue
+where the decision was made. For a question, it is a reply on the question's own ask, which answers
+it or says that `todo` on the root brings the architect back to answer. It says what the controller
+judged. The tree stays parked when the park is not the controller's own hold, the park with its
+`Parked by Legion while it waits on:` comment beside it: a person's park, another agent's session's,
+or an operator's `legion status` (the comment names who, and the tree runs when a person sets it to
+`todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
+parked too when the decision is older than the park, when the root is `done` or `triage`, or when
+the decision only questions the work. When the controller was down, its next start walks the parked
+roots. That walk reads only the last 10 events of each issue. The walk runs at each start and on
+each `tick`, and its `todo` on the controller's own hold comes with a comment that cites the mark.
 
 ## An issue is held
 
@@ -594,18 +599,19 @@ legion state --config legion.yaml --json | jq '.issues["<KEY>"] | {phase, holdRe
 claim's `state` is `failed` with its `failure` beside it. A held phase worker is its architect's
 to retry or escalate, and `holdReason: "escalated"` means it went to the controller. An
 architect that failed (`architect.state` is `failed`) leaves its tree with nobody to act inside it,
-and the controller is woken to re-admit the tree. What brings the architect back depends on where
-its tree stands:
+and the controller is woken. Unless the root's `phase` is `done`, it restarts the tree when it
+finds no cause or the cause is gone, and asks a person whether to park it when the cause stays.
+What brings the architect back depends on where its tree stands:
 
 - **Its tree runs and does not linger:** `legion state`'s `claims nothing will
   wake` line names the architect under `failed, retry`. Retry it, as
   [A tree does not move after a restart](#a-tree-does-not-move-after-a-restart) shows: the daemon
   relaunches it on the session it kept, with fresh budgets, and the tree carries on at the
   generation and phase it stands at.
-- **Its root is parked or lingers,** the controller's park for a re-admission included: leave the
-  claim as it is. The tree's re-admission retries it at a new generation; a retry by hand would run
-  it outside the admission cap, and it would be sent no catch-up. To re-admit the tree by hand, park
-  the root and admit it again:
+- **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
+  in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
+  generation; a retry by hand would run it outside the admission cap, and it would be sent no
+  catch-up. To restart the tree by hand, write the same pair:
 
   ```sh
   legion status <KEY> backlog --config legion.yaml --operator-token-file operator-token
@@ -632,7 +638,7 @@ admission line stay as they were. A person's move of the root to `todo` in the D
 and the controller's own `set_status` do the same, since all three write the one status the
 daemon reads. It reaches a root alone: a held child set to `todo` comes back at a new generation
 of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted at a new
-generation, which is what the park and the admission above do.
+generation, which is what the restart above does.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a text summary of that session and then
@@ -813,8 +819,10 @@ is `legion-<project>-<issue, lowercased>-<role>`, as `legion claims list` shows.
 
 - **`suspendedWorkers`** (a suspended phase worker): the move depends on who suspended it, which
   `legion claims list --json` shows as `suspendedBy`, and `legion state` points there too.
-  Only an architect is sent a catch-up, so a worker resumed with no task relaunches with nothing to
-  do, and once it runs the list stops naming it.
+  Only an architect is sent a catch-up; a worker resumed behind the entry its role's phases row
+  names is sent that entry's work, which the daemon does on every admission pass and on a sweep
+  each minute, and one already at that entry relaunches with nothing to do. Once it runs the list
+  stops naming it.
 
   - **`suspendedBy: unknown`** (suspended before this release recorded who did): let the
     workflow start it. Stop the project's daemon, mark the claim as the daemon's, and start the
@@ -884,6 +892,130 @@ return to `todo` starts it.
 A claim an operator suspended is listed even when a workflow start is queued for it: that start
 waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no start
 is queued for it, since the next phase start or re-admission resumes it as before.
+
+## A worker that stopped taking turns
+
+The issue stands in its phase, its worker does nothing, and the daemon's record of it reads like a healthy one.
+The claim is up and the state shows the tree at work.
+The daemon finds such a worker by itself and writes one `worker-silent` notice to the issue's architect.
+The project's controller reads the same issue in the `silent` list of its periodic tick.
+
+The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
+That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
+
+The daemon sends the worker its work again, chosen by the phase entry the issue's phase row names for the role: the work of that entry where the worker's claim was never given it, and the phase's task again where the claim is on that entry already.
+The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
+A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
+
+The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.
+
+The rule measures silence from the claim's last recorded step alone.
+A daemon that was itself down for longer than the bound comes back and reads every live worker as silent.
+Each of those gets one prompt and one notice, nothing is stopped, and the floor under `worker_silence_minutes` is what keeps an ordinary restart out of it.
+
+A merged root's merger is never named silent.
+The merge ends the merger's work, but the root stands in `merging` until the rest of its tree leaves the workflow, which can take days, so the daemon reads the issue's pull request and leaves alone a merger whose pull request the record holds as merged, as its own resume paths do.
+
+A worker whose own session — the process the claim runs now — reports background work of its own running, an async job, a subagent or a background task, is left alone, however long it has been quiet.
+No bound can tell a forty-minute job from a worker that stopped, so the daemon prompts no such worker at all.
+When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the issue's architect, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
+The architect reads what the session says it is waiting on and decides.
+The report counts for the process the claim runs now and for no other.
+A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
+That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
+
+## A commit carries another role's App as its author
+
+Every role of an issue works in one jj workspace, and each role's commits must carry that role's own GitHub App as their author.
+Before the daemon sends a role a phase task, it asks that role's shim to adopt the working copy under the role's App identity.
+The shim runs `jj log` on `@`, which snapshots the working copy.
+Then it runs `jj metaedit --update-author` on an `@` that has no description, or `jj new` on an `@` that has one.
+So an adoption at the wrong time can make one role the author of another role's work.
+
+**Which tasks adopt the working copy.**
+The daemon adopts only for a task that names a phase, and only for the role that owns that phase:
+
+- the phase start that a move into the phase sends to its role;
+
+- the resume task of the phase owner.
+  The daemon sends it in these cases:
+
+  - the owner comes back ready with no task;
+
+  - a boot resumes an owner that the daemon suspended;
+
+  - a tree is re-admitted in the middle of a phase;
+
+  - the daemon repairs a slot whose worker has no task, or a worker that went silent.
+
+These tasks adopt nothing:
+
+- the ask of a pod update round or a plugin update round;
+
+- a wake for a CI settlement, a role message, an agent message or the backstop;
+
+- an operator's task through `POST /legion/v1/operator/claims/<token>/deliver`;
+
+- a look of a production check;
+
+- the root architect's start, and an architect's catch-up;
+
+- the controller's start.
+
+Notices, hooks, phase-ended messages and phase reminders reach the agent through Envoy or through its plugin, not as a task, so they adopt nothing either.
+
+**A phase task waits for the turns of the other roles.**
+The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
+It sends the task when that turn ends, and the adoption runs then.
+
+**Four lines in the daemon's log show what each adoption did.**
+Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
+So search the daemon's own log for the key and the `-` after it, without regard to case: the `-` keeps out the lines of a longer key, such as `WIDGETS-120` for `WIDGETS-12`.
+Read the log of the daemon's pod under Kubernetes, or the output of `legion start` under tmux:
+
+```sh
+kubectl -n <namespace> logs <the daemon's pod> > daemon.log
+grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
+  -e 'rather than adopt the working copy' -e 'refused to adopt the working copy' \
+  -e 'lost to the transport'
+```
+
+`kubectl logs` gives only the log file that the node keeps now, for the daemon's pod that runs now.
+On a busy daemon, that file can hold only the last minutes, and a new daemon pod starts with an empty log.
+Read the time of the first line.
+If the wrong commit is older than that line, read the daemon's lines from the log store of your cluster.
+A search that finds no line for a time before the first line does not show that no adoption occurred.
+
+- `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
+  It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and the time the shim took as `took`, in nanoseconds.
+  The release that carries cybermonklabs/legion#3971 is the first to write this line.
+
+- `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
+  `inTurn` names the claim whose turn holds it.
+
+- `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
+  The task stays queued, and the refusal counts against the prompt budget of the claim.
+
+- `supervise: the prompt was lost to the transport; the delivery waits` is a send that got no answer.
+  When its `error` starts `adopt <claim>'s working copy for <identity>`, the daemon sent the adoption to the shim, and the answer did not come back: the connection closed, or the daemon stopped its wait.
+  The shim runs jj on a time limit of its own, so jj can have run all the same, and the author can have moved.
+  The task stays queued.
+
+Compare the time of the wrong commit with these lines.
+An adoption line for another role of the issue just before the commit shows that the adoption moved the author.
+On a daemon that carries the rule, every adoption line names a phase, and its `claim` is the claim of the role that owns that phase.
+
+A daemon from a release before `legion-v20.5.0` (cybermonklabs/legion#2539) adopts the working copy before every task that it sends, and it holds no task for the turn of another role.
+On such a daemon, an update round or a message wake can take the author of the commit that the implementer works on.
+
+**Other paths change an author, and no adoption line shows them.**
+
+- A role's own jj command in the shared workspace snapshots the working copy under that role's identity.
+  An architect's `jj git fetch` and the shell of a subagent are two such commands.
+  The roles container gives every role one git identity, and a subagent's shell can carry another identity: `dispatch://INFRA-2791` holds both.
+
+- `jj split` keeps the author of the commit that it splits, so a role that splits a commit that another role made keeps that other role's App on both halves.
+  A check at push time that refuses a commit that the review App authored is `dispatch://INFRA-1185`.
 
 ## A pod does not come up
 
@@ -1130,19 +1262,25 @@ These arrive as messages on the Dispatch issue:
   branch; …`; the issue moves on once a pull request is recorded open, and when the daemon's next read of
   the issue finds none open on the branch the architect is told
   ([An architect is told `pull-request-missing`](#an-architect-is-told-pull-request-missing)).
-- **A worker's completion refused `HANDOFF_STALE_ASSIGNMENT`.** The phase the completing turn was
+- **A worker's completion refused `HANDOFF_STALE_ENTRY`.** The phase the completing turn was
   working ended under that turn, and the role has since been handed the phase's work again: the
   issue left the phase and came back, or the head started conflicting with its base while the
   tester tested, while the reviewer reviewed a round it had not completed, or while the merger
-  worked toward the merge. The daemon
-  ends no turn, so the turn reporting the completion is the earlier assignment's and nothing is
-  recorded. The refusal names the issue, the role and the phase: the worker ends that turn without
-  completing, and reports that work and that verdict no further. The phase was entered again, so
-  the task the daemon queued for the assignment it hands the role now — which arrives as the
-  session's next prompt — is work of its own: a testing assignment after such a move is for the
-  head the fix pushed, and the verdict on the head before it answers for nothing there. The worker
-  does that task's work, writes a handoff of its own for it, and completes in its turn. When no
-  such task is queued for it, the refusal says so and the worker tells its architect.
+  worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
+  an entry behind the one the role's phases row names, and nothing is recorded. The refusal
+  names the issue, the role and the phase, the entry the completion is of and the entry the
+  role's phases row is on, and, when the task of that entry already waits on the claim, that the
+  turn began before it reached the session. It then tells the worker what to do in the same
+  words the `legion` tool's description gives for the code
+  (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
+  without completing; the task of the entry the phase is on is owed to the claim and the daemon
+  sends it by itself, which it does on every admission pass and on a sweep each minute; and that
+  task is work of its own, done at the head it names and completed with a handoff of its own,
+  never the refused completion's record, commit or verdict. A testing entry after such a move is
+  for the head the fix pushed, and the verdict on the head before it answers for nothing there.
+  The same code on a completion of an entry above the one the phases row names is one the
+  record never produces, since the daemon raises the row in the transaction that composes the
+  entry's task; that refusal tells the worker to end the turn and tell the architect.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
@@ -1151,11 +1289,11 @@ the issue back to the implementer with the base to merge forward and told the ar
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-assignment retro handed it while the phase holds the implementing one, so it is refused
-(`HANDOFF_STALE_ASSIGNMENT`), and the implementer merges the base forward in the implementing
+entry retro handed it while its phases row is on the implementing one, so it is refused
+(`HANDOFF_STALE_ENTRY`), and the implementer merges the base forward in the implementing
 task's own turn and completes that work with a handoff of its own, never retro's commit; the
-merger's row still names the assignment merging gave it, so a completion it sends for the phase it
-lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
+merger's phases row still names the entry merging gave it, so a completion it sends for the phase
+it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
 acceptance and retro to a new merge. A red check sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:

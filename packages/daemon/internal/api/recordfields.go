@@ -71,7 +71,9 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "a path on the pod's own disk, which the operator's tools open and no agent reads of another seat"},
 	{Field: "ServingGeneration", Column: ColumnAgents, Keys: []string{"servingGeneration"},
 		Reason: "says whether the work the claim serves is of this generation, which a re-admission and a worker told to wait both turn on"},
-	{Field: "ServingAssignmentID", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "GivenEntry", Column: ColumnAgents, Keys: []string{"givenEntry"},
+		Reason: "the entry the role's claim was last queued a task of, which its issue carries beside the entry that role's phases row stands on (api.Issue.GivenEntry): the pair says whether the daemon has still to send that role the entry's own work"},
+	{Field: "ServedEntry", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ServingCheckLook", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastStartRow", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeliveredRows", Column: ColumnWithheld, Reason: BookkeepingReason},
@@ -133,6 +135,14 @@ var ClaimRecordFields = []RecordFieldDecision{
 		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},
 	{Field: "Step", Column: ColumnAgents, Keys: []string{"step"},
 		Reason: "what the daemon last saw the claim's agent do, which says whether a worker mid-turn is still moving"},
+	// The session's own report of what it is doing, which the daemon's minute sweep reads off
+	// the live claim and no reader of these routes acts on: an agent reads what it is doing
+	// from its own process, and the operator's listing of a pod's activity is the idle view's
+	// (pods.IdleClaim), read from the store by a query of its own.
+	{Field: "ActivityAt", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ActivityBackground", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ActivityKinds", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ActivityNextReminderAt", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastTurnStart", Column: ColumnAgents, Keys: []string{"lastTurnStart"},
 		Reason: "when the agent last began a turn, which tells a worker still making progress from one wedged in a turn"},
 	{Field: "LastTurnEnd", Column: ColumnAgents, Keys: []string{"lastTurnEnd"},
