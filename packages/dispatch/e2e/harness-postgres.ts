@@ -33,6 +33,7 @@ import { existsSync, mkdirSync } from "node:fs";
 import { createServer } from "node:net";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
 import { Interrupted } from "./local-instance-support";
@@ -48,11 +49,42 @@ export const pgBinVariable = "DISPATCH_E2E_PG_BIN";
 /** The database every stack's server holds, named the same in each: the stacks are separate
  *  clusters, and nothing outside a stack reads it. */
 const databaseName = "dispatch_e2e";
-/** A stack's connection limit. One Dispatch process opens up to `store.ConnectionsPerProcess`
- *  (89, packages/envoy/internal/dispatch/store/pool.go), two-process mode runs two of them on
- *  one stack, the harness's psql sessions open their own, and Postgres reserves 3 for
- *  superusers: 200 clears all of that with room for a pool that has not closed yet. */
-const maxConnections = 200;
+/** packages/envoy, the Go module `connectionsArgs` runs in. */
+const envoyDirectory = fileURLToPath(new URL("../../envoy", import.meta.url));
+/** `go` with these prints `testlimits.ServerConnections`
+ *  (packages/envoy/internal/dispatch/testlimits): the connections a Dispatch test server must
+ *  allow beyond its superuser reserve. */
+const connectionsArgs = ["run", "./internal/dispatch/store/cmd/connections"];
+/** Postgres's default `superuser_reserved_connections`. The harness does not set it, so each
+ *  stack's server keeps this many slots for superusers, and the suite's connections get none. */
+const superuserReserved = 3;
+/** A stack's connection limit: what `go` prints for `connectionsArgs`, plus `superuserReserved`.
+ *  It comes from the Go code, so the harness holds no count of a Dispatch process's pool. A
+ *  server that allows fewer does not fail where the size is wrong. It fails later, as a 53300
+ *  refusal inside a room, a lease or a socket, and nothing in that failure names the cause. The
+ *  first stack that starts reads it, once per run. */
+let maxConnections: Promise<number> | undefined;
+async function readMaxConnections(): Promise<number> {
+  const named = `\`go ${connectionsArgs.join(" ")}\` in ${envoyDirectory}`;
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync("go", connectionsArgs, { cwd: envoyDirectory }));
+  } catch (error) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: ${named} failed: ` +
+        `${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  const printed = /^([1-9][0-9]*)\n?$/.exec(stdout)?.[1];
+  const server = printed === undefined ? Number.NaN : Number(printed);
+  if (!Number.isSafeInteger(server)) {
+    throw new Error(
+      `The Dispatch e2e harness cannot start: ${named} printed ${JSON.stringify(stdout)}, ` +
+        "not a positive whole number of connections."
+    );
+  }
+  return server + superuserReserved;
+}
 /** A stack's server. Its data dies with the run and its database is 46 MB with a working set of
  *  one scenario's rows, so each setting here gives up something only a database that outlives
  *  its run can use. What each costs if the database were real is on its own line. Measured in an
@@ -60,7 +92,6 @@ const maxConnections = 200;
  *  own median (51.5 ms before, 52.0 ms after): they take work off a stack's server that this
  *  pod's two cores were not short of, and the runner's four are. */
 const settings = [
-  `max_connections=${maxConnections}`,
   // Crash safety. Nothing here survives the run, so a cluster that dies loses nothing anyone
   // reads: a real database would lose committed transactions (`synchronous_commit`) or the
   // whole cluster (`fsync`, `full_page_writes`) to a power cut.
@@ -92,6 +123,11 @@ const settings = [
   "checkpoint_timeout=60min",
   "max_wal_size=4GB",
 ];
+/** Every setting a stack's server starts with: its connection limit, then `settings`. */
+async function serverSettings(): Promise<string[]> {
+  maxConnections ??= readMaxConnections();
+  return [`max_connections=${await maxConnections}`, ...settings];
+}
 /** How long a stack's server may take to answer `select 1`. */
 const readyMs = 120_000;
 /** How many ports a cluster tries before it gives up (see `freePort`). */
@@ -184,9 +220,10 @@ async function ready(url: string, what: string, signal?: AbortSignal): Promise<v
  *  it serves on. Returns or throws with no postmaster of `data` left running. */
 async function startCluster(bin: string, data: string, dir: string, what: string): Promise<number> {
   let last = "";
+  const started = await serverSettings();
   for (let attempt = 1; attempt <= bindAttempts; attempt++) {
     const port = await freePort();
-    const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...settings.map((s) => `-c ${s}`)];
+    const options = [`-p ${port}`, "-h 127.0.0.1", `-k ${dir}`, ...started.map((s) => `-c ${s}`)];
     try {
       await execFileAsync(join(bin, "pg_ctl"), [
         "-D",
@@ -313,6 +350,7 @@ function imageProvider(image: string, run: string): StackPostgres {
       stackOf(signal, async (): Promise<StackDatabase> => {
         const what = `stack ${index}'s Postgres`;
         let refused = "";
+        const started = await serverSettings();
         for (let attempt = 1; attempt <= bindAttempts; attempt++) {
           // The name carries the attempt: a container whose port was taken keeps its name until it
           // is removed, and the run removes it with the stack.
@@ -345,7 +383,7 @@ function imageProvider(image: string, run: string): StackPostgres {
               // "an unused mount/volume" and then exits, since 18 wants one mount a level up
               // (docker-library/postgres#1259).
               image,
-              ...settings.flatMap((setting) => ["-c", setting]),
+              ...started.flatMap((setting) => ["-c", setting]),
             ]);
           } catch (error) {
             // `docker run` publishes the port itself, so this is the port another listener took
