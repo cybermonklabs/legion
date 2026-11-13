@@ -84,7 +84,7 @@ test("a picked state opens an address only where the state is the address", () =
 // (R13) - a kept Questions or Pinned outranking an entry's own address hid the entry it named.
 test("the address names the conversation's state only where it names what that state holds", () => {
   const named = (route: Parameters<typeof issueAddress>[0]) =>
-    issueAddress(route, "", "", false).conversation;
+    issueAddress(route, "", "", false, "spec").conversation;
   expect(named({ key: "CORE-1", kind: "activity" })).toBe("everything");
   expect(named({ key: "CORE-1", kind: "conversation" })).toBe("words");
   expect(named({ id: "comment-7", key: "CORE-1", kind: "comment" })).toBe("words");
@@ -96,26 +96,32 @@ test("the address names the conversation's state only where it names what that s
 });
 
 test("the address says which preset it opens and which node it names", () => {
-  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "", false).preset).toBe("tree");
-  expect(issueAddress({ key: "CORE-1", kind: "verification" }, "", "", false).preset).toBe(
+  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "", false, "spec").preset).toBe("tree");
+  expect(issueAddress({ key: "CORE-1", kind: "verification" }, "", "", false, "spec").preset).toBe(
     "checks"
   );
   // A route naming the issue's own spec by its slug is the Spec preset's address too.
   expect(
-    issueAddress({ key: "CORE-1", kind: "artifact", slug: "spec" }, "?v=2", "", true).preset
+    issueAddress({ key: "CORE-1", kind: "artifact", slug: "spec" }, "?v=2", "", true, "spec").preset
   ).toBe("spec");
-  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "?ask=ask-9", "", false).target).toEqual({
+  expect(
+    issueAddress({ key: "CORE-1", kind: "issue" }, "?ask=ask-9", "", false, "spec").target
+  ).toEqual({
     id: "ask-9",
     kind: "item",
   });
-  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r3", false).target).toEqual({
-    id: "r3",
-    kind: "block",
-  });
+  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-r3", false, "spec").target).toEqual(
+    {
+      id: "r3",
+      kind: "block",
+    }
+  );
   // An ask or a comment a conversation address names by its own route is a turn, not an item
   // beside a document: the conversation places the reader on it and the tree leaves the focus
   // alone (`IssueBody`'s `focusReveal`).
-  expect(issueAddress({ id: "ask-9", key: "CORE-1", kind: "ask" }, "", "", false).target).toEqual({
+  expect(
+    issueAddress({ id: "ask-9", key: "CORE-1", kind: "ask" }, "", "", false, "spec").target
+  ).toEqual({
     id: "ask-9",
     kind: "turn",
   });
@@ -141,13 +147,16 @@ test("an item is found by its own id, and an ask by the address of the ask it wa
 // and the address falls back to what its route names.
 test("an unreadable block fragment names no block and keeps the route's own target", () => {
   expect(
-    issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-50%", false).target
+    issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-50%", false, "spec").target
   ).toBeUndefined();
   expect(
-    issueAddress({ key: "CORE-1", kind: "artifact", slug: "plan-md" }, "", "#b-50%", false).target
+    issueAddress({ key: "CORE-1", kind: "artifact", slug: "plan-md" }, "", "#b-50%", false, "spec")
+      .target
   ).toEqual({ id: "plan-md", kind: "node" });
   // An escape that does read is the block it names, decoded.
-  expect(issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-a%20b", false).target).toEqual({
+  expect(
+    issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-a%20b", false, "spec").target
+  ).toEqual({
     document: undefined,
     id: "a b",
     kind: "block",
@@ -172,7 +181,8 @@ test("a block of a document's address is found in that document, not in another 
     { key: "CORE-1", kind: "artifact", slug: "plan-md" },
     "",
     "#b-t1",
-    false
+    false,
+    "spec"
   );
   expect(address.target).toEqual({ document: "plan-md", id: "t1", kind: "block" });
   expect(pathToTarget(documents, address.target)?.map((found) => found.id)).toEqual([
@@ -190,7 +200,41 @@ test("a block of a document's address is found in that document, not in another 
   expect(
     pathToTarget(
       documents,
-      issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-t1", false).target
+      issueAddress({ key: "CORE-1", kind: "issue" }, "", "#b-t1", false, "spec").target
     )?.map((found) => found.id)
   ).toEqual(["CORE-1", "spec", "spec#b-t1"]);
+});
+
+// `/issues/CORE-1/spec#b-t1` names the spec as much as `/artifacts/<spec>#b-t1` does, so its
+// block is the spec's own `t1` and never the plan's: matching by the block id alone landed a
+// reader of the spec on another document's author-chosen `#b-t1`.
+test("a block a spec address names is found in the spec, not in another document", () => {
+  const planOnly = node("CORE-1", "issue", {
+    children: [
+      node("spec-md", "document"),
+      node("plan-md", "document", { children: [node("plan-md#b-t1", "plan_task")] }),
+    ],
+  });
+  const both = node("CORE-1", "issue", {
+    children: [
+      node("plan-md", "document", { children: [node("plan-md#b-t1", "plan_task")] }),
+      node("spec-md", "document", { children: [node("spec-md#b-t1", "requirement")] }),
+    ],
+  });
+  const addresses = [
+    issueAddress({ key: "CORE-1", kind: "spec" }, "", "#b-t1", false, "spec-md"),
+    issueAddress({ block: { id: "t1" }, key: "CORE-1", kind: "spec" }, "", "", false, "spec-md"),
+  ];
+  for (const address of addresses) {
+    expect(
+      pathToTarget(planOnly, address.target)?.map((found) => found.id),
+      "the spec's address lands on another document's block of the same id"
+    ).toBeUndefined();
+    expect(pathToTarget(both, address.target)?.map((found) => found.id)).toEqual([
+      "CORE-1",
+      "spec-md",
+      "spec-md#b-t1",
+    ]);
+    expect(address.target).toEqual({ document: "spec-md", id: "t1", kind: "block" });
+  }
 });

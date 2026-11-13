@@ -161,8 +161,9 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const [editing, setEditing] = useState<string | undefined>(undefined);
 
   // What this address opens: its preset, the node it names, the conversation's state, the
-  // filter and the version it pins (`issue-address.ts`).
-  const address = issueAddress(route, search, hash, isPrimaryArtifactRoute);
+  // filter and the version it pins (`issue-address.ts`). A block a `/spec` address names is the
+  // spec's own, looked up in the spec by its slug.
+  const address = issueAddress(route, search, hash, isPrimaryArtifactRoute, primaryArtifact?.slug);
   // Which state the conversation is in. The reader's pick is kept for their login in this
   // browser, the way this page already keeps the children section and the panel's collapsed
   // property sections (`features/shell/userPreference.ts`, `useChildrenSection.ts`,

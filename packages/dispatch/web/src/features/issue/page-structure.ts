@@ -65,8 +65,9 @@ export const PROPERTY_LABELS = freeze({
   components: "Components",
   /** The issue's links out of Dispatch, such as a pull request. */
   external_links: "Links",
-  /** The heading of the panel's facts of the node the reader's focus is on (R12). */
-  focused_node: "The node you are on",
+  /** The heading of the panel's facts of the node the reader's focus is on (R12). A node is a
+   *  row to the reader, the word the tree's own keys use (`useTreeKeymap.ts`). */
+  focused_node: "The row you are on",
   labels: "Labels",
   opened_by: "Opened by",
   parent: "Parent",
@@ -103,8 +104,10 @@ export const MARGIN_SECTION_NAMES = freeze({
  * tooltip, so each of these is drawn as text beside the control it explains (R11).
  */
 export const HELP_LINES = freeze({
-  /** What the blocked-by editor takes, beside the box (`BlockedByControl.tsx`). */
-  blocked_by: "Issue keys, separated by spaces; an empty box clears them.",
+  /** What the blocked-by editor takes, beside the box (`BlockedByControl.tsx`): issues with a
+   *  space or a comma between them, which is what `issueKeysIn` splits on. */
+  blocked_by:
+    "Type the issues this one waits on, with a space or a comma between them. Save an empty box to remove them all.",
   /** What the identity block says of a closed issue. */
   closed: "This issue is closed.",
   /** Why releasing is safe, beside the release control. */
@@ -112,6 +115,13 @@ export const HELP_LINES = freeze({
   /** What a message route is, and is not, beside the route editor. */
   route:
     "New asks, comments and messages on this issue wake this agent or role; replies inside a thread reach their participants directly. It is where messages go, not who is working the issue — that is the claim.",
+  /** What the route box takes, beside it (`IssueFieldForms.tsx`): drawn as a refusal while the
+   *  box holds a route Dispatch would not take, and read as the box's description otherwise.
+   *  It says in words what `useIssueDrafts.ts`'s `routePattern` accepts - `role:` and a name of
+   *  lowercase letters, digits and hyphens, or `session:` and a session's id - and never draws
+   *  the pattern itself (R21). */
+  route_shape:
+    "Type role: and a role name, such as role:reviewer, or session: and the id of an agent's session. A role name holds only lowercase letters, digits and hyphens. An empty box removes the route.",
 } as const);
 
 /**
@@ -123,9 +133,9 @@ export const KEY_REPORTS = freeze({
   /** The next-question key, with no open question after the node the reader is on (R6). */
   no_next_question: "No further open question.",
   /** The decision key, on a node no decision of this issue names. */
-  no_decision: "No decision is recorded behind this node.",
+  no_decision: "No decision is recorded behind this row.",
   /** The edit key, on a node whose text no document of this issue holds. */
-  no_text: "This node has no text to put the caret in.",
+  no_text: "This row has no text to put the caret in.",
   /** The key that zooms back out, with the whole issue already drawn. */
   whole_tree: "The tree is already showing the whole issue.",
 } as const);

@@ -142,8 +142,8 @@ function drawsBody(cycle: number, level: number): boolean {
   return cycle === EVERYTHING || (cycle === 1 && level <= BODIES_TO_LEVEL);
 }
 
-/** The one row a branch below the drawn levels folds to: how many nodes it holds, and the
- *  control that opens them in place. */
+/** The one row a branch below the drawn levels folds to: how many rows it holds, in words that
+ *  agree with the count, and the control that opens them in place. */
 function BranchMore({
   held,
   indent,
@@ -171,7 +171,8 @@ function BranchMore({
         type="button"
         {...pageChrome}
       >
-        <span {...authorText}>{held}</span> {CONTROL_LABELS.deeper_nodes}
+        <span {...authorText}>{held}</span>{" "}
+        {held === 1 ? CONTROL_LABELS.deeper_row : CONTROL_LABELS.deeper_rows}
       </button>
     </div>
   );

@@ -1,4 +1,5 @@
 import { CONTROL_LABELS, PRESET_NAMES } from "../web/src/features/issue/page-words";
+import { blockNodeId } from "../web/src/features/issue/tree-drafts";
 import { DRAWN_LEVELS } from "../web/src/features/issue/tree-fold";
 import { createAsk, createIssue, createProject, getArtifact, getIssue } from "./api";
 import { barAction, selectEditorText, selectTextIn } from "./editor";
@@ -6,7 +7,6 @@ import { seedWholeIssue, type WholeIssueSeed } from "./issue-layout-seed";
 import { requirementBlockId } from "./issue-layout-seed-text";
 import {
   activePreset,
-  blockNodeId,
   caretInNode,
   childrenSection,
   conversationStateControl,

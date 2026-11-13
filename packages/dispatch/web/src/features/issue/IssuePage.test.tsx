@@ -755,10 +755,11 @@ test("IssuePage disables Unsubscribe and explains why for a subscriber reachable
   try {
     const subscribed = await openSubscribedAgents(1);
     // Why Unsubscribe is refused, in words: a disabled control takes no focus and raises no
-    // tooltip, so the `title` it carried reached nobody (R21).
+    // tooltip, so the `title` it carried reached nobody (R21). The line says why in the
+    // reader's words and draws no topic.
     expect(
       within(subscribed).getByText(
-        "via notifications.dispatch.>, which covers other issues and documents too"
+        "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone."
       )
     ).toBeDefined();
     const unsubscribeButton = within(subscribed).getByRole("button", { name: "Unsubscribe" });
@@ -1566,7 +1567,7 @@ test("IssuePage remounts when switching issues, discarding unsaved local state",
       // What a route is, and what it is not: text beside the editor now, where the rail carried
       // it as a tooltip no phone could raise (dispatch://INFRA-1196 R11).
       expect(await screen.findByText(HELP_LINES.route)).toBeDefined();
-      const routeInput = await screen.findByLabelText("Message route");
+      const routeInput = await screen.findByLabelText("Messages go to");
       await user.click(routeInput);
       await user.paste("role:not-saved-draft");
       await screen.findByDisplayValue("role:not-saved-draft");

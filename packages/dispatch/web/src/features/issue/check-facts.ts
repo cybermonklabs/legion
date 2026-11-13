@@ -38,11 +38,11 @@ export function checkFacts(check: CheckBlock): NodeFact[] {
 
 /** Where one result's commit stands against what its check compared its results with, in the
  *  two words the page draws for it (`RESULT_CURRENCY_WORDS`): a commit the check compared with
- *  speaks for the work as it stands, any other commit is older work, and an answer Dispatch
- *  could not give draws no word at all. The server reads this per result
- *  (`results_comparison.go`), where it read a result's own currency before main's e98fc56ef8.
- *  Keyed by the answers the API declares, so an answer renamed there is a compile error here
- *  rather than a result that silently draws no word. */
+ *  is up to date with the work as it stands, any other commit is older work and out of date,
+ *  and an answer Dispatch could not give draws no word at all. The server reads this per
+ *  result (`results_comparison.go`), where it read a result's own currency before main's
+ *  e98fc56ef8. Keyed by the answers the API declares, so an answer renamed there is a compile
+ *  error here rather than a result that silently draws no word. */
 const RESULT_STANDS_WORDS: Readonly<
   Record<NonNullable<CheckResult["commit_stands"]>["answer"], string | undefined>
 > = {
@@ -56,9 +56,9 @@ const RESULT_STANDS_WORDS: Readonly<
  *  who ran it where and how, the commit it ran at, what it counted, and its screenshots. The
  *  result's own `observed` is the node's text and is no fact of its own. */
 export function resultFacts(result: CheckResult): NodeFact[] {
-  // "Current" is both halves of what the removed `currency` meant: at the commit the work
+  // "Up to date" is both halves of what the removed `currency` meant: at the commit the work
   // stands at, and against the words the result proved. A check reworded since the result ran
-  // keeps the first and loses the second, so the result is older work whatever its commit is
+  // keeps the first and loses the second, so the result is out of date whatever its commit is
   // (`check_words_moved`, which `tree-drafts.ts`'s `checkState` reads for the same reason).
   const placed =
     result.commit_stands === undefined

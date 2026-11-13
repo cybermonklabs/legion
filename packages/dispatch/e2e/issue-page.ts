@@ -1,6 +1,13 @@
 import { expect, type Locator, type Page } from "@playwright/test";
 
-import { CONTROL_LABELS, PRESET_NAMES, type Preset } from "../web/src/features/issue/page-words";
+import { presetPath } from "../web/src/features/issue/issue-address";
+import type { MarginSection } from "../web/src/features/issue/page-structure";
+import {
+  CONTROL_LABELS,
+  type ConversationState,
+  PRESET_NAMES,
+  type Preset,
+} from "../web/src/features/issue/page-words";
 import type { Box } from "./layout";
 import { navigateInApp } from "./sends";
 
@@ -42,8 +49,9 @@ import { navigateInApp } from "./sends";
  *   name alone by the inventory of the page it replaced. At 1024 px and below the row becomes
  *   one control: a `button` with `aria-haspopup="menu"` drawing the active preset and its count,
  *   and so named by both, opening a `role="menu"` of five `role="menuitem"`s, each named by its
- *   preset alone. Each preset has its own address (`presetAddress`). c-presets, c-three-things,
- *   c-children, c-urls, c-plain-words, c-keyboard.
+ *   preset alone. Each preset has its own address (`issue-address.ts`'s `presetPath`, which
+ *   this module imports). c-presets, c-three-things, c-children, c-urls, c-plain-words,
+ *   c-keyboard.
  * - **The node menu** beside the presets: a `button` named by `CONTROL_LABELS.other_nodes`,
  *   opening a `role="menu"` whose items are its rows: each document no block cites is a
  *   `role="menuitem"` holding the button that opens it and the `button` that copies its
@@ -77,10 +85,11 @@ import { navigateInApp } from "./sends";
  *
  * - **A node's id** (`data-node-id`) is the node's own address inside the issue, so two documents
  *   that both hold a block `r1` draw two different rows: the issue is its key, a document or other
- *   artifact its slug, a block `<slug>#b-<block id>` (`blockNodeId`), and an ask, comment,
- *   message, handoff or result the id the model gives it. A child issue is its key. Read by every
- *   test that names one row. An ask the server indexed from a document's `ask` block is that
- *   block's node, under `blockNodeId`; an ask made on the issue itself is drawn under its own id.
+ *   artifact its slug, a block `<slug>#b-<block id>` (`tree-drafts.ts`'s `blockNodeId`, which a
+ *   test imports from there), and an ask, comment, message, handoff or result the id the model
+ *   gives it. A child issue is its key. Read by every test that names one row. An ask the server
+ *   indexed from a document's `ask` block is that block's node, under `blockNodeId`; an ask made
+ *   on the issue itself is drawn under its own id.
  * - **A node's body sits inside its own row**, so a row and its body are read together
  *   (`[data-node-row] [data-node-body]`). c-tree, c-focus-opens.
  * - **`[data-node-context]`** on a row a preset draws only as the ancestor of a match, which is
@@ -142,27 +151,6 @@ const SELECTORS = {
   presetRow: '[data-testid="issue-presets"]',
   tree: '[role="tree"]',
 } as const;
-
-/** The address of each preset, under `/issues/<key>`: the Checks preset keeps `/verification` and
- *  the Tree preset is the issue's own address (R19, c-urls). */
-const PRESET_PATHS: Readonly<Record<Preset, string>> = {
-  checks: "/verification",
-  decisions: "/decisions",
-  plan: "/plan",
-  spec: "/spec",
-  tree: "",
-};
-
-/** The address of `preset` on `key`, which is the address the preset's own tab carries. */
-export function presetAddress(key: string, preset: Preset): string {
-  return `/issues/${key}${PRESET_PATHS[preset]}`;
-}
-
-/** The id of the row of one block of one document: a block id alone is unique only inside its
- *  document, and an issue carries several. */
-export function blockNodeId(slug: string, block: string): string {
-  return `${slug}#b-${block}`;
-}
 
 // ---------------------------------------------------------------------------------------------
 // The page's parts, as locators.
@@ -387,8 +375,6 @@ export function marginSlot(page: Page): Locator {
   return page.getByTestId("issue-margin");
 }
 
-export type MarginSection = "development" | "people" | "references";
-
 export function marginSection(page: Page, section: MarginSection): Locator {
   return marginSlot(page).locator(`[data-margin-section="${section}"]`);
 }
@@ -419,8 +405,6 @@ export function marginHideControl(page: Page): Locator {
 export function marginShowControl(page: Page): Locator {
   return page.getByRole("button", { exact: true, name: "Show margin" });
 }
-
-export type ConversationState = "everything" | "pinned" | "questions" | "words";
 
 /** One of the conversation's four state controls, inside the panel. */
 export function conversationStateControl(page: Page, state: ConversationState): Locator {
@@ -982,14 +966,29 @@ export async function gotoIssue(page: Page, path: string): Promise<void> {
 
 /** Opens `preset` on `key` at its own address. */
 export async function openPreset(page: Page, key: string, preset: Preset): Promise<void> {
-  await gotoIssue(page, presetAddress(key, preset));
+  await gotoIssue(page, presetPath(key, preset));
 }
 
-/** How many branches `unfoldEveryBranch` will open before it gives up: well past the branches
- *  any seeded issue holds, so the bound costs a settled tree nothing and a tree that draws a
- *  closed twisty whatever is pressed ends as the caller's own failed reading rather than as
- *  this helper running until the test's deadline. */
+/** How many presses `pressEachUntilNone` makes before it gives up: well past the branches any
+ *  seeded issue holds, so the bound costs a settled tree nothing and a tree that draws the
+ *  control whatever is pressed ends as the caller's own failed reading rather than as this
+ *  helper running until the test's deadline. */
 const BRANCHES_OPENED_AT_MOST = 200;
+
+/** Presses the first of `controls` and reads the page again, until none is left: a press draws
+ *  the rows under it, and the controls they hold, so the set is read anew each time. The bound
+ *  and the exit live here alone; `what` names the control in the failure past the bound. */
+async function pressEachUntilNone(controls: Locator, what: string): Promise<void> {
+  for (let pressed = 0; pressed < BRANCHES_OPENED_AT_MOST; pressed += 1) {
+    const first = controls.first();
+    if ((await first.count()) === 0) return;
+    await first.click();
+  }
+  expect(
+    await controls.count(),
+    `the tree still draws ${what} after ${BRANCHES_OPENED_AT_MOST} openings`
+  ).toBe(0);
+}
 
 /**
  * Opens every branch the fold left shut, which is what a reader does to read past one: the page
@@ -997,41 +996,23 @@ const BRANCHES_OPENED_AT_MOST = 200;
  * reads what a branch holds presses its twisty rather than asserting that the first drawing
  * carried it. The reader's own opening outranks the fold, so what this opens stays open.
  *
- * It presses the first closed twisty on the page and reads the tree again, because opening one
- * branch draws the rows - and the twisties - under it, and it stops when none is left.
- *
  * Only at a width that draws the whole tree: at 1024 px and below a row's twisty zooms into
  * that row instead of unfolding it in place (`IssueTree.tsx`), which is a move of its own.
  */
 export async function unfoldEveryBranch(page: Page): Promise<void> {
-  for (let opened = 0; opened < BRANCHES_OPENED_AT_MOST; opened += 1) {
-    const twisty = nodeRows(page)
-      .getByRole("button", { exact: true, name: CONTROL_LABELS.unfold })
-      .first();
-    if ((await twisty.count()) === 0) return;
-    await twisty.click();
-  }
-  expect(
-    await nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }).count(),
-    `the tree still draws a folded branch after ${BRANCHES_OPENED_AT_MOST} openings`
-  ).toBe(0);
+  await pressEachUntilNone(
+    nodeRows(page).getByRole("button", { exact: true, name: CONTROL_LABELS.unfold }),
+    "a folded branch"
+  );
 }
 
 /** Opens every branch the tree folded to one line because it sits below the drawn levels
  *  (`tree-fold.ts`'s `DRAWN_LEVELS`), so a test reads the nodes such a branch holds as rows of
- *  their own. It presses the first of those lines and reads the tree again, as
- *  `unfoldEveryBranch` does, and a tree that draws none is left exactly as it is: how deep a
- *  node sits is the model's own placement, which is what a test may be reading. */
+ *  their own, as `unfoldEveryBranch` does with a twisty. A tree that draws none is left exactly
+ *  as it is: how deep a node sits is the model's own placement, which is what a test may be
+ *  reading. */
 export async function openEveryDeeperBranch(page: Page): Promise<void> {
-  for (let opened = 0; opened < BRANCHES_OPENED_AT_MOST; opened += 1) {
-    const deeper = branchMoreRows(page).getByRole("button").first();
-    if ((await deeper.count()) === 0) return;
-    await deeper.click();
-  }
-  expect(
-    await branchMoreRows(page).count(),
-    `the tree still draws a deeper branch after ${BRANCHES_OPENED_AT_MOST} openings`
-  ).toBe(0);
+  await pressEachUntilNone(branchMoreRows(page).getByRole("button"), "a deeper branch");
 }
 
 /** Opens one of the addresses the old tabs answered, from wherever the page is on that issue:

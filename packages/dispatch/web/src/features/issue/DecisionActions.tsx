@@ -37,6 +37,20 @@ export function rowActionSelector(action: RowAction): string {
 }
 
 /**
+ * Moves the focus off `control` onto its decision's own row, where `control` holds it, before a
+ * write disables or removes `control`. A focused control that is disabled drops the focus to the
+ * document body (measured in Chromium: a `focusout` from Keep with no related target 45 ms
+ * after its write went out), which loses a keyboard reader's place on the page, and the tree
+ * then closes the body the focus held (`IssueTree.tsx`), taking Change with it. On the row the
+ * focus has not left the tree, so the body stays open. The row is `NodeRow`'s `data-node-row`,
+ * and the move takes no scroll: the reader is already looking at it.
+ */
+function keepFocusOnRow(control: HTMLElement): void {
+  if (!control.contains(document.activeElement)) return;
+  control.closest<HTMLElement>("[data-node-row]")?.focus({ preventScroll: true });
+}
+
+/**
  * What a reader does with a decision, on the decision's own node (dispatch://INFRA-1196 R7, the
  * spec's "Decisions tab ... Keep and Change" row, `plan-md#b-t18a`).
  *
@@ -123,7 +137,10 @@ function DecisionControls({
           <button
             className={`rounded border px-1 text-xs ${borderDefault} ${textMutedOnCanvas}`}
             disabled={keep.isPending}
-            onClick={() => keep.mutate(documentId)}
+            onClick={(event) => {
+              keepFocusOnRow(event.currentTarget);
+              keep.mutate(documentId);
+            }}
             tabIndex={-1}
             type="button"
             {...ROW_ACTION_MARKS.keep}
@@ -211,7 +228,10 @@ function ChangeComposer({
       className="flex min-w-0 flex-col gap-1"
       onSubmit={(event) => {
         event.preventDefault();
-        if (body.trim() !== "") send.mutate({ body, quote });
+        if (body.trim() === "") return;
+        // Send is disabled while the comment is out, and the form goes once it lands.
+        keepFocusOnRow(event.currentTarget);
+        send.mutate({ body, quote });
       }}
     >
       <blockquote

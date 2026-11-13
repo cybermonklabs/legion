@@ -26,7 +26,7 @@ export function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
  *  of CORE-1 saved" and not "CORE-1: parent saved". */
 const WRITTEN_FIELD_NAMES: Readonly<Record<keyof IssueUpdateInput, string>> = {
   parent: PROPERTY_LABELS.parent,
-  route: CONTROL_LABELS.message_route,
+  route: CONTROL_LABELS.route,
   status: PROPERTY_LABELS.status,
   title: PROPERTY_LABELS.title,
 };

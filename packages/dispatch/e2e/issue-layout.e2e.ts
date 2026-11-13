@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 
 import { type Browser, expect, type Locator, type Page, test } from "@playwright/test";
 
+import { presetPath } from "../web/src/features/issue/issue-address";
 import {
   CHECK_WHEN_WORDS,
   CONTROL_LABELS,
@@ -19,6 +20,7 @@ import {
   type Preset,
   wordsIn,
 } from "../web/src/features/issue/page-words";
+import { blockNodeId } from "../web/src/features/issue/tree-drafts";
 import { getUnsubscribeCalls } from "./agents";
 import {
   answerAsk,
@@ -29,6 +31,7 @@ import {
   getAsk,
   getIssue,
   getIssueArtifactText,
+  getIssueDecisions,
   getMyState,
   listComments,
   patchIssue,
@@ -67,7 +70,6 @@ import {
   addControl,
   ancestorsOfRow,
   badgeValue,
-  blockNodeId,
   boxesPastTheirCard,
   branchMoreRows,
   checksRow,
@@ -118,7 +120,6 @@ import {
   parentOfRow,
   pinnedBodies,
   planRow,
-  presetAddress,
   presetChooser,
   presetCount,
   presetMenuItem,
@@ -741,11 +742,11 @@ test("the presets are queries over one tree and fit every width @phone", async (
     // duplicates nothing.
     const chains = new Map<string, { chain: string; preset: Preset }>();
     for (const preset of PRESET_ORDER) {
-      await gotoIssue(page, presetAddress(seeded.key, preset));
+      await gotoIssue(page, presetPath(seeded.key, preset));
       await expectIssuePageDrawn(page);
       expect(
         await activePreset(page),
-        `${presetAddress(seeded.key, preset)} does not open the ${PRESET_NAMES[preset]} preset`
+        `${presetPath(seeded.key, preset)} does not open the ${PRESET_NAMES[preset]} preset`
       ).toBe(PRESET_NAMES[preset]);
 
       const rows = await drawnRows(page);
@@ -929,7 +930,7 @@ test("the three things are at the head of every preset @phone", async ({ browser
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
-        await gotoIssue(page, presetAddress(seeded.key, preset));
+        await gotoIssue(page, presetPath(seeded.key, preset));
         expect(
           await threeThings(page).count(),
           `the ${PRESET_NAMES[preset]} preset draws no three things at ${size.width} px`
@@ -1168,7 +1169,7 @@ test("the children section opens each preset and collapses to its counts @phone"
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
-        await gotoIssue(page, presetAddress(seeded.key, preset));
+        await gotoIssue(page, presetPath(seeded.key, preset));
         expect(
           await childrenSection(page).count(),
           `the ${PRESET_NAMES[preset]} preset draws no children section at ${size.width} px`
@@ -1247,7 +1248,7 @@ test("the children section opens each preset and collapses to its counts @phone"
 
   await phase(browser, seedNoChildren, async (page, seeded) => {
     for (const preset of PRESET_ORDER) {
-      await gotoIssue(page, presetAddress(seeded.key, preset));
+      await gotoIssue(page, presetPath(seeded.key, preset));
       await expectIssuePageDrawn(page);
       expect(
         await childrenSection(page).count(),
@@ -1846,7 +1847,7 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
     for (const size of [DESKTOP, PHONE]) {
       await page.setViewportSize({ height: size.height, width: size.width });
       for (const preset of PRESET_ORDER) {
-        await gotoIssue(page, presetAddress(seeded.key, preset));
+        await gotoIssue(page, presetPath(seeded.key, preset));
         await expectIssuePageDrawn(page);
         // `gotoIssue` waits for the head alone and the tree is drawn empty, so the view is
         // waited for by its rows: a preset read before its own query landed is a head and a
@@ -2117,7 +2118,7 @@ test("a requirement whose words hold an unbroken run keeps the page inside its v
   await phase(browser, seedUnbrokenWords, async (page, seeded) => {
     for (const width of [320, 390, 1440]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
-      await gotoIssue(page, presetAddress(seeded.key, "spec"));
+      await gotoIssue(page, presetPath(seeded.key, "spec"));
       await expectIssuePageDrawn(page);
       // The words are on the page before it is measured, so a fit read before the list draws
       // cannot pass for the fit of a page that holds them.
@@ -2229,7 +2230,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
     const zoomsInto = new Set<number>();
     const views = (width: number) => [
       ...PRESET_ORDER.map((preset) => async () => {
-        await gotoIssue(page, presetAddress(seeded.key, preset));
+        await gotoIssue(page, presetPath(seeded.key, preset));
         return true;
       }),
       async () => {
@@ -2356,7 +2357,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
         : PRESET_ORDER.flatMap((preset) =>
             Array.from({ length: 8 }, (_unused, index) => async () => {
               if (index === 0) {
-                await gotoIssue(page, presetAddress(seeded.key, preset));
+                await gotoIssue(page, presetPath(seeded.key, preset));
                 const first = nodeRows(page);
                 if ((await first.count()) > 0) await first.first().focus();
                 return true;
@@ -2500,7 +2501,7 @@ test("the new page carries every element of the old one @phone", async ({ browse
     await expect.poll(async () => (await getIssue(seeded.key)).parent).toBeNull();
 
     await offered(page, "button", `Messages default to ${PLANNER_TITLE}`).click();
-    const route = page.getByRole("textbox", { name: "Message route" });
+    const route = page.getByRole("textbox", { name: "Messages go to" });
     await route.fill("role:reviewer");
     await offered(page, "button", CONTROL_LABELS.save_route).click();
     await expect.poll(async () => (await getIssue(seeded.key)).route).toBe("role:reviewer");
@@ -2581,9 +2582,29 @@ test("the new page carries every element of the old one @phone", async ({ browse
       "exactly one decision waits for review, and it is the one Keep names"
     ).not.toBeNull();
     const decidingRow = page.locator(`[data-node-row][data-node-id="${decidingId}"]`);
+    const decidingBlock = decidingId?.split("#b-")[1];
     await decidingRow
       .getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision })
       .click();
+    // Keep's own write, read back from Dispatch, as every write of this walk is: the press is
+    // what this step proves, and a press the page lost used to leave the decision waiting
+    // while the step went on to Change regardless (`NodeRow.tsx`, the press that scrolled).
+    await expect
+      .poll(
+        async () =>
+          ((await getIssueDecisions(seeded.key)).decisions ?? []).find(
+            (decision) => decision.block_id === decidingBlock
+          )?.kept ?? null,
+        { message: "Keep was pressed and Dispatch recorded no Keep of that decision" }
+      )
+      .not.toBeNull();
+    // The page has taken the write once Keep is gone from the row, and the preset has opened
+    // the next waiting decision's body by then. This row's body is still open: Keep moves the
+    // focus onto its decision's row before its write disables it (`DecisionActions.tsx`), so
+    // Change is pressed where it was, on the row the reader never left.
+    await expect(
+      decidingRow.getByRole("button", { exact: true, name: CONTROL_LABELS.keep_decision })
+    ).toHaveCount(0);
     await decidingRow
       .getByRole("button", { exact: true, name: CONTROL_LABELS.change_decision })
       .click();
@@ -2675,11 +2696,11 @@ test("every address of the old page still resolves", async ({ browser }) => {
 
     // Every preset's own address.
     for (const preset of PRESET_ORDER) {
-      await gotoIssue(page, presetAddress(seeded.key, preset));
+      await gotoIssue(page, presetPath(seeded.key, preset));
       await expectIssuePageDrawn(page);
       expect(
         await activePreset(page),
-        `${presetAddress(seeded.key, preset)} does not open the ${PRESET_NAMES[preset]} preset`
+        `${presetPath(seeded.key, preset)} does not open the ${PRESET_NAMES[preset]} preset`
       ).toBe(PRESET_NAMES[preset]);
     }
 

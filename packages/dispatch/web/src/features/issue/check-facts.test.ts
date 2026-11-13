@@ -43,20 +43,21 @@ function standsWord(result: CheckResult): string | undefined {
   return resultFacts(result).find((fact) => fact.name === "stands")?.value;
 }
 
-test("a result at the commit its check compares with reads as current", () => {
+test("a result at the commit its check compares with reads as up to date", () => {
   expect(standsWord(recorded())).toBe(RESULT_CURRENCY_WORDS.current);
 });
 
-test("a result the work has moved past reads as older", () => {
+test("a result the work has moved past reads as out of date", () => {
   expect(standsWord(recorded({ commit_stands: { answer: "other_commit" } }))).toBe(
     RESULT_CURRENCY_WORDS.older
   );
 });
 
-// "Current" means both halves: at the commit the work stands at, and against the words the
+// "Up to date" means both halves: at the commit the work stands at, and against the words the
 // result proved. A check reworded since keeps the first half and loses the second, and the
-// result read "Current" over words it never ran against (`checkState` reads the same field).
-test("a result under a check whose words moved since does not read as current", () => {
+// result once read as current over words it never ran against (`checkState` reads the same
+// field).
+test("a result under a check whose words moved since does not read as up to date", () => {
   expect(standsWord(recorded({ check_words_moved: true }))).toBe(RESULT_CURRENCY_WORDS.older);
 });
 

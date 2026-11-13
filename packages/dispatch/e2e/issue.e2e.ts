@@ -1,6 +1,6 @@
 import { QUERY_RETRY_DELAY_MS } from "../web/src/api/query-client";
 import { MIN_REFETCH_INTERVAL_MS } from "../web/src/api/query-refresh";
-import { HELP_LINES } from "../web/src/features/issue/page-structure";
+import { HELP_LINES, PROPERTY_LABELS } from "../web/src/features/issue/page-structure";
 import { CONTROL_LABELS } from "../web/src/features/issue/page-words";
 import { getUnsubscribeCalls, setInterests, setLiveSessions } from "./agents";
 import {
@@ -256,7 +256,9 @@ test("issue header copies its key and persists its title, status, and route", as
     await page.getByLabel("Status").selectOption("todo");
     await expect.poll(() => getIssue(issue.key)).toMatchObject({ status: "todo" });
     await page.getByRole("button", { name: "Messages default to no route" }).click();
-    await page.getByLabel("Message route").fill("role:legion-controller-core");
+    await page
+      .getByLabel(PROPERTY_LABELS.route, { exact: true })
+      .fill("role:legion-controller-core");
     await page.getByRole("button", { name: "Save route" }).click();
     await expect
       .poll(() => getIssue(issue.key))
@@ -266,7 +268,7 @@ test("issue header copies its key and persists its title, status, and route", as
     await page
       .getByRole("button", { name: "Messages default to role:legion-controller-core" })
       .click();
-    const routeInput = page.getByLabel("Message route");
+    const routeInput = page.getByLabel(PROPERTY_LABELS.route, { exact: true });
     await routeInput.fill("");
     // The field must still read "" when the earlier PATCH's response has been applied;
     // a revert here (not a wrong request body) is the race this test guards.

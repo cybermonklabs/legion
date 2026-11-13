@@ -401,20 +401,14 @@ function bringHome(
       queue.push(...(placements.get(above) ?? []));
     }
   };
+  // Nothing the reads hold is lost (R1): every draft the issue cannot reach sits under a ring,
+  // since a draft whose placements run out sits under the issue and is reached, so the rings
+  // this opens answer for them all.
   for (;;) {
     const member = ordered.find((draft) => !reached.has(draft.id) && inRing(draft.id));
     if (member === undefined) break;
     placements.set(member.id, [key]);
     reached.add(member.id);
     walk(member.id);
-  }
-  // Nothing the reads hold is lost (R1): every draft the issue cannot reach sits under a ring,
-  // since a draft whose placements run out sits under the issue and is reached, so the rings
-  // above answer for them all. A draft left over all the same still comes home.
-  for (const draft of ordered) {
-    if (reached.has(draft.id)) continue;
-    placements.set(draft.id, [key]);
-    reached.add(draft.id);
-    walk(draft.id);
   }
 }

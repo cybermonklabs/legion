@@ -406,6 +406,12 @@ export function getIssue(key: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}", { params: { key } }, options);
 }
 
+/** `GET /api/v1/issues/{key}/decisions`: the issue's decision records, each with whether it
+ *  waits for the reader's review and the Keep a person recorded. */
+export function getIssueDecisions(key: string, options: ApiOptions = {}) {
+  return get("/api/v1/issues/{key}/decisions", { params: { key } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/events`: the issue's events in the server's order.
  *
  *  The answer is typed `DispatchEvent[]`, not the document's `Event[]`: Go's `model.Event.Payload`

@@ -142,7 +142,6 @@ function RouteForm({
         {PROPERTY_LABELS.route}
       </label>
       <input
-        aria-label={CONTROL_LABELS.message_route}
         aria-describedby="issue-route-hint issue-route-help"
         className={`w-full rounded px-2 py-1 text-sm outline-none md:w-64 ${inputClasses(true)}`}
         disabled={isClosed}
@@ -166,11 +165,14 @@ function RouteForm({
         saveLabel="Save route"
         saving={isClosed || !drafts.routeIsValid || saving}
       />
+      {/* What the box takes, in words (`HELP_LINES.route_shape`): a refusal while the draft is
+          one Dispatch would not take, and the box's description otherwise (R21). */}
       <span
         className={drafts.routeIsValid ? "sr-only" : `text-sm ${dangerText}`}
         id="issue-route-help"
+        {...pageChrome}
       >
-        A message route must be role:[a-z0-9-]+ or session:[0-9a-f-]{`{16,}`}.
+        {HELP_LINES.route_shape}
       </span>
       <p
         className={`basis-full text-sm ${textMutedOnSurface}`}

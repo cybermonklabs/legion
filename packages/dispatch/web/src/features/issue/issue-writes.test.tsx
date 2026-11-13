@@ -16,7 +16,7 @@ import { projectIssuesQueryKey } from "../project/issue-filters";
 import { writesOf } from "../writes/write-store";
 import { blockedByControlName } from "./BlockedByControl";
 import { IssuePage } from "./IssuePage";
-import { PROPERTY_LABELS } from "./page-structure";
+import { HELP_LINES, PROPERTY_LABELS } from "./page-structure";
 import { BLOCKED_BY_REFUSALS, CONTROL_LABELS } from "./page-words";
 import { blockedByRefusal } from "./useIssueBlockedBy";
 import { issueUpdateLabel } from "./useIssueHeaderWrites";
@@ -196,13 +196,13 @@ async function openTitleEditor(): Promise<HTMLInputElement> {
 }
 
 async function openRouteEditor(): Promise<HTMLInputElement> {
-  const existing = screen.queryByLabelText("Message route");
+  const existing = screen.queryByLabelText("Messages go to");
   if (existing instanceof HTMLInputElement) {
     return existing;
   }
   const user = userEvent.setup();
   await user.click(await screen.findByRole("button", { name: /Messages default to/ }));
-  return (await screen.findByLabelText("Message route")) as HTMLInputElement;
+  return (await screen.findByLabelText("Messages go to")) as HTMLInputElement;
 }
 
 /** Opens the identity block's one actions control, which holds close, reopen and the control
@@ -325,7 +325,7 @@ test("IssuePage keeps the document and a route draft across a save response", as
     expect(
       screen.queryByText("Could not load this issue's primary document.")
     ).not.toBeInTheDocument();
-    expect(screen.getByLabelText("Message route")).toBe(route);
+    expect(screen.getByLabelText("Messages go to")).toBe(route);
     expect(route.value).toBe("");
   } finally {
     unmount();
@@ -651,6 +651,32 @@ test("IssuePage does not retry an invalid route draft after a failed save", asyn
     await waitFor(() =>
       expect(patchIssue).toHaveBeenLastCalledWith("CORE-1", { route: "role:b" }, keyedAttempt)
     );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// What the route box refuses is said in the reader's words: a regular expression is the model's
+// own rule for a route, and drawn on the issue page it told a reader nothing they could type
+// (R21). The words say what a route looks like and how to clear one.
+test("the route box says what a route looks like in words, and draws no pattern", async () => {
+  const user = userEvent.setup();
+  const { restore } = stubIssueApi();
+  const { unmount } = renderIssuePage();
+
+  try {
+    const route = await openRouteEditor();
+    await user.click(route);
+    await user.paste("not-a-route");
+    const refusal = document.getElementById("issue-route-help");
+    expect(route.getAttribute("aria-describedby")).toContain("issue-route-help");
+    expect(
+      refusal?.textContent ?? "",
+      "the route box's refusal draws a regular expression where a reader needs words"
+    ).not.toMatch(/[[\]{}()*+?^$|\\]/);
+    expect(refusal?.textContent).toBe(HELP_LINES.route_shape);
+    expect(screen.getByRole("button", { name: "Save route" })).toHaveProperty("disabled", true);
   } finally {
     unmount();
     restore();
@@ -1204,7 +1230,7 @@ test("the blocked-by editor stays open on a refusal and says what Dispatch refus
   const { unmount } = renderIssuePage();
 
   try {
-    await user.click(await screen.findByRole("button", { name: "Add blocked by of CORE-1" }));
+    await user.click(await screen.findByRole("button", { name: "Add issues CORE-1 waits on" }));
     const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
     await user.click(keys);
     await user.paste("CORE-9");
@@ -1241,7 +1267,7 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
 
   try {
     expect(await screen.findByRole("link", { name: "CORE-2" })).toBeInTheDocument();
-    await user.click(await screen.findByRole("button", { name: "Edit blocked by of CORE-1" }));
+    await user.click(await screen.findByRole("button", { name: "Edit issues CORE-1 waits on" }));
     const keys = (await screen.findByLabelText("Issues CORE-1 waits on")) as HTMLInputElement;
     expect(keys.value).toBe("CORE-2");
 
@@ -1261,7 +1287,7 @@ test("a blocked-by that is set can be changed and cleared from the panel", async
     );
     expect(await screen.findByRole("link", { name: "CORE-3" })).toBeInTheDocument();
 
-    await user.click(await screen.findByRole("button", { name: "Edit blocked by of CORE-1" }));
+    await user.click(await screen.findByRole("button", { name: "Edit issues CORE-1 waits on" }));
     await user.clear(await screen.findByLabelText("Issues CORE-1 waits on"));
     await user.click(screen.getByRole("button", { name: "Save blocked by" }));
     await waitFor(() =>
@@ -1284,7 +1310,7 @@ test("the shell's indicator names the field a header write is saving", async () 
 
   try {
     await user.click(await screen.findByRole("button", { name: "Messages default to no route" }));
-    const route = (await screen.findByLabelText("Message route")) as HTMLInputElement;
+    const route = (await screen.findByLabelText("Messages go to")) as HTMLInputElement;
     await user.click(route);
     await user.paste("role:legion-controller-core");
     await user.click(screen.getByRole("button", { name: "Save route" }));
@@ -1294,7 +1320,7 @@ test("the shell's indicator names the field a header write is saving", async () 
         writesOf(queryClient)
           .rows()
           .map((row) => row.label)
-      ).toEqual(["Message route of CORE-1 saved"])
+      ).toEqual(["Route of CORE-1 saved"])
     );
     saving.resolve(narrowIssue({ ...issue, route: "role:legion-controller-core" }));
     await waitFor(() => expect(writesOf(queryClient).rows()).toHaveLength(0));
@@ -1501,7 +1527,7 @@ test("the add menu opens the control the panel draws, under the name that contro
 test("the indicator names every field a header write carries, and a status by the page's word", () => {
   expect(issueUpdateLabel("CORE-1", { parent: "CORE-9" })).toBe("Parent of CORE-1 saved");
   expect(issueUpdateLabel("CORE-1", { route: "role:legion-controller-core" })).toBe(
-    "Message route of CORE-1 saved"
+    "Route of CORE-1 saved"
   );
   expect(issueUpdateLabel("CORE-1", { status: "in_progress" })).toBe("CORE-1 set to In progress");
   expect(issueUpdateLabel("CORE-1", { status: "todo" })).toBe("CORE-1 set to Todo");

@@ -209,7 +209,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // pattern's rule for the key.
       id: "tree-unfold",
       keys: "ArrowRight",
-      label: "Unfold the focused node, or move into it",
+      label: "Unfold the focused row, or move into it",
       palette: false,
       run: () => {
         const { elements, rows } = drawn();
@@ -236,7 +236,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       id: "tree-fold",
       keys: "ArrowLeft",
-      label: "Fold the focused node, or move to its parent",
+      label: "Fold the focused row, or move to its parent",
       palette: false,
       run: () => {
         const { elements, rows } = drawn();
@@ -265,7 +265,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       id: "tree-pin",
       keys: "o",
-      label: "Keep the focused node's body open",
+      label: "Keep the focused row's body open",
       palette: false,
       run: () => {
         const row = focusedRow();
@@ -329,7 +329,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       id: "tree-zoom-in",
       keys: ".",
-      label: "Zoom into the focused node",
+      label: "Zoom into the focused row",
       palette: false,
       run: () => {
         const row = focusedRow();
@@ -378,7 +378,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
     {
       id: "tree-decision",
       keys: "w",
-      label: "Move into the decision behind the focused node",
+      label: "Move into the decision behind the focused row",
       run: () => {
         const node = focusedRow()?.node;
         const decision = node === undefined ? undefined : decisionBehind(tree.root, node.id);
@@ -411,7 +411,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       // them with no way to press them at all (WCAG 2.1.1).
       id: "tree-edit",
       keys: "Enter",
-      label: "Put the caret in the focused node",
+      label: "Put the caret in the focused row",
       palette: false,
       run: () => {
         const { elements, rows } = drawn();
@@ -431,7 +431,7 @@ export function useTreeKeymap(tree: TreeKeyboard): void {
       id: "tree-leave-caret",
       inEditable: true,
       keys: "Escape",
-      label: "Leave the node's text",
+      label: "Leave the row's text",
       palette: false,
       run: () => {
         const row = caretFrom.current;

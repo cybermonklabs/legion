@@ -253,6 +253,87 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   }
 });
 
+/** The one decision's tree the two rows below press its controls in. */
+function decisionTree(): TreeNode {
+  return node({
+    children: [
+      node({ id: "decisions#b-d1", reference: decision.ref, type: "decision", waiting: true }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+}
+
+// A control that disables itself while its write is out drops the focus to the document body
+// if it holds it: a keyboard reader loses their place, and the tree closes the body the focus
+// held, taking Change with it (measured in Chromium: a `focusout` from Keep with no related
+// target 45 ms after its write went out, then the kept decision's body removed). So Keep moves
+// the focus onto its decision's own row first, and the row's body stays open throughout.
+test("Keep keeps the focus on its decision's row while its write is out, and after", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<never>();
+  const kept = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
+  const view = renderTree(decisionTree(), {
+    artifacts: [decisionsDocument],
+    decisions: { decisions: [decision], document: null, open_questions: [] },
+  });
+  try {
+    const [row] = rowsFor(view.container, "decisions#b-d1");
+    if (row === undefined) throw new Error("the decision has no row");
+    await act(async () => row.focus());
+    const keep = await view.findByRole("button", { name: "Keep" });
+    await user.click(keep);
+    await waitFor(() => expect(kept).toHaveBeenCalled());
+    await waitFor(() => expect(keep).toHaveProperty("disabled", true));
+    expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
+    expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
+
+    await act(async () => answer.resolve({ ...decision, waiting_review: false } as never));
+    await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
+    expect(document.activeElement).toBe(row);
+    expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
+  } finally {
+    kept.mockRestore();
+  }
+});
+
+// The same for Change's own Send, which is disabled while the comment is out and goes with the
+// form once it lands.
+test("Send change keeps the focus on its decision's row while the comment is out, and after", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const answer = Promise.withResolvers<never>();
+  const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
+  const view = renderTree(decisionTree(), {
+    artifacts: [decisionsDocument],
+    decisions: { decisions: [decision], document: null, open_questions: [] },
+  });
+  try {
+    const [row] = rowsFor(view.container, "decisions#b-d1");
+    if (row === undefined) throw new Error("the decision has no row");
+    await act(async () => row.focus());
+    await user.click(await view.findByRole("button", { name: "Change" }));
+    await user.keyboard("Say more about the flag.");
+    const send = view.getByRole("button", { name: "Send change" });
+    await user.click(send);
+    await waitFor(() => expect(sent).toHaveBeenCalled());
+    await waitFor(() => expect(send).toHaveProperty("disabled", true));
+    expect(
+      document.activeElement,
+      "the focus stayed on Send change, which its write disables"
+    ).toBe(row);
+    expect(row.querySelector("[data-node-body]"), "the decision's body closed").not.toBeNull();
+
+    await act(async () => answer.resolve({ id: "comment-1" } as never));
+    await waitFor(() => expect(view.queryByRole("textbox", { name: "Your change" })).toBeNull());
+    expect(document.activeElement).toBe(row);
+    expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
+  } finally {
+    sent.mockRestore();
+  }
+});
+
 test("Escape leaves the caret for the placement it was taken from, not the node's first row", async () => {
   setViewport(1440);
   const user = userEvent.setup();

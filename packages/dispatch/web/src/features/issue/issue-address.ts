@@ -119,20 +119,25 @@ function pinnedVersion(search: string): number | undefined {
   return /^[1-9]\d*$/.test(value) ? Number(value) : undefined;
 }
 
+/** The document a route names, by its slug: an `artifact` route's own, and the issue's spec for
+ *  a `spec` route, which names the primary document as much as `/artifacts/<spec>` does. Every
+ *  other route names none. */
+function routeDocument(route: IssueRoute, specSlug: string | undefined): string | undefined {
+  if (route.kind === "artifact") return route.slug;
+  return route.kind === "spec" ? specSlug : undefined;
+}
+
 /** The node `route` and `search` name, outside of a `#b-` fragment. */
-function routeTarget(route: IssueRoute): AddressTarget | undefined {
+function routeTarget(route: IssueRoute, specSlug: string | undefined): AddressTarget | undefined {
   if (route.kind === "ask" || route.kind === "comment" || route.kind === "message") {
     return { id: route.id, kind: "turn" };
   }
-  if (route.kind === "artifact") {
+  if (route.kind === "artifact" || route.kind === "spec") {
     const block = "block" in route ? route.block : undefined;
-    return block === undefined
-      ? { id: route.slug, kind: "node" }
-      : { document: route.slug, id: block.id, kind: "block" };
-  }
-  if (route.kind === "spec") {
-    const block = "block" in route ? route.block : undefined;
-    return block === undefined ? undefined : { id: block.id, kind: "block" };
+    if (block !== undefined) {
+      return { document: routeDocument(route, specSlug), id: block.id, kind: "block" };
+    }
+    return route.kind === "artifact" ? { id: route.slug, kind: "node" } : undefined;
   }
   return undefined;
 }
@@ -140,15 +145,18 @@ function routeTarget(route: IssueRoute): AddressTarget | undefined {
 /**
  * What the address `route` + `search` + `hash` opens. `isPrimaryDocument` says the route names
  * the issue's own spec by its slug (`/artifacts/<spec>`), which is the Spec preset's address as
- * much as `/spec` is. The fragment outranks the route's own
- * target, because a reader who wrote `#b-` meant that block; `?ask=` and `?comment=` outrank
- * both, because they are what a deep link into a question or a comment carries.
+ * much as `/spec` is, and `specSlug` is that spec's slug, which a block a `/spec` address names
+ * is looked up in; undefined until the issue's documents are read. The fragment outranks the
+ * route's own target, because a reader who wrote `#b-` meant that block; `?ask=` and
+ * `?comment=` outrank both, because they are what a deep link into a question or a comment
+ * carries.
  */
 export function issueAddress(
   route: IssueRoute,
   search: string,
   hash: string,
-  isPrimaryDocument: boolean
+  isPrimaryDocument: boolean,
+  specSlug: string | undefined
 ): IssueAddress {
   const query = new URLSearchParams(search);
   const item = itemFromSearch(search);
@@ -161,12 +169,8 @@ export function issueAddress(
   const block = hash.startsWith("#b-") ? decodeBlockId(hash.slice(3)) : undefined;
   const named: AddressTarget | undefined =
     block === undefined
-      ? routeTarget(route)
-      : {
-          document: route.kind === "artifact" ? route.slug : undefined,
-          id: block,
-          kind: "block",
-        };
+      ? routeTarget(route, specSlug)
+      : { document: routeDocument(route, specSlug), id: block, kind: "block" };
   return {
     conversation: ROUTE_CONVERSATION_STATES[route.kind],
     filter: query.get("q") ?? "",

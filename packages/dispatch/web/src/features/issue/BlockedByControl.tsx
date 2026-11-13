@@ -29,15 +29,16 @@ export function issueKeysIn(value: string): readonly string[] {
 }
 
 /**
- * The name the blocked-by control answers to: the word it shows, the property it opens and the
- * issue it is on, so a voice user saying what they read presses it (WCAG 2.5.3). The add menu
- * reaches the control by this name rather than drawing a second copy of it, and calls this
- * function for it (`IssueAddMenu.tsx`), so the two sides cannot drift apart: a word changed
+ * The name the blocked-by control answers to: the word it shows and what it opens, in the words
+ * the box it opens is named by ("Issues CORE-1 waits on"), so a voice user saying what they read
+ * presses it (WCAG 2.5.3) and every reader hears one sentence: "Add issues CORE-1 waits on". The
+ * add menu reaches the control by this name rather than drawing a second copy of it, and calls
+ * this function for it (`IssueAddMenu.tsx`), so the two sides cannot drift apart: a word changed
  * here changes both.
  */
 export function blockedByControlName(issueKey: string, blockerCount: number): string {
   const verb = blockerCount === 0 ? CONTROL_LABELS.add : CONTROL_LABELS.edit;
-  return `${verb} ${PROPERTY_LABELS.blocked_by.toLowerCase()} of ${issueKey}`;
+  return `${verb} issues ${issueKey} waits on`;
 }
 
 /**

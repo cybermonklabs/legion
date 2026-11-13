@@ -129,11 +129,10 @@ export function NodeRow({
     GLYPH_TOKENS.states;
   const stateGlyph = node.state === undefined ? undefined : stateGlyphs[node.type]?.[node.state];
   /** What a folded row says it holds: drawn beside the node's own text where the row wraps,
-   *  and in the body where it is one line. */
+   *  and in the body where it is one line. The words agree with the count: "1 row", "3 rows". */
+  const foldedWords = folded === 1 ? CONTROL_LABELS.folded_row : CONTROL_LABELS.folded_rows;
   const counted =
-    folded === undefined || expanded !== false
-      ? undefined
-      : `${folded} ${CONTROL_LABELS.folded_nodes}`;
+    folded === undefined || expanded !== false ? undefined : `${folded} ${foldedWords}`;
   // The node's own first line. Where the row wraps, it is the whole of `firstLineOf`'s line;
   // where the row is one line, it is cut again, at a word, to the pixels the row's own box
   // leaves it beside its twisty, its type, its author and its state (R1). The count is no
@@ -192,12 +191,33 @@ export function NodeRow({
   // its own text when the body opens, because the page reads no document's text before a
   // reader opens it (R20), so the row the focus lands on is short for as long as that read
   // takes and the text would otherwise push its foot off the screen.
+  //
+  // Except while a press inside the row is held. A press on an unfocused row focuses it on
+  // mousedown, before the press ends, and a scroll then moves what the pointer went down on:
+  // the press ends on something else and the control it was on never hears it. Measured at
+  // 1440 px on the Decisions preset, a row whose top sat 24 px under the identity block
+  // scrolled 32 px between mousedown and mouseup, and the reader's Keep was never sent. The
+  // reader pressed what they could see, so there is nothing to bring on screen.
+  const pressed = useRef(false);
+  const press = () => {
+    pressed.current = true;
+    const ended = new AbortController();
+    const release = () => {
+      pressed.current = false;
+      ended.abort();
+    };
+    window.addEventListener("pointerup", release, { capture: true, signal: ended.signal });
+    window.addEventListener("pointercancel", release, { capture: true, signal: ended.signal });
+  };
   useLayoutEffect(() => {
     const element = row.current;
     if (!focused || element === null) return;
-    bringOnScreen(element);
+    const place = () => {
+      if (!pressed.current) bringOnScreen(element);
+    };
+    place();
     if (typeof ResizeObserver === "undefined") return;
-    const grown = new ResizeObserver(() => bringOnScreen(element));
+    const grown = new ResizeObserver(place);
     grown.observe(element);
     return () => grown.disconnect();
   }, [focused]);
@@ -217,6 +237,7 @@ export function NodeRow({
       data-node-type={node.type}
       data-row-key={rowKey}
       onFocus={onFocus}
+      onPointerDown={press}
       ref={row}
       role="treeitem"
       style={{ paddingLeft: indent }}
@@ -299,7 +320,7 @@ export function NodeRow({
             carries its type, its author, its own first line and its state. */}
         {oneLine || counted === undefined ? null : (
           <span className={`text-xs ${textMutedOnCanvas} ${whole}`} {...pageChrome}>
-            <span {...authorText}>{folded}</span> {CONTROL_LABELS.folded_nodes}
+            <span {...authorText}>{folded}</span> {foldedWords}
           </span>
         )}
         {state === undefined || node.state === undefined ? null : (
@@ -461,7 +482,8 @@ function Chip({ chip, label }: { chip: NodeChip; label?: string }): ReactNode {
       data-node-chip=""
     >
       {label === undefined ? null : <span {...pageChrome}>{label} </span>}
-      {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale} </span> : null}
+      {/* A sentence about the target, so a colon sets it apart from the target's own words. */}
+      {chip.stale === true ? <span {...pageChrome}>{CONTROL_LABELS.target_stale}: </span> : null}
       {chip.gone ? <span {...pageChrome}>{CONTROL_LABELS.target_gone} </span> : named}
       {address === chip.name ? null : (
         <span className="break-all" {...authorText}>

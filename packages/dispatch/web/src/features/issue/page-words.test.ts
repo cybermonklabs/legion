@@ -277,7 +277,31 @@ test("every gap line is one sentence that says what is absent", () => {
   for (const line of Object.values(GAP_LINES)) {
     expect(line).toMatch(/^[A-Z][^_]*\.$/);
   }
-  expect(GAP_LINES.no_origin).toBe("This node does not say which node it came from.");
+  expect(GAP_LINES.no_origin).toBe("This does not say where it came from.");
+});
+
+// A node is a row to the reader, the word the tree's own keys already use, and "node" is the
+// model's word: no sentence the page draws says it, and no count reads "1 rows".
+test("no word the page declares is the model's word for a node", () => {
+  expect(DECLARED_WORDS).not.toContain("node");
+  expect(DECLARED_WORDS).not.toContain("nodes");
+  expect([CONTROL_LABELS.folded_row, CONTROL_LABELS.deeper_row].join(" ")).not.toMatch(/\brows\b/);
+  expect([CONTROL_LABELS.folded_rows, CONTROL_LABELS.deeper_rows].join(" ")).not.toMatch(/\brow\b/);
+});
+
+// A state is told apart by its word, so no two states of a check share one, and no other word
+// the page draws reads as one of them: a decision's chip once said "Out of date" of a block the
+// decision changed after naming, which is not what the check state means. A result that no
+// longer speaks for the work is the one other place that word is drawn, because it is the
+// same fact: the check reads that state when its newest result reads so.
+test("every check state has a word of its own, and the page says it of nothing else", () => {
+  const checkWords = Object.values(NODE_STATE_WORDS.check);
+  expect(new Set(checkWords).size).toBe(checkWords.length);
+  for (const word of [...Object.values(CONTROL_LABELS), ...Object.values(GAP_WORDS)]) {
+    expect(checkWords, `"${word}" reads as a check state`).not.toContain(word);
+  }
+  expect(RESULT_CURRENCY_WORDS.older).toBe(NODE_STATE_WORDS.check.older);
+  expect(checkWords).not.toContain(RESULT_CURRENCY_WORDS.current);
 });
 
 test("every gap a row draws has a short word, one per gap the page names", () => {

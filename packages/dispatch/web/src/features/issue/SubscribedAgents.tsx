@@ -60,10 +60,13 @@ export function SubscribedAgents({
             {/* Why Unsubscribe is refused, drawn rather than carried as the control's `title`:
                 a disabled control takes no focus and raises no tooltip on a phone, so the
                 reason reached nobody who could not already press it (R21, the panel draws this
-                section inside `NoTooltips`). */}
+                section inside `NoTooltips`). The session's subscription is wider than this one
+                owner (`Subscriber.via`), and removing it would unsubscribe it from everything
+                that subscription covers; the line says that rather than drawing the topic. */}
             {subscriber.removable ? null : (
               <span className="text-xs italic">
-                via {subscriber.via}, which covers other issues and documents too
+                Its subscription covers other issues and documents too, so it cannot be unsubscribed
+                from this one alone.
               </span>
             )}
             <button

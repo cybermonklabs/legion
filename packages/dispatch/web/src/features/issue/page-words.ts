@@ -111,7 +111,11 @@ export const NODE_STATE_WORDS = freeze({
     failed: "Failed",
     "no-result": "No result",
     /** The newest result was recorded against work the check no longer compares its results
-     *  with, so it no longer speaks for the work as it stands, whatever it found. */
+     *  with, or against an older wording of the check, so it no longer speaks for the work as
+     *  it stands, whatever it found. A result says the same of itself in the same words
+     *  (`RESULT_CURRENCY_WORDS`), and nothing else on the page draws them: a decision's chip
+     *  for a block it changed after naming says so in words of its own
+     *  (`CONTROL_LABELS.target_stale`). */
     older: "Out of date",
     passed: "Passed",
     /** Every result recorded against the check has been withdrawn (`CheckResultRetracted`),
@@ -120,10 +124,11 @@ export const NODE_STATE_WORDS = freeze({
      *  that was retracted reads the same word for the same reason, and `STATE_WORDS` holds
      *  the two to it. */
     retracted: "Retracted",
-    /** There is a result, and nothing could judge whether a pass of the check stands - the
-     *  repository is unreadable, or a commit could not be placed - so the page will not say
-     *  that it passed. */
-    unmarked: "Not judged",
+    /** There is a result, and Dispatch cannot tell whether a pass of the check stands - it
+     *  could not read the repository, or could not place the commit a pass was recorded at -
+     *  so the page will not say that it passed. The word says Dispatch cannot tell, which "No
+     *  result" does not: there is a result to tell about. */
+    unmarked: "Cannot tell",
     /** The payload carries no answer over the check's results at all, which is a server that
      *  does not send `pass_stands` - an older build behind the same load balancer as this
      *  one. The page says what is true of it, which is that it could not read how this check
@@ -308,17 +313,24 @@ export const EMPTY_STATE_LINES = freeze({
  * latest result recording no negative control. The last one says what the result left out and
  * no more: whether a control could have changed the verdict is not in the data, and the page
  * states no verdict of its own on it.
+ *
+ * The lines say each of these in the reader's words rather than the model's: a node is "this",
+ * because the line is drawn in the node's own body; a node's origin is where it came from; a
+ * declaration is what a person asked for; a read-back is a person confirming the sentences;
+ * and a negative control is what shows that a check can fail, which the line says beside the
+ * name the check's own attribute carries (`BLOCK_ATTRIBUTE_LABELS.negative_control`).
  */
 export const GAP_LINES = freeze({
   no_check: "No check serves this requirement.",
-  no_negative_control: "This result records no negative control.",
-  no_origin: "This node does not say which node it came from.",
+  no_negative_control:
+    "This result records no negative control, so it does not show that the check can fail.",
+  no_origin: "This does not say where it came from.",
   no_plan_task: "No plan task serves this requirement.",
-  no_read_back: "Dispatch does not record who read these sentences back.",
+  no_read_back: "Dispatch does not record who confirmed these sentences.",
   no_summary_author: "Dispatch does not record who wrote these sentences.",
-  nobody_asked: "This task names no requirement it serves and no declaration it attempts.",
-  serves_not_requirement: "This says it serves a node that is not a requirement.",
-  shaped_disagreement: "A decision says it shaped this node, which came from another one.",
+  nobody_asked: "This task names no requirement it serves and nothing a person asked for.",
+  serves_not_requirement: "What this says it serves is not a requirement.",
+  shaped_disagreement: "A decision says it shaped this, but this says it came from somewhere else.",
 } as const);
 
 /** One kind of gap the page names, which is a row's `data-gap-kind`. */
@@ -331,27 +343,31 @@ export type GapKind = keyof typeof GAP_LINES;
  */
 export const GAP_WORDS = freeze({
   no_check: "No check",
-  /** What the result the check was last run for recorded under its negative control: nothing. */
-  no_negative_control: "No negative control",
-  /** The node names nothing it came from, so a reader cannot follow it back. */
-  no_origin: "Origin not named",
+  /** What the result the check was last run for recorded under its negative control: nothing,
+   *  so nothing in it shows that the check can fail. */
+  no_negative_control: "No proof it can fail",
+  /** The node names nothing it came from, so a reader cannot follow it back. It says the node
+   *  gives no source, and never that it has none (R23). */
+  no_origin: "No source given",
   no_plan_task: "No plan task",
-  /** The head of every issue draws this one, because Dispatch holds no read-back of a summary
-   *  at all yet (dispatch://INFRA-1278). It names Dispatch rather than the issue, so a reader
-   *  does not take it for something their own issue is missing, and it is short enough that
-   *  the two head chips share one line at 390 px: both together are 310 px of the head's 358,
-   *  and a second line there puts the first open question off the first screen (R6,
-   *  `e2e/issue-layout.e2e.ts`, c-open-questions). */
-  no_read_back: "No read-back in Dispatch",
+  /** The head of every issue draws this one, because Dispatch holds no record of a person
+   *  confirming a summary at all yet (dispatch://INFRA-1278). It names Dispatch rather than
+   *  the issue, so a reader does not take it for something their own issue is missing, and it
+   *  is short enough that the two head chips share one line at 390 px: measured there, the
+   *  chips are 141 px and 166.6 px with an 8 px gap, 315.6 px of the head's 358 (the words
+   *  before them took 310.3), and a second line there puts the first open question off the
+   *  first screen (R6, `e2e/issue-layout.e2e.ts`, c-open-questions). */
+  no_read_back: "Not confirmed in Dispatch",
   /** The same for who wrote the sentences, which Dispatch holds of no issue either. */
   no_summary_author: "No author in Dispatch",
-  /** Nobody asked for the task: it is the plan's own words for work no requirement and no
-   *  declaration stands behind. */
-  nobody_asked: "Nobody asked for this",
+  /** The task names no requirement it serves and nothing a person asked for, so no reason
+   *  stands behind it. The chip says that and passes no judgement on the work. */
+  nobody_asked: "No reason given",
   /** The citation names a node, and that node is a requirement no longer. */
   serves_not_requirement: "Not a requirement",
-  /** A decision says it shaped the node, and the node came from another one. */
-  shaped_disagreement: "Origins disagree",
+  /** A decision says it shaped the node, and the node says it came from somewhere else: the
+   *  two name different sources, in the word `no_origin` uses for one. */
+  shaped_disagreement: "Sources disagree",
 } as const satisfies Record<GapKind, string>);
 
 /**
@@ -394,10 +410,14 @@ export const CHECK_WHEN_WORDS = freeze({
 
 /** What a recorded result says about itself beside its verdict: whether it still speaks for the
  *  work as it stands, from where its commit stands against what its check compared its results
- *  with (`check-facts.ts`). A commit Dispatch could not place draws no word at all. */
+ *  with and whether the check's words moved since (`check-facts.ts`). A commit Dispatch could
+ *  not place draws no word at all. A result that no longer speaks for the work reads the word
+ *  its check's `older` state reads, which is the state of a check whose newest result is such a
+ *  result and whose pass stands nowhere (`tree-drafts.ts`'s `checkState`): one fact, one word,
+ *  on the result and on its check. */
 export const RESULT_CURRENCY_WORDS = freeze({
-  current: "Current",
-  older: "Older",
+  current: "Up to date",
+  older: NODE_STATE_WORDS.check.older,
 } as const);
 
 /** What a recorded result says it saw, in the page's own words rather than the wire's `pass`
@@ -530,8 +550,11 @@ export const CONTROL_LABELS = freeze({
   diff_vs_current: "Diff vs current",
   /** The one row a branch below the three drawn levels folds to, which opens it in place: the
    *  count before it is the branch's own and carries `AUTHOR_TEXT_ATTRIBUTE` (R1). It says
-   *  what pressing it shows, because that row is the only way to those nodes. */
-  deeper_nodes: "more nodes below this row, press to show them",
+   *  what pressing it shows, because that row is the only way to those rows, and it agrees
+   *  with its count: "1 more row below", "3 more rows below". A node is a row to the reader,
+   *  the word the tree's own keys use (`useTreeKeymap.ts`). */
+  deeper_row: "more row below, press to show it",
+  deeper_rows: "more rows below, press to show them",
   /** Takes a version of an artifact down (R16). */
   download: "Download",
   /** Opens the editor of a property beside the value it already holds, where that value is
@@ -545,9 +568,11 @@ export const CONTROL_LABELS = freeze({
   filter: "Filter",
   /** Closes a branch of the tree (R1). */
   fold: "Fold",
-  /** What a folded branch says it holds, after the count of the nodes under it (R1): they are
-   *  not gone, they are out of sight until the branch is opened. */
-  folded_nodes: "nodes hidden inside",
+  /** What a folded branch says it holds, after the count of the rows under it (R1): they are
+   *  not gone, they are out of sight until the branch is opened. It agrees with its count, as
+   *  `deeper_row` does. */
+  folded_row: "row hidden inside",
+  folded_rows: "rows hidden inside",
   /** How many checks a pull request has, before the count GitHub gives. */
   github_checks: "checks",
   /** What an external link says when Dispatch holds no token for its repository: the line is
@@ -566,10 +591,12 @@ export const CONTROL_LABELS = freeze({
   keep_open: "Keep open",
   /** Lets a node kept open close again (R2). */
   let_close: "Let it close",
-  /** The editor for where this issue's messages go, as a name rather than as the sentence the
-   *  property is labelled with ("Messages go to"): the box carries it, and the shell's
-   *  indicator calls a write of that field by it. */
-  message_route: "Message route",
+  /** What the shell's indicator calls a write of where this issue's messages go: "Route of
+   *  CORE-1 saved". It is the noun the editor's own Save route and the row's No route carry,
+   *  so the line names what the reader just pressed. The box itself is named by the label it
+   *  is drawn under, `PROPERTY_LABELS.route` ("Messages go to"), so a voice user says the
+   *  words they read (WCAG 2.5.3). */
+  route: "Route",
   /** The word the name-a-version control shows; `name_version` is its accessible name (R16). */
   name: "Name",
   /** Gives the open document's current text a version of its own (R16). */
@@ -636,9 +663,11 @@ export const CONTROL_LABELS = freeze({
   takeable_now: "free for another agent to take now",
   /** What a chip says of a target nothing answers to now (`ReferenceTarget.gone`). */
   target_gone: "Deleted",
-  /** What a chip says of a block a decision shaped and changed after: the decision changed
-   *  since it named the block, and the block has not changed since (`DecisionLink.stale`). */
-  target_stale: "Out of date",
+  /** What a chip on a decision says of a block the decision shaped and changed after: the
+   *  decision changed since it named the block, and the block has not changed since
+   *  (`DecisionLink.stale`). It says what happened in full, so it is no second meaning of the
+   *  check state "Out of date". */
+  target_stale: "Not updated since this decision changed",
   /** The body of the page, as a reader of the tree hears it named (R1). */
   tree: "Issue tree",
   /** What the assignee control says while nobody answers the issue's asks (R11). */

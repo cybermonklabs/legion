@@ -91,7 +91,7 @@ import { ONE_PIXEL_PNG } from "./sends";
  *   go on standing at that head, the reworded check's result speaks for words that have moved
  *   and reads `older`, and the one at a commit no pull request names is not known, so no pass of
  *   its check stands and the page draws the `unmarked` state of `NODE_STATE_WORDS.check` as
- *   `Not judged`.
+ *   `Cannot tell`.
  *   `seedRequestBaseline` keeps the repository installed, because its three GitHub reads are
  *   part of the measured baseline, so only four of the five states appear there.
  * - **The reply that answers a reply.** `threadHeadOf` in
@@ -215,7 +215,7 @@ export async function seedWholeIssue(): Promise<WholeIssueSeed> {
   });
 
   // With the App installed on nothing, the result at a commit no pull request names is the one
-  // the page draws as `Not judged`: see this module's doc comment on the five result states.
+  // the page draws as `Cannot tell`: see this module's doc comment on the five result states.
   await seedFakeGithub({});
   await awaitSeededCheckStates(seeded.key, 6, false);
 

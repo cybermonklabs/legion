@@ -1,6 +1,8 @@
 import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { type RenderResult, render, waitFor } from "@testing-library/react";
+import { act, type RenderResult, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { type ReactNode, useState } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
@@ -168,28 +170,101 @@ test("a check whose citation names no requirement says so, in words", () => {
   const gaps: GapKind[] = ["serves_not_requirement"];
   expect(drawnGap(node({ gaps, id: "verification-md#b-c1", type: "check" }))).toEqual({
     chip: "Not a requirement",
-    line: "This says it serves a node that is not a requirement.",
+    line: "What this says it serves is not a requirement.",
   });
 });
 
 // R8: a plan task that names no requirement it serves and no declaration it attempts is work
-// nobody asked for, and the row says that rather than leaving the reader to notice it.
+// no reason stands behind, and the row says that rather than leaving the reader to notice it,
+// in words that pass no judgement on the work.
 test("a plan task nobody asked for says so, in words", () => {
   const gaps: GapKind[] = ["nobody_asked"];
   expect(drawnGap(node({ gaps, id: "plan-md#b-t9", type: "plan_task" }))).toEqual({
-    chip: "Nobody asked for this",
-    line: "This task names no requirement it serves and no declaration it attempts.",
+    chip: "No reason given",
+    line: "This task names no requirement it serves and nothing a person asked for.",
   });
 });
 
 // R8: a result recording no negative control is drawn beside that result for the reader to
-// weigh. The page states no verdict of its own on it: the line says what is absent, no more.
+// weigh. The page states no verdict of its own on it: the line says what is absent, and what
+// a negative control is for, no more.
 test("a result that records no negative control says so, in words", () => {
   const gaps: GapKind[] = ["no_negative_control"];
   expect(drawnGap(node({ gaps, id: "result-1", type: "result" }))).toEqual({
-    chip: "No negative control",
-    line: "This result records no negative control.",
+    chip: "No proof it can fail",
+    line: "This result records no negative control, so it does not show that the check can fail.",
   });
+});
+
+/** One row the way the tree draws it: unfocused until a focus lands inside it, and then the
+ *  focused row, so a test reads what that focus does to the page. */
+function FocusableRow({ drawn }: { drawn: TreeNode }): ReactNode {
+  const [focused, setFocused] = useState(false);
+  return (
+    <NodeRow
+      body
+      context={false}
+      focused={focused}
+      indent={0}
+      isClosed={false}
+      level={1}
+      node={drawn}
+      oneLine={false}
+      oneLineBox={undefined}
+      onFocus={() => setFocused(true)}
+      onPin={() => {}}
+      onToggle={() => {}}
+      pinned={false}
+      rowKey="row"
+      tabStop={false}
+    />
+  );
+}
+
+// R9 brings the focused row on screen, but a press inside an unfocused row focuses the row
+// before the press ends: a scroll then moves what the pointer went down on, and the press ends
+// on something else and does nothing. Measured at 1440 px on the Decisions preset, with the
+// row's top 24 px under the identity block, the page scrolled 32 px between mousedown and
+// mouseup and a reader's Keep was never sent. A key's focus still brings the row on screen.
+test("a press inside a row does not scroll the page under it, and a key's focus still does", async () => {
+  const user = userEvent.setup();
+  const scrollBy = spyOn(window, "scrollBy").mockImplementation(() => {});
+  // The row's top sits above the line the identity block leaves clear, so R9 would scroll.
+  const box = spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(
+    new DOMRect(0, -24, 400, 300)
+  );
+  const drawn = node({ id: "comment-1", type: "comment" });
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const draw = () =>
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <FocusableRow drawn={drawn} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+  const pressed = draw();
+  try {
+    const control = pressed.getByRole("button", { name: "Keep open" });
+    await user.pointer({ keys: "[MouseLeft>]", target: control });
+    expect(
+      pressed.container.querySelector("[data-node-row]")?.contains(document.activeElement)
+    ).toBe(true);
+    expect(scrollBy, "the press scrolled the page under the pointer").not.toHaveBeenCalled();
+    await user.pointer({ keys: "[/MouseLeft]" });
+  } finally {
+    pressed.unmount();
+  }
+  const keyed = draw();
+  try {
+    const row = keyed.container.querySelector<HTMLElement>("[data-node-row]");
+    act(() => row?.focus());
+    expect(scrollBy, "a key's focus no longer brings the row on screen").toHaveBeenCalledTimes(1);
+  } finally {
+    keyed.unmount();
+    box.mockRestore();
+    scrollBy.mockRestore();
+  }
 });
 
 /** A stored text holding a heading, bold, a list item and a code span: every one of them a
