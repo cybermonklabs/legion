@@ -1,5 +1,6 @@
 import { type ReactNode, useLayoutEffect, useRef } from "react";
 
+import { focusOnDocument } from "../features/shell/roving";
 import {
   chipStripFade,
   controlHoverBorder,
@@ -134,14 +135,15 @@ interface HandOff {
  *  may be a box holding one (the Inbox's agent chip holds its links). */
 const FOCUSABLE = "a[href], button";
 
-/** The strip's child that holds `target` - a chip, or the box a page drew its own chip in - and
- *  its place among the strip's children; null when `target` is the strip itself. */
-function chipHolding(strip: Element, target: EventTarget): { chip: Element; index: number } | null {
+/** The hand-off a click at `target` starts: the strip's child that holds it - a chip, or the box
+ *  a page drew its own chip in - and that child's place among the strip's children; null when
+ *  `target` is the strip itself. */
+function chipHolding(strip: Element, target: EventTarget): HandOff | null {
   if (!(target instanceof Node)) return null;
   const children = Array.from(strip.children);
   const index = children.findIndex((child) => child.contains(target));
-  const chip = children[index];
-  return chip === undefined ? null : { chip, index };
+  const from = children[index];
+  return from === undefined ? null : { from, index };
 }
 
 /** The element of a chip the focus goes to: the chip itself, or the first link or button in the
@@ -224,17 +226,16 @@ export interface ControlRowProps {
  *
  * A chip or **Clear filters** that is taken off hands the keyboard focus on rather than drop it
  * onto the page, where a keyboard reader would start again from the page's first link for each
- * chip (measured: 66 presses for 13 chips at 1440 px). A chip taken off - by Enter, Space or
- * Delete, or by a pointer, under the same rule - hands it to the chip now at its place, else to
- * the chip before it, else to the row's filter trigger (`data-control="panel-trigger"`, or the
- * search box in a row with no trigger), and **Clear filters** hands it to the trigger. Delete
- * presses a chip's own control alone - the strip's child itself, or a `Chip` - and never another
- * link a page drew inside its chip, such as the Inbox agent chip's link to the live view. A chip
- * that takes the focus is scrolled whole into view as any focused chip is, and the trigger is in
- * the first line. The hand-off waits for the removal to commit, whatever holds the focus
- * meanwhile (a pointer's click in Safari focuses no button, so the focus stays on the body), and
- * then moves the focus only if it is on the page's body, so a reader who moved it elsewhere while
- * the chip was going keeps it there.
+ * chip. A chip taken off - by Enter, Space or Delete, or by a pointer, under the same rule - hands
+ * it to the chip now at its place, else to the chip before it, else to the row's filter trigger
+ * (`data-control="panel-trigger"`, or the search box in a row with no trigger), and **Clear
+ * filters** hands it to the trigger. Delete presses a chip's own control alone - the strip's child
+ * itself, or a `Chip` - and never another link a page drew inside its chip, such as the Inbox
+ * agent chip's link to the live view. A chip that takes the focus is scrolled whole into view
+ * as any focused chip is, and the trigger is in the first line. The hand-off waits for the removal
+ * to commit, whatever holds the focus meanwhile (a pointer's click in Safari focuses no button,
+ * so the focus stays on the body), and then moves the focus only if it is on the page's body, so
+ * a reader who moved it elsewhere while the chip was going keeps it there.
  *
  * Beside its slots it draws **Clear filters** and the two scroll buttons, and nothing else. The
  * panel a trigger opens is not in it (`AnchoredPanel` portals to the body and is placed `fixed`,
@@ -265,15 +266,14 @@ export function ControlRow({
     if (pending.from.isConnected) return;
     handOff.current = null;
     // Gone: a reader who has moved the focus elsewhere meanwhile keeps it there.
-    const focused = document.activeElement;
-    if (focused !== null && focused !== document.body) return;
+    if (!focusOnDocument()) return;
     const root = rowRef.current;
     if (root === null) return;
     // The strip as it is drawn now, read through the row: the node `useScrollEnds` holds is the
     // strip last drawn, which taking the last chip off has unmounted.
-    const left = Array.from(root.querySelector("[data-chip-strip]")?.children ?? []);
+    const remaining = Array.from(root.querySelector("[data-chip-strip]")?.children ?? []);
     const chip =
-      pending.index === -1 ? undefined : (left[pending.index] ?? left[pending.index - 1]);
+      pending.index === -1 ? undefined : (remaining[pending.index] ?? remaining[pending.index - 1]);
     const next =
       chip === undefined
         ? (root.querySelector<HTMLElement>(`[data-control="${CONTROL.panelTrigger}"]`) ??
@@ -340,15 +340,13 @@ export function ControlRow({
               data-chip-strip=""
               onClickCapture={(event) => {
                 const held = chipHolding(event.currentTarget, event.target);
-                if (held !== null) handOff.current = { from: held.chip, index: held.index };
+                if (held !== null) handOff.current = held;
               }}
               onFocus={(event) =>
                 event.target.scrollIntoView({ block: "nearest", inline: "nearest" })
               }
               // Delete takes a focused chip off as Enter and Space do, which a button does by
-              // itself. It presses a chip's own control alone - the strip's child itself, or a
-              // `Chip` - and never another link a page drew inside its chip (the Inbox agent
-              // chip's link to the live view).
+              // itself.
               onKeyDown={(event) => {
                 const { currentTarget: strip, key, target } = event;
                 if (key !== "Delete" || !(target instanceof HTMLElement)) return;
