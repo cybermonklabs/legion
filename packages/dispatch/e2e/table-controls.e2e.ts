@@ -5,6 +5,7 @@
  *  are in `table-controls.stub.e2e.ts`.
  */
 
+import type { Locator } from "@playwright/test";
 import { CONTROL } from "../web/src/components/control-names";
 import { plannerSession, reviewerSession, seedAgents, setLiveSessions } from "./agents";
 import {
@@ -637,6 +638,131 @@ test("a pointer reaches and removes every chip of the Inbox's row with the row's
     body: readings.join("\n"),
     contentType: "text/plain",
   });
+});
+
+/** Where the keyboard focus is, as the chips line reads it: on a chip (by its name), on the
+ *  row's filter trigger, on Clear filters, or anywhere else - the body included - with how much
+ *  of the focused element the reader can see. */
+async function focusInRow(
+  row: Locator
+): Promise<{ where: "chip" | "trigger" | "clear" | "elsewhere"; label: string; whole: boolean }> {
+  return row.evaluate((root, measure) => {
+    const shown = new Function(`return (${measure})`)() as typeof shownOf;
+    const focused = document.activeElement;
+    if (!(focused instanceof HTMLElement) || !root.contains(focused)) {
+      return { where: "elsewhere", label: focused?.tagName ?? "nothing", whole: false } as const;
+    }
+    const reading = shown(focused);
+    const whole = reading.shown >= reading.width - 1;
+    const label = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? "";
+    const control = focused.getAttribute("data-control");
+    if (control === "chip") return { where: "chip", label, whole } as const;
+    if (control === "panel-trigger") return { where: "trigger", label, whole } as const;
+    if (label === "Clear filters") return { where: "clear", label, whole } as const;
+    return { where: "elsewhere", label, whole } as const;
+  }, shownOf.toString());
+}
+
+/** The two pages of R2 whose chips this row presses: the Inbox with nine narrowings on, which
+ *  draw nine chips, and the project List with a label, its search text and its three flags on,
+ *  of which the three flags draw chips (the label is its column's filter, the text its box). */
+const CHIP_FOCUS_SURFACES = [
+  { name: "Inbox", path: NINE_NARROWINGS },
+  {
+    name: "project List",
+    path: "/projects/CORE/issues?label=frontend&q=Rollout&needs-you=1&unread=1&unclaimed=1",
+  },
+] as const;
+
+// SLOW(>=2s): two pages at two widths, every chip of each taken off from the keyboard.
+test("a chip taken off from the keyboard hands the focus to the next chip, then the previous, then the filter trigger, and Clear filters hands it to the trigger", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const scene = await seedSurfaces();
+  const main = page.getByTestId("main-content");
+  const row = controlRow(main);
+  const chips = control(row, CONTROL.chip);
+  const wrong: string[] = [];
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+    for (const surface of CHIP_FOCUS_SURFACES) {
+      const where = `${surface.name} at ${size.width}x${size.height}`;
+      // The List is the stored view from here on, so its address below opens on it.
+      if (surface.name === "project List") await openSurface(page, "project List", scene);
+      await page.goto(surface.path);
+      await expect(chips.first(), `${where}: no chip is drawn`).toBeVisible();
+      // The keys a reader takes a chip off with: the last chip first, which has no next chip,
+      // then the first chip by Space and by Delete, then Enter until no chip is left.
+      let key = "Enter";
+      let pick: "last" | "first" = "last";
+      for (let removal = 0; removal < 20; removal++) {
+        const before = await chips.evaluateAll((all) =>
+          all.map((chip) => chip.getAttribute("aria-label") ?? "")
+        );
+        if (before.length === 0) break;
+        const index = pick === "last" ? before.length - 1 : 0;
+        await chips.nth(index).focus();
+        await page.keyboard.press(key);
+        const took = await expect
+          .poll(() => chips.count(), { timeout: 5_000 })
+          .toBe(before.length - 1)
+          .then(() => true)
+          .catch(() => false);
+        let used = key;
+        if (!took) {
+          wrong.push(`${where}: ${key} on "${before[index]}" took no chip off`);
+          await chips.nth(index).focus();
+          await page.keyboard.press("Enter");
+          await expect(chips).toHaveCount(before.length - 1);
+          used = "Enter";
+        }
+        const left = before.filter((_, at) => at !== index);
+        const expected =
+          left.length === 0
+            ? { where: "trigger", label: "the filter trigger" }
+            : { where: "chip", label: left[Math.min(index, left.length - 1)] ?? "" };
+        const focus = await focusInRow(row);
+        const right =
+          focus.where === expected.where &&
+          (expected.where === "trigger" || focus.label === expected.label);
+        if (!right) {
+          wrong.push(
+            `${where}: after ${used} took "${before[index]}" off the focus is on ${focus.where === "elsewhere" ? `${focus.label}, outside the row's controls` : `"${focus.label}"`}, not on ${expected.where === "chip" ? `"${expected.label}"` : expected.label}`
+          );
+        } else if (!focus.whole) {
+          wrong.push(`${where}: after ${used} the focused "${focus.label}" is not shown whole`);
+        }
+        if (removal === 0) {
+          key = "Space";
+          pick = "first";
+        } else if (removal === 1) {
+          key = "Delete";
+        } else {
+          key = "Enter";
+        }
+      }
+      // Clear filters unmounts itself, so the focus it leaves goes to the filter trigger.
+      await page.goto(surface.path);
+      const clear = row.getByRole("button", { exact: true, name: "Clear filters" });
+      await clear.focus();
+      await page.keyboard.press("Enter");
+      await expect(chips, `${where}: Clear filters left chips on`).toHaveCount(0);
+      const focus = await focusInRow(row);
+      if (focus.where !== "trigger") {
+        wrong.push(
+          `${where}: after Clear filters the focus is on ${focus.where === "elsewhere" ? `${focus.label}, outside the row's controls` : `"${focus.label}"`}, not on the filter trigger`
+        );
+      }
+    }
+  }
+  // R6 keeps every chip's removal and Clear filters, and these are now this change's own
+  // components: a removal that drops the focus onto the page sends a keyboard reader back to the
+  // page's first link for the next chip, which cost 66 presses for 13 chips at 1440 px.
+  expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
