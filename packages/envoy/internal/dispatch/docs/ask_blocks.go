@@ -90,13 +90,14 @@ func (r *settlementReconciliation) logCopiedBlocks(artifactID string) {
 	}
 }
 
-// repair runs set on node, the ask block carrying blockID in the tree settlement read, and records
-// it for repairLive when it changed the block.
+// repair runs set on node, the block carrying blockID in the tree settlement read (an ask, or a
+// check whose ci_check breaks a rule), and records it for repairLive, under node's block type,
+// when it changed the block.
 func (r *settlementReconciliation) repair(node *pmdoc.Node, blockID string, set func(*pmdoc.Node) bool) bool {
 	if !set(node) {
 		return false
 	}
-	r.repairs = append(r.repairs, askRepair(blockID, set))
+	r.repairs = append(r.repairs, blockRepair{blockID: blockID, blockType: node.Type, set: set})
 	return true
 }
 
@@ -123,9 +124,10 @@ func (r *settlementReconciliation) repairAsk(node *pmdoc.Node, blockID string, a
 
 // changedTree reports whether settlement changed the tree it reconciled. Every change
 // reconcileAskBlocks and reconcileCICheckBlocks make in place is recorded in repairs - by repair,
-// by repairAsk, by the write of a decided ask's wording, and by the deletion of a broken ci_check -
-// and repairAsk records its change in rewrites too. withholdAnswers drops a repair only for an
-// entry of rewrites, which never shrinks, so changedTree is true whenever the tree was touched.
+// which the deletion of a broken ci_check goes through too, by repairAsk, and by the write of a
+// decided ask's wording - and repairAsk records its change in rewrites too. withholdAnswers drops
+// a repair only for an entry of rewrites, which never shrinks, so changedTree is true whenever the
+// tree was touched.
 func (r *settlementReconciliation) changedTree() bool {
 	return len(r.repairs) > 0 || len(r.rewrites) > 0
 }

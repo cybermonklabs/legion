@@ -82,9 +82,9 @@ function ciResult(): CheckResult {
   return result({
     actor: { id: "github-actions", kind: "github_app" },
     id: "ci-run:9001",
-    observed: "conclusion: success\nci_check passed\nhttps://github.com/acme/widgets/runs/9001",
+    observed: "conclusion: success\ncontracts passed\nhttps://github.com/acme/widgets/runs/9001",
     role: "ci",
-    run: "ci_check",
+    run: "contracts",
     session: "",
   });
 }
@@ -370,9 +370,9 @@ test("a check CI proves names its run and draws the result derived from it", asy
       "c-ci",
       {
         case: "success",
-        detail: `CI run ci_check concluded success at ${commit}, the head of acme/widgets#7.`,
-        line: `- Check c-ci (before_merge): pass at ${commit}, from CI run ci_check. Check c-ci`,
-        run: "ci_check",
+        detail: `CI run contracts concluded success at ${commit}, the head of acme/widgets#7.`,
+        line: `- Check c-ci (before_merge): pass at ${commit}, from CI run contracts. Check c-ci`,
+        run: "contracts",
         state: "pass",
       },
       [ciResult()]
@@ -384,7 +384,7 @@ test("a check CI proves names its run and draws the result derived from it", asy
   };
 
   const card = await screen.findByTestId("verification-check");
-  expect(within(card).getByTestId("verification-check-ci").textContent).toBe("ci_check");
+  expect(within(card).getByTestId("verification-check-ci").textContent).toBe("contracts");
   expect(within(card).getByTestId("verification-check-roles").textContent).toBe("from ci");
   const row = within(card).getByTestId("verification-result");
   const field = (name: string) =>
@@ -392,9 +392,9 @@ test("a check CI proves names its run and draws the result derived from it", asy
   expect(field("role")).toBe("ci");
   expect(field("verdict")).toBe("Pass");
   expect(field("commit-stands")).toBe(`At the head of pull request 7 ${commit}`);
-  expect(field("run")).toBe("ci_check");
+  expect(field("run")).toBe("contracts");
   expect(field("observed")).toBe(
-    "conclusion: success\nci_check passed\nhttps://github.com/acme/widgets/runs/9001"
+    "conclusion: success\ncontracts passed\nhttps://github.com/acme/widgets/runs/9001"
   );
   expect(field("commit")).toBe(commit);
   expect(within(card).queryByTestId("verification-check-ci-unproved")).toBeNull();
@@ -403,15 +403,15 @@ test("a check CI proves names its run and draws the result derived from it", asy
 // A check CI proves whose run proved nothing holds no result at all, and in place of the sentence
 // an ordinary check shows, it shows the server's own sentence saying why.
 test("a check CI proves with no derived result shows why its run proved nothing", async () => {
-  const detail = `CI run ci_check concluded skipped at ${commit}, the head of acme/widgets#7, which proves nothing.`;
+  const detail = `CI run contracts concluded skipped at ${commit}, the head of acme/widgets#7, which proves nothing.`;
   const { getIssueResults, view } = renderTab(verification, [
     ciCheck(
       "c-skipped",
       {
         case: "skipped",
         detail,
-        line: "- Check c-skipped (before_merge): CI run ci_check has not concluded (skipped)",
-        run: "ci_check",
+        line: "- Check c-skipped (before_merge): CI run contracts has not concluded (skipped)",
+        run: "contracts",
         state: "no_result",
       },
       []
@@ -423,7 +423,7 @@ test("a check CI proves with no derived result shows why its run proved nothing"
   };
 
   const card = await screen.findByTestId("verification-check");
-  expect(within(card).getByTestId("verification-check-ci").textContent).toBe("ci_check");
+  expect(within(card).getByTestId("verification-check-ci").textContent).toBe("contracts");
   expect(within(card).getByTestId("verification-check-ci-unproved").textContent).toBe(detail);
   expect(within(card).queryByTestId("verification-check-no-results")).toBeNull();
   expect(within(card).queryByTestId("verification-result")).toBeNull();
@@ -433,8 +433,8 @@ test("a check CI proves with no derived result shows why its run proved nothing"
 // server gives it no `ci`: it reads as the ordinary check it is, with no CI check fact.
 test("a check the server gives no ci reads as an ordinary check", async () => {
   const { getIssueResults, view } = renderTab(verification, [
-    check("c-recorded", [result()], { ci_check: "ci_check", run: "" }),
-    check("c-none", [], { ci_check: "ci_check", pass_stands: { answer: "no" }, run: "" }),
+    check("c-recorded", [result()], { ci_check: "contracts", run: "" }),
+    check("c-none", [], { ci_check: "contracts", pass_stands: { answer: "no" }, run: "" }),
   ]);
   restore = () => {
     getIssueResults.mockRestore();

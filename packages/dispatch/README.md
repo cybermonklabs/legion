@@ -487,9 +487,9 @@ Verification document, and each runs that check's `run` and asserts its `negativ
   cost one check-runs read (`GET /__fixture/requests`), an open head is read before an older
   merged one, an issue with no such check reads no check runs, and a summary of 2,500 runes is cut
   to 2,000.
-- `k3`: the eleven outcomes of the run, the fake GitHub's `500`, and a read the fake holds 12 s,
-  past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs of one name
-  are decided by the higher id, in both orders of their conclusions.
+- `k3`: the eleven outcomes of the run, among them the fake GitHub's `500` and a read the fake
+  holds 12 s, past the server's own 10 s deadline, which therefore takes 10 s of the run. Two runs
+  of one name are decided by the higher id, in both orders of their conclusions.
 - `k4`: a tester's and an implementer's result for a check CI proves are refused `409
   CHECK_PROVED_BY_CI`, naming the block and the run; the same call against an ordinary check is
   recorded and `dispatch results` shows it.

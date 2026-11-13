@@ -73,7 +73,7 @@ func liveCIChecks(t *testing.T, service *Service, artifactID string) map[string]
 	t.Helper()
 	checks := map[string]string{}
 	for _, node := range checkBlockNodes(liveTree(t, service, artifactID)) {
-		check := checkBlockOf(node)
+		check := CheckBlockOf(node)
 		checks[check.BlockID] = check.CICheck
 	}
 	return checks
@@ -165,7 +165,7 @@ func TestACICheckRepairLandsOnlyOnTheCheckItJudged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the settled document: %v", err)
 	}
-	judged := checkBlockOf(checkBlockNodes(read)[0])
+	judged := CheckBlockOf(checkBlockNodes(read)[0])
 	reconciled := settlementReconciliation{repairs: []blockRepair{{blockID: "c1", blockType: "check", set: deleteJudgedCICheck(judged)}}}
 
 	for _, test := range []struct {

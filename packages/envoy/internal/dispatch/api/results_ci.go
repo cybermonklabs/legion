@@ -78,19 +78,17 @@ type ciRun struct {
 }
 
 // deriveCIResults answers every check CI proves among checks: its `ci` member, and, where the
-// run that decides it passed or failed, its one result. recorded is the rows the read loaded for
-// the document, which say whether a check holds a recorded result and so is CI's at all. An issue
+// run that decides it passed or failed, its one result. Each check carries the results the read
+// loaded for it, which say whether it holds a recorded result and so is CI's at all. An issue
 // holding no check CI proves asks nothing of the database or of GitHub. issueKey is the route's
 // issue, whose Verification document holds the checks and whose pull request heads they are read
 // at. Only a failed read of Dispatch's own database is an error; whatever GitHub answers is a
 // case of the answer.
-func (s *server) deriveCIResults(
-	ctx context.Context, issueKey string, checks []model.CheckBlock, recorded map[string][]model.CheckResult,
-) error {
+func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []model.CheckBlock) error {
 	var proved []*model.CheckBlock
 	names := map[string]struct{}{}
 	for index := range checks {
-		if validCICheck(checks[index], len(recorded[checks[index].BlockID]) > 0) {
+		if validCICheck(checks[index], len(checks[index].Results) > 0) {
 			proved = append(proved, &checks[index])
 			names[checks[index].CICheck] = struct{}{}
 		}
@@ -252,14 +250,10 @@ func ciUnconcluded(check model.CheckBlock, state, ciCase, detail string) *model.
 // are cut as checkResultLine cuts a reading.
 func ciVerdictLine(check model.CheckBlock, verdict, sha string) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, from CI run %s.", check.BlockID, check.When, verdict, sha, check.CICheck)
-	words, cut := text.HeadWords(check.Text, checkResultReadingRunes)
-	if words == "" {
+	if check.Text == "" {
 		return line
 	}
-	if cut {
-		words += "…"
-	}
-	return line + " " + words
+	return line + " " + cutWords(check.Text)
 }
 
 // ciObserved is what a derived result says was observed, one part a line: the run's conclusion,

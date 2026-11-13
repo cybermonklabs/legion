@@ -390,6 +390,11 @@ const CI_CHECK_RULE =
   "one of those rules is refused with 400 INVALID_CI_CHECK, which names the block and the rule. " +
   "A check that already holds a result never becomes CI's: write a new check block under a new id.";
 
+/** Which check CI proves, written once for the two tools that record and read results, each
+ *  ending it with its own punctuation. */
+const CHECK_PROVED_BY_CI =
+  "A check whose ci_check names a CI check run, and that holds no recorded result, is proved by CI";
+
 /**
  * The `images` argument of the three tools that write text a person reads: local picture files,
  * each uploaded to `owner` and shown inline in the text as one appended
@@ -1541,8 +1546,8 @@ export const dispatchToolSpecs = [
       "name it by its canonical reference (dispatch://KEY/artifact/verification-md#b-<id>). " +
       "409 CHECK_AMBIGUOUS names both documents. An id no Verification document of the issue " +
       "or of an issue above it holds is 400 UNKNOWN_CHECK. " +
-      "A check whose ci_check names a CI check run, and that holds no recorded result, is proved " +
-      "by CI. Dispatch reads its result from that run, so a record for it is 409 " +
+      `${CHECK_PROVED_BY_CI}. ` +
+      "Dispatch reads its result from that run, so a record for it is 409 " +
       "CHECK_PROVED_BY_CI from every role, which names the check and the run. " +
       "A pass that counts a failed, a skipped or an excluded case contradicts itself, and is " +
       "400 RESULT_CONTRADICTS. " +
@@ -1647,8 +1652,8 @@ export const dispatchToolSpecs = [
       "words moved after it was recorded, the time, its id, and the reading the role recorded. " +
       "A result nobody gave a reading says so. A retracted result prints as retracted, with " +
       "the reason and the caller that retracted it. A check with no result says so. " +
-      "A check whose ci_check names a CI check run, and that holds no recorded result, is proved " +
-      "by CI: no role records its result, and Dispatch reads it from GitHub at the head of the " +
+      `${CHECK_PROVED_BY_CI}: ` +
+      "no role records its result, and Dispatch reads it from GitHub at the head of the " +
       "issue's open pull request of the highest number, else at the head of its merged one of " +
       "the highest number. Its one result prints as `- <id> (before_merge): <verdict> at " +
       "<commit> by ci (CI run <name>, <conclusion>), <where that commit stands>. <the check's " +

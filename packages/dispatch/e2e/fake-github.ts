@@ -155,7 +155,7 @@ function countCheckRunRead(repo: string, sha: string): void {
 const server = Bun.serve({
   hostname: "127.0.0.1",
   port: harnessPorts().fakeGithub.port,
-  async fetch(request) {
+  async fetch(request, server) {
     const url = new URL(request.url);
     if (request.method === "PUT" && url.pathname === "/__fixture/repos") {
       const seeded = (await request.json()) as Record<string, FakeRepo>;
@@ -295,6 +295,9 @@ const server = Bun.serve({
         return Response.json({ message: "Server Error" }, { status: fault.status });
       }
       if (fault !== undefined) {
+        // Bun.serve closes a connection idle for 10 s, as long as Dispatch's own read deadline:
+        // a held request lifts that bound, so Dispatch's deadline is what ends the wait.
+        server.timeout(request, 0);
         await Bun.sleep(fault.hold_ms);
       }
       const runs = repo.check_runs?.[sha] ?? [];

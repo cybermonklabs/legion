@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -217,7 +218,7 @@ func (c *comparisonReader) comparedWith(ctx context.Context, check model.CheckBl
 		return memoized
 	}
 	var compared comparison
-	if check.When == checkWhenBeforeMerge {
+	if check.When == docs.CheckWhenBeforeMerge {
 		compared = c.headBases(ctx, check.IssueKey)
 	} else {
 		compared = c.branchBases(ctx, check)
@@ -378,7 +379,7 @@ func (c *comparisonReader) learn(ctx context.Context, checks []model.CheckBlock)
 		return
 	}
 	for _, check := range checks {
-		if check.When != checkWhenBeforeMerge {
+		if check.When != docs.CheckWhenBeforeMerge {
 			continue
 		}
 		compared := c.comparedWith(ctx, check)
@@ -438,7 +439,7 @@ func (c *comparisonReader) commitStands(
 	if c.at != noCommitNamed {
 		return model.ResultCommitStands{Answer: model.CommitOtherCommit}
 	}
-	if check.When == checkWhenBeforeMerge {
+	if check.When == docs.CheckWhenBeforeMerge {
 		// The heads are the whole of this check's comparison, and none of them is this commit.
 		// Two answers Dispatch cannot give stand against reading that as another commit: a
 		// repository the App cannot read, where nothing can have taught Dispatch this commit's

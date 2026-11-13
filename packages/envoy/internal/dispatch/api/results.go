@@ -38,11 +38,9 @@ var checkResultRole = regexp.MustCompile(`^[a-z-]{1,32}$`)
 // resultCommitSHA is the commit a result ran at, as the column's own check spells it.
 var resultCommitSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
 
-// The three values a check's `when` takes, the closed enum pmdoc/schema/blocks.json declares
-// under `choices`. checkWhenBeforeMerge is also the default a check whose block names none
-// carries.
+// The two values of a check's `when`, beside before_merge (docs.CheckWhenBeforeMerge), that the
+// closed enum pmdoc/schema/blocks.json declares under `choices`.
 const (
-	checkWhenBeforeMerge   = "before_merge"
 	checkWhenAfterMerge    = "after_merge"
 	checkWhenDefaultBranch = "default_branch"
 )
@@ -202,12 +200,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The version, digest and `when` the row is judged by are the block's as this transaction
-	// sees them, read again under the locks: a document version that landed between the resolve
-	// and the lock would otherwise have the result recorded against the words it replaced, and
-	// a check reworded from before_merge to after_merge would be judged by the `when` it carried
-	// before the lock. The digest is read under the locks either way, and the `when` only when
-	// that digest moved, which is the only way the block's words can have changed.
+	// The version, digest and attributes the row is judged by are the block's as this
+	// transaction sees them, read again under the locks: a document version that landed between
+	// the resolve and the lock would otherwise have the result recorded against the words it
+	// replaced, and a check reworded from before_merge to after_merge would be judged by the
+	// `when` it carried before the lock. The digest is read under the locks either way, and the
+	// attributes only when that digest moved, which is the only way the block's words can have
+	// changed.
 	if err := s.refreshResolvedCheck(r.Context(), tx, &check, input.Check); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -350,7 +349,7 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		}
 		checks[index].Results = results
 	}
-	if err := s.deriveCIResults(r.Context(), issueKey, checks, recorded); err != nil {
+	if err := s.deriveCIResults(r.Context(), issueKey, checks); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -603,7 +602,7 @@ func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID s
 	}
 	// The index holds the block, so the live document has it too unless a write landed between
 	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
-	return model.CheckBlock{BlockID: blockID, ArtifactID: artifactID, When: checkWhenBeforeMerge}, nil
+	return model.CheckBlock{BlockID: blockID, ArtifactID: artifactID, When: docs.CheckWhenBeforeMerge}, nil
 }
 
 // validCICheck reports whether check is one CI proves: it carries ci_check and keeps the four
@@ -626,7 +625,7 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 	if err != nil {
 		return err
 	}
-	if !validCICheck(check.Block, held) {
+	if held {
 		return nil
 	}
 	return errorf(http.StatusConflict, "CHECK_PROVED_BY_CI",
@@ -672,20 +671,10 @@ func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string
 // and its words (typedBlocksIn).
 func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.CheckBlock, error) {
 	var checks []model.CheckBlock
-	err := s.typedBlocksIn(ctx, artifactID, "check", func(node *pmdoc.Node, id string) {
-		when, _ := node.Attrs["when"].(string)
-		if when == "" {
-			when = checkWhenBeforeMerge
-		}
-		surface, _ := node.Attrs["surface"].(string)
-		run, _ := node.Attrs["run"].(string)
-		negativeControl, _ := node.Attrs["negative_control"].(string)
-		ciCheck, _ := node.Attrs["ci_check"].(string)
-		checks = append(checks, model.CheckBlock{
-			BlockID: id, ArtifactID: artifactID, Text: blockWords(node), When: when,
-			Surface: surface, Run: run, NegativeControl: negativeControl, CICheck: ciCheck,
-			Results: []model.CheckResult{},
-		})
+	err := s.typedBlocksIn(ctx, artifactID, "check", func(node *pmdoc.Node, _ string) {
+		check := docs.CheckBlockOf(node)
+		check.ArtifactID, check.Text, check.Results = artifactID, blockWords(node), []model.CheckResult{}
+		checks = append(checks, check)
 	})
 	if err != nil {
 		return nil, err
@@ -782,11 +771,17 @@ func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 	if reading == "" {
 		return line + " The role recorded no reading."
 	}
-	head, cut := text.HeadWords(reading, checkResultReadingRunes)
+	return line + " " + cutWords(reading)
+}
+
+// cutWords is s cut at a word boundary to checkResultReadingRunes, with an ellipsis where it was
+// cut, so a reader can tell a cut line from a short one (text.HeadWords).
+func cutWords(s string) string {
+	head, cut := text.HeadWords(s, checkResultReadingRunes)
 	if cut {
 		head += "…"
 	}
-	return line + " " + head
+	return head
 }
 
 // sessionOf is the session a result was recorded by, empty for a person's.

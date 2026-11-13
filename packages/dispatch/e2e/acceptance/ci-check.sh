@@ -17,8 +17,8 @@
 #   either block; the merged head still answers; three such checks at one head cost one
 #   check-runs read; an open head is read before an older merged one; an issue with no such check
 #   reads nothing; a summary of 2,500 runes is cut to 2,000 and the answer is not refused.
-# - k3: the eleven outcomes of the run, the fake GitHub's 500 and a read held past the server's
-#   real 10 s deadline, and two runs of one name decided by the higher id in both orders.
+# - k3: the eleven outcomes of the run, among them the fake GitHub's 500 and a read held past the
+#   server's real 10 s deadline, and two runs of one name decided by the higher id in both orders.
 # - k4: a tester's and an implementer's result for a check CI proves are refused 409
 #   CHECK_PROVED_BY_CI naming the block and the run, and the same call against an ordinary check
 #   is recorded and shown.
@@ -44,7 +44,8 @@
 # it deletes the pull_request_heads rows it staged and empties the fake GitHub. Nothing it writes
 # is read by a second run, so it may be run again at once. Each passing check prints
 # `PASS: <section> <what>`; the first failing one prints `FAIL: <section> <what>: <observed>` and
-# the script exits 1. Every check is `cmd || fail …`, as verification.sh writes them.
+# the script exits 1. Every check is `cmd || fail …`, or, for a refusal, `cmd && fail …`, as
+# verification.sh writes them.
 
 # shellcheck disable=SC2016 # the single-quoted jq filters and SQL name jq and psql variables
 set -euo pipefail
