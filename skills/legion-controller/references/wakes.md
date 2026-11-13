@@ -21,11 +21,12 @@ parent, which come as notices
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 
-The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue is done, it
-left the workflow, or its tree closed or stopped running. An issue
-takes its slot when the daemon starts it and keeps it
-until it is done or leaves the workflow,
-so none of its own waits sends this wake. A slot is one issue the daemon has started, a root or a
+The daemon deleted the slot row of `<KEY>` and no waiting issue took it: that issue's work is past
+its review — it stands in `accepting`, `retro` or `merging` — it is done, it
+left the workflow, or its tree closed or stopped running. An issue holds one of the cap's slots
+from the moment the daemon starts it until its work is past its review, until it is done, or
+until Dispatch shows it in `triage`, `icebox` or `backlog`, so none of its waits up to that
+review sends this wake. A slot is one issue the daemon has started, a root or a
 child, so the issue it names may be either. Name the free slots; take nothing.
 
 ## `todo on <KEY>` (`{kind: "todo"}`)
@@ -106,7 +107,7 @@ Name each silent issue in the day's report, with its role and the length of its 
 Either a root that waited for a slot was moved from `todo` to the status `reason` names, by a
 person or by another session, or a root waiting on a person (`awaiting_person`) could not be
 resumed — its `legion` label is gone, or a person or a session outside its tree took its Dispatch
-claim. Either way the daemon took it out of the workflow (`phase: done`) and starts nothing for it;
+claim. Either way the daemon set the root's `phase` to `done` and starts nothing for it;
 `reason` says which. Re-admit nothing, because the move was someone else's; `dispatch read` shows
 who claims it now. Tell the person in your summary: "<KEY> left Legion's workflow: <reason as the
 wake gives it>; `todo` with the `legion` label queues it again". Other admission states:
@@ -123,6 +124,36 @@ person's answer puts it in `admission.waiting` by itself, among the issues whose
 oldest first, and its promotion gives its architect the answer task, taking no further slot, so
 it happens however full the cap is. A lost label or a foreign Dispatch claim sends the separate
 `unslotted` wake.
+
+## `tree-stalled on <KEY>` (`{kind: "tree-stalled", reason}`)
+
+A tree of your project has stopped: `<KEY>` is its root, nothing of the tree has moved for longer
+than `stalled_tree_notice_hours` (six by default), and no agent of it is at work.
+The daemon tells you when at least one issue of it waits by no rule of the daemon's own, and when
+the project's line can no longer move.
+A tree is silent only while every quiet issue of it waits on a person, on a Dispatch blocker, for
+an open child, or for an admission slot it needs and does not hold, and only while the project's
+line can still move: some issue of the project holds a slot and waits by none of those rules, or
+some claim of the project is at work.
+Where neither holds, no work of the project can start again by itself, so every tree of it is
+named however its members wait. The
+`reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
+line for each issue of the tree the workflow still runs: the phase its record carries, the role
+whose turn that phase is or that no role works it, and the state of that issue's pull request or
+that the record holds none. It ends by telling you to read the tree and decide.
+
+Read `issues.<KEY>.treeMovedAt`, when the daemon last saw anything of the tree move, and
+`issues.<KEY>.quietHours`, how long the tree has been still at that read. Every issue of the tree
+carries the same pair, so read it on any of them. A tree the record shows no movement for reads
+`quietHours` 2562047.788, which means "it has never moved" and is no fault of its own.
+
+Read the tree and decide what it needs. Ask a role what it waits on (`envoy_publish` to its role
+topic). Move an issue back a phase where the phase it stands in has nobody to work it. Park the
+tree only as the rule for a move to `backlog` or `icebox` allows
+([Rules](skill://legion-controller/SKILL.md#rules)), and for a tree that waits on an event outside
+Legion, do as [A tree that waits on an event outside Legion](#a-tree-that-waits-on-an-event-outside-legion) says.
+The daemon starts nothing for this wake, and tells you once for
+each tree: the next movement of that tree is what lets it tell you again.
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)
 

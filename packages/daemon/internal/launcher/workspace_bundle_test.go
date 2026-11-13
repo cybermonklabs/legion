@@ -4,12 +4,15 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -202,29 +205,98 @@ func TestAReleasedWorkspacesWorkIsBundledByTheShimAndRestoredByTheLauncher(t *te
 	if !strings.Contains(notice, "restored") {
 		t.Fatalf("the restore's notice is %q", notice)
 	}
-	log := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph",
-		"-T", `commit_id ++ " " ++ description.first_line() ++ "\n"`)
-	for _, want := range []string{"issue work", "second head", "working copy"} {
-		if !strings.Contains(log, f.commits[want]+" "+want) {
-			t.Fatalf("the restored workspace's log holds no %s (%s), so that head is not visible:\n%s", want, f.commits[want], log)
+	f.requireRestored(workspace, saved)
+}
+
+// The launcher is its pod's PID 1, whose reaper reaps every exited child the launcher does not
+// hold (reapOrphans), and a put-back's jj and git are the launcher's own children. Each starts
+// through the guard the reaper skips (pidGuard.starter, which newManagers gives the pod's
+// restore): a command whose exit the reaper took first fails its own wait with `waitid: no child
+// processes`, at times `waitid: no such process`, and the roles start without the saved work.
+// Here the reaper starts a new pass as soon as it ends one, so it meets the exit of every command,
+// and every put-back must still answer with the whole of what was saved. The test is not
+// parallel: the reaper takes every exited child of the test process, so the test's own jj and git
+// run only while the reaper is stopped, the fixture before it starts and the reads after it stops.
+func TestPutBacksUnderThePodsReaperKeepTheirExitStatus(t *testing.T) {
+	testbin.RequireJJFilters(t)
+	f := newBundleFixture(t)
+	f.workOne()
+	saved := f.bundleWorkspaceOne()
+	workspaces := make([]string, 20)
+	for index := range workspaces {
+		workspaces[index] = f.secondPod(fmt.Sprintf("reaped-%d", index))
+	}
+	// An issue pod's managers, whose restore is the one newManagers wires to the guard. A failed
+	// pass of a namespaced manager's reaper is logged rather than thrown, and the log is read
+	// below: a reaper whose passes failed raced nothing.
+	rolesDir := shortTempDir(t)
+	tokenDir := filepath.Join(rolesDir, "tester", RoleLauncherDir)
+	if err := os.MkdirAll(tokenDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(tokenDir, LauncherTokenFile), []byte("launcher-token\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	reaperLog := &lockedBuffer{}
+	guard := &pidGuard{}
+	managers, err := newManagers(Config{RolesDir: rolesDir, Roles: []string{"tester"}, Stdout: reaperLog, Stderr: reaperLog}, guard)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A child the reaper must take, so the test proves the reaper ran while the put-backs did.
+	orphan := exec.Command("/bin/sh", "-c", "exit 0")
+	if err := orphan.Start(); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	signals := make(chan os.Signal, 1)
+	var reaping sync.WaitGroup
+	reaping.Add(2)
+	go func() {
+		defer reaping.Done()
+		reapOrphans(ctx, signals, managers, guard)
+	}()
+	// A SIGCHLD is always waiting, so the reaper never pauses between passes.
+	go func() {
+		defer reaping.Done()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case signals <- syscall.SIGCHLD:
+			}
+		}
+	}()
+	type answer struct {
+		restored bool
+		notice   string
+	}
+	answers := make([]answer, len(workspaces))
+	for index, dir := range workspaces {
+		answers[index].restored, answers[index].notice = restoreWorkspace(context.Background(), managers[0].restore.start, dir, f.env, bundleRelease, saved)
+	}
+	cancel()
+	reaping.Wait()
+
+	for index, got := range answers {
+		if !got.restored || !strings.Contains(got.notice, "is restored") || strings.Contains(got.notice, "would not take") ||
+			strings.Contains(got.notice, "no child processes") {
+			t.Errorf("the put-back into %s answered %v, %q; want all of the saved work restored, each command's exit read by its own wait",
+				workspaces[index], got.restored, got.notice)
 		}
 	}
-	listed := f.run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
-		"-T", `if(remote, "", name ++ " " ++ normal_target.commit_id() ++ "\n")`)
-	for name, commit := range map[string]string{"legion/" + bundleIssue: f.commits["issue work"], "side": f.commits["second head"]} {
-		if !strings.Contains(listed, name+" "+commit) {
-			t.Fatalf("the restored workspace has no %s on %s:\n%s", name, commit, listed)
-		}
+	if failed := reaperLog.String(); failed != "" {
+		t.Errorf("the reaper's passes failed, so they raced nothing:\n%s", failed)
 	}
-	if head := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
-		t.Fatalf("the restored working copy is on %s, want the saved %s", head, saved.Head)
+	if !errors.Is(syscall.Kill(orphan.Process.Pid, 0), syscall.ESRCH) {
+		t.Errorf("the reaper left the orphan %d unreaped, so it never ran while the put-backs did", orphan.Process.Pid)
 	}
-	if body, err := os.ReadFile(filepath.Join(workspace, "wip.txt")); err != nil || string(body) != "wip\n" {
-		t.Fatalf("the restored working copy's own change reads %q (%v)", body, err)
+	if t.Failed() {
+		t.FailNow()
 	}
-	// Nothing of the restore is left in the repository: the temporary branches are gone.
-	if refs := f.run(workspace, "git", "--git-dir="+f.gitDir(workspace), "for-each-ref", "--format=%(refname)", "refs/heads/"); strings.Contains(refs, restoreRefPrefix) {
-		t.Fatalf("the restore left its temporary branches behind:\n%s", refs)
+	for _, dir := range workspaces {
+		f.requireRestored(dir, saved)
 	}
 }
 
@@ -607,6 +679,37 @@ func (f *bundleFixture) restoreInto(workspace string, saved shimwire.WorkspaceBu
 	}
 	f.t.Fatalf("the launcher wrote no notice for the restore:\n%s", g.stderr.String())
 	return ""
+}
+
+// requireRestored fails the test unless workspace holds all of saved: every saved head visible,
+// each saved bookmark on its commit, the working copy on the saved head with its own change, and
+// none of the restore's temporary branches left in the repository.
+func (f *bundleFixture) requireRestored(workspace string, saved shimwire.WorkspaceBundle) {
+	f.t.Helper()
+	log := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "all()", "--no-graph",
+		"-T", `commit_id ++ " " ++ description.first_line() ++ "\n"`)
+	for _, want := range []string{"issue work", "second head", "working copy"} {
+		if !strings.Contains(log, f.commits[want]+" "+want) {
+			f.t.Fatalf("the restored workspace %s holds no %s (%s), so that head is not visible:\n%s", workspace, want, f.commits[want], log)
+		}
+	}
+	listed := f.run(workspace, "jj", "bookmark", "list", "-R", workspace, "--ignore-working-copy",
+		"-T", `if(remote, "", name ++ " " ++ normal_target.commit_id() ++ "\n")`)
+	for name, commit := range map[string]string{"legion/" + bundleIssue: f.commits["issue work"], "side": f.commits["second head"]} {
+		if !strings.Contains(listed, name+" "+commit) {
+			f.t.Fatalf("the restored workspace %s has no %s on %s:\n%s", workspace, name, commit, listed)
+		}
+	}
+	if head := f.run(workspace, "jj", "log", "-R", workspace, "--ignore-working-copy", "-r", "@", "--no-graph", "-T", "commit_id"); head != saved.Head {
+		f.t.Fatalf("the restored working copy of %s is on %s, want the saved %s", workspace, head, saved.Head)
+	}
+	if body, err := os.ReadFile(filepath.Join(workspace, "wip.txt")); err != nil || string(body) != "wip\n" {
+		f.t.Fatalf("the restored working copy's own change in %s reads %q (%v)", workspace, body, err)
+	}
+	// Nothing of the restore is left in the repository: the temporary branches are gone.
+	if refs := f.run(workspace, "git", "--git-dir="+f.gitDir(workspace), "for-each-ref", "--format=%(refname)", "refs/heads/"); strings.Contains(refs, restoreRefPrefix) {
+		f.t.Fatalf("the restore left its temporary branches behind in %s:\n%s", workspace, refs)
+	}
 }
 
 // gitDir is the git directory behind a workspace, as the restore resolves it.
