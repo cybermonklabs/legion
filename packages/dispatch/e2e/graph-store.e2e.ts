@@ -18,7 +18,6 @@ import {
   getArtifactText,
   getArtifactVersion,
   getIssue,
-  quiesceDocuments,
 } from "./api";
 import {
   ADDED_TYPE,
@@ -92,9 +91,11 @@ function writeThroughTheTab(
   );
 }
 
-/** The document's newest stored version, settled first so the version is the one the room holds. */
+/** The document's newest stored version, read through the API as it stands. A settlement writes
+ *  live typing as a version a short delay after the room's last update (`run-server.sh`), and
+ *  quiescing the documents would cancel a settlement still pending rather than run it, so a
+ *  caller polls this read until the settlement it waits for has written. */
 async function newestStoredMarkdown(artifact: string): Promise<string> {
-  await quiesceDocuments();
   const newest = ((await getArtifact(artifact)).versions ?? []).at(-1);
   if (newest === undefined) {
     throw new Error(`the document ${artifact} has no settled version`);
@@ -186,9 +187,20 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
       path: testInfo.outputPath("supertag-change-open-editor.png"),
     });
 
-    const stored = await newestStoredMarkdown(artifact);
+    // The typing is written as a version only once the room settles, a short delay after the
+    // last keystroke, so the read waits for that settlement; both lines are asserted on the one
+    // read that held the second.
+    let stored = "";
+    await expect
+      .poll(
+        async () => {
+          stored = await newestStoredMarkdown(artifact);
+          return stored;
+        },
+        { timeout: 30_000 }
+      )
+      .toContain("Typed after the switch.");
     expect(stored).toContain("Typed before the switch.");
-    expect(stored).toContain("Typed after the switch.");
 
     // The switch needed no restart: every process of the run is the one that started it.
     expect(await processStartTimes()).toBe(startedBefore);

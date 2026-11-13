@@ -390,11 +390,12 @@ function NavigationContents({
           above is read on every visit, so the footer sits under it rather than over it. */}
       <div className={`mt-auto border-t pt-4 ${railBorder}`}>
         {/* The login is the way in to the reader's own page: what they wrote and what reached
-            them, which no other surface lists. */}
+            them, which no other surface lists. The underline is what tells the link from the
+            text around it, which colour alone does not. */}
         <p className={`px-2 text-sm ${railMutedText}`}>
           Signed in as{" "}
           <Link
-            className={`${railAccentText} ${railAccentHoverText}`}
+            className={`underline ${railAccentText} ${railAccentHoverText}`}
             onClick={onClose}
             to={buildPersonPath(user.login)}
           >
