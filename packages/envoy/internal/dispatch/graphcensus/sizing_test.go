@@ -36,7 +36,7 @@ func seedOwedDocuments(t *testing.T, database *store.Store, clock time.Time, age
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank) values
 			('CORE-1', 'CORE', 1, 'One', '{"kind":"user","id":"alice"}', 'U');
 	`); err != nil {
