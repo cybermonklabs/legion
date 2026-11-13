@@ -20,9 +20,11 @@ import (
 // system cannot require that a failing path call one of them at all, which is exactly what three
 // of the four busy paths did not do before #3625: each decided the busy answer itself, from the
 // agent's words, before any charge function was reached. So this test reads the package's own
-// source and holds the three things the compiler cannot: every member has a row in the policy, no
-// site outside outcome.go reads a refusal's words to decide, and every charge names a member the
-// package declares. Delete this test when a chokepoint for that becomes possible.
+// source and holds the four things the compiler cannot: every member has a row in the policy, no
+// site outside outcome.go reads a refusal's words to decide, every charge names a member the
+// package declares, and no function but a charge function writes a budget counter except to
+// reset it to zero (budgetResets names each that may). Delete this test when a chokepoint for
+// that becomes possible.
 //
 // It type-checks the package's non-test source against the compiler's export data for its
 // dependencies (compiledDependencies, as TestProcessEndsListsEveryEndDeclared does), so it reads
@@ -125,10 +127,128 @@ func TestOutcomeSourceHoldsThePolicyAtItsSites(t *testing.T) {
 			}
 		}
 	})
+
+	t.Run("no function but a charge function or a reset writes a budget counter", func(t *testing.T) {
+		counters := src.budgetCounters(t)
+		wrote := map[string]bool{}
+		for name, file := range src.files {
+			for _, decl := range file.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				for _, write := range src.budgetWrites(fn.Body, counters) {
+					wrote[fn.Name.Name] = true
+					where := fmt.Sprintf("%s (%s, in %s)", src.pos(write.target), name, fn.Name.Name)
+					switch {
+					case slices.Contains(chargeFunctions, fn.Name.Name):
+					case budgetResets[fn.Name.Name] != "":
+						if !write.reset {
+							t.Errorf("%s writes a budget counter other than to zero: %s may only reset the counters, and a charge is the charge functions' alone, which ask the policy (Charges)", where, fn.Name.Name)
+						}
+					default:
+						t.Errorf("%s writes a budget counter: only the charge functions (%s) count against a budget, each asking the policy (Charges), and only the resets listed in budgetResets set one back to zero", where, strings.Join(chargeFunctions, ", "))
+					}
+				}
+			}
+		}
+		for name := range budgetResets {
+			if !wrote[name] {
+				t.Errorf("budgetResets lists %s, which writes no budget counter: remove it", name)
+			}
+		}
+		for _, name := range chargeFunctions {
+			if !wrote[name] && name != "relaunchAfterFailure" {
+				t.Errorf("the charge function %s writes no budget counter: this test reads the charge functions by name, and that one has moved", name)
+			}
+		}
+	})
 }
 
 // chargeFunctions are the functions that charge a budget, each of which asks Charges itself.
+// relaunchAfterFailure counts through chargeLaunch and writes no counter of its own.
 var chargeFunctions = []string{"chargePrompt", "chargeDeath", "relaunchAfterFailure", "chargeLaunch"}
+
+// budgetResets are the functions besides the charge functions that may write a budget counter, and
+// each may write one only to zero: a reset is the end of what a budget measures, which is no event
+// the policy is asked about.
+var budgetResets = map[string]string{
+	"confirm":       "a started turn of the task resets the prompt failures and the prompt retirements (Budgets, PromptFailures and PromptRetires)",
+	"ready":         "the agent's ready resets the launch failures, since the launch it measured came up (Budgets, LaunchFailures)",
+	"turnEnded":     "a turn that ends normally resets the deaths, since the agent got through the work they were charged against (Budgets, Deaths)",
+	"retirePending": "the task's retirement resets the deaths charged against it, in the same write (Budgets, Deaths)",
+	"retry":         "an operator's retry of a failed claim starts every budget again from nothing (RequestRetry)",
+}
+
+// budgetCounters is the fields of Budgets, as the type checker holds them.
+func (s *superviseSource) budgetCounters(t *testing.T) map[types.Object]bool {
+	t.Helper()
+	named, _ := s.pkg.Scope().Lookup("Budgets").(*types.TypeName)
+	if named == nil {
+		t.Fatal("the package declares no type Budgets, whose fields this test reads as the budget counters")
+	}
+	fields := named.Type().Underlying().(*types.Struct)
+	counters := map[types.Object]bool{}
+	for i := range fields.NumFields() {
+		counters[fields.Field(i)] = true
+	}
+	return counters
+}
+
+// budgetWrite is one statement writing a budget counter: target is what it writes, and reset
+// whether it writes zero by plain assignment.
+type budgetWrite struct {
+	target ast.Expr
+	reset  bool
+}
+
+// budgetWrites is every write in body, function literals included, of a budget counter: an
+// assignment, an op-assignment or an increment or decrement whose target is a field of Budgets
+// through any selector chain or pointer, or a whole value of type Budgets.
+func (s *superviseSource) budgetWrites(body *ast.BlockStmt, counters map[types.Object]bool) []budgetWrite {
+	writes := func(target ast.Expr) bool {
+		target = ast.Unparen(target)
+		if selector, ok := target.(*ast.SelectorExpr); ok {
+			if selection := s.info.Selections[selector]; selection != nil && counters[selection.Obj()] {
+				return true
+			}
+		}
+		named, ok := s.info.Types[target].Type.(*types.Named)
+		return ok && named.Obj().Pkg() == s.pkg && named.Obj().Name() == "Budgets"
+	}
+	var found []budgetWrite
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch node := node.(type) {
+		case *ast.IncDecStmt:
+			if writes(node.X) {
+				found = append(found, budgetWrite{target: node.X})
+			}
+		case *ast.AssignStmt:
+			for i, target := range node.Lhs {
+				if !writes(target) {
+					continue
+				}
+				reset := false
+				if node.Tok == gotoken.ASSIGN && len(node.Lhs) == len(node.Rhs) {
+					reset = s.isZero(node.Rhs[i])
+				}
+				found = append(found, budgetWrite{target: target, reset: reset})
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// isZero is whether expr is the constant zero or a composite literal with no elements.
+func (s *superviseSource) isZero(expr ast.Expr) bool {
+	expr = ast.Unparen(expr)
+	if value := s.info.Types[expr].Value; value != nil {
+		return value.ExactString() == "0"
+	}
+	literal, ok := expr.(*ast.CompositeLit)
+	return ok && len(literal.Elts) == 0
+}
 
 // superviseSource is the package's non-test source, type-checked.
 type superviseSource struct {
