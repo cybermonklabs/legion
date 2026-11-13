@@ -422,7 +422,7 @@ var streamGenerations = map[int]struct {
 		},
 	},
 	// Generation 4 adds a team's own topic and its exception lane, the one namespace an agent
-	// names itself (notifications.team.deploy-squad), which main's #3425 added to the stream's
+	// names itself (notifications.team.deploy-squad), which main's #2603 added to the stream's
 	// subjects: that is a change of Subjects, so under the rule above it ships as a generation
 	// of its own rather than as an edit of generation 3's row, and an older build that finds
 	// generation 4 deployed leaves those subjects alone instead of reverting them.

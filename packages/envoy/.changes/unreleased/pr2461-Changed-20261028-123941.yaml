@@ -7,6 +7,10 @@ body: |-
     reconnect, so a stream lost while it runs is created again; Dispatch's server keeps the stream's
     deployed replica count. Every client decides a topic's transport from the deployed stream's
     subjects, read at each ensure, or at connect and every 60 s by a client that owns no stream.
+    The listener judges by those same deployed subjects whether to refuse a publish, which topics of
+    a registration to store, which go in a session's consumer filter, whether the fan-out leaves a
+    message to that consumer, and whether a delivery exception is stored under its one-copy id, so a
+    topic under a subject only the newer build adds reaches a session through either build.
 time: 2026-10-28T12:39:41.070133631Z
 custom:
     Issue: pr2461

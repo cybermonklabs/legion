@@ -155,6 +155,10 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	held.Pass(command, "DISPATCH_LISTEN_FD")
 	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: &lockedBuffer{}, exited: make(chan struct{}), database: h.database}
 	command.Stdout, command.Stderr = server.output, server.output
+	// This server is a Dispatch process like any other a test starts, so the connection guard
+	// counts it, and releases it before exited closes, so a test that sees the exit sees the
+	// count fall (requireConnectionCeiling, cmdtest.StartThen).
+	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
 	err := command.Start()
 	// The server holds its own copy of the socket from here on, so it releases the port when it
 	// exits.
@@ -164,6 +168,7 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	}
 	go func() {
 		_ = command.Wait()
+		releaseConnections()
 		close(server.exited)
 	}()
 	t.Cleanup(func() { server.stop(t) })
