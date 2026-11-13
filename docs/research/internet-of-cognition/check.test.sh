@@ -576,6 +576,22 @@ dir="$(fresh dollar-parameter-admitted)"
 plant_behaviour "$dir" "X=once; printf 'ran %s\\n' \"\${X}\"" '{"contains":"ran once"}'
 honest_result "a parameter written as \${X} is admitted and passes" replay-command "$(fixture_run "$dir" --replay)"
 
+# 40. The rows use one special parameter, $? (6 rows), and check.sh's header lists only
+# that one, but dollar_forms admits every one-character special (SPECIAL holds
+# ?$!#@*-0123456789). So at a201de0b62 $1, $@, $#, $$, $! and $0 were each admitted,
+# none of which a row uses, against the rule that a $ form is admitted only where the rows
+# use it. $? beside them is the honest form and passes.
+special=0
+for form in '"$1"' '"$@"' '"$#"' '"$$"' '"$!"' '"$0"'; do
+    special=$((special + 1))
+    dir="$(fresh "special-parameter-$special")"
+    plant_behaviour "$dir" "printf '%s' $form >/dev/null; printf 'ran once\\n'" '{"contains":"ran once"}'
+    case_result "a special parameter no row uses is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
+done
+dir="$(fresh special-status-admitted)"
+plant_behaviour "$dir" "true; printf 'ran %s\\n' \"once\$?\"" '{"contains":"ran once0"}'
+honest_result "the special parameter \$?, which the rows use, is admitted and passes" replay-command "$(fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
