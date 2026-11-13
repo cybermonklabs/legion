@@ -91,7 +91,12 @@ var plantVerbs = []plantVerb{
 			"port `9090` for the metrics server.", "`alice` as the reviewer.", "`2026-12-01` as the cutoff date."},
 	},
 	{
-		shape: shapeShows, forms: verbForms{"show", "shows", "showed"}, faultSubjectsAreShared: true,
+		// A section, a draft or a rewrite is a text that literally shows what it holds, so the
+		// shows faults take subjects that display nothing: a change, a fix, an approach.
+		shape: shapeShows, forms: verbForms{"show", "shows", "showed"},
+		faultSubjects: []subject{{"This change", false}, {"The fix", false}, {"This approach", false},
+			{"The proposal", false}, {"The second attempt", false}, {"The new rule", false},
+			{"These changes", true}, {"The two proposals", true}},
 		faultRests: []string{"the gap.", "the cause.", "the real problem.", "the risk.", "the problem.",
 			"the issue.", "the next step.", "the trade-off."},
 		controlSubjects: one("The status page", "The dashboard", "The build log", "The job page", "The command's output", "The queue view"),

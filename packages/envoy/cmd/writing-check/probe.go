@@ -55,20 +55,10 @@ type probeCall struct {
 func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	flags := flag.NewFlagSet("writing-check probe-model", flag.ContinueOnError)
 	flags.SetOutput(stderr)
-	kind := flags.String("kind", "", "the endpoint's protocol: openai-chat (an Azure AI Foundry deployment) or anthropic-messages (a model gateway)")
-	endpoint := flags.String("endpoint", "", "the endpoint's base URL")
-	deployment := flags.String("deployment", "", "the model id or deployment name")
-	apiVersion := flags.String("api-version", "", "the api-version query parameter, for an Azure deployment")
-	tenant := flags.String("azure-tenant", "", "the Entra tenant id, for keyless Azure sign-in")
-	clientID := flags.String("azure-client-id", "", "the Entra client id, for keyless Azure sign-in")
-	federated := flags.String("federated-token-file", "", "the federated token file Entra trusts for the client id")
-	scope := flags.String("scope", embed.DefaultEntraScope, "the Entra token scope")
-	keyFile := flags.String("key-file", "", "a file holding the endpoint's key (sent as the protocol expects; never printed)")
+	rf := addReaderFlags(flags, false)
 	calls := flags.Int("calls", 20, "the number of model calls to make")
-	deadline := flags.Duration("deadline", reader.DefaultTimeout, "the reader's time bound for one call")
 	bodies := flags.String("bodies", "", "a JSONL file of {\"text\": ...} bodies; absent, a built-in set of synthetic bodies")
 	out := flags.String("out", "", "a JSONL file for the per-call records")
-	noEffort := flags.Bool("no-effort", false, "send no reasoning effort (openai-chat only), for a deployment that refuses reasoning_effort")
 	if err := flags.Parse(args); err != nil {
 		return 2
 	}
@@ -76,11 +66,7 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintf(stderr, "writing-check probe-model: unexpected argument %q\n", flags.Arg(0))
 		return 2
 	}
-	model, err := probeModel(*kind, *endpoint, *deployment, *apiVersion, *keyFile,
-		embed.EntraConfig{TenantID: *tenant, ClientID: *clientID, TokenFile: *federated, Scope: *scope})
-	if err == nil && *noEffort && model.Endpoint.Kind != agentloop.OpenAIChat {
-		err = errors.New("--no-effort is for openai-chat alone: on anthropic-messages no effort turns thinking on")
-	}
+	model, err := rf.model()
 	if err == nil && *calls < 1 {
 		err = errors.New("--calls must be at least 1")
 	}
@@ -114,8 +100,8 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	r := reader.New(reader.Config{
 		Model:         model,
 		BundleModelID: writingcheck.BundleModelID,
-		Timeout:       *deadline,
-		NoEffort:      *noEffort,
+		Timeout:       rf.deadline,
+		NoEffort:      rf.noEffort,
 		Observe:       func(c reader.Call) { observed = c },
 	})
 	var sink *bufio.Writer
@@ -159,7 +145,7 @@ func runProbe(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		fmt.Fprintln(stderr, "writing-check probe-model: interrupted before the first call")
 		return 1
 	}
-	writeProbeSummary(stdout, records, *deadline, end)
+	writeProbeSummary(stdout, records, rf.deadline, end)
 	return 0
 }
 

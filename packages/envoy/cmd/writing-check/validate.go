@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"strings"
-
-	"gonum.org/v1/gonum/stat/distuv"
 )
 
 // The labeller's validation bound: at least minAgreeing planted cases agree and none disagrees,
@@ -213,14 +211,8 @@ func validateLabels(planted []plantedCase, labels map[writeKey]labelRecord) vali
 }
 
 // disagreementBound is the exact one-sided upper confidence bound on a disagreement rate after x
-// disagreements in n cases, at validationConfidence (Clopper-Pearson: the Beta(x+1, n−x)
-// quantile). It is 1 for no case and for x = n.
-func disagreementBound(x, n int) float64 {
-	if n == 0 || x >= n {
-		return 1
-	}
-	return distuv.Beta{Alpha: float64(x + 1), Beta: float64(n - x)}.Quantile(validationConfidence)
-}
+// disagreements in n cases, at validationConfidence. It is 1 for no case and for x = n.
+func disagreementBound(x, n int) float64 { return upperBound(x, n, validationConfidence) }
 
 // renderValidation is the report as Markdown.
 func renderValidation(r validationReport) string {

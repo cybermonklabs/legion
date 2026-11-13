@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/time/rate"
+	xrate "golang.org/x/time/rate"
 )
 
 // requestsPerSecond bounds the reads fetch makes of the live Dispatch.
@@ -46,7 +46,7 @@ type client struct {
 	base      string
 	tokenFile string
 	http      *http.Client
-	limit     *rate.Limiter
+	limit     *xrate.Limiter
 	requests  int
 }
 
@@ -55,7 +55,7 @@ func newClient(base, tokenFile string) *client {
 		base:      strings.TrimRight(base, "/"),
 		tokenFile: tokenFile,
 		http:      &http.Client{Timeout: 60 * time.Second},
-		limit:     rate.NewLimiter(requestsPerSecond, 1),
+		limit:     xrate.NewLimiter(requestsPerSecond, 1),
 	}
 }
 

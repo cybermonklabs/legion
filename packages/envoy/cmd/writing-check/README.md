@@ -15,6 +15,13 @@ go run ./cmd/writing-check split --in <grouped.jsonl> --cut-a <event id> --cut-b
 go run ./cmd/writing-check plant --in <manifest.jsonl> --corpus <cases.jsonl> --seed N --out <dir> [--per-shape 40] [--nolist 40] [--controls]
 go run ./cmd/writing-check label --in <cases.jsonl> --definition <file> --out <labels.jsonl> --endpoint <url> --key-file <file> [flags]
 go run ./cmd/writing-check validate-labeller --labels <labels.jsonl> --planted <manifest.jsonl> --seed N --out <report.md>
+go run ./cmd/writing-check recall --labels <labels.jsonl> [--planted <manifest.jsonl>] [--heldout-seed N --heldout-share 0.5] --out <dir>
+go run ./cmd/writing-check digest [--root <module root>]
+go run ./cmd/writing-check score --labels <labels.jsonl> [--planted <manifest.jsonl>] --stratum real|planted --out <dir> [--final-test --set-digest <sha> --seed N --exposure-log <file>] <reader flags>
+go run ./cmd/writing-check reproduce --outputs <outputs.jsonl> --labels <labels.jsonl> [--planted <manifest.jsonl>] --figures <figures.json> [--bootstrap-seed N]
+go run ./cmd/writing-check regress --cases <cases.jsonl> --repeat-bound <share> <reader flags>
+go run ./cmd/writing-check reading --in <cases.jsonl> --after <event id> --through <event id> [--exclude <manifest>]... --out <dir> <reader flags>
+go run ./cmd/writing-check validate --description <scanner.yaml> --exposure-log <file> [--manifests <dir>]
 ```
 
 Run it from `packages/envoy`.
@@ -431,3 +438,238 @@ disagreeing or unlabelled case.
 The labeller passes only with at least 183 agreeing cases in total and no disagreeing and no
 unlabelled case in any class and case type. 183 agreeing cases and none disagreeing bound the
 disagreement at 2.0% at 97.5%. The command exits 0 on a pass and 1 on a failure.
+
+## Reference labels and bounds
+
+`recall`, `score` and `reproduce` read a labels file of `label` and, for planted copies, the
+`manifest.jsonl` of `plant`. Each write is read once; where the file holds a write twice (after
+`label --resume`), the last line wins.
+
+- A sentence's reference verdict and shape are the labeller's. In a planted copy, the planted
+  sentence (the one sentence of the planted field whose text is the manifest's `sentence_prose`)
+  takes them from the manifest instead: a fault is `vacuous`, a control `not_vacuous`, each of the
+  planted shape.
+- A write's reference label is `failure` when it holds a reference-vacuous sentence, `unresolved`
+  when it holds none and an unresolved one, `pass` otherwise, `not_applicable` when it holds no
+  prose sentence, and `error` when the labeller failed or the planted sentence is not found once.
+  The rates read only writes labelled `failure`, `unresolved` or `pass`.
+- A copy with a `copy` id is in the planted stratum; every other write is in the real stratum.
+- The no-list sentences are the reference-vacuous sentences of shape `other` (a main verb that is
+  not *name*, *show* or *pay*). `--heldout-seed N --heldout-share S` splits them into a tuning half
+  and a held-out half: a unit goes to the held-out half when the first 8 bytes of
+  `sha256("<seed>\0<unit>")`, as a share of 2^64, fall under S. The unit of a planted fault is its
+  verb (`verb:<verb>`), so no verb of the held-out half is tuned on; the unit of a labelled sentence
+  is its write (`write:<event id>/<source id>[/<copy>]`). The split depends on the seed and the
+  unit alone, so `recall` and `score` given the same seed and share draw the same halves.
+
+Every bound is exact and one-sided (Clopper-Pearson, gonum's `distuv.Beta`): the upper bound on a
+rate after x events in n trials at confidence c is the Beta(x + 1, n − x) quantile at c (1 when
+x = n or n = 0), and the lower bound is the Beta(x, n − x + 1) quantile at 1 − c (0 when x = 0).
+0 of 59 bounds a rate at 4.95% at 95%, and 0 of 183 at 1.99% at 97.5%.
+
+## recall
+
+`recall` measures the code stage alone: for every reference-vacuous sentence of a usable write,
+is it a candidate? It runs `candidates.Find` once over each write's sentences (the labels hold
+each sentence's field and text in order, which is all the code stage reads), once with the
+bundle's lists and once with `Options{NoLists: true}`, and matches each candidate to its sentence
+in order by field and text.
+
+| Flag | Meaning |
+| --- | --- |
+| `--labels` | The labels file. |
+| `--planted` | Plant's manifest, when the labels hold planted copies. |
+| `--heldout-seed`, `--heldout-share` | Split the no-list sentences (default share 0.5). Without a seed, nothing is split. |
+| `--out` | The directory for `recall.json`, `recall.md`, and with a split `nolist-tuning.jsonl` and `nolist-heldout.jsonl`. |
+
+The table gives, for each population (each named shape, the no-list sentences, each half, all
+reference-vacuous sentences), the sentences, the candidates found, the recall and its exact 95%
+lower bound, with the lists and without them. Below it: the candidate share of all sentences and
+of all writes, with and without the lists, and whether R13 holds: deleting the lists does not
+lower the recall over the held-out half (over all no-list sentences without a split). Only the
+tuning half is for tuning; the held-out half is written to its own file so it is never tuned on.
+
+## digest
+
+`digest` prints the bundle's digest and its files. `--root` is the module root (default `.`, so
+run it from `packages/envoy`). The files, in this order, as paths from the module root:
+
+1. `internal/dispatch/writingcheck/prose/*.go`
+2. `internal/dispatch/writingcheck/rules/*.go`
+3. `internal/dispatch/writingcheck/candidates/*.go`
+4. `internal/dispatch/writingcheck/reader/*.go`, then `reader/prompt.md`
+5. `internal/dispatch/writingcheck/bundle.go`, `checker.go`, `actor.go`
+6. `internal/dispatch/writingcheck/baseline/*.go`
+
+Each `*.go` is the directory's Go files without `_test.go`, sorted by name. The digest is the
+SHA-256 of the lines `<sha256 of the file>  <path>\n` in that order, which is what
+`sha256sum <files in order> | sha256sum` prints from the module root.
+
+## score
+
+`score` runs the detector on every write of one stratum of a labels file as the server's check
+does: the code stage over all the write's prose sentences, then one reader call over all its
+candidates (the reader reads at most 24). The reader is `writingcheck/reader` with the bundle's
+prompt and schema.
+
+| Flag | Meaning |
+| --- | --- |
+| `--labels`, `--planted` | The labels file and plant's manifest (`--planted` is required for `--stratum planted`). |
+| `--stratum` | `real` or `planted`. |
+| `--out` | The directory for `outputs.jsonl`, `figures.json` and `figures.md`. |
+| `--labeller-bound` | The labeller's validated disagreement bound at 97.5%, for the composed bound. |
+| `--heldout-seed`, `--heldout-share` | The split `recall` used, for the held-out no-list recall. |
+| `--bootstrap-seed`, `--bootstrap` | The seed (default 1) and resamples (default 1000) of the cluster bootstrap. |
+| `--root` | The module root, for the bundle digest (default `.`). |
+| `--final-test`, `--set-digest`, `--seed`, `--exposure-log` | Mark the run as the final test; see below. |
+| `--kind`, `--endpoint`, `--deployment`, `--api-version`, `--azure-tenant`, `--azure-client-id`, `--federated-token-file`, `--scope`, `--key-file`, `--no-effort`, `--deadline` | The reader flags of `probe-model`. The server sends no effort (`writingcheck.ReaderNoEffort`), so give `--no-effort` to match it on `openai-chat`. |
+| `--model-id` | The model id the reader pins (`reader.Config.BundleModelID`, default the bundle's). A reply from another model is `model_mismatch`. |
+| `--concurrency` | The writes read at once (default 4). Each worker has its own reader, so each call's served model id is its own. |
+
+Each line of `outputs.jsonl` is one write: `write` (`<event id>/<source id>[/<copy>]`), `stratum`,
+`sentences`, `candidates` (`id`, the labels' `sentence_id`, `field`, `text`, `reason`), the reader's
+`outcome` (`read`, `candidate_cap`, `reader_timeout`, `reader_error`, `reader_malformed`,
+`reader_budget`, `model_mismatch`, or `not_called` with no candidate), its `verdicts` (`id`,
+`vacuous`, `rewrite`, `reason`), the scanner `verdict`, `model_called`, `latency_ms`, the served
+`model`, `tokens_estimated` and `error`.
+
+The scanner's verdict on a write:
+
+- `not_applicable`: the write holds no prose sentence;
+- `failure`: the reader called a candidate vacuous;
+- `no_failure`: no candidate, or the reader read every candidate and called none vacuous;
+- `insufficient_evidence`: candidates past the cap went unread and none read was vacuous;
+- `error`: every reader fault (a timeout, a provider error, a malformed reply, a spent budget, a
+  model mismatch). An `error` counts as a missed failure.
+
+The figures, for the scanner and, on the same writes, for the baseline (`baseline.Matches` on
+each sentence; a write is refused when any sentence matches):
+
+- **Write precision**: over the refused writes with a usable label, those labelled `failure` (they
+  hold at least one reference-vacuous sentence; in a planted fault copy, the planted fault is
+  one). `1 − precision` is given with its exact upper bounds at 95% and at 97.5%. A refused write
+  labelled `unresolved` counts against precision.
+- **Composed bound** (with `--labeller-bound`): the labeller's bound plus the scanner's 97.5%
+  upper bound on `1 − write precision`, and whether it is at or below 5%.
+- **Sentence precision**: over the sentences the reader called vacuous, those that are
+  reference-vacuous, with `1 − precision`'s bounds, and a 95% percentile interval by a cluster
+  bootstrap over the writes holding a refused sentence (PCG source seeded with the bootstrap
+  seed). The bootstrap describes these cases alone and certifies nothing.
+- **Recall**: over the reference-vacuous sentences of usable writes, those the reader called
+  vacuous: for each named shape, for the no-list sentences, for the held-out half, and for all.
+  **Write recall**: over the writes labelled `failure`, those refused. Each with its count and
+  exact 95% lower bound.
+- The shares of writes the scanner calls `not_applicable`, `insufficient_evidence` and `error`,
+  and the refused writes with no usable label (left out of precision).
+- Over the writes a model call was made for: latency p50 and p95 (nearest rank), tokens p95, and
+  the ceilings, twice each p95. The reader's `Observe` gives no token counts, so a call's tokens
+  are estimated at four bytes a token, as the reader's budget counts: the system prompt, the
+  candidates as sent, and the verdicts as returned.
+- The served model ids.
+
+`figures.json` holds the run (`run_id`, `time`, `final_test`, `set_digest`, `seed`,
+`bundle_digest`, `model_id`, `deployment`, `deadline`, and the SHA-256 of the labels, the planted
+manifest and `outputs.jsonl`), the parameters (stratum, split, labeller bound, bootstrap seed and
+resamples, and `decimals`, 4), and the figures. `figures.md` is the same as tables.
+
+With `--final-test` (which needs `--set-digest`, `--seed`, `--exposure-log` and a `--model-id`),
+the command refuses a set whose digest the exposure log already holds a final-test run for. It
+appends one line to the log (`run_id`, `kind: final_test`, `time`, `set_digest`,
+`bundle_digest`, `seed`, `model_id`, `stratum`) before it reads any write, so a run that stops
+part way still spends the set.
+
+## reproduce
+
+`reproduce` computes every figure again from `outputs.jsonl`, the labels and the planted manifest,
+with the parameters `figures.json` records, and calls no model. `--bootstrap-seed` replaces the
+recorded seed. It fails (exit 1) and lists each difference when `outputs.jsonl` is not the file
+the run stored (its SHA-256), a write's stored verdict does not follow from its outcome and
+verdicts, a write of the stratum has no output, or a figure differs from `figures.json` by more
+than half a unit of its fourth decimal.
+
+## regress
+
+`regress` is the model half of the regression suite: it runs the detector on development cases
+written for the test and compares each named sentence's verdict with the expected one.
+
+| Flag | Meaning |
+| --- | --- |
+| `--cases` | A JSONL file of `{"id", "field" (default "body"), "text", "expected": [{"sentence", "vacuous"}]}`. Each expected sentence must be a prose sentence of its text. |
+| `--repeat-bound` | The repeatability bound: the largest share of each class that may disagree. |
+| `--out` | A JSON file for the report. |
+| reader flags | As `score`. |
+
+A sentence is called vacuous when it is a candidate and the reader called it vacuous. A reader
+fault disagrees on every expected sentence of its case. The command prints, for each class
+(`vacuous`, `not_vacuous`), the expected sentences, the disagreements and their share, lists each
+disagreement, and exits 1 when either share is above the bound.
+
+## reading
+
+`reading` takes R11's reading over a window of agent writes with the frozen bundle.
+
+| Flag | Meaning |
+| --- | --- |
+| `--in` | The cases file of `fetch`. |
+| `--after`, `--through` | The window: events after `--after`, through `--through`. |
+| `--exclude` | A manifest whose writes are left out (repeatable): the set manifests of `split`, the manifest of `rule-cost`, plant's manifest. Each line's `event_id` and `source_id` name a write. |
+| `--out` | The directory for the output files. |
+| `--root` | The module root, for the bundle digest. |
+| reader flags | As `score`. |
+
+Every write of the window that no excluded manifest names is read; a planted copy never is. Each
+is checked twice by `writingcheck.Checker`, as the server checks it: once with the structure rules
+the bundle enables (`writingcheck.EnabledRules`), once with the detector alone.
+
+The report gives the share of writes the detector refuses, the share the rules refuse, the share
+either refuses, the share where the detector's outcome is a fault (anything but `refused` or
+`clean`), the candidate share of writes and of sentences, and the share of the window's body
+bytes inside block quotes and inside fenced code. A line walker counts those bytes: a fenced
+block runs from its opening line (three backticks or tildes, after at most three spaces) through
+its closing line or the end; a block quote is a line opening with `>` after at most three spaces,
+and each non-blank line straight after one.
+
+A window with no agent write outside the excluded manifests is reported as `no reading`, and its
+report holds no share, never a zero.
+
+Output, in `--out`: `manifest.jsonl` (`event_id`, `source_id`, `project`, `family` of each write
+read) and `manifest.sha256`; `results.jsonl` (each write's sentences, candidates, detector
+outcome, whether the rules refused it, and its bytes; no text); `report.json` and `report.md`,
+with the window, the excluded manifests and their SHA-256, the projects, the manifest's SHA-256
+and the bundle digest.
+
+## validate
+
+`validate` checks a description file (`internal/dispatch/writingcheck/eval/scanner.yaml`, valid
+against `scanner.schema.json` beside it) against the method's rules for a gate.
+
+| Flag | Meaning |
+| --- | --- |
+| `--description` | The description file. A field the schema does not name fails it. |
+| `--exposure-log` | The exposure log `score --final-test` appends to. A log that does not exist holds no run. |
+| `--manifests` | The directory the manifests' `file`s are in (default: the description's directory). |
+
+A field whose figures wait for the freeze or the final test carries `pending: true` and a
+`reason`; the command lists each such field and does not fail on it. It fails (exit 1) on:
+
+- a required field that is absent, or not pending and without its figures, a pending field with
+  no reason, fewer than five boundary cases, and no baseline;
+- for triage or a gate, no error-analysis record, or a sample under 50 opportunities or under 20
+  sessions or issues;
+- a manifest whose file's SHA-256 is not its `sha256`, a case with no group, a group in two sets,
+  and a case whose evidence comes after its cutoff (`evidence_event_id` above `cutoff_event_id`,
+  each the case's `event_id` where absent);
+- before the claim (`final_test` pending), any final-test run of the final-test set in the
+  exposure log; after it, no such run, more than one, one naming another bundle digest than
+  `bundle_digest`, or another run id than `final_test.run_id`;
+- an acceptance bar committed after the final-test run: `acceptance_bar.bar_committed_at`, or
+  else the committer time of the `acceptance_bar:` line by `git blame` (a line not committed
+  fails), against the run's time in the exposure log;
+- a final test with no baseline figures;
+- for a gate, for each error (1 − precision with e = 1 − `precision_floor`, 1 − recall with
+  e = 1 − `recall_floor`): fewer draws than ln(α) / ln(1 − e), an exact upper bound above e at the
+  bar's confidence, and, with a validated labeller, the composed bound (the labeller's bound plus
+  the scanner's, at 1 − α/2) above e.
+
+`TestValidateRefusesAGroupInTwoSetsAndNoBaseline` is the negative control: a copy of a valid
+description with one group in two sets and the baseline taken out is refused for both.
