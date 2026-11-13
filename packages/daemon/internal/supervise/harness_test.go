@@ -661,9 +661,11 @@ func (h *harness) post(ev Event, result bool) error {
 // promptInTurn is the delivery of the prompt the agent took and has not reported the end of: the
 // one whose work the turn now ending did. It is read before the end reaches the machine, so a
 // task that end re-sends is the next turn's prompt rather than this one's. A prompt the
-// connection refused reports nothing, and neither does one the agent has already refused late:
-// Oh My Pi answers a prompt once, a failure or a result, and the machine stops waiting for the
-// result at exactly the moment it takes that task back (awaitingResult).
+// connection refused reports nothing, and neither does one the agent has already answered with
+// no turn, a busy answer or a late refusal: Oh My Pi answers a prompt once, a failure or a result,
+// and the machine stops waiting for that prompt's result at exactly the moment it takes that
+// answer (Machine.outstanding). A prompt whose wait for its turn ran out is still outstanding, and
+// its turn, starting late, still reports it.
 func (h *harness) promptInTurn() string {
 	conn, ok := h.conns.Conn(h.token)
 	if !ok {
@@ -674,10 +676,19 @@ func (h *harness) promptInTurn() string {
 		return ""
 	}
 	delivery, _ := reporter.TakePromptResult()
-	if delivery != h.m.awaitingResult {
+	if !slices.Contains(h.outstanding(), delivery) {
 		return ""
 	}
 	return delivery
+}
+
+// outstanding is every prompt of the pending task the machine waits on a result for
+// (Machine.outstanding), read under the machine's lock, since a send's goroutine may be handling
+// its acknowledgement.
+func (h *harness) outstanding() []string {
+	h.m.mu.Lock()
+	defer h.m.mu.Unlock()
+	return slices.Clone(h.m.outstanding)
 }
 
 func (h *harness) must(ev Event) {

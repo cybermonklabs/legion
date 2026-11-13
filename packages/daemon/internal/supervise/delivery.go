@@ -842,7 +842,10 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	if err != nil && !errors.Is(err, ErrNoSuchDelivery) {
 		return err
 	}
-	m.claim, m.unsaved = retired, false
+	// The prompts the retired task waited on a result for go with it (Machine.outstanding): their
+	// results answer a task the claim no longer holds, and the fence drops them, so a newer task
+	// queue puts in its place is never taken for the turn one of them runs.
+	m.claim, m.unsaved, m.outstanding = retired, false, nil
 	if err != nil {
 		m.log.Warn("supervise: the store holds no such delivery; the refusal is of a retirement it has already made",
 			"delivery", p.ID, "error", err)
@@ -1012,14 +1015,14 @@ func (m *Machine) confirm(ctx context.Context) error {
 // one of them: it takes the task whose turn it ended back first (interrupted), so settle finds
 // nothing of it to retire.
 //
-// Which turn was the delivery's is what the prompt's own result answers, and until it has, no
-// turn that ends is taken for it (resultPending). Oh My Pi's agent_end names no prompt at all,
-// and with background work on for every role a background result wakes a settled session and
-// starts a turn the daemon never prompted: a confirmed task retired at that turn's end would be
-// one the role never worked, and the turn that really is its own would serve no run. The result
-// lands on the heels of the agent_end of the turn the prompt ran, so the wait is milliseconds;
-// a prompt the agent refused or a daemon restart leaves none outstanding, and the turn's end
-// decides as it always did.
+// Which turn was the delivery's is what the result of its outstanding prompt answers
+// (Machine.outstanding), and until it has, no turn that ends is taken for it (resultPending).
+// Oh My Pi's agent_end names no prompt at all, and with background work on for every role a
+// background result wakes a settled session and starts a turn the daemon never prompted: a
+// confirmed task retired at that turn's end would be one the role never worked, and the turn that
+// really is its own would serve no run. The result lands on the heels of the agent_end of the
+// turn the prompt ran, so the wait is milliseconds; a prompt the agent refused or a daemon
+// restart leaves none outstanding, and the turn's end decides as it always did.
 //
 // A daemon suspension ends the claim's phase, so a task queued for a phase is the finished phase's
 // and goes with it; the next resume is handed its new phase's task, never that one. An operator
@@ -1052,8 +1055,13 @@ func (m *Machine) settle(ctx context.Context) error {
 // relaunch and the retirement. read says whether the agent may have read it: the bound's caller
 // passes true, since the turn that has not started may still be this task's, and a refusal passes
 // false, since a prompt the agent answered a failure never ran.
+//
+// The caller has already dropped from the task's outstanding prompts the one its answer names,
+// where it names one (Machine.outstanding); the wait that ran out names none, and its prompt
+// stays outstanding, since its turn at the pin is still the session's next. Whatever stays
+// outstanding is what the take-back reads (takeBackPending).
 func (m *Machine) promptFailed(ctx context.Context, why string, read bool) error {
-	if err := m.takeBackPending(ctx, read); err != nil {
+	if err := m.takeBackPending(ctx, read, m.awaitsResult()); err != nil {
 		return err
 	}
 	return m.chargePrompt(ctx, why)
@@ -1151,14 +1159,15 @@ const outOfMemoryTask = "Your pod ran out of memory. Kubernetes ended the contai
 // alone would be skipped by that death, relaunched from a store still holding it confirmed, and
 // retired as served by a restart.
 //
-// The wait for the prompt's result ends with that same write (awaitingResult), after it rather
-// than before: while the task stands confirmed, the wait is what keeps the turn that ends next
-// from being taken for this prompt's (resultPending), and settle retires a confirmed task of a
-// ready or idle claim the moment nothing is waiting on a result for it (turnOver). Ending the
-// wait for a take-back that did not land would leave a claim whose task is confirmed, whose
-// prompt is over as far as this machine is concerned, and whose next settlement retires a task
-// no turn ever finished. A take-back that did land leaves the task unconfirmed, which settle
-// retires in no state at all.
+// The wait for the task's prompts' results ends with that same write (Machine.outstanding),
+// after it rather than before, and for every prompt of the task at once: the turn they ran is
+// the one this ends, and the process that would answer them is going. While the task stands
+// confirmed, the wait is what keeps the turn that ends next from being taken for a prompt of its
+// (resultPending), and settle retires a confirmed task of a ready or idle claim the moment
+// nothing is waiting on a result for it (turnOver). Ending the wait for a take-back that did not
+// land would leave a claim whose task is confirmed, whose prompts are over as far as this machine
+// is concerned, and whose next settlement retires a task no turn ever finished. A take-back that
+// did land leaves the task unconfirmed, which settle retires in no state at all.
 func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool) error {
 	p := m.claim.Pending
 	if p == nil || p.ConfirmedAt.IsZero() {
@@ -1171,7 +1180,7 @@ func (m *Machine) interrupted(ctx context.Context, why string, outOfMemory bool)
 		return err
 	}
 	*p = next
-	m.awaitingResult = ""
+	m.outstanding = nil
 	return nil
 }
 
@@ -1216,27 +1225,64 @@ func (m *Machine) markUnread(ctx context.Context) error {
 	return m.putPending(ctx)
 }
 
-// takeBackPending returns the pending delivery to waiting after a prompt came to nothing:
-// unconfirmed if a turn had confirmed it, under a new id so the retry is a new prompt rather than
-// an echo the shim answers from its record, and with the wait for its turn disarmed. A task taken
+// awaitResult records id as a prompt of the pending task Oh My Pi acknowledged, whose result is
+// still to come (Machine.outstanding). An id already held is held once: the shim answers a prompt
+// it has a record of without a second turn (shimwire's dedupe), so its acknowledgement can come
+// twice for one prompt.
+func (m *Machine) awaitResult(id string) {
+	if !slices.Contains(m.outstanding, id) {
+		m.outstanding = append(m.outstanding, id)
+	}
+}
+
+// answered drops id from the prompts the pending task waits on a result for: Oh My Pi answered
+// it, a result or a refusal, and answers no prompt twice.
+func (m *Machine) answered(id string) {
+	m.outstanding = slices.DeleteFunc(m.outstanding, func(o string) bool { return o == id })
+}
+
+// outstandingPrompt is whether id is a prompt of the pending task still waiting on its result.
+func (m *Machine) outstandingPrompt(id string) bool { return slices.Contains(m.outstanding, id) }
+
+// awaitsResult is whether any prompt of the pending task is still waiting on its result.
+func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
+
+// takeBackPending returns the pending delivery to waiting after a prompt came to nothing, under a
+// new id so the retry is a new prompt rather than an echo the shim answers from its record, and
+// with the wait for its turn disarmed.
+//
+// outstanding is whether a prompt of the task is still outstanding once the caller has dropped
+// the one its answer named (Machine.outstanding). The pinned Oh My Pi runs one admitted prompt at
+// a time and refuses the rest, so the session's next turn, running or still to come, is that
+// prompt's: the task keeps its confirmation and its read mark for it, and only the pending id
+// moves. That is the busy answer of a send made while the first prompt's turn is late — refused
+// because that very turn is being prepared or run — which takes back nothing of that turn. With
+// none outstanding, the task goes back unconfirmed if a turn had confirmed it, and a task taken
 // back unread loses the mark, so nothing the worker reports from whatever turn follows belongs to
-// it.
+// it; and the wait for results ends, so a caller whose prompt's turn is over or aborted — a
+// provider error's, a compaction's — passes false and leaves nothing of the task outstanding.
+//
+// The id moves either way: the prompt whose answer this is gets a new one, so its own late
+// acknowledgement is fenced out (fenceOutcome) and adds nothing outstanding, and the shim's
+// one-delivery record (shimwire's dedupe) is never asked to answer an old id again.
 //
 // The refusal or timeout behind it arrives once, and settle and ServingRun read the claim as memory
 // holds it, so what it established — not confirmed, and not read when taken back unread — holds at
 // once, whether or not the write recording it lands. Only the new id waits for the write, so the
 // claim's id is always one the store holds; a write that fails leaves the delivery unsaved, and
-// settle writes it again under the id it kept (saved). Ending the wait for the prompt's result
+// settle writes it again under the id it kept (saved). Ending the wait for the prompts' results
 // before that write is safe here, where interrupted ends it after its own: this clears
 // ConfirmedAt in memory first, so the claim a failed write leaves is one settle reads as a task
 // still waiting rather than as a turn that is over (turnOver, resultPending).
-func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
+func (m *Machine) takeBackPending(ctx context.Context, read, outstanding bool) error {
 	m.disarm(TimerTurn)
-	m.awaitingResult = ""
 	p := m.claim.Pending
-	p.ConfirmedAt = time.Time{}
-	if !read {
-		m.clearReadMark(p)
+	if !outstanding {
+		m.outstanding = nil
+		p.ConfirmedAt = time.Time{}
+		if !read {
+			m.clearReadMark(p)
+		}
 	}
 	next := *p
 	next.ID = rotateTaskID(p.ID)

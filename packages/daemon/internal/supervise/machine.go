@@ -1048,14 +1048,31 @@ type Machine struct {
 	// that arrived after the sweep read the claims is already in this machine's inbox, ahead of
 	// the backstop's own event, so a turn whose agent moved in that window is left alone.
 	steppedAt time.Time
-	// awaitingResult is the id of the pending delivery whose prompt Oh My Pi acknowledged and has
-	// not yet reported the end of (shimwire.PromptResult). While it is set, a turn that ends is
-	// not known to be that prompt's — with background work on, a role's own background result
-	// wakes it and starts turns the daemon never prompted — so the delivery's life ends at its
-	// result rather than at any agent_end (turnEnded, promptResulted). It is memory only: a
-	// restart has no prompt of its own outstanding and asks the agent where it is instead
-	// (askFirst).
-	awaitingResult string
+	// outstanding is every prompt of the pending task that Oh My Pi acknowledged and has not yet
+	// reported the end of (shimwire.PromptResult), by delivery id. The pinned Oh My Pi answers each
+	// prompt with exactly one prompt_result, owned by the first run after the prompt's admission
+	// (rpc-prompt-results.ts), and refuses a prompt that arrives while another is admitted ("Agent
+	// is already processing") rather than queue it; the Claude Code bridge takes one prompt at a
+	// time too (internal/claudebridge's Busy and promptRun). So the session's next turn after an
+	// acknowledgement is that prompt's, however long its pre-turn work runs past the wait for it
+	// (noTurn): a turn that starts while an id is held here is the task's (turnStarted), and a
+	// result naming one is the task's whichever id the task has moved on to since (fence,
+	// promptResulted). While one is held, a turn that ends is not known to be the task's — with
+	// background work on, a role's own background result wakes it and starts turns the daemon
+	// never prompted — so the delivery's life ends at its result rather than at any agent_end
+	// (turnEnded, resultPending).
+	//
+	// acked and ackedInTurn add an id. A result or a refusal naming one removes it, and the
+	// result of a prompt that ran a turn ends the wait for them all; the wait for a turn that runs
+	// out (noTurn) takes the task back and keeps its prompt here. letGo, retirePending — and with
+	// it queue, when a newer task takes the pending one's place — and interrupted empty it, since
+	// what it waits on goes with the process or the task.
+	//
+	// It is memory only: a daemon restarted inside a late turn's wait restores the claim with no
+	// prompt outstanding and asks the agent where it is instead (askFirst), so that window keeps
+	// the behaviour it had before the set: a turn that starts is taken for the task by askFirst,
+	// as one this daemon never saw begin (unseenTurn).
+	outstanding []string
 	// askFirst is a restored claim whose agent an earlier daemon was talking to: a pending
 	// delivery it may already have sent, or a turn it saw start and may not have seen end. The
 	// machine asks the agent (get_state) before it acts on either.
@@ -1479,11 +1496,15 @@ func (c Claim) ServingAssignment() string {
 // task; held to the look alone, the fallback would hand that tester a look it has not begun to
 // serve, and its testing verdict — pass or fail, which a check report also names — would close
 // the check with nobody having looked at production. The look, the run and the assignment are
-// one serving, not three. The cost is a look whose own turn starts after the daemon's wait for
-// it: that turn counts as the agent's own, its report is refused, and the task is re-sent once
-// the turn ends (noTurn keeps the mark, sendPending sends it again), so the next turn confirms
-// it and reports. The look's own bound (workflow.CheckLookBound, two hours) is the backstop
-// under that, and a refusal the agent sees beats a silent false pass.
+// one serving, not three. A look whose own turn starts after the daemon's wait for it still
+// reports: the prompt Oh My Pi acknowledged stays outstanding until its result, and the pinned
+// Oh My Pi runs one admitted prompt at a time, so the session's next turn is that prompt's and
+// confirms the look's task (Machine.outstanding, turnStarted). The cost left is a look turn no
+// acknowledged prompt of the task is waiting on, such as one that starts after Oh My Pi answered
+// the look's prompt without a turn: that turn counts as the agent's own, its report is refused,
+// and the task is sent again once the turn ends, so the next turn confirms it and reports. The
+// look's own bound (workflow.CheckLookBound, two hours) is the backstop under that, and a
+// refusal the agent sees beats a silent false pass.
 func (c Claim) ServingCheck() CheckLook {
 	retired := c.ServingCheckLook
 	if c.Pending != nil && c.Pending.Phase != "" {
@@ -1526,17 +1547,18 @@ func deliveredCheckLook(d Delivery) CheckLook { return d.CheckLook }
 //  3. Otherwise, for a claim that has served no older work this value could be mistaken for, the
 //     task it holds, unless a prompt of that task has already come to nothing (Delivery.Prompted)
 //     or an open update round is holding it back from the worker (held, Claim.openRoundHoldsTask).
-//     Oh My Pi's own agent_start names no prompt, so a turn that starts after the daemon's wait
-//     for it is indistinguishable from a turn of the agent's own and confirms nothing; and a turn
-//     an Envoy message starts can run the whole phase before the phase's task is sent at all,
-//     which is what INFRA-264's tester did — it registered on a fresh claim, a message to its role
-//     topic started its first turn six seconds later, and its completion was refused as belonging
-//     to no run. A worker on its first task would otherwise have its completion refused. A task
-//     the daemon has not sent, or one the agent acknowledged, is the only work such a claim can be
-//     on, and cannot be mistaken for older work, because there is none this claim served. A task
-//     the agent refused is not one it read, and carries no such mark, so the claim answers for
-//     nothing until one is. The completion retires the task it is credited to, through the phase
-//     it leaves behind (sendPending), so that task is never sent after the work it names is done.
+//     Oh My Pi's own agent_start names no prompt, so a turn that starts with no prompt of the task
+//     in flight or outstanding (Machine.outstanding) is indistinguishable from a turn of the
+//     agent's own and confirms nothing; and a turn an Envoy message starts can run the whole
+//     phase before the phase's task is sent at all, which is what INFRA-264's tester did — it
+//     registered on a fresh claim, a message to its role topic started its first turn six
+//     seconds later, and its completion was refused as belonging to no run. A worker on its
+//     first task would otherwise have its completion refused. A task the daemon has not sent, or
+//     one the agent acknowledged, is the only work such a claim can be on, and cannot be mistaken
+//     for older work, because there is none this claim served. A task the agent refused is not
+//     one it read, and carries no such mark, so the claim answers for nothing until one is. The
+//     completion retires the task it is credited to, through the phase it leaves behind
+//     (sendPending), so that task is never sent after the work it names is done.
 //
 //     held is sendPending's own hold, read through the one predicate that spells it
 //     (openRoundHoldsTask): a worker that has answered its update round is given no task until the
@@ -1818,18 +1840,23 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 		}
 	case StreamPromptResult:
 		// The result of a prompt for a delivery the claim no longer holds — retired, or taken back
-		// under a new id — answers a question nothing is still asking.
-		if pending == nil || pending.ID != ev.DeliveryID {
+		// under a new id — answers a question nothing is still asking. A prompt of the pending task
+		// still outstanding is the one exception: the wait for its turn took the task back under a
+		// new id, or a later send's busy answer did, and the turn the prompt ran is the task's all
+		// the same, since a session's next turn after an admission is that prompt's
+		// (Machine.outstanding).
+		if pending == nil || (pending.ID != ev.DeliveryID && !m.outstandingPrompt(ev.DeliveryID)) {
 			m.dropStale("StreamPromptResult", "delivery", ev.DeliveryID, pendingID(pending))
 			return false, nil
 		}
 	case StreamLateRefusal:
 		// A refusal naming the prompt that set the mark always reaches the table. One naming the
-		// pending id does when its connection sent that prompt, or when it takes back a task a turn
-		// not its own confirmed (takesBackConfirmed): a replayed refusal answers an earlier send, and
-		// the pending id may be the one its connection re-sent.
+		// pending id, or a prompt of the pending task still outstanding, does when its connection
+		// sent that prompt, or when it takes back a task a turn not its own confirmed
+		// (takesBackConfirmed): a replayed refusal answers an earlier send, and the pending id may be
+		// the one its connection re-sent.
 		named := pending != nil && pending.MarkedBy == ev.DeliveryID
-		pendingNamed := pending != nil && pending.ID == ev.DeliveryID && !ev.Replayed
+		pendingNamed := pending != nil && (pending.ID == ev.DeliveryID || m.outstandingPrompt(ev.DeliveryID)) && !ev.Replayed
 		if pending == nil || !(named || pendingNamed || m.takesBackConfirmed(ev)) {
 			m.dropStale("StreamLateRefusal", "delivery", ev.DeliveryID, pendingID(pending))
 			return false, nil
@@ -1894,7 +1921,10 @@ func timesADelivery(kind TimerKind) bool {
 
 // fenceOutcome is the fence on a prompt's outcome. The send it belongs to is over either way; an
 // outcome for a delivery or a generation the claim has moved past records nothing — and when it
-// was the machine's own send that finished late, the delivery that replaced it may go now.
+// was the machine's own send that finished late, the delivery that replaced it may go now. The
+// acknowledgement of a send whose busy answer arrived first is one of those: that answer took the
+// task back under a new id (takeBackPending), so the acknowledgement adds no prompt to the ones
+// the task waits on a result for (Machine.outstanding).
 func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string) (bool, error) {
 	own := m.send != nil && m.send.id == deliveryID && m.send.generation == generation
 	if own {
@@ -2609,7 +2639,9 @@ func (m *Machine) retire(ctx context.Context) error {
 // make is the one this end replaces, and the credit of the refresh gate a refresh of the
 // stale-plugin lane held for that wake goes back at the end of this decision, which is where a
 // credit whose wake is gone goes back wherever that wake went (endRefreshLane,
-// dispatch://INFRA-2712 R1) — no send talks to it, no suspension is held for its turn,
+// dispatch://INFRA-2712 R1) — no send talks to it, no prompt of the pending task waits on a
+// result from it (Machine.outstanding: the process that would answer is gone, and the next one
+// is sent the task anew), no suspension is held for its turn,
 // no stale-plugin relaunch waits for that turn either (refreshPlugin) — the process it was to
 // replace is gone — no compaction runs against it (Machine.Compact, whose end then finds the
 // claim records none and answers ErrCompactProcessGone, giving it back nothing and sending
@@ -2630,6 +2662,7 @@ func (m *Machine) letGo() {
 	m.relaunch = nil
 	m.wake = nil
 	m.forgetSend()
+	m.outstanding = nil
 	m.held = nil
 	m.staleRelaunch = nil
 	m.unseenTurn = false

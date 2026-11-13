@@ -28,6 +28,8 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -1330,11 +1332,11 @@ func TestTheRunAClaimServesSurvivesARestart(t *testing.T) {
 	}
 }
 
-// Oh My Pi's own agent_start names no prompt, so a turn that starts after the daemon's
-// five-second bound confirms nothing: the task is taken back and waits for the sweep to resend it
-// while the worker is already doing it. A worker on its first task has no earlier run to fall
-// back on, and its completion would be refused; the task it holds is the only run it can be
-// working, so that is what the completion is attributed to.
+// Oh My Pi's own agent_start names no prompt, and a turn's completion can reach the route before
+// the machine has read any start that would confirm the task, so the claim holds its task
+// acknowledged and unconfirmed. A worker on its first task has no earlier run to fall back on,
+// and its completion would be refused; the task it holds is the only run it can be working, so
+// that is what the completion is attributed to.
 func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testing.T) {
 	github := newHandoffGitHub(t)
 	h, facts := newHandoffHarness(t, github, nil, nil)
@@ -1355,10 +1357,11 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 	if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: "the task", ID: id, Generation: 1}); err != nil {
 		t.Fatalf("deliver: %v", err)
 	}
-	// The prompt is acknowledged and no turn starts within the bound, so the task is taken back —
-	// keeping the mark, because the turn that has not started may still be this task's. The turn
-	// the worker is in then starts late, naming no prompt, and confirms nothing. That leaves the
-	// task delivered and unconfirmed, which is the state this completion arrives in.
+	// The prompt is acknowledged and its turn has not been read to start: should the wait for it
+	// run out, the task is taken back keeping the mark, because the turn that has not started may
+	// still be this task's, and the late start confirms it once it is read (supervise's
+	// turnStarted). Until then the task is delivered and unconfirmed, which is the state this
+	// completion arrives in.
 	if err := machine.Handle(ctx, supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
 		t.Fatalf("acknowledge the prompt: %v", err)
 	}
@@ -1374,6 +1377,155 @@ func TestACompletionFromATurnThatStartedLateNamesTheTaskTheWorkerHolds(t *testin
 	}
 	if completion := lastCompletion(t, facts); completion.Generation != 1 {
 		t.Fatalf("completion generation = %d, want the task's 1", completion.Generation)
+	}
+}
+
+// turnClock is the route harness's still clock with timers a test fires: a test whose claim must
+// see the wait for an acknowledged prompt's turn run out (supervise's TimerTurn, armed for the RPC
+// timeout) fires the timers armed for that wait, and every other wait stays armed and never due,
+// as stillClock leaves it. It is the daemon package's heldClock, cut down to that one use.
+type turnClock struct {
+	stillClock
+	mu     sync.Mutex
+	timers []*turnTimer
+}
+
+type turnTimer struct {
+	clock *turnClock
+	after time.Duration
+	f     func()
+	done  bool
+}
+
+func (c *turnClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &turnTimer{clock: c, after: d, f: f}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
+func (t *turnTimer) Stop() bool {
+	t.clock.mu.Lock()
+	defer t.clock.mu.Unlock()
+	if t.done {
+		return false
+	}
+	t.done = true
+	return true
+}
+
+// fire runs, once each, every timer armed for after that has neither fired nor been stopped, and
+// reports how many it ran.
+func (c *turnClock) fire(after time.Duration) int {
+	c.mu.Lock()
+	var due []*turnTimer
+	for _, timer := range c.timers {
+		if !timer.done && timer.after == after {
+			timer.done = true
+			due = append(due, timer)
+		}
+	}
+	c.mu.Unlock()
+	for _, timer := range due {
+		timer.f()
+	}
+	return len(due)
+}
+
+// dispatch://INFRA-2947's case, which the specification makes R4's own acceptance
+// (dispatch://INFRA-3276): a worker whose turn the daemon's task starts, and whose first call in
+// it is handoff_complete, is accepted. The tester served an assignment before this one, so the
+// completion is the new task's only once the turn confirms that task. The task's prompt is
+// acknowledged, Oh My Pi's pre-turn work outlasts the daemon's five-second wait, which takes the
+// task back under a new id, and the turn starts late; a busy re-send of the task lands while it
+// runs. Before, the late start confirmed nothing and every completion was refused
+// HANDOFF_STALE_ASSIGNMENT ("your turn began before the daemon's task for this assignment reached
+// this session") until a relaunch. Now the start is matched to the first prompt, still
+// outstanding (supervise's Machine.outstanding), and the re-send's busy answer takes back nothing
+// of that turn, in both orders the harness can give one event at a time: the re-send refused at
+// its send after the turn's start, and the re-send acknowledged and then answered busy, by a late
+// refusal or by its result.
+func TestACompletionInALateTurnWithABusyResendIsAccepted(t *testing.T) {
+	const busy = "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."
+	for _, tc := range []struct {
+		name string
+		// resend is the busy re-send of the task under id, landing in the late turn.
+		resend func(t *testing.T, machine *supervise.Machine, token claim.Token, id string)
+	}{
+		{name: "the re-send refused at its send, after the turn's start", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
+			t.Helper()
+			refusal := &stream.RefusedError{Claim: token, Command: shimwire.TypePrompt, Reason: busy}
+			if err := machine.Handle(context.Background(), supervise.PromptRefused{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id, Err: refusal}); err != nil {
+				t.Fatalf("refuse the re-send: %v", err)
+			}
+		}},
+		{name: "the re-send acknowledged, then refused late", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
+			t.Helper()
+			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
+				t.Fatalf("acknowledge the re-send: %v", err)
+			}
+			if err := machine.Handle(context.Background(), supervise.StreamLateRefusal{Claim: token, DeliveryID: id, Error: busy}); err != nil {
+				t.Fatalf("refuse the re-send late: %v", err)
+			}
+		}},
+		{name: "the re-send acknowledged, then answered busy by its result", resend: func(t *testing.T, machine *supervise.Machine, token claim.Token, id string) {
+			t.Helper()
+			if err := machine.Handle(context.Background(), supervise.PromptAcked{Claim: token, Generation: machine.Claim().Generation, DeliveryID: id}); err != nil {
+				t.Fatalf("acknowledge the re-send: %v", err)
+			}
+			if err := machine.Handle(context.Background(), supervise.StreamPromptResult{Claim: token, DeliveryID: id, Error: busy}); err != nil {
+				t.Fatalf("answer the re-send busy: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts := newHandoffHarness(t, newHandoffGitHub(t), nil, nil)
+			clock := &turnClock{}
+			h.supervisor.deps.Clock = clock
+			seedIssueAt(t, h, "LEGION-208", phase.Testing)
+			tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
+			machine, ok := h.supervisor.Machine(tester.token)
+			if !ok {
+				t.Fatal("no machine for the tester")
+			}
+			ctx := context.Background()
+			// The tester worked an earlier assignment, whose turn ended and retired its task.
+			takeTask(t, h, tester.token, "outbox:41", "test the first head", "A1", 1)
+			if err := machine.Handle(ctx, supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
+				t.Fatalf("end the earlier assignment's turn: %v", err)
+			}
+			// The phase hands the tester the next assignment, and the daemon sends its task.
+			seedAssignment(t, h, "LEGION-208", claim.RoleTester, "A2")
+			first := "outbox:42"
+			if err := machine.Handle(ctx, supervise.RequestDeliver{Claim: tester.token, Task: "test the new head", ID: first, Generation: 1, Assignment: "A2"}); err != nil {
+				t.Fatalf("deliver the new assignment's task: %v", err)
+			}
+			if err := machine.Handle(ctx, supervise.PromptAcked{Claim: tester.token, Generation: machine.Claim().Generation, DeliveryID: first}); err != nil {
+				t.Fatalf("acknowledge the task's prompt: %v", err)
+			}
+			if fired := clock.fire(h.supervisor.deps.Timeouts.RPC); fired != 1 {
+				t.Fatalf("fired %d waits for the prompt's turn, want the one its acknowledgement armed", fired)
+			}
+			resend := machine.Claim().Pending.ID
+			if resend == first {
+				t.Fatalf("pending after the wait ran out is still %s, want the task taken back under an id of its own", first)
+			}
+
+			if err := machine.Handle(ctx, supervise.StreamTurnStart{Claim: tester.token}); err != nil {
+				t.Fatalf("start the task's late turn: %v", err)
+			}
+			tc.resend(t, machine, tester.token, resend)
+
+			recorder := h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+				HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1})
+			if recorder.Code != http.StatusOK {
+				t.Fatalf("the completion from the late turn = %d, want 200; body %s", recorder.Code, recorder.Body)
+			}
+			if completion := lastCompletion(t, facts); completion.Generation != 1 || completion.Role != claim.RoleTester {
+				t.Fatalf("the completion recorded = %+v, want the tester's of run 1", completion)
+			}
+		})
 	}
 }
 

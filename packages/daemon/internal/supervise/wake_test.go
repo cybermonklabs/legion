@@ -801,9 +801,9 @@ func TestATurnTheReplacedProcessConfirmedIsTakenBackAtTheLaunchsTurn(t *testing.
 // settlement runs with the very decision the write failed in (Handle, settle): the task would
 // go while its worker was still on it, on the process this turn did not replace.
 //
-// The negative control is that ordering reverted (interrupted's awaitingResult, cleared above
-// the write): the settlement that follows the turn then retires the task, which this test reads
-// where it asks the claim for it.
+// The negative control is that ordering reverted (interrupted's emptying of Machine.outstanding,
+// moved above the write): the settlement that follows the turn then retires the task, which this
+// test reads where it asks the claim for it.
 func TestATakeBackTheStoreRefusesAtTheTurnRetiresNoTask(t *testing.T) {
 	const task = "implement the plan"
 	h := pacedHarness(t, wakeRate)

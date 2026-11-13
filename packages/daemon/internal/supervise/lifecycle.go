@@ -155,8 +155,8 @@ func (m *Machine) relaunchRefused(ctx context.Context, relaunch func(context.Con
 // session is watched by the runtime's sweep (observe) and by its own connection, and the probe
 // interval is an uncertain answer's retry rather than a watch of the claim's — the sweep asks
 // again at its own pass. The turn bound goes with them for a prompt Oh My Pi acknowledged and no
-// turn has started on (acked, awaitingResult), for the same RPC wait that prompt was given, so
-// one the agent read and never turned on still fails rather than waiting for ever (noTurn).
+// turn has started on (acked, Machine.outstanding), for the same RPC wait that prompt was given,
+// so one the agent read and never turned on still fails rather than waiting for ever (noTurn).
 //
 // A timer already armed keeps the moment it already holds: the park takes only the four timers
 // above, so whatever the claim still holds is a watch nothing of this launch disturbed, and
@@ -183,7 +183,7 @@ func (m *Machine) watchAgain() {
 			m.armRegistration()
 		}
 	}
-	if p := m.claim.Pending; p != nil && p.ID == m.awaitingResult && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
+	if p := m.claim.Pending; p != nil && m.outstandingPrompt(p.ID) && p.ConfirmedAt.IsZero() && !armed(TimerTurn) {
 		m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
 	}
 }
