@@ -124,6 +124,7 @@ func TestAnUnnamedRoleMentionPinnedToTheThreadAuthorShowsItTheCommentTwice(t *te
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
 	}
+	claims.drained(t)
 	if got := claims.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while the mention of %s was live and named no session, want nothing: the sender can pin that mention to the issue's claimant", claimant, got, target)
 	}
@@ -232,6 +233,7 @@ func TestAnUnnamedRoleMentionPinnedToAFollowerShowsItTheCommentTwice(t *testing.
 		t.Fatalf("the comment reached %v, want %s not among them: that session claims the issue, so its copy waits for an attempt that names no session yet and whose role this read can name no holder for",
 			reached, claimantSubject)
 	}
+	claims.drained(t)
 	if got := claims.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while the mention of %s was live and named no session, want nothing: the sender can pin that mention to the issue's claimant", claimant, got, target)
 	}

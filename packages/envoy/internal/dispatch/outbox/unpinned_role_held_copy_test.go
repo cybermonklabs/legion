@@ -61,6 +61,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, live, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	claimant.drained(t)
 	if row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder)); row.settled || row.published {
 		t.Fatalf("the batch left the claimant's held copy settled=%v published=%v, want the unpublished row the lapsed attempt's state owes every key of this comment",
 			row.settled, row.published)

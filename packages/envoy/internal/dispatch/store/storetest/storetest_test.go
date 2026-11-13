@@ -61,7 +61,9 @@ func TestEachTestIsHandedADatabaseOfItsOwnWhichIsDroppedAfterwards(t *testing.T)
 		t.Fatalf("two tests were handed the same database %s", firstName)
 	}
 
-	if _, err := first.Pool.Exec(ctx, `insert into projects (key, name) values ('TEST', 'Test')`); err != nil {
+	// Every project names a default assignee since main's 20261111210103 migration, so the row
+	// this writes names one too.
+	if _, err := first.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TEST', 'Test', 'alice@d.example')`); err != nil {
 		t.Fatalf("write a row in the first database: %v", err)
 	}
 	var elsewhere int

@@ -60,14 +60,12 @@ func TestACopyAnUnnamedRoleMentionMayBePinnedToCarriesThatMentionsKey(t *testing
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	// The copy is the one send this pass makes to that session, so the read waits for nothing but
+	// the holder's subscription to drain to what the pass sent (receiver.drained): a pass that made
+	// none is read for what it is at once rather than timed out.
+	recv.drained(t)
 
 	want := contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, target, "steer"))
-	// The copy is the one send this pass makes to that session, so a pass that made none is read
-	// for what it is rather than timed out: the wait it took instead is the finding.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) && len(recv.received()) == 0 {
-		time.Sleep(20 * time.Millisecond)
-	}
 	forwards := recv.received()
 	if len(forwards) != 1 || forwards[0].DedupeKey != want {
 		t.Fatalf("%s was sent %+v in the pass that read the comment, want one copy under %q, the key the mention of %s carries wherever its sender pins it: a copy under the event's own key %s waits for the attempt or shows that host the comment twice",
@@ -135,6 +133,7 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	recv.drained(t)
 
 	if forwards := recv.received(); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while two mentions of the comment were live and pinned to no session, want nothing: one key serves one mention, so neither copy can carry the key the mention that reaches this host will repeat",
@@ -216,6 +215,7 @@ func TestAForwardWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, liveTarget, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	recv.drained(t)
 
 	if forwards := recv.received(); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while a live unpinned mention of the comment named no session and no key stood for it, want nothing: the sender can pin that mention to this very holder, and this copy would carry a key its host never claimed",

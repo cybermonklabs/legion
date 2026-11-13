@@ -65,7 +65,8 @@ func TestR17UnrelatedAuthorCopyFirstPass(t *testing.T) {
 	}
 	dueNow(t, rig.database, comment.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
+	u.drained(t)
+	r.drained(t)
 	_, _, reached = eventState(t, rig.database, comment.ID)
 	t.Logf("R17 SECOND PASS: reached=%v published=%v ses-u copies=%d ses-r copies=%d",
 		reached, publishedAt(t, rig.database, comment.ID) != nil, len(u.received()), len(r.received()))
@@ -116,7 +117,7 @@ func TestR17UnrelatedAuthorCopyOrder(t *testing.T) {
 	}
 	dueNow(t, rig.database, first.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
+	u.drained(t)
 	var order []string
 	for _, item := range u.received() {
 		order = append(order, item.DedupeKey)

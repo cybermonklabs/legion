@@ -65,6 +65,7 @@ func TestAThreadAuthorsCopyWaitsForAnUnnamedMentionPastItsLease(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, target, "", "resumed")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	wrote.drained(t)
 
 	eventKey := fmt.Sprintf("dispatch-%d", comment.ID)
 	mentionKey := contracts.AgentSendDedupeKey(author, model.CommentMentionIdempotencyKey(commentID, target, "steer"))

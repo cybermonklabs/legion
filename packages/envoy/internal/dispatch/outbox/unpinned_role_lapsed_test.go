@@ -72,6 +72,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	claimant.drained(t)
 
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v while its own mention of %s was live and unpinned, want nothing",
@@ -97,6 +98,7 @@ func unpinnedRoleMentionPastItsLease(ctx context.Context, t *testing.T) lapsedMe
 	dueNow(t, rig.database, comment.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	claimant.drained(t)
 
 	if got := claimant.received(); len(got) != 0 {
 		t.Fatalf("%s was sent %+v once the lease of its own mention of %s lapsed, want nothing: no attempt names that session while the sender has pinned none, so this copy carries the event's own key %s - one that host never claimed - and the mention lands beside it. The copy is the fallback pass's to key, from the attempts as they stand when it publishes them",
@@ -153,6 +155,7 @@ func TestACopyKeptPastAnUnpinnedRoleMentionsLeaseIsKeyedByThatMention(t *testing
 		}
 
 		publishFallbackCopies(ctx, staged.rig.deps(), unfenced{}, holdingProcess(t, staged.rig.database))
+		staged.claimant.drained(t)
 
 		row := readHeldCopy(t, staged.rig.database, staged.commentID, contracts.AgentSubject(staged.holder))
 		if !row.settled || row.published {

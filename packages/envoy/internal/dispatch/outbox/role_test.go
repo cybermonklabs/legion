@@ -294,12 +294,13 @@ func (r *roleRig) silent(t *testing.T, subject string) {
 
 // receiver is a role holder's own subscription to its agent subject: it records every forward it
 // receives and answers nothing, as a session does now that the stream's acknowledgement is a
-// forward's whole answer. conn and subject are what its own probe is published on (drained).
+// forward's whole answer. sender is the outbox's own client, whose connection its probe goes out
+// on, and subject is what the probe is published to (drained).
 type receiver struct {
 	mu       sync.Mutex
 	forwards []contracts.Envelope
 	arrived  chan contracts.Envelope
-	conn     *natsgo.Conn
+	sender   *bus.Client
 	subject  string
 	probes   atomic.Int64
 }
@@ -310,10 +311,17 @@ type receiver struct {
 // it went to and a forward's is its role's - so no copy is mistaken for one.
 const receiverProbe = "test.receiver.probe"
 
+// receiverProbeStream is the Nats-Expected-Stream the probe carries. No stream has that name, so
+// the stream that captures the holder's agent subject refuses the probe and stores nothing of it,
+// while the receiver's core subscription is handed it all the same. What the stream holds on that
+// subject (storedCopies, storedMsgIDs) is then the outbox's copies alone, whether a row reads it
+// before a drain or after one.
+const receiverProbeStream = "stores-no-receiver-probe"
+
 func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 	t.Helper()
 	subject := contracts.AgentSubject(holder)
-	recv := &receiver{arrived: make(chan contracts.Envelope, 64), conn: r.conn, subject: subject}
+	recv := &receiver{arrived: make(chan contracts.Envelope, 64), sender: r.client, subject: subject}
 	sub, err := r.conn.Subscribe(subject, func(msg *natsgo.Msg) {
 		var item contracts.Envelope
 		if err := json.Unmarshal(msg.Data, &item); err != nil {
@@ -338,34 +346,46 @@ func (r *roleRig) receiver(t *testing.T, holder string) *receiver {
 	return recv
 }
 
-// drained returns once every copy the server had already handed this subscription has been
-// recorded, so a read of received() after it is the whole of what the pass before it sent.
+// drained returns once every copy the pass before it sent this holder has been recorded, so a
+// read of received() after it is the whole of what that pass sent.
 //
-// The passes these rows read return only once every send they made was answered - the stream's
-// acknowledgement of the copy it stored, for a copy published to this subject and for a forward
-// alike - and the server fans a message out to this subscription as it processes it, before that
-// answer leaves it. So by the time such a pass returns, every copy it sent is already on its way
-// here and nothing further is coming, and the one thing left to wait for is this client's own
-// delivery. A probe published afterwards on this very subject is behind those copies in this one
-// subscription's queue, whose messages are dispatched in order, so its arrival says they have
-// all been recorded.
+// A pass these rows read has made every send it makes by the time it returns, and each went out
+// on the outbox's own connection: the rig's client is the outbox's publisher, and every window of
+// it sends on that one connection (bus.Client.WindowUntil). The probe goes out on that same
+// connection after the pass returned, so it is behind every one of those copies: NATS hands a
+// subscription one connection's messages in the order that connection sent them, and this
+// client dispatches one subscription's messages in order. So the probe's arrival says every copy
+// the pass sent here has been recorded, and nothing it sent is still to come.
+//
+// A probe from any other connection, the receiver's own included, is ordered after those copies
+// by nothing. The stream's acknowledgement of a copy it stored is the whole answer to a send now,
+// a forward's included, and the server writes it from the stream's own goroutine while its reader
+// of the outbox's connection goes on to hand the copy to this subscription (nats-server v2.15.1,
+// stream.go processInboundJetStreamMsg and internalLoop), so the pass can return on that
+// acknowledgement, and such a probe arrive, ahead of a copy the pass counted as reached.
 //
 // It is what the flat second of sleep these reads used to take was reaching for, asked for
 // instead of timed: a copy the pass should not have sent fails the read after this exactly as it
 // failed after the sleep, and a run on a loaded box waits as long as it must rather than a
 // second (dispatch://INFRA-1075).
 //
-// The probe goes to the holder's agent subject, which the stream captures, so the stream holds
-// it too: a row that counts the stored copies of that subject (storedCopies) must read that
-// count before it drains the receiver.
+// The stream stores nothing of the probe (receiverProbeStream), so a row reads what the stream
+// holds on the holder's subject the same on either side of a drain.
 func (recv *receiver) drained(t *testing.T) {
 	t.Helper()
 	before := recv.probes.Load()
-	probe, err := json.Marshal(contracts.Envelope{Topic: receiverProbe})
+	data, err := json.Marshal(contracts.Envelope{Topic: receiverProbe})
 	if err != nil {
 		t.Fatalf("encode the probe for %s: %v", recv.subject, err)
 	}
-	if err := recv.conn.Publish(recv.subject, probe); err != nil {
+	conn := recv.sender.Connection()
+	if conn == nil {
+		t.Fatalf("the outbox's client has no connection to publish the probe for %s on", recv.subject)
+	}
+	probe := natsgo.NewMsg(recv.subject)
+	probe.Header.Set(natsgo.ExpectedStreamHdr, receiverProbeStream)
+	probe.Data = data
+	if err := conn.PublishMsg(probe); err != nil {
 		t.Fatalf("publish the probe to %s: %v", recv.subject, err)
 	}
 	waitFor(t, eventWait, "the holder's subscription drained to the probe behind what the pass sent",
@@ -1200,6 +1220,7 @@ func TestAFallbackPassForwardsARoleCopyToItsOwnMentionedHolderUnderTheMentionsKe
 	commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
 	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+	recv.drained(t)
 
 	held := readHeldCopy(t, rig.database, commentID, contracts.RoleTopicPrefix+role)
 	if !held.published || !held.settled || held.attempts != 0 {
@@ -1311,6 +1332,7 @@ func TestARoleCopyToTheHolderWhoseOwnMentionFailedCarriesTheMentionsKey(t *testi
 	seedMentionDelivery(t, deps.Store, commentID, holder, "failed")
 
 	holding(t, deps).scan(ctx, unfenced{})
+	recv.drained(t)
 
 	forwards := recv.received()
 	if len(forwards) != 1 {
@@ -1802,6 +1824,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		rig, recv, deps, commentID, event := heldBy(t, "pending")
 
 		holding(t, deps).scan(ctx, unfenced{})
+		recv.drained(t)
 
 		if forwards := recv.received(); len(forwards) > 0 {
 			t.Fatalf("the batch sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
@@ -1828,6 +1851,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		dueNow(t, rig.database, event.ID)
 
 		holding(t, deps).scan(ctx, unfenced{})
+		recv.drained(t)
 
 		if publishedAt(t, rig.database, event.ID) == nil {
 			attempts, failure, _ := eventState(t, rig.database, event.ID)
@@ -1849,6 +1873,7 @@ func TestAForwardToALiveHolderWaitsForThatHoldersOwnMention(t *testing.T) {
 		rig, recv, deps, _, event := heldBy(t, "resumed")
 
 		holding(t, deps).scan(ctx, unfenced{})
+		recv.drained(t)
 
 		forwards := recv.received()
 		if len(forwards) != 1 {
@@ -1940,6 +1965,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	}
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	recv.drained(t)
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.
@@ -2006,6 +2032,7 @@ func TestAWaitingRoleForwardHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	dueNow(t, rig.database, edit.ID)
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
+	recv.drained(t)
 
 	for _, event := range []model.Event{comment, edit} {
 		if publishedAt(t, rig.database, event.ID) == nil {
@@ -2163,6 +2190,7 @@ func TestACommentAnUnansweredRoleMentionPinnedReachesThatSessionOnce(t *testing.
 				reached, holderSubject, holder, target, comment.ID)
 		}
 		claimantCopyOf(t, rig, other, apart)
+		pinned.drained(t)
 		for _, item := range pinned.received() {
 			t.Fatalf("%s was sent %+v, want nothing of the comment: its mention of %s delivered it, and every copy of the comment bound for that session's own topic is left to that mention (want no copy, or one under %q)",
 				holder, item, target, mentionKey(commentID))
@@ -2238,6 +2266,7 @@ func TestAFallbackRoleCopyReachingASecondMentionedHolderCarriesItsOwnMentionsKey
 		commentID := seedHeldRoleFallbackCopyMentioningTwo(ctx, t, deps, role, first, second, "failed")
 
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		recv.drained(t)
 
 		held := readHeldCopy(t, rig.database, commentID, roleTopic)
 		if !held.published || !held.settled || held.attempts != 0 {
@@ -2469,6 +2498,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		before := time.Now()
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		after := time.Now()
+		recv.drained(t)
 
 		if forwards := recv.received(); len(forwards) > 0 {
 			t.Fatalf("the pass sent %s %d copies while that holder's own mention of the comment was still being sent, the first under %q, want none yet: a copy under a key its host never claimed shows it the comment a second time beside the mention",
@@ -2499,6 +2529,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		}
 
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		recv.drained(t)
 
 		if settled := readHeldCopy(t, rig.database, commentID, roleTopic); !settled.settled ||
 			!settled.published || settled.attempts != 0 {
@@ -2521,6 +2552,7 @@ func TestAFallbackCopyForwardedToALiveHolderWaitsForThatHoldersOwnMention(t *tes
 		rig, recv, deps, commentID := heldFor(ctx, t, "resumed")
 
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
+		recv.drained(t)
 
 		row := readHeldCopy(t, rig.database, commentID, roleTopic)
 		forwards := recv.received()
