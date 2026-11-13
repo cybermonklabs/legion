@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
@@ -124,22 +125,30 @@ func TestTheGitWrapperPassesANonPushThroughByteForByte(t *testing.T) {
 // there are, because the wrapper does not rebuild the list of one: in dash a rebuild costs time
 // that grows with the square of the argument count, and a leak check's `git rev-list` with one
 // `^<sha>` for each commit a remote holds is about 4,970 arguments long for a clone of this
-// repository. Among the 5,000 here are the ones a rebuild could get wrong: a space, a newline, a
-// leading `-`, a `--no-verify`, which only a push loses, and a `push` that is no subcommand.
-func TestTheGitWrapperPassesFiveThousandArgumentsOfANonPushThroughUnchanged(t *testing.T) {
+// repository. Among the 20,000 here are the ones a rebuild could get wrong: a space, a newline, a
+// leading `-`, a `--no-verify`, which only a push loses, and a `push` that is no subcommand. The
+// arguments alone would pass through a rebuild as well, so the run is also held to 10 s: without
+// a rebuild it takes milliseconds, and the rebuild the wrapper made before took four minutes in a
+// pod.
+func TestTheGitWrapperPassesTwentyThousandArgumentsOfANonPushThroughWithoutARebuild(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv")
 	script := wrapperCopy(t, dir, "git", [2]string{
 		"real=/usr/bin/git", "real=" + logging(t, filepath.Join(dir, "stand-in-git"), log),
 	})
 	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
-	const count = 5000
+	const count, bound = 20_000, 10 * time.Second
 	want := []string{"rev-list", "an argument with a space", "an argument with\na newline", "-c", "--no-verify", "push"}
 	for len(want) < 1+count {
 		want = append(want, fmt.Sprintf("^%040x", len(want)))
 	}
+	started := time.Now()
 	if out, err := run.Try(dir, append([]string{script}, want...)...); err != nil {
 		t.Fatalf("the wrapper failed: %v\n%s", err, out)
+	}
+	if took := time.Since(started); took > bound {
+		t.Fatalf("the wrapper took %s to pass %d arguments through, want under %s: it rebuilt the list of a command that is no push",
+			took.Round(time.Millisecond), count, bound)
 	}
 	if got := ranAs(t, log); !slices.Equal(got, want) {
 		same := 0
