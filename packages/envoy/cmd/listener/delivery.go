@@ -37,8 +37,8 @@ const roleForwardTimeout = 2 * time.Second
 const exceptionPublishFailedLine = "listener exception publish failed"
 
 // ledgerUnavailableLine is the WARN a delivery logs when the delivery ledger could not be read or
-// written: the durable lane then retries the message, while a core lane, and an ask made only for
-// a record worth having (ledgerAsk.bestEffort), deliver without the ledger.
+// written: the durable lane then retries the message, while a core lane delivers without the
+// ledger.
 const ledgerUnavailableLine = "delivery ledger unavailable"
 
 // durableRetryDelay is how long the durable waits before it redelivers a message the listener
@@ -268,16 +268,10 @@ func clearLedgerAttempt(cfg listenerDeliveryHandlerConfig, item contracts.Envelo
 type ledgerAsk struct {
 	// role picks the role lane's skip line, `listener role dedupe skip`, for every skip.
 	role bool
-	// bestEffort asks for a copy this listener hands to nobody: one a self-subscribed recipient
-	// reads on its own NATS subscription. The record is worth writing - it keeps the next copy
-	// of the same event from being counted a second delivery - but never worth holding the
-	// message for, so such an ask neither defers nor retries it, whichever lane it is on: the
-	// ledger's answer is taken when it comes, and a ledger that cannot answer is passed over.
-	bestEffort bool
 }
 
 // ledgerAttempt asks the delivery ledger for (item, sessionID) before the listener forwards the
-// role-lane message to it or counts the copy it reads on its own subscription, and logs and
+// role-lane message to it, and logs and
 // counts any skip. It returns the attempt the delivery settles and deliver=true when the
 // listener goes on to deliver; otherwise retryIn > 0 asks the durable lane to retry the message
 // after it, and zero to ack it.
@@ -290,11 +284,8 @@ type ledgerAsk struct {
 //     a core lane delivers without the ledger, under the zero attempt, which settles nothing. The
 //     durable lane first waits for the ledger's connection (ledgerReconnected) and asks once more,
 //     so a call that failed while that connection was reconnecting costs no 30 s.
-//
-// A best-effort ask (ledgerAsk.bestEffort) is answered as a core lane's is on either lane: it
-// delays and retries nothing.
 func ledgerAttempt(cfg listenerDeliveryHandlerConfig, message deliveryMessage, item contracts.Envelope, sessionID string, ask ledgerAsk) (attempt dedupe.Attempt, deliver bool, retryIn time.Duration) {
-	durable := message.mode == durableDelivery && !ask.bestEffort
+	durable := message.mode == durableDelivery
 	attempt, err := cfg.ledger.Attempt(item.DedupeKey, sessionID)
 	// Only the durable lane waits for the ledger's connection and asks again: every other ask
 	// retries nothing, so it delivers under the zero attempt rather than waiting. The wait runs
@@ -768,13 +759,8 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 // recipient this path answers for is asked of the delivery ledger, after the
 // echo check and before its delivery-mode checks: a recipient it refuses, so
 // that one `delivery_failed` holds across the copies of an event stored on
-// several of the session's topics, and a recipient that reads the message on
-// its own NATS subscription, so that the second copy of that event is counted
-// a dedupe rather than a second delivery. The second ask is best-effort
-// (ledgerAsk.bestEffort): the listener hands such a copy to nobody, so a
-// ledger that cannot answer leaves it counted skipped, with no record, rather
-// than holding the whole message back for 30 s for every recipient of it. A
-// recipient whose own consumer relays the message is asked nothing at all: a
+// several of the session's topics. A recipient whose own consumer relays the
+// message is asked nothing at all: a
 // record written here would have the relay's own copy of the next event under
 // that key skipped as one the session already has. The message is retried
 // after the longest wait any recipient asks for: durableRetryDelay for a
