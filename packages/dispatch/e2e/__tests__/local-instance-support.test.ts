@@ -610,9 +610,15 @@ describe("awaitSeededInbox", () => {
     const waiting = awaitSeededInbox(declared, inbox.read, quick);
     const settled = watch(waiting);
     await pass(quick.deadlineMs - 1);
-    expect(settled()).toBe(false);
+    expect(
+      settled(),
+      "awaitSeededInbox had settled before the fake clock reached its deadline"
+    ).toBe(false);
     await pass(1);
-    expect(settled()).toBe(true);
+    expect(
+      settled(),
+      "awaitSeededInbox had neither answered nor rejected once the fake clock reached its deadline"
+    ).toBe(true);
     const message = await failureOf(waiting);
     // Both readings are of the moved clock: the row's own and the wait the helper reports.
     expect(Date.now() - started).toBeGreaterThanOrEqual(300);
@@ -641,9 +647,15 @@ describe("awaitSeededInbox", () => {
     const waiting = awaitSeededInbox(declared, inbox.read);
     const settled = watch(waiting);
     await pass(15_000 - 1);
-    expect(settled()).toBe(false);
+    expect(
+      settled(),
+      "awaitSeededInbox had settled before the fake clock reached its deadline"
+    ).toBe(false);
     await pass(1);
-    expect(settled()).toBe(true);
+    expect(
+      settled(),
+      "awaitSeededInbox had neither answered nor rejected once the fake clock reached its deadline"
+    ).toBe(true);
     const message = await failureOf(waiting);
     expect(message.split("\n")[0]).toBe(
       `inbox rows: the Inbox and the seed still disagree after 15.0 s and ${inbox.calls} reads.`
@@ -750,9 +762,15 @@ describe("awaitSeededInbox", () => {
     const waiting = awaitSeededInbox(declared, () => new Promise<never>(() => {}), quick);
     const settled = watch(waiting);
     await pass(quick.deadlineMs - 1);
-    expect(settled()).toBe(false);
+    expect(
+      settled(),
+      "awaitSeededInbox had settled before the fake clock reached its deadline"
+    ).toBe(false);
     await pass(1);
-    expect(settled()).toBe(true);
+    expect(
+      settled(),
+      "awaitSeededInbox had neither answered nor rejected once the fake clock reached its deadline"
+    ).toBe(true);
     const message = await failureOf(waiting);
     expect(message.split("\n").slice(1)).toEqual([
       "  the seed declares 5 rows.",
@@ -773,9 +791,15 @@ describe("awaitSeededInbox", () => {
     const waiting = awaitSeededInbox(declared, read, quick);
     const settled = watch(waiting);
     await pass(quick.deadlineMs - 1);
-    expect(settled()).toBe(false);
+    expect(
+      settled(),
+      "awaitSeededInbox had settled before the fake clock reached its deadline"
+    ).toBe(false);
     await pass(1 + quick.intervalMs);
-    expect(settled()).toBe(true);
+    expect(
+      settled(),
+      "awaitSeededInbox had neither answered nor rejected once the fake clock moved one interval past its deadline"
+    ).toBe(true);
     const message = await failureOf(waiting);
     expect(calls).toBeGreaterThan(1);
     const lines = message.split("\n");
@@ -804,9 +828,15 @@ describe("awaitSeededInbox", () => {
     const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 300, intervalMs: 200 });
     const settled = watch(waiting);
     await pass(299);
-    expect(settled()).toBe(false);
+    expect(
+      settled(),
+      "awaitSeededInbox had settled before the fake clock reached its deadline"
+    ).toBe(false);
     await pass(1);
-    expect(settled()).toBe(true);
+    expect(
+      settled(),
+      "awaitSeededInbox had neither answered nor rejected once the fake clock reached its deadline"
+    ).toBe(true);
     const message = await failureOf(waiting);
     expect(inbox.calls).toBeLessThanOrEqual(2);
     expect(message.split("\n")[0]).toMatch(/ and [12] reads?\.$/);
