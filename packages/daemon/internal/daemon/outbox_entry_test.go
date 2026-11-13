@@ -687,7 +687,9 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	admission := admit.New(records, engine, 1, "LEGION", quietLogger())
 	sweeper := &workflowRuntime{pool: rig.pool, records: records, admission: admission,
 		handlers: []intake.Handler{engine, admission}, dispatchProject: "LEGION", bootID: "test-boot", log: quietLogger()}
-	sweeper.applyEntrySweep(ctx, time.Now())
+	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
+	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as in production (INFRA-3169).
+	sweeper.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now())
 	if starts := testerStarts(); len(starts) != 0 {
 		t.Fatalf("the sweep wrote the tester %+v while its worker works entry 1's task, want nothing: the pass passes over a claim whose pending delivery is still worked", starts)
 	}
@@ -697,7 +699,7 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	if got := machine.Claim(); got.Pending != nil || got.GivenEntry != 1 || got.ServedEntry != 1 {
 		t.Fatalf("the claim after the turn = %+v, want its delivery retired, entry 1 given and entry 1 served", got)
 	}
-	sweeper.applyEntrySweep(ctx, time.Now().Add(time.Second))
+	sweeper.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Second))
 	owed := testerStart(2)
 	if owed.row.ID == second.row.ID || owed.request.Task != row.EntryTask {
 		t.Fatalf("the start the sweep wrote = row %d carrying %q, want a row of its own carrying the task the tester's phases row names (%q)",

@@ -466,15 +466,18 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// under its own name. Three more sweeps are driven by hand with the ticker stopped, because
 	// every role that pass sent work now carries that entry and the gate applies no further fact
 	// on its own period: they are what reads a later sweep as adding nothing.
+	// Each sweep runs on a hold mark of its own, as workflowRuntime.run starts the sweep
+	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as it does in production
+	// rather than refusing nothing on an unmarked context (INFRA-3169).
 	sweeping, stop := context.WithCancel(ctx)
 	done := make(chan struct{})
-	go func() { w.tickEntrySweep(sweeping); close(done) }()
+	go func() { w.tickEntrySweep(store.ForConcurrentWorker(sweeping)); close(done) }()
 	testwait.Eventually(t, "the entry sweep's fact applied", func() bool { return swept() >= 1 })
 	stop()
 	<-done
 	sweeps := swept()
 	for i := range 3 {
-		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i+1)*time.Second))
+		w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Duration(i+1)*time.Second))
 	}
 
 	for i, shape := range shapes {
@@ -542,7 +545,7 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 	// still behind is the block above's to say; what is read here is the one role whose start ran.
 	upgradeOwedStartGivesItsEntry(t, st, issues["UPGRADE-807"], held[tokens["UPGRADE-807"]], owedRows["UPGRADE-807"], false)
 	for i := range 2 {
-		w.applyEntrySweep(ctx, time.Now().Add(time.Duration(i+5)*time.Second))
+		w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Duration(i+5)*time.Second))
 	}
 	if starts := sweptStarts(t, pool, "UPGRADE-807"); len(starts) != 1 || starts[0].id != owedRows["UPGRADE-807"] {
 		t.Fatalf("the start rows of UPGRADE-807 once the row it owed had run = %+v, want that one row %d: its claim was given that entry, so the sweep sends no second task",

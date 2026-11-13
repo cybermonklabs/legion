@@ -558,7 +558,9 @@ func upgradeRollForwardSweepsTheLostTask(t *testing.T, st *store.Store, w *workf
 		return n
 	}
 	before := elsewhere()
-	w.applyEntrySweep(ctx, time.Now().Add(time.Hour))
+	// On a hold mark of its own, as workflowRuntime.run starts the sweep
+	// (store.ForConcurrentWorker(running)), so the pool's guard sees it as in production (INFRA-3169).
+	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Hour))
 	starts := sweptStarts(t, pool, key)
 	if len(starts) != 1 {
 		t.Fatalf("the sweep after the roll-forward sent %s %+v, want the one start of entry 1: a role whose task that daemon lost is what the re-arm exists to send again",
