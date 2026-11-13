@@ -43,19 +43,42 @@ type Registry struct {
 	// fence, which keeps a delayed watcher record from undoing a claim this registry wrote or read,
 	// its marks and its read epoch (kvwatch.Copy, newRoleHolderCopy), so a claim write this registry
 	// made through a handle on a bucket since recreated cannot land in the new bucket's view and
-	// fence out its lower revisions.
+	// fence out its lower revisions. It guards roleRepair too, what the watcher's whole reads of the
+	// bucket repaired in that copy (roleCache, RoleClaimRepair), which each read's hooks write
+	// beside the copy they repair.
 	roleWatcher *kvwatch.Watcher
 	holdersMu   sync.RWMutex
 	roleHolders kvwatch.Copy[string]
+	roleRepair  roleClaimRepair
 }
+
+// roleClaimRepairInterval is how long after each whole read of the role claims that completed the
+// role claim watcher reads the bucket whole again (kvwatch.WithScheduledRead), which repairs a copy
+// that drifted from its bucket in either direction: a claim the copy lost, and one it kept that the
+// bucket no longer holds. A minute leaves room inside RoleClaimRepairBound for one whole read, the
+// scan's idle timeout (kvwatch.ScanIdleTimeout, 10 s) and the 5 s a re-read whose setup failed
+// waits before it is tried again, so a scheduled read that runs late still completes inside the
+// bound, and /healthz and the grant guard do not flap at each read.
+const roleClaimRepairInterval = time.Minute
+
+// RoleClaimRepairBound is the longest the role claim copy may go without a whole read of the bucket
+// that completed before its repair is reported late (RoleClaimRepairErr): the live window
+// (contracts.SessionLiveWindow, 5 minutes) less two 90-second heartbeats
+// (contracts.SessionHeartbeat). A claim the copy lost is back within the bound, and its holder's
+// next heartbeat renews it within one heartbeat more, so the claim is renewed again before the live
+// window its last renewal opened ends and before another session may take the role. It is a
+// constant and no setting: a setting would have to refuse every value above the bound, and no
+// caller needs another value.
+const RoleClaimRepairBound = 2 * time.Minute
 
 // OpenOption configures the registry.
 type OpenOption func(*openOpts)
 
 type openOpts struct {
-	replicas int
-	now      func() time.Time
-	log      *slog.Logger
+	replicas  int
+	now       func() time.Time
+	log       *slog.Logger
+	roleWatch []kvwatch.Option
 }
 
 // WithLogger sets the logger the registry and its cache watcher write through. The listener passes
@@ -84,6 +107,14 @@ func WithReplicas(n int) OpenOption {
 // move it to end a window without waiting for it.
 func WithClock(now func() time.Time) OpenOption {
 	return func(o *openOpts) { o.now = now }
+}
+
+// WithRoleClaimWatch adds options to the role claim watcher's own, after them, so a test sets the
+// watcher's AfterFunc (kvwatch.WithAfterFunc), its clock (kvwatch.WithNow) or the interval of its
+// scheduled read (kvwatch.WithScheduledRead) and fires the scheduled read itself rather than wait
+// a minute for it, without reaching into the registry. The listener passes none.
+func WithRoleClaimWatch(options ...kvwatch.Option) OpenOption {
+	return func(o *openOpts) { o.roleWatch = append(o.roleWatch, options...) }
 }
 
 func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
@@ -118,7 +149,7 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 	}
 	r.cache = newInterestCopy(r)
 	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
-	r.roleWatcher = r.newRoleWatcher(roleKV)
+	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)
 	// No eager load: the watchers populate the caches asynchronously. A synchronous load of N
 	// individual kv.Get() calls blocks indefinitely when the KV stream leader is on a remote node.
 	r.watcher.Start()
@@ -128,9 +159,13 @@ func Open(conn *nats.Conn, options ...OpenOption) (*Registry, error) {
 
 // newRoleWatcher returns the watcher that feeds the holder view from kv. A read whose scan timed
 // out is read again by the watcher itself, so a view RolesHeldBy refuses becomes servable without
-// waiting for a Rewatch.
-func (r *Registry) newRoleWatcher(kv bus.KeyValue) *kvwatch.Watcher {
-	return kvwatch.New("role claims", kv, roleCache{r}, kvwatch.WithLogger(r.log))
+// waiting for a Rewatch, and the bucket is read whole again roleClaimRepairInterval after each read
+// that completed, which repairs a copy that drifted from the bucket in either direction (roleCache
+// counts what each such read repaired). options follow the watcher's own, so one of them replaces
+// the scheduled read's interval (WithRoleClaimWatch).
+func (r *Registry) newRoleWatcher(kv bus.KeyValue, options ...kvwatch.Option) *kvwatch.Watcher {
+	options = append([]kvwatch.Option{kvwatch.WithLogger(r.log), kvwatch.WithScheduledRead(roleClaimRepairInterval)}, options...)
+	return kvwatch.New("role claims", kv, roleCache{r}, options...)
 }
 
 // Ping verifies both KV buckets are reachable through the current NATS connection and reports
