@@ -36,10 +36,10 @@ const experimentAssignmentsVersion = 20261111045636
 // column carries — drawn into the memory arm, drawn under off, and settled at a hand-over with no
 // instant — and each is read back twice: as the row the back-fill wrote, which is where the
 // normalisation shows, and through the mapping the state serves the three memory fields by
-// (projectedMemoryFields, internal/projection's memoryOf), which must answer exactly what the
-// release before this one answered off the four columns (baseMemoryFields). The second reading is
-// what says the normalisation costs no reader of those three fields anything; the first is what
-// the unnormalised copy fails.
+// (projectedMemoryFields, internal/projection's memoryOf), which must answer exactly what a
+// release without this change answers off the four columns (baseMemoryFields). The second
+// reading is what says the normalisation costs no reader of those three fields anything; the
+// first is what the unnormalised copy fails.
 func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -62,11 +62,11 @@ func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 		// Drawn into the memory group under a randomisation.
 		{key: "LEGION-401", group: "memory", mode: "random", at: &drawnAt, lifecycle: true,
 			holds: true, wantUnit: "tree", wantVariant: "memory", wantMode: "random", wantDrawnAt: &drawnAt},
-		// Drawn under mode off, which draws every tree into no group and records that it did. The
-		// previous release wrote that answer as the word `none` and this one writes it as the
-		// empty variant, which is the generic rule a declared experiment needs, so the back-fill
-		// normalises it: one answer, one spelling, whichever release drew the tree. Its mode and
-		// its instant are what still tell it from the settled row below.
+		// Drawn under mode off, which draws every tree into no group and records that it did. A
+		// release without this change writes that answer as the word `none` and this one writes
+		// it as the empty variant, which is the generic rule a declared experiment needs, so the
+		// back-fill normalises it: one answer, one spelling, whichever release drew the tree. Its
+		// mode and its instant are what still tell it from the settled row below.
 		{key: "LEGION-402", group: "none", mode: "off", at: &drawnAt, lifecycle: true,
 			holds: true, wantUnit: "tree", wantVariant: "", wantMode: "off", wantDrawnAt: &drawnAt},
 		// A hand-over that carried a draw: the copy keeps the draw and the mark both.
@@ -145,7 +145,7 @@ func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 			continue
 		}
 		// The second reading: the three memory fields of the state, off the row the back-fill
-		// wrote, against the three the release before this one served off the four columns the
+		// wrote, against the three a release without this change serves off the four columns the
 		// migration leaves standing. They must agree for every state the old column carries —
 		// the memory arm, the draw under mode off whose spelling this back-fill normalises, and
 		// the hand-over that settled a root at no draw — or a reader of those fields would see
@@ -167,8 +167,8 @@ func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 		t.Fatalf("the test read %d trees back, want all %d: every shape the back-fill meets is read by name", count, len(trees))
 	}
 
-	// The migration alters no memory column and drops none: the four stand as the previous release
-	// left them, which is what the roll back onto that release rests on.
+	// The migration alters no memory column and drops none: the four stand as a release without
+	// this change left them, which is what the roll back onto such a release rests on.
 	var group, mode string
 	var at *time.Time
 	var carried bool
@@ -181,7 +181,7 @@ func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 	}
 }
 
-// baseMemoryFields is the three memory fields the release before this one served for a tree, off
+// baseMemoryFields is the three memory fields a release without this change serves for a tree, off
 // the four issues.memory_* columns of its root and exactly as that release's projection read
 // them: the group, the mode and the instant where the row holds a group at all, and none of the
 // three where it does not, which is the one shape that column left empty.

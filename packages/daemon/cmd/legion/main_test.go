@@ -2117,7 +2117,7 @@ func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.
 	}
 }
 
-// R6 holds the documented rollback, to the release before this one, to a deployment that keeps
+// R6 holds the documented rollback, to a release without this change, to a deployment that keeps
 // this `legion`: the daemon it then reads serves no `assignments` and no
 // `settings.projects.<KEY>.experiments`, and every issue's draw is in its three memory fields,
 // which every daemon from contract 49 serves.
