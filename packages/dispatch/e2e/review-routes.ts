@@ -592,6 +592,14 @@ function feedsInboxCount(request: Request): boolean {
   );
 }
 
+/** The rail's Inbox entry, the link whose text carries the shell's one Inbox number from the wide
+ *  layout up (`Sidebar.tsx`). Below that width the rail is not drawn and this matches nothing.
+ *  The settle wait below reads the number through it, and the visual review masks it
+ *  (e2e/visual.e2e.ts says why). */
+export function railInboxLink(page: Page): Locator {
+  return page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ });
+}
+
 /** Waits until the shell's Inbox number has settled: none of the requests that feed it or move it
  *  is still waiting for its answer, and the number has then held one value for
  *  `INBOX_COUNT_QUIET_MS`. The number is drawn on every page, by the sidebar's entry from the wide
@@ -611,7 +619,7 @@ function feedsInboxCount(request: Request): boolean {
  *  page's latest hundred, which holds every request recent enough to still be waiting. */
 async function waitForInboxCountSettled(page: Page): Promise<void> {
   const count = wideLayout(page)
-    ? page.getByRole("navigation", { name: "Navigation" }).getByRole("link", { name: /^Inbox/ })
+    ? railInboxLink(page)
     : page
         .locator("header")
         .first()
