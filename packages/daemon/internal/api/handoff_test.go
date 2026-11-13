@@ -677,6 +677,25 @@ func TestHandoffCompleteHoldsALateCompletionToTheRecordOfThePhaseItLeft(t *testi
 	}
 }
 
+// The reviewer's own approval moves the issue on as well: the review event takes reviewing to
+// accepting, the architect's sign-off and a phase that ends with no handoff record, before the
+// reviewer's completion lands. That completion is still of reviewing, the phase the reviewer left,
+// so the route reads its own new review record back against reviewing's word rather than refusing
+// a record for accepting, and the engine records it on the reviewer's row and leaves the issue in
+// accepting for the architect.
+func TestHandoffCompleteRecordsALateCompletionOfReviewingWhileTheIssueIsAccepting(t *testing.T) {
+	h := newWorkflowHandoffHarness(t, newHandoffGitHub(t), io.Discard)
+	seedIssueAt(t, h, "LEGION-208", phase.Accepting)
+	seedApproval(t, h, "LEGION-208", "ccddee")
+	reviewer := newLiveClaim(t, h, "LEGION-208", claim.RoleReviewer)
+	own := reviewer.writeHandoff("review", 1)
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: reviewer.grant(t), Summary: "approved", HandoffID: own, HandoffVersion: 1}))
+	if row := reviewerRow(t, h, "LEGION-208"); row == nil || row.HandoffRecord != own || row.HandoffVersion != 1 {
+		t.Fatalf("the reviewer's row after its late completion = %+v, want it naming %s version 1", row, own)
+	}
+	assertIssuePhase(t, h, phase.Accepting)
+}
+
 // reviewerRow is key's reviewer's phases row, nil while none is recorded.
 func reviewerRow(t *testing.T, h *harness, key string) *record.PhaseRow {
 	t.Helper()
