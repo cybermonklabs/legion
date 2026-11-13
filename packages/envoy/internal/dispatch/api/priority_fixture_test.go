@@ -36,7 +36,7 @@ const seededWriter = `{"kind":"user","id":"alice"}`
 // either has a default or is one nothing here writes (an issue's assignee, claim and repository,
 // an event's owner other than the issue).
 var (
-	seededProjectColumns = []string{"key", "name", "next_number", "created_at"}
+	seededProjectColumns = []string{"key", "name", "default_assignee", "next_number", "created_at"}
 	seededIssueColumns   = []string{
 		"key", "project_key", "number", "title", "status", "parent_key", "created_by",
 		"created_at", "updated_at", "closed_at", "rank", "last_seq",
@@ -64,10 +64,11 @@ func copySeededRows(t testing.TB, database *store.Store, table string, columns [
 	}
 }
 
-// seededProject is one project row: its key, and how many issues the seed writes under it, which
-// is what `next_number` continues from.
+// seededProject is one project row: its key, its default assignee, which every project names
+// (20261111210103_projects_default_assignee_not_null) and which is alice, the seeded writer, and
+// how many issues the seed writes under it, which is what `next_number` continues from.
 func seededProject(key string, issues int, at time.Time) []any {
-	return []any{key, key + " project", issues + 1, at}
+	return []any{key, key + " project", "alice", issues + 1, at}
 }
 
 // seededIssueRow is one issue of a bulk corpus, in the shape the columns above take. A closed
