@@ -221,9 +221,27 @@ func preReleaseStore(t *testing.T) *store.Store {
 	if err != nil {
 		t.Fatalf("read the embedded migrations: %v", err)
 	}
+	withheld := make([]migrations.Migration, 0, len(all))
+	for _, migration := range all {
+		if migration.Version != issueSlotsMigration {
+			withheld = append(withheld, migration)
+		}
+	}
+	applyMigrationsByHand(t, st, withheld)
+	return st
+}
+
+// applyMigrationsByHand applies each migration of set to st, in the order set holds them, as
+// Store.Migrate applies one: the migration's SQL, the widening of schema_version the first time a
+// timestamped version is recorded, and the version row, all in one transaction per migration. A
+// test that needs a database some earlier set of migrations left takes it from here, so the record
+// it seeds stands on exactly that schema and Store.Migrate later finds exactly the versions the set
+// left out (store.migrate and store.apply read each version, not max(version)).
+func applyMigrationsByHand(t *testing.T, st *store.Store, set []migrations.Migration) {
+	t.Helper()
+	ctx := context.Background()
 	widened := false
-	apply := func(migration migrations.Migration) {
-		t.Helper()
+	for _, migration := range set {
 		if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
 			if _, err := tx.Exec(ctx, migration.SQL); err != nil {
 				return err
@@ -240,12 +258,6 @@ func preReleaseStore(t *testing.T) *store.Store {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
 	}
-	for _, migration := range all {
-		if migration.Version != issueSlotsMigration {
-			apply(migration)
-		}
-	}
-	return st
 }
 
 // A7's first boot on the release. A store carrying what a pre-release daemon left — one slot per
