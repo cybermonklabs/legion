@@ -271,3 +271,34 @@ test("every spelling of a bare cache read is named by file and line", () => {
     `${where}:29 import() (namespace)`,
   ]);
 });
+
+// R7 of dispatch://INFRA-299: no reader is asked to remember anything, so every ordinary way a
+// module can read a cache's data past the live changes is a door this guard holds. TanStack
+// hands a cache's data back by three calls besides `getQueryData` and `getQueriesData`, none of
+// them a name made at run time, and each is already called in shipped code: `getQueryState`
+// (`api/event-feed.ts`), `fetchQuery` with a staleTime that answers from the cache
+// (`features/project/issues-table-data.ts`), and a found query's `state.data`
+// (`api/query-refresh.ts`). A reader written through any of them shows Dispatch's answer
+// without the person's unsaved change, which is the fault this guard exists to stop.
+test("a cache read bare through getQueryState, fetchQuery or a found query's state is named too", () => {
+  const sources = new Map(shippedTexts());
+  const where = "features/issue/read-past-state.ts";
+  sources.set(
+    where,
+    [
+      'import type { QueryClient } from "@tanstack/react-query";',
+      'import { userStateQuery } from "../../api/queries";',
+      "",
+      'export const byState = (client: QueryClient) => client.getQueryState(["user-state"])?.data;',
+      "export const byFetch = (client: QueryClient) =>",
+      "  client.fetchQuery({ ...userStateQuery(), staleTime: Number.POSITIVE_INFINITY });",
+      "export const byCache = (client: QueryClient) =>",
+      '  client.getQueryCache().find({ queryKey: ["user-state"] })?.state.data;',
+      "",
+    ].join("\n")
+  );
+  const lines = bareReads(sources)
+    .filter((door) => door.startsWith(`${where}:`))
+    .map((door) => door.split(" ")[0]);
+  expect(lines).toEqual([`${where}:4`, `${where}:6`, `${where}:8`]);
+});
