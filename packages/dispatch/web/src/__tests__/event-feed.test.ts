@@ -49,6 +49,8 @@ const READS = {
     key: ["references", "to", "dispatch://CORE-9/ask/ask-9"],
   },
   asks: { key: ["asks", "CORE-1"] },
+  // The Conversation tab's list of CORE-1's asks, each with its thread, beneath the issue's.
+  askThreads: { key: ["asks", "CORE-1", "thread"] },
   collaborators: { key: ["issue", "CORE-1", "collaborators"] },
   comment: { key: commentQuery("comment-1").queryKey },
   // Block b2 of CORE-1's comment-1, read by a link to it and, pinned to the comment's revision 1,
@@ -115,6 +117,7 @@ const READS = {
   otherDocumentPage: { data: { id: "artifact-2" }, key: ["artifact-ref", "CORE/notes-md"] },
   otherHandoffs: { key: ["handoffs", "CORE-9"] },
   otherIssueMessage: { key: messageQuery("CORE-9", "message-9").queryKey },
+  otherProjectAsks: { key: ["asks", "OTHER-1"] },
   otherProjectList: { key: projectIssuesQuery("OTHER", []).queryKey },
   // Another block of CORE-1's spec, which a link elsewhere on the page names.
   otherSpecBlock: {
@@ -183,6 +186,8 @@ interface PageOptions {
   readonly threadsHold: boolean;
   /** The rows both Inbox reads hold, in place of the two `inboxHolds` names. */
   readonly inboxRows?: readonly Partial<InboxRow>[];
+  /** The rows every issue's ask list and the project document's hold, in place of their own. */
+  readonly askRows?: readonly Partial<Ask>[];
 }
 
 function dataFor(name: ReadName, page: PageOptions): unknown {
@@ -197,6 +202,12 @@ function dataFor(name: ReadName, page: PageOptions): unknown {
           { id: "ask-9", issue_key: "CORE-9" },
         ]
       : [{ id: "ask-5", issue_key: "CORE-5" }];
+  }
+  if (
+    page.askRows !== undefined &&
+    (name === "asks" || name === "askThreads" || name === "otherProjectAsks" || name === "docAsks")
+  ) {
+    return page.askRows;
   }
   if (name === "architecture") {
     const listed = [{ key: page.treeLists === "nowhere" ? "CORE-5" : "CORE-1" }];
@@ -1186,6 +1197,32 @@ const rules: Record<string, Rule> = {
       },
       refreshes: ["projectDefaultAssignees"],
       spares: ["inbox", "projectInbox", "inboxThreads", "replies", "detail"],
+    },
+  // The issue page and the document page draw the same Asked-of badge from their own ask lists,
+  // each row with the person the server resolved for it: a list of the project holding a
+  // question nobody handed on reads again. The document list's key and rows do not name its
+  // project, so it reads again whichever project's document it is.
+  "a project's default assignee moving refreshes the issue and document ask lists holding a question nobody handed on":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: { askRows: [{ asked_of: null, id: "ask-1", question: "Ship it?" }] },
+      refreshes: ["projectDefaultAssignees", "asks", "askThreads", "docAsks"],
+      spares: ["otherProjectAsks", "docBlocks", "ask", "detail", "inboxThreads"],
+    },
+  "a project's default assignee moving leaves alone the ask lists whose every question was handed on":
+    {
+      event: event(
+        "settings.project_default_assignee.updated",
+        { assignee: "carol", project: "CORE", thread_logins: ["bob", "carol"] },
+        { issue_key: null }
+      ),
+      page: { askRows: [{ asked_of: "dave@example.com", id: "ask-1", question: "Ship it?" }] },
+      refreshes: ["projectDefaultAssignees"],
+      spares: ["asks", "askThreads", "docAsks", "otherProjectAsks"],
     },
   // The project list carries no default assignee, so a new project's is in the defaults read
   // alone; an update of a project moves no default.

@@ -1,4 +1,4 @@
-import { askProject } from "../features/inbox/list-row";
+import { askProject, issueProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
 import {
   agentMessagesQuery,
@@ -18,6 +18,7 @@ import type {
   ArchitectureTreeComponent,
   ArchitectureTreeIssueRef,
   Artifact,
+  Ask,
   AskRead,
   ChangedReference,
   DispatchEvent,
@@ -144,6 +145,43 @@ function inboxRowsDecidedByDefault(project: string): RefreshTarget {
       ),
   };
 }
+
+/** Every ask list of an issue of `project` that holds a question nobody handed on: the issue's
+ *  (`["asks", key]`, which the margin and a document's ask blocks read) and the Conversation
+ *  tab's (`["asks", key, "thread"]`, beneath it). Each row carries the person the server resolved
+ *  for it (`waiting_on_person`), which the Asked-of badge on the issue's page reads, so a default
+ *  move changes it for every such question on an issue nobody holds. An issue key's project is
+ *  the part before its first hyphen (`issueProject`). The rows do not say who holds their issue,
+ *  so the list of an issue a person holds reads again too, which answers the same rows. */
+function issueAskListsDecidedByDefault(project: string): RefreshTarget {
+  return {
+    queryKey: ["asks"],
+    when: (data, query) => {
+      const key = query.queryKey[1];
+      return (
+        typeof key === "string" &&
+        issueProject(key) === project &&
+        rowsOf<Ask>(data).some((row) => row.asked_of === null)
+      );
+    },
+  };
+}
+
+/** Every project document's ask list (`["artifact", id, "asks"]`, which the document's page reads
+ *  its ask blocks and its margin's cards from) that holds a question nobody handed on: an ask on
+ *  a project document waits on that project's default until somebody hands it on. A document of
+ *  an issue reads its issue's list instead (`ProofDocument`). Of any project, since the cache
+ *  cannot tell which: the key names the document by id alone, a row names its project only for
+ *  an anchored ask (`anchor_artifact`), and the document's own read, which carries it, is another
+ *  query, which a test of this one cannot see. A list of another project's document reads again
+ *  and answers the same rows. */
+const DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT: RefreshTarget = {
+  queryKey: ["artifact"],
+  when: (data, query) =>
+    query.queryKey.length === 3 &&
+    query.queryKey[2] === "asks" &&
+    rowsOf<Ask>(data).some((row) => row.asked_of === null),
+};
 
 /** The thread rows one of the Inbox's two reads holds: its own unpaged list, or the pages of
  *  what the reader has dismissed (`dismissedThreadsQuery`, an infinite read, whose data is its
@@ -797,19 +835,23 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
       ...(event.type === "settings.repo_project.updated" ? [{ queryKey: ["issue"] }] : []),
     ];
   }
-  // The Settings table always, and every Inbox that holds a question the move carries: a
+  // The Settings table always, and every read that holds a question the move carries: a
   // project's default is the last step of the chain that decides who a question reaches, so every
   // open ask of the project nobody handed on, on an issue nobody holds or on a project document,
   // now waits on the new default. Every reader's Inbox holds those rows with the person they wait
   // on, which its assignee filter and Asked-of badge read, so a reader whose list holds one reads
-  // it again whoever she is (`inboxRowsDecidedByDefault`). The two people `thread_logins` names
-  // (`movesInboxThreads`) read their whole Inbox and their Reply rows as well, since the move
-  // carries those threads between their Replies, and a reader whose list holds no such row and
-  // whom the write does not name sends no read.
+  // it again whoever she is (`inboxRowsDecidedByDefault`). The issue page and the document page
+  // draw the same badge from their own ask lists, which read again when they hold such a question
+  // (`issueAskListsDecidedByDefault`, `DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT`). The two people
+  // `thread_logins` names (`movesInboxThreads`) read their whole Inbox and their Reply rows as
+  // well, since the move carries those threads between their Replies, and a reader whose reads
+  // hold no such question and whom the write does not name sends no read.
   if (event.type === "settings.project_default_assignee.updated") {
     const targets: RefreshTarget[] = [
       { queryKey: projectDefaultAssigneesQuery().queryKey },
       inboxRowsDecidedByDefault(event.payload.project),
+      issueAskListsDecidedByDefault(event.payload.project),
+      DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT,
     ];
     if (movesInboxThreads(event, viewer)) {
       targets.push({ queryKey: inboxKey }, { queryKey: myRepliesKey });

@@ -312,7 +312,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/popover-escape.e2e.ts` | the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader |
 | `e2e/prefix-links.e2e.ts` | `sql`-forged id twins and the server's short-id resolution |
 | `e2e/progress.e2e.ts` | it asserts the progress the server computes over an issue's children before it opens a page |
-| `e2e/project-default-assignee.e2e.ts` | which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach two open Inboxes over the live socket with no reload |
+| `e2e/project-default-assignee.e2e.ts` | which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload |
 | `e2e/project.e2e.ts` | the reference closure is the server's graph walk |
 | `e2e/recipients-claim.e2e.ts` | claims and routes the server computes, with live card updates |
 | `e2e/reference-cards.e2e.ts` | opens the spec's live editor and its margin thread |

@@ -1,7 +1,16 @@
-import { createAsk, createIssue, createProject, getAsk, patchIssue } from "./api";
+import {
+  createArtifactAsk,
+  createAsk,
+  createIssue,
+  createProject,
+  createProjectDocument,
+  getAsk,
+  patchIssue,
+} from "./api";
+import { needsYouCards } from "./editor";
 import { inboxRow } from "./inbox-pane";
 import { expectInboxCount } from "./inbox-threads";
-import { expect, test } from "./test";
+import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
 /**
@@ -21,6 +30,11 @@ import { asUser } from "./users";
  * (`thread_logins`) their whole Inbox; the assignee write reads again every list holding a row
  * of the issue (`inboxRowsOf`). `e2e/refetch-budget.e2e.ts` holds a third reader to what each
  * write costs her.
+ *
+ * The second row holds the issue page and the document page to the same move: each draws the
+ * question's Asked-of badge from its own ask list, which the default write reads again when it
+ * holds a question nobody handed on (`issueAskListsDecidedByDefault` and
+ * `DOCUMENT_ASK_LISTS_DECIDED_BY_DEFAULT`, beside `inboxRowsDecidedByDefault`).
  */
 
 /** The agent that asks the question: an autonomous session, which holds no issue and names
@@ -29,6 +43,30 @@ const asker = {
   actor: { id: "e2e-default-assignee-asker", kind: "session" as const },
   as: "agent" as const,
 };
+
+/** Names `login` CORE's default from the Settings page, as a person does: the people the control
+ *  offers are read only once the reader reaches for it, so it is focused first and the option
+ *  waited for. `from` is the person it names before. */
+async function nameDefaultFromSettings(settings: Page, from: string, login: string): Promise<void> {
+  await settings.goto("/settings");
+  const control = settings.getByRole("combobox", {
+    exact: true,
+    name: "Default assignee of CORE",
+  });
+  await expect(control).toBeEnabled();
+  await expect(control).toHaveValue(from);
+  await control.focus();
+  await expect(control.locator(`option[value="${login}"]`)).toHaveCount(1);
+  await control.selectOption(login);
+}
+
+/** The issue page's own card for an unanchored question, which the page draws on its
+ *  Conversation turn from the issue's ask list (`["asks", key, "thread"]`). */
+async function conversationCard(page: Page, issueKey: string, askId: string): Promise<Locator> {
+  await page.goto(`/issues/${issueKey}`);
+  await page.getByRole("tab", { name: "Conversation" }).click();
+  return page.locator("#issue-conversation-panel").getByTestId(`ask-${askId}`);
+}
 
 // SLOW(>=2s): two browser contexts and three pages, then two live moves, each of which both open
 // Inboxes and their counts must follow with no reload and none of which the page may send a read
@@ -67,17 +105,7 @@ test("a question on an issue nobody holds follows its project's default assignee
 
     // 2. Bob names himself CORE's default from the Settings page, in a page of his own. The
     // question moves with no reload of either Inbox: out of hers, into his, counts and all.
-    const settings = await bob.newPage();
-    await settings.goto("/settings");
-    const control = settings.getByRole("combobox", {
-      exact: true,
-      name: "Default assignee of CORE",
-    });
-    await expect(control).toBeEnabled();
-    await expect(control).toHaveValue("alice");
-    await control.focus();
-    await expect(control.locator('option[value="bob"]')).toHaveCount(1);
-    await control.selectOption("bob");
+    await nameDefaultFromSettings(await bob.newPage(), "alice", "bob");
 
     await expect(inboxRow(bobPage, ask.id)).toBeVisible();
     await expect(bobPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
@@ -103,6 +131,73 @@ test("a question on an issue nobody holds follows its project's default assignee
     await expect(bobPage.getByText("Nothing needs you")).toBeVisible();
     await expectInboxCount(bobPage, 0);
     expect((await getAsk(ask.id)).ask.waiting_on_person).toBe("alice");
+  } finally {
+    await alice.close();
+    await bob.close();
+  }
+});
+
+// SLOW(>=2s): two browser contexts and three pages, one of them the live document, then one live
+// move both open pages must follow with no reload.
+test("issue and document pages follow a default move: a question's Asked-of badge names the new default on the issue page and on the document page", async ({
+  browser,
+}, testInfo) => {
+  // CORE names alice, as the row above has it.
+  const project = await createProject({ key: "CORE", name: "Core" });
+  expect(project.default_assignee).toBe("alice");
+  // A question on an issue nobody holds, and one on a project document: no step of the chain
+  // above the project's default answers for either.
+  const created = await createIssue({ project: "CORE", title: "Nobody holds this" }, asker);
+  const issue = await patchIssue(created.key, { assignee: null }, asker);
+  expect(issue.assignee).toBeNull();
+  const issueAsk = await createAsk(issue.key, { question: "Which rollout flag?" }, asker);
+  const runbook = await createProjectDocument(
+    "CORE",
+    { content: "# Runbook\n\nRestart, reseed, reopen.\n", name: "Runbook" },
+    asker
+  );
+  const docAsk = await createArtifactAsk(
+    runbook.artifact.id,
+    { question: "Keep the runbook in the repository?" },
+    asker
+  );
+  expect((await getAsk(issueAsk.id)).ask.waiting_on_person).toBe("alice");
+  expect((await getAsk(docAsk.id)).ask.waiting_on_person).toBe("alice");
+
+  const alice = await asUser(browser, "alice");
+  const bob = await asUser(browser, "bob");
+  try {
+    // 1. Alice reads the issue's page and the document's page, two tabs of one context, and
+    // each names her as the person its question is asked of.
+    const issuePage = await alice.newPage();
+    const issueCard = await conversationCard(issuePage, issue.key, issueAsk.id);
+    const docPage = await alice.newPage();
+    await docPage.goto(`/projects/CORE/documents/${runbook.artifact.slug}`);
+    const docCard = needsYouCards(docPage).getByTestId(`ask-${docAsk.id}`);
+    await expect(issueCard).toContainText("Asked of alice");
+    await expect(docCard).toContainText("Asked of alice");
+
+    // 2. Bob names himself CORE's default from the Settings page, in a page of his own.
+    await nameDefaultFromSettings(await bob.newPage(), "alice", "bob");
+
+    // 3. Without a reload, each page names bob: the issue page first, then the document page.
+    await expect(issueCard).toContainText("Asked of bob");
+    await expect(docCard).toContainText("Asked of bob");
+    for (const [name, page] of [
+      ["issue", issuePage],
+      ["document", docPage],
+    ] as const) {
+      const shot = testInfo.outputPath(
+        `project-default-assignee-${name}-page-${testInfo.project.name}.png`
+      );
+      await page.screenshot({ fullPage: true, path: shot });
+      await testInfo.attach(`the ${name} page after the move (${testInfo.project.name})`, {
+        contentType: "image/png",
+        path: shot,
+      });
+    }
+    expect((await getAsk(issueAsk.id)).ask.waiting_on_person).toBe("bob");
+    expect((await getAsk(docAsk.id)).ask.waiting_on_person).toBe("bob");
   } finally {
     await alice.close();
     await bob.close();
