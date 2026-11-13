@@ -86,14 +86,15 @@ export async function assertWholeAcross(locator: Locator): Promise<void> {
  *
  * A row of the issue tree is the case this exists for (`e2e/issue-layout.e2e.ts`, c-reflow). A
  * row is one line by design and cuts its first line at a sentence end, or at a word boundary
- * by 100 characters where it wraps and by the one-line measure where it does not
- * (`web/src/features/issue/NodeRow.tsx`), and the focused node's body holds that text whole -
- * c-tree reads the body against the stored text - so the reader loses no word to the cut: they
- * open the node. The line's own box is `overflow: hidden`, which the stronger reading counts
- * as a cut wherever the words reach past it, measured at 1440 px on the `truncate` that box
- * once carried as `span…truncate: 323x20 in 186x20`, and it would be right to for a scope that
- * promises every word on screen. A row promises something else, which is what this reads:
- * whatever it shortened, it fits the box it is drawn in and takes the page nowhere sideways.
+ * by 100 characters where it wraps and to the pixels its own box leaves it where it does not
+ * (`web/src/features/issue/NodeRow.tsx`, `one-line.ts`), and the focused node's body holds
+ * that text whole - c-tree reads the body against the stored text - so the reader loses no
+ * word to the cut: they open the node. The line's own box is `overflow: hidden`, which the
+ * stronger reading counts as a cut wherever the words reach past it, measured at 1440 px on
+ * the `truncate` that box once carried as `span…truncate: 323x20 in 186x20`, and it would be
+ * right to for a scope that promises every word on screen. A row promises something else,
+ * which is what this reads: whatever it shortened, it fits the box it is drawn in and takes
+ * the page nowhere sideways.
  *
  * This is not an exception inside `assertWhole`: the identity block, the preset row and the
  * panel keep that reading unchanged, and a scope that wants this one asks for it by name.

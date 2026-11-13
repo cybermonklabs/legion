@@ -318,12 +318,6 @@ export function rowPictures(row: Locator): Locator {
   return row.locator("img");
 }
 
-/** The element one row draws the node's own first line in: the box a one-line row cuts that
- *  line to fit, which is read for what it holds and for what it hides (R1, R17). */
-export function rowFirstLine(row: Locator): Locator {
-  return row.locator(SELECTORS.nodeFirstLine);
-}
-
 export function rowBody(row: Locator): Locator {
   return row.locator(SELECTORS.nodeBody);
 }
@@ -472,6 +466,15 @@ function cssValue(value: string): string {
 // instead of timing out.
 // ---------------------------------------------------------------------------------------------
 
+/** How wide one box lays its text out against how wide it draws it: `scroll` past `client` is
+ *  text the box hides, which no word boundary decided. `nowrap` says the box lays its text out
+ *  on one line at all. */
+export interface LineBox {
+  readonly client: number;
+  readonly nowrap: boolean;
+  readonly scroll: number;
+}
+
 /** One row of the tree, as the page draws it. */
 export interface DrawnRow {
   /** The author the row names, or null where the model holds none. */
@@ -491,6 +494,10 @@ export interface DrawnRow {
   readonly id: string | null;
   /** The row's own first line, as drawn. */
   readonly firstLine: string | null;
+  /** The first line's own box against the text it holds: the reading a text reading cannot
+   *  make, since a box that hides the tail of its text leaves every character of it in
+   *  `firstLine` (R1). Null where the row draws no first line. */
+  readonly firstLineBox: LineBox | null;
   /** `aria-level`, as drawn. */
   readonly level: string | null;
   /** Whether the row is drawn only as the ancestor of a match in this preset. */
@@ -509,6 +516,10 @@ export interface DrawnRow {
   /** `data-node-type`, the model's own token for the kind of node. */
   readonly type: string | null;
   readonly visible: boolean;
+  /** The same reading of the box the row's words sit in - its twisty, type, author, first line
+   *  and state - which is what hides a word beside the first line rather than in it. Null
+   *  where the row draws no first line. */
+  readonly wordsBox: LineBox | null;
 }
 
 /** Every row the page draws, in document order. */
@@ -521,35 +532,48 @@ export function drawnRows(page: Page): Promise<DrawnRow[]> {
       if (rect.width === 0 && rect.height === 0) return null;
       return { height: rect.height, width: rect.width, x: rect.x, y: rect.y };
     };
+    const lineBox = (element: Element | null | undefined) =>
+      element === null || element === undefined
+        ? null
+        : {
+            client: element.clientWidth,
+            nowrap: window.getComputedStyle(element).whiteSpace === "nowrap",
+            scroll: element.scrollWidth,
+          };
     const rows = [...document.querySelectorAll(`${selectors.issuePage} ${selectors.nodeRow}`)];
-    return rows.map((row) => ({
-      author: text(row.querySelector(selectors.nodeAuthor)),
-      body: row.querySelector(selectors.nodeBody) !== null,
-      box: box(row),
-      chips: [...row.querySelectorAll(selectors.nodeChip)].map((chip) => text(chip) ?? ""),
-      context: row.hasAttribute("data-node-context"),
-      expanded: row.getAttribute("aria-expanded"),
-      firstLine: text(row.querySelector(selectors.nodeFirstLine)),
-      foldedCount: row.getAttribute("data-folded-count"),
-      glyphs: [...row.querySelectorAll(selectors.nodeGlyph)].map((glyph) => ({
-        name:
-          glyph.getAttribute("aria-label") ??
-          text(glyph.querySelector("title")) ??
-          text(glyph.querySelector("desc")) ??
-          "",
-        token: glyph.getAttribute("data-glyph") ?? "",
-      })),
-      id: row.getAttribute("data-node-id"),
-      level: row.getAttribute("aria-level"),
-      pinned: row.querySelector(`${selectors.nodeBody}[data-pinned]`) !== null,
-      role: row.getAttribute("role"),
-      state: row.getAttribute("data-node-state"),
-      stateWord: text(row.querySelector(selectors.nodeState)),
-      tabIndex: (row as HTMLElement).tabIndex,
-      text: text(row) ?? "",
-      type: row.getAttribute("data-node-type"),
-      visible: row.getClientRects().length > 0,
-    }));
+    return rows.map((row) => {
+      const firstLine = row.querySelector(selectors.nodeFirstLine);
+      return {
+        author: text(row.querySelector(selectors.nodeAuthor)),
+        body: row.querySelector(selectors.nodeBody) !== null,
+        box: box(row),
+        chips: [...row.querySelectorAll(selectors.nodeChip)].map((chip) => text(chip) ?? ""),
+        context: row.hasAttribute("data-node-context"),
+        expanded: row.getAttribute("aria-expanded"),
+        firstLine: text(firstLine),
+        firstLineBox: lineBox(firstLine),
+        foldedCount: row.getAttribute("data-folded-count"),
+        glyphs: [...row.querySelectorAll(selectors.nodeGlyph)].map((glyph) => ({
+          name:
+            glyph.getAttribute("aria-label") ??
+            text(glyph.querySelector("title")) ??
+            text(glyph.querySelector("desc")) ??
+            "",
+          token: glyph.getAttribute("data-glyph") ?? "",
+        })),
+        id: row.getAttribute("data-node-id"),
+        level: row.getAttribute("aria-level"),
+        pinned: row.querySelector(`${selectors.nodeBody}[data-pinned]`) !== null,
+        role: row.getAttribute("role"),
+        state: row.getAttribute("data-node-state"),
+        stateWord: text(row.querySelector(selectors.nodeState)),
+        tabIndex: (row as HTMLElement).tabIndex,
+        text: text(row) ?? "",
+        type: row.getAttribute("data-node-type"),
+        visible: row.getClientRects().length > 0,
+        wordsBox: lineBox(firstLine?.parentElement),
+      };
+    });
   }, SELECTORS);
 }
 

@@ -8,7 +8,8 @@ import { api } from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import type { TreeNode } from "./issue-tree";
-import { NodeRow, WIDE_ONE_LINE_MEASURE } from "./NodeRow";
+import { NodeRow } from "./NodeRow";
+import type { OneLineBox } from "./one-line";
 import type { GapKind, NodeType } from "./page-words";
 
 /**
@@ -37,8 +38,9 @@ function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): Tree
 }
 
 /** One row, drawn with its body open, as the focused row draws it. `artifact` is the document
- *  or image the node is, whose body draws the artifact itself. */
-function renderRow(drawn: TreeNode, artifact?: Artifact) {
+ *  or image the node is, whose body draws the artifact itself; `oneLineBox` draws the row on
+ *  one line, cut to that reading of the tree's width. */
+function renderRow(drawn: TreeNode, artifact?: Artifact, oneLineBox?: OneLineBox) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
@@ -52,8 +54,8 @@ function renderRow(drawn: TreeNode, artifact?: Artifact) {
           isClosed={false}
           level={1}
           node={drawn}
-          oneLine={false}
-          oneLineMeasure={WIDE_ONE_LINE_MEASURE}
+          oneLine={oneLineBox !== undefined}
+          oneLineBox={oneLineBox}
           onFocus={() => {}}
           onPin={() => {}}
           onToggle={() => {}}
@@ -103,6 +105,46 @@ test("a node with no author says nothing about one, and draws no shape for it", 
   } finally {
     view.unmount();
   }
+});
+
+/** A reading of the tree's width whose face draws every character at half its size, which is
+ *  what makes each line below a sum a reader can check by hand: 7 px a character of the
+ *  row's `text-sm`. */
+function treeOf(width: number): OneLineBox {
+  return { family: "test", rem: 16, width, widthOf: (text, size) => text.length * size * 8 };
+}
+
+/** The first line a one-line row draws of `drawn` in a tree `width` px wide. */
+function oneLineOf(drawn: TreeNode, width: number): string | null | undefined {
+  const view = renderRow(drawn, undefined, treeOf(width));
+  try {
+    return view.container.querySelector("[data-node-first-line]")?.textContent;
+  } finally {
+    view.unmount();
+  }
+}
+
+// R1, R7: a one-line row's first line is what its own box leaves it beside its other words,
+// the author's id and shape among them. The row is 10 px less than the tree (`border-l-2`,
+// `pr-2`), and a leaf's twisty, the comment's shape and word and the gaps between them take
+// 101 px of it; the author's shape, id and gap take 168 px more.
+test("a one-line row's first line is what its author leaves it", () => {
+  const text = "The page draws the whole issue in one reading, with nothing lost.";
+  const unauthored = node({ id: "comment-1", text, type: "comment" });
+  const authored = node({
+    author: { id: "issue-layout-planner", kind: "session" },
+    id: "comment-1",
+    text,
+    type: "comment",
+  });
+  // 400 px: 288 px of line beside the words, or 120 px with the author's beside them, each
+  // cut at the last word whose run and ellipsis fit.
+  expect(oneLineOf(unauthored, 400)).toBe("The page draws the whole issue in one…");
+  expect(oneLineOf(authored, 400)).toBe("The page draws…");
+  // 300 px: 188 px beside the words, and 20 px with the author's - less than "The…" takes - so
+  // that line goes under them, where it has the row's whole 290 px.
+  expect(oneLineOf(unauthored, 300)).toBe("The page draws the whole…");
+  expect(oneLineOf(authored, 300)).toBe("The page draws the whole issue in one…");
 });
 
 /** The few words a row draws for `gap`, and the sentence its body draws under them. */

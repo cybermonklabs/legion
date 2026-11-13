@@ -18,6 +18,7 @@ import { seedFakeGithub } from "./fake-github-helpers";
 import { inboxRow } from "./inbox-pane";
 import { conversationStateControl } from "./issue-page";
 import { expect, type Locator, test, type WebSocket } from "./test";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { asUser } from "./users";
 
 // These scenarios exercise the live event feed fanning updates into other open tabs, so
@@ -601,6 +602,9 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   const alice = await asUser(browser, "alice");
   const page = await alice.newPage();
   const apiRequestPaths: string[] = [];
+  // What says the load is over: nothing in flight for the recorded baseline's window
+  // (`expectLoadSettled`), counting every request the page makes and not only these.
+  const settling = watchApiRequests(page);
   page.on("request", (request) => {
     // Called for every request of a cold load this row measures, so the cheap string test comes
     // first: a path under /api/v1/ or /auth/ always shows in the raw URL.
@@ -739,7 +743,11 @@ test("live: a fresh page load opens the socket at the current head and stays wit
   // The batch is one request, which the set above cannot say: it holds the address once
   // however many times the page asked for it. The tree waits for all of its reads before it
   // asks (`features/issue/useIssueTree.ts`), where before it asked for the addresses known so
-  // far and asked again for the rest, so the count is the assertion that rule needs.
+  // far and asked again for the rest, so the count is the assertion that rule needs. It is
+  // counted once the page has gone quiet, not at the moment the set above first matched: that
+  // moment is the first batch's own, so a second batch sent after the reads answer would land
+  // after it and never be counted.
+  await expectLoadSettled(settling);
   expect(
     apiRequestPaths.filter((path) => path.split("?")[0] === "/api/v1/reference-targets"),
     "the page read /api/v1/reference-targets more than once on a first load"

@@ -48,8 +48,9 @@ import {
   seedUnbrokenWords,
   seedWholeIssue,
   UNBROKEN_PATH,
+  type WholeIssueSeed,
 } from "./issue-layout-seed";
-import { asPlanner } from "./issue-layout-seed-support";
+import { asPlanner, PLANNER, WHOLE_REPO } from "./issue-layout-seed-support";
 import {
   checkBlockId,
   OPEN_QUESTION_BLOCK_ID,
@@ -128,7 +129,6 @@ import {
   presetToolbar,
   rowAuthor,
   rowBody,
-  rowFirstLine,
   rowGaps,
   rowPictures,
   rowsOfType,
@@ -146,7 +146,7 @@ import {
 } from "./issue-page";
 import { assertInventoryCarried, type InventoryEntry } from "./page-inventory";
 import { resetDatabase } from "./seed";
-import { type ApiRequests, watchApiRequests } from "./traffic";
+import { expectLoadSettled, watchApiRequests } from "./traffic";
 import { assertFitsItsBox, assertPageFits, assertWhole, assertWholeAcross } from "./unclipped";
 import { asUser } from "./users";
 
@@ -214,25 +214,6 @@ async function expectIssuePageDrawn(page: Page): Promise<void> {
     tree(page),
     'the page draws no role="tree" named "Issue tree" inside [data-issue-page]'
   ).toHaveCount(1);
-}
-
-/** How long nothing may be in flight before a load is counted finished. It is the recorded
- *  baseline's own window (dispatch://INFRA-1196/artifact/request-baseline-md: "between
- *  navigation and network idle (nothing in flight for 1500 ms)"). */
-const LOAD_QUIET_MS = 1_500;
-
-/** Fails unless the page has gone quiet, which is the moment a load's cost is read at. Measured
- *  on this pod, the same unchanged page counted 39, 35 and 38 requests when the count was taken
- *  at Playwright's `networkidle` instead: that window closes after 500 ms of quiet, which is
- *  less than a read waiting on another read's answer takes under load, so what it yields is
- *  whatever had arrived by then rather than what the load costs. */
-async function expectLoadSettled(traffic: ApiRequests): Promise<void> {
-  await expect
-    .poll(() => traffic.quietFor(LOAD_QUIET_MS), {
-      message: "the page never went quiet, so its first load has no settled cost",
-      timeout: 30_000,
-    })
-    .toBe(true);
 }
 
 /** The slug of the issue's own spec, which is how its blocks are addressed. */
@@ -378,6 +359,47 @@ function cutsAWord(stored: string, drawn: string): boolean {
   return !/\s/.test(stored.charAt(line.length)) && !/[.!?]$/.test(line);
 }
 
+/**
+ * R1 on one row drawn on one line, read twice, because the text alone cannot see the cut a box
+ * makes: `text-overflow: ellipsis` paints an ellipsis and inserts no character, and a box that
+ * hides the tail of its line leaves every character of it in the line's text. So the line is
+ * read for its words - the start of the stored text, ending at a word break, with an ellipsis
+ * where the text carries on - and its box for holding every character it was given, the box
+ * the row's words sit in included, since a type, an author or a state the row's box hides is
+ * a word cut too (`scrollWidth` at its `clientWidth`, a pixel for rounding).
+ */
+function expectCutAtAWord(row: DrawnRow | undefined, stored: string, where: string): void {
+  expect(row, `${where} draws no row`).toBeDefined();
+  const drawn = row?.firstLine ?? "";
+  const line = drawn.replace(/\s*…$/u, "").trimEnd();
+  expect(line, `${where} draws none of its own words`).not.toBe("");
+  expect(stored.startsWith(line), `${where} draws "${drawn}", which is not "${stored}"`).toBe(true);
+  expect(cutsAWord(stored, drawn), `${where} cuts "${stored}" inside a word: "${drawn}"`).toBe(
+    false
+  );
+  if (line !== stored) {
+    expect(drawn.endsWith("…"), `${where} says nothing of the text "${drawn}" stops short of`).toBe(
+      true
+    );
+  }
+  // The row is on one line at all: a wrapped line fits its box by wrapping, so the readings
+  // below would pass on any width that draws the whole tree (measured: 658 px of box and
+  // `white-space: normal` at 1440 px).
+  const box = row?.firstLineBox;
+  expect(box?.nowrap, `${where} is not drawn on one line, so this width reads nothing`).toBe(true);
+  expect(
+    box?.scroll,
+    `${where} draws "${drawn}" as ${box?.scroll} px of text in a ${box?.client} px box, so the ` +
+      "box hides its tail where no word boundary decided it"
+  ).toBeLessThanOrEqual((box?.client ?? -2) + 1);
+  const words = row?.wordsBox;
+  expect(
+    words?.scroll,
+    `${where} lays its words out over ${words?.scroll} px in a ${words?.client} px box, so the ` +
+      "row hides a word beside its first line"
+  ).toBeLessThanOrEqual((words?.client ?? -2) + 1);
+}
+
 test.beforeEach(async () => {
   await resetDatabase();
 });
@@ -514,16 +536,29 @@ test("the body is one folded tree whose rows never truncate a word", async ({ br
   });
 });
 
-// c-tree, at the width that decides the cut, which is a row of its own. The row above reads the
+/** The widths a one-line row is read at: the floor R17 names, the phone the `iphone` project
+ *  runs, and the narrowest width above a phone's (`PHONE_VIEWPORT_QUERY` is under 768 px).
+ *  The character measure this cut replaced was one number per band, taken at 390 px and at
+ *  1024 px, so the widths below those were where its rows fit their boxes least. */
+const ONE_LINE_WIDTHS = [320, 390, 768] as const;
+
+// c-tree, at the widths that decide the cut, which is a row of its own. The row above reads the
 // whole tree - every level it names, every ancestor it walks and every fold it counts is the
 // unzoomed tree's - and at 1024 px and below the tree draws two levels under a breadcrumb
 // instead (`zoomedRows`), so that row cannot be the one that runs here. This reads the one
 // clause the width changes: a row is one line below 1025 px (`ZOOMED_TREE_QUERY`), where the
-// node's own first line is cut again to the characters the row's other words leave it
-// (`NodeRow.tsx`'s `oneLineFirstLine`), and no cut of it ends inside a word (R1). It carries
-// `@phone-only` beside `@phone` because the row above already reads the same clause against the
-// same stored text wherever the tree draws the whole of itself, so no desktop project owns a
-// second run of this one.
+// node's own first line is cut again to the pixels the row's own box leaves it beside its
+// other words (`NodeRow.tsx`, `one-line.ts`), and no cut of it ends inside a word (R1). It
+// carries `@phone-only` beside `@phone` because the row above already reads the same clause
+// against the same stored text wherever the tree draws the whole of itself, so no desktop
+// project owns a second run of this one.
+//
+// Two rows, because the words beside the first line are what decide how much of it is left:
+// the two-sentence requirement, which carries a type and nothing else, and the open question,
+// which carries its author as well - the planner's session id and the pen beside it, 163 px of
+// a 258 px row at 320 px. Measured on the page the character measure drew: that row's first
+// line was given 0 px at 320 px and its state was hidden past the row's edge, and at 390 px
+// its "Does…" was drawn 21 px wide. Each row is read at each of the three widths.
 //
 // It sets the width itself, as every row of this file does: `phase` starts every page at the
 // desktop size in every project, the `iphone` project included, so the tag chooses which
@@ -535,16 +570,27 @@ test("a one-line row cuts the node's first line at a word @phone @phone-only", a
   browser,
 }) => {
   await phase(browser, seedFrontierShallow, async (page, seeded) => {
-    await page.setViewportSize({ height: PHONE.height, width: PHONE.width });
-    await gotoIssue(page, `/issues/${seeded.key}`);
-    await expectIssuePageDrawn(page);
     const specSlug = await primarySlug(seeded.key);
     const nodeId = blockNodeId(specSlug, requirementBlockId(1));
-    // The zoomed tree draws the issue's children and the trail down to its open question, so
-    // the two-sentence requirement is one zoom away: its document's own twisty opens it, which
-    // is how a reader on a phone reaches a document's blocks (R17). A width that draws the
-    // whole tree has the row already and opens nothing.
-    if ((await nodeRow(page, nodeId).count()) === 0) {
+    const question = (await getAsk(seeded.askId)).ask.question;
+    for (const width of ONE_LINE_WIDTHS) {
+      await page.setViewportSize({ height: PHONE.height, width });
+      await gotoIssue(page, `/issues/${seeded.key}`);
+      await expectIssuePageDrawn(page);
+
+      // The authored row: the open question sits under the issue itself, so the zoomed tree
+      // draws it on the issue's own screen.
+      await expect(
+        nodeRow(page, seeded.askId).first(),
+        `the open question draws no row at ${width} px`
+      ).toBeVisible();
+      const asked = rowOf(await drawnRows(page), seeded.askId);
+      expect(asked?.author, `the open question's row names no author at ${width} px`).toBe(PLANNER);
+      expectCutAtAWord(asked, question, `the open question's row at ${width} px`);
+
+      // The zoomed tree draws the issue's children and the trail down to its open question, so
+      // the two-sentence requirement is one zoom away: its document's own twisty opens it,
+      // which is how a reader on a phone reaches a document's blocks (R17).
       await nodeRow(page, specSlug)
         .first()
         .getByRole("button", {
@@ -553,53 +599,20 @@ test("a one-line row cuts the node's first line at a word @phone @phone-only", a
         .click();
       await expect(
         nodeRow(page, nodeId).first(),
-        "the zoom into the spec drew no row for its first requirement"
+        `the zoom into the spec drew no row for its first requirement at ${width} px`
       ).toBeVisible();
+      const rows = await drawnRows(page);
+      for (const row of rows) {
+        if (row.firstLine === null) continue;
+        const line = row.firstLine.replace(/\s*(?:…|\.\.\.)$/u, "").trimEnd();
+        expect(row.text, `row ${row.id}'s first line is not its own text`).toContain(line);
+      }
+      expectCutAtAWord(
+        rowOf(rows, nodeId),
+        requirementText(1),
+        `the two-sentence requirement's row at ${width} px`
+      );
     }
-
-    const rows = await drawnRows(page);
-    expect(rows.length, `${seeded.key} draws no node row on one line`).toBeGreaterThan(0);
-    for (const row of rows) {
-      if (row.firstLine === null) continue;
-      const line = row.firstLine.replace(/\s*(?:…|\.\.\.)$/u, "").trimEnd();
-      expect(row.text, `row ${row.id}'s first line is not its own text`).toContain(line);
-    }
-    const long = rowOf(rows, nodeId);
-    expect(long, "the two-sentence requirement draws no row").toBeDefined();
-    expect(
-      cutsAWord(requirementText(1), long?.firstLine ?? ""),
-      `the first line "${long?.firstLine}" cuts the stored text inside a word`
-    ).toBe(false);
-    expect(
-      long?.firstLine?.endsWith("…"),
-      `the first line "${long?.firstLine}" says nothing of the text it stops short of`
-    ).toBe(true);
-
-    // The three readings above are of the text, and the text alone cannot see the cut this
-    // width makes: `text-overflow: ellipsis` paints an ellipsis and inserts no character, so a
-    // page that laid the whole line out and let CSS hide its tail reads here exactly as a page
-    // that cut the line before drawing it. Measured on the page without the cut, built from
-    // 17507b5b1661: this row passed all three. So the box is read too, on the one row whose
-    // line is long enough to overflow it: the line's own element holds every character it was
-    // given, `scrollWidth` at its `clientWidth` (a pixel for rounding). A wider `scrollWidth`
-    // is the page drawing more than the box holds and leaving the cut to CSS, which no word
-    // boundary decided (R1).
-    const line = rowFirstLine(nodeRow(page, nodeId).first());
-    const box = await line.evaluate((element) => ({
-      client: element.clientWidth,
-      drawn: element.textContent ?? "",
-      nowrap: window.getComputedStyle(element).whiteSpace === "nowrap",
-      scroll: element.scrollWidth,
-    }));
-    // The row is on one line at all: a wrapped line fits its box by wrapping, so the reading
-    // below would pass on any width that draws the whole tree (measured: 658 px of box and
-    // `white-space: normal` at 1440 px).
-    expect(box.nowrap, "the row is not drawn on one line, so this width reads nothing").toBe(true);
-    expect(
-      box.scroll,
-      `the row drew "${box.drawn}" as ${box.scroll} px of text in a ${box.client} px box, so ` +
-        "the page drew more than the row holds and left CSS to cut it"
-    ).toBeLessThanOrEqual(box.client + 1);
 
     // What the cut left out is in the body the row opens on focus, whole (R2), so the reader
     // loses no word to it.
@@ -1260,15 +1273,20 @@ test("every property with a value is visible at every width @phone", async ({ br
     // so they are read against the whole viewport; the panel's are read sideways only, which
     // is what a column that scrolls down by design can be held to
     // (`expectInsideTheViewportSideways`).
+    //
+    // A value read by a locator that names no text is read for its words too: the assignee and
+    // the repository are found by the control that draws them, not by what they say, so a
+    // badge reading "Unassigned" or "No repository" is drawn, visible and whole, and only its
+    // own text says the seed's value is not what it draws.
     const panel = marginSlot(page);
-    const inTheBlock: readonly (readonly [string, Locator])[] = [
+    const inTheBlock: readonly (readonly [string, Locator, string?])[] = [
       [
         "the parent",
         identityBlock(page).getByRole("link", { exact: true, name: seeded.parentKey }),
       ],
       // The assignee is the badge its control draws, not any text saying `alice` inside the
       // state row: the control's own `select` holds an `option` with the same word.
-      ["the assignee", badgeValue(page, `Assignee of ${seeded.key}`)],
+      ["the assignee", badgeValue(page, `Assignee of ${seeded.key}`), "alice"],
       ["the first label", page.getByTestId("issue-labels").getByText("dispatch", { exact: true })],
       ["the second label", page.getByTestId("issue-labels").getByText("layout", { exact: true })],
       ["the third label", page.getByTestId("issue-labels").getByText("redesign", { exact: true })],
@@ -1278,8 +1296,8 @@ test("every property with a value is visible at every width @phone", async ({ br
     // sideways half of the clipping walk (R17 bans two dimensions, never one). The repository
     // is read as the assignee is, at the badge its control draws, since its select and the
     // description beside it carry the same words.
-    const inThePanel: readonly (readonly [string, Locator])[] = [
-      ["the repository", badgeValue(page, `Repository of ${seeded.key}`)],
+    const inThePanel: readonly (readonly [string, Locator, string?])[] = [
+      ["the repository", badgeValue(page, `Repository of ${seeded.key}`), WHOLE_REPO],
       ["the pull request", panel.getByRole("link", { name: /^#11\b/ })],
       [
         "a component",
@@ -1294,22 +1312,28 @@ test("every property with a value is visible at every width @phone", async ({ br
     for (const width of [1440, 1280, 1024, 390]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
       await gotoIssue(page, `/issues/${seeded.key}`);
-      for (const [name, at] of inTheBlock) {
+      for (const [name, at, words] of inTheBlock) {
         await expect(
           at,
           `${name} is not drawn at ${width} px with no control opened`
         ).toBeVisible();
+        if (words !== undefined) {
+          await expect(at, `${name} does not read "${words}" at ${width} px`).toHaveText(words);
+        }
         await expect(
           at,
           `${name} is drawn outside the ${width} px viewport with no control opened`
         ).toBeInViewport();
         await assertWhole(at);
       }
-      for (const [name, at] of inThePanel) {
+      for (const [name, at, words] of inThePanel) {
         await expect(
           at,
           `${name} is not drawn at ${width} px with no control opened`
         ).toBeVisible();
+        if (words !== undefined) {
+          await expect(at, `${name} does not read "${words}" at ${width} px`).toHaveText(words);
+        }
         await expectInsideTheViewportSideways(page, at, `${name} at ${width} px`);
         await assertWholeAcross(at);
       }
@@ -1734,15 +1758,52 @@ test("the Checks preset is readable @phone", async ({ browser }) => {
   });
 });
 
+/** How many rows of each kind `seedWholeIssue` draws with every branch open, from the seed's own
+ *  record of what it wrote where it keeps one: the 12 requirements and the one citing a
+ *  document, a result for each check but the one recorded with none, the two comment threads
+ *  with their replies and the comment anchored to a block, and the three messages of the one
+ *  conversation. The rest it writes once each, or a fixed number of: the issue, the summary's
+ *  callout, the open question and the answered one, the one picture, and six documents - the
+ *  spec, the verification, the plan, the decisions and the cited and uncited notes. */
+function rowsOfTheWholeIssue(seeded: WholeIssueSeed): Record<string, number> {
+  const checks = Object.keys(seeded.checks).length;
+  return {
+    ask: 2,
+    callout: 1,
+    check: checks,
+    child_issue: seeded.children.keys.length,
+    comment: seeded.comments.threads.length + seeded.comments.replies.length + 1,
+    decision: seeded.decisions.length,
+    document: 6,
+    image: 1,
+    issue: 1,
+    message: Object.keys(seeded.messages).length,
+    plan_task: seeded.planTasks.length,
+    requirement: seeded.requirements.length + 1,
+    result: checks - 1,
+  };
+}
+
+/** How many of `rows` there are of each kind. */
+function rowsByKind(rows: readonly DrawnRow[]): Record<string, number> {
+  const kinds: Record<string, number> = {};
+  for (const row of rows) {
+    const kind = row.type ?? "<no type>";
+    kinds[kind] = (kinds[kind] ?? 0) + 1;
+  }
+  return kinds;
+}
+
 // c-plain-words.
 test("the page draws no internal word where a name belongs @phone", async ({ browser }) => {
-  // The check reads the page's chrome in ten views and in all 56 node bodies of the seeded
-  // issue: about 11,700 readings, each read against five patterns and the declared list. One
-  // `expect` per reading was 70,000 calls at about 4 ms each - 281 s of assertion beside 20 s
-  // of page work - so each view gathers every offender it finds and names them in one
-  // assertion, which reads the same strength and says more: a view that draws three internal
-  // words names all three rather than the first. The row still carries a deadline of its own,
-  // because ten navigations and 56 bodies outlast the 30 s default on their own.
+  // The check reads the page's chrome in ten views and in the body of every row the seeded
+  // issue draws with every branch open - 67 of them - each reading read against five patterns
+  // and the declared list. One `expect` per reading was 70,000 calls at about 4 ms each - 281 s
+  // of assertion beside 20 s of page work - so each view gathers every offender it finds and
+  // names them in one assertion, which reads the same strength and says more: a view that
+  // draws three internal words names all three rather than the first. The row still carries a
+  // deadline of its own, because ten navigations and 67 bodies outlast the 30 s default on
+  // their own.
   test.setTimeout(600_000);
   await phase(browser, seedWholeIssue, async (page, seeded) => {
     // An identifier, a fragment, a slug, and the schema and enumeration tokens the check names.
@@ -1802,18 +1863,31 @@ test("the page draws no internal word where a name belongs @phone", async ({ bro
     }
 
     // Every node's body in turn, where a type's attributes and its state are drawn in full.
+    // The page opens folded to the frontier (R1): measured on this seed, the first drawing is
+    // 49 of its 67 rows, with half its comments, one of its three messages and none of its
+    // results, so a walk over that drawing reads no result's body at all. So every branch is
+    // opened first, and every branch below the drawn levels, as a reader opens them to read
+    // past the fold - once the page has stopped reading, since a row that lands after the
+    // twisties were pressed lands folded - and the rows are read against the seed's own count
+    // of every kind, so a kind that is still folded, or not yet drawn, fails here rather than
+    // leaving its bodies out of the walk.
     await page.setViewportSize({ height: DESKTOP.height, width: DESKTOP.width });
+    const settling = watchApiRequests(page);
     await gotoIssue(page, `/issues/${seeded.key}`);
-    const rows = nodeRows(page);
-    // The count is asserted, not only read: taken straight after the navigation it answers
-    // zero for a tree whose reads have not landed, and the loop below would then read no body
-    // at all and pass. The seed draws a row per requirement and far more besides.
+    await expectLoadSettled(settling);
+    await unfoldEveryBranch(page);
+    await openEveryDeeperBranch(page);
+    const seededRows = rowsOfTheWholeIssue(seeded);
     await expect
-      .poll(async () => await rows.count(), {
-        message: "the tree draws fewer rows than the seed's own requirements: it has not loaded",
+      .poll(async () => rowsByKind(await drawnRows(page)), {
+        message: "the unfolded tree does not draw a row for every node the seed wrote",
       })
-      .toBeGreaterThan(seeded.requirements.length);
+      .toEqual(seededRows);
+    const rows = nodeRows(page);
     const count = await rows.count();
+    expect(count, "the walk is not over every row the seed wrote").toBe(
+      Object.values(seededRows).reduce((sum, kind) => sum + kind, 0)
+    );
     for (let index = 0; index < count; index += 1) {
       const row = rows.nth(index);
       await row.focus();
@@ -1931,9 +2005,10 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
     // What each row drew of its own text, kept by the width it was drawn at. The wrapped
     // widths are the stored text the one-line widths are read against, below the loop, once
     // both are in: a width reads the page it loaded, and a row is drawn on one line at one
-    // width and wrapped at another.
+    // width and wrapped at another. A one-line row is kept whole, its boxes with its words,
+    // because its boxes are what say whether it hid part of what it drew.
     const wrapped = new Map<string, string>();
-    const oneLineRows: { id: string; line: string; width: number }[] = [];
+    const oneLineRows: { row: DrawnRow; width: number }[] = [];
     // The test sets the viewport and writes no width rule of its own: every measure is the page's.
     for (const width of [320, 390, 768, 1024, 1280, 1440]) {
       await page.setViewportSize({ height: width < 1024 ? PHONE.height : DESKTOP.height, width });
@@ -1968,15 +2043,17 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
       // it is taller than the screen and scrolls down by design; R17 bans two dimensions, not
       // one, so the panel is read for a sideways clip and a clamped line (`e2e/unclipped.ts`).
       if ((await marginSlot(page).count()) === 1) await assertWholeAcross(marginSlot(page));
-      // R17's reading of a row, which is of its box and not of its words: the row is one line
-      // by design and cuts its own first line to what that line has room for (`NodeRow.tsx`'s
-      // `oneLineFirstLine`), and the focused node's body holds the text whole (c-tree reads
-      // the body against the stored text), so the cut takes nothing from a reader - they open
-      // the node. What a row may not do is reach past the box it is drawn in or hold a box
-      // that scrolls inside it, which is what `assertFitsItsBox` reads (`e2e/unclipped.ts` has
-      // both readings and why a row takes the weaker one for its box). R1's reading of the
-      // same rows stands beside it rather than being given up for it: the words the row drew
-      // are collected here and read below the loop, where the wrapped widths are in too.
+      // R17's reading of a row, which is of its box and not of its words: a row is one line at
+      // 1024 px and below and cuts its own first line, at a word, to the pixels its own box
+      // leaves it beside its other words, putting it under them where they leave it none
+      // (`NodeRow.tsx`, `one-line.ts`), and the focused node's body holds the text whole
+      // (c-tree reads the body against the stored text), so the cut takes nothing from a
+      // reader - they open the node. What a row may not do is reach past the box it is drawn
+      // in or hold a box that scrolls inside it, which is what `assertFitsItsBox` reads
+      // (`e2e/unclipped.ts` has both readings and why a row takes the weaker one for its box).
+      // R1's reading of the same rows stands beside it rather than being given up for it: the
+      // words and the boxes each one-line row drew are collected here and read below the loop,
+      // where the wrapped widths are in too.
       for (const row of walked) {
         await assertFitsItsBox(row);
       }
@@ -1984,7 +2061,7 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
       for (const row of drawn) {
         if (row.id === null || row.firstLine === null) continue;
         if (width > 1024) wrapped.set(row.id, row.firstLine);
-        else oneLineRows.push({ id: row.id, line: row.firstLine, width });
+        else if (row.visible) oneLineRows.push({ row, width });
       }
       expect(
         await scrollersOutsideAuthorText(page),
@@ -2008,21 +2085,21 @@ test("the page never scrolls in two dimensions @phone", async ({ browser }) => {
     // (`ZOOMED_TREE_QUERY`): no row truncates a word. The stored text a one-line row is read
     // against is the line the same row draws where it wraps, and c-tree reads that line
     // against the node's own stored text, so a one-line line that is a word-boundary prefix
-    // of the wrapped one is a word-boundary prefix of the stored text. A row drawn at a
-    // one-line width and at no wrapped one has nothing to be read against, so the count below
-    // is an assertion of its own: a reading over no row would pass for want of anything to
-    // read.
-    const read = oneLineRows.filter((row) => wrapped.has(row.id));
+    // of the wrapped one is a word-boundary prefix of the stored text. The words alone cannot
+    // see a cut the box makes - a box that hides the tail of its line leaves every character
+    // of it in the line's text, so CSS's `truncate` on the whole line reads as no cut at all -
+    // so each row's boxes are read against the text they hold too (`expectCutAtAWord`). A row
+    // drawn at a one-line width and at no wrapped one has nothing to be read against, so the
+    // count below is an assertion of its own: a reading over no row would pass for want of
+    // anything to read.
+    const read = oneLineRows.filter(({ row }) => (wrapped.get(row.id ?? "") ?? "") !== "");
     expect(
       read.length,
       "no row of the tree was drawn both on one line and wrapped, so no line was read for R1"
     ).toBeGreaterThan(0);
-    for (const row of read) {
-      const stored = (wrapped.get(row.id) ?? "").replace(/\s*(?:…|\.\.\.)$/u, "").trimEnd();
-      expect(
-        cutsAWord(stored, row.line),
-        `the one-line row ${row.id} cuts "${stored}" inside a word at ${row.width} px`
-      ).toBe(false);
+    for (const { row, width } of read) {
+      const stored = (wrapped.get(row.id ?? "") ?? "").replace(/\s*(?:…|\.\.\.)$/u, "").trimEnd();
+      expectCutAtAWord(row, stored, `the one-line row ${row.id} at ${width} px`);
     }
   });
 });

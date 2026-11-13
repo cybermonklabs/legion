@@ -1,4 +1,4 @@
-import type { Page, Request } from "@playwright/test";
+import { expect, type Page, type Request } from "@playwright/test";
 
 /** What one page sends: its GETs under `/api/` since the last `reset`, every read of one issue's
  *  detail since the page opened, and whether any request is still in flight. The event feed rides
@@ -141,4 +141,23 @@ export function watchApiRequests(page: Page): ApiRequests {
     },
     total: () => requests.length,
   };
+}
+
+/** How long nothing may be in flight before a load is counted finished. It is the recorded
+ *  baseline's own window (dispatch://INFRA-1196/artifact/request-baseline-md: "between
+ *  navigation and network idle (nothing in flight for 1500 ms)"). */
+const LOAD_QUIET_MS = 1_500;
+
+/** Fails unless the page has gone quiet, which is the moment a load's cost is read at. Measured
+ *  on this pod, the same unchanged page counted 39, 35 and 38 requests when the count was taken
+ *  at Playwright's `networkidle` instead: that window closes after 500 ms of quiet, which is
+ *  less than a read waiting on another read's answer takes under load, so what it yields is
+ *  whatever had arrived by then rather than what the load costs. */
+export async function expectLoadSettled(traffic: ApiRequests): Promise<void> {
+  await expect
+    .poll(() => traffic.quietFor(LOAD_QUIET_MS), {
+      message: "the page never went quiet, so its first load has no settled cost",
+      timeout: 30_000,
+    })
+    .toBe(true);
 }

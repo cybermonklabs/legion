@@ -1,4 +1,4 @@
-import { type ReactNode, useLayoutEffect, useRef } from "react";
+import { type ReactNode, useLayoutEffect, useMemo, useRef } from "react";
 import { Link } from "react-router-dom";
 
 import type { Artifact } from "../../api/types";
@@ -20,6 +20,7 @@ import { firstLineOf, type NodeChip, nodeWords, type TreeNode } from "./issue-tr
 import { NodeArtifact } from "./NodeArtifact";
 import { NodeFacts } from "./NodeFacts";
 import { NodeGlyph } from "./NodeGlyph";
+import { type OneLineBox, oneLineCut } from "./one-line";
 import { authorText, pageChrome } from "./page-structure";
 import {
   CONTROL_LABELS,
@@ -38,9 +39,9 @@ import { RowText } from "./RowText";
  * A row is the twisty, the type with its shape, the author where the model holds one, the node's
  * first line, its chips, the gaps on it, and its state with its shape where the model holds one;
  * a folded row says how many nodes it holds. The first line is cut at a word (`firstLineOf`,
- * and again at `oneLineFirstLine` where the row is one line) and the whole text is in the body,
- * so nothing is lost and no row truncates a word. The words beside it - the type, the author,
- * the state - hold no word boundary to cut at, so a one-line row draws each of them whole.
+ * and again at `oneLineCut` where the row is one line) and the whole text is in the body, so
+ * nothing is lost and no row truncates a word. The words beside it - the type, the author, the
+ * state - hold no word boundary to cut at, so a one-line row draws each of them whole.
  *
  * The body is drawn for the focused row and for a row pinned open, and for no other row: it is
  * the focus that opens it, never the pointer, and no element of the row carries a `title`, since
@@ -68,7 +69,7 @@ export function NodeRow({
   level,
   node,
   oneLine,
-  oneLineMeasure,
+  oneLineBox,
   onFocus,
   onPin,
   onToggle,
@@ -103,13 +104,14 @@ export function NodeRow({
   isClosed: boolean;
   level: number;
   node: TreeNode;
-  /** Whether the row is drawn on one line, which is how the zoomed tree draws it at 1024 px and
-   *  below: the row stays one line, cut with an ellipsis, and its body says the rest. */
+  /** Whether the row is drawn as a one-line row, which is how the zoomed tree draws it at
+   *  1024 px and below: its first line is one line, cut with an ellipsis to the room the row
+   *  leaves it, and its body says the rest. */
   oneLine: boolean;
-  /** How many characters of its own words the row draws while it is one line
-   *  (`PHONE_ONE_LINE_MEASURE`, `WIDE_ONE_LINE_MEASURE`): the tree reads the width band once
-   *  for every row (`IssueTree.tsx`), since no row may read its own layout. */
-  oneLineMeasure: number;
+  /** The tree's one reading of its own width, which a one-line row cuts its first line to
+   *  (`one-line.ts`): no row reads its own layout. Undefined where the row wraps, and until
+   *  the tree has been laid out. */
+  oneLineBox: OneLineBox | undefined;
   onFocus: () => void;
   onPin: () => void;
   onToggle: () => void;
@@ -133,33 +135,55 @@ export function NodeRow({
       ? undefined
       : `${folded} ${CONTROL_LABELS.folded_nodes}`;
   // The node's own first line. Where the row wraps, it is the whole of `firstLineOf`'s line;
-  // where the row is one line, it is cut again to what the words drawn beside it leave of the
-  // measure its width band carries, at a word (R1). The count is no longer one of those words
-  // there - it is the body's - so it takes nothing from the line. Both are cut from the node's
-  // words as its body draws them (`nodeWords`), so a line holds none of the symbols the body
-  // draws as formatting.
+  // where the row is one line, it is cut again, at a word, to the pixels the row's own box
+  // leaves it beside its twisty, its type, its author and its state (R1). The count is no
+  // longer one of those words there - it is the body's - so it takes nothing from the line.
+  // Both are cut from the node's words as its body draws them (`nodeWords`), so a line holds
+  // none of the symbols the body draws as formatting.
+  //
+  // The row sums those parts itself rather than reading where the browser put them, since no
+  // row may read its own layout: the tree reads its own width once for every row
+  // (`useOneLineBox`), each part sized by a class is that class's size in rem (`ROW_PARTS`),
+  // and each word is measured in the tree's face, so a row whose author's id is longer leaves
+  // its line less, the author's shape and its gap included. Where they leave it less than its
+  // first word, the line goes on a line of its own under them (`oneLineCut`). Everything
+  // beside the line is drawn whole (`shrink-0`): a type's word and a state's word are one word
+  // each and a session's id is one token, so a row that shrank them would cut inside a word,
+  // which is the one thing R1 bans. The line keeps `overflow-hidden` with `min-w-0`, so a box
+  // the sum was wrong about never draws past its row over whatever sits beside it
+  // (c-checks-readable); the e2e rows read that box against the text it holds, which is how a
+  // wrong sum is found. Above 1024 px the row wraps instead and nothing is cut.
   const words = nodeWords(node);
-  const first = oneLine
-    ? oneLineFirstLine(words, oneLineMeasure, [NODE_TYPE_NAMES[node.type], node.author?.id, state])
-    : firstLineOf(words);
-  // THE CUT DECIDES THE WORDS AND THE BOX DECIDES THE FIT. They are two rules and the row needs
-  // both (R1, R17).
-  //
-  // The cut is `oneLineFirstLine` above: it decides what the line says, at a word and never
-  // inside one, from a measure that is an estimate of a font's advance width and so is
-  // sometimes generous and sometimes mean.
-  //
-  // The fit is here. The line keeps `min-w-0` with its `overflow-hidden`, so flexbox may shrink
-  // it below the characters the cut gave it and the box hides the tail - with no ellipsis of
-  // its own, which would claim a cut the words do not carry. Everything beside it is drawn
-  // whole (`shrink-0`): a phone's row is 258 px and a type's word, a session's id and a state's
-  // word fill it, and not one of the three holds a word boundary to cut at - a type's word and
-  // a state's word are one word each, and a session's id is one token - so a row that shrank
-  // them would cut inside a word, which is the one thing R1 bans. Only the element the text
-  // itself sits in gives way, never one that holds another: a box that reached past its row
-  // would be drawn over whatever sits beside it (c-checks-readable). The whole of every cut
-  // word is in the body the row opens on focus (R2). Above 1024 px the row wraps instead and
-  // nothing is cut.
+  const typeWord = NODE_TYPE_NAMES[node.type];
+  const authorId = node.author?.id;
+  const leaf = expanded === undefined;
+  const box = oneLine ? oneLineBox : undefined;
+  const first = useMemo(() => {
+    if (box === undefined) return { ...firstLineOf(words), under: false, wraps: false };
+    const { rem, widthOf } = box;
+    const gap = ROW_PARTS.gap * rem;
+    const shaped = (word: string, size: number) =>
+      (ROW_PARTS.glyph + ROW_PARTS.inner) * rem + widthOf(word, size);
+    const twisty = leaf ? ROW_PARTS.glyph * rem : Math.max(ROW_PARTS.touch, ROW_PARTS.glyph * rem);
+    const stateWidth =
+      state === undefined
+        ? 0
+        : stateGlyph === undefined
+          ? widthOf(state, ROW_PARTS.small)
+          : shaped(state, ROW_PARTS.small);
+    return oneLineCut({
+      after: state === undefined ? 0 : gap + stateWidth,
+      before:
+        twisty +
+        gap +
+        shaped(typeWord, ROW_PARTS.text) +
+        gap +
+        (authorId === undefined ? 0 : shaped(authorId, ROW_PARTS.text) + gap),
+      room: box.width - indent - ROW_PARTS.border - ROW_PARTS.paddingRight * rem,
+      text: words,
+      widthOf: (line) => widthOf(line, ROW_PARTS.text),
+    });
+  }, [authorId, box, indent, leaf, state, stateGlyph, typeWord, words]);
   const whole = oneLine ? "shrink-0" : "";
 
   // The focused row is brought inside the viewport and clear of the sticky identity block
@@ -200,27 +224,42 @@ export function NodeRow({
     >
       <div
         className={`flex min-w-0 items-baseline gap-x-2 text-sm ${
-          oneLine ? "flex-nowrap overflow-hidden whitespace-nowrap" : "flex-wrap gap-y-1"
+          oneLine
+            ? first.under
+              ? "flex-wrap overflow-hidden"
+              : "flex-nowrap overflow-hidden whitespace-nowrap"
+            : "flex-wrap gap-y-1"
         }`}
       >
         <Twisty expanded={expanded} onToggle={onToggle} />
         <span className={`flex items-center gap-1 ${whole}`} {...pageChrome}>
           <NodeGlyph token={GLYPH_TOKENS.types[node.type]} />
-          <span className={textMutedOnCanvas}>{NODE_TYPE_NAMES[node.type]}</span>
+          <span className={textMutedOnCanvas}>{typeWord}</span>
         </span>
         {/* Who made it, by a word and a shape, in the form the type beside it and the state
             after it are drawn in: one shape for an author, whoever they are, because the node
             carries an author's id and nothing else (R7). The id itself is the author's own
             text and the shape is the page's, so the two carry their own marks and the shape
-            adds no word to what the reader sees. */}
+            adds no word to what the reader sees. On a row whose line went under its words, an
+            id longer than the whole row wraps inside itself rather than be hidden past it. */}
         {node.author === undefined ? null : (
-          <span className={`flex items-center gap-1 ${whole}`} data-node-author="">
+          <span
+            className={`flex items-center gap-1 ${whole} ${first.under ? "max-w-full" : ""}`}
+            data-node-author=""
+          >
             <NodeGlyph token={GLYPH_TOKENS.author} />
-            <span className={textMutedOnCanvas} {...authorText}>
+            <span
+              className={`${textMutedOnCanvas} ${first.under ? "[overflow-wrap:anywhere]" : ""}`}
+              {...authorText}
+            >
               {node.author.id}
             </span>
           </span>
         )}
+        {/* Where the row's other words leave the first line less than its first word, the line
+            starts a line of its own under them (`oneLineCut`): this takes the whole of the line
+            it is on, so what follows it - the first line and the state - starts the next. */}
+        {first.under ? <span aria-hidden="true" className="basis-full" /> : null}
         {/* A context row - one drawn only because a match sits under it - is faint by drawing
             its own words at the muted level the rest of the row already uses, rather than by
             dimming the whole row. `opacity-60` was the first way, and it fades every colour of
@@ -231,7 +270,11 @@ export function NodeRow({
             a faint row is as readable as any other. */}
         <span
           className={`min-w-0 ${context ? textMutedOnCanvas : textSecondaryOnCanvas} ${
-            oneLine ? "overflow-hidden" : "break-words"
+            oneLine
+              ? first.wraps
+                ? "[overflow-wrap:anywhere]"
+                : "overflow-hidden whitespace-nowrap"
+              : "break-words"
           }`}
           data-node-first-line=""
           {...authorText}
@@ -286,74 +329,32 @@ export function NodeRow({
 }
 
 /**
- * How many characters of its own words a one-line row draws at 767 px and below
- * (`PHONE_VIEWPORT_QUERY`), which is the phone's band of the one-line widths (R1, R17).
- *
- * The row a phone draws is 258 px wide, measured on the zoomed tree at the 390 px the `iphone`
- * project runs, so the page keeps 132 px of that viewport for itself. Off the row go the
- * twisty and the type's and the state's shapes at 16 px each (`h-4 w-4`), the four gaps
- * between the row's parts at 8 px each (`gap-x-2`) and the gap inside the type and inside the
- * state at 4 px each (`gap-1`): 88 px, which leaves 170 px of words. `text-sm` is 14 px and
- * the page's sans face draws mixed-case prose at about half its size per character, so
- * 170 / 7 is 24 characters, and the row's words share them.
- *
- * A row whose author the model holds draws a third shape and a third 4 px gap beside it (R7),
- * 20 px the measure above does not subtract. The measure is one number per band for every row
- * (`IssueTree.tsx` reads the band once), so it is derived for the row without an author and
- * the author's row spends 20 px of its own line on the shape: the cut still lands at a word,
- * which is R1's rule, and the line's own box hides whatever is left over, as it does at the
- * low end of every band below. Measured on the Checks preset at 390 px, where a result row is
- * the author's row: the row is 358 px, the box the card gives it, with nothing drawn past it.
+ * The parts of a one-line row its node's first line shares the row's width with, each in the
+ * unit of the class that draws it in `NodeRow`, so a row sums them against the tree's one
+ * reading of its width (`one-line.ts`) rather than reading its own layout. A class changed there
+ * is a number changed here: `e2e/issue-layout.e2e.ts` reads each one-line row's box against the
+ * text the sum gave it, which is where a number left behind is found.
  */
-export const PHONE_ONE_LINE_MEASURE = 24;
-
-/**
- * The same, for the rest of the one-line widths: 768 px up to the 1024 px the tree is zoomed at
- * (`ZOOMED_TREE_QUERY`), where the row is still one line and four times as wide as a phone's.
- *
- * The same arithmetic at 1024 px: the page keeps the 132 px the measurement above gives it, so
- * the row is 1024 - 132 = 892 px; less the same 88 px of twisty, shapes and gaps, 804 px of
- * words; at 7 px a character, 804 / 7 is 114. A line of 114 characters is longer than
- * `FIRST_LINE_LIMIT` allows one to be at all, so a row of this band draws the whole of
- * `firstLineOf`'s line except where its own type, author and state take enough of the measure
- * to cut into it.
- *
- * Each band is derived at one width and drawn at every width in it, because a row may not read
- * its own layout to decide what it says - that is a layout read per row and another on every
- * resize, for a page that draws 56 of them - and the tree reads the band once for all of them
- * (`IssueTree.tsx`). So the low end of a band hides the tail of a long line in the line's own
- * box: 320 px leaves the phone's row 188 px, and 768 px leaves this band's row 636 px, which is
- * (636 - 88) / 7, about 78 characters. The row's whole text is in the body it opens on focus
- * (R2) at every width, and the cut a measure makes never lands inside a word.
- */
-export const WIDE_ONE_LINE_MEASURE = 114;
-
-/**
- * The node's own text as a one-line row draws it: `firstLineOf`'s line, cut again to what the
- * row's words drawn beside it - its type, its author, its state - leave of
- * `measure`, at a space and never inside a word (R1). `cut` says the text carries on past the
- * line, which is what the row draws its ellipsis for.
- *
- * A first word longer than what is left of the measure is drawn whole rather than cut: a piece
- * of a word with an ellipsis after it is the one thing R1 bans, and a word no box at that width
- * could hold is answered by the body the row opens (R2), never by cutting it. The one cut no
- * word boundary can answer is already made before this: `firstLineOf` holds a token longer than
- * its own 100 characters to that limit, because such a token has no boundary in it at all
- * (`issue-tree.ts`).
- */
-export function oneLineFirstLine(
-  text: string,
-  measure: number,
-  beside: readonly (string | undefined)[]
-): { readonly cut: boolean; readonly line: string } {
-  const first = firstLineOf(text);
-  const left = measure - beside.reduce((sum, word) => sum + (word?.length ?? 0), 0);
-  if (first.line.length <= left) return first;
-  const space = first.line.lastIndexOf(" ", Math.max(left, 0));
-  if (space > 0) return { cut: true, line: first.line.slice(0, space) };
-  const wordEnd = first.line.indexOf(" ");
-  return wordEnd === -1 ? first : { cut: true, line: first.line.slice(0, wordEnd) };
-}
+const ROW_PARTS = {
+  /** The row's `border-l-2`, in pixels. */
+  border: 2,
+  /** The row's `gap-x-2`, between each two of its parts, in rem. */
+  gap: 0.5,
+  /** A shape's `h-4 w-4` (`NodeGlyph`), which is also the place a row that holds no children
+   *  keeps for its twisty (`w-4`), in rem. */
+  glyph: 1,
+  /** The `gap-1` between a shape and its word, in rem. */
+  inner: 0.25,
+  /** The row's `pr-2`, in rem. */
+  paddingRight: 0.5,
+  /** The state's `text-xs`, in rem. */
+  small: 0.75,
+  /** The row's `text-sm`, which the type, the author and the first line are drawn at, in rem. */
+  text: 0.875,
+  /** The touch target every control is held to below 1280 px (`styles.css`), which is every
+   *  width a row is one line at, so a twisty is that wide whatever its shape is, in pixels. */
+  touch: 44,
+} as const;
 
 /** The control that opens and closes a branch. It draws a shape with no name of its own - the
  *  tree's named shapes are its types' and its states' - and carries the page's word for what it
