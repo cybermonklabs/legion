@@ -540,6 +540,20 @@ dir="$(fresh program-variable-alone)"
 plant_behaviour "$dir" "\"\$IOC_PY\" -c \"print('ran once')\"" '{"contains":"ran once"}'
 honest_result "a row whose only program is a program variable passes" replay-command "$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
 
+# 37. Four forms the header's admitted list does not name are admitted at 27859400d7:
+# the arithmetic command (( ... )), the arithmetic expansion $(( ... )), and the process
+# substitutions <( ... ) and >( ... ). The header says every form it does not list is
+# refused by name. The last form also hides a failed read: a >( ... ) runs alongside the
+# row, so a program in it that fails after the row ends is recorded by nobody, and
+# `echo | tee >(sleep 2; cat /nonexistent-ioc)` passed. No row of claims.jsonl uses any
+# of the four.
+for form in "(( 1 + 1 ))" "echo \$(( 2 + 3 ))" "cat <(printf x)" \
+    "printf x | tee >(sleep 2; cat /nonexistent-ioc 2>/dev/null) >/dev/null"; do
+    dir="$(fresh "unlisted-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-28)")"
+    plant_behaviour "$dir" "$form; printf 'ran once\\n'" '{"contains":"ran once"}'
+    case_result "a form the admitted list does not name is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
