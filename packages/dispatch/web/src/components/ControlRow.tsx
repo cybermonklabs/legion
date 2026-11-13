@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useLayoutEffect, useRef } from "react";
 
 import {
   chipStripFade,
@@ -121,6 +121,36 @@ function ScrollButton({
   );
 }
 
+/** A removal a click has started, which hands the keyboard focus on once it has committed:
+ *  `from` is what was clicked - a strip's child, or **Clear filters** - and `index` is that
+ *  child's place among the strip's children, or -1 for **Clear filters**, whose focus goes to
+ *  the row's filter trigger. */
+interface HandOff {
+  readonly from: Element;
+  readonly index: number;
+}
+
+/** What takes the focus in a chip: a chip is a button or a link itself, and a page's own chip
+ *  may be a box holding one (the Inbox's agent chip holds its links). */
+const FOCUSABLE = "a[href], button";
+
+/** The strip's child that holds `target` - a chip, or the box a page drew its own chip in - and
+ *  its place among the strip's children; null when `target` is the strip itself. */
+function chipHolding(strip: Element, target: EventTarget): { chip: Element; index: number } | null {
+  if (!(target instanceof Node)) return null;
+  const children = Array.from(strip.children);
+  const index = children.findIndex((child) => child.contains(target));
+  const chip = children[index];
+  return chip === undefined ? null : { chip, index };
+}
+
+/** The element of a chip the focus goes to: the chip itself, or the first link or button in the
+ *  box a page drew its own chip in. */
+function focusableOf(chip: Element): HTMLElement | null {
+  if (chip instanceof HTMLElement && chip.matches(FOCUSABLE)) return chip;
+  return chip.querySelector<HTMLElement>(FOCUSABLE);
+}
+
 export interface ControlRowProps {
   /** The chips of the narrowings that are on. While there is any, they take ONE line of their
    *  own under the row's first line, whatever their number - at most 52 px, a 44 px control and
@@ -192,6 +222,20 @@ export interface ControlRowProps {
  * that end (`chipStripFade`), so the cut reads as a scroll and the round button laid over that
  * end sits over faded chips rather than over the opaque end of one.
  *
+ * A chip or **Clear filters** that is taken off hands the keyboard focus on rather than drop it
+ * onto the page, where a keyboard reader would start again from the page's first link for each
+ * chip (measured: 66 presses for 13 chips at 1440 px). A chip taken off - by Enter, Space or
+ * Delete, or by a pointer, under the same rule - hands it to the chip now at its place, else to
+ * the chip before it, else to the row's filter trigger (`data-control="panel-trigger"`, or the
+ * search box in a row with no trigger), and **Clear filters** hands it to the trigger. Delete
+ * presses a chip's own control alone - the strip's child itself, or a `Chip` - and never another
+ * link a page drew inside its chip, such as the Inbox agent chip's link to the live view. A chip
+ * that takes the focus is scrolled whole into view as any focused chip is, and the trigger is in
+ * the first line. The hand-off waits for the removal to commit, whatever holds the focus
+ * meanwhile (a pointer's click in Safari focuses no button, so the focus stays on the body), and
+ * then moves the focus only if it is on the page's body, so a reader who moved it elsewhere while
+ * the chip was going keeps it there.
+ *
  * Beside its slots it draws **Clear filters** and the two scroll buttons, and nothing else. The
  * panel a trigger opens is not in it (`AnchoredPanel` portals to the body and is placed `fixed`,
  * so it covers the page rather than taking room), and neither is the selection bar
@@ -209,11 +253,46 @@ export function ControlRow({
   trigger,
 }: ControlRowProps): ReactNode {
   const { leading, node, ref, trailing } = useScrollEnds();
+  const rowRef = useRef<HTMLDivElement>(null);
+  const handOff = useRef<HandOff | null>(null);
+  // After every commit of the row: a removal a click started hands the focus on once it has
+  // committed.
+  useLayoutEffect(() => {
+    const pending = handOff.current;
+    if (pending === null) return;
+    // What was clicked is still in the page: its removal commits later, whatever holds the
+    // focus meanwhile.
+    if (pending.from.isConnected) return;
+    handOff.current = null;
+    // Gone: a reader who has moved the focus elsewhere meanwhile keeps it there.
+    const focused = document.activeElement;
+    if (focused !== null && focused !== document.body) return;
+    const root = rowRef.current;
+    if (root === null) return;
+    // The strip as it is drawn now, read through the row: the node `useScrollEnds` holds is the
+    // strip last drawn, which taking the last chip off has unmounted.
+    const left = Array.from(root.querySelector("[data-chip-strip]")?.children ?? []);
+    const chip =
+      pending.index === -1 ? undefined : (left[pending.index] ?? left[pending.index - 1]);
+    const next =
+      chip === undefined
+        ? (root.querySelector<HTMLElement>(`[data-control="${CONTROL.panelTrigger}"]`) ??
+          root.querySelector<HTMLElement>(`[data-control="${CONTROL.searchBox}"]`))
+        : focusableOf(chip);
+    next?.focus();
+  });
   const controls = ROW_CONTROL[size];
   const chipsOn = chips !== undefined && chips !== null;
   const clear =
     onClear === undefined ? null : (
-      <button className={controls.clear} onClick={onClear} type="button">
+      <button
+        className={controls.clear}
+        onClick={(event) => {
+          handOff.current = { from: event.currentTarget, index: -1 };
+          onClear();
+        }}
+        type="button"
+      >
         Clear filters
       </button>
     );
@@ -226,6 +305,7 @@ export function ControlRow({
     <div
       className={className === undefined ? own : `${own} ${className}`}
       data-control={CONTROL.controlRow}
+      ref={rowRef}
     >
       {/* One line from `sm` up, which is where R1's two widths are; below it the line wraps,
           because a search box holding three characters beside a trigger is no search box. */}
@@ -254,12 +334,31 @@ export function ControlRow({
                 end and take its clicks. `scroll-px-12` keeps a chip brought into view 48 px
                 from either end: past the 44 px button laid over that end, and the 48 px fade
                 under it. */}
-            {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handler only scrolls to where the focus has already gone, a chip of the strip, so the strip needs no role of its own. */}
+            {/* biome-ignore lint/a11y/noStaticElementInteractions: nothing here is made interactive - the handlers only act on a chip of the strip, which is a button or a link of its own: they scroll to where the focus has already gone, note which chip a click takes off, and press the focused chip on Delete, so the strip needs no role of its own. */}
             <div
               className={`-mx-0.5 -my-0.5 flex min-w-0 flex-1 scroll-px-12 flex-nowrap items-center gap-2 overflow-x-auto px-0.5 py-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&>*]:shrink-0 ${fade}`}
+              data-chip-strip=""
+              onClickCapture={(event) => {
+                const held = chipHolding(event.currentTarget, event.target);
+                if (held !== null) handOff.current = { from: held.chip, index: held.index };
+              }}
               onFocus={(event) =>
                 event.target.scrollIntoView({ block: "nearest", inline: "nearest" })
               }
+              // Delete takes a focused chip off as Enter and Space do, which a button does by
+              // itself. It presses a chip's own control alone - the strip's child itself, or a
+              // `Chip` - and never another link a page drew inside its chip (the Inbox agent
+              // chip's link to the live view).
+              onKeyDown={(event) => {
+                const { currentTarget: strip, key, target } = event;
+                if (key !== "Delete" || !(target instanceof HTMLElement)) return;
+                const own =
+                  (target.parentElement === strip && target.matches(FOCUSABLE)) ||
+                  target.getAttribute("data-control") === CONTROL.chip;
+                if (!own) return;
+                event.preventDefault();
+                target.click();
+              }}
               ref={ref}
             >
               {chips}

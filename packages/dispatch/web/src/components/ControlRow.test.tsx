@@ -1,6 +1,7 @@
 import { expect, mock, spyOn, test } from "bun:test";
 import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 
 import { ControlRow, type ControlRowProps } from "./ControlRow";
 
@@ -310,6 +311,219 @@ test("a chip that takes the focus is scrolled wholly into view inside the strip"
     await user.tab();
     expect(document.activeElement).toBe(chip);
     expect(scrolled).toHaveBeenCalledWith({ block: "nearest", inline: "nearest" });
+  } finally {
+    view.unmount();
+  }
+});
+
+/**
+ * A row whose chips are buttons that take themselves off when pressed, as every page's chips do,
+ * beside a filter trigger and a Clear filters that takes every chip off at once. Given `held`, a
+ * pressed chip is named as going at once - the row draws again with the chip still in it - and is
+ * taken off only when the promise `held` hands it settles, as on a page whose removal waits on its
+ * navigation.
+ */
+function RemovableChips({ held, names }: { held?: () => Promise<void>; names: readonly string[] }) {
+  const [on, setOn] = useState(names);
+  const [going, setGoing] = useState<string>();
+  const takeOff = (name: string) => setOn((chips) => chips.filter((chip) => chip !== name));
+  return (
+    <ControlRow
+      chips={
+        on.length === 0
+          ? undefined
+          : on.map((name) => (
+              <button
+                key={name}
+                onClick={() => {
+                  if (held === undefined) {
+                    takeOff(name);
+                    return;
+                  }
+                  setGoing(name);
+                  void held().then(() => takeOff(name));
+                }}
+                type="button"
+              >
+                {name}
+              </button>
+            ))
+      }
+      onClear={() => setOn([])}
+      search={<input aria-label="Search" type="search" />}
+      trigger={
+        <button data-control="panel-trigger" type="button">
+          Filter
+        </button>
+      }
+    >
+      {going === undefined ? null : <span>{going} is going</span>}
+    </ControlRow>
+  );
+}
+
+/** The chip removals `RemovableChips` holds, each committed when the test releases it. */
+function heldRemovals(): { hold: () => Promise<void>; release: () => Promise<void> } {
+  const waiting: (() => void)[] = [];
+  return {
+    hold: () => {
+      const { promise, resolve } = Promise.withResolvers<void>();
+      waiting.push(resolve);
+      return promise;
+    },
+    release: () =>
+      act(async () => {
+        for (const resolve of waiting.splice(0)) resolve();
+        await Promise.resolve();
+      }),
+  };
+}
+
+test("a chip taken off hands the focus to the chip now at its place", async () => {
+  const user = userEvent.setup();
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Beta" }));
+    expect(screen.queryByRole("button", { name: "Beta" })).toBeNull();
+    // Not the page's body, from which a keyboard reader would start again at its first link.
+    expect(screen.getByRole("button", { name: "Gamma" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the last chip taken off hands the focus to the chip before it", async () => {
+  const user = userEvent.setup();
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Gamma" }));
+    expect(screen.queryByRole("button", { name: "Gamma" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Beta" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the only chip taken off hands the focus to the filter trigger", async () => {
+  const user = userEvent.setup();
+  const view = render(<RemovableChips names={["Alpha"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Alpha" }));
+    // The chips line went with its last chip, strip and all.
+    expect(lines().length).toBe(1);
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Clear filters hands the focus to the filter trigger", async () => {
+  const user = userEvent.setup();
+  const view = render(<RemovableChips names={["Alpha", "Beta", "Gamma"]} />);
+  try {
+    await user.click(screen.getByRole("button", { name: "Clear filters" }));
+    expect(lines().length).toBe(1);
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Delete on a focused chip takes it off, as Enter and Space do, and hands the focus on", async () => {
+  const user = userEvent.setup();
+  const view = render(<RemovableChips names={["Alpha", "Beta"]} />);
+  try {
+    act(() => screen.getByRole("button", { name: "Alpha" }).focus());
+    await user.keyboard("{Delete}");
+    expect(screen.queryByRole("button", { name: "Alpha" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Beta" })).toHaveFocus();
+    await user.keyboard("{Delete}");
+    expect(lines().length).toBe(1);
+    expect(screen.getByRole("button", { name: "Filter" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("Delete on a link a page drew inside its chip beside the chip's own control takes nothing off and follows nothing", async () => {
+  const user = userEvent.setup();
+  const cleared = mock(() => {});
+  const followed = mock(() => {});
+  // The Inbox's agent chip: a box holding the link that clears the filter and, after it, the
+  // link to the agent's live view.
+  const view = render(
+    <ControlRow
+      chips={
+        <span>
+          <a
+            href="/"
+            onClick={(event) => {
+              event.preventDefault();
+              cleared();
+            }}
+          >
+            Clear agent filter
+          </a>
+          <a
+            href="/agents/planner/live"
+            onClick={(event) => {
+              event.preventDefault();
+              followed();
+            }}
+          >
+            Open live conversation
+          </a>
+        </span>
+      }
+      trigger={
+        <button data-control="panel-trigger" type="button">
+          Filter
+        </button>
+      }
+    />
+  );
+  try {
+    const live = screen.getByRole("link", { name: "Open live conversation" });
+    act(() => live.focus());
+    await user.keyboard("{Delete}");
+    expect(followed).not.toHaveBeenCalled();
+    expect(cleared).not.toHaveBeenCalled();
+    expect(live).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a removal that commits later hands the focus on then, whatever held it meanwhile, and moves nothing once the reader has moved it elsewhere", async () => {
+  const user = userEvent.setup();
+  const removals = heldRemovals();
+  const view = render(
+    <RemovableChips held={removals.hold} names={["Alpha", "Beta", "Gamma", "Delta"]} />
+  );
+  try {
+    // The row draws again at once with the chip still in it: the hand-off waits.
+    await user.click(screen.getByRole("button", { name: "Alpha" }));
+    expect(screen.getByText("Alpha is going")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Alpha" })).toHaveFocus();
+    await removals.release();
+    expect(screen.queryByRole("button", { name: "Alpha" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Beta" })).toHaveFocus();
+    // A press that leaves the focus on the body, as a pointer's click in Safari does: the
+    // hand-off still waits for the removal rather than focus the chip that is going.
+    act(() => screen.getByRole("button", { name: "Beta" }).blur());
+    act(() => screen.getByRole("button", { name: "Gamma" }).click());
+    expect(screen.getByText("Gamma is going")).toBeDefined();
+    expect(document.activeElement).toBe(document.body);
+    await removals.release();
+    expect(screen.queryByRole("button", { name: "Gamma" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Delta" })).toHaveFocus();
+    // The reader moves to the search box before Beta's removal commits, and the focus stays.
+    await user.click(screen.getByRole("button", { name: "Beta" }));
+    const search = screen.getByRole("searchbox", { name: "Search" });
+    await user.click(search);
+    await removals.release();
+    expect(screen.queryByRole("button", { name: "Beta" })).toBeNull();
+    expect(search).toHaveFocus();
   } finally {
     view.unmount();
   }
