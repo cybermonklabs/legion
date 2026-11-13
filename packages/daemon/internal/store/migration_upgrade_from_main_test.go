@@ -31,20 +31,24 @@ import (
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
-// above main's newest is this branch's and has to be named here.
+// above main's newest is this branch's and has to be named here. dispatch://INFRA-3219's claim
+// leak-check cause (20261112180548), which came after, is above main's newest too, so a database
+// main migrated takes it in the same upgrade and it is named here with the rest, as is
+// dispatch://INFRA-3027's pull request read stamp (20261112070503) for the same reason.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
-	20261112070503,
+	20261112070503, 20261112180548,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
-// failure. Every embedded version above it is one a database that main migrated lacks, and today
-// there is one, the pull request's read stamp (20261112070503, dispatch://INFRA-3027): main's
-// newest came in above the rest of this branch's at the forward merge of 2026-11-12, which is why
-// the loop below holds the list rather than counting it.
+// failure. Every embedded version above it is named in thisBranchsMigrations: main's newest came in
+// above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and two migrations are above
+// it, dispatch://INFRA-3027's pull request read stamp (20261112070503) and dispatch://INFRA-3219's
+// claim leak-check cause (20261112180548), which is why the loop below holds the list rather than
+// counting it.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

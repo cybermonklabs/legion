@@ -1242,6 +1242,33 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
 // 93: dispatch://INFRA-3027 -- the issue record of `GET /legion/v1/state` gains `mergeWait`, what
 // the issue's review round waits on from GitHub (api.MergeWaitView, which projection's
 // mergeWaitView builds for exactly the rounds classify.RoundWaitsOnMergeState names — the one
@@ -1263,8 +1290,9 @@ package api
 // from a new one. A caller from a pod whose claims record a contract below 93 is served the
 // state with no `mergeWait` on any issue at all — the key absent rather than empty, since a
 // strict reader before the contract that added a key refuses it whatever it names (api's
-// stateNarrowings, withoutMergeWait) — as a caller below 85 is served every issue without `why`
-// and every member of the waiting line with its `place` and its `length` alone, one below 75
+// stateNarrowings, withoutMergeWait) — as a caller below 87 is served every claim view without
+// `leakCheckCause`, one below 85 every issue without `why` and every member of the waiting line
+// with its `place` and its `length` alone, one below 75
 // the claim views and the issues without the nine keys the decided record added and the body
 // without its `contract` mark, one below 73 a body with no `claimsToRefresh`, one below 62 the
 // workers without their counts of the moves back, one below 58 the issues without their place in
@@ -1290,9 +1318,12 @@ package api
 // main at 86, so 93 passes, a renumber costs a push, a full check run and a test round each time
 // while the open heads move the free number again within the hour, and the change that lands
 // second is the one renumbered (AGENTS.md). If main carries 93 before this change merges, it
-// takes the free number then, in one push. The entries above keep the numbers they were read
-// at. Read the base's own number and every open head again at the next merge rather than from
-// this line, as
+// takes the free number then, in one push. A seventh reading, at the forward merge of
+// 2026-11-13T04:21Z over the 139 open pull requests, found main at 87 (dispatch://INFRA-3219's
+// entry above), #3730 88, #3659 89, #3830 90, #3519, #3573 and #3712 91, #3715 92, #3677 93 beside
+// this change, #3708 94 and #3575 95; main carries no 93, so this change keeps it. The entries
+// above keep the numbers they were read at. Read the base's own number and every open head again
+// at the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 const DaemonAPIVersion = 93

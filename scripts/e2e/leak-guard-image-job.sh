@@ -11,12 +11,13 @@
 # image. A Job holds no checkout, so the harness writes that text into the Job's command itself;
 # neither file is run or changed without the other.
 #
-# The Job holds no Kubernetes credential and no GitHub credential, so it cannot fetch the private
-# shared public leak check a pod installs. It writes a stand-in of its own into its `emptyDir`
-# instead and names it in `PUBLIC_LEAK_CHECK`; that stand-in clears every call, so the rule file
-# alone decides each verdict. Every one of k1's five cases turns on the Tailscale MagicDNS class,
-# which only the rule file holds, which is why a stand-in is enough here. The real shared check is
-# driven after the rollout, in a real pod, where a credential exists.
+# The Job holds no Kubernetes credential and runs no launcher, so it is not given the private
+# shared public leak check, which the daemon reads and pushes to a pod's launcher. It writes a
+# stand-in of its own into its `emptyDir` instead and names it in `PUBLIC_LEAK_CHECK`. That
+# stand-in clears every call, so the rule file alone decides each verdict. Every one of k1's five
+# cases turns on the Tailscale MagicDNS class, which only the rule file holds, which is why a
+# stand-in is enough here. The real shared check is driven after the rollout, in a real pod, whose
+# launcher the daemon pushes it to.
 #
 # What the Job drives, inside the image, against a bare scratch repository on its `emptyDir`:
 #

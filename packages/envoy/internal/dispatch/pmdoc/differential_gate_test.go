@@ -110,6 +110,7 @@ func TestDifferentialCompare(t *testing.T) {
 		t.Skip("PMDOC_DIFF_BASE unset; gen/differential.sh runs this")
 	}
 	engine := openDiffLines(t, "PMDOC_DIFF_ENGINE")
+	readOnly := openDiffLines(t, "PMDOC_DIFF_ENGINE_READONLY")
 	corpus := openDiffLines(t, "PMDOC_DIFF_CORPUS")
 	dumps := [2]*diffLines{openDiffLines(t, "PMDOC_DIFF_BASE"), openDiffLines(t, "PMDOC_DIFF_HEAD")}
 	readings := [2]*diffLines{openDiffLines(t, "PMDOC_DIFF_BASE_ENGINE"), openDiffLines(t, "PMDOC_DIFF_HEAD_ENGINE")}
@@ -158,6 +159,14 @@ func TestDifferentialCompare(t *testing.T) {
 		case source == nil:
 			counts["engine cannot read"]++
 		}
+		var shownRead struct {
+			ID string       `json:"id"`
+			MD *diffReading `json:"md_readonly"`
+		}
+		if !readOnly.next(t, &shownRead) || shownRead.ID != read.ID {
+			t.Fatalf("the read-only engine's readings do not follow the corpus at %q", read.ID)
+		}
+		shown := diffTree(shownRead.MD)
 		var sides [2]diffSide
 		for index := range sides {
 			var dump diffDump
@@ -168,6 +177,21 @@ func TestDifferentialCompare(t *testing.T) {
 			sides[index] = judge(dump, source, reading)
 		}
 		base, head := sides[0], sides[1]
+		// The cross-reader gates, on the head alone (gen/differential.sh's usage says why): the
+		// display read must read a document as the browser's read-only engine reads it, and its
+		// version mode as the editing engine does, block ids ignored. A document an engine
+		// cannot read is left to that engine's own count, and a revision with no display read
+		// dumps neither tree and answers neither gate.
+		if head.dump.Display != nil && shown != nil {
+			if tree, err := FromJSON(head.dump.Display); err != nil || !tree.Equal(shown) {
+				flag("display differs from the read-only engine", sides)
+			}
+		}
+		if head.dump.DisplayVersion != nil && source != nil {
+			if tree, err := FromJSON(head.dump.DisplayVersion); err != nil || !tree.Equal(source) {
+				flag("version differs from the editing engine", sides)
+			}
+		}
 		for index, name := range []string{"base", "head"} {
 			side := sides[index]
 			if side.correct {
@@ -256,6 +280,8 @@ func TestDifferentialCompare(t *testing.T) {
 		{"lost fixed points (base reads the markdown as the engine and writes it back as read, head does not)", "lost fixed point"},
 		{"newly refused by the writer (base stores, head refuses the rendering it would store)", "newly refused by the writer"},
 		{"engine readings Go's schema refuses (FromJSON cannot hold what the engine read)", "engine reading Go's schema refuses"},
+		{"display readings unlike the read-only engine's (the head alone, block ids ignored)", "display differs from the read-only engine"},
+		{"version readings unlike the editing engine's (the head alone, block ids ignored)", "version differs from the editing engine"},
 	}
 	for _, line := range gates {
 		fmt.Fprintf(&summary, "GATE %-86s %d\n", line.label, counts[line.key])
