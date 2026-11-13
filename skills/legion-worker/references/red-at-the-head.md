@@ -190,9 +190,9 @@ records the external cause in the same record this page already asks for — the
 the head, and the change it waits on — tells the architect, and ends its round where it stands:
 a tester completes its phase with a failing verdict, and a reviewer submits the
 `REQUEST_CHANGES` naming the red, since that is how a reviewer's round ends. It waits for
-nothing here. The daemon returns the issue to `implementing` on the required red whatever the
-role does, so a wait buys no fix, holds the pod, and keeps the record from the architect, who is
-the one who can coordinate the other tree's fix or the forward merge that carries it.
+nothing here. The daemon moves no phase on a red, and the fix is another tree's: it reaches this
+head only through a forward merge, which is the architect's to arrange. A role that waits holds
+its phase and its pod for that, and the architect, who arranges it, has not seen the record.
 
 No role pushes a commit to make a new head for its own sake, and no role patches another tree's
 file to clear its own lane. The work waits until the repository's default branch carries the
@@ -213,11 +213,15 @@ failed on the runner with `unable to write file spend/README.md`, exit 128, befo
 change had run, and the required aggregate was red only because of it. The implementer had
 nothing of its own to change. A red again of the same test is not that case.
 
-## The daemon's half, while cybermonklabs/legion#2539 is open
+## What the daemon does with a red
 
-A red by a check the base branch requires still ends the round, whatever the role has found. A
-role whose phase ends while it waits for its re-run has already written the record. That record
-goes to the implementer with the work. The role starts nothing new.
+A red moves no phase. When CI settles at the pull request's head, the daemon sends one message to
+the tree's architect, the worker of the issue's current phase and the implementer, naming each
+check of that settlement with what it came to — failed, cancelled or succeeded — and it judges
+none of them (`tellChecks`, `packages/daemon/internal/workflow/review.go`). A role the same
+settlement woke from a released pod reads it in its wake task instead. So nothing but the role
+ends a round that a red the change did not cause would otherwise hold, and this page is the rule
+it ends it by.
 
 ## What becomes of the record
 

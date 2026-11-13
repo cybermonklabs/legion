@@ -224,7 +224,8 @@ it there until that answer comes clean.
     merge setting of any pull request.
   - *The watch.* On a merge-queue base it reads the pull request until GitHub merges it or takes
     it out of the queue, and acts on a removal: a head the queue took out over its own
-    `merge_group` checks is work to fix, so the issue goes back; a person's dequeue is that
+    `merge_group` checks is work to fix, so the issue goes back on the second such removal of
+    that head, the first being queued once more (the bullet below); a person's dequeue is that
     person's decision, reported to the architect. A removal is never a merge.
   - *A failed merge is the merger's decision.* Wait for what GitHub waits for (a required check
     still running, a required review only a person can give) and merge again; merge again at the
@@ -240,9 +241,7 @@ it there until that answer comes clean.
   back only on a second such ejection of that head. No role re-runs a group build. GitHub does
   re-run one, but the re-run puts nothing back in the queue, and GitHub deletes the entry's
   branch, after which `GET /git/ref/heads/gh-readonly-queue/main/pr-<n>-<sha>` answers 404
-  (measured on cybermonklabs/legion#2811). This rule acts once dispatch://INFRA-714 gives the
-  merger the merge. Until then the daemon decides a `failed_checks` ejection itself, as the
-  bullet above says.
+  (measured on cybermonklabs/legion#2811).
 - *The completion* is `handoff_complete` with the ordinary two-sentence `summary`, which names the
   pull request, the head merged and the merge commit. It records the merger's phase row and moves
   nothing: no Dispatch message, no publish, no phase. What moves the issue is the daemon's own
