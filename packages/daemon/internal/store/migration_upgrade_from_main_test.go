@@ -33,11 +33,11 @@ import (
 // main migrated takes it in the same upgrade and it is named here with the rest.
 //
 // Three more are INFRA-1117's, which a database main migrated has not recorded either: the
-// running copy's table (20261112105448), the newest push of each issue's branch (20261113005308)
-// and the claim's run of pod ends from outside the pod (20261113020122). They add two tables and a
-// defaulted column; the first also holds issue_releases.id below 2^62, which no release id main
-// wrote reaches, and the second widens workspace_bundles' attempt-outcome check, so every value
-// main's rows hold still passes it.
+// running copy's table (20261112105448), the newest push of each issue's branch and the heads its
+// pushes left (20261113005308), and the claim's run of pod ends from outside the pod
+// (20261113020122). They add three tables and a defaulted column; the first also holds
+// issue_releases.id below 2^62, which no release id main wrote reaches, and the second widens
+// workspace_bundles' attempt-outcome check, so every value main's rows hold still passes it.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

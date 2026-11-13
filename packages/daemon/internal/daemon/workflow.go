@@ -129,15 +129,16 @@ type workflowRuntime struct {
 	// `runtime: tmux`, whose processes share the daemon's own disk — and copyStore for a daemon
 	// built with no store, which is every hand-built workflowRuntime in a test; either leaves the
 	// cadence doing nothing. copies is what that cadence holds in memory, one entry per issue it
-	// has copied, and the run's context its copies run under.
+	// has copied, and the run's context its copies run under; the outbox's release save is handed
+	// the same one (newOutbox), so the save and a copy share one single flight.
 	//
-	// copyPeriod and copyBudget are the period between two copies of one issue and the budget one
-	// copy is given; zero means the production constants (runningCopyPeriod, runningCopyBudget).
-	// A test shortens both, as it shortens the ticks.
+	// copyBudget is the budget one copy is given; zero means the production constant
+	// (runningCopyBudget). A test shortens it, as it shortens the ticks. The period between two
+	// copies of one issue is the constant runningCopyPeriod alone, because a release's save
+	// prunes the cadence's memory by it as a copy does (runningCopies.giveBack).
 	copyBundler runtime.WorkspaceBundler
 	copyStore   *store.Store
 	copies      runningCopies
-	copyPeriod  time.Duration
 	copyBudget  time.Duration
 	// holdWarnAfter and holdWarnEvery bound the watchdog log a hold that never releases gets: zero
 	// means the production defaults. A test shortens both to bound how long the warning takes to
@@ -1070,10 +1071,9 @@ func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
-		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
+		supervision.supervisor.store, &w.copies, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
-	w.outbox.copies = &w.copies
 	w.outboxWake.Store(w.outbox)
 	w.limits = supervision.supervisor.deps.Limits
 	w.copyStore = supervision.supervisor.store

@@ -172,9 +172,12 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 }
 
 // Pushes is the daemon's record of the newest push of each issue's branch, written in the push
-// fact's own transaction (Config.Pushes, store.Store.RecordIssuePush).
+// fact's own transaction (Config.Pushes, store.Store.RecordIssuePush). It is given both heads of
+// the push, the one it replaced and the one it left, because the time it is applied at cannot
+// order two pushes: every push is applied at the daemon's now, a redelivery and a late webhook
+// included, and the record orders them by the heads it has seen instead.
 type Pushes interface {
-	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, head string, at time.Time) error
+	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, before, after string, at time.Time) error
 }
 
 // push applies a push of a branch. It records the push of an issue's branch first and on its
@@ -228,14 +231,15 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior)
 }
 
-// recordPush records a push of `legion/<KEY>` on the repository KEY is recorded on as the newest
-// push of that issue's branch (Config.Pushes), at the daemon's own clock, and asks for a copy of
-// the issue's workspace once the fact commits (Config.PushRecorded). The branch alone names the
-// issue (issueForBranch), so the record is made whether or not the issue has a pull request: a
-// branch is pushed before its pull request opens, and an issue with no pull-request record is
-// the one a record kept beside the pull request would have missed — the one a stale copy of its
-// workspace would then have been sent for, moving its branch back behind what GitHub holds. Every
-// push is recorded, whoever pushed: a copy older than any of them would roll that push back.
+// recordPush records a push of `legion/<KEY>` on the repository KEY is recorded on in the record
+// of that issue's branch's newest push (Config.Pushes), with both of its heads and at the daemon's
+// own clock, and asks for a copy of the issue's workspace once the fact commits
+// (Config.PushRecorded). The branch alone names the issue (issueForBranch), so the record is made
+// whether or not the issue has a pull request: a branch is pushed before its pull request opens,
+// and an issue with no pull-request record is the one a record kept beside the pull request would
+// have missed — the one a stale copy of its workspace would then have been sent for, putting the
+// workspace back behind what GitHub holds. Every push is recorded, whoever pushed: a copy older
+// than any of them is behind that push.
 //
 // The copy is asked for on commit and not here, as every effect of a fact is: a fact that rolls
 // back has recorded no push, and a copy is a `git bundle create` in a workspace a role is working
@@ -248,7 +252,7 @@ func (e *Engine) recordPush(ctx context.Context, tx pgx.Tx, fact intake.Push) er
 	if err != nil || issue == nil {
 		return err
 	}
-	if err := e.cfg.Pushes.RecordIssuePush(ctx, tx, issue.Key, fact.After, e.now()); err != nil {
+	if err := e.cfg.Pushes.RecordIssuePush(ctx, tx, issue.Key, fact.Before, fact.After, e.now()); err != nil {
 		return err
 	}
 	if recorded := e.cfg.PushRecorded; recorded != nil {

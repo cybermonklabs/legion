@@ -226,7 +226,9 @@ func (r *copyRig) awaitAsks(t *testing.T, count int) {
 func (r *copyRig) awaitQuiet(t *testing.T) {
 	t.Helper()
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		return r.w.copies.due(r.issue.Key, time.Now(), 0)
+		r.w.copies.mu.Lock()
+		defer r.w.copies.mu.Unlock()
+		return !r.w.copies.issues[r.issue.Key].inFlight()
 	}) {
 		t.Fatalf("a copy of %s is still in flight; the daemon logged:\n%s", r.issue.Key, r.logs.String())
 	}
@@ -238,7 +240,7 @@ func (r *copyRig) awaitQuiet(t *testing.T) {
 func (r *copyRig) wind(t *testing.T) {
 	t.Helper()
 	r.awaitQuiet(t)
-	r.w.copies.done(r.issue.Key, time.Now().Add(-r.w.runningCopyPeriod()), r.w.runningCopyPeriod())
+	r.w.copies.done(r.issue.Key, time.Now().Add(-runningCopyPeriod))
 }
 
 // lines is every log record the daemon wrote under msg, as its attributes.
@@ -555,7 +557,7 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			}
 			tc.fail(t, rig)
 
-			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
+			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil, slog.LevelWarn)
 
 			line := rig.awaitLine(t, runningCopyUnsavedLine)
 			if got := line["reason"]; got != tc.reason {
@@ -576,7 +578,7 @@ func TestEachFailedWorkspaceCopyIsLoggedByItsReasonAndLeavesTheIdleIssuesCopyAsI
 			taken := copyRigBundle
 			taken.Bundle, taken.Head, taken.Tips, taken.At = []byte("PACK the work the next period copied"), "f00d", []string{"f00d"}, time.Now().UTC()
 			rig.bundler.answers(taken, nil)
-			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
+			rig.w.takeRunningCopy(ctx, rig.issue.Key, nil, slog.LevelWarn)
 			if stored, held := rig.facts(t); !held || stored.Size != len(taken.Bundle) {
 				t.Fatalf("the copy of the next period = %+v (held %v), want the %d bytes it took", stored, held, len(taken.Bundle))
 			}
@@ -599,7 +601,7 @@ func TestAWorkspaceThatBundlesToNothingDropsTheIssuesRunningCopy(t *testing.T) {
 	empty.Bundle, empty.Head, empty.Tips, empty.At = nil, "", nil, time.Now().UTC()
 	rig.bundler.answers(empty, nil)
 
-	rig.w.takeRunningCopy(ctx, rig.issue.Key, nil)
+	rig.w.takeRunningCopy(ctx, rig.issue.Key, nil, slog.LevelWarn)
 
 	if facts, held := rig.facts(t); held {
 		t.Fatalf("the issue still holds %+v, want the copy of work that has since been pushed dropped", facts)
@@ -649,19 +651,18 @@ func TestTheWorkspaceCopyIsBundledWhileTheEnvoyListenerIsSilent(t *testing.T) {
 // the issues it is copying rather than for every issue it has ever copied.
 func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T) {
 	var copies runningCopies
-	const period = 5 * time.Minute
 	now := time.Now()
 	for _, issue := range []string{"INFRA-1", "INFRA-2"} {
-		if !copies.begin(issue) {
+		if !copies.begin(issue, slog.LevelWarn) {
 			t.Fatalf("the cadence refused the first copy of %s", issue)
 		}
-		copies.done(issue, now.Add(-2*period), period)
+		copies.done(issue, now.Add(-2*runningCopyPeriod))
 	}
-	if !copies.begin("INFRA-3") {
+	if !copies.begin("INFRA-3", slog.LevelWarn) {
 		t.Fatal("the cadence refused the first copy of INFRA-3")
 	}
 
-	copies.done("INFRA-3", now, period)
+	copies.done("INFRA-3", now)
 
 	copies.mu.Lock()
 	held := slices.Sorted(maps.Keys(copies.issues))
@@ -671,11 +672,11 @@ func TestTheCadenceForgetsAnIssueWhoseWorkspaceCopyPeriodHasPassed(t *testing.T)
 	}
 	// The issues it forgot are due at once, which is what the entries it dropped said too.
 	for _, issue := range []string{"INFRA-1", "INFRA-2"} {
-		if !copies.due(issue, now, period) {
+		if !copies.due(issue, now) {
 			t.Fatalf("%s is not due though the cadence forgot it; a dropped entry must answer as a missing one", issue)
 		}
 	}
-	if copies.due("INFRA-3", now, period) {
+	if copies.due("INFRA-3", now) {
 		t.Fatal("the copy that just ended is due again at once")
 	}
 }

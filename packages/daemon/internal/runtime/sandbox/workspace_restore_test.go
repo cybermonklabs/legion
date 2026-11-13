@@ -762,8 +762,8 @@ func TestARestoreSendsNoCopyOlderThanTheIssuesNewestPushAndLogsThePushItWouldRol
 		t.Fatalf("take the running copy of the workspace: %v", err)
 	}
 	pushed := rigNow.Add(-time.Minute)
-	const pushedHead = "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
-	if err := st.Tx(ctx, func(tx pgx.Tx) error { return st.RecordIssuePush(ctx, tx, testTree, pushedHead, pushed) }); err != nil {
+	const beforeHead, pushedHead = "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1", "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
+	if err := st.Tx(ctx, func(tx pgx.Tx) error { return st.RecordIssuePush(ctx, tx, testTree, beforeHead, pushedHead, pushed) }); err != nil {
 		t.Fatalf("record the push of the issue's branch: %v", err)
 	}
 	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))

@@ -18,22 +18,43 @@
 -- no pull-request record is exactly the one a guard that read the pull request would have sent a
 -- stale copy for. pushed_at is the daemon's clock when it applied the push, not GitHub's, since it
 -- is compared with copies the daemon asked for; head is the commit the push left, which the
--- refusal's log line names as the work the copy would have rolled back. One row per issue holds
--- the newest of them: a push applied late, behind a newer one, moves neither column.
+-- refusal's log line names as the work the copy would have rolled back.
+--
+-- One row per issue holds the newest of them, and pushed_at cannot say which that is: every push
+-- is applied at the daemon's own now, so a redelivered webhook, the per-issue read's rebuild of a
+-- push whose webhook then arrives as well, and a webhook an hour late are each applied later than
+-- the push they repeat or that replaced them. issue_push_heads says it instead. It holds every
+-- commit the issue's recorded pushes replaced or left, so a push that leaves the branch on a
+-- commit it holds — one the record holds already, one behind it, or one setting the branch back
+-- on a commit it held — moves neither column; a push that leaves the branch on a commit it does
+-- not hold moves both, and pushed_at only ever later (store.Store.RecordIssuePush, which says
+-- what the record cannot know). The all-zero sha GitHub names as a new branch's before and a
+-- deleted branch's after is no commit and is never held, and a deletion moves neither column.
+-- seen_at is when the daemon first saw the commit, and each issue keeps the 256 it saw last, more
+-- than the commits of the hundred newest entries of the branch's activity, which is all the
+-- per-issue read rebuilds pushes from.
 --
 -- An issue the daemon has recorded no push for has no row, and nothing of it is refused by this
 -- rule, because nothing newer than its copies is known to be on GitHub. That is also what a
 -- deployment meets the first time it runs this release: its pushes before the upgrade were never
 -- recorded, so the rows its earlier daemon saved are refused only once a push is recorded after
--- them. A row outlives the issue's close, since the push it records happened and stays true; it is
--- one small row per issue. For the same reason a rollback to an earlier daemon deletes the rows of
--- workspace_running_copies (docs/kubernetes.md, "Rolling back the running copy"): that daemon
--- records no push while it runs, so after a roll forward the copies taken before the rollback
--- would be older than pushes this table never saw, and nothing here could refuse them.
+-- them. A row and its commits outlive the issue's close, since the pushes they record happened and
+-- stay true; they are one small row and at most 256 commits per issue. For the same reason a
+-- rollback to an earlier daemon deletes the rows of workspace_running_copies (docs/kubernetes.md,
+-- "Rolling back the running copy"): that daemon records no push while it runs, so after a roll
+-- forward the copies taken before the rollback would be older than pushes this table never saw,
+-- and nothing here could refuse them.
 create table issue_pushes (
     issue     text        primary key,
     pushed_at timestamptz not null,
     head      text        not null
+);
+
+create table issue_push_heads (
+    issue   text        not null,
+    head    text        not null,
+    seen_at timestamptz not null,
+    primary key (issue, head)
 );
 
 -- The two outcomes an attempt can now record beside `sent` and `refused_older`. `refused_pushed`

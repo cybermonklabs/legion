@@ -151,14 +151,14 @@ func TestEitherSavedCopyOfAWorkspaceBundleHasOneRestoreAttemptReadToItsSecond(t 
 	}
 }
 
-// recordPush records a push of issue's branch as the workflow's push handler does, in a
-// transaction of its own.
-func recordPush(t *testing.T, s *Store, issue, head string, at time.Time) {
+// recordPush records the push of issue's branch from before to after as the workflow's push
+// handler does, in a transaction of its own.
+func recordPush(t *testing.T, s *Store, issue, before, after string, at time.Time) {
 	t.Helper()
 	if err := s.Tx(context.Background(), func(tx pgx.Tx) error {
-		return s.RecordIssuePush(context.Background(), tx, issue, head, at)
+		return s.RecordIssuePush(context.Background(), tx, issue, before, after, at)
 	}); err != nil {
-		t.Fatalf("record the push of %s to %s: %v", issue, head, err)
+		t.Fatalf("record the push of %s from %s to %s: %v", issue, before, after, err)
 	}
 }
 
@@ -170,9 +170,10 @@ func recordPush(t *testing.T, s *Store, issue, head string, at time.Time) {
 // refusal spends its copy's attempt and keeps its bytes, and the answer names the push it read,
 // which the restore's warning carries.
 //
-// A push recorded late, behind a newer one, moves neither the time nor the head; and an issue with
-// no push recorded refuses nothing by this rule. The copy the daemon takes after the push is a new
-// row with an attempt of its own, and it is the one the next pod is sent.
+// A push recorded late, behind a newer one, moves neither the time nor the head, although the
+// daemon applies it later; and an issue with no push recorded refuses nothing by this rule. The
+// copy the daemon takes after the push is a new row with an attempt of its own, and it is the one
+// the next pod is sent.
 func TestABundleOrRunningCopyOlderThanTheNewestRecordedPushIsSentToNoPod(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -186,8 +187,8 @@ func TestABundleOrRunningCopyOlderThanTheNewestRecordedPushIsSentToNoPod(t *test
 		t.Fatal(err)
 	}
 	pushed := at.Add(time.Minute)
-	recordPush(t, s, "INFRA-1117", "c2", pushed)
-	recordPush(t, s, "INFRA-1117", "c-late", at.Add(-2*time.Hour))
+	recordPush(t, s, "INFRA-1117", "c1", "c2", pushed)
+	recordPush(t, s, "INFRA-1117", "c0", "c1", pushed.Add(time.Hour))
 
 	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-after-the-push", at.Add(time.Hour))
 	if err != nil {

@@ -125,7 +125,6 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 // copy in flight, then bundles, and its stored bundle drops the copy that finished just before it.
 func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *testing.T) {
 	rig := newCopyRig(t)
-	rig.runner.copies = &rig.w.copies
 	ctx := context.Background()
 	release := make(chan struct{})
 	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
@@ -215,5 +214,152 @@ func TestTheWorkspaceCopyBundlerEndsWithTheDaemonsRun(t *testing.T) {
 	rig.w.copyWorkspaceAtPush(rig.issue.Key)
 	if testwait.Holds(time.Second, testwait.Poll, func() bool { return len(rig.bundler.reads()) > 1 }) {
 		t.Fatalf("the bundler was asked %v after the run ended, want nothing more", rig.bundler.reads())
+	}
+}
+
+// The daemon applies every push at its own clock, so a push it applies again — the per-issue
+// read's rebuild of a push whose webhook it already applied, under an event id of its own — and a
+// webhook that arrives after a newer push are each applied later than the push they repeat or that
+// replaced them. Neither moves the record of the issue's newest push back, in its head or its
+// time: a copy taken after the newest push holds it, and the pod that replaces this one is sent
+// that copy. Were the record's time moved on to the later application, the copy would be refused,
+// and a refused release bundle holds the issue's pod.
+//
+// The pushes are driven through the workflow's push handler as the daemon wires it, with the
+// daemon's store as its record (openWorkflow), and the record is read back by the store's restore,
+// which is the one reader of it.
+func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	clock := time.Date(2026, 11, 13, 9, 30, 0, 0, time.UTC)
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return clock }, Pushes: rig.st}, quietLogger())
+	apply := func(eventID, before, after string, at time.Time) {
+		t.Helper()
+		clock = at
+		push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: before, After: after}
+		if _, err := intake.ApplyFact(ctx, rig.pool, "github", eventID, push, engine); err != nil {
+			t.Fatalf("apply the push %s..%s as %s: %v", before, after, eventID, err)
+		}
+	}
+	// sent stores a running copy of the issue's workspace the cadence took at taken, and answers
+	// how the pod that replaces this one is answered it, with the push the restore read.
+	sent := func(name string, taken time.Time) (runtime.WorkspaceBundleTake, runtime.WorkspacePush) {
+		t.Helper()
+		held := runtime.WorkspaceBundle{Bundle: []byte("PACK the " + name), Head: name, Tips: []string{name}, At: taken, PodUID: releasedPodUID}
+		if err := rig.st.PutRunningWorkspaceCopy(ctx, rig.issue.Key, held); err != nil {
+			t.Fatalf("take the %s: %v", name, err)
+		}
+		restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-the-"+name, taken.Add(time.Hour))
+		if err != nil {
+			t.Fatalf("restore the %s: %v", name, err)
+		}
+		for _, copied := range restore.Copies {
+			if copied.Kind == runtime.WorkspaceCopyRunning {
+				return copied.Take, restore.Push
+			}
+		}
+		return runtime.WorkspaceBundleNone, restore.Push
+	}
+
+	read := clock
+	webhook := read.Add(time.Minute)
+	apply("pull-request-read:c1..c2", "c1", "c2", read)
+	apply("push-webhook:c2..c3", "c2", "c3", webhook)
+
+	// The read rebuilds c2..c3 from the branch's activity after its webhook was applied.
+	apply("pull-request-read:c2..c3", "c2", "c3", webhook.Add(2*time.Minute))
+	if take, push := sent("copy after the push of c3", webhook.Add(30*time.Second)); take != runtime.WorkspaceBundleSend || push.Head != "c3" || !push.At.Equal(webhook) {
+		t.Fatalf("after c2..c3 was applied again, the copy taken after it was answered %v against the push %+v; want it sent against c3 at %s", take, push, webhook)
+	}
+
+	// c1..c2's own webhook arrives an hour on, behind c2..c3.
+	late := webhook.Add(time.Hour)
+	apply("push-webhook:c1..c2", "c1", "c2", late)
+	if take, push := sent("copy before the late webhook", late.Add(-time.Minute)); take != runtime.WorkspaceBundleSend || push.Head != "c3" || !push.At.Equal(webhook) {
+		t.Fatalf("after the late webhook of c1..c2, the copy taken after c3 was answered %v against the push %+v; want it sent against c3 at %s", take, push, webhook)
+	}
+}
+
+// Every push of an issue's branch asks for a copy of the issue's workspace, whatever the issue is
+// doing, so a push of an issue whose roles were released, or whose branch was deleted after its
+// merge, finds no live role to ask. That copy is logged at Debug: the Warn of a copy that found no
+// role is what a deployment counts of the cadence and the turn's end, and a Warn per push of every
+// released issue would bury it. The same holds for the copy such a push is owed behind a copy in
+// flight, as the per-issue read's burst of rebuilt pushes meets: it is the push's copy all the
+// same. A turn's end that finds no role is still a Warn, since that copy holds the end of a turn.
+func TestAPushOfAnIssueWithNoLiveRoleLogsItsCopyAtDebugAndNeverAtWarn(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Pushes: rig.st, PushRecorded: rig.w.copyWorkspaceAtPush}, quietLogger())
+	apply := func(eventID, before, after string) {
+		t.Helper()
+		push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: before, After: after}
+		if _, err := intake.ApplyFact(ctx, rig.pool, "github", eventID, push, engine); err != nil {
+			t.Fatalf("apply the push %s..%s: %v", before, after, err)
+		}
+	}
+	// noRole waits for count lines of a copy that found no live role, and fails on any at Warn.
+	noRole := func(count int) {
+		t.Helper()
+		var lines []map[string]any
+		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+			lines = rig.lines(t, runningCopyUnsavedLine)
+			return len(lines) >= count
+		}) {
+			t.Fatalf("the daemon logged %d copies that found no role, want %d; it logged:\n%s", len(lines), count, rig.logs.String())
+		}
+		rig.awaitQuiet(t)
+		for _, line := range rig.lines(t, runningCopyUnsavedLine) {
+			if line["reason"] != runningCopyNoRole || line["level"] != "DEBUG" {
+				t.Fatalf("a push's copy of an issue with no live role was logged as %v, want reason %s at DEBUG", line, runningCopyNoRole)
+			}
+		}
+	}
+
+	rig.setClaimState(t, "suspended")
+	apply("push-of-a-released-issue", "c1", "c2")
+	noRole(1)
+	if asked := rig.bundler.reads(); len(asked) != 0 {
+		t.Fatalf("the bundler was asked %v for an issue with no live role", asked)
+	}
+
+	// A copy is in flight when the role goes and the push arrives, so the push's copy is owed
+	// behind it and runs once it ends.
+	rig.setClaimState(t, "idle")
+	release := make(chan struct{})
+	rig.bundler.holds(func(ctx context.Context) (runtime.WorkspaceBundle, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return runtime.WorkspaceBundle{}, ctx.Err()
+		}
+		taken := copyRigBundle
+		taken.At = time.Now().UTC()
+		return taken, nil
+	})
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	rig.awaitAsks(t, 1)
+	rig.setClaimState(t, "suspended")
+	apply("push-behind-a-copy-in-flight", "c2", "c3")
+	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		rig.w.copies.mu.Lock()
+		defer rig.w.copies.mu.Unlock()
+		return rig.w.copies.issues[rig.issue.Key].owed
+	}) {
+		t.Fatalf("the push's copy was never owed behind the copy in flight; the daemon logged:\n%s", rig.logs.String())
+	}
+	close(release)
+	noRole(2)
+
+	rig.w.copyWorkspaceAtTurnEnd(rig.machine.Claim(), supervise.StateIdle)
+	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+		for _, line := range rig.lines(t, runningCopyUnsavedLine) {
+			if line["reason"] == runningCopyNoRole && line["level"] == "WARN" {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("a turn's end that found no live role was not logged at WARN; the daemon logged:\n%s", rig.logs.String())
 	}
 }

@@ -139,9 +139,9 @@ type outbox struct {
 	lanes   map[record.LaneKey]*outboxLane
 	wg      sync.WaitGroup
 	// copies is the workspace cadence's memory of which issue has a copy in flight
-	// (workflowRuntime.copies), whose per-issue mark a release's save takes before it runs the
-	// shim's bundler (bundleIssueWorkspace): the two share one workspace and its ref prefix. Nil in
-	// a test that builds the outbox by hand without the workflow, where no copy is ever in flight.
+	// (workflowRuntime.copies), whose per-issue place a release's save takes before it runs the
+	// shim's bundler (bundleIssueWorkspace): the two share one workspace and its ref prefix. Every
+	// outbox that runs a release's save is given it (newOutbox), so no save runs beside a copy.
 	copies *runningCopies
 }
 
@@ -170,12 +170,12 @@ type outboxTrees interface {
 	ArmPodBackstop(ctx context.Context, backstop store.PodWakeBackstop) error
 }
 
-func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
+func newOutbox(pool *pgxpool.Pool, records record.Store, client dispatch.Client, publisher notify.Publisher, supervisor *supervisor, trees outboxTrees, copies *runningCopies, tokens appauth.Tokens, handlers []intake.Handler, gatedSteps []record.DesignStep, project, dispatchProject, stateDir, githubAPI string, repositories *repositories, tools map[string]string, log *slog.Logger) *outbox {
 	if log == nil {
 		log = slog.Default()
 	}
 	return &outbox{
-		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, tokens: tokens,
+		pool: pool, records: records, dispatch: client, notices: publisher, supervisor: supervisor, trees: trees, copies: copies, tokens: tokens,
 		handlers: handlers, gatedSteps: gatedSteps,
 		project: project, dispatchProject: dispatchProject, stateDir: stateDir, githubAPI: githubAPI, repositories: repositories,
 		log: log, now: time.Now, clock: supervise.RealClock{},
@@ -2084,13 +2084,11 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	if !ok {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
 	}
-	if r.copies != nil {
-		release, err := r.copies.hold(ctx, row.Issue)
-		if err != nil {
-			return fmt.Errorf("release save of %s: waiting for the running copy in flight: %w", row.Issue, err)
-		}
-		defer release()
+	release, err := r.copies.hold(ctx, row.Issue)
+	if err != nil {
+		return fmt.Errorf("release save of %s: waiting for the running copy in flight: %w", row.Issue, err)
 	}
+	defer release()
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
 	if err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
