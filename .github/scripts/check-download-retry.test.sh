@@ -2258,9 +2258,11 @@ YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
 check "names the retried step it holds" "$(contains "$out" "holds a retried step")"
-check "says no comment above the key prices it" \
-  "$(contains "$out" "no comment above that key prices it")"
-check "says what to write" "$(contains "$out" 'as .-> N min. in the block that derives it')"
+check "says no comment block prices that key" \
+  "$(contains "$out" "no comment block prices that key")"
+check "names the two clauses that read a price, by what they are and where" \
+  "$(contains "$out" "rule 8's priced-comment and job-derivation clauses in .github/scripts/check-download-retry.sh")"
+check "says what to write" "$(contains "$out" 'as .-> N min. in a comment block above this key')"
 
 echo "case: the same job priced as -> N min passes, wherever the block sits"
 root=$(fixture job-priced-above-its-id)
@@ -2283,6 +2285,125 @@ jobs:
 YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
+
+# What "a job prices itself" means is what the priced-comment clause pairs: a block's arrow goes
+# to the keys below it, one per figure, so an arrow belongs to the key it sits above and never to
+# a job further down. A 40-line window stood here before, and a reviewer lowered `typecheck` to
+# 20 minutes — 1200 s under its own 1650 s — with its derivation written in words: the gate
+# stayed green, because `tool-fallback-arm`'s step comment 28 lines up carried `-> 22 min`
+# (dispatch://INFRA-1545, review round 27). This case is that shape.
+echo "case: a job priced only by a neighbouring job's arrow is refused"
+root=$(fixture job-priced-by-neighbour)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  arm:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the small fetch's 450 s: 1200 + 450 = 1650 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      # The small fetch's 5 x 60 + 150 = 450 s, the whole minute above it (ci-budgets.md's
+      # Budgets note) -> 8 min.
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+  typecheck:
+    runs-on: ubuntu-24.04
+    # Budget: 600 s measured, plus the large fetch's 1050 s: 600 + 1050 = 1650 s, so the key
+    # takes the whole minute above it: 28.
+    timeout-minutes: 20
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses typecheck's key, which no block prices" \
+  "$(contains "$out" "line=20::job 'typecheck' carries .timeout-minutes: 20. and holds a retried step")"
+check "does not refuse the job whose own step comment it is" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "job 'arm'")" 0)"
+
+echo "case: a job priced by its own arrow more than forty lines above its key passes"
+root=$(fixture job-priced-far-above)
+{
+  printf 'name: Case\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-24.04\n'
+  printf '    # Budget: 1200 s measured, plus the large fetch, 1200 + 1050 = 2250 s -> 38 min.\n'
+  for line in $(seq 1 45); do
+    printf '    # Line %s of the reasoning behind that sum, which this check never reads.\n' "$line"
+  done
+  cat <<'YAML'
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+} > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The pricing clause's guard is `cost <= 0`: only a job whose retried steps cost nothing is passed
+# over. A reviewer widened it to `<= 1000` and `download-retry-images`, its arrow written in words
+# and its key put back to 95 minutes, went through (review round 27), so a retried job costing a
+# few minutes is the case that holds that guard where it is.
+echo "case: an unpriced job whose slowest retried step takes 450 s is refused"
+root=$(fixture job-prices-nothing-small)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 300 s measured, plus the small fetch's 450 s, which takes the whole minute
+    # above 750 s: 13.
+    timeout-minutes: 13
+    steps:
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the 450 s step" "$(contains "$out" "whose retries take 450 s to exhaust")"
+check "says no comment block prices that key" \
+  "$(contains "$out" "no comment block prices that key")"
+
+# The priced-comment clause holds a key to BEING ONE OF its block's figures. A reviewer weakened
+# `key in figures` to `key >= min(figures)` and `re-record`, whose block prices both a step at 9
+# and the job at 69, went through at 50 (review round 27): a key between two figures of its block
+# names neither.
+echo "case: a key between the two figures its block prices is refused"
+root=$(fixture arrow-between-figures)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the small fetch's 5 x 60 + 150 = 450 s -> 9 min, and the job's 3000 s measured
+    # plus that, 3000 + 450 = 3450 s -> 69 min.
+    timeout-minutes: 50
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names both figures and the key between them" \
+  "$(contains "$out" "this comment prices what it sits above at 9 min and 69 min, and the .timeout-minutes: 50. below it carries 50")"
 
 echo "case: a job whose comment derives its key another way is passed over"
 root=$(fixture job-derivation-construction)

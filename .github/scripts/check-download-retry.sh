@@ -3196,6 +3196,13 @@ for budget in budgets:
 # KEY, AND THE KEY CARRIES THE SUM THE SENTENCE STATES.
 PRICED = re.compile(r"->\s*(\d+)\s*min")
 KEY_LINE = re.compile(r"^\s*timeout-minutes:\s*(\d+)\s*$")
+# Every key line a priced block is paired with below, as (file, 1-based line). The pricing
+# clause after the job-derivation clause refuses a retried job whose own key is not in it, so
+# what "a job prices itself" means is exactly what this loop pairs: no window, no distance, and
+# no arrow counting for a job whose key it does not sit above (dispatch://INFRA-1545, review
+# round 27, where `typecheck` lowered to 20 was priced by `tool-fallback-arm`'s step comment 28
+# lines above it).
+PAIRED: set[tuple[str, int]] = set()
 for path in sorted(set(budget.path for budget in budgets)):
     lines = Path(path).read_text().split("\n")
     number = 0
@@ -3227,6 +3234,7 @@ for path in sorted(set(budget.path for budget in budgets)):
             found = KEY_LINE.match(lines[below])
             if found:
                 keys.append(int(found.group(1)))
+                PAIRED.add((path, below + 1))
         for key in keys:
             if key in figures:
                 continue
@@ -3265,44 +3273,10 @@ for path in sorted(set(budget.path for budget in budgets)):
 #     construction gives with ten minutes added`. A clause that refused that job would be a
 #     correct job refused, which is how a check gets silenced.
 # A KEY LOWERED ON ITS OWN IS NOT IN THAT LIST ANY MORE: it leaves an arrow its key no longer
-# matches, which the clause above refuses by name. Before that clause existed, each of the nine
-# keys this issue raised could be put back with its comment left alone and this check stayed
-# green — the reviewer drove all nine, and three of them again afterwards to see them refused.
-# Rule 8, the job that prices nothing. The two clauses below read a figure a comment states;
-# this one refuses a job that states none at all, which is what makes their reach total rather
-# than a sentence in a header. THE HEADER OF THIS RULE CLAIMED A REACH IT DID NOT HAVE THREE
-# ROUNDS RUNNING (dispatch://INFRA-1545): `download-retry` — the very job whose cancellation
-# this issue exists to prevent — could be put back to its old key and every clause stayed
-# silent, because its derivation names its minutes in words rather than as `-> N min`. A key
-# nothing measures is a key that drifts, so a job holding a retried step must price itself
-# somewhere its own blocks can be read.
-#
-# A job prices itself where either of the two clauses below can find it: a `-> N min` in a
-# comment block above its key, or above its id. Nothing else is asked — not the shape of the
-# sum, not where the block sits — so a job with a derivation of any form passes by writing its
-# minute figure beside it.
-for (path, job), row in sorted(JOB_SLOWEST.items()):
-    if row["cost"] <= 0:
-        continue
-    lines = Path(path).read_text().split("\n")
-    priced = False
-    for number in range(max(0, row["line"] - 40), row["line"]):
-        if lines[number].lstrip().startswith("#") and PRICED.search(lines[number]):
-            priced = True
-            break
-    if priced:
-        continue
-    problem(path, row["line"],
-            f"job '{job}' carries `timeout-minutes: {row['minutes']}` and holds a retried step "
-            f"— '{row['step']}', whose retries take {row['cost']} s to exhaust — and no comment "
-            "above that key prices it: none of them writes a figure as `-> N min`. A key no "
-            "comment prices is a key the two clauses below cannot read, so it drifts in silence: "
-            "at the head that earned this rule, `download-retry` could be put back from 240 to "
-            "the 221 it carried before this issue raised it, and every rule here stayed green, "
-            "because its own derivation ends `takes the whole minute above it: 240` rather than "
-            "`-> 240 min` (dispatch://INFRA-1545). Write this job's own figure as `-> N min` in "
-            "the block that derives it, which is what the clauses below read.")
-
+# matches, which the priced-comment clause above refuses by name. Before that clause existed,
+# each of the nine keys this issue raised could be put back with its comment left alone and
+# this check stayed green — the reviewer drove all nine, and three of them again afterwards to
+# see them refused.
 DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
 for (path, job), row in sorted(JOB_SLOWEST.items()):
     lines = Path(path).read_text().split("\n")
@@ -3347,6 +3321,39 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
                 "repository came to stand under their own derivation while every other clause of "
                 "this rule was green (dispatch://INFRA-1545). Re-pick the slowest step, rewrite "
                 f"the derivation, and write `timeout-minutes: {recomputed // 60 + 1}` or more.")
+
+# Rule 8, the job that prices nothing. The priced-comment clause and the job-derivation clause
+# above each read a figure a comment states; this one refuses a retried job that states none
+# for its own key, which is what makes their reach total rather than a sentence in a header.
+# THE HEADER OF THIS RULE CLAIMED A REACH IT DID NOT HAVE THREE ROUNDS RUNNING
+# (dispatch://INFRA-1545): `download-retry` — the very job whose cancellation this issue exists
+# to prevent — could be put back to its old key and every clause stayed silent, because its
+# derivation names its minutes in words rather than as `-> N min`. A key nothing measures is a
+# key that drifts, so a job holding a retried step must price itself.
+#
+# A job prices itself when the priced-comment clause pairs one of its blocks with that job's own
+# key: a comment block holding `-> N min` whose keys below it, one per figure, include this key,
+# wherever the block sits above it and however far up. Nothing else is asked — not the shape of
+# the sum, not the distance — and another job's arrow never counts, because the pairing hands
+# that arrow to the key it sits above (review round 27: a 40-line window took
+# `tool-fallback-arm`'s step comment as `typecheck`'s price).
+for (path, job), row in sorted(JOB_SLOWEST.items()):
+    if row["cost"] <= 0:
+        continue
+    if (path, row["line"]) in PAIRED:
+        continue
+    problem(path, row["line"],
+            f"job '{job}' carries `timeout-minutes: {row['minutes']}` and holds a retried step "
+            f"— '{row['step']}', whose retries take {row['cost']} s to exhaust — and no comment "
+            "block prices that key: none writes a `-> N min` whose keys below it include this "
+            "one. A key no comment prices is a key rule 8's priced-comment and job-derivation "
+            "clauses in .github/scripts/check-download-retry.sh cannot read, so it drifts in "
+            "silence: at the head that earned this rule, `download-retry` could be put back "
+            "from 240 to the 221 it carried before this issue raised it, and every rule here "
+            "stayed green, because its own derivation ends `takes the whole minute above it: "
+            "240` rather than `-> 240 min` (dispatch://INFRA-1545). Write this job's own figure "
+            "as `-> N min` in a comment block above this key, with no other `timeout-minutes` "
+            "between them, which is what those clauses read.")
 
 for entry in EXEMPTIONS:
     if entry.used:
