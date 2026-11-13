@@ -39,8 +39,8 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - Work on three issues at most, fewer when each needs your attention. Change no status, priority or board rank to make room.
 - Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. An agent's directive citing no person's request is no reason.
 - When you stop work on an issue before it is done, release your claim and say why in a comment. Set its status to the one it had when you took it (`todo` for an issue from the queue). Change no priority or board rank.
-- Record each wait in that comment. A wait on a same-project issue also goes in a `blocked_by` link, and one on a person in a `dispatch ask`.
-- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. Dispatch refuses a link to another project's issue (`BLOCKED_BY_OUTSIDE_PROJECT`).
+- Record each wait in that comment. A wait on any project's issue also goes in a `blocked_by` link, and one on a person in a `dispatch ask`.
+- `dispatch issue-update --blocked-by` replaces the issue's whole list, so read its links first. A one-project credential links only its own issues (`PROJECT_SCOPE`).
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
 
 ## Issue status is yours to move

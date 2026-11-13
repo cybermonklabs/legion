@@ -269,8 +269,14 @@ here, because the controller's session id changes when it restarts or is taken o
 ## A tree that waits on an event outside Legion
 
 A running tree can hold a slot while it waits on an event outside Legion: a deploy, another
-project's release, a vendor, or a person outside the company. Do not park it: the tree stays
-admitted and keeps its slot. Ask the person whether to park it, as
+project's release, a vendor, or a person outside the company.
+When the event is a Dispatch issue, of this project or of another, and the waiting issue names it
+in its `blocked_by` links, the waiting issue gives its slot back while that issue is not `done`
+and takes a slot again by itself once it is, unless it is one of the three roots that keep their
+slot through a wait (root `AGENTS.md`, "Admission"): it holds no slot for that wait, so there is
+nothing to park or ask.
+An event no `blocked_by` link names keeps the slot.
+Do not park such a tree: it stays admitted and keeps its slot. Ask the person whether to park it, as
 [Ask whether to park a tree](#ask-whether-to-park-a-tree) says, with the event as `<cause>`. Its
 `<key>` is `event: <the event>`. `<the event>` is the one thing the tree waits on, named by a
 fixed reference: an issue's `dispatch://` reference, a pull request's or a release's URL, or the
