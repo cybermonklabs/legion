@@ -315,7 +315,8 @@ func (s *server) sinceHorizon(ctx context.Context) (int64, error) {
 // it, as a node with no text or changed version whose facts are a removed block's
 // (refs.RemovedBlockNode); a pin to a current block carries the current block's facts. A pin to
 // a version the document lacks, to one whose blocks are not on record (an older build wrote it and
-// none indexed it) or to one that did not hold the block answers 404, each saying which.
+// none indexed it) or to one that did not hold the block answers 404, each saying which. A block
+// who may not see answers, pinned or not, what an address nobody holds answers (refs/visibility.go).
 func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	documentKey, _, _ := strings.Cut(query.ID, "#")
@@ -341,6 +342,19 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 	if err != nil {
 		return model.GraphNode{}, err
 	}
+	// refs.Node answers a block reserved for another author exactly as it answers one no current
+	// version holds, so such a block reaches the branch below as removed, and BlockTextAt reads a
+	// version's record of it for nobody in particular. Whether who may see it is the block's own
+	// predicate's to say (refs.VisibleKind, the one every read of a block binds): a block who may
+	// not see answers what an address nobody holds answers, the 404 of a version that did not
+	// hold it, and its text, its removal and its existence stay unsaid.
+	hidden := false
+	if !current && at.Text != nil {
+		if err := pool.QueryRow(ctx, `select not `+refs.VisibleKind("block", "$1", "$2"),
+			query.ID, refs.VisibilityArg(who)).Scan(&hidden); err != nil {
+			return model.GraphNode{}, fmt.Errorf("read whether the reader may see block %s: %w", query.ID, err)
+		}
+	}
 	switch {
 	case !at.Exists:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no version %d of %s", ref.Pin, document.Ref)
@@ -348,7 +362,7 @@ func (s *server) blockReferenceNode(ctx context.Context, who model.Actor, query 
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "version %d of %s has no record of its blocks; no version of it has one yet", ref.Pin, document.Ref)
 	case !at.Indexed:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "version %d of %s has no record of its blocks; the earliest is version %d", ref.Pin, document.Ref, at.Earliest)
-	case at.Text == nil:
+	case at.Text == nil, hidden:
 		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no block %q in %s at version %d", ref.Block, document.Ref, ref.Pin)
 	}
 	blockRef := refs.BlockRef(document.Ref, ref.Block)
