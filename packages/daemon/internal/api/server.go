@@ -181,10 +181,9 @@ type Options struct {
 	// repository's recovery (the daemon's awaitRecovery), which tells the tree's architect of each
 	// such child it did not record. Nil leaves none.
 	AwaitRecovery func(repo, tree, child, parent string)
-	// RoleFor is the role that works a phase (the daemon's workflow.RoleFor, handed in because the
-	// workflow's tests import this package). The operator's retry of a failed phase worker applies
-	// its issue's held phase only when that phase's role is the claim's (retryClaim); nil retries no
-	// held phase, leaving every one to its architect.
+	// RoleFor is the role that works a phase (phase.RoleFor). The operator's retry of a failed
+	// phase worker applies its issue's held phase only when that phase's role is the claim's
+	// (retryClaim); nil retries no held phase, leaving every one to its architect.
 	RoleFor func(phase.Phase) claim.Role
 	// Record is the issue record the routes read and write (record.NewStore()). Nil is defaulted
 	// to one: the Postgres implementation is stateless, so a server given none still draws an
@@ -655,22 +654,25 @@ func (s *server) stateRoute(w http.ResponseWriter, r *http.Request) {
 // waitingLineContract's own schema describes; a caller below leakCheckCauseContract, the
 // contract that added the sentence a claim's launch was refused with because the shared public
 // leak check could not be installed, is served every claim view without `leakCheckCause`
-// (withoutLeakCheckCause); and a caller below waitingOnIssueContract, the contract that added
-// `waiting_on_issue` to the line's `kind`, is served every member of that kind without its
-// `kind` (withoutWaitingOnIssue), a word and not a key, so it adds none to the count below.
-// The fourteen compose: each is applied when the state carries something of its own, so a
-// caller below all of them — a pod below supervise.PodUpdateContract — is served a body carrying
-// none of the twenty-five keys, the line's own fields being fields of a view such a caller is
-// served none of at all, each of them absent rather than empty, since a strict reader before the
-// contract that added a key refuses it whether or not it names anything, and with no
-// retired entry under `strandedClaims`. Every later reader takes all twenty-five keys as
+// (withoutLeakCheckCause); a caller below phaseEntriesContract, the contract that added the
+// entry the issue's current phase stands on and the entry its role was given, is served it
+// without `phaseEntry` and `givenEntry` (withoutPhaseEntries); and a caller below
+// waitingOnIssueContract, the contract that added `waiting_on_issue` to the line's `kind`, is
+// served every member of that kind without its `kind` (withoutWaitingOnIssue), a word and not a
+// key, so it adds none to the count below.
+// The fifteen compose: each is applied when the state carries something of its own, so a
+// caller below all of them — a pod below supervise.PodUpdateContract — is served a body
+// carrying none of the twenty-seven keys, the line's own fields being fields of a view such a
+// caller is served none of at all, each of them absent rather than empty, since a strict reader
+// before the contract that added a key refuses it whether or not it names anything, and with no
+// retired entry under `strandedClaims`. Every later reader takes all twenty-seven keys as
 // optional and all three states — `packages/contracts/src/legion-api.ts` marks
 // `admission.trees`, `wakesWaiting`, `claimsToRefresh`, the issues' `gatedSteps`,
-// `waitingLine` and `why`, the workers' counts of the moves back, the claim views' `step` and
-// `leakCheckCause`, each of the nine the decided record added and `contract` itself optional for
-// exactly these bodies.
-// Any other caller — a pod at this contract, the operator's `legion state`, a tmux pane — is
-// served the state as this contract writes it.
+// `waitingLine`, `why`, `phaseEntry` and `givenEntry`, the workers' counts of the moves back,
+// the claim views' `step` and `leakCheckCause`, each of the nine the decided record added and
+// `contract` itself optional for exactly these bodies. Any other caller — a pod at this
+// contract, the operator's `legion state`, a tmux pane — is served the state as this contract
+// writes it.
 //
 // Each narrowing is written to the daemon's own log as it is applied, one line naming the
 // caller, the contract that caller's pod records, the contract this daemon declares and what
@@ -735,7 +737,7 @@ func (s *server) stateFor(r *http.Request, state State, claims []supervise.Claim
 // (TestANarrowedBodySaysSo).
 const narrowedTheState = "api: narrowed the state to the caller's plugin contract"
 
-// stateNarrowing is one of the fourteen narrowings stateFor applies: the contract that added the
+// stateNarrowing is one of the fifteen narrowings stateFor applies: the contract that added the
 // keys to this route, whether a state carries anything of it, the body served without it, and
 // what the log line names as dropped. Each arm carries its own `dropped` rather than the
 // contract number alone, because a reader of the log who is told only a number has to find out
@@ -747,23 +749,23 @@ type stateNarrowing struct {
 	dropped  string
 }
 
-// stateNarrowings are the fourteen, lowest contract first, which is the order stateFor applies
+// stateNarrowings are the fifteen, lowest contract first, which is the order stateFor applies
 // them in: a caller below all of them is served a body with every one of these keys gone. The
 // order is the history of the route and nothing a strip depends on, so a row added at the end
 // needs no reading of the rows before it. Three rows do touch one key, and they are the reason
 // this sentence names them rather than claiming none: waitingLineContract's row drops the
-// issues' `waitingLine` whole, whyAndLineFieldsContract's takes the members it added from inside
-// that same field, `kind` among them, and waitingOnIssueContract's takes `kind` from the members
-// of one kind. They still do not depend on their order, because each takes something out and
-// none puts anything back or reads what another left: a caller below the lowest is served no
-// `waitingLine` at all whichever runs first, the later ones then finding the key gone and doing
-// nothing; a caller between the lowest and the middle one keeps the field with its `place` and
-// its `length` alone, which no word of `kind` is left in; and a caller below only the highest
-// keeps every field but that one word. A later row that takes something out of a field an
-// earlier row drops whole is sound on those same terms; one that puts a key back, or reads what
-// an earlier row left, is not, and this table is the wrong shape for it. The order is kept
-// beyond that so a reader of this table and a reader of version.go walk the contracts the same
-// way.
+// issues' `waitingLine` whole, whyAndLineFieldsContract's takes the members that contract added
+// from inside that same field, `kind` among them, and waitingOnIssueContract's takes `kind` from
+// the members of one kind. They still do not depend on their order, because each takes something
+// out and none puts anything back or reads what another left: a caller below the lowest is
+// served no `waitingLine` at all whichever runs first, the later ones then finding the key gone
+// and doing nothing; a caller between the lowest and the middle one keeps the field with its
+// `place` and its `length` alone, which no word of `kind` is left in; and a caller below only
+// the highest keeps every field but that one word. A later row that takes something out of a
+// field an earlier row drops whole is sound on those same terms; one that puts a key back, or
+// reads what an earlier row left, is not, and this table is the wrong shape for it. The order is
+// kept beyond that so a reader of this table and a reader of version.go walk the contracts the
+// same way.
 var stateNarrowings = []stateNarrowing{
 	{supervise.PodUpdateContract, carriesUpdateRounds, withoutUpdateRounds, "the claim views' updateRound and updateHead"},
 	{memoryContract, carriesMemory, withoutMemory, "the issues' memoryGroup, memoryDrawMode and memoryDrawnAt"},
@@ -781,6 +783,7 @@ var stateNarrowings = []stateNarrowing{
 	{whyAndLineFieldsContract, carriesWhyAndLineFields, withoutWhyAndLineFields, "the issues' why and " +
 		"every field of the waiting line beside place and length"},
 	{leakCheckCauseContract, carriesLeakCheckCause, withoutLeakCheckCause, "the claim views' leakCheckCause"},
+	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{waitingOnIssueContract, carriesWaitingOnIssue, withoutWaitingOnIssue, "the waiting line's kind " +
 		"of every member waiting on another issue"},
 }
@@ -846,8 +849,12 @@ const backwardMovesContract = 62
 // plugin before it is served the state without the key: one built before sjawhar/legion#2788
 // reads it with a strict schema and would refuse the whole body for a key it does not name, and
 // one built after strips the key instead, so the strip is what keeps the count from a caller
-// that did not ask for it rather than what keeps such a caller reading at all. It is the band
-// below recordFieldsContract's: a pod at 73 or 74 is served the count and no older pod is.
+// that did not ask for it rather than what keeps such a caller reading at all. It was the
+// highest of the bands when it was taken, this daemon's own contract then; recordFieldsContract,
+// whyAndLineFieldsContract, leakCheckCauseContract, phaseEntriesContract and
+// waitingOnIssueContract stand above it now, so a caller in a pod at 73 or 74 is served the count
+// and neither the decided record's keys, nor each issue's answer with the line's own fields, nor
+// a claim view's `leakCheckCause`, nor the two entry numbers, nor any word of the line's `kind`.
 const claimsToRefreshContract = 73
 
 // recordFieldsContract is the daemon contract that decided every field of the claim record and
@@ -891,14 +898,25 @@ const whyAndLineFieldsContract = 85
 // reading at all.
 const leakCheckCauseContract = 87
 
+// phaseEntriesContract is the daemon contract that added each issue's `phaseEntry` and
+// `givenEntry`, the entry the role of its current phase stands on and the entry that role was
+// given (version.go's 94). A plugin before it is served the state without the two keys: one
+// built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
+// for a key it does not name, and one built after strips the keys instead, so the strip is what
+// keeps the numbers from a caller that did not ask for it rather than what keeps such a caller
+// reading at all. waitingOnIssueContract stands above it, and its strip takes a word and no key,
+// so every caller at 94 or above is served the two keys.
+const phaseEntriesContract = 94
+
 // waitingOnIssueContract is the daemon contract that added `waiting_on_issue` to the waiting
-// line's `kind` (version.go's 92): a started issue that gave its admission slot back to wait on
-// another issue (record.LineWaitingOnIssue). A plugin from 85 up to it, INFRA-714's 86 and
-// INFRA-3219's 87 among them, reads `kind` with a `z.enum` of the four words before it, which
-// refuses a word it does not name and with it the whole state body, so a caller below 92 is
-// served such a member without its `kind` (withoutWaitingOnIssue), which that schema takes as
-// optional.
-const waitingOnIssueContract = 92
+// line's `kind` (version.go's 97): a started issue that gave its admission slot back to wait on
+// another issue (record.LineWaitingOnIssue). A plugin from 85 up to it, INFRA-714's 86,
+// INFRA-3219's 87 and INFRA-2800's 94 among them, reads `kind` with a `z.enum` of the four
+// words before it, which refuses a word it does not name and with it the whole state body, so a
+// caller below 97 is served such a member without its `kind` (withoutWaitingOnIssue), which
+// that schema takes as optional. It is the highest of the fifteen bands, this daemon's own
+// contract.
+const waitingOnIssueContract = 97
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1094,6 +1112,34 @@ func withoutBackwardMoves(state State) State {
 			}
 			issue.Workers = workers
 		}
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesPhaseEntries is whether any issue of state carries the two keys phaseEntriesContract
+// added: `phaseEntry` and `givenEntry`. Like the step record and the counts of the moves back
+// they are written only where the projection has a number to write — an issue whose current
+// phase names no phase worker role carries neither — so this is asked of the state rather than
+// answered true.
+func carriesPhaseEntries(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.PhaseEntry != 0 || issue.GivenEntry != 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutPhaseEntries is state with no issue carrying `phaseEntry` or `givenEntry`, the two
+// fields phaseEntriesContract added to the state; nothing else of that contract is on the route.
+// The issue map is copied, as every sibling strip copies it, so the state the source answered is
+// left as it was.
+func withoutPhaseEntries(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.PhaseEntry, issue.GivenEntry = 0, 0
 		issues[key] = issue
 	}
 	state.Issues = issues
@@ -1401,15 +1447,15 @@ func stripRecordFields(view ClaimView) ClaimView {
 
 // withoutRecordFields is state with no `contract` mark, no claim view carrying any of the keys
 // stripRecordFields takes off, and no issue carrying `heldFrom`, `lingerUntil` or `ancestry`,
-// which is everything recordFieldsContract added to this route (stateNarrowings' last row names
-// them); nothing else of that contract is on it. The record's keys are stripped in this one copy
-// of the issue map, because they arrive and leave together and a pass for each would copy that
-// map once for each. The maps are copied, so the state the source answered is left as it was, as
-// withoutStallRecord leaves it. An issue's own three are cleared on the copy the map rebuild
-// makes anyway; its architect and its worker map are built again only where a claim view of that
-// issue carries one of the strip's keys, as withoutBackwardMoves rebuilds only the worker maps
-// that carry the counts, because this strip runs on every state read of every pod below the
-// contract.
+// which is everything recordFieldsContract added to this route (that contract's row of
+// stateNarrowings names them); nothing else of that contract is on it. The record's keys are
+// stripped in this one copy of the issue map, because they arrive and leave together and a pass
+// for each would copy that map once for each. The maps are copied, so the state the source
+// answered is left as it was, as withoutStallRecord leaves it. An issue's own three are cleared
+// on the copy the map rebuild makes anyway; its architect and its worker map are built again
+// only where a claim view of that issue carries one of the strip's keys, as
+// withoutBackwardMoves rebuilds only the worker maps that carry the counts, because this strip
+// runs on every state read of every pod below the contract.
 //
 // The mark goes with them, and must: it names the two contracts, and a key this caller's plugin
 // does not know refuses the whole body at it, which is the one thing the narrowing is for. What

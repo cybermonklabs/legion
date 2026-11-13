@@ -212,7 +212,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 		// still running an older plugin is not.
 		stall bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count
-		// claimsToRefreshContract added, the contract nineteen below this daemon's own.
+		// claimsToRefreshContract added, the contract twenty-four below this daemon's own.
 		refresh bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
@@ -280,9 +280,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields), and with each claim view's `leakCheckCause` gone, the
-			// sentence contract 87 added (withoutLeakCheckCause). Every row that reaches here is
-			// below all of them, so those thirteen keys go whatever the row is.
+			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
+			// sentence contract 87 added (withoutLeakCheckCause), and with each issue's
+			// `phaseEntry` and `givenEntry` gone, the two keys contract 94 added
+			// (withoutPhaseEntries). Every row that reaches here is below all of them, so those
+			// fifteen keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -303,6 +305,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
+				// Every row that reaches here is below phaseEntriesContract too, so the two
+				// entry numbers go whatever the row is, as the decided record's keys above do.
+				delete(issue, "phaseEntry")
+				delete(issue, "givenEntry")
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)

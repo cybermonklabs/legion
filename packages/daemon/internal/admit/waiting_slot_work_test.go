@@ -28,10 +28,12 @@ func statusWrites(t *testing.T, pool *pgxpool.Pool, issue string) int {
 }
 
 // seedWorkerWithLostTask records key as a started issue standing in stands, holding a row, whose
-// phase worker has lost its task: the claim the daemon suspended still holds the task of this
-// run, and nothing is queued to start the role again. It is seedSlotRepairRow's repaired fixture
-// over a root of its own (seedStarted) — the one the repair of a slot whose worker has no task
-// starts again whenever it reads that issue's row (resumeSlottedWorkers).
+// phase worker has lost its task: its phases row names entry seededEntry and the work of it, the
+// claim the daemon suspended was given no task of that entry (given_entry 0, so it stands behind
+// it: workflow.OwedEntry), and nothing is queued to start the role again. It is
+// seedSlotRepairRow's repaired fixture over a root of its own (seedStarted) — the one the repair
+// of a slot sends that entry's work to whenever it reads that issue's row
+// (resumeSlottedWorkers).
 func seedWorkerWithLostTask(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase) claim.Token {
 	t.Helper()
 	seedStarted(t, pool, key, stands, nil)
@@ -39,7 +41,7 @@ func seedWorkerWithLostTask(t *testing.T, pool *pgxpool.Pool, key string, stands
 	token := putWorkerClaim(t, pool, key, key, role, 1, supervise.StateSuspended, supervise.SuspendedByDaemon)
 	inTx(t, pool, func(tx pgx.Tx) {
 		if err := record.NewStore().PutPhase(context.Background(), tx, record.PhaseRow{Issue: key, Role: role,
-			Claim: token, Assignment: seededAssignment(key)}); err != nil {
+			Claim: token, Entry: seededEntry, EntryTask: seededEntryTask(key), EntryRaisedAt: fixedNow}); err != nil {
 			t.Fatalf("record the %s's phases row of %s: %v", role, key, err)
 		}
 	})
@@ -133,8 +135,11 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 					t.Fatalf("the starts of %s once it holds a row again = %+v, want the %s's one row, held for the issue's own slot: the row is back, so the repair reads the issue again",
 						waiter, got, role)
 				}
-				if want := workflow.ResumePhaseTask(issue(t, pool, waiter)); got[0].task != want {
-					t.Fatalf("the start of %s carries %q, want the phase's resume task %q", waiter, got[0].task, want)
+				if want := seededEntryTask(waiter); got[0].task != want {
+					t.Fatalf("the start of %s carries %q, want the work of the entry its phases row names, %q", waiter, got[0].task, want)
+				}
+				if entries := taskedStartEntries(t, pool, waiter); len(entries) != 1 || entries[0] != seededEntry {
+					t.Fatalf("the start of %s is of the entries %v, want the one its phases row names, %d: the repair raises none", waiter, entries, seededEntry)
 				}
 			})
 		}
@@ -161,7 +166,7 @@ func TestReturningASlotStopsNothing(t *testing.T) {
 				t.Fatalf("seed the pull request of %s: %v", waiter, err)
 			}
 			if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: waiter, Role: claim.RoleImplementer,
-				Claim: "implementer", Assignment: seededAssignment(waiter)}); err != nil {
+				Claim: "implementer", Entry: seededEntry, EntryTask: seededEntryTask(waiter), EntryRaisedAt: fixedNow}); err != nil {
 				t.Fatalf("seed the implementer's phases row of %s: %v", waiter, err)
 			}
 		})
