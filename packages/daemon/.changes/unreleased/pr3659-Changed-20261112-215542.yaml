@@ -4,10 +4,15 @@ body: |-
   the contract its plugin speaks in the `Legion-Plugin-Contract` header. Every answer carries the
   daemon's own contract in `Legion-Daemon-Contract`. A caller that states no contract is read from
   the claims of the pod it asks from. A key a later contract added is left out of that body, and a
-  key a later contract removed is written back. So a plugin roll that replaces one pod at a time
-  leaves `legion` working in every pod it has not replaced yet. The same rule holds for a value. A
-  reader refuses the whole body for a value its contract does not name, so a wait answer or a
-  stranded claim state the caller's contract does not name is held back.
+  key a later contract removed is written back where the caller's own plugin requires it. The
+  same rule holds for a value. A reader refuses the whole body for a value its contract does not
+  name, so a wait answer or a stranded claim state the caller's contract does not name is held
+  back. A plugin below contract 86 sends `ready` on every `handoff_complete`, and 86 took that
+  field out of the request. The daemon reads it again: `false` is ignored, and `true` is refused
+  `READY_RETIRED`, because no daemon from 86 on acts on READY. So a pod below 86 can end its phase
+  on this daemon, and a plugin roll that replaces one pod at a time leaves `legion` working in
+  every pod it has not replaced yet whose plugin speaks contract 46 or later. A caller below 46 is
+  served the shape of 46.
   `GET /legion/v1/issues/{key}/record` answers one issue on its own, and `GET /healthz` answers
   the project the daemon serves beside its status.
 time: 2026-11-12T21:55:42.614806298Z

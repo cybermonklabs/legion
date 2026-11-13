@@ -312,109 +312,143 @@ const ANSWER_SCHEMAS: Record<string, z.ZodType> = {
   register: LegionRegisterResponse,
 };
 
-/** `node` with every `.optional()` and `.nullable()` taken off it. */
-function unwrapped(node: z.core.$ZodType): z.core.$ZodType {
-  let inner = node;
-  while (inner instanceof z.ZodOptional || inner instanceof z.ZodNullable) {
-    inner = inner.def.innerType;
-  }
-  return inner;
+/** One step of a path from a schema's root to a node below it: the field `key` of an object,
+ * the element of a list, the value of a record, or the option `index` of a union. */
+type SchemaStep =
+  | { readonly kind: "key"; readonly key: string }
+  | { readonly kind: "element" }
+  | { readonly kind: "value" }
+  | { readonly kind: "option"; readonly index: number };
+
+/** A path as the object censuses below write it: `.key` for a field, `[]` for a list's element,
+ * `{}` for a record's value and `|0`, `|1` for the options of a union. */
+function censusPath(steps: readonly SchemaStep[]): string {
+  return steps
+    .map((step) => {
+      if (step.kind === "key") return `.${step.key}`;
+      if (step.kind === "option") return `|${step.index}`;
+      return step.kind === "element" ? "[]" : "{}";
+    })
+    .join("");
 }
 
-/** The members of the `z.enum` at `keyPath` of `node`, read off that schema, or a sentence
- * saying what stands there instead. `at` is the path walked so far, which that sentence names.
- *
- * A segment `*` descends a record's value type or a list's element: the daemon's table writes
- * both of them that way (`issues.*.phase`, `capabilities.*.status`). A union is descended
- * through every member that names the next key, and all of those members must reach one
- * enumeration, since `waitingOn.answeredBy` is one field of both the `ask` and the `gate` shape. */
-function enumAt(
+/** The node kinds the schemas of either side are built from that hold no node below them. A
+ * kind outside this list and the branches of `walkSchema` throws: a `z.tuple`, a
+ * `z.intersection`, a `.pipe()` or a `z.lazy()` added later would otherwise take its whole
+ * subtree out of every census in silence. */
+const CENSUS_LEAF_KINDS: Record<string, true> = {
+  boolean: true,
+  enum: true,
+  literal: true,
+  number: true,
+  string: true,
+  unknown: true,
+};
+
+/** The one walk of the schema tree that every census of this file reads. It calls `visit` on
+ * `node` and on every node below it, with the steps from the root. It descends an object's
+ * shape, a list's element, a record's value type and a union's options (`.refine()` wraps
+ * nothing, so a refined object is still an object node and a refined discriminated union still a
+ * union node). It visits the inner type of an optional or a nullable at the path of the wrapper,
+ * and the wrapper not at all. A node two paths reach is visited at each of them, as the claim
+ * view is at an issue's `architect` and under `workers{}.claim`. The schemas hold no `z.lazy`,
+ * so the walk ends: `CENSUS_LEAF_KINDS` refuses one if it arrives. `root` names the schema in
+ * the sentence the walk throws. */
+function walkSchema(
+  root: string,
   node: z.core.$ZodType,
-  keyPath: readonly string[],
-  at: string
-): readonly string[] | string {
-  const here = unwrapped(node);
-  if (keyPath.length === 0) {
-    if (here instanceof z.ZodEnum) {
-      // `z.enum` admits a numeric member, and the daemon's table writes every value as a word:
-      // one that is no string would be compared as something it is not.
-      const members = here.options.filter((member): member is string => typeof member === "string");
-      if (members.length !== here.options.length) {
-        return `${at} is a z.enum whose members are not all strings`;
-      }
-      return members;
-    }
-    return `${at} is a ${here._zod.def.type} and no z.enum`;
+  visit: (node: z.core.$ZodType, steps: readonly SchemaStep[]) => void,
+  steps: readonly SchemaStep[] = []
+): void {
+  if (node instanceof z.ZodOptional || node instanceof z.ZodNullable) {
+    walkSchema(root, node.def.innerType, visit, steps);
+    return;
   }
-  const [segment, ...rest] = keyPath;
-  if (here instanceof z.ZodUnion) {
-    const reached = here.def.options
-      .map((option) => unwrapped(option))
-      .filter((option) => option instanceof z.ZodObject && option.def.shape[segment] !== undefined)
-      .map((option) => enumAt(option, keyPath, at));
-    const stopped = reached.find((members) => typeof members === "string");
-    if (stopped !== undefined) {
-      return stopped;
+  visit(node, steps);
+  if (node instanceof z.ZodObject) {
+    for (const [key, value] of Object.entries(node.def.shape)) {
+      walkSchema(root, value, visit, [...steps, { kind: "key", key }]);
     }
-    const members = reached as (readonly string[])[];
-    if (members.length === 0) {
-      return `no member of the union at ${at} names ${segment}`;
-    }
-    const first = [...members[0]].sort().join(", ");
-    if (members.some((option) => [...option].sort().join(", ") !== first)) {
-      return `the members of the union at ${at} name ${segment} with different enumerations`;
-    }
-    return members[0];
+    return;
   }
-  if (segment === "*") {
-    if (here instanceof z.ZodRecord) {
-      return enumAt(here.def.valueType, rest, `${at}.*`);
+  if (node instanceof z.ZodArray) {
+    walkSchema(root, node.def.element, visit, [...steps, { kind: "element" }]);
+    return;
+  }
+  if (node instanceof z.ZodRecord) {
+    walkSchema(root, node.def.valueType, visit, [...steps, { kind: "value" }]);
+    return;
+  }
+  if (node instanceof z.ZodUnion) {
+    for (const [index, option] of node.def.options.entries()) {
+      walkSchema(root, option, visit, [...steps, { kind: "option", index }]);
     }
-    if (here instanceof z.ZodArray) {
-      return enumAt(here.def.element, rest, `${at}.*`);
-    }
-    return `${at} is a ${here._zod.def.type}: no record and no list to descend`;
+    return;
   }
-  if (!(here instanceof z.ZodObject)) {
-    return `${at} is a ${here._zod.def.type} and names no ${segment}`;
+  const kind = node._zod.def.type;
+  if (CENSUS_LEAF_KINDS[kind] !== true) {
+    throw new Error(
+      `the census reached a ${kind} node it does not walk, at ${root}${censusPath(steps)}`
+    );
   }
-  const next = here.def.shape[segment];
-  if (next === undefined) {
-    return `this module's schema names no ${at}.${segment}`;
-  }
-  return enumAt(next, rest, `${at}.${segment}`);
 }
 
-/** Every path below `node` at which this module reads a `z.enum`, written as the daemon's table
- * writes a key path: a record's value and a list's element are both `*`, and a union's members
- * stand at the path of the union itself. A node two paths reach is read at both of them, as the
- * claim view is at `architect` and at `workers.*.claim`. The schemas hold no `z.lazy`, so the
- * walk has no cycle to guard against (`CENSUS_LEAF_KINDS` below refuses one if it arrives). */
-function enumPaths(node: z.core.$ZodType, at: string, found: Set<string>): void {
-  const here = unwrapped(node);
-  if (here instanceof z.ZodEnum) {
-    found.add(at);
-    return;
+/** Every `z.enum` the answer schemas of `roots` read, with its members, by `<answer> <key path>`.
+ * The key path is written as the daemon's table writes one: the keys joined by `.`, a record's
+ * value and a list's element both `*` (`issues.*.phase`, `capabilities.*.status`), and the
+ * options of a union at the path of the union itself, since `waitingOn.answeredBy` is one field
+ * of both the `ask` and the `gate` shape. A node two paths reach is read at both of them, as the
+ * claim view is at `architect` and at `workers.*.claim`.
+ *
+ * `problems` names each path that holds no one list to compare: a path at which two
+ * enumerations with different members stand, a path at which a `z.enum` stands beside a node
+ * of another kind, and a `z.enum` with a member that is no string, since the daemon's table
+ * writes every value as a word. */
+function enumeratedFields(roots: Record<string, z.ZodType>): {
+  readonly members: ReadonlyMap<string, readonly string[]>;
+  readonly problems: readonly string[];
+} {
+  const members = new Map<string, readonly string[]>();
+  const others = new Map<string, string>();
+  const problems: string[] = [];
+  for (const [answer, schema] of Object.entries(roots)) {
+    walkSchema(answer, schema, (node, steps) => {
+      const keyPath = steps
+        .flatMap((step) => {
+          if (step.kind === "key") return [step.key];
+          return step.kind === "option" ? [] : ["*"];
+        })
+        .join(".");
+      const field = `${answer} ${keyPath}`;
+      if (!(node instanceof z.ZodEnum)) {
+        // A union and its options stand at one path, so only a kind other than those two is
+        // one that could stand where an enumeration does.
+        if (!(node instanceof z.ZodUnion) && !(node instanceof z.ZodObject)) {
+          others.set(field, node._zod.def.type);
+        }
+        return;
+      }
+      const words = node.options.filter((member): member is string => typeof member === "string");
+      if (words.length !== node.options.length) {
+        problems.push(`${field} is a z.enum whose members are not all strings`);
+        return;
+      }
+      const before = members.get(field);
+      const sorted = [...words].sort().join(", ");
+      if (before !== undefined && [...before].sort().join(", ") !== sorted) {
+        problems.push(
+          `${field} is read with two enumerations: ${[...before].sort().join(", ")} and ${sorted}`
+        );
+        return;
+      }
+      members.set(field, words);
+    });
   }
-  if (here instanceof z.ZodObject) {
-    for (const [key, value] of Object.entries(here.def.shape)) {
-      enumPaths(value, at === "" ? key : `${at}.${key}`, found);
-    }
-    return;
+  for (const [field, kind] of others) {
+    if (members.has(field))
+      problems.push(`${field} is a z.enum in one place and a ${kind} in another`);
   }
-  if (here instanceof z.ZodRecord) {
-    enumPaths(here.def.valueType, at === "" ? "*" : `${at}.*`, found);
-    return;
-  }
-  if (here instanceof z.ZodArray) {
-    enumPaths(here.def.element, at === "" ? "*" : `${at}.*`, found);
-    return;
-  }
-  if (here instanceof z.ZodUnion) {
-    for (const option of here.def.options) {
-      enumPaths(option, at, found);
-    }
-  }
+  return { members, problems };
 }
 
 // The two statements of one domain, held to each other. The daemon serves a value down to a
@@ -423,54 +457,45 @@ function enumPaths(node: z.core.$ZodType, at: string, found: Set<string>): void 
 // not the other would make the daemon either refuse a body it writes or strip a value this
 // build reads, so the two lists are compared here rather than left to agree by habit.
 //
-// Both sides are read rather than restated. The compared side is the `z.enum` at the row's own
-// key path, reached from the answer schema the row names, so a change to any enumeration of
-// legion-api.ts is a change to what this case compares. The join is the whole key path, not its
-// tail, so a row can only meet the field it names. Neither is a list kept by hand beside the
-// schemas: a field the daemon adds to its table is compared without a line being added here,
-// and a `z.enum` this module reads at a path the daemon declares nothing for fails the last
-// assertion rather than passing unheld.
+// Both sides are read rather than restated. The compared side is one map of every `z.enum` the
+// answer schemas read, by answer and key path, collected in one walk (`enumeratedFields`), so a
+// change to any enumeration of legion-api.ts is a change to what this case compares. The join is
+// the whole key path, not its tail, so a row can only meet the field it names. Neither is a list
+// kept by hand beside the schemas: a field the daemon adds to its table is compared without a
+// line being added here, and a `z.enum` this module reads at a path the daemon declares nothing
+// for fails the last assertion rather than passing unheld.
 test("every enumerated field the daemon declares holds this build's own values", () => {
   const rows = fixture("enumerated-fields.json") as EnumeratedFieldRow[];
   expect(rows.length).toBeGreaterThan(0);
+  const { members, problems } = enumeratedFields(ANSWER_SCHEMAS);
+  expect(problems).toEqual([]);
+  // A walk that read no enumeration would leave both directions below holding vacuously.
+  expect(members.size).toBeGreaterThan(0);
 
   for (const row of rows) {
-    const root = ANSWER_SCHEMAS[row.answer];
     expect(
-      root,
+      ANSWER_SCHEMAS[row.answer],
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and ANSWER_SCHEMAS names no schema for that answer`
     ).toBeDefined();
-    if (root === undefined) {
-      continue;
-    }
-    const members = enumAt(root, row.keyPath.split("."), row.answer);
+    const read = members.get(`${row.answer} ${row.keyPath}`);
     expect(
-      typeof members === "string" ? members : null,
+      read,
       `the daemon declares \`${row.keyPath}\` of the ${row.answer} answer enumerated and this module reads it with no z.enum`
-    ).toBeNull();
-    if (typeof members === "string") {
+    ).toBeDefined();
+    if (read === undefined) {
       continue;
     }
     expect(
       row.values.map((value) => value.value).sort(),
       `the daemon's \`${row.keyPath}\` of the ${row.answer} answer and this build's enumeration name different values`
-    ).toEqual([...members].sort());
+    ).toEqual([...read].sort());
   }
 
   // The other direction: a field this module reads with a `z.enum` that the daemon's table does
   // not declare is a value the daemon could add without serving it down, and the loop above
   // would never reach it.
   const declared = new Set(rows.map((row) => `${row.answer} ${row.keyPath}`));
-  const read = new Set<string>();
-  for (const [answer, schema] of Object.entries(ANSWER_SCHEMAS)) {
-    const paths = new Set<string>();
-    enumPaths(schema, "", paths);
-    for (const keyPath of paths) {
-      read.add(`${answer} ${keyPath}`);
-    }
-  }
-  expect(read.size).toBeGreaterThan(0);
-  const undeclared = [...read].filter((path) => !declared.has(path)).sort();
+  const undeclared = [...members.keys()].filter((field) => !declared.has(field)).sort();
   expect(
     undeclared,
     `this module reads these fields with a z.enum and the daemon's table declares none of them: ${undeclared.join(", ")}`
@@ -599,67 +624,21 @@ function objectMark(node: z.ZodObject): ObjectMark {
   return catchall === "never" ? "refuses" : "loose";
 }
 
-/** The node kinds the schemas of either side are built from that hold no object below them. A
- * kind outside this list and the walk's own branches throws: a `z.tuple`, a `z.intersection`, a
- * `.pipe()` or a `z.lazy()` added later would otherwise take its whole subtree out of the census
- * in silence. */
-const CENSUS_LEAF_KINDS: Record<string, true> = {
-  boolean: true,
-  enum: true,
-  literal: true,
-  number: true,
-  string: true,
-  unknown: true,
-};
-
-/** Every object node of the given schemas, by mark and by path. The walk descends an object's
- * shape, an array's element (`[]`), a record's value type (`{}`), a union's options (`|0`, `|1`;
- * `.refine()` wraps nothing, so a refined object is still an object node and a refined
- * discriminated union still a union node) and the inner type of an optional or a nullable. A node
- * two paths reach is one node, counted at the first path that reaches it: the claim view under
- * `architect`, the cache view under `repositories.mapped[].cache`. */
+/** Every object node of the given schemas, by mark and by path, read off `walkSchema`. A path is
+ * written as `censusPath` writes it. A node two paths reach is one node, counted at the first
+ * path that reaches it: the claim view under `architect`, the cache view under
+ * `repositories.mapped[].cache`. */
 function objectCensus(roots: Record<string, z.ZodType>): Record<ObjectMark, string[]> {
   const found: Record<ObjectMark, string[]> = { strips: [], refuses: [], loose: [] };
   const seen = new Set<z.core.$ZodType>();
-
-  const walk = (node: z.core.$ZodType, path: string): void => {
-    if (seen.has(node)) {
-      return;
-    }
-    seen.add(node);
-    if (node instanceof z.ZodObject) {
-      found[objectMark(node)].push(path);
-      for (const [key, value] of Object.entries(node.def.shape)) {
-        walk(value, `${path}.${key}`);
-      }
-      return;
-    }
-    if (node instanceof z.ZodArray) {
-      walk(node.def.element, `${path}[]`);
-      return;
-    }
-    if (node instanceof z.ZodRecord) {
-      walk(node.def.valueType, `${path}{}`);
-      return;
-    }
-    if (node instanceof z.ZodUnion) {
-      for (const [index, option] of node.def.options.entries()) {
-        walk(option, `${path}|${index}`);
-      }
-      return;
-    }
-    if (node instanceof z.ZodOptional || node instanceof z.ZodNullable) {
-      walk(node.def.innerType, path);
-      return;
-    }
-    const kind = node._zod.def.type;
-    if (CENSUS_LEAF_KINDS[kind] !== true) {
-      throw new Error(`the census reached a ${kind} node it does not walk, at ${path}`);
-    }
-  };
-
   for (const [name, schema] of Object.entries(roots)) {
-    walk(schema, name);
+    walkSchema(name, schema, (node, steps) => {
+      if (!(node instanceof z.ZodObject) || seen.has(node)) {
+        return;
+      }
+      seen.add(node);
+      found[objectMark(node)].push(`${name}${censusPath(steps)}`);
+    });
   }
   for (const paths of Object.values(found)) {
     paths.sort();

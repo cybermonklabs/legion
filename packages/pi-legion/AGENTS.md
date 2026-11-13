@@ -105,7 +105,9 @@ and that answers 404 `RECORD_NOT_FOUND` for an issue the daemon records nothing 
 in place of the state, `GET /legion/v1/state` gains `lowestPluginContract`, the lowest contract
 any claim of the project records, and every claim view gains `updateState`,
 `updateReaskedForPushCheck`, `unpromptedTurnTakesAnswerBack` and `wake`, which a caller from an
-earlier contract is served without), after contract 86 (dispatch://INFRA-714:
+earlier contract is served without, and `handoff_complete` reads the `ready` that a plugin below
+86 still sends, so that such a pod can end its phase: `false` is ignored, and `true` is refused
+`READY_RETIRED`, since no daemon from 86 on acts on READY), after contract 86 (dispatch://INFRA-714:
 the phase vocabulary loses `awaiting_merge`, a pull request carries `mergeState` in place of
 `checksVerdict`, a phase carries `pass`, every claim view carries `lastTurnStart` and
 `lastTurnEnd`, and `handoff_complete` takes no `ready`), and after contract 85's `why` and the

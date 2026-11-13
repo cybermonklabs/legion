@@ -2,8 +2,9 @@ kind: Changed
 body: |-
   The worker's MCP server states the contract its build speaks on each request it makes to the
   daemon, so the daemon serves it the shape its own build describes rather than reading the
-  lowest contract of its pod. A refusal for an answer the reader cannot read now names both
-  contracts and says which side is behind.
+  lowest contract of its pod. A refusal for an answer the reader cannot read now names the
+  contract this build speaks, the contract the daemon states or that it stated none, and which
+  side is behind.
   `read_record`, `handoff_complete` and the phase reminder read the daemon's new per-issue record
   route instead of the whole project's state, so a changed field on another issue no longer stops
   a role ending its own phase.

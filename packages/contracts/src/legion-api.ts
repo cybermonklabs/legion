@@ -1573,7 +1573,12 @@ export const LegionChildRequest = z.strictObject({
  * The record route and the
  * state's `issues{}` answer the same node, so the read set below names these paths at both,
  * `LegionIssueRecordResponse` as they stand and `LegionStateResponse` under the state's prefix.
- * They are written once here because the two entries must say the same thing. */
+ * They are written once here because the two entries must say the same thing.
+ *
+ * The summary reads the state and never the record route. Its fields are in this list because
+ * the summary reads them on the node that the two answers share. Each of them is `.optional()`
+ * on `legionIssue`, so the record route refuses no body that does not carry one. A change that
+ * makes one of them required for the state makes it required on the record route too. */
 const ISSUE_RECORD_READS = [
   "phase",
   "status",
