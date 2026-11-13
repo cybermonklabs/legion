@@ -85,6 +85,8 @@ var settingsEmitted = map[string]string{
 	"Config.ProductionCheckBound":                    "production_check_hours",
 	"Config.PodUpdateRetask":                         "pod_update_retask_hours",
 	"Config.PodUpdateNotice":                         "pod_update_notice_hours",
+	"Config.WorkerSilence":                           "worker_silence_minutes",
+	"Config.WorkerBackground":                        "worker_background_hours",
 	"Config.PodUpdateMaxOpenRounds":                  "pod_update_max_open_rounds",
 	"Config.PodUpdateRoundsPerMinute":                "pod_update_rounds_per_minute",
 	"Config.ReviewRoundCap":                          "review_round_cap",
@@ -317,8 +319,9 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit",
 		"worker_wakes_per_minute", "worker_wake_burst", "envoy_url", "nats_urls",
 		"dispatch_url", "projects", "gates", "github_apps", "linger_hours", "production_check_hours",
-		"pod_update_retask_hours", "pod_update_notice_hours", "pod_update_max_open_rounds",
-		"pod_update_rounds_per_minute", "review_round_cap",
+		"pod_update_retask_hours", "pod_update_notice_hours", "worker_silence_minutes",
+		"worker_background_hours",
+		"pod_update_max_open_rounds", "pod_update_rounds_per_minute", "review_round_cap",
 		"controller", "capabilities", "worker_backends", "role_config_files", "repository_renames",
 		"hooks",
 	}
@@ -345,7 +348,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
 	// `experiments` always rides the wire, `[]` for the fixture's projects, which declare none
-	// (contract 95); what a project that declares one carries is
+	// (contract 97); what a project that declares one carries is
 	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
 		"slack_channels", "memory", "experiments", "production_check", "deploys",
@@ -619,7 +622,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 		"slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
-		t.Errorf("a project that declares no experiment carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 95)", got)
+		t.Errorf("a project that declares no experiment carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 97)", got)
 	}
 	var document any
 	if err := json.Unmarshal(encoded, &document); err != nil {

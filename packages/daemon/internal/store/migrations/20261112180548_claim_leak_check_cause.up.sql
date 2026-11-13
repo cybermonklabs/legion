@@ -1,0 +1,21 @@
+-- 20261112180548_claim_leak_check_cause.up.sql — the sentence a claim's latest launch try was
+-- refused with because the shared public leak check could not be installed in the role's pod,
+-- beside the failure record (INFRA-3219).
+--
+-- claims.leak_check_cause is supervise.Claim.LeakCheckCause: the cause sentence the runtime
+-- refused the start with (runtime.LeakCheckCause), beginning `the shared public leak check could
+-- not be installed: `, and empty when the latest try started its process or failed for another
+-- reason. launchNow writes it from every try, and the retry that revives a failed claim clears it
+-- with the failure record. It is kept beside `failure` rather than in it: a claim that fails on it
+-- carries `launch failures ran out: <the error>` and the cause word launchNow chooses, as before.
+--
+-- Every row the table already holds takes the empty default, and nothing backfills it: the
+-- release this upgrades from installed the check in the role's own shim and refused no start on
+-- it, so no stored try was refused this way.
+--
+-- Rolling the image back needs no restore of the schema: store's claims.go is the only reader and
+-- writer of this column, and the release before it names it in no statement, so its upserts leave
+-- whatever the column last held and a daemon rolled forward again reads it back.
+--
+-- There is no down file: migrations here are forward-only.
+alter table claims add column leak_check_cause text not null default '';

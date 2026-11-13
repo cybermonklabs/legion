@@ -298,6 +298,15 @@ const legionClaimView = z.object({
    * `died` here, which is what an architect deciding a retry or an escalation acts on while
    * `failure` is still empty. It is stripped with `failure` below the same contract. */
   pendingCause: legionFailureCause.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod, beginning `the shared public leak check could
+   * not be installed: `; absent once a try starts its process or fails for another reason. It
+   * stands beside `failure` rather than in it: a claim that runs out of launches on it fails with
+   * the cause and the sentence it would have failed with anyway, and this key says which check
+   * refused it. A caller in a pod whose plugin declares a contract below 87 is served the state
+   * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
+   * optional. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -594,7 +603,7 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
-/** `api.AssignmentView` — one experiment's answer for an issue (contract 95): the name the
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 97): the name the
  * project declares the experiment under, the arm the draw gave the unit, the mode in force at
  * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
@@ -687,12 +696,12 @@ const legionIssue = z.object({
    * off draws — is `none`. They are absent together while no `memory` answer applies to the
    * issue — a tree first opened before the setting existed — and while its only `memory` answer
    * records no draw, which is a hand-over settling the tree at no arm and which answered none
-   * of the three before contract 95 as well. Every issue of a tree carries its tree's, since
+   * of the three before contract 97 as well. Every issue of a tree carries its tree's, since
    * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
   memoryDrawnAt: timestamp.optional(),
-  /** Every experiment answer that applies to the issue (contract 95): its tree's, for an
+  /** Every experiment answer that applies to the issue (contract 97): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
    * order the project's file declares the experiments — the order
    * `settings.projects.<KEY>.experiments` names them in. `variant` and `mode` ride whatever they
@@ -701,7 +710,7 @@ const legionIssue = z.object({
    * experiment the tree it left held no row for, which is how a reader tells a unit settled at
    * no arm from a unit never drawn, which carries no row at all. The key is absent from an issue
    * no experiment holds an answer for, and from every issue of the body the route serves a
-   * caller before 95, so a reader takes it as optional. */
+   * caller before 97, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
 });
 
@@ -1326,6 +1335,11 @@ export const LegionOperatorClaimResponse = z.object({
    * record. It stands on a claim an operator retired after it failed, which is what lets the seat
    * reading the listing say why that worker is gone. */
   failure: legionClaimFailureView.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod; absent once a try starts its process or fails
+   * for another reason. These routes are the only surface the controller's claim reaches, so the
+   * controller's cause is read here alone. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;

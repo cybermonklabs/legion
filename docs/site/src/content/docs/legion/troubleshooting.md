@@ -535,8 +535,63 @@ failure until it is given another run. The issue's architect reads it with the `
 claim the daemon holds no cause and sentence for, or with `legion claims list --json` for the
 whole record.
 
-Before it come `supervise: launch failed` or `supervise: process died` warnings, one per attempt,
-each but the last followed by `supervise: waiting before the next launch`: the tries are spaced by
+**A launch the shared public leak check refused** has a sentence of its own on the claim, as
+`leakCheckCause`. Under the Kubernetes runtime the daemon reads that check at the tag the worker
+image pins, and pushes it to the pod's launcher, which installs it before any role of the pod
+starts ([Worker image](https://github.com/sjawhar/legion/blob/main/docs/kubernetes.md#worker-image)).
+A start whose check could not be installed is not sent, and it is charged as a launch failure, so
+a claim that keeps meeting it fails with `launch failures ran out: <the refusal>` and the cause
+word `launch_refused`, or `died` where the refused launches were the relaunch of a process that
+died. The sentence is the reason:
+
+```text
+the shared public leak check could not be installed: <what happened>
+```
+
+Every launch try sets it: to that sentence when the check refused the try, and to nothing when
+the try started or failed for another reason. It is not cleared while the claim waits between
+tries. It shows in `legion state --json`, `read_state` and `read_record` for a workflow role's
+claim, and in `legion claims list --json` and the last column of `legion claims list` for every
+claim. The project's controller is on no claim view of the state, so its sentence shows in the
+listing alone. What follows the colon says where to look:
+
+- `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
+  could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
+  configuration, and the implement App's installation on theorem-labs.
+- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
+  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
+  wider token in its place.
+- `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
+  tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
+  in that repository and holds its `leak-check` directory.
+- `the daemon could not read theorem-labs/agent-infra at <tag>: …`, `the daemon's read of
+  theorem-labs/agent-infra at <tag> did not finish within <bound>`, `the daemon could not ask
+  GitHub for …` or `the daemon could not slice the check it read at <tag>: …`: the daemon's own
+  connection to GitHub, or what GitHub sent. The daemon keeps no failed read, so the next launch
+  reads again.
+- `the start stopped waiting for the daemon's read of theorem-labs/agent-infra at <tag>: …`: the
+  launch reached its own bound before the daemon's read ended. The read goes on, and the next
+  launch takes what it read.
+- `the pod asked for the tag "<tag>", which is not of the published shape leak-check-v<n>`: the
+  worker image's `ARG LEAK_CHECK_TAG` holds another shape of tag.
+- `the pod's launcher did not answer the install of <tag> within <bound>`: the launcher's install
+  took longer than the push's bound. The install goes on, and the next launch is answered at once
+  when it is in place. The pod's log then shows `launcher: installed the shared public leak check
+  <tag> at /legion/scratch/leak-check, served by the daemon (sha256 …)`: in the `roles` container
+  of an issue pod, behind the role's prefix, and in the `controller` container of the
+  controller's pod.
+- every other sentence the pod's launcher gives, such as `the pod's launcher could not unpack the
+  check the daemon served: …`, `the served check did not answer: …`, `the staging directory could
+  not be made: …` or `the staged install could not be moved to …`: the launcher could not unpack,
+  verify or move the check into place on the pod's disk. The sentence on the claim is the whole
+  record, because the launcher writes no log line for a refusal.
+
+Once the cause is fixed, `legion claims retry --claim <token>` starts a failed claim again. The
+daemon launches a claim that has not failed yet again on its own, after the backoff below.
+
+Before the `supervise: claim failed` line come `supervise: launch failed` or `supervise: process
+died` warnings, one per attempt, each but the last followed by `supervise: waiting before the
+next launch`: the tries are spaced by
 a backoff (1–2 s, then 2–4 s), so a fault that lasts a moment cannot spend the whole budget. Under
 the Kubernetes runtime, a launch whose requests the API server answers overloaded (a 429, or a 5xx
 such as `etcdserver: throttle: too many requests`) waits the server out and is charged nothing;
@@ -842,6 +897,37 @@ return to `todo` starts it.
 A claim an operator suspended is listed even when a workflow start is queued for it: that start
 waits for the operator's resume. One whose `suspendedBy` is `unknown` is listed only while no start
 is queued for it, since the next phase start or re-admission resumes it as before.
+
+## A worker that stopped taking turns
+
+The issue stands in its phase, its worker does nothing, and the daemon's record of it reads like a healthy one.
+The claim is up and the state shows the tree at work.
+The daemon finds such a worker by itself and writes one `worker-silent` notice to the issue's architect.
+The project's controller reads the same issue in the `silent` list of its periodic tick.
+
+The rule is this: the claim's process is up and between turns, it holds no task, and its agent's last recorded step is older than `worker_silence_minutes`.
+That bound is 30 minutes by default, and the configuration refuses a value under 16 minutes when it loads.
+
+The daemon sends the worker its phase's task again, under the assignment the issue's phase row already names where it names one.
+The notice says what the daemon wrote, which is that start row, so the worker is coming back and there is nothing to do.
+A suspension an operator holds over the claim is the one thing that refuses the start when the outbox runs it, and the notice says so as well: resume the claim, or have the architect message the role and the controller start its session again with `fresh_session`.
+
+The daemon writes the same record to its own log, as `workflow: a phase worker nothing will prompt was found silent; its architect is told`, so an operator finds every silence without a Dispatch notice.
+
+The rule measures silence from the claim's last recorded step alone.
+A daemon that was itself down for longer than the bound comes back and reads every live worker as silent.
+Each of those gets one prompt and one notice, nothing is stopped, and the floor under `worker_silence_minutes` is what keeps an ordinary restart out of it.
+
+A merged root's merger is never named silent.
+The merge ends the merger's work, but the root stands in `merging` until the rest of its tree leaves the workflow, which can take days, so the daemon reads the issue's pull request and leaves alone a merger whose pull request the record holds as merged, as its own resume paths do.
+
+A worker whose own session — the process the claim runs now — reports background work of its own running, an async job, a subagent or a background task, is left alone, however long it has been quiet.
+No bound can tell a forty-minute job from a worker that stopped, so the daemon prompts no such worker at all.
+When that report has stood past `worker_background_hours`, four hours by default, the daemon writes one `worker-background-stalled` notice to the issue's architect, naming the kinds the session reported and how long they have stood, and sends the worker nothing, because a background job can hang.
+The architect reads what the session says it is waiting on and decides.
+The report counts for the process the claim runs now and for no other.
+A worker whose pod was replaced while a background task of its own ran left that report behind, and the work it names died with the pod, so the daemon reads such a worker as one that has reported nothing: it is prompted at the silence bound like any other, and it earns no `worker-background-stalled` notice.
+That is why the daemon clears a worker's report when it launches the worker again, and why a worker on the Claude Code backend is repaired at all: that session reports at the end of a turn alone, and a worker nothing prompts has no turn to end.
 
 ## A pod does not come up
 

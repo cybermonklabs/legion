@@ -171,7 +171,8 @@ type overrides struct {
 	// production daemon always mints through appauth.New.
 	workflowTokens appauth.Tokens
 	// githubAPI is the GitHub REST root a workflow integration test points the workflow at (its
-	// required-checks reads and its issue branches' creates); empty, in production, is
+	// required-checks reads and its issue branches' creates) and the Kubernetes runtime's read of
+	// the shared public leak check at (sandboxRuntime); empty, in production, is
 	// https://api.github.com.
 	githubAPI string
 	// listen takes the API listener for cfg's bind and port; nil binds them with net.Listen. Run's
@@ -1192,6 +1193,16 @@ type supervision struct {
 	// tick (tellUpdateStalled). The workflow sets it where it attaches, before supervision
 	// restores or launches any claim, as it sets the supervisor's terminal callback there.
 	enqueue func(ctx context.Context, issue string, payloads ...record.OutboxPayload) error
+	// applySweepFacts applies the facts a sweep of supervision read, through the workflow's own
+	// handlers (workflowRuntime.applySweepFacts); nil in a deployment with no workflow, which
+	// records no issue a fact could be about. It is the whole of what the silence sweep needs of
+	// the workflow (tellSilentPhaseWorkers): the sweep filters on the live claims, and every
+	// decision about a silence is the handler's, inside the fact's own
+	// transaction (workflow.(*Engine).workerSilent). The facts of one sweep go in one call so the
+	// ids it minted can be read against what this daemon has applied in one query rather than one
+	// transaction each. The workflow sets it where it attaches, before supervision restores or
+	// launches any claim, as it sets enqueue above.
+	applySweepFacts func(ctx context.Context, facts []sweptFact) error
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
@@ -2054,10 +2065,12 @@ func (s *supervision) relaunchUnfinished(tokens []claim.Token, reconciled bool) 
 // the claims the daemon has not retired, once it has idled past the grace, re-posts StalePlugin
 // for every live claim whose contract still differs — the retry a relaunch the boot pass
 // (refreshStalePlugins) could not complete needs — carries every update round a step
-// (reconcilePodUpdates), and ends the turn of every claim whose agent has stopped stepping
-// (backstopStalledTurns). All three ride the sweep because it is the one periodic pass that
+// (reconcilePodUpdates), ends the turn of every claim whose agent has stopped stepping
+// (backstopStalledTurns), and tells the workflow of every phase worker that nothing will prompt
+// (tellSilentPhaseWorkers). All four ride the sweep because it is the one periodic pass that
 // already reads every claim, rather than running a timer of their own; its minute is far below
-// the smallest backstop bound a configuration can hold.
+// the smallest backstop bound a configuration can hold, and far below the floor under
+// `worker_silence_minutes`.
 func (s *supervision) reconcileOrphans(ctx context.Context) {
 	ticker := time.NewTicker(s.plan.orphanSweep)
 	defer ticker.Stop()
@@ -2080,6 +2093,7 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
+		s.tellSilentPhaseWorkers(ctx, claims)
 	}
 }
 

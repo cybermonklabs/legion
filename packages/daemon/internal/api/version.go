@@ -1244,7 +1244,34 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
-// 95: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
+// 97: INFRA-2566 -- the experiments each issue was drawn for on `GET /legion/v1/state`. Every
 // issue record of the state gains `assignments`, the experiment answers that apply to it: one
 // `{experiment, variant, mode, drawnAt}` per answer, in the order the project's file declares
 // the experiments, which is the `memory` block's experiment first and then the order
@@ -1274,19 +1301,21 @@ package api
 // strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
 // `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
-// that package's own test holds it to, and 95 is later than that change, so a reader before 95
+// that package's own test holds it to, and 97 is later than that change, so a reader before 97
 // parses this state and sees no `assignments` at all rather than refusing it — and every
 // worker's `read_record` parses the state through that schema. The downgrade below is still
 // what serves such a reader: a caller that did not ask for the field is not given it.
 // `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
-// contract below 95 is served the state without the field (api's stateFor,
+// contract below 97 is served the state without the field (api's stateFor,
 // withoutAssignments), as a caller below 49 is served it without the memory fields; a caller at
-// 49 through 94 is served the three memory fields and no assignments, whatever else its own
+// 49 through 96 is served the three memory fields and no assignments, whatever else its own
 // band gives it — one at 73 or above is served `claimsToRefresh` too, one at 75 or above the
-// record fields, and one at 85 or above the `why` answer and the waiting line's own fields the
-// 85 entry added, so a caller at 85 to 94 is served all of those and still no assignments —
-// and a caller below 49 neither. The 86 entry above adds no narrowing of its own, so a caller
-// at 86 to 94 is served what one at 85 is. The number is held in four files that
+// record fields, one at 85 or above the `why` answer and the waiting line's own fields the 85
+// entry added, and one at 87 or above the claim views' `leakCheckCause` the 87 entry added, so
+// a caller at 87 to 96 is served all of those and still no assignments — and a caller below 49
+// neither. The 86 entry above adds no narrowing of its own, so a caller at 86 is served what one
+// at 85 is: the `why` answer and the line's own fields, and neither `leakCheckCause` nor
+// assignments. The number is held in four files that
 // move together: this one,
 // `packages/contracts/fixtures/daemon-api/version.json`, `packages/pi-legion/package.json` and
 // `packages/claude-envoy/package.json`. This change adds no store migration of its own: the
@@ -1297,18 +1326,22 @@ package api
 // (This entry took 60 when the base carried 59, 73 at the forward merge of 2026-11-11 that
 // brought main in, 74 at the push that followed, 86 at the forward merge of 2026-11-12 that
 // brought main in at 9009dc1d, 87 at the push after it, 90 at the push after that, 93 at the
-// push after that, and 95 here. The number a renumber takes is one above every open
-// declaration, never the lowest free one: three branches each took the lowest free number at
-// three moments and collided four ways at 65. The heads were read again at the push that takes
-// 95, over the `const DaemonAPIVersion` of main and of every one of the 142 open pull requests
-// of this repository at refs/pull/<n>/head rather than over the file lists GitHub gives, which
-// it cuts short for a pull request of many files: main declares 86; #3519, #3573 and #3712
-// declare 91; #3715 declares 92; #3677 and #3937 declare 93, the number this change declared
-// before this move; and #3708 declares 94. None of them carries these shapes, so this change
-// takes 95, which is one above every one of them: a number below the highest open declaration
-// is refused by .github/scripts/check-daemon-api-contract.sh the moment one of those heads
-// lands and main itself reaches it. Read main's number and every open pull request again at
-// the next merge rather than from this line, as
+// push after that, 95 at the push after that, and 97 here. The number a renumber takes is one
+// above every open declaration, never the lowest free one: three branches each took the lowest
+// free number at three moments and collided four ways at 65. The heads were read at the push
+// that took 95, over the `const DaemonAPIVersion` of main and of every one of the 142 open pull
+// requests of this repository at refs/pull/<n>/head rather than over the file lists GitHub
+// gives, which it cuts short for a pull request of many files: main declared 86; #3519, #3573
+// and #3712 declared 91; #3715 declared 92; #3677 and #3937 declared 93, the number this change
+// declared before that move; and #3708 declared 94. They were read again at this push, the
+// forward merge of 2026-11-13 that brought main in at 12ba4e6a, with #3829 and the 87 entry
+// above, over all 139 open heads at refs/pull/<n>/head: main declares 87, #3937 declares 93,
+// #3708 declares 94, and #3677 declares 96, above the 95 this change declared before this move.
+// None of them carries these shapes, so this change takes 97, which is one above every one of
+// them: a number below the highest open declaration is refused by
+// .github/scripts/check-daemon-api-contract.sh the moment one of those heads lands and main
+// itself reaches it. Read main's number and every open pull request again at the next merge
+// rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 95
+const DaemonAPIVersion = 97

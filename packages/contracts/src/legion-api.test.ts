@@ -634,12 +634,12 @@ test("the state golden carries each issue's tree memory draw", () => {
   expect(parses()).toBeFalse();
 });
 
-// Contract 95: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
+// Contract 97: the state golden carries LEGION-208, a root, and LEGION-209, a child of its
 // tree, each under two experiments — the tree experiment `memory`, whose answer every issue of
 // the tree shows, and the issue experiment `plan-length`, drawn for each issue on its own, so
 // the two stand in different arms of it — and LEGION-210, whose hand-over settled it at no arm:
 // an empty variant, an empty mode and no instant. An issue no experiment holds an answer for
-// carries no key at all, as does every issue of the body served a caller before 95, so the
+// carries no key at all, as does every issue of the body served a caller before 97, so the
 // field is optional; a daemon before this contract sent none, and its state must still parse.
 test("the state golden carries the experiments each issue was drawn for", () => {
   const state = fixture("state.json") as {
@@ -679,7 +679,7 @@ test("the state golden carries the experiments each issue was drawn for", () => 
   const parses = () => LegionStateResponse.safeParse(state).success;
   expect(parses()).toBeTrue();
 
-  // A state from a daemon before contract 95, and one served to a pod below it.
+  // A state from a daemon before contract 97, and one served to a pod below it.
   const held = drawn.assignments;
   delete drawn.assignments;
   expect(parses()).toBeTrue();
@@ -1089,6 +1089,55 @@ test("a claim and an issue carry the fields the record decides they serve", () =
   expect(LegionStateResponse.safeParse(state).success).toBeFalse();
   root.ancestry = undefined;
   expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
+// Contract 87: a claim whose launch the runtime refused because the shared public leak check
+// could not be installed in the role's pod carries that sentence under a key of its own, on both
+// shapes the daemon serves a claim in — the state's claim views, which every worker and architect
+// reads, and the operator claim, which is where the controller's own is read. The schema must
+// name the key on both, since a key it does not name is stripped and the seat never sees it: the
+// goldens carry it, and this reads it before the parse and after. A daemon narrows it away for a
+// caller below 87 (`api.withoutLeakCheckCause`), so a body without it parses, and an empty
+// sentence — which the daemon never writes, leaving the key off instead — is refused.
+test("a claim carries the leak check's cause beside its failure", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: { leakCheckCause?: string } }> }>;
+  };
+  const refused = state.issues["LEGION-210"]?.workers.implementer?.claim;
+  if (refused === undefined) {
+    throw new Error("state fixture lacks LEGION-210's implementer");
+  }
+  const sentence =
+    "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found";
+  expect(refused.leakCheckCause).toBe(sentence);
+  expect(
+    LegionStateResponse.parse(state).issues["LEGION-210"]?.workers.implementer?.claim.leakCheckCause
+  ).toBe(sentence);
+
+  refused.leakCheckCause = "";
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  refused.leakCheckCause = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+
+  const listing = fixture("operator-claims.json") as {
+    claims: { token: string; leakCheckCause?: string }[];
+  };
+  const launching = listing.claims.find(
+    (claim) => claim.token === "legion-legion-legion-211-tester"
+  );
+  if (launching === undefined) {
+    throw new Error("operator-claims fixture lacks legion-legion-legion-211-tester");
+  }
+  const pending =
+    "the shared public leak check could not be installed: the pod's launcher did not answer the install of leak-check-v3 within 2m0s";
+  expect(launching.leakCheckCause).toBe(pending);
+  expect(
+    LegionOperatorClaimsResponse.parse(listing).claims.find(
+      (claim) => claim.token === "legion-legion-legion-211-tester"
+    )?.leakCheckCause
+  ).toBe(pending);
+  launching.leakCheckCause = "";
+  expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at

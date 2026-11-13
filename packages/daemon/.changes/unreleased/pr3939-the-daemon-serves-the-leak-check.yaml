@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A pod no longer reads the shared public leak check from GitHub with a role's token, which reached
+  only the repositories its project maps, so every role of a project that maps no
+  theorem-labs/agent-infra failed to start. The daemon now reads the check at the tag the pod's
+  launcher names, with a read-only token for theorem-labs/agent-infra alone, once for each tag, and
+  pushes it to the launcher, which installs it once for the pod before any role starts. A start
+  whose check cannot be installed is charged as a launch failure, and the claim carries the reason
+  as `leakCheckCause` in `legion state --json` and in `legion claims list`. The daemon and the
+  worker image pins move together, at daemon API contract 87: an older daemon pushes nothing, and
+  the new image's shim then refuses every start.

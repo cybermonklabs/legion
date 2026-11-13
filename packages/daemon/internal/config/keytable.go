@@ -304,6 +304,16 @@ var topLevelKeys = func() []keyDescriptor {
 			Positive:    &positiveKey{Value: 1, Count: func(c *Config) *int { return &c.WorkerWakeBurst }},
 		},
 		{
+			Name: "worker_silence_minutes", Default: "`30`", RequiredBy: "no",
+			Description: "How many minutes a phase worker that is up, between turns and holding no task may go with no recorded step before the daemon sends it its phase's task again; decimals allowed, and a value under 16 is refused, since a healthy worker that says it is waiting stays quiet for 15 minutes before its own reminder comes again.",
+			Read:        reads(readMinutes, func(f *fileConfig, v *time.Duration) { f.WorkerSilence = v }),
+		},
+		{
+			Name: "worker_background_hours", Default: "`4`", RequiredBy: "no",
+			Description: "How many hours the background work a phase worker's own session reports may stand before the daemon names that worker to its architect, once and with nothing sent; decimals allowed, and a value at or below `worker_silence_minutes` is refused.",
+			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.WorkerBackground = v }),
+		},
+		{
 			Name: "linger_hours", Default: "`72`", RequiredBy: "no",
 			Description: "How many hours a closed root's tree lingers before the daemon retires it, which is also where a claim carried out of that tree has its stop bounded; decimals allowed.",
 			Read:        reads(readHours, func(f *fileConfig, v *time.Duration) { f.Linger = v }),

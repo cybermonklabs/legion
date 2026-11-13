@@ -19,7 +19,7 @@
     "AGENTS.md"
   ],
   "legion": {
-    "daemonApiVersion": 95
+    "daemonApiVersion": 97
   },
   "repository": {
     "type": "git",
