@@ -15,7 +15,9 @@ label, and on each later change while it stays in `triage`, the change that adds
 included. Triage the root as `skill://legion-controller/references/triage.md` says. A person's
 label on a `triage` root wakes nobody: the root is queued by the daemon (its own `todo` write). A
 person's approval of a parked (`backlog` or `icebox`) labelled root's spec is queued by the daemon
-the same way and wakes nobody.
+the same way and wakes nobody, except a carried approval and one on a root that keeps a Dispatch
+parent, which come as notices
+(`skill://legion-controller/references/parked-decisions.md#the-notice`).
 
 ## `slot-free on <KEY>` (`{kind: "slot-free"}`)
 

@@ -117,8 +117,10 @@ person's label off, because it is their decision. Label an issue before you `set
 Two handovers are queued by the daemon, with no write of yours. A person's `legion` label on an
 unrecorded root in `triage` is queued by the daemon: it writes the root's `todo` through its
 outbox. A person's approval of the primary document of a parked (`backlog` or `icebox`) labelled
-root with no live tree is queued by the daemon the same way. At a handover, you write `todo` only
-for the roots you label at a person's request or file yourself.
+root with no live tree is queued by the daemon the same way, except a carried approval and one on
+a root that keeps a Dispatch parent, which come to you as notices
+(`skill://legion-controller/references/parked-decisions.md#the-notice`). At a handover, you write
+`todo` only for the roots you label at a person's request or file yourself.
 
 An issue whose work must start at a commit other than its base branch's head needs its branch
 `legion/<KEY>` created at that commit before Legion starts the issue. One command creates it:
