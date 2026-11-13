@@ -4,6 +4,7 @@ import (
 	"errors"
 	"log/slog"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -254,7 +255,9 @@ func TestARelaunchRecordsAtAParkedWakesTurn(t *testing.T) {
 }
 
 // The registration deadline: a process that registered and never said it was ready is retired
-// and relaunched. It ran no turn, so the only work it can end is what its own report named.
+// and relaunched. It ran no turn, so the only work it can end is what its own report named. Its
+// cause names what the agent never did and then the retirement, so the sentence the next process
+// reads has the one "because" (endNeverReady, relaunchSentence).
 func TestARelaunchRecordsTheRegistrationDeadline(t *testing.T) {
 	h := newHarness(t)
 	h.launch()
@@ -267,10 +270,14 @@ func TestARelaunchRecordsTheRegistrationDeadline(t *testing.T) {
 
 	h.wantCalls("Suspend", 1)
 	h.wantState(StateLaunching)
-	cause := endNeverReady("registered and never said it was ready")
+	cause := "its agent registered and never said it was ready, so the daemon retired it"
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: retired,
 		Background: true, Kinds: []string{"async-job"}, Reported: true})
 	h.wantEndedLine(cause)
+	because := "Your previous process ended because " + cause + ". You were not in a turn then."
+	if got := RelaunchSentence(h.claim().EndedWork); !strings.HasPrefix(got, because) {
+		t.Errorf("the relaunch is told %q, want it to begin %q", got, because)
+	}
 }
 
 // A suspension records what its stop ended under the source that asked for it: the operator's
@@ -457,6 +464,64 @@ func TestARelaunchRecordsAProcessWithNoReportAsUnknown(t *testing.T) {
 	cause := endDied(deathCause(runtime.Observation{Kind: runtime.Gone}))
 	h.wantEnded(EndedWork{At: at, Cause: cause, Generation: died})
 	h.wantEndedLine(cause)
+}
+
+// A report read before the cut turn began is no report of that turn, as the idle rule holds
+// (pods.IdleClaim.Reported): a Claude Code worker reports only at its Stop hook, so when a turn of
+// its task is cut off, its newest report is the turn before's, which says nothing of what the cut
+// turn started. The process ran a turn and reported — nothing running, or a subagent — and a later
+// turn of the task began after that report; the process then died in it. The record names the
+// turn and the task, says the daemon has no report (EndedWork.Reported false) and takes none of
+// the old report's background work, so the task taken back is sent saying that the subagents and
+// background jobs of that turn are gone (relaunchSentence). The control is a report read after the
+// turn began, saying nothing runs: it is the turn's own, counted as a report, and the task goes
+// back with no word that the turn's background work is gone.
+func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
+	const gone = "So the subagents and background jobs of that turn are gone."
+	for _, row := range []struct {
+		name string
+		// before is whether the report is read before the task's turn begins.
+		before   bool
+		kinds    []string
+		reported bool
+	}{
+		{name: "a report before the turn began said nothing runs", before: true},
+		{name: "a report before the turn began named a subagent", before: true, kinds: []string{"subagent"}},
+		{name: "a report after the turn began said nothing runs", reported: true},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateIdle)
+			if row.before {
+				h.reportActivity(row.kinds...)
+				h.advance(time.Second)
+			}
+			h.must(RequestDeliver{Claim: h.token, Task: "the next task"})
+			h.must(StreamTurnStart{Claim: h.token})
+			if !row.before {
+				h.advance(time.Second)
+				h.reportActivity(row.kinds...)
+			}
+			died, at := h.generation(), h.clock.Now()
+
+			h.observe(runtime.Gone)
+
+			h.wantState(StateLaunching)
+			h.wantEnded(EndedWork{At: at, Cause: endDied(deathCause(runtime.Observation{Kind: runtime.Gone})),
+				Generation: died, Turn: true, TaskTurn: true, Reported: row.reported})
+			p := h.pending()
+			if !p.Interrupted {
+				t.Fatalf("the task after the death is %+v, want it taken back from the turn", p)
+			}
+			message := p.message(h.claim())
+			switch {
+			case !row.reported && !strings.Contains(message, gone):
+				t.Errorf("the task taken back is sent as %q, want it to say %q", message, gone)
+			case row.reported && (strings.Contains(message, gone) || strings.Contains(message, "The daemon has no report")):
+				t.Errorf("the task taken back is sent as %q, want no word that the turn's background work is gone", message)
+			}
+		})
+	}
 }
 
 // Only a process in no turn, with no task in one and no background work reported running, is

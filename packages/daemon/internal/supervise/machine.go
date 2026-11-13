@@ -1228,9 +1228,15 @@ type Machine struct {
 	goneOutOfMemory bool
 	// goneCause is the runtime's account of the death the report that set processGone found
 	// (deathCause), and empty wherever processGone is false: written and cleared with it. It is
-	// kept for the same suspension, which puts it on the claim as died would have
-	// (Claim.LastDeathCause), so the task it takes back tells the agent why its process died
-	// rather than nothing, or an older death's cause (interruptedTask).
+	// kept for the same suspension, which records the dead process's end as the death it is under
+	// this account (recordEnd, endDied) once the dead turn's task is taken back, unless a death
+	// died judged already recorded it, so the task is sent again saying why its process died
+	// rather than that a suspension ended it: the sentence in front of it reads that record, its
+	// own while the record is untold (relaunchSentence) and the record's cause once it is told
+	// (interruptedTask, EndedWork.Cause). Before the take-back the suspension also puts it on the
+	// claim as died would have (Claim.LastDeathCause), which the operator's listing and a failed
+	// claim's notices read, and it puts back the cause the claim held when the take-back's write
+	// fails (suspendOverADeadProcess).
 	goneCause string
 	// previous is the incarnation the claim last ran and no longer records — stopped by a
 	// suspension, retired, failed on, or found dead — which every launch of the same session hands

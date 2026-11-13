@@ -1396,12 +1396,13 @@ func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 // rest, so the session's next turn, running or still to come, is that prompt's: the task keeps
 // its confirmation and its read mark for it, and only the pending id moves. That is the busy
 // answer of a send made while the first prompt's turn is late — refused because that very turn is
-// being prepared or run — which takes back nothing of that turn. With none outstanding, the task
-// goes back unconfirmed if a turn had confirmed it, and a task taken back unread loses the mark,
-// so nothing the worker reports from whatever turn follows belongs to it; and the wait for
-// results ends. A caller whose prompt's turn is over or aborted therefore leaves nothing of the
-// task outstanding before it calls: a provider error's result has ended the wait already
-// (promptResulted), and a compaction ends it itself (compactStart).
+// being prepared or run — which takes back nothing of that turn. With none outstanding, the wait
+// for the task's results is over, and the task goes back unconfirmed if a turn had confirmed it,
+// and a task taken back unread loses the mark, so nothing the worker reports from whatever turn
+// follows belongs to it. A caller whose prompt's turn is over or aborted therefore leaves nothing
+// of the task outstanding before it calls, since the set is what this reads to tell the two
+// apart: a provider error's result has ended the wait already (promptResulted), and a compaction
+// ends it itself (compactStart).
 //
 // The id moves either way: the prompt whose answer this is gets a new one, so its own late
 // acknowledgement is fenced out (fenceOutcome) and adds nothing outstanding, and the shim's
@@ -1411,15 +1412,15 @@ func (m *Machine) awaitsResult() bool { return len(m.outstanding) > 0 }
 // holds it, so what it established — not confirmed, and not read when taken back unread — holds at
 // once, whether or not the write recording it lands. Only the new id waits for the write, so the
 // claim's id is always one the store holds; a write that fails leaves the delivery unsaved, and
-// settle writes it again under the id it kept (saved). Ending the wait for the prompts' results
-// before that write is safe here, where interrupted ends it after its own: this clears
-// ConfirmedAt in memory first, so the claim a failed write leaves is one settle reads as a task
-// still waiting rather than as a turn that is over (turnOver, resultPending).
+// settle writes it again under the id it kept (saved). Where none is outstanding, the wait for the
+// prompts' results is over before that write, which is safe here, where interrupted ends the wait
+// after its own write: this clears ConfirmedAt in memory first, so the claim a failed write leaves
+// is one settle reads as a task still waiting rather than as a turn that is over (turnOver,
+// resultPending).
 func (m *Machine) takeBackPending(ctx context.Context, read bool) error {
 	m.disarm(TimerTurn)
 	p := m.claim.Pending
 	if !m.awaitsResult() {
-		m.outstanding = nil
 		p.ConfirmedAt = time.Time{}
 		if !read {
 			m.clearReadMark(p)
