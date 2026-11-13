@@ -28,6 +28,7 @@ func (w *Watcher) Stop() {
 	w.watcher = nil
 	w.clearRepairArm()
 	w.clearRereadArm()
+	w.clearScheduledArm()
 	w.clearProbeArm()
 	w.clearIdleArm()
 	w.generation++
