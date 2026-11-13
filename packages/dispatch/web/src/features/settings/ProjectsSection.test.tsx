@@ -1,7 +1,7 @@
 import { expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the submit site below is a form submitted with no control pressed, which user-event has no form for
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
@@ -82,7 +82,10 @@ test("Retry after two stopped saves of the same default assignee goes under the 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
-  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  // Every project names a person (#3707), so the control is read from a stored default.
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([
+    { assignee: "bob@example.com", project: "CORE" },
+  ]);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
   const putDefault = spyOn(api, "putProjectDefaultAssignee").mockRejectedValue(
     new NetworkError("/api/v1/projects/CORE/default-assignee", new TypeError("Failed to fetch"))
@@ -101,7 +104,8 @@ test("Retry after two stopped saves of the same default assignee goes under the 
     });
     await waitFor(() => expect(control.disabled).toBe(false));
     await user.hover(control);
-    await screen.findByRole("option", { name: "alice@example.com" });
+    // The new-project form offers the same people, so the option is read inside this row.
+    await within(control).findByRole("option", { name: "alice@example.com" });
 
     await user.selectOptions(control, "alice@example.com");
     await stopTheLateWrite(queryClient);
@@ -185,7 +189,10 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
   jest.useFakeTimers();
   const user = userOnFakeClock();
   const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
-  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  // Every project names a person (#3707), so the control is read from a stored default.
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([
+    { assignee: "bob@example.com", project: "CORE" },
+  ]);
   const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
   const putDefault = spyOn(api, "putProjectDefaultAssignee").mockRejectedValue(
     new NetworkError("/api/v1/projects/CORE/default-assignee", new TypeError("Failed to fetch"))
@@ -204,7 +211,8 @@ test("a default assignee save the reader stopped says Retry makes it again, not 
     });
     await waitFor(() => expect(control.disabled).toBe(false));
     await user.hover(control);
-    await screen.findByRole("option", { name: "alice@example.com" });
+    // The new-project form offers the same people, so the option is read inside this row.
+    await within(control).findByRole("option", { name: "alice@example.com" });
     await user.selectOptions(control, "alice@example.com");
     await stopTheLateWrite(queryClient);
 
