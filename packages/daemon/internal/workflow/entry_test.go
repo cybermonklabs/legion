@@ -223,9 +223,10 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 		Project: "LEGION", Title: "root", Phase: phase.Implementing, Generation: 2, Status: "in_progress", Rank: "U"}
 	seedIssue(t, pool, issue)
 	seedTreeLifecycle(t, pool, entryIssue)
-	// The row a re-admission leaves: the entry where it stood, with no task of its own.
+	// The row a re-admission leaves: the entry where it stood, with no task of its own, and the
+	// move back that raised it still on it, which the promotion's own entry writes over.
 	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleImplementer, Claim: "implement-claim",
-		Entry: seededEntry, EntryRaisedAt: seededRaisedAt})
+		Entry: seededEntry, EntryRaisedAt: seededRaisedAt, EntryMovedBack: true})
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
 	seedRecord(t, pool, func(tx pgx.Tx) error {
@@ -243,9 +244,54 @@ func TestThePromotionsStartRaisesTheEntryAndWritesItsTask(t *testing.T) {
 			start, seededEntry+1, want)
 	}
 	row := entryRow(t, pool, claim.RoleImplementer)
-	if row.Entry != seededEntry+1 || row.EntryTask != want || !row.EntryRaisedAt.Equal(engine.now()) {
-		t.Fatalf("the implementer's row after the promotion = entry %d, task %q, raised at %s; want entry %d, the task the start carries, raised at %s",
-			row.Entry, row.EntryTask, row.EntryRaisedAt, seededEntry+1, engine.now())
+	if row.Entry != seededEntry+1 || row.EntryTask != want || !row.EntryRaisedAt.Equal(engine.now()) || row.EntryMovedBack {
+		t.Fatalf("the implementer's row after the promotion = entry %d, task %q, raised at %s, moved back %t; want entry %d, the task the start carries, raised at %s and moved back false: the promotion hands back the phase the issue stands in",
+			row.Entry, row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack, seededEntry+1, engine.now())
+	}
+}
+
+// The entry a start raises carries the move that raised it: whether that start was a move back
+// to an earlier phase. One rule reads it, the completion route's entry fence
+// (record.PhaseRow.EntryMovedBack, api/handoff.go), and nothing else of the record can answer
+// it. A count cannot: every move back raises the implementer's pass and a phase is never
+// re-entered without one, so a count is raised by the move this exists to catch and by the move
+// it exists to let through alike, and no earlier count is kept to compare with.
+//
+// Both readings are written, never only the true one: a row whose standing entry a move back
+// raised is handed a forward move's entry next, and a value left behind would make the fence
+// refuse work the issue moved forward into.
+func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
+	pool := migratedPool(t)
+	seedIssue(t, pool, record.Issue{Key: entryIssue, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: entryIssue,
+		Project: "LEGION", Title: "root", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U"})
+	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: entryIssue, Repo: "sjawhar/legion", Number: 42,
+		Branch: "legion/" + entryIssue, Base: "main", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
+	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: claim.RoleImplementer, Claim: "implement-claim"})
+	// The tester's row as a move back left it: an entry standing at the reading this change
+	// writes, which the forward move below must write over rather than leave where it is.
+	seedEntryRow(t, pool, claim.RoleTester, "test-claim")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	// The head starts conflicting with its base: testing goes back to implementing, which is a
+	// move back, and the implementer's first entry is raised by it.
+	applyRefusingNothing(t, pool, engine, intake.PullRequestMergeability{Repo: "sjawhar/legion", Number: 42, Base: "main",
+		HeadSHA: "head", Mergeable: record.MergeabilityConflicting})
+
+	assertPhase(t, pool, phase.Implementing)
+	if row := entryRow(t, pool, claim.RoleImplementer); row.Entry != 1 || !row.EntryMovedBack {
+		t.Fatalf("the implementer's row after the conflict = entry %d, moved back %t; want entry 1 raised by a move back: testing came back to implementing",
+			row.Entry, row.EntryMovedBack)
+	}
+
+	// The implementer's completion moves the issue forward into testing. The entry that start
+	// raises is of no move back, and says so over the reading the tester's row stood at.
+	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleImplementer,
+		Claim: "implement-claim", Commit: "fix-1", HandoffRecord: "implement-1", HandoffVersion: 1})
+
+	assertPhase(t, pool, phase.Testing)
+	if row := entryRow(t, pool, claim.RoleTester); row.Entry != seededEntry+1 || row.EntryMovedBack {
+		t.Fatalf("the tester's row after the implementer's completion = entry %d, moved back %t; want entry %d raised by no move back: implementing moves forward into testing, and the reading the row stood at is written over",
+			row.Entry, row.EntryMovedBack, seededEntry+1)
 	}
 }
 
@@ -351,11 +397,16 @@ func TestTheReadyOfAWorkerBehindItsEntrySendsThatEntrysWork(t *testing.T) {
 }
 
 // seedEntryRow records role's phases row as a transition of the run before the fact under test
-// left it: on the seeded entry, carrying that entry's work and the moment it was raised.
+// left it: on the seeded entry, carrying that entry's work, the moment it was raised and the
+// reading that the start which raised it moved the issue back. That last is seeded true because
+// no start of these fixtures writes true: one that hands the role no new work writes nothing
+// here at all, and the row is read back as it stood (assertEntryUntouched), while the forward
+// move of TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack raises the entry and writes
+// false over it. So true is the reading that stands only where no start wrote one.
 func seedEntryRow(t *testing.T, pool *pgxpool.Pool, role claim.Role, held claim.Token) {
 	t.Helper()
 	seedPhase(t, pool, record.PhaseRow{Issue: entryIssue, Role: role, Claim: held, Entry: seededEntry,
-		EntryTask: seededEntryTask, EntryRaisedAt: seededRaisedAt})
+		EntryTask: seededEntryTask, EntryRaisedAt: seededRaisedAt, EntryMovedBack: true})
 }
 
 // seedGivenEntry records entry as the entry token's claim was last queued a task of
@@ -370,13 +421,14 @@ func seedGivenEntry(t *testing.T, pool *pgxpool.Pool, token claim.Token, entry i
 }
 
 // assertEntryUntouched is the phases row seedEntryRow wrote, unchanged: a start that hands the
-// role no work it was not on leaves the number, the work and the moment alike where they stood.
+// role no work it was not on leaves the number, the work, the moment and the move that raised
+// the entry alike where they stood.
 func assertEntryUntouched(t *testing.T, pool *pgxpool.Pool, role claim.Role, what string) {
 	t.Helper()
 	row := entryRow(t, pool, role)
-	if row.Entry != seededEntry || row.EntryTask != seededEntryTask || !row.EntryRaisedAt.Equal(seededRaisedAt) {
-		t.Fatalf("after %s the %s's row = entry %d, task %q, raised at %s; want the entry %d, task %q and moment %s it stood at",
-			what, role, row.Entry, row.EntryTask, row.EntryRaisedAt, seededEntry, seededEntryTask, seededRaisedAt)
+	if row.Entry != seededEntry || row.EntryTask != seededEntryTask || !row.EntryRaisedAt.Equal(seededRaisedAt) || !row.EntryMovedBack {
+		t.Fatalf("after %s the %s's row = entry %d, task %q, raised at %s, moved back %t; want the entry %d, task %q, moment %s and moved back true it stood at",
+			what, role, row.Entry, row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack, seededEntry, seededEntryTask, seededRaisedAt)
 	}
 }
 

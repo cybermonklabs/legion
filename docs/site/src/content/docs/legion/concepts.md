@@ -345,12 +345,20 @@ Legion uses GitHub's own review mechanisms rather than labels:
   stops writing there and leaves whatever it has uncommitted. Only the implementer's phase entry
   is raised, so a completion the tester, the reviewer or the merger sends for the phase it lost
   still names the entry that phase gave it and is refused `HANDOFF_NOT_CURRENT_PHASE`;
-  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again. From retro
-  the implementer keeps its turn, is told the same way, and is handed the implementing task after
-  it; a retro completion that reaches the daemon after the move reports the entry retro handed it
-  while its phases row is on the implementing one, so it is refused `HANDOFF_STALE_ENTRY`;
-  the implementer merges the base forward in the implementing task's own turn and completes that
-  work with a handoff of its own, never retro's commit.
+  `HANDOFF_STALE_ENTRY` comes once the issue has handed that role the phase again. One completion
+  behind its entry goes on all the same: a verdict on the head the record holds, of a phase that
+  ends with the role's own handoff record. The phase was entered again at that head, so the work
+  the new entry's task asks for is the work that completion reports. A completion at another
+  commit is refused, as the tester's verdict on the head before the merge forward is; so is one
+  that names no commit, and so is any while the record holds no pull request for the issue. A
+  completion is refused whatever head it names when the entry the phase stands on was raised by a
+  move back, which asks for that phase's work to be done again. From retro the implementer keeps
+  its turn, is told the same way, and is handed the implementing task after it; a retro
+  completion that reaches the daemon after the move reports the entry retro handed it while its
+  phases row is on the implementing one, and retro writes no handoff record, so it is refused
+  `HANDOFF_STALE_ENTRY` whatever head it names; the implementer merges the base forward in the
+  implementing task's own turn and completes that work with a handoff of its own, never retro's
+  commit.
 - **An implementer that completes with no pull request** is refused (`HANDOFF_NO_PULL_REQUEST`)
   until one is open on its branch, and the daemon's read of that issue tells its architect
   `pull-request-missing`, once per handoff commit, so an issue never waits in `implementing`

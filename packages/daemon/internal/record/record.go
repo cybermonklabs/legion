@@ -512,6 +512,22 @@ type PhaseRow struct {
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
 	// difference that has stood. Zero on a row no entry has been raised on.
 	EntryRaisedAt time.Time
+	// EntryMovedBack is whether the start that raised that entry was a move back to an earlier
+	// phase, written beside the three fields above in the same transaction from the move the
+	// transition already reads for its pass (workflow's transition, start and enter). False on a
+	// row no entry has been raised on, on every row a daemon upgraded in place found, and on the
+	// promotion's start of a mid-phase worker, which moves no phase back.
+	//
+	// One rule of the daemon reads it and no other: the completion route's entry fence, which
+	// takes a completion of an earlier entry when the commit it names is the head the record
+	// holds, and refuses it however the heads read when the entry standing now was raised by a
+	// move back (api/handoff.go). Such an entry asks for the phase's work to be done again, which
+	// is what the earlier entry's verdict must not stand in for, and the heads cannot say so: the
+	// move back that sends work back at a head that did not move leaves the two heads equal. The
+	// counts beside it cannot say so either — Pass rises on every move back and a phase is never
+	// re-entered without one, so a fence on the count would refuse the case the route exists to
+	// take.
+	EntryMovedBack bool
 }
 
 // Completed says whether the role completed its current phase: its completion reported a commit

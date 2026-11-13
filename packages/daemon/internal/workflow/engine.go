@@ -1213,7 +1213,15 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// where it stands. The pull request goes with both because each reads it: a move made while
 	// the record holds this head as conflicting with its base is a conflict round, which
 	// review_round_cap does not count and no pair counts either (recordRound, recordPass).
-	if phase.MovesBack(issue.Phase, row.To) {
+	//
+	// The same reading goes onto the entry the start below raises, in this transaction, because
+	// it is the one thing the entry fence cannot read from anywhere else: a phase re-entered by a
+	// move back asks for its work to be done again, and the completion of the entry before it
+	// does not answer for that however its commit reads (record.PhaseRow.EntryMovedBack,
+	// api/handoff.go). It is read here and not below because issue.Phase is moved onto row.To a
+	// few lines down, which would leave the start comparing a phase with itself.
+	movedBack := phase.MovesBack(issue.Phase, row.To)
+	if movedBack {
 		if err := e.recordPass(ctx, tx, issue.Key, issue.Phase, row.To, pr); err != nil {
 			return err
 		}
@@ -1273,7 +1281,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// architect got at the merge could not say it, since the issue was elsewhere then.
 	mergedAlready := row.To == phase.Merging && pr != nil && pr.State == record.PullRequestMerged
 	if !mergedAlready {
-		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), false); err != nil {
+		if err := e.start(ctx, tx, issue, starting, task(issue, handoff, pr, reason), false, movedBack); err != nil {
 			return err
 		}
 	}

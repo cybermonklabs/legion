@@ -1269,18 +1269,28 @@ These arrive as messages on the Dispatch issue:
   worked toward the merge. The daemon ends no turn, so the turn reporting the completion is of
   an entry behind the one the role's phases row names, and nothing is recorded. The refusal
   names the issue, the role and the phase, the entry the completion is of and the entry the
-  role's phases row is on, and, when the task of that entry already waits on the claim, that the
-  turn began before it reached the session. It then tells the worker what to do in the same
-  words the `legion` tool's description gives for the code
+  role's phases row is on, and then what decided it, which is one of four readings: the
+  completion is at another commit than the head the record holds, or the record holds no pull
+  request for the issue; it names no commit at all, so it says nothing about any head; the phase
+  ends with no handoff record this role writes — retro and merging — so nothing the completion
+  names says which entry's work it is, and no head it reports on answers for it; or the move
+  that handed the phase out again moved the issue back, which asks for this phase's work to be
+  done again whatever head the completion names. When the task of that entry already waits on
+  the claim, the refusal says the turn began before it reached the session. It then tells the
+  worker what to do in the same words the `legion` tool's description gives for the code
   (`packages/contracts/fixtures/daemon-api/stale-entry.json` holds the two equal): end the turn
   without completing; the task of the entry the phase is on is owed to the claim and the daemon
   sends it by itself, which it does on every admission pass and on a sweep each minute; and that
   task is work of its own, done at the head it names and completed with a handoff of its own,
   never the refused completion's record, commit or verdict. A testing entry after such a move is
   for the head the fix pushed, and the verdict on the head before it answers for nothing there.
-  The same code on a completion of an entry above the one the phases row names is one the
-  record never produces, since the daemon raises the row in the transaction that composes the
-  entry's task; that refusal tells the worker to end the turn and tell the architect.
+  A completion at the head the record holds is taken rather than refused, where the phase ends
+  with a handoff record this role writes and no move back raised the entry it is behind: the
+  phase was handed out again at that same head, so the work the new entry's task asks for is the
+  work that turn did. The same code on a completion of an entry above the one the phases row
+  names is one the record never produces, since the daemon raises the row in the transaction
+  that composes the entry's task; that refusal tells the worker to end the turn and tell the
+  architect.
 
 An issue back in `in_progress` from `retro` or `merging` has a head that conflicts with its base:
 GitHub computes no merge ref for such a head and runs no check on it at all, so the daemon sent
@@ -1289,12 +1299,13 @@ the issue back to the implementer with the base to merge forward and told the ar
 from `merging` the merger kept its turn, its jobs, its process and its session. Neither turn was
 interrupted: each role was told on its own Envoy role topic that its phase had ended and that the
 workspace is the implementer's now. The implementer's retro completion after the move reports the
-entry retro handed it while its phases row is on the implementing one, so it is refused
-(`HANDOFF_STALE_ENTRY`), and the implementer merges the base forward in the implementing
-task's own turn and completes that work with a handoff of its own, never retro's commit; the
-merger's phases row still names the entry merging gave it, so a completion it sends for the phase
-it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`). The work comes back through testing, review,
-acceptance and retro to a new merge. A red check sends nothing back from anywhere.
+entry retro handed it while its phases row is on the implementing one, and retro writes no
+handoff record, so it is refused (`HANDOFF_STALE_ENTRY`) whatever head it names; the implementer
+merges the base forward in the implementing task's own turn and completes that work with a
+handoff of its own, never retro's commit; the merger's phases row still names the entry merging
+gave it, so a completion it sends for the phase it lost is refused (`HANDOFF_NOT_CURRENT_PHASE`).
+The work comes back through testing, review, acceptance and retro to a new merge. A red check
+sends nothing back from anywhere.
 
 The pull request's state as the daemon sees it:
 
