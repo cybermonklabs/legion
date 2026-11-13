@@ -17,6 +17,7 @@ import {
   resolveAsk,
   snoozeAsk,
 } from "./api";
+import type { SeededInboxRow } from "./local-instance-support";
 import { sessionIds } from "./session-ids";
 
 // One realistic workspace, built through the public API, that fills every surface only a human
@@ -91,19 +92,33 @@ export interface SeededWorkspace {
   >;
   readonly broadcast: { readonly id: string; readonly sessionIds: readonly string[] };
   readonly directMessage: string;
-  /** Rows the server lists for alice (open asks on open issues and documents); the snoozed one
-   *  is among them, under Later. The Inbox page opens on the reader's own work - every issue
-   *  here is alice's - so her default list is these rows less the document's, which nobody
-   *  holds and `?assignee=unassigned` lists. */
-  readonly inboxRows: number;
+  /** The rows the unfiltered Inbox read returns for alice once the seed has settled: the open
+   *  asks on open issues and documents, the snoozed one among them, under Later. The answered
+   *  ask and the retracted ask are absent. The Inbox page opens on the reader's own work - every
+   *  issue here is alice's, and the document's question waits on CORE's default assignee, alice
+   *  too - so her default list is these rows. */
+  readonly inbox: readonly SeededInboxRow[];
 }
 
 /** The spec's decision block becomes an ask only when the document service settles the spec,
- *  which happens after `createIssue` answers. The Inbox count is exact only once it has. */
-async function waitForSpecAsk(issueKey: string): Promise<void> {
+ *  which happens after `createIssue` answers. Waits for that ask and gives back its block id:
+ *  the service may retract the ask and write it again for the same block, so the block id, not
+ *  the ask id, names the decision's Inbox row. */
+async function waitForSpecAsk(issueKey: string): Promise<string> {
   const deadline = Date.now() + 15_000;
   for (;;) {
-    if (((await getIssue(issueKey)).open_asks ?? []).some((ask) => ask.block_id)) return;
+    const blockIds = new Set(
+      ((await getIssue(issueKey)).open_asks ?? []).flatMap((ask) =>
+        ask.block_id ? [ask.block_id] : []
+      )
+    );
+    if (blockIds.size > 1) {
+      throw new Error(
+        `seedWorkspace: ${issueKey}'s open asks name more than one block: ${[...blockIds].join(", ")}`
+      );
+    }
+    const [blockId] = blockIds;
+    if (blockId !== undefined) return blockId;
     if (Date.now() > deadline) {
       throw new Error(`seedWorkspace: ${issueKey}'s spec decision was not indexed within 15 s`);
     }
@@ -174,7 +189,7 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
   // newest first, so without this the "asked" and "updated the issue" rows swapped places
   // between two runs of the drift probe. Waiting here puts the ask before the patch in every
   // run.
-  await waitForSpecAsk(workflow.key);
+  const decisionBlockId = await waitForSpecAsk(workflow.key);
   await Promise.all([
     patchIssue(workflow.key, { labels: ["dispatch"], priority: 1, status: "in_progress" }),
     patchIssue(broadcastOrder.key, { status: "needs_review" }),
@@ -301,8 +316,18 @@ export async function seedWorkspace(): Promise<SeededWorkspace> {
       sessionIds: (broadcast.recipients ?? []).map((recipient) => recipient.session_id),
     },
     directMessage: directMessage.id,
-    // blocking, snoozed, rotate, the spec's decision block, and the document ask.
-    inboxRows: 5,
+    inbox: [
+      { askId: blocking.id, kind: "ask", made: `the blocking ask on ${folds.key}` },
+      { askId: snoozed.id, kind: "ask", made: `the snoozed ask on ${snooze.key}` },
+      { askId: rotation.id, kind: "ask", made: `the rotate ask on ${rotate.key}` },
+      { askId: documentAsk.id, kind: "ask", made: "the runbook document's ask" },
+      {
+        blockId: decisionBlockId,
+        issueKey: workflow.key,
+        kind: "block",
+        made: `the spec decision block on ${workflow.key}`,
+      },
+    ],
     issues: {
       broadcastOrder: broadcastOrder.key,
       child: child.key,

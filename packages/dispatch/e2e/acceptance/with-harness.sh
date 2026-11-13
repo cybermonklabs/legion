@@ -16,13 +16,16 @@
 # Usage, from `packages/dispatch`:
 #
 #   DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harness.sh \
-#     bash -c 'DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
-#       bash e2e/acceptance/create-document.sh'
+#     bash -c 'curl -sS -o /dev/null "http://127.0.0.1:$DISPATCH_E2E_PORT/auth/_dev/signin?login=alice" &&
+#       DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
+#       DISPATCH_DEFAULT_ASSIGNEE=alice bash e2e/acceptance/create-document.sh'
 #
 # The command runs with every variable of the stack exported, `DISPATCH_E2E_PORT` among them, and
-# `e2e-token` is the agent bearer the harness pins. The exit status is the command's own, so a
-# pipeline reads it with `${PIPESTATUS[0]}` or `set -o pipefail`. Everything this writes goes under
-# `mktemp`, and it removes exactly what it made.
+# `e2e-token` is the agent bearer the harness pins. The `curl` is the harness's dev sign-in, which
+# records `alice` as a person who has signed in, so the project the driver creates may name her as
+# its default assignee. The exit status is the command's own, so a pipeline reads it with
+# `${PIPESTATUS[0]}` or `set -o pipefail`. Everything this writes goes under `mktemp`, and it
+# removes exactly what it made.
 set -uo pipefail
 
 if [[ $# -eq 0 ]]; then

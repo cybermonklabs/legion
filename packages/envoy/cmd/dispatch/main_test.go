@@ -1232,7 +1232,7 @@ func TestCensusSubcommandExitsOneWhenAPendingMigrationsCensusCountsRows(t *testi
 		-- delivery_settings.production_job_name; a database at 52 still has both.
 		create table users (login text primary key);
 		alter table delivery_settings add column production_job_name text;
-		insert into projects (key, name) values ('CORE', 'Core');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice');
 		insert into issues (key, project_key, number, title, created_by, rank)
 			values ('CORE-1', 'CORE', 1, 'Spec', '{"kind":"session","id":"s"}', 'U');
 		insert into asks (issue_key, author, question, options, kind, approval)
@@ -1625,7 +1625,7 @@ func TestListenAddressJoinsAnIPv6LoopbackHost(t *testing.T) {
 func seedBackfillFile(t *testing.T, database *store.Store) []byte {
 	t.Helper()
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('FILES', 'Files')`,
+		`insert into projects (key, name, default_assignee) values ('FILES', 'Files', 'alice')`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank) values ('FILES-1', 'FILES', 1, 'Issue', 'todo', '{"kind":"user","id":"alice"}', 'U')`,
 		`insert into artifacts (issue_key, project_key, slug, name, kind, created_by) values ('FILES-1', 'FILES', 'notes-bin', 'notes.bin', 'file', '{"kind":"user","id":"alice"}')`,
 	} {

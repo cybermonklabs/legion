@@ -264,9 +264,10 @@ Sign in, then open **Settings**:
   `DISPATCH_DEFAULT_PROJECT` catches repositories with no mapping; that project must already exist.
 - **Projects → Default assignee**: name the person each project's unowned work lands on, in the
   projects table's own column. An issue created with no assignee, by an agent on the shared token
-  and under no parent that names one, goes to that person; a project with no default leaves such
-  an issue unassigned. Only a person sets it, here — no agent command or flag does — and the
-  picker's **Unassigned** clears it.
+  and under no parent that names one, goes to that person, and so does every question on an issue
+  nobody holds. Every project names one, so the page moves a default from one person to another
+  and clears none. A person moves it here, and an agent names a project's first one in the call
+  that creates the project.
 - **Architecture sources**: add each repository branch holding part of a project's architecture
   model. A project can have several, one per repository, and its model is all of their components
   together. Saving checks that the GitHub App can read the repository.

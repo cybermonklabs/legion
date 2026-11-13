@@ -76,7 +76,9 @@ async function indexedRow(match: (row: InboxRow) => boolean): Promise<InboxRow> 
  * Eleven rows covering every kind, every priority and none, every urgency and none, two
  * projects and none, and three holders - the last of them a thread the reader has already read,
  * which the Inbox lists like any other, drawn as read, since a thread stays until it is
- * dismissed.
+ * dismissed. Every row is held by somebody: whom a question reaches is three steps resolved
+ * (`coalesce(a.asked_of, i.assignee, p.default_assignee)`) and every project names a default
+ * assignee, so no row of a list this server answers is nobody's.
  */
 export async function seedEveryField(): Promise<{
   read: string;
@@ -84,14 +86,16 @@ export async function seedEveryField(): Promise<{
 }> {
   await setLiveSessions([THREAD_SESSION]);
   await createProject({ key: "CORE", name: "Core" });
-  await createProject({ key: "MIRROR", name: "Mirror" });
+  // MIRROR names carol, which is how she is a person who has signed in and so a person an
+  // issue below may be handed to; the issue this file makes in MIRROR is alice's own.
+  await createProject({ key: "MIRROR", name: "Mirror" }, { login: "carol" });
   const rows: ViewRow[] = [];
 
   const question = async (
     title: string,
     priority: IssuePriority | null,
     urgency: "blocking" | "high" | "low" | "med" | undefined,
-    assignee: string | null
+    assignee: string
   ): Promise<string> => {
     const issue = await createIssue({ project: "CORE", title });
     if (priority !== null) await patchIssue(issue.key, { priority });
@@ -102,7 +106,7 @@ export async function seedEveryField(): Promise<{
       asSession()
     );
     rows.push({
-      assignee: assignee ?? "unassigned",
+      assignee,
       id: ask.id,
       issueKey: issue.key,
       priority: priority === null ? "none" : `P${priority}`,
@@ -127,7 +131,9 @@ export async function seedEveryField(): Promise<{
     asSession()
   );
   await question("Clock drift", 3, "med", "alice");
-  await question("Replay budget", null, undefined, null);
+  // Carol's question: the third holder, and the row that was nobody's before every project
+  // named a default assignee.
+  await question("Replay budget", null, undefined, "carol");
 
   const decisionIssue = await createIssue({
     project: "CORE",
@@ -273,7 +279,6 @@ const VALUE_LABELS: Record<string, string> = {
   med: "Medium",
   question: "Question",
   reply: "Reply",
-  unassigned: "Unassigned",
 };
 
 /** The plural each Type band is headed by. */
@@ -304,11 +309,7 @@ export function valuesOf(rows: readonly ViewRow[], field: keyof ViewRow): string
   const fixed = VALUE_ORDER[field] ?? [];
   const seen = [...new Set(rows.map((row) => String(row[field])))];
   const ranked = (value: string) =>
-    value === "none" || value === "unassigned"
-      ? Number.MAX_SAFE_INTEGER
-      : fixed.length === 0
-        ? 0
-        : fixed.indexOf(value);
+    value === "none" ? Number.MAX_SAFE_INTEGER : fixed.length === 0 ? 0 : fixed.indexOf(value);
   return seen.sort((left, right) => ranked(left) - ranked(right) || left.localeCompare(right));
 }
 

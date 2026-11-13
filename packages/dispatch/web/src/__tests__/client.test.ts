@@ -713,16 +713,13 @@ test("API client sends project default assignee requests to their routes", async
     { assignee: "alice@example.com" },
     keyed("put-1")
   );
-  await settingsApi.putProjectDefaultAssignee("CORE", { assignee: null }, keyed("put-2"));
 
   expect(stub.requests.map(({ init, path }) => [init?.method ?? "GET", path])).toEqual([
     ["GET", "/api/v1/settings/project-default-assignees"],
     ["PUT", "/api/v1/projects/CORE/default-assignee"],
-    ["PUT", "/api/v1/projects/CORE/default-assignee"],
   ]);
+  // The write always names a person: no body of this route clears a default.
   expect(JSON.parse(stub.requests[1]?.body as string)).toEqual({ assignee: "alice@example.com" });
-  // Clearing a default is the same route with an explicit null, not a body that omits the field.
-  expect(JSON.parse(stub.requests[2]?.body as string)).toEqual({ assignee: null });
 });
 
 test("API client sends inline artifacts as JSON", async () => {
