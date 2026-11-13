@@ -1255,14 +1255,14 @@ package api
 // has answered, since a reader must never take "never read" for a read at the zero instant;
 // `headUpdatedAt`, the newest `updated_at` GitHub has given the pull request among its lifecycle
 // observations, absent when the record holds none; `checkRuns`, how many of the fence's runs are
-// stamped with that head, which is the runs a CI settlement has applied for it and so 0 until CI
-// on the head has settled, a running CI as much as none, written whatever its value so that 0 is
-// that reading rather than a gap in the view; and `toldHead` with `toldState`, the head
-// and state the architect and the reviewer were told of once the round was reported stuck, both
-// empty while the round still waits for its first answer, which is what tells a stuck round from
-// a new one. A caller from a pod whose claims record a contract below 93 is served the state with
-// no `mergeWait` on any issue at all — the key absent rather than empty, since a strict reader
-// before the contract that added a key refuses it whether or not it names anything (api's
+// stamped with that head, which is the runs a CI settlement has applied for it and so 0 until a
+// settlement has arrived, which is no evidence of what GitHub holds, written whatever its value
+// so that 0 is that reading rather than a gap in the view; and `toldHead` with `toldState`, the
+// head and state the architect and the reviewer were told of once the round was reported stuck,
+// both empty while the round still waits for its first answer, which is what tells a stuck round
+// from a new one. A caller from a pod whose claims record a contract below 93 is served the
+// state with no `mergeWait` on any issue at all — the key absent rather than empty, since a
+// strict reader before the contract that added a key refuses it whatever it names (api's
 // stateNarrowings, withoutMergeWait) — as a caller below 85 is served every issue without `why`
 // and every member of the waiting line with its `place` and its `length` alone, one below 75
 // the claim views and the issues without the nine keys the decided record added and the body

@@ -402,9 +402,10 @@ const legionMergeWaitView = z.object({
   headUpdatedAt: timestamp.optional(),
   /** How many of the fence's check runs are stamped with the current head
    * (`record.PullRequest.CheckRuns`): the runs a CI settlement has applied for this head. The
-   * listener settles a head only once every check it has seen there is terminal, so 0 is a head
-   * whose CI is still running as much as one GitHub ran no check on; count the head's runs on
-   * GitHub to tell them apart. Written whatever its value, so 0 is that reading and not a gap. */
+   * listener settles a head only once every check it has seen there is terminal, so 0 is no
+   * evidence of what GitHub holds: CI still running, no check at all, and runs that concluded with
+   * their settlement not yet arrived all read 0, so read the head's runs and their status on
+   * GitHub before acting. Written whatever its value, so 0 is that reading and not a gap. */
   checkRuns: z.number().int().nonnegative(),
   /** The head and the merge state the architect and the reviewer were told of
    * (`record.ReviewDecision.ToldStuckHead` and `ToldStuckState`, the marks workflow's

@@ -44,7 +44,8 @@ as the fingerprint decides (*The reviewer*, below, and
   base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
     base_path=$(jq -rn --arg b "$base" '$b | split("/") | map(@uri) | join("/")') && \
     echo rulesets: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context' && \
-    echo protection: && gh api "repos/<o>/<r>/branches/$base_path" --jq '.protection.required_status_checks.checks[].context'
+    echo protection: && gh api "repos/<o>/<r>/branches/$base_path" --jq '.protection.required_status_checks.checks[].context' && \
+    echo code_scanning: && gh api --paginate "repos/<o>/<r>/rules/branches/$base_path" --jq '.[] | select(.type=="code_scanning") | .parameters'
   ```
 
   A read GitHub refuses stops the command there, and is reported to the architect, never guessed.
@@ -66,25 +67,27 @@ as the fingerprint decides (*The reviewer*, below, and
   cancelled jobs and the jobs that depend on them, and to nothing that succeeded. Never
   `--job <job-id>` alone: under a routing workflow, re-running only the final job reads the
   cancelled results again and stays red. GitHub refuses a re-run while an attempt of that run is
-  still in progress: wait for it. When no
-  run at the head holds the job, or nothing will run it (a check only a commit status reports, a
-  workflow another repository defines), tell the architect and do not approve.
-  A head that carries no check run at all is neither of those, and one count tells it apart:
-  `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
+  still in progress: wait for it. When nothing will run it (a check only a commit status reports,
+  a workflow another repository defines), tell the architect and do not approve; a required
+  item that no run at the head holds at all is the case below.
+  A required item that no run at the head holds is neither of those, and what the base requires is more than its status checks: a `code_scanning` rule, which the read above prints under `code_scanning:`, requires an analysis no status-check list names, which is what held this issue's own six heads while every required status check was green.
+  Count the head's runs: `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
   Read the merge state first where that count is zero (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.
-  A head GitHub computes no merge for (`DIRTY`) takes a merge of its base forward, which is the implementer's push, and never the remedy below; the daemon itself sends such a head back to implementing.
+  A head GitHub computes no merge for (`DIRTY`) takes a merge of its base forward, which is the implementer's push, and never the remedy below; the daemon itself sends such a head back to implementing, so it never waits in the issue's `mergeWait` once a read has answered for it.
   A second reading, of 60 open pull requests at 2026-11-12T22:16Z, found 12 heads with no check run: 10 `DIRTY`, and 2 `BLOCKED` fork pull requests whose workflow runs waited for a maintainer's approval (`action_required`, #2051 and #2646).
   A fork head of that kind takes the maintainer's approval of its runs, which is a person's: tell the architect, and never close and reopen it.
-  Every other head with no required run is `BLOCKED`, and the rule for it is one, whatever its count: the remedy below, unless the check's workflow skipped the change itself.
-  On cybermonklabs/legion#2856 the remedy took a head from zero check runs to four (dispatch://INFRA-2831).
-  Read the `on:` block of that check's workflow first: a `paths` or `paths-ignore` filter that skips every file of the change means the workflow started and skipped itself, so a reopen starts it no more.
-  That was this issue's own cause, `codeql.yaml`'s `paths-ignore`, which the reopen beat only after cybermonklabs/legion#3279 removed the filter; such a filter is the repository's to change, so tell the architect.
-  Otherwise no event started the workflow on a pull request that was already open, and the remedy delivers it.
-  Close the pull request and reopen it at the same head.
-  The reopen delivers the event the workflow needs, and the head and the approval stand.
+  A required workflow whose own `paths` or `paths-ignore` filter skips every file of the change gets no run from GitHub at all, and a close and a reopen send the same event.
+  So while the base still carries that filter the reopen does nothing, and the head takes a change to the workflow or to the head: tell the architect.
+  When the base dropped that filter after the pull request opened, the head takes the remedy: that was this issue's own cause, `codeql.yaml`'s `paths-ignore`, where the reopen worked once cybermonklabs/legion#3279 had removed the filter from main.
+  Any other `BLOCKED` head with a required item that no run holds, whatever its count, is most often one no event started on a pull request that was already open, and it takes the remedy, which took one such head from zero check runs to four (dispatch://INFRA-2831).
+  A head still missing the item after one reopen has a cause the reopen does not move, among them a `branches` filter that skips the base, trigger `types` that leave out `reopened`, and a required name no job produces: tell the architect, and never reopen it a second time.
+  Close the pull request, wait a minute, and reopen it at the same head: in cybermonklabs/legion a reopen within about a minute of the close can have its new CI run cancelled by the close's own run, which leaves a failing `ci-ok` (`.github/workflows/tests-closed.yaml`).
+  The reopen delivers the event the workflow needs, and the head and any approval already given stand.
   It costs two things: the close writes a `pr-closed-unmerged` notice to the architect, and the reopen starts the head's other checks again.
   So tell the architect before you close, and say why.
   It is for no other state: not a check that is running, not a check that is red, and not a head GitHub holds for a review the repository requires.
+  A head whose checks are still running is waited for: its runs on GitHub stand `queued` or `in_progress` (`gh api --paginate 'repos/<o>/<r>/commits/<headRefOid>/check-runs?per_page=100' --jq '.check_runs[].status' | sort | uniq -c`, every page of it).
+  The daemon's own count in the issue's `mergeWait`, `checkRuns`, is only the runs a CI settlement applied, so a zero there is no evidence of what GitHub holds: count on GitHub before you act.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
   A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.

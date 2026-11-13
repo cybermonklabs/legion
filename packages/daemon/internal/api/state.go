@@ -1167,10 +1167,11 @@ type MergeWaitView struct {
 	// CheckRuns counts the fence's runs stamped with the current head
 	// (record.PullRequest.CheckRuns, record.AttemptRun.Head): the runs a CI settlement has applied
 	// for this head. The listener settles a head only once every check it has seen there is
-	// terminal, so the count is 0 until CI on the head has settled, which makes 0 a head whose CI
-	// is still running as much as a head GitHub ran no check on; a reader counts the head's runs on
-	// GitHub (`gh api repos/<owner>/<repo>/commits/<head>/check-runs --jq .total_count`) to tell
-	// the two apart. It is written whatever its value, so 0 is that reading and not a gap.
+	// terminal, so the count is 0 until CI on the head has settled, and 0 is no evidence of what
+	// GitHub holds: a head whose CI is still running, a head GitHub ran no check on, and a head
+	// whose runs all concluded with their settlement not yet arrived all read 0, so a reader reads
+	// the head's runs and their status on GitHub before acting on it. It is written whatever its
+	// value, so 0 is that reading and not a gap.
 	CheckRuns int `json:"checkRuns"`
 	// ToldHead and ToldState are the reviewer's record.ReviewDecision.ToldStuckHead and
 	// ToldStuckState, the marks workflow's tellStuckMergeState leaves once the architect and the
