@@ -2933,12 +2933,14 @@ architect, planner, implementer, tester, reviewer, merger):
    The clone it sweeps is derived from the workspace's own path, through the layout provisioning laid that workspace out in (`workspace.WorkspaceOf`), and is never read from the workspace's `.jj/repo` or the repository's `store/git_target`, which every role of the pod can write:
    the container's restart policy is `Always` and its disk outlives it, so a launcher that read those files after a restart would read what the last container's roles left there, and would send its first pass, which removes at any age, wherever they point.
    A workspace that layout does not account for is a line naming that workspace and, where the layout can say it, the directory `Location` would have put it in — no clone was derived, so the line names none.
+   A layout directory below the state directory that is a symlink — the workspace, the clone, or a directory above either up to the state directory — is a line naming that directory (`refuseSymlinkedLayout`).
    A derived clone with no git directory is a line naming the `.git` that is missing and the error of reading it, and a derived git directory holding no git worktree entry for the workspace is a line naming that git directory and the workspace it serves no worktree of.
-   Each of the three is no sweep at all.
+   Each of the four is no sweep at all.
    What the derivation settles is the text of a path, which no role can write; the directories that text names are on the issue's disk, which the `roles` container mounts read-write and where every role writes as the pod's uid.
    So every pass holds that path to the layout again before it walks it, through the check the init container's sweep runs too (`workspace.GitLocksOf`, `refuseSymlinkedLayout` in `internal/workspace/config.go`):
    a role that renames the clone away and leaves a symlink to a directory of its own where it stood is refused in one line, that pass removes nothing, and the launcher goes on serving its roles.
-   A link planted in the instant between that check and the walk is caught by neither, which is a known limit of the sweep: closing it takes `openat` and `unlinkat` down every component of every path the sweep touches.
+   What is left open runs from that check through the whole walk to each lock's first read (`read`): `WalkDir` goes down by path, so a directory inside `.git` swapped for a link during the walk is followed, and the recheck, the second read below, only ties the removal to what that first read found.
+   That gap is a known limit of the sweep: closing it takes `openat` and `unlinkat` down every component of every path the sweep touches.
    The first pass runs when the launcher starts, before it serves any role start and so before the pod's one bundle restore, and no age bound applies to it.
    A pass then runs every minute, whether or not a role process is running.
    A clock pass removes a lock only when no process of the container holds it open and it was last written more than 15 minutes ago.

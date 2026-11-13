@@ -1625,6 +1625,47 @@ func TestTheSweepRefusesACloneReplacedWithASymlinkAfterTheDerivation(t *testing.
 	})
 }
 
+// A clone directory that is already a symlink when the launcher starts is refused by the
+// derivation itself (workspace.WorkspaceOf, which runs the layout guard before it reads
+// .git/worktrees), and the sweep is left with no workspace at all.
+//
+// Every pass guards again (workspace.GitLocksOf), so a sweep that took such a clone would still
+// remove nothing; what the derivation's own guard settles is the step before that. Without it the
+// derivation reads the worktree entries through the link — the clone's .git is no link itself, so
+// nothing else refuses — finds this workspace's entry there and answers the clone, and the log
+// then says the sweep works a clone it would refuse on every pass, rather than the one line that
+// says why it has none.
+func TestTheDerivationRefusesACloneThatIsASymlinkBeforeTheSweepStarts(t *testing.T) {
+	c := newLockClone(t)
+	stale := c.lock("refs/heads/main.lock", "stale", time.Hour)
+	elsewhere := c.clone + "-real"
+	if err := os.Rename(c.clone, elsewhere); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(elsewhere, c.clone); err != nil {
+		t.Fatal(err)
+	}
+	planted := filepath.Join(elsewhere, ".git", "refs", "heads", "main.lock")
+	t.Chdir(c.dir)
+	log := &lockedBuffer{}
+	s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+	refusal := fmt.Sprintf("launcher: the git lock sweep's working directory %q is no jj workspace it can sweep (%q); it takes its workspace from the first role start",
+		c.dir, fmt.Sprintf("refusing workspace operation in %s: %s is a symlink, and no directory of the workspace layout below the state directory is one", c.dir, c.clone))
+	requireLine(t, log, refusal)
+	if s.ws.Dir != "" || s.fromWorkDir {
+		t.Fatalf("a launcher whose clone is a symlink gave its sweep the workspace %q (from its working directory: %v); log:\n%s", s.ws.Dir, s.fromWorkDir, log.String())
+	}
+	if strings.Contains(log.String(), "the git lock sweep works the workspace") {
+		t.Fatalf("the sweep says it works a workspace whose clone is a symlink:\n%s", log.String())
+	}
+	s.pass(context.Background(), false)
+	for _, path := range []string{planted, stale} {
+		if swept(path) {
+			t.Fatalf("a sweep with no workspace removed %s:\n%s", path, log.String())
+		}
+	}
+}
+
 // A removal that fails is one lock's problem and no one else's: the pass keeps that lock, with
 // the failure as the condition that kept it, goes on to the next lock and ends as any other pass
 // does. This runs in PID 1 of the roles container, where a failure that ended the process would

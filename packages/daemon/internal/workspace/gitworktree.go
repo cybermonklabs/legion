@@ -35,24 +35,15 @@ const rootHeadRef = "ref: refs/jj/root"
 // gitWorktreeEntries is the admin directories of the shared clone's git worktrees registered at
 // dir: each <clone>/.git/worktrees/<id> whose gitdir file names dir's .git, dir as given or with its
 // symlinks resolved, as jj records it. git names an entry after the directory's base name, with a
-// number on a collision, so the id is read, never derived. A clone with no linked worktree, or a
-// jj that colocates no workspace (0.44), has none. A clone whose .git or .git/worktrees is a
-// symlink is refused: git never creates either as one, and each caller writes or removes files in
-// the entries, which a symlink a tree agent planted would place outside the clone.
+// number on a collision, so the id is read, never derived, and each entry's gitdir is read bounded
+// (readGitdir). A clone with no linked worktree, or a jj that colocates no workspace (0.44), has
+// none. A clone whose .git or .git/worktrees is a symlink is refused, the refusal naming the
+// clone's git directory: git never creates either as one, and each caller writes or removes files
+// in the entries, which a symlink a tree agent planted would place outside the clone.
 func gitWorktreeEntries(cloneDir, dir string) ([]string, error) {
-	return gitDirWorktreeEntries(filepath.Join(cloneDir, ".git"), dir)
-}
-
-// gitDirWorktreeEntries is gitWorktreeEntries over a git directory named outright: each
-// gitDir/worktrees/<id> whose gitdir file names dir's .git. gitLocks sweeps the git directory it
-// is handed, and must list the entries of that same directory, so the directory is read where
-// gitWorktreeEntries joins the clone with .git. Every caller hands it `<clone>/.git` — the pod's
-// two sweeps reach it through GitLocksOf, which joins the clone the layout names with .git — and
-// the refusal names the git directory it was handed, which is the directory it read, so a caller
-// that ever hands it another is answered about the directory it passed and no other.
-func gitDirWorktreeEntries(gitDir, dir string) ([]string, error) {
+	gitDir := filepath.Join(cloneDir, ".git")
 	admin := filepath.Join(gitDir, "worktrees")
-	for _, path := range []string{filepath.Dir(admin), admin} {
+	for _, path := range []string{gitDir, admin} {
 		info, err := os.Lstat(path)
 		switch {
 		case err == nil && info.Mode()&fs.ModeSymlink != 0:

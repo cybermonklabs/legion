@@ -126,7 +126,7 @@ func newJJClone(t *testing.T) *jjClone {
 	run.Run(clone, "jj", "workspace", "add", ws, "--name", jjWorkspaceName, "--revision", "main", "--sparse-patterns", "empty", "-R", clone)
 	run.Run(ws, "jj", "sparse", "reset")
 	// git names a worktree entry after the directory's base name, with a number on a collision, so
-	// the entry this row plants its lock in is read rather than derived (gitDirWorktreeEntries
+	// the entry this row plants its lock in is read rather than derived (gitWorktreeEntries
 	// reads it the same way).
 	admin := filepath.Join(clone, ".git", "worktrees")
 	entries, err := os.ReadDir(admin)

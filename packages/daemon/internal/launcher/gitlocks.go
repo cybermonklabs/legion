@@ -147,13 +147,17 @@ type gitLockSweep struct {
 	// which runs on every pass before the walk (workspace.GitLocksOf, refuseSymlinkedLayout),
 	// together with the walk's own check that each worktree entry it opens names this
 	// workspace. A planted link still there when a pass runs is refused in one line, and that
-	// pass removes nothing. What is left is the instant between the guard and the walk: a link
-	// planted inside it is caught by neither, and closing that takes openat and unlinkat down
-	// every component of every path the sweep touches, which this deployment does not build
-	// without a person's approval. It is a named limit of this sweep, deliberately left open.
+	// pass removes nothing. What is left open runs from the guard through the whole walk to each
+	// lock's first read (read): WalkDir goes down by path, so a directory inside .git swapped for
+	// a link during the walk is followed, and the recheck only ties the removal to what that
+	// first read found. Closing that takes openat and unlinkat down every component of every path
+	// the sweep touches, which this deployment does not build without a person's approval. It is
+	// a named limit of this sweep, deliberately left open.
 	ws workspace.Workspace
-	// learned says a role start has already given the sweep a workspace, whether or not the
-	// derivation that followed answered one, so no later start derives again (learn).
+	// learned says the sweep has already been given a workspace — by the launcher's own working
+	// directory (newGitLockSweep) or by a role start, whether or not the derivation that followed
+	// a start answered one — so no later start derives again. It is what learn's locked body
+	// tests.
 	learned bool
 	// refusal is the last reason a pass was refused for, so the same one is written once rather
 	// than once a minute for the pod's life. Only a pass that made every read it meant to and
@@ -201,6 +205,7 @@ func newGitLockSweep(log func(format string, args ...any)) *gitLockSweep {
 	}
 	s.ws = ws
 	s.fromWorkDir = true
+	s.learned = true
 	s.log("launcher: the git lock sweep works the workspace %q, which is the launcher's own working directory, and its clone %q", dir, ws.Clone)
 	return s
 }
@@ -262,8 +267,8 @@ func (s *gitLockSweep) serve(ctx context.Context) <-chan struct{} {
 // the ordinary pod — where that working directory is the issue's workspace — a start would
 // otherwise wait a pass out to find there was nothing to learn. fromWorkDir is settled before any
 // role is served and never written again, so reading it unlocked races nothing, and the locked
-// body it skips provably does nothing: workspace is not empty wherever fromWorkDir is set, which
-// is the one thing that body tests.
+// body it skips provably does nothing: newGitLockSweep sets learned wherever it sets fromWorkDir,
+// and learned is what that body tests.
 //
 // The clone is derived here, once, from the workspace's own path (workspace.WorkspaceOf), and
 // the workspace's files are not read for it at all, which is what makes the moment this runs no
