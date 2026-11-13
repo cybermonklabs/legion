@@ -1369,8 +1369,7 @@ package api
 // 86, each renumbered when another change took the number first, then 94, which it left for 98
 // because an open head declared a higher number that could land first; 86 was read at
 // 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
-// already declared it, merged at 18:19Z. Taking the number above every open head rather than
-// above the base alone is what leaves no open head able to land the same number first. A reading
+// already declared it, merged at 18:19Z. A reading
 // of the open heads is of this file at refs/pull/<n>/head for every open pull request, not of a
 // file list: GitHub cuts a pull request's file list short, so one that changes more files than
 // the page holds answers without this path. Read the base's own number and every open pull

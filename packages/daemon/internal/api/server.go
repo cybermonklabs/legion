@@ -905,9 +905,9 @@ const leakCheckCauseContract = 87
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the keys instead, so the strip is what
 // keeps the numbers from a caller that did not ask for them rather than what keeps such a caller
-// reading at all. It is the band below heldContract's, the highest of the fifteen and this
-// daemon's own contract, so a caller in a pod at 94 through 97 is served the two keys and not
-// `admission.held`.
+// reading at all. It is the band below heldContract's band, which is the highest of the fifteen
+// and this daemon's own contract, so a caller in a pod at 94 through 97 is served the two keys
+// and not `admission.held`.
 const phaseEntriesContract = 94
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.

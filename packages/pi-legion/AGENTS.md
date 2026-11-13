@@ -103,7 +103,10 @@ the daemon reads in one order, of which `at_work` names no issue today (see
 that waits; the strict reader this plugin parses the state through takes the key as optional,
 because a caller from a pod whose claims record a contract under 98 is served the admission
 block without it (`api.stateFor`,
-`withoutHeld`), and the controller's tick notice carries the same rows), after contract 87
+`withoutHeld`), and the controller's tick notice carries the same rows), after contract 94
+(dispatch://INFRA-2800: each issue carries `phaseEntry` and `givenEntry`, which a caller below
+94 is served without, and a completion of an older phase entry is refused
+`HANDOFF_STALE_ENTRY`), after contract 87
 (dispatch://INFRA-3219: each claim view carries `leakCheckCause`, the sentence a launch try was
 refused with because the shared public leak check could not be installed, which a caller below
 87 is served without), after contract 86
