@@ -40,6 +40,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlockproxy"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/config"
@@ -623,8 +624,12 @@ func main() {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
 		}})
+	// The answer recorder is outermost, outside the request deadline, so it sees every answer of
+	// this port, whichever writer wrote it: the API's routes, the OAuth provider's library, the
+	// approval page and the mux's own 404 and 405 (answer.Middleware). Its counter is built on the
+	// registry the metrics port serves.
 	srv := &http.Server{
-		Handler:           withRequestDeadline(mux, requestDeadline),
+		Handler:           answer.Middleware(withRequestDeadline(mux, requestDeadline), answer.NewAnswers(registry)),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      writeTimeout,
@@ -788,11 +793,14 @@ const shutdownTimeout = writeTimeout
 // is given is a whole number of them.
 func wholeSeconds(d time.Duration) string { return strconv.Itoa(int(d/time.Second)) + "s" }
 
+// withRequestDeadline hands next the request with deadline on its context, through
+// answer.WithContext, so the answer recorder outside it reads the route the mux matched on the
+// request the mux is handed.
 func withRequestDeadline(next http.Handler, deadline time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, answer.WithContext(r, ctx))
 	})
 }
 

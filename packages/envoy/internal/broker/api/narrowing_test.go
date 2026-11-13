@@ -12,6 +12,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
@@ -182,7 +183,7 @@ func TestABadNarrowingIs400AndMintsNothing(t *testing.T) {
 // minter runs, and one GitHub refuses (a repository it names that the installation does not
 // reach) 422 NARROWING_REFUSED; neither releases a value or answers the 502 MINT_FAILED of an
 // App that failed, and each is logged at WARN as a refused narrowing, never as the operator's
-// mint failure.
+// mint failure, beside the record of the refusal the answer recorder writes for it.
 func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing.T) {
 	logged := policytest.CaptureLog(t)
 	s := newNarrowingServer(t)
@@ -219,5 +220,16 @@ func TestANarrowingTheSecretCannotServeIsTheCallersAndNotAMintFailure(t *testing
 	}
 	if warned != 2 {
 		t.Fatalf("logged %d %q lines naming APP_KEY at WARN, want 2: %s", warned, requests.NarrowingRefusedMessage, logged.String())
+	}
+	for _, code := range []string{"NARROWING_OWNER_NOT_LISTED", "NARROWING_REFUSED"} {
+		recorded := 0
+		for line := range strings.Lines(logged.String()) {
+			if strings.Contains(line, "WARN "+answer.RefusalMessage) && strings.Contains(line, "code="+code) && strings.Contains(line, "secrets=[APP_KEY]") {
+				recorded++
+			}
+		}
+		if recorded != 1 {
+			t.Fatalf("logged %d %q records of %s naming APP_KEY, want 1 beside the refused narrowing's line: %s", recorded, answer.RefusalMessage, code, logged.String())
+		}
 	}
 }

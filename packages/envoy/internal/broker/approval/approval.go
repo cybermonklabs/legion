@@ -30,6 +30,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/oidc"
@@ -238,6 +239,7 @@ func (p *Page) sameOrigin(r *http.Request) bool {
 
 // refuseOrigin answers a POST sameOrigin refuses, having written nothing.
 func refuseOrigin(w http.ResponseWriter) {
+	answer.FromWriter(w).NoteCode(codeOriginRefused)
 	writeMessage(w, http.StatusForbidden, say("Refused",
 		"This request did not come from the secrets broker's own page, so nothing was changed."))
 }
@@ -250,6 +252,7 @@ func refuseOrigin(w http.ResponseWriter) {
 // ServiceAccount token that refusal names.
 func (*Page) WriteRateLimited(w http.ResponseWriter, retryAfter int) {
 	w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+	answer.FromWriter(w).NoteCode(codeRateLimited)
 	writeMessage(w, http.StatusTooManyRequests, say("Too many requests",
 		"Too many requests have come from this address. Try again in a moment."))
 }
@@ -296,6 +299,9 @@ type message struct {
 	chrome
 	Lines []string
 	Link  *link
+	// AnswerID is the answer's id (answer.Recorder.ID), printed on a refusal so the person has
+	// a thing to quote to whoever runs the broker; empty on any other page.
+	AnswerID string
 }
 
 // say is a message page with title and lines and nothing else.
@@ -303,7 +309,50 @@ func say(title string, lines ...string) message {
 	return message{chrome: chrome{Title: title}, Lines: lines}
 }
 
+// The code each refusal of the page answers with, which its writer notes on the answer's record
+// (answer.Recorder.NoteCode) before writeMessage writes its page: the page is HTML, so the record
+// cannot read a code from its body as it does from the API's.
+const (
+	// A GET /approve/{record} whose id is no record id.
+	codeRecordIDInput = "RECORD_ID_INPUT"
+	// A signed-in person's GET /approve/{record} of a record the broker does not have.
+	codeRecordNotFound = "NOT_FOUND"
+	// A POST whose form could not be read: a decision's or a sign-out's.
+	codeFormUnreadable = "FORM_UNREADABLE"
+	// A decision that is neither approve nor deny.
+	codeDecisionInvalid = "DECISION_INVALID"
+	// A decision form that names no record it may decide, or a malformed token or expiry.
+	codeDecisionRecordsInvalid = "DECISION_RECORDS_INVALID"
+	// A decision form whose token was not made for this sign-in and these printed records.
+	codePageTokenInvalid = "PAGE_TOKEN_INVALID"
+	// A decision form whose page is more than tokenLifetime old.
+	codePageExpired = "PAGE_EXPIRED"
+	// A decision form naming a record its page did not print.
+	codeRecordNotPrinted = "RECORD_NOT_PRINTED"
+	// A POST from another origin than the broker's own (refuseOrigin).
+	codeOriginRefused = "ORIGIN_REFUSED"
+	// A request over the address bucket the page's routes spend (WriteRateLimited).
+	codeRateLimited = "RATE_LIMITED"
+	// A sign-in callback from a browser with no sign-in in progress.
+	codeSignInNotStarted = "SIGN_IN_NOT_STARTED"
+	// A sign-in callback whose state is not the one the sign-in sent.
+	codeSignInStateInvalid = "SIGN_IN_STATE_INVALID"
+	// A sign-in that would return somewhere other than a record's page.
+	codeSignInNextInvalid = "SIGN_IN_NEXT_INVALID"
+	// A sign-in the provider itself refused, returning an error and no code.
+	codeSignInProviderRefused = "SIGN_IN_PROVIDER_REFUSED"
+	// A sign-in whose code the provider would not exchange, or whose ID token did not verify.
+	codeSignInUnverified = "SIGN_IN_UNVERIFIED"
+	// A verified sign-in the Workspace rule refuses (oidc.WorkspaceLogin).
+	codeSignInAccountRefused = "SIGN_IN_ACCOUNT_REFUSED"
+)
+
+// writeMessage writes m as the page's answer with status. A refusal's page prints the answer's
+// id, so a person refused on it has the id the broker's own record of that refusal names.
 func writeMessage(w http.ResponseWriter, status int, m message) {
+	if status >= 400 && status < 500 {
+		m.AnswerID = answer.FromWriter(w).ID()
+	}
 	writePage(w, status, "message.html", m)
 }
 

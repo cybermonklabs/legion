@@ -432,6 +432,7 @@ func (p *Provider) exchangeGrant(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 	request, err := p.oauth.NewAccessRequest(txCtx, r, oauthstore.NewExchangeSession())
+	noteClient(ctx, request)
 	if err != nil {
 		p.writeError(ctx, w, request, err)
 		return

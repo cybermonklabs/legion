@@ -15,6 +15,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
 )
@@ -111,8 +112,10 @@ type pageView struct {
 // the note that its typed code is decided on Dispatch's machine-login page, and offers no
 // button.
 func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session) {
+	recorder := answer.FromContext(r.Context())
 	id := r.PathValue("record")
 	if !record.ValidID(id) {
+		recorder.NoteCode(codeRecordIDInput)
 		writeMessage(w, http.StatusBadRequest, say("Not a request", "Credential-request record ids are lowercase-hex SHA-256 hashes."))
 		return
 	}
@@ -126,6 +129,7 @@ func (p *Page) ServeRecord(w http.ResponseWriter, r *http.Request, sess Session)
 	case errors.Is(err, pgx.ErrNoRows):
 		m := say("No such request", "The secrets broker has no credential request "+id+".")
 		m.Login = sess.Login
+		recorder.NoteCode(codeRecordNotFound)
 		writeMessage(w, http.StatusNotFound, m)
 		return
 	case err != nil:
@@ -411,12 +415,14 @@ func firstRecordID(values []string) string {
 // function's: a replayed form decides nothing again. It answers 303 to the first record's page
 // with the decided ids, whose outcomes that page reads from the records themselves.
 func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session) {
+	recorder := answer.FromContext(r.Context())
 	if !p.sameOrigin(r) {
 		refuseOrigin(w)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxFormBytes)
 	if err := r.ParseForm(); err != nil {
+		recorder.NoteCode(codeFormUnreadable)
 		writeMessage(w, http.StatusBadRequest, say("Not a decision", "The form could not be read, so nothing was decided."))
 		return
 	}
@@ -437,6 +443,7 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 		approve = true
 	case "deny":
 	default:
+		recorder.NoteCode(codeDecisionInvalid)
 		writeMessage(w, http.StatusBadRequest, say("Not a decision", "A decision is approve or deny, so nothing was decided."))
 		return
 	}
@@ -445,21 +452,25 @@ func (p *Page) ServeDecide(w http.ResponseWriter, r *http.Request, sess Session)
 	expires, err := strconv.ParseInt(form.Get("expires"), 10, 64)
 	token, tokenErr := hex.DecodeString(form.Get("token"))
 	if !printedOK || !decideOK || len(decide) == 0 || err != nil || tokenErr != nil {
+		recorder.NoteCode(codeDecisionRecordsInvalid)
 		writeMessage(w, http.StatusBadRequest, say("Not a decision", "The form names no request it may decide, so nothing was decided."))
 		return
 	}
 	switch {
 	case !hmac.Equal(token, pageMAC(sess.secret, expires, printed)):
+		recorder.NoteCode(codePageTokenInvalid)
 		writeMessage(w, http.StatusForbidden, say("Refused",
 			"This form was not made for your sign-in, so nothing was decided. Open the request again."))
 		return
 	case time.Now().Unix() >= expires:
+		recorder.NoteCode(codePageExpired)
 		writeMessage(w, http.StatusForbidden, say("Page expired",
 			"This page is more than an hour old, so nothing was decided. Open the request again."))
 		return
 	}
 	for _, id := range decide {
 		if !slices.Contains(printed, id) {
+			recorder.NoteCode(codeRecordNotPrinted)
 			writeMessage(w, http.StatusForbidden, say("Refused",
 				"This form names a request its page did not print, so nothing was decided. Open the request again."))
 			return

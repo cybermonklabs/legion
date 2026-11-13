@@ -78,19 +78,28 @@ func newClient(baseURL string) *client {
 	return &client{baseURL: baseURL, http: &http.Client{Timeout: leasetime.RenewClientTimeout}}
 }
 
-// apiError is the broker's {"code":...,"error":...} error envelope, plus the HTTP status it came
-// with.
+// apiError is the broker's {"code":...,"error":...,"answer_id":...} error envelope, plus the HTTP
+// status it came with. AnswerID is the id the broker's own record of the answer names: the body's
+// answer_id, else the X-Broker-Answer-Id header every answer carries, so a refusal whose body is
+// not the envelope (the broker's 404 for a path it does not serve) still names it. A broker from
+// before the id sends neither.
 type apiError struct {
-	Status  int
-	Code    string
-	Message string
+	Status   int
+	Code     string
+	Message  string
+	AnswerID string
 }
 
+// Error is the broker's message and code, and the answer id to quote when it named one.
 func (e *apiError) Error() string {
+	text := fmt.Sprintf("%s (%s)", e.Message, e.Code)
 	if e.Code == "" {
-		return fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
+		text = fmt.Sprintf("HTTP %d: %s", e.Status, e.Message)
 	}
-	return fmt.Sprintf("%s (%s)", e.Message, e.Code)
+	if e.AnswerID != "" {
+		text += " (answer " + e.AnswerID + ")"
+	}
+	return text
 }
 
 // enrollmentEnded reports whether this refusal is the broker's answer to a proof naming an
@@ -227,17 +236,25 @@ func (c *client) doStatus(ctx context.Context, method, url string, body []byte, 
 	}
 	if resp.StatusCode/100 != 2 {
 		var envelope struct {
-			Code  string `json:"code"`
-			Error string `json:"error"`
+			Code     string `json:"code"`
+			Error    string `json:"error"`
+			AnswerID string `json:"answer_id"`
 		}
 		_ = json.Unmarshal(data, &envelope)
 		if envelope.Error == "" {
 			envelope.Error = string(data)
 		}
-		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error}
+		if envelope.AnswerID == "" {
+			envelope.AnswerID = resp.Header.Get(answerIDHeader)
+		}
+		return resp.StatusCode, nil, &apiError{Status: resp.StatusCode, Code: envelope.Code, Message: envelope.Error, AnswerID: envelope.AnswerID}
 	}
 	return resp.StatusCode, data, nil
 }
+
+// answerIDHeader is the header every answer of the broker names its answer id in
+// (answer.Header in internal/broker/answer, which this client does not link).
+const answerIDHeader = "X-Broker-Answer-Id"
 
 // errNothingSent is the cause of a call this client could not even build a request for.
 var errNothingSent = errors.New("nothing was sent")

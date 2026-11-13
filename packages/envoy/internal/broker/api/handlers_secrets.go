@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
@@ -80,10 +81,11 @@ type rereadResponse struct {
 // too (Deps.NotifyReread), so one call reaches the whole fleet rather than the pod the load
 // balancer happened to pick.
 func (s *server) rereadSecret(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	answer.FromContext(r.Context()).NoteSecrets(name)
 	if s.refuseReread(w, r) {
 		return
 	}
-	name := r.PathValue("name")
 	lk, err := s.deps.Policy.RefreshOne(r.Context(), name)
 	switch {
 	case errors.Is(err, policy.ErrNameInvalid):

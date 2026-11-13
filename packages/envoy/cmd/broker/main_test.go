@@ -33,6 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
 	"github.com/sjawhar/envoy/internal/broker/airlockproxy"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/config"
 	"github.com/sjawhar/envoy/internal/broker/policy"
@@ -794,52 +795,64 @@ func TestMainLogsRealBoundAddress(t *testing.T) {
 }
 
 // TestTheBinaryLogsOneJSONObjectPerLine drives the REAL compiled binary on
-// TestMainLogsRealBoundAddress's fixture and reads two lines of its log as Cloud Logging reads
-// them: the boot's "broker listening" line at INFO and its refusal of the secret whose owner tag
-// names nobody at ERROR. Each is one JSON object, with time (RFC 3339, in UTC), severity and
-// message under those names and each of its attributes a field of its own, which is what makes
-// an entry's severity its level rather than the stream's. The lines are found by their text, not
-// through startBroker's read of the address, so a broker writing any other shape fails here,
-// naming the line, rather than in a wait for an address it never reads.
+// TestMainLogsRealBoundAddress's fixture and reads three lines of its log as Cloud Logging reads
+// them: the boot's "broker listening" line at INFO, its refusal of the secret whose owner tag
+// names nobody at ERROR, and the record of a refused answer (answer.RefusalMessage) at WARNING,
+// for a reread of a name no secret can carry sent to the address the listening line names. Each
+// is one JSON object, with time (RFC 3339, in UTC), severity and message under those names and
+// each of its attributes a field of its own, which is what makes an entry's severity its level
+// rather than the stream's. The lines are found by their text, not through startBroker's read of
+// the address, so a broker writing any other shape fails here, naming the line, rather than in a
+// wait for an address it never reads.
 func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 	broker := startBroker(t, brokerOptions{NoWaitForListening: true, Env: refusedSecretEnv(t)})
-	log := broker.Await(t, "broker listening")
-	for _, want := range []struct {
-		message, severity string
-		fields            map[string]any
-	}{
-		{message: "broker listening", severity: "INFO"},
-		{message: policy.RefusedMessage, severity: "ERROR",
-			fields: map[string]any{"name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed"}},
-	} {
-		var line string
+	// line reads the first line of log carrying message as a record, failing t unless it is one
+	// JSON object with time, message and severity as wanted and fields among its fields.
+	line := func(log, message, severity string, fields map[string]any) map[string]any {
+		t.Helper()
+		var text string
 		for candidate := range strings.Lines(log) {
-			if strings.Contains(candidate, want.message) {
-				line = candidate
+			if strings.Contains(candidate, message) {
+				text = candidate
 				break
 			}
 		}
-		if line == "" {
-			t.Fatalf("the broker logged no line carrying %q by its listening line:\n%s", want.message, log)
+		if text == "" {
+			t.Fatalf("the broker logged no line carrying %q:\n%s", message, log)
 		}
-		record, ok := logRecord(line)
+		record, ok := logRecord(text)
 		if !ok {
-			t.Fatalf("the broker's %q line is not one JSON object:\n%s", want.message, line)
+			t.Fatalf("the broker's %q line is not one JSON object:\n%s", message, text)
 		}
 		stamp, _ := record["time"].(string)
 		if at, err := time.Parse(time.RFC3339Nano, stamp); err != nil || at.Location() != time.UTC {
-			t.Errorf("the %q line's time is %q (%v); want RFC 3339 in UTC: %s", want.message, stamp, err, line)
+			t.Errorf("the %q line's time is %q (%v); want RFC 3339 in UTC: %s", message, stamp, err, text)
 		}
-		if record["message"] != want.message || record["severity"] != want.severity || !carries(record, want.fields) {
+		if record["message"] != message || record["severity"] != severity || !carries(record, fields) {
 			t.Errorf("the %q line reads message %v, severity %v; want message %q, severity %s and the fields %v: %s",
-				want.message, record["message"], record["severity"], want.message, want.severity, want.fields, line)
+				message, record["message"], record["severity"], message, severity, fields, text)
 		}
-		if want.message == "broker listening" {
-			if addr, _ := record["addr"].(string); addr == "" {
-				t.Errorf("the %q line carries no addr field: %s", want.message, line)
-			}
-		}
+		return record
 	}
+
+	log := broker.Await(t, "broker listening")
+	addr, _ := line(log, "broker listening", "INFO", nil)["addr"].(string)
+	if addr == "" {
+		t.Fatalf("the %q line carries no addr field:\n%s", "broker listening", log)
+	}
+	line(log, policy.RefusedMessage, "ERROR", map[string]any{"name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed"})
+
+	refused, err := http.Post("http://"+addr+"/v1/secrets/bad%20name/reread", "application/json", nil)
+	if err != nil {
+		t.Fatalf("POST /v1/secrets/bad%%20name/reread: %v", err)
+	}
+	refused.Body.Close()
+	if refused.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST /v1/secrets/bad%%20name/reread = %d; want 400", refused.StatusCode)
+	}
+	line(broker.Await(t, answer.RefusalMessage), answer.RefusalMessage, "WARNING", map[string]any{
+		"answer_id": refused.Header.Get(answer.Header), "code": "SECRET_NAME_INVALID", "secrets": []any{"bad name"}, "caller_class": answer.CallerPublic,
+	})
 }
 
 // TestTheBrokerServesItsMetricsOnAPortOfItsOwn drives the REAL compiled binary and reads its

@@ -26,6 +26,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/api"
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
@@ -40,6 +41,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/ratelimit"
@@ -77,6 +79,8 @@ type testServer struct {
 	// otherDaemonAccount each logging in as legion-daemon; a test removes an entry to take an
 	// account off it.
 	ServiceLogins map[string]string
+	// registry is the server's own metrics, the answer recorder's broker_answers_total among them.
+	registry *metrics.Registry
 }
 
 // podAudience is the audience the test server's pod verifier checks and podToken mints for.
@@ -115,7 +119,10 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	cur := policytest.Current(t, local)
 
 	mux := http.NewServeMux()
-	srv := httptest.NewServer(mux)
+	// Behind the answer recorder cmd/broker installs outermost (answer.Middleware), counting on a
+	// registry of the server's own, so every answer a test reads is the one a deployment sends.
+	registry := metrics.New()
+	srv := httptest.NewServer(answer.Middleware(mux, answer.NewAnswers(registry)))
 	t.Cleanup(srv.Close)
 
 	issuer := oidctest.New(t)
@@ -162,7 +169,7 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	adjust(&deps)
 	api.Register(mux, deps)
 
-	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins}
+	ts := &testServer{URL: srv.URL, Store: st, Secrets: local, podIssuer: issuer, podKey: podKey, machine: reqMachine, ServiceLogins: serviceLogins, registry: registry}
 	ts.uiToken = ts.accountToken(t, dispatchAccount, "", time.Hour)
 	return ts
 }

@@ -17,6 +17,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
@@ -110,6 +111,12 @@ func (m *Machine) checkRelease(ctx context.Context, grantID, owner string) (gran
 	granted, err := requestedSecrets(ctx, m.Store.Pool, requestID)
 	if err != nil {
 		return grantRelease{}, err
+	}
+	// The grant's names, once the grant is the caller's and its chain verifies, so a refusal of
+	// the release from here on names them (answer.Recorder.NoteSecrets).
+	recorder := answer.FromContext(ctx)
+	for _, g := range granted {
+		recorder.NoteSecrets(g.name)
 	}
 	// One policy snapshot serves both the grant re-check and the minters' name, tier and owners.
 	set := m.Policy.Get()

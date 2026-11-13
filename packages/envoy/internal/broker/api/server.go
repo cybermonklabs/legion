@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/approval"
 	"github.com/sjawhar/envoy/internal/broker/enroll"
 	"github.com/sjawhar/envoy/internal/broker/machine"
@@ -221,10 +222,14 @@ func Register(mux *http.ServeMux, deps Deps) {
 			continue
 		}
 		mux.HandleFunc(route.Method+" "+route.Pattern, func(w http.ResponseWriter, r *http.Request) {
+			recorder := answer.FromContext(r.Context())
 			who, ok := s.authenticate(w, r, route)
 			if !ok {
+				// A refusal raised in authentication, before any caller was established.
+				recorder.NoteCaller(answer.CallerUnauthenticated, "")
 				return
 			}
+			recorder.NoteCaller(who.answerCaller(route.Handler))
 			route.Handler.serve(s, w, r, who)
 		})
 	}
@@ -336,6 +341,40 @@ func (s *server) authenticate(w http.ResponseWriter, r *http.Request, route apiR
 	}
 	writeInternal(w, "authenticate", fmt.Errorf("route has unknown authentication %d", auth))
 	return caller{}, false
+}
+
+// answerCaller is the caller class and identity the answer's record names for a request
+// authenticate let through on route (answer.Recorder.NoteCaller): the launcher credential, the
+// enrollment, the listed account, the service and the account it presented, or the signed-in
+// person. A route that takes no credential is public; one whose handler authenticates its own
+// caller (accountAuthAfterRecordKind) is unauthenticated until that handler notes who it found,
+// and so is a route of the approval page reached with no live sign-in.
+func (c caller) answerCaller(route routeHandler) (class, id string) {
+	switch route.auth {
+	case authLauncher:
+		return answer.CallerLauncher, c.launcher.ID.String()
+	case authProof, authRenewProof:
+		return answer.CallerSession, c.enrollment
+	case authAccount:
+		return answer.CallerAccount, c.account.Name
+	case authService:
+		return answer.CallerService, serviceIdentity(c.service)
+	case authSignIn:
+		if c.signIn.Login == "" {
+			return answer.CallerUnauthenticated, ""
+		}
+		return answer.CallerSignIn, c.signIn.Login
+	}
+	if route.power != noPower {
+		return answer.CallerUnauthenticated, ""
+	}
+	return answer.CallerPublic, ""
+}
+
+// serviceIdentity is a service's identity in the answer's record: the service it logs in as and
+// the account whose token it presented, <service>@<namespace>/<name>.
+func serviceIdentity(account machine.ServiceAccount) string {
+	return account.Service + "@" + account.Host
 }
 
 // refuseWithoutPower writes 403 ACCOUNT_LACKS_POWER and reports true when the listed caller who

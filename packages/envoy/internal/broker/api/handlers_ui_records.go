@@ -19,6 +19,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/machine"
 	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/requests"
@@ -119,6 +120,9 @@ func (s *server) decideRecord(w http.ResponseWriter, r *http.Request, approve bo
 	if !ok {
 		return
 	}
+	// Register noted this route's caller unauthenticated, since it is this handler that reads
+	// the credential; from here on the refusals are the listed caller's.
+	answer.FromContext(r.Context()).NoteCaller(answer.CallerAccount, who.account.Name)
 	if refuseWithoutPower(w, who.account, needs, r.Pattern) {
 		return
 	}

@@ -49,6 +49,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/broker/airlock"
+	"github.com/sjawhar/envoy/internal/broker/answer"
 	"github.com/sjawhar/envoy/internal/broker/exchange"
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/record"
@@ -409,6 +410,17 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	if err != nil {
 		return Request{}, err
 	}
+	// The names the request asks for, read the moment its JWS has opened, so every refusal of
+	// it from here on names them (answer.Recorder.NoteSecrets). A request object's details are
+	// all agent secrets or one machine login (record.VerifyRequestObject), and a machine login's
+	// identifier is a host, not a secret, so it names none; the check below refuses it.
+	var names []string
+	for _, d := range obj.Details {
+		if d.Type == record.KindAgentSecret {
+			names = append(names, d.Identifier)
+		}
+	}
+	answer.FromContext(ctx).NoteSecrets(names...)
 	if obj.LoginHint != "" {
 		return Request{}, fmt.Errorf("%w: login_hint is only for machine login requests", record.ErrRequestInvalid)
 	}
@@ -424,10 +436,6 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 	}
 	if !fresh {
 		return Request{}, fmt.Errorf("%w: replayed jti", record.ErrRequestInvalid)
-	}
-	names := make([]string, len(obj.Details))
-	for i, d := range obj.Details {
-		names[i] = d.Identifier
 	}
 
 	set, err := m.rereadMissing(ctx, enrollmentID, names, m.Policy.Get())

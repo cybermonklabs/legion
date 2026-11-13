@@ -401,6 +401,7 @@ jobs:
               # tree: lean/ holds the model, which airlock-lean alone reads.
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlock/testdata/**'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -915,6 +916,7 @@ jobs:
               - 'packages/envoy/cmd/broker-refgen/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1309,6 +1311,7 @@ jobs:
               - 'packages/envoy/cmd/dev-oidc-issuer/*'
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
@@ -1691,6 +1694,7 @@ jobs:
               - 'packages/envoy/internal/broker/airlock/*'
               - 'packages/envoy/internal/broker/airlock/testdata/**'
               - 'packages/envoy/internal/broker/airlockproxy/*'
+              - 'packages/envoy/internal/broker/answer/*'
               - 'packages/envoy/internal/broker/api/*'
               # The approval page's own files, its embedded templates and stylesheet included.
               - 'packages/envoy/internal/broker/approval/**'
