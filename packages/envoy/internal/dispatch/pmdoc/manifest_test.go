@@ -269,21 +269,23 @@ func manifestAsOf(t *testing.T, version int) []byte {
 	return encoded
 }
 
-// The typed blocks this manifest's version adds are staged by their numbers: a build at the
-// manifest version before this one, whose manifest is this one as of that version, does not
-// declare them. That is a build of a release before the first one that shipped them, not the
-// release before this one: the three blocks ship from legion-envoy-v29.1.0 at manifest version
-// 3, so the releases from it on, legion-envoy-v29.2.0 among them, declare all three, and
-// legion-envoy-v29.0.0, at manifest version 2, is the shape this models. Such a build creates
-// none of them - a write naming one is refused - and a stored document holding one reads as an
-// element it does not know (ErrUnknownElement), which the document service answers
-// 409 DOC_NEWER_CONTENT for rather than repairing or rebuilding the document.
+// The typed blocks manifest version 3 added are staged by their numbers: a build at version 2,
+// whose manifest is this one as of that version, does not declare them. That is a build of a
+// release before the first one that shipped them: the three blocks ship from legion-envoy-v29.1.0
+// at manifest version 3, so the releases from it on declare all three, and legion-envoy-v29.0.0,
+// at manifest version 2, is the shape this models. Such a build creates none of them - a write
+// naming one is refused - and a stored document holding one reads as an element it does not know
+// (ErrUnknownElement), which the document service answers 409 DOC_NEWER_CONTENT for rather than
+// repairing or rebuilding the document. The name says "this version" from when version 3 was the
+// manifest's; the Verification document's check names the row, so it keeps its name, and the
+// element version 4 adds has a row of its own (TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree).
 func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *testing.T) {
+	const adds = 3
 	added := []string{"requirement", "plan_task", "check"}
 	for _, name := range added {
 		versions, declared := Element{Kind: TypedBlockElement, Name: name}.Versions()
-		if !declared || versions.Since != SchemaVersion() {
-			t.Fatalf("typed block %q = %+v, %t; want since %d, the version that adds it", name, versions, declared, SchemaVersion())
+		if !declared || versions.Since != adds {
+			t.Fatalf("typed block %q = %+v, %t; want since %d, the version that adds it", name, versions, declared, adds)
 		}
 	}
 	markdown := func(name string) string {
@@ -299,7 +301,7 @@ func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *te
 		}
 	}
 
-	before := SchemaVersion() - 1
+	before := adds - 1
 	restore, err := UseManifestForTest(manifestAsOf(t, before))
 	if err != nil {
 		t.Fatalf("install the manifest as of version %d: %v", before, err)
@@ -310,7 +312,7 @@ func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *te
 	}
 	for _, name := range added {
 		if IsTypedBlock(name) {
-			t.Errorf("a build at version %d declares typed block %q, which version %d adds", before, name, before+1)
+			t.Errorf("a build at version %d declares typed block %q, which version %d adds", before, name, adds)
 		}
 		_, err := ParseForWrite(markdown(name), nil)
 		if !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), name) {
@@ -319,5 +321,46 @@ func TestTheTypedBlocksThisVersionAddsAreUnknownToABuildAtTheVersionBefore(t *te
 	}
 	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
 		t.Errorf("a build at version %d reading a stored document holding them = %v, want ErrUnknownElement", before, err)
+	}
+}
+
+// The check block's ci_check attribute, which main added with manifest version 4 (the name of the
+// GitHub check run that proves the check), is staged by its own numbers in the same way: this
+// build reads and writes it, and a build at version 3 - legion-envoy-v30.11.0 is one - declares
+// the check block but not the attribute, so it creates none and reads a stored check carrying one
+// as an element it does not know (ErrUnknownElement, answered 409 DOC_NEWER_CONTENT).
+func TestTheAttributeVersionFourAddsIsUnknownToABuildAtVersionThree(t *testing.T) {
+	const adds = 4
+	attribute := Element{Kind: AttributeElement, Block: "check", Name: "ci_check"}
+	versions, declared := attribute.Versions()
+	if !declared || versions.Since != adds || versions.CreatableSince != adds {
+		t.Fatalf("attribute ci_check of check = %+v, %t; want since and creatable_since %d", versions, declared, adds)
+	}
+	if SchemaVersion() < adds {
+		t.Fatalf("SchemaVersion() = %d, below the version %d that adds ci_check", SchemaVersion(), adds)
+	}
+	const markdown = ":::check{#b-c1 when=\"before_merge\" negative_control=\"n\" ci_check=\"build\"}\nBody.\n:::\n"
+	stored, err := Parse(markdown)
+	if err != nil {
+		t.Fatalf("this build reads a check carrying ci_check: %v", err)
+	}
+	if _, err := ParseForWrite(markdown, nil); err != nil {
+		t.Fatalf("this build writes a check carrying ci_check: %v", err)
+	}
+
+	before := adds - 1
+	restore, err := UseManifestForTest(manifestAsOf(t, before))
+	if err != nil {
+		t.Fatalf("install the manifest as of version %d: %v", before, err)
+	}
+	t.Cleanup(restore)
+	if !IsTypedBlock("check") {
+		t.Fatalf("a build at version %d does not declare the check block, which version 3 adds", before)
+	}
+	if _, err := ParseForWrite(markdown, nil); !errors.Is(err, ErrUnknownElement) || !strings.Contains(err.Error(), "ci_check") {
+		t.Errorf("a build at version %d writing a check carrying ci_check = %v, want ErrUnknownElement naming it", before, err)
+	}
+	if err := stored.Validate(); !errors.Is(err, ErrUnknownElement) {
+		t.Errorf("a build at version %d reading a stored check carrying ci_check = %v, want ErrUnknownElement", before, err)
 	}
 }
