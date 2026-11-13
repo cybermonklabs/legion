@@ -620,6 +620,19 @@ case_result "an entry of ADMITTED that no row uses fails --admitted, named" 'adm
 plant_gate admitted-missing '/^    "&&": /d' '    "&&": ' lacks
 case_result "an entry the rows use, taken out of ADMITTED, refuses those rows" 'admitted-rows: the row [^ ]+ is refused: the operator &&' "$(bash "$GATE" --admitted 2>&1)"
 
+# 43. $_ is bash's special parameter, the last argument of the last command, but at
+# c2ab1b7c56 the name pattern matched it, so it was admitted as the entry "$NAME or
+# ${NAME}" that no row uses it through (the tester's note of test round 16). $_ and ${_}
+# are refused by name; a name that starts with _, such as $_x, is a parameter and passes.
+for form in '"$_"' '"${_}"'; do
+    dir="$(fresh "special-underscore-$(printf '%s' "$form" | tr -dc 'a-z{}' | tr '{}' 'bb')")"
+    plant_behaviour "$dir" "true x; printf '%s' $form >/dev/null; printf 'ran once\\n'" '{"contains":"ran once"}'
+    case_result "the special parameter \$_ is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
+done
+dir="$(fresh underscore-name-admitted)"
+plant_behaviour "$dir" "_x=once; printf 'ran %s\\n' \"\$_x\"" '{"contains":"ran once"}'
+honest_result "a name that starts with _, \$_x, is a parameter and passes" replay-command "$(fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"

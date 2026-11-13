@@ -1028,8 +1028,11 @@ def dollar_forms(text):
                 out.append((None, text[i:]))
                 break
             body = text[i + 2:j]
-            if NAME_RE.fullmatch(body):
+            if NAME_RE.fullmatch(body) and body != "_":
                 out.append(("$NAME or ${NAME}", "${" + body + "}"))
+            elif body == "_":
+                # ${_} is bash's special parameter, the last argument of the last command.
+                out.append(("${_}", "${_}"))
             elif len(body) == 1 and body in SPECIAL:
                 out.append(("${" + body + "}", "${" + body + "}"))
             else:
@@ -1037,7 +1040,10 @@ def dollar_forms(text):
             i = j + 1
         elif nxt and NAME_RE.match(nxt):
             end = NAME_RE.match(text, i + 1).end()
-            out.append(("$NAME or ${NAME}", text[i:end]))
+            # $_ alone is bash's special parameter, the last argument of the last command,
+            # and no name: its key is its own, so no entry admits it.
+            key = "$_" if text[i + 1:end] == "_" else "$NAME or ${NAME}"
+            out.append((key, text[i:end]))
             i = end
         elif nxt and nxt in SPECIAL:
             out.append(("$" + nxt, "$" + nxt))
