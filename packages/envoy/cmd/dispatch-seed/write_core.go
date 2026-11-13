@@ -37,14 +37,27 @@ func sessionActor(session string) string {
 
 // writeProjects writes the projects and their repository mappings. Each project has one default
 // mapping, which an issue with no repository of its own resolves to, and one more that the issues
-// carrying a repository of their own use.
+// carrying a repository of their own use. Each project also names the seed's own person as its
+// default assignee, the column every project fills
+// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql), and that person
+// is written first as somebody who has signed in (0068_people): every write that stores a
+// default holds it to a people row (allowedLogin, internal/dispatch/api/issue_assignee.go), so
+// the person a seeded project's unowned questions reach is one the server knows, offers in the
+// assignee picker and can hand a question back to. The row is written as
+// store.PgPeopleStore.Record writes one, and left alone where somebody signed in under that
+// address before the seed ran.
 func (r *seedRun) writeProjects(ctx context.Context) error {
 	return r.inTransaction(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `
+			insert into people (email, signed_in_at) values ($1, $2) on conflict (email) do nothing
+		`, seedAuthor.ID, baseTime); err != nil {
+			return fmt.Errorf("person %s: %w", seedAuthor.ID, err)
+		}
 		for index, project := range r.plan.projects {
 			if _, err := tx.Exec(ctx, `
-				insert into projects (key, name, next_number, created_at, last_seq)
-				values ($1, $2, 1, $3, 0)
-			`, project.Key, project.Name, timeAt(index, len(r.plan.projects))); err != nil {
+				insert into projects (key, name, default_assignee, next_number, created_at, last_seq)
+				values ($1, $2, $3, 1, $4, 0)
+			`, project.Key, project.Name, seedAuthor.ID, timeAt(index, len(r.plan.projects))); err != nil {
 				return fmt.Errorf("project %s: %w", project.Key, err)
 			}
 			for _, mapping := range []struct {
