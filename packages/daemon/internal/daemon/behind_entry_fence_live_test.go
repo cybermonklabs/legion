@@ -3,7 +3,7 @@
 // The live proof's driver for the completion route's entry fence on a completion behind its phase
 // entry: a completion of an entry the issue has moved past is taken when the commit it names is the
 // head the daemon's record holds, because a verdict is a fact about a head and the phase was
-// entered again at that same head (api/handoff.go's behindAtRecordedHead), and is refused when it
+// entered again at that same head (api/handoff.go's behindEntryClause), and is refused when it
 // names any other commit or none, or when the move that entered the phase again moved the issue
 // back. Such a move sends the work back at the head that is already there, so the two heads read
 // alike and the heads alone would take a verdict over an entry that exists to have the work done
@@ -525,7 +525,7 @@ func (r *behindEntryFenceLive) behindWithNoHead() {
 // Step 5. A behind completion at the head the record holds is taken. The same completion from the
 // same turn names the head the record holds. Nothing moved the issue back into testing, so the work
 // the standing entry's task asks for is the work this turn did: the daemon takes the completion
-// (behindAtRecordedHead) and the pass moves the issue to reviewing. Steps 3 and 4 are this same
+// (behindEntryClause) and the pass moves the issue to reviewing. Steps 3 and 4 are this same
 // completion with another commit; step 6 sends it again once it is taken; step 8 is this same
 // completion at this same head with one thing changed, the move that raised the entry.
 func (r *behindEntryFenceLive) behindAtTheHead() {

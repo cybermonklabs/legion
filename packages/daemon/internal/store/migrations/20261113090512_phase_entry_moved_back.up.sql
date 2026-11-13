@@ -5,7 +5,7 @@
 -- The completion route takes a completion of an earlier entry when the commit it names is the
 -- head the record holds, because a verdict is a fact about a head: the phase was entered again at
 -- that same head, so the work the new entry's task asks for is the work that completion did
--- (internal/api/handoff.go, behindAtRecordedHead). The head alone takes one case wrongly. Where
+-- (internal/api/handoff.go, behindEntryClause). The head alone takes one case wrongly. Where
 -- the architect or the reviewer moved the work back at a head that did not move, the new entry
 -- asks for the work to be done again, and the earlier entry's verdict is exactly what it must not
 -- stand on. The head is the same, so no reading of the heads can tell that case from the one the

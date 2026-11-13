@@ -212,9 +212,9 @@ func TestStaleEntryInstructionGolden(t *testing.T) {
 	if staleEntryCode != "HANDOFF_STALE_ENTRY" {
 		t.Fatalf("staleEntryCode = %q, want the wire code HANDOFF_STALE_ENTRY", staleEntryCode)
 	}
-	// What decided the refusal stands in the middle of it (entryHeadClause), so the instruction is
-	// still the text the refusal ends with, whichever clause it carries.
-	decided := entryHeadClause(true, "", headSHA, false)
+	// What decided the refusal stands in the middle of it (behindEntryClause), so the instruction
+	// is still the text the refusal ends with, whichever clause it carries.
+	decided := behindEntryClause(true, "", &record.PullRequest{HeadSHA: headSHA}, false)
 	for clause, pending := range map[string]*supervise.Delivery{
 		"the entry 2 the phase is on, and " + decided + "; nothing was recorded":                nil,
 		"your turn began before the daemon's task for entry 2 (outbox:78) reached this session": {ID: "outbox:78", Entry: 2},
