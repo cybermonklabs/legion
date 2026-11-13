@@ -677,8 +677,10 @@ func ParseKindSource(source string) (kind, storeSource string, minted bool, err 
 var ErrUnknownSecret = errors.New("no agent secret has this name")
 
 // ReasonAbsent is LoadOne's answer for a name no secret carries: none exists under the prefix, or
-// the one that does is scheduled for deletion. It is not a refusal, so it is never logged as
-// RefusedMessage.
+// the one that does is scheduled for deletion. It is not a refusal, so it is never in
+// Set.Refused nor written as RefusedMessage: a reread of a name nobody created adds no
+// broker_unservable_secrets series, and a refused secret found absent writes ServableMessage
+// with now=absent.
 const ReasonAbsent = "absent"
 
 type ownerKind int
@@ -822,6 +824,29 @@ type Set struct {
 	// spending the untrimmed value.
 	Version string
 	Secrets map[string]Secret
+	// Refused is every secret under the prefix the policy refuses to serve, keyed by its whole
+	// name in the store (the name its RefusedMessage line carries), with why. It is not in
+	// Version: a refused secret is served to nobody, so a refusal that comes, goes or changes its
+	// reason re-evaluates no live grant the served secrets did not already move. Current compares
+	// it with the set before to write the state-change lines, and broker_unservable_secrets
+	// (NewUnservableSecrets) reads it at each scrape.
+	Refused map[string]Refusal
+}
+
+// Refusal is why the policy refuses to serve one secret under the prefix, as a load found it.
+type Refusal struct {
+	// Reason is one of the Reason* refusal constants.
+	Reason string
+	// Owner is the secret's owner tag as the store holds it, and "" for ReasonOwnerTagMissing and
+	// ReasonOwnerTagMalformed, whose tag is the fault and names nobody the broker knows.
+	Owner string
+}
+
+// setOf is NewSet(secrets) carrying refused, which NewSet's Version leaves out.
+func setOf(secrets map[string]Secret, refused map[string]Refusal) *Set {
+	set := NewSet(secrets)
+	set.Refused = refused
+	return set
 }
 
 // NewSet builds the one Set shape both Load and the single-name merges produce, keeping secrets

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"regexp"
 	"slices"
 	"strings"
@@ -13,17 +12,35 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 )
 
-// RefusedMessage opens the one line logged, at ERROR on every load (Load for every secret, LoadOne
-// for its one), for each secret under the prefix the policy refuses to serve, followed by
-// name=<the secret's Secrets Manager name> and reason=<one of the Reason* values>. The deployment's
-// alarm filters on it, so it does not change.
+// RefusedMessage is the line Current writes, at ERROR, when a secret under the prefix becomes one
+// the policy refuses to serve, or is refused for another reason than before: name (the secret's
+// whole name in the store), reason (one of the Reason* values), owner (Refusal.Owner: its owner
+// tag, "" for ReasonOwnerTagMissing and ReasonOwnerTagMalformed), first_load (true on every line
+// of the pod's first load, which writes one for each secret it refuses, false after it) and, on
+// a change of reason, was (the reason before). A load or a reread that refuses a secret for the
+// reason the live policy already held writes nothing: the line is the record of when the state
+// changed, and broker_unservable_secrets (NewUnservableSecrets) is what holds the standing
+// state. The operate guide documents its text, so the text changes only with that guide.
 const RefusedMessage = "agent secret policy refused"
 
-// LoadFailedMessage is logged, at ERROR, when a reload fails and the previous policy stays in
-// force. The deployment's alarm filters on it too.
+// ServableMessage is the line Current writes, at INFO, when a secret the live policy refused is
+// refused no longer: name, reason (the reason it had) and owner as its refusal last held them,
+// and now, which is servable when the policy serves it and absent when the store no longer holds
+// it (deleted, or scheduled for deletion).
+const ServableMessage = "agent secret policy no longer refused"
+
+// LoadFailedMessage is written, at ERROR, by the reload NewCurrent runs every interval, on the
+// first reload of a run that fails while its context is live; the previous policy stays in force,
+// and the reloads of the run after it write nothing until one loads again (LoadRecoveredMessage).
+// requests writes it too, with the name, for one request whose reread of a name failed.
 const LoadFailedMessage = "agent secret policy load failed; previous policy kept"
 
-// Why a secret under the prefix is refused, as its RefusedMessage line's reason.
+// LoadRecoveredMessage is written, at INFO, by the reload NewCurrent runs, on the first reload
+// that succeeds after a run of failed reloads that wrote LoadFailedMessage.
+const LoadRecoveredMessage = "agent secret policy load succeeded again"
+
+// Why a secret under the prefix is refused, as its Refusal's Reason and its RefusedMessage line's
+// reason.
 const (
 	// ReasonNameMalformed: the name under the prefix is not lowercase letters, digits and single
 	// hyphens starting with a letter, so it maps to no name a session can ask for.
@@ -149,20 +166,16 @@ type Loader struct {
 	StoreReads *metrics.Counter
 }
 
-// Load reads the namespace into a Set, logging one RefusedMessage line for each secret it refuses.
-// A failed store call fails the whole load.
+// Load reads the namespace into a Set: each secret it serves, and each it refuses with why
+// (Set.Refused, refusalOf). It writes no line: Current, which keeps the set before, writes the
+// lines a change of state calls for. A failed store call fails the whole load.
 func (l Loader) Load(ctx context.Context) (*Set, error) {
 	l.StoreReads.Inc(readList)
 	listings, err := l.Store.List(ctx, l.Prefix)
 	if err != nil {
 		return nil, err
 	}
-	// The store promises no listing order, and the RefusedMessage lines below are read in the
-	// order they are logged: this sort is theirs alone. NewSet sorts the served secrets by slug
-	// itself, so the Version's bytes do not rest on it.
-	slices.SortFunc(listings, func(a, b secrets.Listing) int { return strings.Compare(a.ID, b.ID) })
-
-	served := map[string]Secret{}
+	served, refused := map[string]Secret{}, map[string]Refusal{}
 	for _, ls := range listings {
 		// The namespace is the prefix as written: a name outside it is skipped, whatever the
 		// lister answered.
@@ -175,20 +188,38 @@ func (l Loader) Load(ctx context.Context) (*Set, error) {
 			return nil, err
 		}
 		if reason != "" {
-			slog.Error(RefusedMessage, "name", ls.ID, "reason", reason)
+			refused[ls.ID] = refusalOf(ls, reason)
 			continue
 		}
 		served[secret.Name] = secret
 	}
-	return NewSet(served), nil
+	return setOf(served, refused), nil
 }
 
-// Lookup is LoadOne's answer: Served with the Secret, or Reason — a Reason* refusal constant
-// (logged as RefusedMessage, same line as Load) or ReasonAbsent (not logged).
+// refusalOf is the Refusal of the secret ls lists for reason: its owner tag as the store holds
+// it, or "" for the two reasons that tag is itself the fault, missing or malformed.
+func refusalOf(ls secrets.Listing, reason string) Refusal {
+	if reason == ReasonOwnerTagMissing || reason == ReasonOwnerTagMalformed {
+		return Refusal{Reason: reason}
+	}
+	return Refusal{Reason: reason, Owner: ls.Tags[TagOwner]}
+}
+
+// Lookup is LoadOne's answer: Served with the Secret; or Reason, a Reason* refusal constant, with
+// Owner as a Refusal carries it; or ReasonAbsent, which is no refusal.
 type Lookup struct {
 	Secret Secret
 	Served bool
 	Reason string
+	Owner  string
+}
+
+// refusal is the Refusal lk answers, and the zero Refusal for a secret served or absent.
+func (lk Lookup) refusal() Refusal {
+	if lk.Served || lk.Reason == ReasonAbsent {
+		return Refusal{}
+	}
+	return Refusal{Reason: lk.Reason, Owner: lk.Owner}
 }
 
 // secretName is the one place that answers whether name can name a secret under the prefix: its
@@ -208,8 +239,9 @@ func (l Loader) secretName(name string) (slug, id string, err error) {
 }
 
 // LoadOne reads the one secret a session asks for as name, by the rules Load applies to each
-// secret it lists, logging the same RefusedMessage line when it refuses it. A name no secret can
-// carry (secretName) is ErrNameInvalid, with no call made; a failed store call is an error.
+// secret it lists, answering the refusal Load would hand to the Set when it refuses it; like Load,
+// it writes no line. A name no secret can carry (secretName) is ErrNameInvalid, with no call made;
+// a failed store call is an error.
 func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 	slug, id, err := l.secretName(name)
 	if err != nil {
@@ -228,8 +260,8 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 		return Lookup{}, err
 	}
 	if reason != "" {
-		slog.Error(RefusedMessage, "name", id, "reason", reason)
-		return Lookup{Reason: reason}, nil
+		refusal := refusalOf(ls, reason)
+		return Lookup{Reason: refusal.Reason, Owner: refusal.Owner}, nil
 	}
 	return Lookup{Secret: secret, Served: true}, nil
 }

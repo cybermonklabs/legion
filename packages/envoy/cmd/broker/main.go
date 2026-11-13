@@ -332,7 +332,8 @@ func main() {
 	// The one registry every metric this process serves is built on, and the one the metrics
 	// port serves (BROKER_METRICS_LISTEN_ADDR). The policy's store-read counter is built on it
 	// here, before the loader that counts through it takes the first load, so the boot's own
-	// reads are counted with every read after them.
+	// reads are counted with every read after them; broker_unservable_secrets, which reads the
+	// live policy, is registered on it once that first load has answered (LoadPolicy).
 	registry := metrics.New()
 	// rules.Digest is "" for every secret when no rules file was named, so such a deployment's
 	// policy version is the one it has today.
@@ -364,8 +365,8 @@ func main() {
 		// signalled mid-boot finishes that load and then returns without draining at all, there
 		// being nothing bound to drain. NewCurrent's own contract is untouched — its
 		// loop logs no failed-load line once its context has ended, which is now the end of the
-		// shutdown rather than the signal, so the line a deployment alarms on still counts only
-		// loads that failed while the broker was meant to be serving.
+		// shutdown rather than the signal, so the failed-load line still reports only loads that
+		// failed while the broker was meant to be serving.
 		//
 		// Written down so nobody rediscovers it as a hang: one signal does not interrupt this
 		// call. A store that never answers the first load leaves it running - it runs on serving,
@@ -377,7 +378,12 @@ func main() {
 		// from `again` and answers with os.Exit(1) (measured: gone within 30 ms of that signal),
 		// or the kubelet's SIGKILL at the end of the grace period.
 		LoadPolicy: func(serving context.Context) (*policy.Current, error) {
-			return policy.NewCurrent(serving, loader, policyRefresh)
+			current, err := policy.NewCurrent(serving, loader, policyRefresh)
+			if err != nil {
+				return nil, err
+			}
+			policy.NewUnservableSecrets(registry, current)
+			return current, nil
 		},
 		// The receiving half of the reread fan-out, started after the first policy load (it
 		// rereads into that policy) and before the bind, so a pod that cannot hold a LISTEN

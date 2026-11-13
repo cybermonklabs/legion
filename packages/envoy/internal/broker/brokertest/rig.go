@@ -33,6 +33,7 @@ import (
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 	"github.com/sjawhar/envoy/internal/broker/store"
 	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/oidc"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 )
@@ -114,6 +115,11 @@ type Rig struct {
 	// Secrets is the secrets.Local standing in for Secrets Manager, which a test writes to as a
 	// person would, before asking the broker to reread a secret.
 	Secrets *secrets.Local
+	// Registry holds the policy's two metrics as cmd/broker/main.go builds them on its own
+	// registry: broker_policy_store_reads_total, counted from the first load on, and
+	// broker_unservable_secrets, registered once that load answered. A test reads them through
+	// Registry.Handler(), the scrape main serves.
+	Registry *metrics.Registry
 	// podIssuer and podKey back every token this Rig mints — a pod's enrolment token, a service
 	// account's login token, and a subject token for the exchange: a local OIDC issuer this Rig's
 	// own verifier (wired into its enroll.Service and its api.Deps by NewRig) trusts, and the
@@ -176,7 +182,16 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		policytest.Secret("TEST_AUTO_SECRET", operator, policy.TierAgent, "test-auto-secret-v1"),
 	}
 	local := secrets.NewLocal(fixtures...)
-	cur := policytest.Current(t, local)
+	// The policy's metrics as main wires them: the store-read counter before the first load,
+	// which NewCurrent takes, and the gauge of unservable secrets once NewCurrent has answered.
+	registry := metrics.New()
+	loader := policytest.Loader(local)
+	loader.StoreReads = policy.NewStoreReads(registry)
+	cur, err := policy.NewCurrent(t.Context(), loader, time.Hour)
+	if err != nil {
+		t.Fatalf("policy.NewCurrent: %v", err)
+	}
+	policy.NewUnservableSecrets(registry, cur)
 
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
@@ -239,6 +254,7 @@ func NewRig(t *testing.T, options ...Option) *Rig {
 		URL: srv.URL, Operator: operator, OperatorFile: operatorFile,
 		Store:     st,
 		Secrets:   local,
+		Registry:  registry,
 		podIssuer: issuer, podKey: podKey,
 		serviceLogins: serviceLogins,
 	}

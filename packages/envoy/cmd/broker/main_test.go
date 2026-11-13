@@ -753,16 +753,17 @@ func refusedSecretEnv(t *testing.T) []string {
 // synchronously before logging anything means the address this test reads can only ever name this
 // process's own listener.
 // It also holds a fake Secrets Manager with one secret whose owner tag names nobody, and asserts
-// the real binary refuses it at boot with the line the deployment's alarm filters on, at ERROR
-// with its name and reason, while still booting to serve the rest; and one owned by
-// example-service, which BROKER_SERVICES registers, and asserts the binary serves it: the policy
-// loader main builds carries the configured services.
+// the real binary refuses it at boot with one RefusedMessage line, at ERROR with its name, its
+// reason, an empty owner (the tag is the fault) and first_load, and no second one for the boot's
+// catch-up load, which finds it refused as the first load did, while still booting to serve the
+// rest; and one owned by example-service, which BROKER_SERVICES registers, and asserts the binary
+// serves it: the policy loader main builds carries the configured services.
 func TestMainLogsRealBoundAddress(t *testing.T) {
 	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
 	addr, boot := broker.Addr, broker.Boot
-	refused := map[string]any{"severity": "ERROR", "name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed"}
-	if len(recordsWith(boot, policy.RefusedMessage, refused)) == 0 {
-		t.Fatalf("boot log has no %q line carrying %v:\n%s", policy.RefusedMessage, refused, boot)
+	refused := map[string]any{"severity": "ERROR", "name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed", "owner": "", "first_load": true}
+	if lines := recordsWith(boot, policy.RefusedMessage, map[string]any{"name": "example/agent-secrets/untagged-key"}); len(lines) != 1 || !carries(lines[0], refused) {
+		t.Fatalf("boot log holds %v as its %q lines for untagged-key; want one, carrying %v:\n%s", lines, policy.RefusedMessage, refused, boot)
 	}
 	if served := recordsWith(boot, policy.RefusedMessage, map[string]any{"name": "example/agent-secrets/service-key"}); len(served) != 0 {
 		t.Fatalf("boot log refuses the secret example-service owns, which BROKER_SERVICES registers: %v", served)
@@ -840,7 +841,7 @@ func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 	if addr == "" {
 		t.Fatalf("the %q line carries no addr field:\n%s", "broker listening", log)
 	}
-	line(log, policy.RefusedMessage, "ERROR", map[string]any{"name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed"})
+	line(log, policy.RefusedMessage, "ERROR", map[string]any{"name": "example/agent-secrets/untagged-key", "reason": "owner-tag-malformed", "owner": "", "first_load": true})
 
 	refused, err := http.Post("http://"+addr+"/v1/secrets/bad%20name/reread", "application/json", nil)
 	if err != nil {
@@ -860,7 +861,9 @@ func TestTheBinaryLogsOneJSONObjectPerLine(t *testing.T) {
 // listening" line names - a port of its own on 127.0.0.1, which the kernel picked
 // (metricsListenEnv), and never the API's - answers the Prometheus text format, and its
 // broker_policy_store_reads_total holds the boot's whole-namespace loads; one reread through the
-// API is one more read="describe" there and no list. That port answers nothing else, and the
+// API is one more read="describe" there and no list. broker_unservable_secrets holds one series,
+// the secret whose owner tag names nobody, labelled by its store id, its reason and the empty
+// owner, and none for the secrets the broker serves. That port answers nothing else, and the
 // API's address answers GET /metrics 404, so no caller of the API reaches the scrape.
 func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 	broker := startBroker(t, brokerOptions{Env: refusedSecretEnv(t)})
@@ -886,6 +889,10 @@ func TestTheBrokerServesItsMetricsOnAPortOfItsOwn(t *testing.T) {
 	after := scrapeMetric(t, metricsAddr, "broker_policy_store_reads_total")
 	if after[`read="describe"`] != reads[`read="describe"`]+1 || after[`read="list"`] != reads[`read="list"`] {
 		t.Fatalf("one reread moved the store reads from %v to %v; want one more read=\"describe\" and no more read=\"list\"", reads, after)
+	}
+	unservable := scrapeMetric(t, metricsAddr, "broker_unservable_secrets")
+	if want := map[string]float64{`secret="example/agent-secrets/untagged-key",reason="owner-tag-malformed",owner=""`: 1}; !maps.Equal(unservable, want) {
+		t.Fatalf("broker_unservable_secrets reads %v; want the one refused secret alone, %v", unservable, want)
 	}
 
 	for _, row := range []struct {

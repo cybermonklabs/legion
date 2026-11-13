@@ -4,8 +4,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -23,12 +25,6 @@ import (
 	"github.com/sjawhar/envoy/internal/metrics"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
-
-// refusedLine is the exact line the broker logs for a refused secret: the deployment's alarm
-// filters on it.
-func refusedLine(name, reason string) string {
-	return "ERROR agent secret policy refused name=" + policytest.ID(name) + " reason=" + reason + "\n"
-}
 
 // TestLoadServesEveryWellTaggedSecretOnTheKey pins what the loader reads from Secrets Manager: a
 // secret's request name from its name under the prefix, owner and tier from its tags, and its ARN
@@ -63,8 +59,8 @@ func TestLoadServesEveryWellTaggedSecretOnTheKey(t *testing.T) {
 	if deel.Name != "DEEL_API_KEY" || deel.Owner != policy.OwnerShared || deel.Tier != policy.TierHuman || deel.Source != secrets.LocalARN(policytest.ID("DEEL_API_KEY")) {
 		t.Fatalf("DEEL_API_KEY = %+v, want shared, human, read by its ARN", deel)
 	}
-	if logged.String() != "" {
-		t.Fatalf("a load refusing nothing logged:\n%s", logged)
+	if len(set.Refused) != 0 || logged.String() != "" {
+		t.Fatalf("a load refusing nothing refused %+v and logged:\n%s", set.Refused, logged)
 	}
 }
 
@@ -96,7 +92,6 @@ func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
 	)
 	aliases := &failingAliases{}
 	loader := policy.Loader{Store: secrets.AWS{Client: store, KMS: aliases, KeyARN: policytest.KeyARN}, Prefix: policytest.Prefix}
-	policytest.CaptureLog(t)
 	ctx := context.Background()
 	if _, err := loader.Load(ctx); err != nil || aliases.calls != 0 {
 		t.Fatalf("Load = %v after %d ListAliases calls; want the refusals alone, with no lookup", err, aliases.calls)
@@ -113,68 +108,77 @@ func TestARefusalForANameOrTagCostsNoAliasLookup(t *testing.T) {
 }
 
 // TestLoadRefusesEachUnservableSecretByNameWithTheExactLine pins every reason a secret under the
-// prefix is refused, each logged as the one line the deployment's alarm filters on, while every
-// other secret is still served: one person's malformed tag never freezes anyone else's policy. A
-// secret with no value and a tag or key fault is logged for the fault, which a value alone would
-// not fix. The one secret it serves carries shape=document, so the table holds both halves of
-// that tag: a word the loader knows is carried into the Secret, and a word it does not is
-// refused.
+// prefix is refused, each handed to the set under its whole name in the store with its reason
+// and its owner tag, while every other secret is still served: one person's malformed tag never
+// freezes anyone else's policy. The owner is the tag as the store holds it, and empty for the two
+// reasons that tag is itself the fault. A secret with no value and a tag or key fault is refused
+// for the fault, which a value alone would not fix. The pod's first load over the same store
+// writes the exact RefusedMessage line for each, marked first_load and in the order of the
+// secrets' names. The one secret it serves carries shape=document, so the table holds both
+// halves of that tag: a word the loader knows is carried into the Secret, and a word it does not
+// is refused.
 func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	refusals := map[string]struct {
 		secret secrets.LocalSecret
-		reason string
+		want   policy.Refusal
 	}{}
-	refuse := func(name, reason string, edit func(*secrets.LocalSecret)) {
+	refuse := func(name, reason, refusedOwner string, edit func(*secrets.LocalSecret)) {
 		s := policytest.Secret(name, owner, policy.TierAgent, "v")
 		edit(&s)
 		refusals[name] = struct {
 			secret secrets.LocalSecret
-			reason string
-		}{s, reason}
+			want   policy.Refusal
+		}{s, policy.Refusal{Reason: reason, Owner: refusedOwner}}
 	}
-	refuse("NO_OWNER", policy.ReasonOwnerTagMissing, func(s *secrets.LocalSecret) { delete(s.Tags, policy.TagOwner) })
-	refuse("GITHUB_LOGIN_OWNER", policy.ReasonOwnerTagMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "sjawhar" })
-	refuse("CASED_OWNER", policy.ReasonOwnerTagMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "Sami@Example.com" })
-	refuse("EMPTY_OWNER", policy.ReasonOwnerTagMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "" })
-	refuse("UNREGISTERED_SERVICE", policy.ReasonOwnerTagMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "dispatch" })
-	refuse("NO_TIER", policy.ReasonTierTagMissing, func(s *secrets.LocalSecret) { delete(s.Tags, policy.TagTier) })
-	refuse("ADMIN_TIER", policy.ReasonTierTagMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagTier] = "admin" })
-	refuse("CASED_TAG_KEY", policy.ReasonOwnerTagMissing, func(s *secrets.LocalSecret) {
+	refuse("NO_OWNER", policy.ReasonOwnerTagMissing, "", func(s *secrets.LocalSecret) { delete(s.Tags, policy.TagOwner) })
+	refuse("GITHUB_LOGIN_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "sjawhar" })
+	refuse("CASED_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "Sami@Example.com" })
+	refuse("EMPTY_OWNER", policy.ReasonOwnerTagMalformed, "", func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "" })
+	refuse("UNREGISTERED_SERVICE", policy.ReasonOwnerTagMalformed, "", func(s *secrets.LocalSecret) { s.Tags[policy.TagOwner] = "dispatch" })
+	refuse("NO_TIER", policy.ReasonTierTagMissing, owner, func(s *secrets.LocalSecret) { delete(s.Tags, policy.TagTier) })
+	refuse("ADMIN_TIER", policy.ReasonTierTagMalformed, owner, func(s *secrets.LocalSecret) { s.Tags[policy.TagTier] = "admin" })
+	refuse("CASED_TAG_KEY", policy.ReasonOwnerTagMissing, "", func(s *secrets.LocalSecret) {
 		s.Tags["Owner"] = s.Tags[policy.TagOwner]
 		delete(s.Tags, policy.TagOwner)
 	})
-	refuse("SERVICE_HUMAN", policy.ReasonServiceOwnerHumanTier, func(s *secrets.LocalSecret) {
+	refuse("SERVICE_HUMAN", policy.ReasonServiceOwnerHumanTier, legion, func(s *secrets.LocalSecret) {
 		s.Tags[policy.TagOwner], s.Tags[policy.TagTier] = legion, policy.TierHuman
 	})
-	refuse("MANAGED_KEY", policy.ReasonNotOnAgentSecretsKey, func(s *secrets.LocalSecret) { s.KmsKeyID = "" })
-	refuse("ANOTHER_KEY", policy.ReasonNotOnAgentSecretsKey, func(s *secrets.LocalSecret) {
+	refuse("MANAGED_KEY", policy.ReasonNotOnAgentSecretsKey, owner, func(s *secrets.LocalSecret) { s.KmsKeyID = "" })
+	refuse("ANOTHER_KEY", policy.ReasonNotOnAgentSecretsKey, owner, func(s *secrets.LocalSecret) {
 		s.KmsKeyID = "arn:aws:kms:us-east-1:111122223333:key/another-key"
 	})
-	refuse("ANOTHER_KEYS_ALIAS", policy.ReasonNotOnAgentSecretsKey, func(s *secrets.LocalSecret) { s.KmsKeyID = "alias/someone-elses" })
-	refuse("NO_VALUE", policy.ReasonNoCurrentValue, func(s *secrets.LocalSecret) { s.Value = "" })
-	refuse("NO_TIER_NOR_VALUE", policy.ReasonTierTagMissing, func(s *secrets.LocalSecret) {
+	refuse("ANOTHER_KEYS_ALIAS", policy.ReasonNotOnAgentSecretsKey, owner, func(s *secrets.LocalSecret) { s.KmsKeyID = "alias/someone-elses" })
+	refuse("NO_VALUE", policy.ReasonNoCurrentValue, owner, func(s *secrets.LocalSecret) { s.Value = "" })
+	refuse("NO_TIER_NOR_VALUE", policy.ReasonTierTagMissing, owner, func(s *secrets.LocalSecret) {
 		delete(s.Tags, policy.TagTier)
 		s.Value = ""
 	})
-	refuse("MANAGED_KEY_NO_VALUE", policy.ReasonNotOnAgentSecretsKey, func(s *secrets.LocalSecret) {
+	refuse("MANAGED_KEY_NO_VALUE", policy.ReasonNotOnAgentSecretsKey, owner, func(s *secrets.LocalSecret) {
 		s.KmsKeyID = ""
 		s.Value = ""
 	})
-	refuse("BOGUS_SHAPE", policy.ReasonShapeMalformed, func(s *secrets.LocalSecret) { s.Tags[policy.TagShape] = "bogus" })
+	refuse("BOGUS_SHAPE", policy.ReasonShapeMalformed, owner, func(s *secrets.LocalSecret) { s.Tags[policy.TagShape] = "bogus" })
 
 	wellTagged := policytest.Secret("WELL_TAGGED", owner, policy.TierAgent, "v")
 	wellTagged.Tags[policy.TagShape] = policy.ShapeDocument
 	store := secrets.NewLocal(wellTagged)
 	store.Alias("arn:aws:kms:us-east-1:111122223333:key/another-key", "alias/someone-elses")
-	for _, r := range refusals {
+	want := map[string]policy.Refusal{}
+	for name, r := range refusals {
 		store.Put(r.secret)
+		want[policytest.ID(name)] = r.want
 	}
+	// A name under the prefix that is no slug maps to no name a session asks for: it is refused
+	// under its whole name in the store, which is all it has, with the owner its tag names.
 	badName := policytest.Secret("X", owner, policy.TierAgent, "v")
 	badName.Name = policytest.Prefix + "Deel_Api_Key"
 	store.Put(badName)
+	want[badName.Name] = policy.Refusal{Reason: policy.ReasonNameMalformed, Owner: owner}
 
 	logged := policytest.CaptureLog(t)
-	set, err := policytest.Loader(store, legion).Load(context.Background())
+	loader := policytest.Loader(store, legion)
+	set, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
@@ -184,17 +188,22 @@ func TestLoadRefusesEachUnservableSecretByNameWithTheExactLine(t *testing.T) {
 	if got := set.Secrets["WELL_TAGGED"].Shape; got != policy.ShapeDocument {
 		t.Errorf("WELL_TAGGED's Shape = %q, want the %s tag the store holds", got, policy.ShapeDocument)
 	}
-	lines := logged.String()
-	for name, r := range refusals {
-		if want := refusedLine(name, r.reason); strings.Count(lines, want) != 1 {
-			t.Errorf("log has %d of %q, want exactly one:\n%s", strings.Count(lines, want), want, lines)
-		}
+	if !maps.Equal(set.Refused, want) {
+		t.Errorf("Load refused\n%+v\nwant\n%+v", set.Refused, want)
 	}
-	if want := "ERROR agent secret policy refused name=" + badName.Name + " reason=" + policy.ReasonNameMalformed + "\n"; !strings.Contains(lines, want) {
-		t.Errorf("log has no %q:\n%s", want, lines)
+	if logged.String() != "" {
+		t.Fatalf("Load logged; the state-change lines are Current's:\n%s", logged)
 	}
-	if got := strings.Count(lines, "\n"); got != len(refusals)+1 {
-		t.Errorf("logged %d lines, want one per refused secret (%d):\n%s", got, len(refusals)+1, lines)
+
+	if _, err := policy.NewCurrent(t.Context(), loader, time.Hour); err != nil {
+		t.Fatalf("NewCurrent: %v", err)
+	}
+	var lines strings.Builder
+	for _, id := range slices.Sorted(maps.Keys(want)) {
+		lines.WriteString(refusedLine(id, want[id].Reason, want[id].Owner, true, ""))
+	}
+	if logged.String() != lines.String() {
+		t.Errorf("the first load logged:\n%s\nwant one line for each refused secret, in the order of their names:\n%s", logged, lines.String())
 	}
 }
 
@@ -253,16 +262,15 @@ func listEntry(name, arn string, versionsToStages map[string][]string) smtypes.S
 
 // TestLoadReadsEveryPageOfThePrefixOnly pins that the loader asks Secrets Manager for the
 // namespace prefix alone, reads every page, skips a name the lister answered outside the namespace
-// (here the prefix in upper case: the namespace is the prefix as written) without logging it as
-// refused (it is not in the namespace, and the alarm counts refusals), and never resolves aliases
-// nobody used.
+// (here the prefix in upper case: the namespace is the prefix as written) without refusing it (it
+// is not in the namespace, so no line and no broker_unservable_secrets series is its), and never
+// resolves aliases nobody used.
 func TestLoadReadsEveryPageOfThePrefixOnly(t *testing.T) {
 	entry := func(name string) smtypes.SecretListEntry { return listEntry(name, "arn:"+name, onlyCurrent) }
 	loader, sm := pagedLoader(t,
 		entry(policytest.Prefix+"first"), entry(policytest.Prefix+"second"),
 		entry(strings.ToUpper(policytest.Prefix)+"third"), entry(policytest.Prefix+"fourth"),
 	)
-	logged := policytest.CaptureLog(t)
 	set, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -270,8 +278,8 @@ func TestLoadReadsEveryPageOfThePrefixOnly(t *testing.T) {
 	if len(set.Secrets) != 3 || set.Secrets["FIRST"].Source != "arn:"+policytest.Prefix+"first" || set.Secrets["FOURTH"].Name != "FOURTH" {
 		t.Fatalf("served %+v, want FIRST, SECOND and FOURTH", set.Secrets)
 	}
-	if logged.String() != "" {
-		t.Fatalf("a name outside the namespace was logged rather than skipped:\n%s", logged)
+	if len(set.Refused) != 0 {
+		t.Fatalf("a name outside the namespace was refused rather than skipped: %+v", set.Refused)
 	}
 	if len(sm.filters) != 4 {
 		t.Fatalf("asked for %d pages, want 4", len(sm.filters))
@@ -299,7 +307,6 @@ func TestLoadServesASecretOnlyWhileAVersionIsCurrent(t *testing.T) {
 		entry("PENDING_ONLY", map[string][]string{"v1": {"AWSPENDING"}}),
 		entry("PREVIOUS_ONLY", map[string][]string{"v1": {"AWSPREVIOUS"}}),
 	)
-	logged := policytest.CaptureLog(t)
 	set, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -307,18 +314,23 @@ func TestLoadServesASecretOnlyWhileAVersionIsCurrent(t *testing.T) {
 	if _, current := set.Secrets["CURRENT"]; !current || len(set.Secrets) != 2 || set.Secrets["ROTATING"].Name != "ROTATING" {
 		t.Fatalf("served %+v, want CURRENT and ROTATING alone", set.Secrets)
 	}
-	want := refusedLine("NEVER_GIVEN_A_VALUE", policy.ReasonNoCurrentValue) +
-		refusedLine("NO_STAGES", policy.ReasonNoCurrentValue) +
-		refusedLine("PENDING_ONLY", policy.ReasonNoCurrentValue) +
-		refusedLine("PREVIOUS_ONLY", policy.ReasonNoCurrentValue)
-	if logged.String() != want {
-		t.Fatalf("logged:\n%s\nwant:\n%s", logged, want)
+	noValue := policy.Refusal{Reason: policy.ReasonNoCurrentValue, Owner: policy.OwnerShared}
+	want := map[string]policy.Refusal{
+		policytest.ID("NEVER_GIVEN_A_VALUE"): noValue,
+		policytest.ID("NO_STAGES"):           noValue,
+		policytest.ID("PENDING_ONLY"):        noValue,
+		policytest.ID("PREVIOUS_ONLY"):       noValue,
+	}
+	if !maps.Equal(set.Refused, want) {
+		t.Fatalf("refused %+v, want %+v", set.Refused, want)
 	}
 }
 
 // TestReloadServesASecretOnceItIsGivenAValue pins that a secret created and tagged without a value
 // is left out of the live policy, and that the reload after its value is put serves it, with no
-// restart. Its synctest bubble waits for the reload goroutine to return.
+// restart. The first load writes its refusal once, marked first_load, the reloads that find it
+// still without a value write nothing, and the reload that serves it writes the one line that
+// says so (now=servable). Its synctest bubble waits for the reload goroutine to return.
 func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := secrets.NewLocal(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, ""))
@@ -330,12 +342,18 @@ func TestReloadServesASecretOnceItIsGivenAValue(t *testing.T) {
 		if _, served := cur.Get().Secrets["SEEDED_LATER"]; served {
 			t.Fatalf("served SEEDED_LATER before it had a value: %+v", cur.Get().Secrets)
 		}
-		if want := refusedLine("SEEDED_LATER", policy.ReasonNoCurrentValue); !strings.HasPrefix(logged.String(), want) {
-			t.Fatalf("logged:\n%s\nwant it to open with %q", logged, want)
+		refused := refusedLine(policytest.ID("SEEDED_LATER"), policy.ReasonNoCurrentValue, owner, true, "")
+		time.Sleep(time.Second) // a hundred reloads that find it as the first load did
+		synctest.Wait()
+		if logged.String() != refused {
+			t.Fatalf("logged:\n%s\nwant the first load's line alone:\n%s", logged, refused)
 		}
 
 		store.Put(policytest.Secret("SEEDED_LATER", owner, policy.TierHuman, "seeded-v1"))
 		await(t, func() bool { return cur.Get().Secrets["SEEDED_LATER"].Name == "SEEDED_LATER" })
+		if want := refused + servableLine(policytest.ID("SEEDED_LATER"), policy.ReasonNoCurrentValue, owner, "servable"); logged.String() != want {
+			t.Fatalf("logged:\n%s\nwant:\n%s", logged, want)
+		}
 	})
 }
 
@@ -357,10 +375,10 @@ func (f *failingSecrets) ListSecrets(ctx context.Context, in *secretsmanager.Lis
 }
 
 // TestReloadKeepsThePolicyWhenSecretsManagerFails pins the live policy across reloads: a tag edit
-// takes effect on the next tick, a reload that cannot reach Secrets Manager logs the exact line
-// the deployment's alarm filters on and keeps the previous policy, and a first load that fails
-// fails the broker's boot. Its synctest bubble waits for the reload goroutine to return, so no
-// failed reload logs into a later test's capture.
+// takes effect on the next tick, a reload that cannot reach Secrets Manager logs the exact
+// LoadFailedMessage line and keeps the previous policy, and a first load that fails fails the
+// broker's boot. Its synctest bubble waits for the reload goroutine to return, so no failed
+// reload logs into a later test's capture.
 func TestReloadKeepsThePolicyWhenSecretsManagerFails(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		store := &failingSecrets{Local: secrets.NewLocal(policytest.Secret("DEEL_API_KEY", owner, policy.TierAgent, "v"))}
@@ -643,43 +661,55 @@ func TestMergedSetVersionEqualsAFullLoads(t *testing.T) {
 }
 
 // TestLoadOneAnswersOneNameByLoadsRules pins LoadOne against Load for the same secret: served, or
-// refused with Load's exact RefusedMessage line, or absent - none exists, or it is scheduled for
-// deletion - which is no refusal and logs nothing. A name no secret can carry is ErrNameInvalid.
+// refused with the reason and the owner Load hands to the set for it (the owner empty for a
+// reason that is the owner tag's own), or absent - none exists, or it is scheduled for deletion -
+// which is no refusal. Like Load it logs nothing: the lines are Current's. A name no secret can
+// carry is ErrNameInvalid.
 func TestLoadOneAnswersOneNameByLoadsRules(t *testing.T) {
 	deleting := policytest.Secret("DELETING", owner, policy.TierAgent, "v")
 	deleting.DeletedAt = new(time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC))
+	noOwner := policytest.Secret("NO_OWNER", owner, policy.TierAgent, "v")
+	delete(noOwner.Tags, policy.TagOwner)
 	store := secrets.NewLocal(
 		policytest.Secret("SERVED", owner, policy.TierHuman, "v"),
 		policytest.Secret("ADMIN_TIER", owner, "admin", "v"),
+		noOwner,
 		deleting,
 	)
 	loader := policytest.Loader(store)
 	logged := policytest.CaptureLog(t)
 	ctx := context.Background()
+	set, err := loader.Load(ctx)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, listed := set.Secrets["DELETING"]; listed {
+		t.Fatalf("Load served a secret scheduled for deletion: %+v", set.Secrets)
+	}
 
 	lk, err := loader.LoadOne(ctx, "SERVED")
 	if s := lk.Secret; err != nil || !lk.Served || lk.Reason != "" || s.Name != "SERVED" || s.Owner != owner || s.Tier != policy.TierHuman || s.Source != secrets.LocalARN(policytest.ID("SERVED")) {
 		t.Fatalf("LoadOne(SERVED) = %+v, %v; want it served, %s's, human, read by its ARN", lk, err, owner)
 	}
-	for name, reason := range map[string]string{
-		"ADMIN_TIER": policy.ReasonTierTagMalformed,
-		"MISSING":    policy.ReasonAbsent,
-		"DELETING":   policy.ReasonAbsent,
+	for name, want := range map[string]policy.Refusal{
+		"ADMIN_TIER": {Reason: policy.ReasonTierTagMalformed, Owner: owner},
+		"NO_OWNER":   {Reason: policy.ReasonOwnerTagMissing},
+		"MISSING":    {Reason: policy.ReasonAbsent},
+		"DELETING":   {Reason: policy.ReasonAbsent},
 	} {
-		if lk, err := loader.LoadOne(ctx, name); err != nil || lk.Served || lk.Reason != reason {
-			t.Errorf("LoadOne(%s) = %+v, %v; want unserved for %s", name, lk, err, reason)
+		lk, err := loader.LoadOne(ctx, name)
+		if err != nil || lk.Served || lk.Reason != want.Reason || lk.Owner != want.Owner {
+			t.Errorf("LoadOne(%s) = %+v, %v; want unserved for %s, owner %q", name, lk, err, want.Reason, want.Owner)
+		}
+		if loaded, refused := set.Refused[policytest.ID(name)]; refused != (want.Reason != policy.ReasonAbsent) || refused && loaded != want {
+			t.Errorf("Load refused %s as %+v (%t), want the refusal LoadOne answers, %+v", name, loaded, refused, want)
 		}
 	}
-	if want := refusedLine("ADMIN_TIER", policy.ReasonTierTagMalformed); logged.String() != want {
-		t.Errorf("logged %q, want only the refusal %q", logged.String(), want)
+	if logged.String() != "" {
+		t.Errorf("LoadOne and Load logged %q, want nothing: the lines are Current's", logged.String())
 	}
 	if _, err := loader.LoadOne(ctx, "serv-ed"); !errors.Is(err, policy.ErrNameInvalid) {
 		t.Errorf("LoadOne(serv-ed) = %v, want ErrNameInvalid", err)
-	}
-
-	set, err := loader.Load(ctx)
-	if _, listed := set.Secrets["DELETING"]; err != nil || listed {
-		t.Fatalf("Load served a secret scheduled for deletion (%v): %+v", err, set.Secrets)
 	}
 }
 
@@ -703,15 +733,15 @@ func TestLoadOneMakesNoCallForAnIDPastSecretsManagersNameLimit(t *testing.T) {
 	}
 }
 
-// storeReadSamples is every sample of broker_policy_store_reads_total the registry serves, one
-// per line in the order the scrape writes them.
-func storeReadSamples(t *testing.T, registry *metrics.Registry) string {
+// samplesOf is every sample of metric the registry serves, one per line in the order the scrape
+// writes them.
+func samplesOf(t *testing.T, registry *metrics.Registry, metric string) string {
 	t.Helper()
 	recorder := httptest.NewRecorder()
 	registry.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	var samples strings.Builder
 	for line := range strings.Lines(recorder.Body.String()) {
-		if strings.HasPrefix(line, "broker_policy_store_reads_total{") {
+		if strings.HasPrefix(line, metric+"{") {
 			samples.WriteString(line)
 		}
 	}
@@ -759,14 +789,14 @@ func TestLoadCountsEachStoreReadByWhatItRead(t *testing.T) {
 		if err := step.read(); err != nil {
 			t.Fatalf("%s: %v", step.name, err)
 		}
-		if got := storeReadSamples(t, registry); got != step.want {
+		if got := samplesOf(t, registry, "broker_policy_store_reads_total"); got != step.want {
 			t.Fatalf("after %s the counter reads\n%s\nwant\n%s", step.name, got, step.want)
 		}
 	}
 }
 
-// TestRequestersLoad pins what the loader makes of a requesters tag, each refusal logged as the
-// one line the deployment's alarm filters on, with its own reason: a list it cannot read at all
+// TestRequestersLoad pins what the loader makes of a requesters tag, each refusal handed to the
+// set with its own reason and its owner: a list it cannot read at all
 // is requesters-malformed, an entry naming a service this deployment does not register included;
 // a google-service-account secret whose grants are unbounded, or bounded past an hour, is
 // max-grant-required, the cap its kind demands; and one whose requesters are not its own person
@@ -830,7 +860,6 @@ func TestRequestersLoad(t *testing.T) {
 		store.Put(r.secret)
 	}
 
-	logged := policytest.CaptureLog(t)
 	set, err := policytest.Loader(store, daemon).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -838,14 +867,12 @@ func TestRequestersLoad(t *testing.T) {
 	if len(set.Secrets) != 1 || set.Secrets["SERVED_KEY"].Requesters != sami {
 		t.Fatalf("served %+v, want only SERVED_KEY, listing %s", set.Secrets, sami)
 	}
-	lines := logged.String()
+	want := map[string]policy.Refusal{}
 	for name, r := range refusals {
-		if want := refusedLine(name, r.reason); strings.Count(lines, want) != 1 {
-			t.Errorf("log has %d of %q, want exactly one:\n%s", strings.Count(lines, want), want, lines)
-		}
+		want[policytest.ID(name)] = policy.Refusal{Reason: r.reason, Owner: sami}
 	}
-	if got := strings.Count(lines, "\n"); got != len(refusals) {
-		t.Errorf("logged %d lines, want one per refused secret (%d):\n%s", got, len(refusals), lines)
+	if !maps.Equal(set.Refused, want) {
+		t.Errorf("refused\n%+v\nwant each refusal with its own reason\n%+v", set.Refused, want)
 	}
 
 	// The same tag read by a loader that registers no service at all, which is what the broker
@@ -853,7 +880,6 @@ func TestRequestersLoad(t *testing.T) {
 	// requesters-malformed, exactly as an owner tag naming an unregistered service is refused,
 	// since no pod can prove a name the deployment does not register.
 	unregistered := policytest.ListedSecret("SERVICE_LIST_KEY", sami, policy.TierAgent, daemon, "v")
-	bareLog := policytest.CaptureLog(t)
 	bare, err := policytest.Loader(secrets.NewLocal(unregistered)).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load with no registered services: %v", err)
@@ -861,15 +887,14 @@ func TestRequestersLoad(t *testing.T) {
 	if len(bare.Secrets) != 0 {
 		t.Errorf("a loader registering no service served %+v, want the list naming %s refused", bare.Secrets, daemon)
 	}
-	bareLines := bareLog.String()
-	if want := refusedLine("SERVICE_LIST_KEY", policy.ReasonRequestersMalformed); strings.Count(bareLines, want) != 1 {
-		t.Errorf("log has %d of %q, want exactly one:\n%s", strings.Count(bareLines, want), want, bareLines)
+	if want := (policy.Refusal{Reason: policy.ReasonRequestersMalformed, Owner: sami}); bare.Refused[policytest.ID("SERVICE_LIST_KEY")] != want || len(bare.Refused) != 1 {
+		t.Errorf("refused %+v, want SERVICE_LIST_KEY alone, as %+v", bare.Refused, want)
 	}
 }
 
 // TestAdminCap pins every rule the admin tag and the scopes tag bring, both ways, driven through
-// the loader as TestRequestersLoad is: the refusal a row reads is the line the deployment's alarm
-// filters on, not TagRules' answer called directly. An admin secret is human tier, names its
+// the loader as TestRequestersLoad is: the refusal a row reads is the one the load hands to the
+// set, not TagRules' answer called directly. An admin secret is human tier, names its
 // requesters and caps its grants at an hour, so every release of it is approved, asked for by
 // someone it names and short enough to review while it is live; a secret that merely lists its
 // requesters keeps its own cap, or none, whatever its tier. A google-service-account secret
@@ -905,7 +930,7 @@ func TestAdminCap(t *testing.T) {
 		return s
 	}
 	unedited := func(*secrets.LocalSecret) {}
-	// The name a session asks for the fixture by, which the refusals are keyed and logged under.
+	// The name a session asks for the fixture by, which the refusals are keyed under.
 	nameOf := func(s secrets.LocalSecret) string {
 		return policy.SlugToName(strings.TrimPrefix(s.Name, policytest.Prefix))
 	}
@@ -972,7 +997,6 @@ func TestAdminCap(t *testing.T) {
 	loader := policytest.Loader(store, daemon)
 	loader.ServiceAccounts = map[string]string{"ACCOUNT_DAEMON": fleetAccount, "ACCOUNT_DEV_BOUND": devAccount}
 
-	logged := policytest.CaptureLog(t)
 	set, err := loader.Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
@@ -988,14 +1012,12 @@ func TestAdminCap(t *testing.T) {
 	if !set.Secrets["ADMIN_KEY"].Admin {
 		t.Errorf("ADMIN_KEY = %+v, want it served as an administrator's secret", set.Secrets["ADMIN_KEY"])
 	}
-	lines := logged.String()
+	want := map[string]policy.Refusal{}
 	for name, r := range refusals {
-		if want := refusedLine(name, r.reason); strings.Count(lines, want) != 1 {
-			t.Errorf("log has %d of %q, want exactly one:\n%s", strings.Count(lines, want), want, lines)
-		}
+		want[policytest.ID(name)] = policy.Refusal{Reason: r.reason, Owner: sami}
 	}
-	if got := strings.Count(lines, "\n"); got != len(refusals) {
-		t.Errorf("logged %d lines, want one per refused secret (%d):\n%s", got, len(refusals), lines)
+	if !maps.Equal(set.Refused, want) {
+		t.Errorf("refused\n%+v\nwant each refusal with its own reason\n%+v", set.Refused, want)
 	}
 }
 
