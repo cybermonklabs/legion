@@ -566,7 +566,14 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 		boot := resolveWith(t, map[string]string{
 			"DISPATCH_LEGION_DAEMON_TOKEN_FILE": writeFile(t, "legion-daemon-token", token),
 		})
-		router := routerFor(t, boot, routes.AppContextOptions{Store: storetest.Open(t)})
+		database := storetest.Open(t)
+		// Main's projects name a person who has signed in (projects.default_assignee, NOT NULL),
+		// so the project is seeded beside its person rather than created by a browser's write.
+		if _, err := database.Pool.Exec(context.Background(),
+			`insert into projects (key, name, default_assignee) values ('LGN', 'Legion', 'alice')`); err != nil {
+			t.Fatalf("seed the project: %v", err)
+		}
+		router := routerFor(t, boot, routes.AppContextOptions{Store: database})
 		send := func(method, path string, body any) *httptest.ResponseRecorder {
 			t.Helper()
 			encoded, err := json.Marshal(body)
@@ -581,9 +588,6 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			response := httptest.NewRecorder()
 			router.ServeHTTP(response, request)
 			return response
-		}
-		if created := send(http.MethodPost, "/api/v1/projects", map[string]string{"key": "LGN", "name": "Legion"}); created.Code != http.StatusCreated {
-			t.Fatalf("create the project: %d %s", created.Code, created.Body.String())
 		}
 		if set := send(http.MethodPut, "/api/v1/settings/legion/LGN", map[string]any{"state_url": daemon.URL}); set.Code != http.StatusOK {
 			t.Fatalf("set the project's Legion daemon: %d %s", set.Code, set.Body.String())
