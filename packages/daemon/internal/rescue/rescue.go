@@ -1038,9 +1038,10 @@ func heldByJJ(dir string) bool {
 // one-sided file, so the snapshot carries every side of it and no content is lost; failing there
 // would hold a pod replacement back for work the branch already holds.
 //
-// An untracked nested git repository is carried by neither read and fails neither: `git add
-// --all` records a gitlink, whose commit no object of this repository holds, and jj does not
-// snapshot it at all. What is in it goes with the pod, as it would have gone had no check run.
+// An untracked nested git repository fails neither read: `git add --all` records it as a
+// gitlink, whose commit no object of this repository holds, and carries none of its files, and
+// the route carries none of them either. What is in it goes with the pod, as it would have gone
+// had no check run.
 func (r runner) edits(dir, head string) (string, error) {
 	var tree string
 	var err error
