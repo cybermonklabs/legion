@@ -15,6 +15,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // projectedTables are the tables migration 20261109022248 made projections of the node and
@@ -418,7 +420,12 @@ func newProjectionRun(t *testing.T) *projectionRun {
 		}
 	}))
 	t.Cleanup(listener.Close)
-	handler, database := newTargetedMessageHandler(t, listener.URL)
+	// The run's pool reports every statement to connectionWatch, so a watched write's statements
+	// are read on the connection each of them ran on, the ones a helper ran outside the
+	// transaction it was handed among them.
+	handler, database, _ := newTestServer(t, testServerOptions{
+		envoyURL: listener.URL, store: storetest.TracedStore(t, storetest.Open(t), connectionWatch{}),
+	})
 	issue := createInteractionIssue(t, handler, "PROJ", "A projection of its node",
 		"# Spec\n\nA passage the anchor names.\n")
 	run := &projectionRun{handler: handler, database: database, issue: issue.Key, specID: issue.PrimaryArtifactID, project: "PROJ"}
@@ -629,7 +636,93 @@ type watchedTx struct {
 	failBefore int
 	abort      bool
 	injected   bool
+	// traced is every statement the write issued on the run's pool, read by the tracer on the
+	// connection each ran on (connectionWatch): a statement a helper sent through a pooled
+	// connection never passes through this transaction, and is recorded there all the same.
+	traced *watchedWrite
+	// backend is the process id of the connection the transaction holds, read when it began.
+	backend uint32
 }
+
+// connectionWatch is the tracer on the run's pool. It keeps nothing itself: a write under watch
+// carries its own record on its context (watchedWriteKey), so a statement is recorded for the
+// write that issued it, whichever connection of the pool it ran on, and the run's other work is
+// recorded nowhere.
+type connectionWatch struct{}
+
+// watchedWriteKey marks the context of one watched write with the record its statements go to.
+type watchedWriteKey struct{}
+
+// tracedStatement is one statement a watched write issued, with the backend process id of the
+// connection it ran on.
+type tracedStatement struct {
+	sql string
+	pid uint32
+}
+
+// watchedWrite is what one watched write issued on the run's pool, in the order it issued it.
+type watchedWrite struct {
+	mu         sync.Mutex
+	statements []tracedStatement
+}
+
+func (w *watchedWrite) add(sql string, pid uint32) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.statements = append(w.statements, tracedStatement{sql: strings.Join(strings.Fields(sql), " "), pid: pid})
+}
+
+func (w *watchedWrite) all() []tracedStatement {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.statements)
+}
+
+// index answers the position of the first statement holding clause, and -1 for none.
+func (w *watchedWrite) index(clause string) int {
+	for position, statement := range w.all() {
+		if strings.Contains(statement.sql, clause) {
+			return position
+		}
+	}
+	return -1
+}
+
+// elsewhere is every statement the write ran on a connection other than the one its
+// transaction holds, each named with the backend it ran on: the helper that sent it is the
+// writer's code that ran it outside the transaction it was handed.
+func (w *watchedTx) elsewhere() []string {
+	var off []string
+	for _, statement := range w.traced.all() {
+		if statement.pid != w.backend {
+			off = append(off, fmt.Sprintf("backend %d: %s", statement.pid, statement.sql))
+		}
+	}
+	return off
+}
+
+func (connectionWatch) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if write, watched := ctx.Value(watchedWriteKey{}).(*watchedWrite); watched {
+		write.add(data.SQL, conn.PgConn().PID())
+	}
+	return ctx
+}
+
+func (connectionWatch) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// The batch half: a statement sent in a batch is reported here rather than as a query start, and
+// a write that batches its statements is watched as one that sends them one by one.
+func (connectionWatch) TraceBatchStart(ctx context.Context, _ *pgx.Conn, _ pgx.TraceBatchStartData) context.Context {
+	return ctx
+}
+
+func (connectionWatch) TraceBatchQuery(ctx context.Context, conn *pgx.Conn, data pgx.TraceBatchQueryData) {
+	if write, watched := ctx.Value(watchedWriteKey{}).(*watchedWrite); watched {
+		write.add(data.SQL, conn.PgConn().PID())
+	}
+}
+
+func (connectionWatch) TraceBatchEnd(context.Context, *pgx.Conn, pgx.TraceBatchEndData) {}
 
 // errInjected is the failure the test injects between two writes.
 var errInjected = errors.New("injected failure between the node write and the projection write")
@@ -717,9 +810,10 @@ type projectionWriter struct {
 	// write runs the whole write - the node, the row, and the facts the row projects - in the
 	// caller's transaction.
 	write func(ctx context.Context, tx pgx.Tx) error
-	// left is what either side of the write left behind: the number of rows of the projection
-	// and of the store the write would have written, read outside its transaction.
-	left func(ctx context.Context) (int, int, error)
+	// left is what either side of the write left behind, read outside its transaction: every
+	// row of the projection and of the store the write would have written, each as the row
+	// itself, so a row a rollback left committed is reported as what it holds.
+	left func(ctx context.Context) ([]string, error)
 }
 
 // projectionWriters are the two writers a transaction of this tree runs: the comment write,
@@ -752,10 +846,12 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			}
 			return stored.caused(ctx, tx, graphstore.NoEvent)
 		},
-		left: func(ctx context.Context) (int, int, error) {
-			return countPair(ctx, run.database,
-				`select count(*) from comments where id = $1::uuid`,
-				`select count(*) from graph_nodes where kind = 'comment' and id = $1`, commentID)
+		left: func(ctx context.Context) ([]string, error) {
+			return readStrings(ctx, run.database.Pool, `
+				select 'comments ' || row_to_json(c)::text from comments c where c.id::text = $1
+				union all
+				select 'graph_nodes ' || row_to_json(n)::text from graph_nodes n where n.kind = 'comment' and n.id = $1
+			`, commentID)
 		},
 	}, {
 		name:  "the block index",
@@ -772,10 +868,13 @@ func projectionWriters(t *testing.T, run *projectionRun) []projectionWriter {
 			}
 			return written.Caused(ctx, tx, graphstore.NoEvent)
 		},
-		left: func(ctx context.Context) (int, int, error) {
-			return countPair(ctx, run.database,
-				`select count(*) from document_blocks where artifact_id = $2::uuid and node_address = $1`,
-				`select count(*) from graph_nodes where kind = 'block' and id = $1`, blockAddress, run.specID)
+		left: func(ctx context.Context) ([]string, error) {
+			return readStrings(ctx, run.database.Pool, `
+				select 'document_blocks ' || row_to_json(b)::text from document_blocks b
+				where b.artifact_id = $2::uuid and b.node_address = $1
+				union all
+				select 'graph_nodes ' || row_to_json(n)::text from graph_nodes n where n.kind = 'block' and n.id = $1
+			`, blockAddress, run.specID)
 		},
 	}}
 }
@@ -789,29 +888,46 @@ func mustUUID(t *testing.T, run *projectionRun) string {
 	return id
 }
 
-// countPair reads how many rows each of two statements counts, on the pool and so outside any
-// transaction the write ran in.
-func countPair(ctx context.Context, database *store.Store, projection, node string, args ...any) (int, int, error) {
-	var rows, nodes int
-	if err := database.Pool.QueryRow(ctx, projection, args...).Scan(&rows); err != nil {
-		return 0, 0, err
-	}
-	if err := database.Pool.QueryRow(ctx, node, args[0]).Scan(&nodes); err != nil {
-		return 0, 0, err
-	}
-	return rows, nodes, nil
-}
-
 // requireOneTransactionPerWrite runs each writer in a watched transaction and reads what every
-// statement it issued ran on: one backend and one transaction, the node write's. A helper that
-// took a pooled connection of its own would commit its row there, which the rollback below
-// leaves behind for the read that names it.
+// statement it issued ran on: one backend and one transaction, the node write's.
+//
+// Two records are read. The tracer on the run's pool saw every statement the write issued, on
+// the connection each ran on, so a helper that sent one through a pooled connection of its own
+// is caught by the backend that statement ran on, whether or not it wrote anything the rollback
+// could leave. The transaction's own record (watchedTx) names the transaction each statement
+// it carried ran in. And a row the rollback left committed is read back out of the database and
+// reported as the row it is, beside the statements that ran outside the transaction.
 func requireOneTransactionPerWrite(t *testing.T, ctx context.Context, run *projectionRun) {
 	t.Helper()
 	for _, writer := range projectionWriters(t, run) {
 		watched := run.runWatched(t, ctx, writer, -1, false)
+		leftover, err := writer.left(ctx)
+		if err != nil {
+			t.Fatalf("read what %s left behind: %v", writer.name, err)
+		}
+		if len(leftover) != 0 {
+			t.Errorf("%s left these rows committed after its transaction rolled back:\n  %s\nand ran these statements outside that transaction:\n  %s",
+				writer.name, strings.Join(leftover, "\n  "), strings.Join(watched.elsewhere(), "\n  "))
+		}
+		traced := watched.traced.all()
+		tracedNode := watched.traced.index("insert into graph_nodes")
+		if tracedNode < 0 {
+			t.Fatalf("%s issued no node write on the run's pool; it ran %v", writer.name, traced)
+		}
+		nodeBackend := traced[tracedNode].pid
+		if nodeBackend != watched.backend {
+			t.Errorf("%s wrote its node on backend %d, and the transaction it was handed holds backend %d",
+				writer.name, nodeBackend, watched.backend)
+		}
+		for position, statement := range traced {
+			if statement.pid != nodeBackend {
+				t.Errorf("%s ran statement %d on backend %d, and its node write on backend %d: %s",
+					writer.name, position, statement.pid, nodeBackend, statement.sql)
+			}
+		}
+
 		if len(watched.statements) < 2 {
-			t.Fatalf("%s issued %d statement, which is no write", writer.name, len(watched.statements))
+			t.Fatalf("%s issued %d statement through its transaction, which is no write", writer.name, len(watched.statements))
 		}
 		nodeWrite := watched.index("insert into graph_nodes")
 		if nodeWrite < 0 {
@@ -832,15 +948,9 @@ func requireOneTransactionPerWrite(t *testing.T, ctx context.Context, run *proje
 					writer.name, position, statement.pid, statement.txid, wanted.pid, wanted.txid, statement.sql)
 			}
 		}
-		rows, nodes, err := writer.left(ctx)
-		if err != nil {
-			t.Fatalf("read what %s left behind: %v", writer.name, err)
+		if off := watched.elsewhere(); len(off) == 0 {
+			t.Logf("%s ran %d statements on the run's pool, all on backend %d, and its transaction %d", writer.name, len(traced), nodeBackend, wanted.txid)
 		}
-		if rows != 0 || nodes != 0 {
-			t.Errorf("%s left %d row of %s and %d node committed after its transaction rolled back, so a statement of it ran somewhere else",
-				writer.name, rows, writer.table, nodes)
-		}
-		t.Logf("%s ran %d statements, all on backend %d in transaction %d", writer.name, len(watched.statements), wanted.pid, wanted.txid)
 	}
 }
 
@@ -860,7 +970,11 @@ func (r *projectionRun) runWatched(t *testing.T, ctx context.Context, writer pro
 	if err != nil {
 		t.Fatalf("begin %s: %v", writer.name, err)
 	}
-	watched := &watchedTx{Tx: tx, failBefore: failBefore, abort: abort}
+	watched := &watchedTx{Tx: tx, failBefore: failBefore, abort: abort,
+		traced: &watchedWrite{}, backend: tx.Conn().PgConn().PID()}
+	// The write runs on a context carrying its record, so the tracer on the run's pool records
+	// every statement it issues, on whichever connection it ran.
+	ctx = context.WithValue(ctx, watchedWriteKey{}, watched.traced)
 	writeErr := writer.write(ctx, watched)
 	if writeErr == nil {
 		writeErr = watched.after(ctx)
@@ -900,14 +1014,14 @@ func requireNeitherSideSurvivesAFailure(t *testing.T, ctx context.Context, run *
 				if abort {
 					how = "a statement of the write errors"
 				}
-				run.runWatched(t, ctx, writer, injection.point, abort)
-				rows, nodes, err := writer.left(ctx)
+				failed := run.runWatched(t, ctx, writer, injection.point, abort)
+				leftover, err := writer.left(ctx)
 				if err != nil {
 					t.Fatalf("read what %s left: %v", writer.name, err)
 				}
-				if rows != 0 || nodes != 0 {
-					t.Errorf("%s, failed %s while %s, left %d row of %s and %d node: the two commit together or not at all",
-						writer.name, injection.what, how, rows, writer.table, nodes)
+				if len(leftover) != 0 {
+					t.Errorf("%s, failed %s while %s, left these rows committed:\n  %s\nand ran these statements outside its transaction:\n  %s\nthe two commit together or not at all",
+						writer.name, injection.what, how, strings.Join(leftover, "\n  "), strings.Join(failed.elsewhere(), "\n  "))
 				}
 			}
 		}

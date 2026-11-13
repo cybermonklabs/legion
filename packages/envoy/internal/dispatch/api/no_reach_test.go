@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -398,9 +399,10 @@ func readRepositoryFile(t *testing.T, root, path string) string {
 //   - An unauthorized actor: an anonymous request, which every row but a public one refuses.
 //   - An identifier of another project: a route addressing one project's object under another
 //     project's key, which answers that object to nobody.
-//   - An undeclared traversal parameter: every word a caller would walk the graph with, handed
-//     to the route at once. A route that honoured one would answer something else, so the
-//     answer must be the answer it gives without them, status and rows alike.
+//   - An undeclared traversal parameter: every word a caller would walk the graph with that the
+//     route does not declare, handed to it at once, at objects the route has a row of. A route
+//     that honoured one would answer something else, so the answer must be the answer it gives
+//     without them, status and rows alike, as the base build answered it.
 func threeBadRequests(t *testing.T) {
 	handler := newTestHandler(t)
 	// The production table: a test hook is mounted only where Deps.TestHooksEnabled is set, and
@@ -439,38 +441,137 @@ func threeBadRequests(t *testing.T) {
 		t.Fatalf("only %d route(s) were probed with another project's identifier, which is too few to prove anything", probed)
 	}
 
-	traversal := "?" + strings.Join(traversalQuery(), "&")
+	// The traversal probe reads each route at the objects seedTwoProjects wrote, with the query
+	// a route requires (routeProbeQueries), so a route with a row to answer answers it, and a
+	// route that honoured a traversal word would answer different rows. A route that answers no
+	// row at all - a 404 for a placeholder id - answers the same 404 whatever the query holds,
+	// and proves nothing; so every route reads a row here, but the few listed in
+	// routesNoSeedAnswers, each of which needs something no seed of this test holds.
+	//
+	// Each route is sent the traversal words it does not declare. No route refuses an
+	// undeclared query parameter, and the base build answered each of them as it answers the
+	// plain read, so the walked read must answer exactly that: a refusal is an answer
+	// production never gave, and fails as any other. A word a route does declare - `kind` on
+	// GET /api/v1/me/replies - is that route's own parameter, which it answers by its own
+	// rule, and is no traversal the caller handed it.
+	queries := routeProbeQueries(owned)
+	answered := 0
 	for _, route := range rows {
 		if route.Method != http.MethodGet {
 			continue
 		}
-		plain := dispatchRequest(t, handler, route.Method, routeProbePath(route.Pattern), nil, "alice")
-		walked := dispatchRequest(t, handler, route.Method, routeProbePath(route.Pattern)+traversal, nil, "alice")
-		// Two answers are right: the answer the route gives without them, word for word, and a
-		// refusal. A route that answered something else walked the graph for its caller.
-		if walked.Code >= 400 && plain.Code < 400 {
-			continue
+		name := route.Method + " " + route.Pattern
+		target := seededProbePath(route.Pattern, owned)
+		walkedTarget := target + "?" + undeclaredTraversal(name)
+		if query, held := queries[name]; held {
+			target += "?" + query
+			walkedTarget = target + "&" + undeclaredTraversal(name)
+		}
+		plain := dispatchRequest(t, handler, route.Method, target, nil, "alice")
+		walked := dispatchRequest(t, handler, route.Method, walkedTarget, nil, "alice")
+		if reason, exempt := routesNoSeedAnswers[name]; exempt {
+			if plain.Code < 400 {
+				t.Errorf("%s answers %d at %s, and routesNoSeedAnswers holds it as a route no seed answers (%s): take it off that list",
+					name, plain.Code, target, reason)
+			}
+		} else if plain.Code >= 400 {
+			t.Errorf("%s answers %d at %s on its own, so its traversal probe reads no row: %s",
+				name, plain.Code, target, firstLine(plain.Body.String()))
+		} else {
+			answered++
 		}
 		if plain.Code != walked.Code {
-			t.Errorf("%s %s answers %d on its own and %d with a traversal parameter",
-				route.Method, route.Pattern, plain.Code, walked.Code)
+			t.Errorf("%s answers %d at %s on its own and %d with a traversal parameter: %s",
+				name, plain.Code, target, walked.Code, firstLine(walked.Body.String()))
 			continue
 		}
 		if before, after := answerShape(plain.Body.Bytes()), answerShape(walked.Body.Bytes()); before != after {
-			t.Errorf("%s %s answers %s on its own and %s with a traversal parameter",
-				route.Method, route.Pattern, before, after)
+			t.Errorf("%s answers %s at %s on its own and %s with a traversal parameter",
+				name, before, target, after)
 		}
+	}
+	if answered < 60 {
+		t.Fatalf("only %d read answered a row for the traversal probe, which is too few to prove anything", answered)
+	}
+	t.Logf("%d reads answered a row with and without a traversal parameter alike", answered)
+}
+
+// routesNoSeedAnswers are the reads no object seedTwoProjects writes lets answer a row, each
+// with what it would need. Their traversal probe still runs, and still has to answer as the
+// plain read answers, but reads nothing.
+var routesNoSeedAnswers = map[string]string{
+	"GET /api/v1/github/app-installation/{owner}/{repo}":                 "a GitHub App private key",
+	"GET /api/v1/projects/{key}/architecture":                            "an architecture source configured for the project",
+	"GET /api/v1/delivery/timeline":                                      "delivery settings",
+	"GET /api/v1/delivery/measures":                                      "delivery settings",
+	"GET /api/v1/delivery/pipeline":                                      "delivery settings",
+	"GET /api/v1/delivery/runs/{id}":                                     "a delivery run",
+	"GET /api/v1/issues/{key}/subscribers":                               "an Envoy listener (ENVOY_URL)",
+	"GET /api/v1/artifacts/{id}/subscribers":                             "an Envoy listener (ENVOY_URL)",
+	"GET /api/v1/agents":                                                 "an Envoy listener (ENVOY_URL)",
+	"GET /api/v1/issues/{key}/handoffs/{phase}/latest":                   "a handoff",
+	"GET /api/v1/handoffs/{id}":                                          "a handoff",
+	"GET /api/v1/going/requests/{id}/stream":                             "a going request's answer run",
+	"GET /api/v1/agents/{session_id}/artifacts/{slug}":                   "a session's own document",
+	"GET /api/v1/agents/{session_id}/artifacts/{slug}/versions/{number}": "a session's own document",
+	"GET /api/v1/broadcasts/{id}":                                        "a broadcast",
+	"GET /api/v1/credential-grants":                                      "the agent-secrets broker",
+	"GET /api/v1/machine-logins":                                         "the agent-secrets broker",
+	"GET /api/v1/signins":                                                "the agent-secrets broker",
+}
+
+// routeProbeQueries are the queries the reads that require one are sent, each naming the
+// objects seedTwoProjects wrote, so the read answers a row rather than refusing the request
+// that names nothing.
+func routeProbeQueries(owned crossProject) map[string]string {
+	spec := "dispatch://" + owned.issue + "/spec"
+	return map[string]string{
+		"GET /api/v1/search":               url.Values{"q": {"project"}}.Encode(),
+		"GET /api/v1/search/results":       url.Values{"q": {"project"}}.Encode(),
+		"GET /api/v1/references":           url.Values{"to": {"dispatch://" + owned.issue}}.Encode(),
+		"GET /api/v1/references/questions": url.Values{"kind": {"comment"}, "id": {owned.comment}}.Encode(),
+		"GET /api/v1/block-links":          url.Values{"from": {spec}, "to": {spec}}.Encode(),
+		"GET /api/v1/issues/resolve":       url.Values{"ref": {owned.issue}}.Encode(),
+		"GET /api/v1/asks/open":            url.Values{"project": {"TEST"}}.Encode(),
+		"GET /api/v1/credential-requests":  url.Values{"approver": {"me"}}.Encode(),
 	}
 }
 
-// traversalQuery is the undeclared traversal every route is sent, each word with a value a
-// traversal would take.
-func traversalQuery() []string {
-	query := make([]string, 0, len(traversalWords))
-	for _, word := range traversalWords {
-		query = append(query, word+"=comment")
+// seededProbePath is the route's path at the objects seedTwoProjects wrote under their own
+// project: each wildcard takes the seeded object its place names, and a wildcard no seeded
+// object fills takes routeProbePath's placeholder. A route under /artifacts/{id} reads the
+// project's own document, which every such route answers for; one of an issue's documents is
+// read through the issue's routes, which is where those send a reader.
+func seededProbePath(pattern string, owned crossProject) string {
+	path := pattern
+	for _, replacement := range []struct{ from, to string }{
+		{"/issues/{key}/artifacts/{slug}", "/issues/" + owned.issue + "/artifacts/" + owned.slug},
+		{"/projects/{key}/artifacts/{slug}", "/projects/TEST/artifacts/" + owned.documentSlug},
+		{"/projects/{key}", "/projects/TEST"},
+		{"/issues/{key}", "/issues/" + owned.issue},
+		{"/comments/{id}", "/comments/" + owned.comment},
+		{"/asks/{id}", "/asks/" + owned.ask},
+		{"/messages/{id}", "/messages/" + owned.message},
+		{"/artifacts/{id}", "/artifacts/" + owned.document},
+		{"/documents/{id}", "/documents/" + owned.document},
+		{"{block_id}", owned.documentBlock},
+	} {
+		path = strings.ReplaceAll(path, replacement.from, replacement.to)
 	}
-	return query
+	return routeProbePath(path)
+}
+
+// undeclaredTraversal is the traversal one route is sent: every traversal word the route does
+// not declare as a query parameter of its own, each with a value a traversal would take.
+func undeclaredTraversal(route string) string {
+	declared := queryTagsOf(routeShapes[route].Params)
+	query := url.Values{}
+	for _, word := range traversalWords {
+		if !slices.Contains(declared, word) {
+			query.Set(word, "comment")
+		}
+	}
+	return query.Encode()
 }
 
 // probeWithoutCredential sends a mutating route its probe body and no credential.
@@ -498,15 +599,19 @@ func routeProbeBodyValue(route apiRoute) any {
 }
 
 // crossProject is one project's objects, for the probe that addresses them under another
-// project's key.
+// project's key and for the probe that reads each of them under its own.
 type crossProject struct {
 	otherKey, otherIssue  string
 	issue, comment, ask   string
 	artifact, slug, block string
+	// message is an issue message, and document a project document, with its slug and one of
+	// its blocks: the objects a route of the project's own documents and messages reads.
+	message, document, documentSlug, documentBlock string
 }
 
-// seedTwoProjects writes one project with an issue, a document, a comment, an ask and a block,
-// and a second project the probe addresses them under.
+// seedTwoProjects writes one project with an issue, a document, a comment, an ask, a message, a
+// project document and a block of each document, and a second project the probe addresses them
+// under.
 func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
 	t.Helper()
 	createDuplicateTestProject(t, handler, "OTH")
@@ -520,9 +625,12 @@ func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("seed a document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
+	design := decodeBody[struct {
+		Artifact model.Artifact `json:"artifact"`
+	}](t, uploaded).Artifact
 	owned := crossProject{
 		otherKey: "OTH", otherIssue: other.Key,
-		issue: issue.Key, artifact: issue.PrimaryArtifactID, slug: "design",
+		issue: issue.Key, artifact: issue.PrimaryArtifactID, slug: design.Slug,
 	}
 	comment := decodeBody[struct {
 		ID string `json:"id"`
@@ -530,14 +638,31 @@ func seedTwoProjects(t *testing.T, handler http.Handler) crossProject {
 		map[string]any{"body": "A comment of this project."}, "alice"))
 	owned.comment = comment.ID
 	owned.ask = createIssueAsk(t, handler, issue.Key, "A question of this project?")
+	owned.block = firstBlockOf(t, handler, issue.PrimaryArtifactID)
+	message := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages",
+		map[string]any{"body": "A message of this project."}, "alice")
+	if message.Code != http.StatusCreated {
+		t.Fatalf("seed a message: status=%d body=%s", message.Code, message.Body.String())
+	}
+	owned.message = decodeBody[struct {
+		ID string `json:"id"`
+	}](t, message).ID
+	document := createProjectDocument(t, handler, "TEST", "Notes", "# Notes\n\nA passage of the project's own document.\n")
+	owned.document, owned.documentSlug = document.ID, document.Slug
+	owned.documentBlock = firstBlockOf(t, handler, document.ID)
+	return owned
+}
+
+// firstBlockOf is the id of the first block GET /api/v1/artifacts/{id}/blocks lists.
+func firstBlockOf(t *testing.T, handler http.Handler, artifactID string) string {
+	t.Helper()
 	blocks := decodeBody[[]struct {
 		ID string `json:"id"`
-	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/blocks", nil, "alice"))
+	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/blocks", nil, "alice"))
 	if len(blocks) == 0 {
-		t.Fatal("the seeded document holds no block")
+		t.Fatalf("the seeded document %s holds no block", artifactID)
 	}
-	owned.block = blocks[0].ID
-	return owned
+	return blocks[0].ID
 }
 
 // crossProjectPath is the route's path with another project's key and this project's object, or
@@ -614,14 +739,29 @@ func olderBuildReadsTheGraph(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("seed a comment: status=%d body=%s", created.Code, created.Body.String())
 	}
-	references := "/api/v1/issues/" + issue.Key + "/references"
-	now := dispatchRequest(t, handler, http.MethodGet, references, nil, "alice")
-	if now.Code != http.StatusOK {
-		t.Fatalf("read the graph: status=%d body=%s", now.Code, now.Body.String())
+	// The read a `dispatch://` address is read by, in both directions at the issue. It reads
+	// graph_edges, whose first arm is the refs table, so an edge written there is one this read
+	// lists, or, for a kind this build cannot address, skips (refs.resolveNodes).
+	address := "dispatch://" + issue.Key
+	read := func(when string) [2]string {
+		t.Helper()
+		var answers [2]string
+		for index, direction := range []string{"to", "from"} {
+			response := dispatchRequest(t, handler, http.MethodGet,
+				"/api/v1/references?"+url.Values{direction: {address}}.Encode(), nil, "alice")
+			if response.Code != http.StatusOK {
+				t.Fatalf("read the issue's edges (%s) %s: status=%d body=%s", direction, when, response.Code, response.Body.String())
+			}
+			answers[index] = response.Body.String()
+		}
+		return answers
 	}
+	now := read("before any unknown kind")
 
-	// A node of a kind nothing in this build can address, with an edge at the issue. A newer
-	// build's kind reads exactly like this one to this build.
+	// A node of a kind nothing in this build can address, an edge from it at the issue and an
+	// edge from the issue at it, written where this read's edges come from. A newer build's kind
+	// reads exactly like this one to this build, and an older build meets the edge at it where a
+	// later child adds a kind: refs.resolveNodes drops that end rather than refusing the read.
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
 		insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event)
@@ -629,35 +769,37 @@ func olderBuildReadsTheGraph(t *testing.T) {
 		t.Fatalf("write a node of an unknown kind: %v", err)
 	}
 	if _, err := database.Pool.Exec(ctx, `
-		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
-		values ('telepathy', 'a-kind-no-build-knows', 'mentions', 'issue', $1, now(), '{}'::jsonb, 0)`,
-		issue.Key); err != nil {
-		t.Fatalf("write a tuple of an unknown kind: %v", err)
+		insert into refs (from_kind, from_id, kind, to_kind, to_id) values
+			('telepathy', 'a-kind-no-build-knows', 'mentions', 'issue', $1),
+			('issue', $1, 'mentions', 'telepathy', 'a-kind-no-build-knows')`, issue.Key); err != nil {
+		t.Fatalf("write the edges of an unknown kind: %v", err)
 	}
-	after := dispatchRequest(t, handler, http.MethodGet, references, nil, "alice")
-	if after.Code != http.StatusOK {
-		t.Fatalf("read the graph beside an unknown kind: status=%d body=%s", after.Code, after.Body.String())
+	// The view answers both edges, so the read below meets them and has to skip them.
+	var listed int
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from graph_edges
+		where (from_kind = 'telepathy' and to_kind = 'issue' and to_id = $1)
+		   or (from_kind = 'issue' and from_id = $1 and to_kind = 'telepathy')`, issue.Key).Scan(&listed); err != nil {
+		t.Fatalf("read the unknown kind's edges out of graph_edges: %v", err)
 	}
-	if after.Body.String() != now.Body.String() {
-		t.Fatalf("the unknown kind changed the read:\n before %s\n after  %s", now.Body.String(), after.Body.String())
+	if listed != 2 {
+		t.Fatalf("graph_edges holds %d of the two edges of the unknown kind, so the read below never meets them", listed)
+	}
+	if after := read("beside an unknown kind"); after != now {
+		t.Fatalf("the unknown kind changed the read:\n before %v\n after  %v", now, after)
 	}
 
-	// The other side of the same thing: a tuple out of a node this build does address, whose
-	// far end is a kind it cannot. An older build meets exactly this where a later child adds
-	// a kind, and refs.resolveNodes drops the end rather than refusing the read.
+	// The same edge from a kind this build does address changes the answer, so the comparison
+	// above is of a read that lists what the refs table holds, and not of one that reads past it.
+	other := requireCreatedIssue(t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]any{"project": "TEST", "title": "An issue this build addresses", "spec": "Other.\n"}, "alice"))
 	if _, err := database.Pool.Exec(ctx, `
-		insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
-		values ('issue', $1, 'mentions', 'telepathy', 'a-kind-no-build-knows', now(), '{}'::jsonb, 0)`,
-		issue.Key); err != nil {
-		t.Fatalf("write a tuple at an unknown kind: %v", err)
+		insert into refs (from_kind, from_id, kind, to_kind, to_id) values ('issue', $1, 'mentions', 'issue', $2)`,
+		other.Key, issue.Key); err != nil {
+		t.Fatalf("write an edge of a known kind: %v", err)
 	}
-	both := dispatchRequest(t, handler, http.MethodGet, references, nil, "alice")
-	if both.Code != http.StatusOK {
-		t.Fatalf("read the graph at an unknown kind: status=%d body=%s", both.Code, both.Body.String())
-	}
-	if both.Body.String() != now.Body.String() {
-		t.Fatalf("an edge at an unknown kind changed the read:\n before %s\n after  %s",
-			now.Body.String(), both.Body.String())
+	if known := read("beside a known kind"); known[0] == now[0] {
+		t.Fatalf("an edge from an issue this build addresses left the read unchanged, so the comparison above read nothing the refs table holds:\n %s", known[0])
 	}
 	// Every kind this child's reads resolve answers a visibility predicate, which is what makes
 	// an unknown kind the one case the reads skip rather than one they never meet.
