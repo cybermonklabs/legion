@@ -578,6 +578,34 @@ test(
   rowLimit("short")
 );
 
+// RED TEST of the testing phase, dispatch://INFRA-3082, 2026-11-13. `--minutes` is the length of
+// the watch from its socket's first open, so the probe's own clock must say when the watch ended:
+// a reading the test takes after the process has exited and its pipes have drained counts that
+// time as watch. Measured in this issue's pod on 2026-11-13, a probe that stopped 540 ms after its
+// open passed the row above 4 of 5 times under six busy loops. The probe writes an `end` line
+// when its watch stops, and that line's time comes no sooner than `--minutes` after its open.
+test(
+  "the probe's own end line comes no sooner than --minutes after its open",
+  async () => {
+    const dispatch = probeDispatch({ onSubscribe() {} });
+    const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
+    expect(run.code).toBe(0);
+    const written = run.stdout
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as { readonly at: string; readonly type: string });
+    const opens = written.filter((line) => line.type === "open");
+    const ends = written.filter((line) => line.type === "end");
+    expect(opens).toHaveLength(1);
+    expect(ends, "the probe wrote no end line when its watch stopped").toHaveLength(1);
+    expect(
+      Date.parse(ends[0].at) - Date.parse(opens[0].at),
+      "the probe's own clock says its watch ended before 600 ms had passed since its open"
+    ).toBeGreaterThanOrEqual(600);
+  },
+  rowLimit("short")
+);
+
 /** A Dispatch on a loopback port of its own that holds each `/ws/live` upgrade for `holdMs`,
  *  counted from the moment the probe asks for it, as a loaded pod can answer late, and then takes
  *  it. It records the moment it let each upgrade go, and every frame the probe sent, parsed. */
