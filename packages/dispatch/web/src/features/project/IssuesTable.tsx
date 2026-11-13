@@ -19,10 +19,15 @@ import { ConfirmDialog } from "./ConfirmDialog";
 import { EpicNameDialog } from "./EpicNameDialog";
 import { useIssueFilters } from "./issue-filters";
 import { useIssueTableActions } from "./issues-table-actions";
-import { ISSUE_TABLE_LAYOUT, useIssueTableColumns } from "./issues-table-columns";
+import {
+  issueTableLayout,
+  listingColumns,
+  type ShownColumnId,
+  useIssueTableColumns,
+} from "./issues-table-columns";
 import { IssueTableSelection, IssueTableStatus, IssueTableToolbar } from "./issues-table-controls";
-import { type IssueListing, useIssueTableItems } from "./issues-table-data";
-import { type LayoutColumns, useTableLayout } from "./issues-table-layout";
+import { answeredWhole, type IssueListing, useIssueTableItems } from "./issues-table-data";
+import { useTableLayout } from "./issues-table-layout";
 import {
   clearPicked,
   compareGroups,
@@ -60,14 +65,15 @@ export function IssuesTable({
   /** What this list is called, for a reader who cannot see where it sits; by its listing when
    *  unset: a project's issues, or the issues advancing one priority. */
   label?: string;
-  /** The layout this table keeps, under its own key, where it is not its listing's: the fault
-   *  lists of the priorities page show listing columns a project's table hides
-   *  (`issueTableLayout`). */
-  layout?: { readonly key: string; readonly columns: LayoutColumns };
+  /** The layout this table keeps, under its own key, where it is not its listing's, and the
+   *  columns it opens with shown: each fault list of the priorities page shows its listing
+   *  columns and Updated, which a table opens with hidden (`issueTableLayout`). */
+  layout?: { readonly key: string; readonly shown: readonly ShownColumnId[] };
   /** What this table lists: one project's issues, or the issues advancing one priority, which
    *  belong to no project (`issues-table-data.ts`). */
   listing: IssueListing;
-  /** Each priority's title by its id, which the Advances column names a priority by. */
+  /** Each priority's title by its id. Given, the table has the Advances column, which names each
+   *  priority a row advances by its title; unset, it has none (`listingColumns`). */
   priorityTitles?: ReadonlyMap<string, string>;
   /** The prefix this table's own view takes in the address: `<stateKey>.sort` and the rest.
    *  Unset keeps the bare `sort`, `q`, `group`, `page` and `size` the project page publishes. */
@@ -76,19 +82,24 @@ export function IssuesTable({
   // What this list is, for a reader who cannot see where it sits: a project's issues, or the
   // issues advancing one priority, which are of every project.
   const name = label ?? ("project" in listing ? "Project issues" : "Priority issues");
-  // A listing that names its statuses is answered whole by its one read: it holds no closed
-  // issue it did not ask for, so it never reads every closed issue beside it.
-  const answeredWhole = "advances" in listing && listing.statuses !== undefined;
+  // Whether the listing's one open read is every row it holds, so the table reads no closed
+  // issue beside it (`answeredWhole`).
+  const whole = answeredWhole(listing);
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(stateKey);
   const { sorting, grouping, filters, search } = view;
   const pagination = { pageIndex: view.page, pageSize: view.pageSize };
+  // The listing columns this table has: the ones its listing gives a use (`listingColumns`).
+  const columnsLayout = issueTableLayout(
+    listingColumns(listing, priorityTitles !== undefined),
+    ownLayout?.shown
+  );
   // One stored layout per project, and one for every scoped table: the work advancing a
   // priority is one table drawn in two places, so a reader who drags a column there drags it
   // for the priorities page and the priority's own page alike, and not once per priority.
   const layout = useTableLayout(
     ownLayout?.key ?? ("project" in listing ? listing.project : SCOPED_LAYOUT_KEY),
-    ownLayout?.columns ?? ISSUE_TABLE_LAYOUT
+    columnsLayout
   );
   const { attachAbove, boxWidth } = layout;
   const flags = useIssueFilters();
@@ -97,7 +108,7 @@ export function IssuesTable({
   const [openFilter, setOpenFilter] = useState<string>();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
-  const wantsDone = !answeredWhole && (statusPicked.length === 0 || statusPicked.includes("done"));
+  const wantsDone = !whole && (statusPicked.length === 0 || statusPicked.includes("done"));
   const claimPicked = (filters.find((filter) => filter.id === "claim")?.value ?? []) as string[];
   // Which claims have lapsed is the agent registry's answer, read only while the Claimed by
   // filter asks for it: because it is picked, or because its panel is open and counting.
@@ -141,7 +152,12 @@ export function IssuesTable({
     return shown.filter(({ issue }) => !isEpic(issue) || !headings.has(issue.key));
   }, [allItems, filters, flags.needsYou, flags.unread, grouping, picked, search, userState.data]);
 
-  const columns = useIssueTableColumns(userState.data, boxWidth < 640, priorityTitles);
+  const columns = useIssueTableColumns(
+    userState.data,
+    boxWidth < 640,
+    columnsLayout,
+    priorityTitles
+  );
 
   const model = useDataTable<Item>({
     rows: items,
@@ -382,7 +398,7 @@ export function IssuesTable({
       <DataTable
         empty="No issues match these filters."
         filterCounts={openFacets}
-        filterUnloaded={doneLoaded || answeredWhole ? undefined : DONE_UNLOADED}
+        filterUnloaded={doneLoaded || whole ? undefined : DONE_UNLOADED}
         label={`${name} table`}
         model={model}
         noun={{ many: "issues", one: "issue" }}

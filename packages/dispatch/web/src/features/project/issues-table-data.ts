@@ -4,6 +4,7 @@ import { advancesIssuesQuery, issueQuery, projectIssuesQuery } from "../../api/q
 import { claimIsTakeable } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import type { AgentRegistry } from "../refs/agent-registry";
+import { openIssueStatuses } from "./board-model";
 import { buildItems, type EpicAncestor, isEpic } from "./issues-table-model";
 
 /** How many parent reads the ancestry walk keeps in flight. A project that has been running a
@@ -23,15 +24,30 @@ export type IssueListing = { readonly project: string } | AdvancesListing;
  * The issues of every project the server narrows by what they advance: one priority's id, or
  * `none` for the work that advances no live priority and `any` for the work that advances one.
  * `statuses`, where it is set, is the whole of what the listing holds - the issues standing in
- * one of those statuses, which is how the priorities page asks for each of its two faults - so
- * its one read answers every row and no closed issue is read beside it. `moved` asks for the
- * time each row standing in backlog or icebox was moved there and who moved it.
+ * one of those statuses, which is how the priorities page asks for each of its two faults (see
+ * `answeredWhole` for when its open read is every row of it). `moved` asks for the time each row
+ * standing in backlog or icebox was moved there and who moved it.
  */
 export type AdvancesListing = {
   readonly advances: string;
   readonly statuses?: readonly string[];
   readonly moved?: boolean;
 };
+
+/**
+ * Whether a listing's one open read (`open: true`) answers every row its table can show, so the
+ * table never reads the closed issues beside it: a listing that names its statuses, every one of
+ * them open. A listing whose statuses include `done` holds closed issues the open read leaves
+ * out, and a project's listing, or a listing that names no status, holds every closed issue it
+ * has: each of those reads the full listing once the reader lets closed issues through.
+ */
+export function answeredWhole(listing: IssueListing): boolean {
+  return (
+    "advances" in listing &&
+    listing.statuses !== undefined &&
+    listing.statuses.every((status) => (openIssueStatuses as readonly string[]).includes(status))
+  );
+}
 
 /** The name what a table keeps of its listing is held under: the ancestry it walked and the
  *  action a reload interrupted. Two listings of different rows never share one. */
@@ -60,8 +76,8 @@ export function useIssueTableItems(
   const queryClient = useQueryClient();
   const text = useAgentText();
   // Scoped, the listing is the priority's own, which names no project: a priority belongs to
-  // none, so the work under it is every project's. A listing that names its statuses holds no
-  // closed issue it did not ask for, so its table never wants the full read (`IssuesTable`).
+  // none, so the work under it is every project's. A listing its open read answers whole never
+  // asks for this one (`answeredWhole`, which `IssuesTable` reads).
   const everyIssue = useQuery({
     ...("project" in listing
       ? projectIssuesQuery(listing.project, [])

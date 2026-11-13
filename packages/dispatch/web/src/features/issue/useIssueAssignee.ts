@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 
 import { projectDefaultAssigneesQuery } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
-import { issueProject } from "../inbox/list-row";
+import { issueProject } from "../../lib/issue-key";
 import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssueAssigneeWrite {

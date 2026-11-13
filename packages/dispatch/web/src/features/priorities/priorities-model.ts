@@ -9,7 +9,9 @@ import { columnsById, type TableColumn, tableLayout } from "./priority-table-mod
  *  admitted and not started; parked is work that stands in the backlog or the icebox. The three
  *  together are every open status, so no open issue under a priority is uncounted. */
 const WAITING_STATUSES: readonly IssueStatus[] = ["todo", "triage"];
-const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
+/** The one list of the parked statuses: the parked count here and the parked fault list of the
+ *  priorities page (`PrioritiesPage.tsx`) both read it. */
+export const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
 
 /** What the newest-event column files a row under when nothing under the priority has moved. */
 export const NEVER_MOVED = "Never";

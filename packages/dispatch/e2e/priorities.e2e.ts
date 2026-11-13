@@ -15,6 +15,7 @@ import {
   createPriority,
   createProject,
   endPriority,
+  getIssue,
   getPriorityHistory,
   listPriorities,
   patchIssue,
@@ -841,6 +842,64 @@ test("a person places an issue under a priority from the issue and takes it off 
     expect(entries[1]).toContain("alice");
   } finally {
     await context.close();
+  }
+});
+
+// SLOW(>=2s): the seed, an issue page held open across another person's delete, a write from its
+// header, and a reload that reads it back.
+test("another person's delete of a priority leaves an open issue page, whose next write lands", async ({
+  browser,
+}) => {
+  const seed = await seedPriorities();
+  // The daemon's smoke suite advances P1 already; it states P3 beside it - one relation more,
+  // which a write with no revision may assert - so the delete of P3 below leaves the issue one
+  // relation of its own for the next write to keep.
+  await patchIssue(seed.smoke, { advances: [seed.ids[0], seed.ids[2]] });
+  const alice = await asUser(browser, "alice");
+  try {
+    // The reader: alice, on the issue's page, which nothing below reloads until the write has
+    // landed. A mark on the document would be gone after a reload, so its presence then says
+    // there was none.
+    const reader = await alice.newPage();
+    await priorityPage(reader);
+    await reader.goto(`/issues/${seed.smoke}`);
+    await reader.evaluate(() => {
+      document.documentElement.dataset.heldOpen = "yes";
+    });
+    const line = reader.getByTestId("issue-advances");
+    const kept = line.getByRole("link", { name: `P1 ${seed.titles[0]}` });
+    const deleted = line.locator(`a[href="/priorities/${seed.ids[2]}"]`);
+    await expect(kept).toBeVisible();
+    await expect(deleted).toHaveText(`P3 ${seed.titles[2]}`);
+
+    // Another person retires P3 over the API. The open header stops naming it, by its title or
+    // by its id, with no reload: the issue's read is fetched again, so the set the next write
+    // sends is the one the server holds.
+    await endPriority(seed.ids[2], { login: "bob" });
+    await expect(deleted).toHaveCount(0);
+    await expect(kept).toBeVisible();
+
+    // The reader places the issue under P2 from the header's own control. The write sends P1 and
+    // P2, which the server takes; a set still naming P3 would be refused, a priority that is gone.
+    await reader.getByRole("button", { name: `Add a priority to ${seed.smoke}` }).click();
+    await reader.getByLabel("Priority to advance").selectOption(seed.ids[1]);
+    await reader.getByRole("button", { name: "Add", exact: true }).click();
+    const added = line.getByRole("link", { name: `P2 ${seed.titles[1]}` });
+    await expect(added).toBeVisible();
+    expect(await reader.evaluate(() => document.documentElement.dataset.heldOpen)).toBe("yes");
+
+    // What the server holds, read back after a reload: P1 and P2, and nothing of P3.
+    await expect
+      .poll(async () =>
+        ((await getIssue(seed.smoke)).advances ?? []).map((entry) => entry.id).sort()
+      )
+      .toEqual([seed.ids[0], seed.ids[1]].sort());
+    await reader.reload();
+    await expect(kept).toBeVisible();
+    await expect(added).toBeVisible();
+    await expect(deleted).toHaveCount(0);
+  } finally {
+    await alice.close();
   }
 });
 

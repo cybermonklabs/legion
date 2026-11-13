@@ -4,13 +4,13 @@ import { prioritiesQuery } from "../../api/queries";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
 import { textPrimaryOnCanvas, textSecondaryOnCanvas } from "../../theme/classes";
-import type { IssueStatus } from "../project/board-model";
 import { IssuesTable } from "../project/IssuesTable";
-import { issueTableLayout } from "../project/issues-table-columns";
+import type { ShownColumnId } from "../project/issues-table-columns";
 import type { IssueListing } from "../project/issues-table-data";
 import { runningIssueStatuses } from "../project/issues-table-model";
 import { NewPriority } from "./NewPriority";
 import { PrioritiesTable } from "./PrioritiesTable";
+import { PARKED_STATUSES } from "./priorities-model";
 
 /** What each fault is, in the words a reader judges it by. Neither is a judgement: both are
  *  true or false of an issue as it stands now. */
@@ -19,24 +19,24 @@ const NO_PRIORITY_RULE =
 const PARKED_RULE =
   "Work that advances a priority and stands in the backlog or the icebox, with the time it was moved there and whoever moved it. No reason is recorded for a move yet.";
 
-const PARKED_STATUSES: readonly IssueStatus[] = ["backlog", "icebox"];
-
 /** The two faults, as the issue listing answers each: the work being done under no priority,
  *  in the statuses an issue is worked in, and the work under a priority standing in backlog or
  *  icebox, with the move that put it there. */
 const NO_PRIORITY: IssueListing = { advances: "none", statuses: runningIssueStatuses };
 const PARKED: IssueListing = { advances: "any", statuses: PARKED_STATUSES, moved: true };
 
-/** Each fault list's own stored layout. Both name each row's project, since neither stands on
- *  one, and when the issue last changed, which is how long it has stood as it is (R6); the
- *  parked list names what the work advances and when it was moved there besides. */
+/** Each fault list's own stored layout and the columns it opens with shown. Both name each row's
+ *  project, since neither stands on one, and when the issue last changed, which is how long it
+ *  has stood as it is (R6); the parked list names what the work advances and when it was moved
+ *  there besides. The list under no priority has no Advances column at all: every row of it
+ *  advances nothing. */
 const NO_PRIORITY_LAYOUT = {
   key: "priorities-no-priority",
-  columns: issueTableLayout(["project", "updated"]),
+  shown: ["project", "updated"] satisfies ShownColumnId[],
 };
 const PARKED_LAYOUT = {
   key: "priorities-parked",
-  columns: issueTableLayout(["project", "advances", "moved", "updated"]),
+  shown: ["project", "advances", "moved", "updated"] satisfies ShownColumnId[],
 };
 
 /** The per-project or per-priority counts under a fault's rule, in plain words: `CORE 12 ·
@@ -112,7 +112,7 @@ export function PrioritiesPage(): ReactNode {
           </div>
         </div>
       ) : (
-        <PrioritiesTable rows={rows} />
+        <PrioritiesTable rows={rows} titles={titles} />
       )}
 
       <section aria-label="In flight under no priority" className="space-y-2">
@@ -128,7 +128,6 @@ export function PrioritiesPage(): ReactNode {
           label="Issues in flight under no priority"
           layout={NO_PRIORITY_LAYOUT}
           listing={NO_PRIORITY}
-          priorityTitles={titles}
           stateKey="n"
         />
       </section>

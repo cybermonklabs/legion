@@ -56,6 +56,15 @@ const READS = {
       true
     ).queryKey,
   },
+  // The other fault list: the work in flight under no priority, which a delete can add to.
+  noPriorityWork: {
+    key: advancesIssuesQuery(
+      { advances: "none", statuses: ["in_progress", "testing", "needs_review", "retro"] },
+      true
+    ).queryKey,
+  },
+  // The work under another priority, which a delete of linkage-closure leaves where it is.
+  otherAdvancesWork: { key: advancesIssuesQuery({ advances: "oss-verify" }, true).queryKey },
   agentsPicker: { key: ["agents", "issue-picker"] },
   answers: { key: ["me", "answers"] },
   architecture: { key: ["architecture", "CORE"] },
@@ -260,9 +269,20 @@ interface PageOptions {
   readonly inboxRows?: readonly Partial<InboxRow>[];
   /** The rows every issue's ask list and the project document's hold, in place of their own. */
   readonly askRows?: readonly Partial<Ask>[];
+  /** The priorities the one issue each named read holds advances, in place of its own data: an
+   *  issue read (`ISSUE_READS`) answers the issue, any other read a list of that one row. */
+  readonly advances?: Readonly<Partial<Record<ReadName, readonly string[]>>>;
 }
 
+/** The reads that answer one issue rather than a list of them. */
+const ISSUE_READS: readonly ReadName[] = ["detail", "parent", "grandparent", "unrelatedDetail"];
+
 function dataFor(name: ReadName, page: PageOptions): unknown {
+  const advanced = page.advances?.[name];
+  if (advanced !== undefined) {
+    const row = { advances: advanced.map((id) => ({ id, inherited: false })), key: "CORE-1" };
+    return ISSUE_READS.includes(name) ? row : [row];
+  }
   if (name === "pinned") {
     return page.pinned ? [{ key: "CORE-1" }] : [{ key: "CORE-5" }];
   }
@@ -640,29 +660,6 @@ const rules: Record<string, Rule> = {
     refreshes: ["detail"],
     spares: ["advancesWork", "parkedWork", "priorities", "prioritySummary"],
   },
-  "a priority write refreshes the priorities reads and every advances listing, and no other issue list":
-    {
-      event: event(
-        "priority.updated",
-        { change: "updated", id: "linkage-closure" },
-        {
-          actor: { id: "bob", kind: "user" },
-          issue_key: null,
-          notify: false,
-          project: undefined,
-          seq: 0,
-        }
-      ),
-      refreshes: ["priorities", "prioritySummary", "priorityHistory", "advancesWork", "parkedWork"],
-      spares: [
-        "detail",
-        "projectList",
-        "labelledProjectList",
-        "otherProjectList",
-        "pinned",
-        "inbox",
-      ],
-    },
   "a new issue refreshes its ancestors' rollups and the pickers, not every detail or the project counts":
     {
       event: event(
@@ -1561,35 +1558,97 @@ test("an event that makes a collaborator refreshes the issue's collaborators", (
   expect(refreshesCollaborators(reprioritised)).toBe(false);
 });
 
-// One drag on the Priorities page is one `priority.updated`, and every open page of every reader
-// refetches on it: exactly the priorities reads and the advances-filtered issue listings, so the
-// drag refetches no other issue list a reader holds. A delete moves parked work into the other
-// fault list, which is why the advances listings are in it at all.
-test("a priority.updated refreshes ['priorities'] and ['issues', 'advances'] and nothing else", () => {
-  for (const change of ["created", "updated", "deleted"]) {
-    const incoming = event(
-      "priority.updated",
-      { change, id: "linkage-closure" },
-      {
-        actor: { id: "bob", kind: "user" },
-        issue_key: null,
-        notify: false,
-        project: undefined,
-        seq: 0,
-      }
-    );
-    expect(eventRefreshTargets(incoming, "alice")).toEqual([
-      { queryKey: ["priorities"] },
-      { queryKey: ["issues", "advances"] },
-    ]);
-    expect(refreshedReads(incoming).sort()).toEqual([
-      "advancesWork",
-      "parkedWork",
-      "priorities",
-      "priorityHistory",
-      "prioritySummary",
-    ]);
-  }
+/** One write of priority linkage-closure by bob, as the server appends it: ownerless and quiet. */
+function priorityWrite(change: "created" | "updated" | "deleted"): DispatchEvent {
+  return event(
+    "priority.updated",
+    { change, id: "linkage-closure" },
+    { actor: { id: "bob", kind: "user" }, issue_key: null, notify: false, project: undefined }
+  );
+}
+
+/** A page whose reads of CORE-1 - its issue read, a project's list, the pinned list, both pickers,
+ *  the parked fault list and the work under linkage-closure - hold it advancing linkage-closure,
+ *  beside an issue read, a project's list and the work under oss-verify that advance oss-verify
+ *  alone. */
+const HOLDS_LINKAGE: NonNullable<PageOptions["advances"]> = {
+  advancesWork: ["linkage-closure"],
+  agentsPicker: ["linkage-closure"],
+  detail: ["linkage-closure", "oss-verify"],
+  otherAdvancesWork: ["oss-verify"],
+  otherProjectList: ["oss-verify"],
+  parkedWork: ["linkage-closure"],
+  pinned: ["linkage-closure"],
+  projectList: ["linkage-closure"],
+  referencePicker: ["linkage-closure"],
+  unrelatedDetail: ["oss-verify"],
+};
+
+// A create, a rename, a move in the order and a description save move only the priorities reads:
+// an issue row carries a priority by its id alone, so not one issue read refetches, even where
+// every row names the priority. The description autosaves as the person types, so each save
+// would otherwise refetch both fault lists on every open Priorities page.
+test.each([
+  "created",
+  "updated",
+] as const)("a priority.updated of a %s priority refreshes ['priorities'] and no issue read", (change) => {
+  const incoming = priorityWrite(change);
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([{ queryKey: ["priorities"] }]);
+  expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
+    "priorities",
+    "priorityHistory",
+    "prioritySummary",
+  ]);
+});
+
+// A delete takes the priority out of every relation and writes no issue event: the work under it
+// and the work under none read again whatever they hold, and every issue read and issue list
+// whose row advances it reads again too, so an open issue's next whole-set write of `advances`
+// does not send the priority that is gone.
+test("a priority.updated of a deleted priority refreshes its work, the work under none, and every read of an issue advancing it", () => {
+  const incoming = priorityWrite("deleted");
+  const holds = expect.any(Function);
+  expect(eventRefreshTargets(incoming, "alice")).toEqual([
+    { queryKey: ["priorities"] },
+    { queryKey: ["issues", "advances", "linkage-closure"] },
+    { queryKey: ["issues", "advances", "none"] },
+    { queryKey: ["issue"], when: holds },
+    { queryKey: ["issues"], when: holds },
+    { exact: true, queryKey: ["agents", "issue-picker"], when: holds },
+  ]);
+  expect(refreshedReads(incoming, { advances: HOLDS_LINKAGE }).sort()).toEqual([
+    "advancesWork",
+    "agentsPicker",
+    "detail",
+    "noPriorityWork",
+    "parkedWork",
+    "pinned",
+    "priorities",
+    "priorityHistory",
+    "prioritySummary",
+    "projectList",
+    "referencePicker",
+  ]);
+});
+
+// The same delete, on a page where no cached issue advances the priority: the reads that hold an
+// issue advancing another one, the issue's own read among them, stay as they are.
+test("a priority.updated of a deleted priority refetches no issue read that does not advance it", () => {
+  const otherOnly: NonNullable<PageOptions["advances"]> = {
+    agentsPicker: ["oss-verify"],
+    detail: ["oss-verify"],
+    parkedWork: ["oss-verify"],
+    pinned: ["oss-verify"],
+    projectList: ["oss-verify"],
+    referencePicker: ["oss-verify"],
+  };
+  expect(refreshedReads(priorityWrite("deleted"), { advances: otherOnly }).sort()).toEqual([
+    "advancesWork",
+    "noPriorityWork",
+    "priorities",
+    "priorityHistory",
+    "prioritySummary",
+  ]);
 });
 
 /** One event of every type the feed can carry, keyed by type so a new one fails to compile here

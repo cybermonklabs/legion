@@ -41,9 +41,17 @@ const WORK_PREFIX = "w";
  * The priorities themselves: one row per priority in the one order, with the counts that say
  * what is happening under each. A reader who may write a priority adds one, renames one, writes
  * its description and drags its order here; every reader opens a row, which shows the whole of
- * that priority's description and the work advancing it.
+ * that priority's description and the work advancing it, which names every priority each row
+ * advances by `titles`, as the priority's own page does.
  */
-export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): ReactNode {
+export function PrioritiesTable({
+  rows,
+  titles,
+}: {
+  rows: readonly PriorityRow[];
+  /** Each priority's title by its id, which the opened row's work table names a priority by. */
+  titles: ReadonlyMap<string, string>;
+}): ReactNode {
   const { params, setParams, view, setFilters, setGrouping, setPagination, setSearch, setSorting } =
     useTableView(VIEW_PREFIX, PRIORITY_COLUMNS, PRIORITY_SORTING);
   const layout = useTableLayout(LAYOUT_KEY, PRIORITY_LAYOUT);
@@ -256,7 +264,11 @@ export function PrioritiesTable({ rows }: { rows: readonly PriorityRow[] }): Rea
           <h3 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>
             Work advancing {open.order} {open.priority.title}
           </h3>
-          <IssuesTable listing={{ advances: open.priority.id }} stateKey={WORK_PREFIX} />
+          <IssuesTable
+            listing={{ advances: open.priority.id }}
+            priorityTitles={titles}
+            stateKey={WORK_PREFIX}
+          />
         </section>
       )}
     </section>

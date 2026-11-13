@@ -349,8 +349,8 @@ export const advancesIssuesParams = (listing: AdvancesListing, open = false) => 
  *  the read names none: the work under it is the whole deployment's. No board move gates it - a
  *  move is one project's, and this listing is of no project. Every key sits under
  *  `["issues", "advances"]`, the prefix the event feed refreshes when an `advances`, a status
- *  or a parent moves, and on every `priority.updated`, since a deleted priority moves its work
- *  from one fault listing to the other (`api/event-refresh.ts`). */
+ *  or a parent moves; a deleted priority refreshes the listing under it and the work under none,
+ *  and every listing whose rows advance it (`priorityWriteTargets`, `api/event-refresh.ts`). */
 export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
   queryOptions({
     // Typed as widely as the project listing's key (`projectIssuesQueryKey`), so the table that

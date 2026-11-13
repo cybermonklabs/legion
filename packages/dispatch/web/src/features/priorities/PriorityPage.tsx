@@ -5,6 +5,7 @@ import { advancesIssuesQuery, prioritiesQuery } from "../../api/queries";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
 import { QueryError } from "../../components/QueryError";
+import { issueProject } from "../../lib/issue-key";
 import {
   linkHoverText,
   linkText,
@@ -51,13 +52,19 @@ export function PriorityPage(): ReactNode {
   const byProject = useMemo(() => {
     const grouped = new Map<string, string[]>();
     for (const issue of work.data ?? []) {
-      const project = issue.key.split("-")[0] ?? issue.key;
+      const project = issueProject(issue.key);
       const keys = grouped.get(project);
       if (keys === undefined) grouped.set(project, [issue.key]);
       else keys.push(issue.key);
     }
     return grouped;
   }, [work.data]);
+  // Each priority's title by its id, which the work table's Advances column names every priority
+  // a row advances by. Built once a read, so the table's columns are not rebuilt every render.
+  const titles = useMemo(
+    () => new Map((priorities.data?.priorities ?? []).map((row) => [row.id, row.title])),
+    [priorities.data]
+  );
 
   if (priorities.isPending) return <LoadingSkeleton label="Loading the priority" />;
   if (priorities.isError)
@@ -187,7 +194,7 @@ export function PriorityPage(): ReactNode {
                 ))}
             </p>
           )}
-          <IssuesTable listing={{ advances: id }} stateKey={WORK_PREFIX} />
+          <IssuesTable listing={{ advances: id }} priorityTitles={titles} stateKey={WORK_PREFIX} />
         </section>
       </div>
       <PriorityMargin id={id} />

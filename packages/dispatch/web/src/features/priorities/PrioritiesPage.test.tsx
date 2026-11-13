@@ -300,7 +300,8 @@ test("each fault table asks the issue listing for its statuses, and the parked o
   expect(faultHeaders.some((text) => text.startsWith("Moved there"))).toBe(false);
 
   // The parked list names the project, each priority advanced by its title, linking to it, and
-  // when the work was moved there and by whom - or that no move is recorded.
+  // when the work was moved there and by whom. A row answered with no move draws an empty cell:
+  // absent is absent, and no cell says a record is missing.
   const moved = await cellsOf(parked, "CORE-9 Work CORE-9");
   expect(moved("Project").textContent).toBe("CORE");
   expect(within(moved("Updated")).getByRole("time").getAttribute("datetime")).toBe(
@@ -321,7 +322,8 @@ test("each fault table asks the issue listing for its statuses, and the parked o
       .getAllByRole("link")
       .map((link) => link.textContent)
   ).toEqual(["Legion works reliably first", "OSS Verify"]);
-  expect(unrecorded("Moved there").textContent).toBe("Not recorded");
+  expect(unrecorded("Moved there").textContent).toBe("");
+  expect(within(unrecorded("Moved there")).queryByRole("time")).toBeNull();
 });
 
 test("with no priority the page says so, and offers a writer the way to add the first", async () => {

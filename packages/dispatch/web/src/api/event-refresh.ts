@@ -1,5 +1,6 @@
-import { askProject, issueProject } from "../features/inbox/list-row";
+import { askProject } from "../features/inbox/list-row";
 import { buildDispatchReference } from "../features/refs/routes";
+import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
@@ -12,7 +13,7 @@ import {
   userAgentStateQuery,
   userStateQuery,
 } from "./queries";
-import { answeredNotFound, type RefreshTarget } from "./query-refresh";
+import { answeredNotFound, type RefreshCheck, type RefreshTarget } from "./query-refresh";
 import type {
   ArchitectureTree,
   ArchitectureTreeComponent,
@@ -770,6 +771,57 @@ function issueWriteTargets(
   return targets;
 }
 
+/**
+ * What one write of priority `id` changes, by which of the three writes it was. Every one moves
+ * the priorities reads (`["priorities"]`: the Priorities page's body `["priorities", "full"]`,
+ * the rail's two counts `["priorities", "summary"]`, and the priority page's margin
+ * `["priorities", "history", id]`), which is also where every page reads a priority's title and
+ * its place in the order from. A create, a rename, a move or a description moves nothing else:
+ * an issue row carries a priority by its id alone (`{id, inherited}`), so no issue listing
+ * reads again on them, and the description's autosave refetches no fault list.
+ *
+ * A delete takes the priority out of every relation, and the server writes no issue event for
+ * the issues it leaves, so it also moves:
+ *
+ * - the work listed under it (`["issues", "advances", id]`), which the priority page's work
+ *   table and its scope links read, now empty;
+ * - the work under no priority (`["issues", "advances", "none"]`): an issue that advanced only
+ *   this priority joins it, and the cache cannot tell which issues those are, since no row of
+ *   that listing names the priority;
+ * - every read that holds an issue advancing it, by its own relation or one it inherits
+ *   (`advances` lists both): an issue read (`["issue", key]`; an issue's references or its
+ *   collaborators under that prefix carry no `advances`), and a list of issue rows (every
+ *   `["issues", ...]` listing and the Agents page's issue picker). That is the parked fault list
+ *   (`advances=any`), whose rows under this priority alone leave it and whose other rows drop
+ *   it, every other issue listing that draws the row, and above all each open issue read, whose
+ *   header would otherwise keep naming the priority and send it back in the next whole-set write
+ *   of its `advances`, which the server refuses (`400 ADVANCES_INPUT`, a priority that is gone).
+ *   A row of `advances=any` that does not name it stays, since it still advances another.
+ */
+function priorityWriteTargets(
+  event: Extract<DispatchEvent, { type: "priority.updated" }>
+): RefreshTarget[] {
+  const { change, id } = event.payload;
+  const targets: RefreshTarget[] = [{ queryKey: ["priorities"] }];
+  if (change !== "deleted") {
+    return targets;
+  }
+  const advancesIt = (row: unknown): boolean =>
+    typeof row === "object" &&
+    row !== null &&
+    ((row as Pick<IssueSummary, "advances">).advances ?? []).some((entry) => entry.id === id);
+  const when: RefreshCheck = (data) =>
+    Array.isArray(data) ? data.some(advancesIt) : advancesIt(data);
+  targets.push(
+    { queryKey: ["issues", "advances", id] },
+    { queryKey: ["issues", "advances", "none"] },
+    { queryKey: ["issue"], when },
+    { queryKey: ["issues"], when },
+    { exact: true, queryKey: ["agents", "issue-picker"], when }
+  );
+  return targets;
+}
+
 /** Every question map a reader holds (`["references", "questions", <kind>, <id>]`, the read
  *  behind a `#id` in any text). The read is keyed by the source whose text was read, and
  *  neither a version nor an ask names those sources, so the prefix is refreshed rather than one
@@ -983,12 +1035,8 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     return isViewer(payloadString(event, "login"), viewer) ? [{ queryKey: myRepliesKey }] : [];
   }
   if (event.type === "priority.updated") {
-    // A create, a rename, a move or a delete of a priority, by anybody: the Priorities page, a
-    // priority's own page and its history, and the rail's two fault counts (`["priorities"]`),
-    // and the issue listings an `advances` filter narrows (`["issues", "advances"]`), since a
-    // delete moves the work parked under that priority into the other fault list. Nothing wider,
-    // so one drag on the Priorities page refetches no other issue list the reader holds.
-    return [{ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] }];
+    // A create, a rename, a move, a description or a delete of a priority, by anybody.
+    return priorityWriteTargets(event);
   }
   if (event.type === "subscription.remove_requested") {
     return [];
