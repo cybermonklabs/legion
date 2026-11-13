@@ -565,7 +565,7 @@ for form in "echo \$[2+3]" "X=\$[0]"; do
 done
 
 # 39. The classifier admits a $ expansion only in the forms the rows use: a parameter,
-# $NAME or ${NAME}, a one-character special parameter such as $?, a command substitution
+# $NAME or ${NAME}, the one special parameter $?, a command substitution
 # and a literal $. Any other $ form is refused by name, so a spelling nobody named lands on
 # a refusal: here a parameter with a default, ${X:-y}. The honest form beside it, the same
 # parameter as ${X}, is read and passes.
@@ -591,6 +591,34 @@ done
 dir="$(fresh special-status-admitted)"
 plant_behaviour "$dir" "true; printf 'ran %s\\n' \"once\$?\"" '{"contains":"ran once0"}'
 honest_result "the special parameter \$?, which the rows use, is admitted and passes" replay-command "$(fixture_run "$dir" --replay)"
+
+# 41-42 break a scratch copy of check.sh, never the gate itself, and run --admitted on the
+# copy over this directory's claims.jsonl. plant_gate <name> <sed program> <text>
+# <holds|lacks> makes the copy at $GATE and stops when, after the change, the copy does not
+# hold the text it should hold, or still holds the text it should lack.
+plant_gate() {
+    local copy="$WORK/$1"
+    mkdir -p "$copy"
+    cp "$HERE/check.sh" "$copy/check.sh"
+    sed -i "$2" "$copy/check.sh"
+    if { [ "$4" = holds ] && ! grep -qF -- "$3" "$copy/check.sh"; } ||
+        { [ "$4" = lacks ] && grep -qF -- "$3" "$copy/check.sh"; }; then
+        printf 'FAIL the change %s could not be planted in the copy of check.sh\n' "$2"
+        exit 1
+    fi
+    GATE="$copy/check.sh"
+}
+
+# 41. The audit's own bite: an entry of ADMITTED that no row uses is admitted unchecked, so
+# --admitted fails it and names it. The copy adds the keyword until, which no row writes.
+plant_gate admitted-unused 's/^ADMITTED = {$/&\n    "until": "a keyword no row writes, planted by check.test.sh",/' '"until": "a keyword no row writes' holds
+case_result "an entry of ADMITTED that no row uses fails --admitted, named" 'admitted-form: until is used by no row' "$(bash "$GATE" --admitted 2>&1)"
+
+# 42. The table is the classifier's only admission: with the entry && taken out of
+# ADMITTED, every row that joins two pipelines with && is refused, and --admitted fails
+# naming a refused row and the form.
+plant_gate admitted-missing '/^    "&&": /d' '    "&&": ' lacks
+case_result "an entry the rows use, taken out of ADMITTED, refuses those rows" 'admitted-rows: the row [^ ]+ is refused: the operator &&' "$(bash "$GATE" --admitted 2>&1)"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then

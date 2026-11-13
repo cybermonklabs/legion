@@ -9,6 +9,7 @@
 #   bash docs/research/internet-of-cognition/check.sh --citations
 #   bash docs/research/internet-of-cognition/check.sh --landed
 #   bash docs/research/internet-of-cognition/check.sh --self-test
+#   bash docs/research/internet-of-cognition/check.sh --admitted
 #   bash docs/research/internet-of-cognition/check.sh --published
 #   bash docs/research/internet-of-cognition/check.sh --coverage
 #   bash docs/research/internet-of-cognition/check.sh --help
@@ -62,6 +63,12 @@
 # commit and its command. The mode runs the committed command, and fails a page whose
 # Landed commit or Proven by command differs from the committed entry for its title, and a
 # page carrying a Landed line that no committed entry names.
+#
+# --admitted reads the one table of the forms the evaluator admits, ADMITTED in reader_py:
+# it classifies the command of every row of claims.jsonl, prints each entry with the
+# number of rows that use it, and fails an entry no row uses, a row the classifier refuses,
+# and a line of the table in the header above run_recorded that differs from the one it
+# measured. --self-test runs it as one assertion.
 #
 # The Dispatch bearer stands on no command line. A run writes it once as an HTTP header
 # into a file under its own scratch, readable by its owner alone, exports that file's path
@@ -430,37 +437,81 @@ prepare_env() {
     }
 }
 
-# What the evaluator admits, a closed list. It fails closed: the classifier of reader_py
-# reads each row's command once, and admits it only when every part of it is one of these
-# forms, each of which the rows of claims.jsonl use; any other form is refused by name, and
-# the row fails without being read. The counts are of the 569 rows with a command.
+# What the evaluator admits, a closed table. It fails closed: the classifier of reader_py
+# reads each row's command once, and admits it only when every part of it is an entry of
+# the classifier's one table, ADMITTED; any other form is refused by name, and the row fails
+# without being read. Every admission goes through one function, admit, which refuses a
+# form the table does not hold whatever the parser read it as. The table below is ADMITTED
+# in its own order, each entry with the number of the rows of claims.jsonl with a command
+# that use it. --admitted measures it, and fails when an entry is used by no row, when a
+# row is refused, or when a line here differs from what it measured; --self-test runs it.
 #
-#   - a simple command (569 rows), with assignments before it (28) or alone (7), and with
-#     output redirections (14);
-#   - a pipeline (363), and a list joined by ;, && or || or an unquoted newline (88);
-#   - a group { list; } (28), a subshell ( list ) (2), and a for loop (12);
-#   - a command substitution $(...) in a word (13), whose code is admitted by the same
-#     list;
-#   - as a $ expansion: a parameter, $NAME or ${NAME} (362), the special parameter $?
-#     (6), a command substitution (13), and a $ that starts no expansion, which the shell
-#     leaves as it stands (2); every other $ form is refused by name, $[ ], $(( )), $' ',
-#     $" " and ${ } holding anything but a name among them, such as ${X:-y};
-#   - as a command word: a program named by a bare word, which is wrapped in a function of
-#     that name that records its status; one of the five program variables (38), whose
-#     shim records it; xargs running a program named by a bare word (4), whose own status
-#     carries the program's; sh running a script file (1); and true (6), whose status is
-#     no read.
+#   form                            rows  what it is
+#   &&                                82  runs the next pipeline when this one exits 0
+#   ||                                 6  runs the next pipeline when this one fails
+#   |                                370  joins the commands of a pipeline
+#   ;                                 46  ends a pipeline
+#   newline                            3  an unquoted newline, ending a pipeline as ; does
+#   >                                  4  writes the output to a file
+#   2>                                 6  writes the error output to a file
+#   2>&1                               4  sends the error output where the output goes
+#   {                                 28  opens a group
+#   }                                 28  closes a group
+#   (                                  2  opens a subshell
+#   )                                  2  closes a subshell
+#   for                               12  opens a for loop
+#   in                                12  comes before a for loop's words
+#   do                                12  comes before a for loop's body
+#   done                              12  closes a for loop
+#   simple command                   569  a command word and its arguments
+#   pipeline                         370  two or more commands joined by |
+#   list                             100  two or more pipelines joined by ;, &&, || or newline
+#   group                             28  { list; }, whose status is its last command's
+#   subshell                           2  ( list ), whose status is its last command's
+#   for loop                          12  for NAME in words; do list; done
+#   assignment before a command       22  NAME=value, set in that command's environment
+#   assignment alone                   6  NAME=value with no command word
+#   command substitution in a word    13  $( ) in a word, its code admitted by this table
+#   a program by bare word           565  wrapped in a function that records its status
+#   variable $IOC_PY                  26  a program variable, whose shim records its status
+#   variable $IOC_MASLAB_PY            4  a program variable, whose shim records its status
+#   variable $IOC_MASLAB_CTL           4  a program variable, whose shim records its status
+#   variable $IOC_MASLAB_WHEEL_CTL     2  a program variable, whose shim records its status
+#   variable $IOC_TC_PY                2  a program variable, whose shim records its status
+#   xargs running a program            4  xargs's status carries the program's
+#   sh running a script file           1  the script's status reaches the row as sh's
+#   true                               6  a command whose status is no read
+#   $NAME or ${NAME}                 362  a parameter, its name in braces or not
+#   $?                                 6  the status of the last command
+#   $( )                              13  a command substitution
+#   a literal $                        2  a $ that starts no expansion, left as it stands
+#
+# A program named by a bare word is wrapped in a function of that name that records its
+# status; a program variable points at a shim that does the same; true's status is no read.
+#
+# What the table is checked against. The classifier is a parser of the forms the rows use,
+# so a spelling it misreads into an admitted entry, one that no row writes, is outside what
+# it is checked against. Such a spelling is a defect only when it can hide a failed read,
+# that is a read whose failure the gate then does not record. A form the rows use in one
+# context that could hide a read in another is what the planted cases of check.test.sh are
+# for.
 #
 # Refused by name, among every other form: a word in command position that holds a / or is
 # a variable other than the five, the output of a substitution as a command word, command,
 # builtin, exec, eval, source, time, function definitions and the keywords if, while,
-# until, case and select, a shell given a string with -c, env, timeout, nice, nohup, sudo
-# or stdbuf running a program, find -exec, an input redirection, a here-document, a
-# background &, process substitution <( ) and >( ), whose code runs beside the row and
-# ends after it is read, arithmetic (( )) and $(( )), and IOC_EXPECT_STATUS written as a
-# statement of its own, and declare, local, typeset and readonly, which a wrapping function
-# would make local to it. A row that needs a new form adds it here and to the classifier,
-# with a case of check.test.sh, in the same commit.
+# until, case and select, a shell given a string with -c, a shell reading its commands
+# from its input or given an option, a shell other than sh, env, timeout, nice, nohup, sudo
+# or stdbuf running a program, xargs with no program, find -exec, an input redirection, a
+# here-document, an output redirection other than >, 2> and 2>&1, a background &, process
+# substitution <( ) and >( ), whose code runs beside the row and ends after it is read, a
+# substitution written with backticks, arithmetic (( )), $(( )) and $[ ], every special
+# parameter but $?, such as $1, $@, $#, $$, $!, $0, $- and $*, bare or in braces, every
+# other $ form, $' ', $" " and ${ } holding anything but a name among them, such as
+# ${X:-y}, a for loop with no in, an assignment to an array element or by +=,
+# IOC_EXPECT_STATUS written as a statement of its own, and declare, local, typeset and
+# readonly, which a wrapping function would make local to it. A row that needs a new form
+# adds its entry to ADMITTED and its line to the table above, with a case of
+# check.test.sh, in the same commit.
 #
 # What the evaluator refuses in an admitted row, read after it runs:
 #
@@ -492,8 +543,9 @@ prepare_env() {
 
 # The programs a row may name through a variable, each of which env.sh sets to one
 # executable; during a run each is pointed at a shim that runs that executable and records
-# its status, as the functions below record a program named by a bare word. It is the
-# reader's allow-list of command-word variables, and the two are one list.
+# its status, as the functions below record a program named by a bare word. The
+# classifier admits each as a command word by its entry "variable $<name>" of ADMITTED, and
+# install-pinned's reader resolves each through RESOLVABLE; the three name the same five.
 PROGRAM_VARIABLES="IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY"
 
 program_shims() {
@@ -725,7 +777,9 @@ github_budget() {
 # words in one way only. Its last argument selects what it prints: "installs" reads
 # claims.jsonl on stdin and prints each refusal as <id><TAB><what it runs>; "names" reads
 # one command on stdin and prints each program name it runs in command position, one per
-# line, including those inside shell strings, eval and substitutions.
+# line, including those inside shell strings, eval and substitutions; "admitted" reads
+# claims.jsonl on stdin and prints each refused row and each entry of ADMITTED with the
+# number of rows that use it, which --admitted reads.
 reader_py() {
     cat <<'PYREADER'
 import json, re, shlex, sys
@@ -754,8 +808,72 @@ NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*$")
 class Refused(Exception):
     pass
 
+# ADMITTED is every form the classifier admits, one entry each, from the form's key to what
+# it is, and nothing else admits a form: every admission goes through admit below, which
+# refuses a key ADMITTED does not hold, whatever the parser read. --admitted reads this same
+# table, counts the rows of claims.jsonl that use each entry, and fails an entry no row
+# uses, so the table is exactly the forms the rows use. check.sh's header above
+# run_recorded holds the table with those counts. One entry holds two spellings: a
+# parameter, written $NAME or ${NAME}, which the shell expands alike.
+ADMITTED = {
+    # Operators and separators.
+    "&&": "runs the next pipeline when this one exits 0",
+    "||": "runs the next pipeline when this one fails",
+    "|": "joins the commands of a pipeline",
+    ";": "ends a pipeline",
+    "newline": "an unquoted newline, ending a pipeline as ; does",
+    ">": "writes the output to a file",
+    "2>": "writes the error output to a file",
+    "2>&1": "sends the error output where the output goes",
+    # Keywords and control words.
+    "{": "opens a group",
+    "}": "closes a group",
+    "(": "opens a subshell",
+    ")": "closes a subshell",
+    "for": "opens a for loop",
+    "in": "comes before a for loop's words",
+    "do": "comes before a for loop's body",
+    "done": "closes a for loop",
+    # Shapes.
+    "simple command": "a command word and its arguments",
+    "pipeline": "two or more commands joined by |",
+    "list": "two or more pipelines joined by ;, &&, || or newline",
+    "group": "{ list; }, whose status is its last command's",
+    "subshell": "( list ), whose status is its last command's",
+    "for loop": "for NAME in words; do list; done",
+    "assignment before a command": "NAME=value, set in that command's environment",
+    "assignment alone": "NAME=value with no command word",
+    "command substitution in a word": "$( ) in a word, its code admitted by this table",
+    # Command words.
+    "a program by bare word": "wrapped in a function that records its status",
+    "variable $IOC_PY": "a program variable, whose shim records its status",
+    "variable $IOC_MASLAB_PY": "a program variable, whose shim records its status",
+    "variable $IOC_MASLAB_CTL": "a program variable, whose shim records its status",
+    "variable $IOC_MASLAB_WHEEL_CTL": "a program variable, whose shim records its status",
+    "variable $IOC_TC_PY": "a program variable, whose shim records its status",
+    "xargs running a program": "xargs's status carries the program's",
+    "sh running a script file": "the script's status reaches the row as sh's",
+    "true": "a command whose status is no read",
+    # $ forms.
+    "$NAME or ${NAME}": "a parameter, its name in braces or not",
+    "$?": "the status of the last command",
+    "$( )": "a command substitution",
+    "a literal $": "a $ that starts no expansion, left as it stands",
+}
+
+# The entries of ADMITTED the command being classified used, which admit records.
+USED = set()
+
+def admit(key, refusal=None):
+    # The one way the classifier admits a form. A key ADMITTED does not hold, None
+    # included, is refused, naming the form; any other is recorded as used.
+    if key not in ADMITTED:
+        raise Refused(refusal or str(key) + ", a form the evaluator does not admit")
+    USED.add(key)
+
 def tokenize(text):
-    # Words and operators, quotes respected; an unquoted newline is a separator like ;.
+    # Words and operators, quotes respected; an unquoted newline is an operator of its own,
+    # which the parser reads as a separator like ;.
     lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>\n")
     lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
@@ -771,7 +889,7 @@ def tokenize(text):
             while i < len(token):
                 for op in OPS:
                     if token.startswith(op, i):
-                        out.append(("op", ";" if op == "\n" else op))
+                        out.append(("op", op))
                         i += len(op)
                         break
         else:
@@ -860,14 +978,21 @@ def substitutions(text):
     return out
 
 NAME_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")
+# The characters bash reads after a $ as a one-character special parameter. dollar_forms
+# reads them to name each one; which of them is admitted is ADMITTED's to say, and it holds
+# $? alone.
 SPECIAL = "?$!#@*-0123456789"
 
 def dollar_forms(text):
-    # Each $ the shell expands in text, outside single quotes, as (form, spelling):
-    # "parameter" for $NAME and ${NAME}, "special" for $? and the other one-character
-    # parameters, "command" for $( ), "literal" for a $ that starts no expansion, which the
-    # shell leaves as it is, and every other form as "refused": $(( )), $[ ], $' ', $" "
-    # and ${ } with anything inside but a name, ${NAME:-x}, ${#NAME} and ${!NAME} among them.
+    # Each $ the shell expands in text, outside single quotes, as (key, spelling), the key
+    # being the form's entry in ADMITTED: "$NAME or ${NAME}" for a parameter, "$" and its
+    # character for a one-character special parameter, $? or $1 alike, "${" and that
+    # character and "}" for the same in braces, "$( )" for a command substitution and
+    # "a literal $" for a $ that starts no expansion, which the shell leaves as it is.
+    # Every other form has the key None, which no entry is: $(( )), $[ ], $' ', $" " and
+    # ${ } with anything inside but a name or one special character, ${NAME:-x}, ${#NAME}
+    # and ${!NAME} among them. classify admits each key through admit, so a special
+    # parameter ADMITTED does not list is refused like every form without an entry.
     out, i, single, double = [], 0, False, False
     while i < len(text):
         c = text[i]
@@ -892,33 +1017,39 @@ def dollar_forms(text):
             continue
         nxt = text[i + 1:i + 2]
         if text.startswith("$((", i):
-            out.append(("refused", "$(( ))"))
+            out.append((None, "$(( ))"))
             i += 3
         elif nxt == "(":
-            out.append(("command", "$( )"))
+            out.append(("$( )", "$( )"))
             i += 2
         elif nxt == "{":
             j = text.find("}", i)
-            body = text[i + 2:j] if j > 0 else text[i + 2:]
-            if NAME_RE.fullmatch(body) or (len(body) == 1 and body in SPECIAL):
-                out.append(("parameter", "${NAME}"))
+            if j < 0:
+                out.append((None, text[i:]))
+                break
+            body = text[i + 2:j]
+            if NAME_RE.fullmatch(body):
+                out.append(("$NAME or ${NAME}", "${" + body + "}"))
+            elif len(body) == 1 and body in SPECIAL:
+                out.append(("${" + body + "}", "${" + body + "}"))
             else:
-                out.append(("refused", "${" + body + "}"))
-            i = j + 1 if j > 0 else len(text)
+                out.append((None, "${" + body + "}"))
+            i = j + 1
         elif nxt and NAME_RE.match(nxt):
-            out.append(("parameter", "$NAME"))
-            i += 1 + NAME_RE.match(text, i + 1).end() - (i + 1)
+            end = NAME_RE.match(text, i + 1).end()
+            out.append(("$NAME or ${NAME}", text[i:end]))
+            i = end
         elif nxt and nxt in SPECIAL:
-            out.append(("special", "$" + nxt))
+            out.append(("$" + nxt, "$" + nxt))
             i += 2
         elif nxt in ("[", "\x27", "\x22") and not (double and nxt == "\x22"):
             # $[ ] is arithmetic, and $' ' and $" " are quoting forms; none is admitted.
-            out.append(("refused", "$" + nxt))
+            out.append((None, "$" + nxt))
             i += 2
         else:
             # A $ before any other character starts no expansion, and the shell leaves it
             # as it stands, as in a sed pattern's "$/".
-            out.append(("literal", "$"))
+            out.append(("a literal $", "$"))
             i += 1
     return out
 
@@ -933,11 +1064,12 @@ def without_substitutions(text):
     pieces.append(text[last:])
     return "".join(pieces)
 
-# The closed allow-list of variables a command word may be written with: the programs
-# env.sh builds and pins, each naming one executable, which is the list PROGRAM_VARIABLES
-# of check.sh names too. Each resolves to the program named here, and the word is then
-# held to every rule a literal word is held to. A variable with a path after it, and any
-# other variable, may not stand in command position.
+# The install-pinned reader's closed allow-list of variables a command word may be written
+# with: the programs env.sh builds and pins, each naming one executable, which the list
+# PROGRAM_VARIABLES of check.sh and the "variable $<name>" entries of ADMITTED name too.
+# Each resolves to the program named here, and the word is then held to every rule a
+# literal word is held to. A variable with a path after it, and any other variable, may
+# not stand in command position.
 RESOLVABLE = {
     "IOC_PY": "python",
     "IOC_MASLAB_PY": "python",
@@ -945,6 +1077,9 @@ RESOLVABLE = {
     "IOC_MASLAB_WHEEL_CTL": "mas-ctl",
     "IOC_TC_PY": "python",
 }
+# The words the install-pinned reader steps over to reach a command word, and the wrappers
+# whose command it reads. They admit nothing: they let that reader find runners inside
+# forms the evaluator refuses, and the evaluator's admissions are ADMITTED's alone.
 KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time", "done", "fi", "esac"}
 CONTROL = {"for", "case", "select", "function", "in"}
 ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
@@ -1160,13 +1295,20 @@ def read_command(command, depth=0):
     return found
 
 
+# The redirection operators of the tokenizer. Each output redirection is admitted by its
+# spelling, its file descriptor and, for >&, the descriptor it copies; an input redirection
+# and a here-document are refused by name.
+REDIRECTS = (">", ">>", "<", ">&", "&>", "<<", "<<<")
+
 class Parser:
-    # A recursive descent over the admitted shapes: a list of pipelines joined by ;, &&
-    # and ||; a pipeline of elements joined by |; an element is a simple command, a group
-    # { list; }, a subshell ( list ) or a for loop. Anything else is refused by name.
+    # A recursive descent over the shapes ADMITTED names: a list of pipelines joined by ;,
+    # &&, || and newlines; a pipeline of elements joined by |; an element is a simple
+    # command, a group { list; }, a subshell ( list ) or a for loop. Every operator,
+    # keyword and shape it reads is admitted through admit, so a form ADMITTED does not
+    # hold is refused by name whatever this parser reads it as.
     def __init__(self, tokens):
         self.t, self.i = tokens, 0
-        self.commands = []  # every simple command: (words, flags)
+        self.commands = []  # every simple command: ("simple", words)
 
     def peek(self):
         return self.t[self.i] if self.i < len(self.t) else ("end", "")
@@ -1180,146 +1322,205 @@ class Parser:
         kind, value = self.peek()
         return kind == "word" and value in words
 
+    def at_end(self, closers):
+        kind, value = self.peek()
+        return kind == "end" or (kind in ("word", "op") and value in closers)
+
+    def separator(self):
+        # Takes one ; or unquoted newline, admitting it, and says whether it took one.
+        kind, value = self.peek()
+        if kind == "op" and value in (";", "\n"):
+            self.take()
+            admit("newline" if value == "\n" else ";",
+                  ("an unquoted newline" if value == "\n" else "the separator ;") + ", a form the evaluator does not admit")
+            return True
+        return False
+
     def parse_list(self, closers=()):
         pipelines = []
         while True:
-            while self.peek() == ("op", ";"):
-                self.take()
-            kind, value = self.peek()
-            if kind == "end" or (kind == "word" and value in closers) or (kind == "op" and value in closers):
-                return pipelines
+            while self.separator():
+                pass
+            if self.at_end(closers):
+                break
             pipelines.append(self.parse_pipeline(closers))
             kind, value = self.peek()
-            if kind == "op" and value in (";", "&&", "||"):
+            if kind == "op" and value in ("&&", "||"):
                 self.take()
+                admit(value, "the operator " + value + ", a form the evaluator does not admit")
+                continue
+            if self.separator():
                 continue
             if kind == "op" and value in ("&", ";;", "|&"):
                 raise Refused("the operator " + value)
-            if kind == "end" or (kind == "word" and value in closers) or (kind == "op" and value in closers):
-                return pipelines
+            if self.at_end(closers):
+                break
             raise Refused("the word " + value + " after a command")
+        if len(pipelines) > 1:
+            admit("list")
+        return pipelines
 
     def parse_pipeline(self, closers):
         elements = [self.parse_element(closers)]
         while self.peek() == ("op", "|"):
             self.take()
+            admit("|", "the operator |, a form the evaluator does not admit")
             elements.append(self.parse_element(closers))
+        if len(elements) > 1:
+            admit("pipeline")
         return elements
 
     def parse_element(self, closers):
         kind, value = self.peek()
         if kind == "word" and value == "{":
             self.take()
+            admit("{")
             body = self.parse_list(closers=("}",))
             if not self.at_word("}"):
                 raise Refused("a group with no closing brace")
             self.take()
-            self.redirections()
+            admit("}")
+            admit("group")
+            self.trailing_redirections()
             return ("group", body)
         if kind == "op" and value == "(":
             self.take()
             if self.peek() == ("op", "("):
                 raise Refused("an arithmetic command (( )), a form the evaluator does not admit")
+            admit("(")
             body = self.parse_list(closers=(")",))
             if self.peek() != ("op", ")"):
                 raise Refused("a subshell with no closing parenthesis")
             self.take()
-            self.redirections()
+            admit(")")
+            admit("subshell")
+            self.trailing_redirections()
             return ("group", body)
         if kind == "word" and value == "for":
             self.take()
+            admit("for")
             kind, var = self.take()
             if kind != "word" or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", var):
                 raise Refused("a for loop with no variable")
             if self.at_word("in"):
                 self.take()
+                admit("in")
                 while self.peek()[0] == "word":
                     self.take()
-            while self.peek() == ("op", ";"):
-                self.take()
+            else:
+                # With no in, the loop runs over the positional parameters, as $@ does.
+                admit(None, "a for loop with no in, which loops over the positional parameters")
+            while self.separator():
+                pass
             if not self.at_word("do"):
                 raise Refused("a for loop with no do")
             self.take()
+            admit("do")
             body = self.parse_list(closers=("done",))
             if not self.at_word("done"):
                 raise Refused("a for loop with no done")
             self.take()
-            self.redirections()
+            admit("done")
+            admit("for loop")
+            self.trailing_redirections()
             return ("group", body)
         return self.parse_simple()
 
-    def redirections(self):
-        flags = set()
-        while True:
-            kind, value = self.peek()
-            if kind == "op" and value in (">", ">>", "<", ">&", "&>"):
-                self.take()
-                if self.peek()[0] != "word":
-                    raise Refused("a redirection with no target")
-                self.take()
-                if value == "<":
-                    flags.add("input")
-                continue
-            if kind == "op" and value in ("<<", "<<<"):
-                raise Refused("a here-document or here-string")
-            return flags
+    def redirection(self, fd):
+        # One redirection, its operator next, written after the file descriptor fd, or
+        # after none when fd is "".
+        _, op = self.take()
+        if op in ("<<", "<<<"):
+            raise Refused("a here-document or here-string")
+        if op == "<":
+            raise Refused("an input redirection, which fails before the program it feeds runs")
+        kind, target = self.peek()
+        if kind != "word":
+            raise Refused("a redirection with no target")
+        self.take()
+        if op == ">&":
+            # >& copies a descriptor, or with a file name after it writes both outputs.
+            spelling = fd + op + (target if re.fullmatch(r"[0-9]+|-", target) else " a file")
+        else:
+            spelling = fd + op
+        admit(spelling, "the redirection " + spelling + ", a form the evaluator does not admit")
+
+    def trailing_redirections(self):
+        # The redirections after a group, a subshell or a loop, written with no descriptor.
+        while self.peek()[0] == "op" and self.peek()[1] in REDIRECTS:
+            self.redirection("")
 
     def parse_simple(self):
-        words, flags = [], set()
+        words = []
         while True:
             kind, value = self.peek()
             if kind == "word":
                 self.take()
-                if self.peek()[0] == "op" and self.peek()[1] in (">", ">>", "<", ">&") and value.isdigit():
-                    continue  # a file descriptor before a redirection
+                nxt = self.peek()
+                if nxt[0] == "op" and nxt[1] in (">", ">>", "<", ">&") and value.isdigit():
+                    self.redirection(value)  # a file descriptor before a redirection
+                    continue
                 words.append(value)
                 continue
-            if kind == "op" and value in (">", ">>", "<", ">&", "&>", "<<", "<<<"):
-                flags |= self.redirections()
+            if kind == "op" and value in REDIRECTS:
+                self.redirection("")
                 continue
             break
         if not words:
             raise Refused("an empty command")
-        command = ("simple", words, flags)
+        admit("simple command")
+        command = ("simple", words)
         self.commands.append(command)
         return command
 
-# The command words a row may use that are no program to wrap: conditions, whose status
-# is a test's answer rather than a read. Every word not named here or below is a program.
-CONDITIONS = {"true"}
 # Command words refused by name: each runs code past the function that records it, ends
-# the shell, or is a form no row uses.
+# the shell, or is a form no row uses. Every other command word is admitted through admit
+# as the kind of command word it is, so a kind ADMITTED does not hold is refused too.
 REFUSED_WORDS = {"eval", "exec", "command", "builtin", "source", ".", "time", "function", "coproc",
                  "alias", "trap", "exit", "return", "if", "then", "elif", "else", "fi", "while",
                  "until", "case", "esac", "select", "!", "[[", "((", "do", "done", "in",
                  "timeout", "nice", "nohup", "sudo", "stdbuf", "test", "[", "false", "read",
                  "declare", "local", "typeset", "readonly"}
+# An assignment the classifier reads as one: a name, then =. A subscript or += is a form
+# of its own, refused unless ADMITTED holds it.
+PLAIN_ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*=")
+VARIABLE_WORD = re.compile(r"^\$(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))$")
 
 def classify_word(words):
     # The class of a simple command's command word: ("program", name), ("variable",
-    # name), ("condition", word), or ("none",) for a command of assignments alone. Every
-    # other word is refused.
+    # name), ("condition", word), or ("none",) for a command of assignments alone, each
+    # admitted through admit. Every other word is refused.
     i = 0
     while i < len(words) and ASSIGNMENT.match(words[i]):
+        if not PLAIN_ASSIGNMENT.match(words[i]):
+            admit(None, words[i] + ", an assignment to an array element or by +=, a form the evaluator does not admit")
         i += 1
     if i == len(words):
+        admit("assignment alone")
         return ("none",), i
+    if i:
+        admit("assignment before a command")
     word = words[i]
     if SUBST_WORD in word or "`" in word:
         raise Refused("the output of a substitution as a command word")
     if word.startswith("$"):
-        m = re.match(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$", word)
-        if m and m.group(1) in RESOLVABLE:
-            return ("variable", m.group(1)), i
-        raise Refused(word + ", a variable that names no program the evaluator records")
+        m = VARIABLE_WORD.match(word)
+        name = (m.group(1) or m.group(2)) if m else None
+        # The key carries the prefix "variable ", which no other kind of key starts with,
+        # so no variable's name can spell another entry of ADMITTED.
+        admit("variable $" + name if name else None, word + ", a variable that names no program the evaluator records")
+        return ("variable", name), i
     if "/" in word:
         raise Refused(word + ", a program named by a path, which no function can be named for")
     if word in REFUSED_WORDS:
         raise Refused(word + ", a form the evaluator does not admit")
     if not NAME.match(word):
         raise Refused(word + ", a command word the evaluator cannot name")
-    if word in CONDITIONS:
+    if word == "true":
+        # A condition, whose status is a test's answer rather than a read.
+        admit("true")
         return ("condition", word), i
+    admit("a program by bare word")
     return ("program", word), i
 
 
@@ -1335,6 +1536,14 @@ def check_simple(words):
     if name in SHELLS:
         if any(a.startswith("-") and "c" in a.lstrip("-") for a in args):
             raise Refused(name + " -c, a command given to a shell as a string")
+        # A shell with no script file reads its commands from its input, which no function
+        # records, as -c does; one given an option is a form of its own.
+        if not args:
+            admit(None, name + " reading its commands from its input, which no function records")
+        elif args[0].startswith("-"):
+            admit(None, name + " " + args[0] + ", a shell given an option, a form the evaluator does not admit")
+        else:
+            admit(name + " running a script file")
         return [cls]
     if name == "env" and any(not a.startswith("-") and not ASSIGNMENT.match(a) for a in args):
         raise Refused("env running a program, which runs it past the function that records it")
@@ -1351,6 +1560,9 @@ def check_simple(words):
             inner, _ = classify_word(args[j:])
             if inner[0] != "program":
                 raise Refused("xargs " + args[j] + ", a program xargs runs that is no plain program")
+            admit("xargs running a program")
+        else:
+            admit(None, "xargs with no program, which runs echo, a form the evaluator does not admit")
         return [cls]
     return [cls]
 
@@ -1361,53 +1573,55 @@ def final_stage(element):
         return element
     body = element[1]
     if not body:
-        return ("simple", ["true"], set())
+        return ("simple", ["true"])
     return final_stage(body[-1][-1])
 
 
 def classify(command, depth=0):
-    # ("admitted", programs, stages) or ("refused", reason) for one command.
+    # ("admitted", programs, stages) or ("refused", reason) for one command. Each form it
+    # admits is admitted through admit, which records it in USED.
     if depth > 3:
         return ("refused", "a command nested too deep")
-    # Every $ form of the command is read first, quotes respected: only a parameter, a
-    # one-character special parameter, a command substitution and a literal $ are admitted.
-    for form, spelling in dollar_forms(command):
-        if form == "refused":
-            return ("refused", "the expansion " + spelling + ", a $ form the evaluator does not admit")
-    inner_programs = []
-    for start, _, code in substitutions(command):
-        # Process substitution runs its code beside the row, so a failure in it lands
-        # after the row is read; an arithmetic expansion is no command. No row uses either.
-        if command[start] in "<>":
-            return ("refused", "a process substitution " + command[start] + "( ), whose code runs beside the row and ends after it is read")
-        if command.startswith("$((", start):
-            return ("refused", "an arithmetic expansion $(( )), a form the evaluator does not admit")
-        inner = classify(code, depth + 1)
-        if inner[0] == "refused":
-            return inner
-        # A substitution's programs run like any other, so each is wrapped and recorded.
-        inner_programs += inner[1]
-    tokens = tokenize(without_substitutions(command))
-    if tokens is None:
-        return ("refused", "a command the evaluator cannot split into words")
-    parser = Parser(tokens)
     try:
+        # Every $ form of the command is read first, quotes respected, and admitted only
+        # when ADMITTED holds its key.
+        for key, spelling in dollar_forms(command):
+            admit(key, "the expansion " + spelling + ", a $ form the evaluator does not admit")
+        inner_programs = []
+        for start, _, code in substitutions(command):
+            # Process substitution runs its code beside the row, so a failure in it lands
+            # after the row is read; an arithmetic expansion is no command. No row uses either.
+            if command[start] in "<>":
+                raise Refused("a process substitution " + command[start] + "( ), whose code runs beside the row and ends after it is read")
+            if command.startswith("$((", start):
+                raise Refused("an arithmetic expansion $(( )), a form the evaluator does not admit")
+            if command[start] == "$":
+                admit("command substitution in a word")
+            else:
+                admit(None, "a substitution written with backticks, a form the evaluator does not admit")
+            inner = classify(code, depth + 1)
+            if inner[0] == "refused":
+                return inner
+            # A substitution's programs run like any other, so each is wrapped and recorded.
+            inner_programs += inner[1]
+        tokens = tokenize(without_substitutions(command))
+        if tokens is None:
+            return ("refused", "a command the evaluator cannot split into words")
+        parser = Parser(tokens)
         pipelines = parser.parse_list()
         if parser.peek()[0] != "end":
             raise Refused("the word " + parser.peek()[1] + " the evaluator does not admit there")
         programs = list(inner_programs)
-        for _, words, flags in parser.commands:
-            if "input" in flags:
-                raise Refused("an input redirection, which fails before the program it feeds runs")
+        for _, words in parser.commands:
             programs += check_simple(words)
     except Refused as why:
         return ("refused", str(why))
     stages = []
     if pipelines:
         for element in pipelines[-1]:
-            _, words, _ = final_stage(element)
+            _, words = final_stage(element)
             stages.append(" ".join(words))
-    return ("admitted", programs, stages, pipelines, parser.commands)
+    return ("admitted", programs, stages)
 
 
 if sys.argv[-1] == "stages":
@@ -1424,6 +1638,24 @@ elif sys.argv[-1] == "names":
     else:
         for kind in sorted({k for k in result[1] if k[0] == "program"}):
             print(kind[1])
+elif sys.argv[-1] == "admitted":
+    # Reads claims.jsonl on stdin and classifies the command of each row that carries one.
+    # Prints REFUSED<TAB><id><TAB><why> for each row it refuses, then one line per entry of
+    # ADMITTED, in its order, FORM<TAB><key><TAB><rows that use it><TAB><what it is>.
+    counts = {key: 0 for key in ADMITTED}
+    for line in sys.stdin:
+        row = json.loads(line)
+        if not row.get("command"):
+            continue
+        USED.clear()
+        result = classify(row["command"])
+        if result[0] == "refused":
+            print("REFUSED\t" + row.get("id", "?") + "\t" + result[1])
+            continue
+        for key in USED:
+            counts[key] += 1
+    for key, what in ADMITTED.items():
+        print("FORM\t%s\t%d\t%s" % (key, counts[key], what))
 else:
     for line in sys.stdin:
         row = json.loads(line)
@@ -1434,6 +1666,62 @@ PYREADER
 
 unpinned_installs() {
     claims | python3 -c "$(reader_py)" installs
+}
+
+# ---------------------------------------------------------------- --admitted
+
+# admitted_line <form> <rows> <what it is>; one line of the table of admitted forms, as the
+# header above run_recorded holds it after its "#   ".
+admitted_line() { printf '%-31s %4s  %s' "$1" "$2" "$3"; }
+
+# mode_admitted; the audit of ADMITTED. It runs the classifier over the command of every
+# row of claims.jsonl, through the one table the classifier admits by, and prints one line
+# per entry with the number of rows that use it. It fails an entry no row uses, a row the
+# classifier refuses, and a line of the header's table that differs from the one measured.
+mode_admitted() {
+    local kind a b c line measured=() header=() refused=0 differ=0
+    while IFS=$'\t' read -r kind a b c; do
+        case "$kind" in
+        REFUSED)
+            refused=$((refused + 1))
+            fail admitted-rows "the row $a is refused: $b"
+            ;;
+        FORM)
+            line="$(admitted_line "$a" "$b" "$c")"
+            measured+=("$line")
+            if [ "$b" -eq 0 ]; then
+                fail admitted-form "$a is used by no row of claims.jsonl, so the classifier admits a form nothing checks it against: $line"
+            else
+                pass admitted-form "$line"
+            fi
+            ;;
+        esac
+    done < <(claims | python3 -c "$(reader_py)" admitted)
+    if [ "${#measured[@]}" -eq 0 ]; then
+        fail admitted-rows "the classifier printed no table, so no row was read"
+    elif [ "$refused" -eq 0 ]; then
+        pass admitted-rows "the classifier refuses no row of claims.jsonl that carries a command"
+    fi
+
+    # The header's table: the lines after its column names, down to the first comment line
+    # that is no line of it.
+    mapfile -t header < <(awk '/^#   form +rows  what it is$/ { on = 1; next } on && !/^#   / { exit } on { sub(/^#   /, ""); print }' "${BASH_SOURCE[0]}")
+    for line in "${measured[@]}"; do
+        printf '%s\n' "${header[@]}" | grep -qxF -- "$line" && continue
+        differ=1
+        fail admitted-header "the header's table above run_recorded lacks the measured line: $line"
+    done
+    for line in "${header[@]}"; do
+        printf '%s\n' "${measured[@]}" | grep -qxF -- "$line" && continue
+        differ=1
+        fail admitted-header "the header's table above run_recorded holds a line --admitted does not measure: $line"
+    done
+    if [ "$differ" -eq 0 ] && [ "$(printf '%s\n' "${header[@]}")" != "$(printf '%s\n' "${measured[@]}")" ]; then
+        differ=1
+        fail admitted-header "the header's table above run_recorded holds the measured lines in another order or number than ADMITTED"
+    fi
+    [ "$differ" -eq 0 ] && pass admitted-header "the header's table above run_recorded is the table --admitted measures, line for line"
+    return 0
 }
 
 mode_replay() {
@@ -3019,6 +3307,16 @@ mode_self_test() {
         fail gate-cases "check.test.sh is missing, so the faults the tester found are proved by nothing"
     fi
 
+    # The classifier admits exactly the forms the rows use, through its one table, and the
+    # header's table is the one --admitted measures.
+    local admitted
+    admitted="$(bash "$EVIDENCE/check.sh" --admitted 2>&1)"
+    if printf '%s\n' "$admitted" | tail -1 | grep -q '^all [0-9]* assertions passed$'; then
+        pass admitted-table "check.sh --admitted: every entry of ADMITTED is used by a row, no row is refused, and the header's table is the one measured"
+    else
+        fail admitted-table "check.sh --admitted does not pass: $(printf '%s\n' "$admitted" | grep '^FAIL' | head -3 | tr '\n' ' ')"
+    fi
+
     # --coverage names every family the gate holds, so a mode nothing runs is still read.
     local missing=0 coverage
     coverage="$(bash "$EVIDENCE/check.sh" --coverage)"
@@ -3042,6 +3340,7 @@ main() {
     --citations) need git jq curl python3 && { mode_citations; finish; } ;;
     --landed) need git jq && { mode_landed; finish; } ;;
     --published) need git jq curl && { mode_published; finish; } ;;
+    --admitted) need python3 && { mode_admitted; finish; } ;;
     --self-test) need git jq python3 && { mode_self_test; finish; } ;;
     *)
         usage
