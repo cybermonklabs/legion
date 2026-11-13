@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"strings"
 	"testing"
 	"time"
 
@@ -56,6 +55,7 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 
 	// A push of the issue's branch is recorded now, with the pod's roles still live, through the
 	// workflow's push handler as the daemon wires it.
+	before := len(copyOutcomes(t, rig))
 	pushed := saved.Add(time.Minute)
 	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return pushed },
 		Pushes: rig.st, PushRecorded: rig.w.copyWorkspaceAtPush}, quietLogger())
@@ -63,14 +63,14 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
 		t.Fatalf("apply the push of c0..c2: %v", err)
 	}
-	// Whatever the push's copy comes to, it ends before the release goes on.
+	// The push's copy comes to an end of its own before the release goes on, whatever end that
+	// is: stored, not stored for some reason, dropped or overtaken. Each is one line of the copy's
+	// own naming the issue, and the release writes none of them, so the drain below never runs
+	// beside a copy that is still being built.
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
-		if len(rig.bundler.reads()) > 0 {
-			return true
-		}
-		return strings.Contains(rig.logs.String(), `"issue":"`+rig.issue.Key+`"`)
+		return len(copyOutcomes(t, rig)) > before
 	}) {
-		t.Fatalf("the push asked for no copy and logged nothing; the daemon logged:\n%s", rig.logs.String())
+		t.Fatalf("the push's copy wrote no line of its end; the daemon logged:\n%s", rig.logs.String())
 	}
 	rig.awaitQuiet(t)
 	rig.drain(t)
@@ -99,4 +99,21 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 		t.Fatalf("after the next pod restored the issue's work, a release bundle (answered %v) still holds the issue's pod (%s), so no idle release of the issue ever runs again",
 			restore.ReleaseBundle.Take, workflow.IdleHoldBundleUnrestored)
 	}
+}
+
+// copyOutcomes is every line of the rig's issue that a running copy writes as it ends: stored, not
+// stored for a reason it names, dropped because the workspace holds nothing unpushed, or not
+// stored because a push overtook it. A copy writes exactly one of them however it ends, and no
+// other path writes any of them.
+func copyOutcomes(t *testing.T, rig *copyRig) []map[string]any {
+	t.Helper()
+	var found []map[string]any
+	for _, msg := range []string{runningCopyStoredLine, runningCopyUnsavedLine, runningCopyDroppedLine, runningCopyOvertakenLine} {
+		for _, line := range rig.lines(t, msg) {
+			if line["issue"] == rig.issue.Key {
+				found = append(found, line)
+			}
+		}
+	}
+	return found
 }
