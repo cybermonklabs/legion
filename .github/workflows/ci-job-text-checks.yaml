@@ -80,6 +80,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # INFRA-1413 k7 negative control, never merged: a step that fails with exit 1 and no shutdown annotation.
+      - name: INFRA-1413 k7 probe - an ordinary failure
+        run: exit 1
       # All three modules pin the same Go in their go.mod, so one install serves the three
       # directories below; packages/envoy's is the one this reads.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
