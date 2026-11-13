@@ -2450,7 +2450,8 @@ for path in workflows + actions:
                 f"`{name}` is written twice in one mapping here. GitHub refuses a workflow with a "
                 "duplicate key and runs nothing of it - a run of zero jobs, with no annotation to "
                 "read - while this check's own YAML reader takes the last of the two and says "
-                "nothing, so without this line a file CI will not start passes every rule below. "
+                "nothing, so without this line a file CI will not start passes every other rule "
+                "of this check. "
                 "Delete one of them, and say in the comment which figure survived and why.")
     if not isinstance(document, Mapping):
         continue
@@ -3184,8 +3185,8 @@ for budget in budgets:
                 f"write `timeout-minutes: {budget.minutes + 1}` or more on this job, or the "
                 "figure that job's own comment derives, whichever is larger. "
                 "(dispatch://INFRA-1545, round 27: twenty-two job keys stood below their own "
-                "documented derivation while this check was green, because it read only the "
-                "clause above.)")
+                "documented derivation while this check was green, because it read only a step's "
+                "arithmetic against its job's key.)")
 
 # Rule 8, the priced comment against its own key, which is the control dispatch://INFRA-1545's
 # tester ran by `python3` at every round, moved into this check. EVERY ROUND OF THAT ISSUE
