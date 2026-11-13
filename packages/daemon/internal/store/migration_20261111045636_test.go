@@ -23,10 +23,12 @@ const experimentAssignmentsVersion = 20261111045636
 // (memory_drawn_at is not null) or whose hand-over settled it (memory_carried) holds an answer and
 // takes a row, under the experiment `memory` and the unit `tree`, with its group as the variant,
 // its mode as the mode, its instant as the instant and its mark as the mark. A root that holds
-// neither has no answer to record and takes no row at all, so this release's own first open draws
-// for it like any other new tree. The lifecycle rows here are the negative control of what the
-// back-fill does not read: it walks the issue rows alone, so a drawn root whose tree holds no
-// lifecycle row takes its row all the same.
+// neither has no answer to record and takes no row at all. This release draws a tree only where it
+// creates the tree's lifecycle row (admit's promoteHolds, `if lifecycle.Created`, and the
+// operator's spawn), so such a root whose tree has never been opened is drawn at that first open,
+// and one whose tree was already opened is never drawn and answers nothing. The lifecycle rows
+// here are the negative control of what the back-fill does not read: it walks the issue rows
+// alone, so a drawn root whose tree holds no lifecycle row takes its row all the same.
 //
 // The group is copied with one spelling changed: a row drawn under mode off takes the empty
 // variant, which is how this release's draw answers a mode-off experiment, rather than the word
@@ -73,8 +75,9 @@ func TestTheMemoryDrawIsCopiedIntoTheAssignmentsBy20261111045636(t *testing.T) {
 		// A hand-over that carried no draw: the mark alone is the answer, and it is no draw.
 		{key: "LEGION-404", carried: true, lifecycle: true,
 			holds: true, wantUnit: "tree", wantVariant: "", wantMode: "", wantDrawnAt: nil, wantCarried: true},
-		// Neither drawn nor settled: it holds no answer, so it takes no row and this release's own
-		// first open draws for it.
+		// Neither drawn nor settled: it holds no answer, so it takes no row. Its tree holds a
+		// lifecycle row, as a tree opened before the memory draw existed does, so this release,
+		// which draws a tree only where it creates that row, never draws it, and it answers nothing.
 		{key: "LEGION-405", lifecycle: true},
 		// The sixth tree, the one with no lifecycle row: the daemon never opened it, so it holds
 		// no answer and takes no row, and this release draws for it when its row is made.

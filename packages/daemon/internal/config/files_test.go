@@ -248,6 +248,46 @@ func TestMaterializeDeploymentInstructionsRefusesAnUnusableFile(t *testing.T) {
 	}
 }
 
+// The `memory` block's instructions are read as the deployment's are: the operator's file
+// verbatim, and a refusal naming the operator's path for a file that is missing, unreadable, or
+// blank, in the block's own words, since a configured key with nothing to append is a
+// misconfiguration, not an empty fragment.
+func TestReadMemoryInstructionsAnswersTheFileOrRefusesIt(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "memory.md")
+	content := "Read the tree's memory before you plan.\n\n- write what you learned\n"
+	if err := os.WriteFile(good, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ReadMemoryInstructions(good)
+	if err != nil {
+		t.Fatalf("ReadMemoryInstructions: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("contents = %q, want %q", got, content)
+	}
+
+	blank := filepath.Join(dir, "blank.md")
+	if err := os.WriteFile(blank, []byte("\n  \n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	absent := filepath.Join(dir, "absent.md")
+	for _, tc := range []struct {
+		name, path, want string
+	}{
+		{name: "blank", path: blank, want: "memory instructions file " + blank + " is empty"},
+		{name: "absent", path: absent, want: "memory instructions file " + absent + " could not be read: "},
+		{name: "a directory", path: dir, want: "memory instructions file " + dir + " could not be read: "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := ReadMemoryInstructions(tc.path)
+			if err == nil || !strings.HasPrefix(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want it to start %q", err, tc.want)
+			}
+		})
+	}
+}
+
 // A declared variant's instructions are read as the deployment's are: the operator's file
 // verbatim, and a refusal naming the operator's path, with the experiment and the arm that name
 // it, for a file that is missing, unreadable, or blank, since a configured key with nothing to

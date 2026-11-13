@@ -54,12 +54,16 @@ create table experiment_assignments (
 --
 -- The rows it copies are the rows that hold an answer: a draw (memory_drawn_at is not null) or a
 -- hand-over that settled the root at no draw (memory_carried), which is the pair the memory
--- draw's own condition refused to draw over. A root neither drew for nor
--- handed an answer to has nothing to record and takes no row, so it is drawn by this release's
--- own first open like any other new tree. memory_drawn_at is the instant and memory_carried the
--- mark, each verbatim; the experiment is the literal `memory`, the name
--- config.Project.ExperimentsDeclared gives the `memory` block, and the unit the literal `tree`,
--- the unit that block has always drawn for.
+-- draw's own condition refused to draw over. A root neither drawn for nor handed an answer to has
+-- nothing to record and takes no row. What happens to it next turns on its tree's lifecycle row,
+-- since this release draws a tree's experiments only where it creates that row (the
+-- `if lifecycle.Created` branch of (*Admission).promoteHolds, in internal/admit/admit.go, and the
+-- operator's spawn, store.Store.OpenOperatorTreeLifecycle): a root whose tree has never been
+-- opened is drawn at that first open, like any other new tree, and a root whose tree was already
+-- opened — such as one opened before the memory draw existed — is never drawn and answers nothing.
+-- memory_drawn_at is the instant and memory_carried the mark, each verbatim; the experiment is the
+-- literal `memory`, the name config.Project.ExperimentsDeclared gives the `memory` block, and the
+-- unit the literal `tree`, the unit that block has always drawn for.
 --
 -- The variant is memory_group with one spelling changed: a row drawn under mode off is copied at
 -- the empty variant rather than at the word `none` that column holds. That is the one answer the
@@ -95,21 +99,34 @@ from issues
 where memory_drawn_at is not null or memory_carried;
 
 -- Rolling back onto a release before this one: legion-v19.57.3, which the deployment ran when this
--- was written, and whose tree the two places cited here were read in. That release writes
+-- was written, and whose tree the places cited here were read in. That release draws into
 -- issues.memory_* only where it creates a tree's lifecycle row (internal/admit/admit.go, the
--- `if lifecycle.Created` branch of (*Admission).promoteHolds), and the lifecycle row of every tree drawn after this merge exists
--- already, so the rolled-back daemon creates none of them again: it re-draws nothing. It changes
--- arms all the same, which is what the roll back costs. That release decides a launch's memory
--- from issues.memory_group alone (its daemon.go's treeMemoryGroup, `issue.MemoryGroup ==
--- "memory"`), and this release writes no memory_* column, so a tree drawn into the `memory` arm
--- after the upgrade has an empty memory_group: its next role starts without the memory overlays
--- and without the memory instructions, and the tree runs the rest of its life in the other arm
--- than the one it was drawn into. The record goes with it: that tree's answer is in
--- experiment_assignments, which the rolled-back release names nowhere, so it reads as undrawn
--- there — its lifecycle row is never created again, so nothing ever writes the columns for it —
--- and the measurement job loses its exposure. The trees drawn before the merge are untouched:
--- their columns are the back-fill's source and still hold their draw, so they keep their arm and
--- read exactly as they did.
+-- `if lifecycle.Created` branch of (*Admission).promoteHolds), and the lifecycle row of every
+-- tree drawn after this merge exists already, so the rolled-back daemon creates none of them
+-- again: it re-draws nothing. It changes arms all the same, which is what the roll back costs.
+-- That release decides a launch's memory from issues.memory_group alone (its daemon.go's
+-- treeMemoryGroup, `issue.MemoryGroup == "memory"`), and this release writes no memory_* column,
+-- so a tree drawn into the `memory` arm after the upgrade has an empty memory_group: its next role
+-- starts without the memory overlays and without the memory instructions, and the tree runs the
+-- rest of its life in the other arm than the one it was drawn into. The record goes with it: that
+-- tree's answer is in experiment_assignments, which the rolled-back release names nowhere, so it
+-- reads as undrawn there — its lifecycle row is never created again, so nothing ever writes the
+-- columns for it — and the measurement job loses its exposure. The trees drawn before the merge
+-- are untouched: their columns are the back-fill's source and still hold their draw, so they keep
+-- their arm and read exactly as they did.
+--
+-- That release writes issues.memory_* in a second place, the hand-over, and it costs the children
+-- handed over out of those trees too. Its (*Admission).readmit, in the same file, calls
+-- record.Store.CarryMemory (internal/record/store.go) for every child that leaves another tree,
+-- and CarryMemory copies the old tree's root's issues.memory_* onto the child and marks it
+-- carried wherever that tree holds a lifecycle row. A tree this release drew holds one and holds
+-- empty columns, so a child handed over out of it while the roll back holds is copied no group, no
+-- mode and no instant, and marked carried: it is settled at no group, and that release never
+-- draws it, since its DrawMemory passes over a carried root. Rolling forward does not undo that.
+-- The back-fill above does not run again, so the child holds no assignment row, and once that
+-- release has opened the child's own tree its lifecycle row stands, so this release never draws
+-- it either: it comes back at no variant, whatever arm the tree it left was drawn into. The copy
+-- by hand below gives it only the settled row, which is no variant too.
 --
 -- Rolling forward again costs the window. A tree the rolled-back release drew while it ran has
 -- its answer in issues.memory_* alone, and the back-fill above runs once, at the first deploy of

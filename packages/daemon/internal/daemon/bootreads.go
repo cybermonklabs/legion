@@ -107,12 +107,21 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// (config.Config.ExperimentsDeclared, the list that maps the `memory` block in as the
 	// experiment named memory). No mode decides it: a unit already drawn into an arm is given
 	// that arm's instructions whatever the mode is now, and only removing the key takes them away.
+	// The block's own arm is refused in the block's own words (config.ReadMemoryInstructions),
+	// which the documentation quotes, and every arm of the `experiments` key, `experiments.memory`
+	// included, in the experiments' words (config.ReadVariantInstructions).
+	memoryBlock := cfg.Projects[cfg.Project].MemoryIsBlock()
 	for _, experiment := range cfg.ExperimentsDeclared() {
 		for _, variant := range experiment.Variants {
 			if variant.InstructionsPath == "" {
 				continue
 			}
-			contents, err := config.ReadVariantInstructions(experiment.Name, variant.Name, variant.InstructionsPath)
+			var contents []byte
+			if memoryBlock && experiment.Name == config.MemoryExperimentName {
+				contents, err = config.ReadMemoryInstructions(variant.InstructionsPath)
+			} else {
+				contents, err = config.ReadVariantInstructions(experiment.Name, variant.Name, variant.InstructionsPath)
+			}
 			if err != nil {
 				return bootReads{}, err
 			}

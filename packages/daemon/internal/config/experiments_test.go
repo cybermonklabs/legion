@@ -119,8 +119,8 @@ func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
 // twice, a mode or a unit that is no word of its own, a variants list that is missing, no list or
 // empty, one variant where the mode draws, a weight that is not a whole number above zero, an
 // overlay or an instructions path no role could load, a mode on that names no on_variant, an
-// on_variant that is no variant of its experiment, and the two shapes of `experiments.memory` that
-// only the project as a whole shows.
+// on_variant that is no variant of its experiment, and the three shapes of `experiments.memory`
+// the name memory forbids: beside the block, with other variants, and drawn for each issue.
 func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",
@@ -200,6 +200,8 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: "projects.DEMO.experiments.memory names the variants memory, none, some: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse"},
 		{name: "experiments.memory with a variant of another name", block: "{memory: {variants: [{name: memory}, {name: nothing}]}}",
 			want: "projects.DEMO.experiments.memory names the variants memory, nothing: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse"},
+		{name: "experiments.memory drawn for each issue", block: "{memory: {unit: issue, variants: [{name: memory}, {name: none}]}}",
+			want: "projects.DEMO.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it"},
 		{name: "a variant's overlays beside a role on claude",
 			block: "{alpha: {mode: random, variants: [{name: only, config_files: [/etc/a.yml]}, {name: other}]}}",
 			extra: "worker_backends: {implementer: claude}\n",

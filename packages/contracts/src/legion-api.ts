@@ -703,14 +703,17 @@ const legionIssue = z.object({
   memoryDrawnAt: timestamp.optional(),
   /** Every experiment answer that applies to the issue (contract 97): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
-   * order the project's file declares the experiments — the order
-   * `settings.projects.<KEY>.experiments` names them in. `variant` and `mode` ride whatever they
-   * hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
-   * that row — no arm, no mode, no instant — is a hand-over settling a unit at no arm for an
-   * experiment the tree it left held no row for, which is how a reader tells a unit settled at
-   * no arm from a unit never drawn, which carries no row at all. The key is absent from an issue
-   * no experiment holds an answer for, and from every issue of the body the route serves a
-   * caller before 97, so a reader takes it as optional. */
+   * order the project's file declares the experiments. That is the `memory` block's experiment
+   * first (`settings.projects.<KEY>.memory`, which every project declares, at mode `off` where its
+   * file writes no block), unless `settings.projects.<KEY>.experiments` names `memory` itself;
+   * then the experiments `settings.projects.<KEY>.experiments` names, in its order; then any
+   * experiment the file no longer names, in the order of their names. `variant` and `mode` ride
+   * whatever they hold, the empty string included, and `drawnAt` is absent where the row holds
+   * no instant: that row — no arm, no mode, no instant — is a hand-over settling a unit at no arm
+   * for an experiment the tree it left held no row for, which is how a reader tells a unit
+   * settled at no arm from a unit never drawn, which carries no row at all. The key is absent
+   * from an issue no experiment holds an answer for, and from every issue of the body the route
+   * serves a caller before 97, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
 });
 

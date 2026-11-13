@@ -180,9 +180,7 @@ var MemoryVariantNames = []string{MemoryVariantMemory, MemoryVariantNone}
 // at all, so it is the block's rule and not an experiment's.
 func (project Project) ExperimentsDeclared(key string) []Experiment {
 	declared := make([]Experiment, 0, len(project.Experiments)+1)
-	if !slices.ContainsFunc(project.Experiments, func(experiment Experiment) bool {
-		return experiment.Name == MemoryExperimentName
-	}) {
+	if project.MemoryIsBlock() {
 		memory := project.Memory
 		declared = append(declared, Experiment{
 			Name:      MemoryExperimentName,
@@ -206,6 +204,18 @@ func (project Project) ExperimentsDeclared(key string) []Experiment {
 		declared = append(declared, experiment)
 	}
 	return declared
+}
+
+// MemoryIsBlock is whether the project's experiment named memory is its `memory` block: true
+// unless the project declares `experiments.memory`, which the loader refuses beside a written
+// block (checkExperimentMemory). A project that writes neither declares the experiment from the
+// empty block (ExperimentsDeclared). The block's arm keeps the block's own refusals, checkMemory's
+// and ReadMemoryInstructions', so a reader walking the declared list asks this to tell that arm
+// from an arm of the `experiments` key.
+func (project Project) MemoryIsBlock() bool {
+	return !slices.ContainsFunc(project.Experiments, func(experiment Experiment) bool {
+		return experiment.Name == MemoryExperimentName
+	})
 }
 
 // ExperimentsDeclared is the experiments the project this daemon serves declares, under the key
@@ -403,12 +413,17 @@ func variantNames(variants []Variant) []string {
 	return names
 }
 
-// checkExperimentMemory refuses the two shapes of `experiments.memory` that only the project as a
-// whole shows, which is why they are read here rather than in readExperiments: a project that
-// writes the `memory` block and declares the experiment too, since the two are one experiment
-// spelled twice and the daemon would draw for it twice; and an `experiments.memory` whose variants
-// are not exactly memory and none, which would serve every pod of the project a state body it
-// refuses (MemoryVariantNames). Every other name of the key declares whatever variants it likes.
+// checkExperimentMemory refuses the shapes of `experiments.memory` that the name memory forbids
+// and every other name of the key allows, which is why they are read here rather than in
+// readExperiments, which reads every name alike: a project that writes the `memory` block and
+// declares the experiment too, since the two are one experiment spelled twice and the daemon would
+// draw for it twice; an `experiments.memory` whose variants are not exactly memory and none, which
+// would serve every pod of the project a state body it refuses (MemoryVariantNames); and one whose
+// unit is not the tree. A draw of the experiment named memory is served as the issue state's
+// three memory fields (internal/projection's memoryOf), which are the draw of the issue's tree and
+// the same for every issue of it (packages/contracts/src/legion-api.ts, legionIssue's
+// memoryGroup), so an issue unit would serve each issue an answer of its own under fields that
+// promise its tree's. Every other name of the key declares whatever variants and unit it likes.
 func checkExperimentMemory(experiments []Experiment, blockWritten bool, key string) error {
 	index := slices.IndexFunc(experiments, func(e Experiment) bool { return e.Name == MemoryExperimentName })
 	if index < 0 {
@@ -424,6 +439,10 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 	if !slices.Equal(slices.Sorted(slices.Values(names)), slices.Sorted(slices.Values(MemoryVariantNames))) {
 		return fmt.Errorf("%s.experiments.memory names the variants %s: its variants must be exactly %s, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse",
 			key, strings.Join(names, ", "), strings.Join(MemoryVariantNames, " and "))
+	}
+	if unit := experiments[index].Unit; unit != ExperimentTree {
+		return fmt.Errorf("%s.experiments.memory is unit %s: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it",
+			key, unit)
 	}
 	return nil
 }
@@ -452,7 +471,7 @@ func checkExperimentMemory(experiments []Experiment, blockWritten bool, key stri
 func checkExperiments(cfg Config) error {
 	for _, name := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		project := cfg.Projects[name]
-		block := !slices.ContainsFunc(project.Experiments, func(e Experiment) bool { return e.Name == MemoryExperimentName })
+		block := project.MemoryIsBlock()
 		for _, experiment := range project.ExperimentsDeclared("projects." + name) {
 			if block && experiment.Name == MemoryExperimentName {
 				continue

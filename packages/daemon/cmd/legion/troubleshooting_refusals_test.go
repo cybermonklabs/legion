@@ -112,7 +112,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	"projects.<KEY>.memory.config_files …": func(t *testing.T) string {
 		return refusalFile{project: "    memory: {mode: on, config_files: [/etc/legion-operator/memory.yml, /etc/legion-operator/memory.yml]}\n"}.refuse(t)
 	},
-	"instructions file <path> of experiment memory variant memory could not be read: …": func(t *testing.T) string {
+	"memory instructions file <path> could not be read: …": func(t *testing.T) string {
 		dir := t.TempDir()
 		overlay, missing := filepath.Join(dir, "memory.yml"), filepath.Join(dir, "missing.md")
 		if err := os.WriteFile(overlay, []byte("retry:\n  modelFallback: true\n"), 0o600); err != nil {
@@ -127,6 +127,9 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 	},
 	"projects.<KEY>.experiments.memory names the variants …: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: {memory: {variants: [{name: long}, {name: short}]}}\n"}.refuse(t)
+	},
+	"projects.<KEY>.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it": func(t *testing.T) string {
+		return refusalFile{project: "    experiments: {memory: {unit: issue, variants: [{name: memory}, {name: none}]}}\n"}.refuse(t)
 	},
 	"projects.<KEY>.experiments must be a mapping of an experiment's name to its block": func(t *testing.T) string {
 		return refusalFile{project: "    experiments: [plan-length]\n"}.refuse(t)

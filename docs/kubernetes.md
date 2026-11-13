@@ -2122,7 +2122,10 @@ The commits already stamped keep their line: it is in their messages, which noth
 
 **Each issue's experiment assignments in the state (daemon API contract 97).**
 A release at contract 97 carries, on every issue of `GET /legion/v1/state`, `assignments`:
-one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments, which is the order `settings.projects.<KEY>.experiments` names them in.
+one `{experiment, variant, mode, drawnAt}` per experiment answer that applies to that issue, in the order the project's file declares the experiments:
+first the `memory` block's experiment, `settings.projects.<KEY>.memory`, which every project declares — at mode `off` where its file writes no block — unless `settings.projects.<KEY>.experiments` names `memory` itself;
+then the experiments `settings.projects.<KEY>.experiments` names, in its order;
+then any experiment the file no longer names, in the order of their names.
 An issue carries its tree's answer for an experiment whose unit is the tree, and its own answer for one whose unit is the issue.
 `variant` and `mode` ride whatever they hold, the empty string included, and `drawnAt` is absent where the row holds no instant:
 that row — no arm, no mode, no instant — is a hand-over settling a child at no arm for an experiment the tree it left held no row for, which is how a reader tells a unit settled at no arm from a unit never drawn, which is no row at all.
@@ -2138,12 +2141,19 @@ To roll this release back to contract 87, put `legion.yaml` back without `projec
 There is no SQL to run and no table to drop:
 the earlier release names neither `experiment_assignments` nor its rows, so it boots with the table in place, reads nothing of it and writes nothing to it, and an upgrade back to this release reads the rows it left.
 What the rollback costs is the arm of every tree drawn after the upgrade, and the record of it.
-The earlier release writes `issues.memory_*` only where it creates a tree's lifecycle row, and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
+The earlier release draws into `issues.memory_*` only where it creates a tree's lifecycle row (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`, `internal/admit/admit.go` at `legion-v19.57.3`), and the lifecycle row of every tree drawn after the upgrade exists already, so the rolled-back daemon creates none of them again and re-draws nothing;
 it changes arms all the same.
 That release decides a launch's memory from `issues.memory_group` alone (its `treeMemoryGroup`, `issue.MemoryGroup == "memory"`), and this release writes no `memory_*` column, so a tree drawn into the `memory` arm after the upgrade has an empty `memory_group`:
 its next role starts without the memory overlays and without the memory instructions, and the tree runs the rest of its life in the other arm than the one it was drawn into.
 The record goes with it: that tree's answer is in `experiment_assignments`, which the earlier release names nowhere, so it reads as undrawn there for the rest of its life — its lifecycle row is never created again, so nothing ever writes the columns for it — and the measurement job loses its exposure.
 The trees drawn before the upgrade are untouched: their columns are the back-fill's source and still hold their draw, so they keep their arm and read exactly as they did.
+The earlier release writes `issues.memory_*` in a second place, the hand-over, and that costs the children handed over out of those trees too.
+Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v19.57.3`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
+A tree this release drew holds one and holds empty columns, so a child handed over out of it while the rollback holds is copied no group, no mode and no instant, and marked carried:
+it is settled at no group, and the earlier release never draws it, since its `DrawMemory` passes over a carried root.
+Rolling forward does not undo that.
+The back-fill does not run again, so the child holds no assignment row, and once the earlier release has opened the child's own tree its lifecycle row stands, so this release never draws it either:
+it comes back at no variant, whatever arm the tree it left was drawn into, and the copy by hand below gives it only the settled row, which is no variant too.
 Rolling forward again costs the window the earlier release ran for.
 A tree it drew in that window has its answer in `issues.memory_*` alone, and the back-fill runs once, at the first deploy of the migration, and not a second time:
 this release finds no row for that tree, runs it in no arm — so it too changes arm mid-life — and settles the children it hands over at no variant.
@@ -5482,8 +5492,8 @@ each issue's pod (every role of it alike) and the image probe's.
   Nothing else says that the generation ran outside the arm its record names, so an analysis reads those lines and counts such a unit out of its exposure.
 
 - **Where an arm shows.**
-  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments (daemon API contract 97, [Rolling back the upgrade](#rolling-back-the-upgrade)).
-  `settings.projects.<KEY>.experiments` carries the declaration itself.
+  Every issue of `GET /legion/v1/state` carries `assignments`, one `{experiment, variant, mode, drawnAt}` per answer that applies to it, in the order the project declares the experiments: the `memory` block's experiment first, unless `experiments.memory` declares it instead, then the `experiments` key's own in the file's order, then any the file no longer names (daemon API contract 97, [Rolling back the upgrade](#rolling-back-the-upgrade)).
+  `settings.projects.<KEY>.experiments` carries the `experiments` key's declaration itself, and `settings.projects.<KEY>.memory` the block's.
   `legion state` prints one line per declared experiment, counting the issues that hold each arm; every project declares the `memory` experiment — one that writes no `memory` block declares it at mode `off` — so there is always a line, and `memory: none` is what a deployment reads until a tree is drawn.
   `legion config-reference --json` prints every key of the block with its default, whether it is required and what it does, and reads no `legion.yaml`, no daemon and no cluster.
   The documentation site's configuration reference page is generated from that output.
