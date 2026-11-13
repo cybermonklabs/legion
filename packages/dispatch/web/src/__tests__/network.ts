@@ -84,12 +84,15 @@ const shellHandlers: RequestHandler[] = [
   // The command bar reads what this Dispatch can do as it opens (`goingCapabilityQuery`), on
   // every page the bar opens over. The answer is a Dispatch with nothing configured - the
   // server's own answer with every setting unset - so a bar under test asks no model; a test of
-  // the answer spies `api.goingCapability` above this.
-  http.get("/api/v1/going/capability", () => Response.json(UNCONFIGURED_CAPABILITY)),
+  // the answer spies `api.goingCapability` above this. It is answered at any origin (`*/`):
+  // a test that renders the bar on a page whose origin is not the suite's still opens it, as
+  // the bar's other reads are answered there by that test's own spies.
+  http.get("*/api/v1/going/capability", () => Response.json(UNCONFIGURED_CAPABILITY)),
   // The Settings page's Command bar section reads the person's own setting
   // (`goingSettingsQuery`) wherever the page renders. The answer is a person who never set it -
-  // the server's own default, off - and a test of the setting spies `api.myGoingSettings`.
-  http.get("/api/v1/me/going/settings", () => Response.json({ confirm_writes: false })),
+  // the server's own default, off - and a test of the setting spies `api.myGoingSettings`. It is
+  // answered at any origin, as the capability read above is.
+  http.get("*/api/v1/me/going/settings", () => Response.json({ confirm_writes: false })),
 ];
 
 const network = defineNetwork({
