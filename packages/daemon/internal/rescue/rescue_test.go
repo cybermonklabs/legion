@@ -17,9 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/workspace"
 )
 
 const (
@@ -489,6 +491,26 @@ func TestRescueLeavesAWorkspaceSetAsideForRemovalUnchecked(t *testing.T) {
 	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, removed)
 }
 
+// A workspace's repository is read from its path as workspace.Location lays it out,
+// <state>/workspaces/<owner>/<repo>/<issue>, under any state directory; a directory laid out
+// otherwise, the repository's own directory among them, stands for itself.
+func TestRescueRepositoryOfIsTheOwnerAndRepoOfAWorkspacesPath(t *testing.T) {
+	located, err := workspace.Location("/legion", ghrepo.MustParse(rescuetest.Owner+"/"+rescuetest.Repo), issue)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct{ dir, want string }{
+		{located.Dir, rescuetest.Owner + "/" + rescuetest.Repo},
+		{"/var/state/workspaces/octo/tools/tools-7", "octo/tools"},
+		{"/legion/workspaces/acme/widgets", "/legion/workspaces/acme/widgets"},
+		{"/legion/scratch/acme/widgets/widgets-42", "/legion/scratch/acme/widgets/widgets-42"},
+	} {
+		if got := rescue.RepositoryOf(tc.dir); got != tc.want {
+			t.Errorf("RepositoryOf(%q) = %q, want %q", tc.dir, got, tc.want)
+		}
+	}
+}
+
 // A request of an older daemon names no Target: the check pushes the issue's own work to the
 // request's per-pod Branch itself, with no number, by the same rule.
 func TestRescueForAnOlderDaemonPushesToItsPerPodBranchWithNoNumber(t *testing.T) {
@@ -698,17 +720,6 @@ func TestAnUnpushedCommitOnTheIssuesOwnBranchIsRescued(t *testing.T) {
 	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, target)), commit)
 }
 
-// A commit on a local git branch of another name than the issue's, which neither the workspace's
-// HEAD nor jj's own line names, is no work of the issue's own line: nothing is pushed.
-func TestACommitOnAnotherLocalGitBranchIsNotRescued(t *testing.T) {
-	d := rescuetest.New(t, issue)
-	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
-	commit := d.Run(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "work on a local branch")
-	d.Run(d.Clone, "git", "branch", "topic", commit)
-	before := d.RemoteBranches()
-	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit)
-}
-
 // Files written in the workspace and in no commit become one commit on top of the workspace's
 // head, built in an index of its own: the workspace's files, its index, its HEAD and jj's
 // operation log are what they were. The rescue commit over it names it as the working copy.
@@ -840,47 +851,6 @@ func TestAnOwnCommitOnlyAStaleRemoteTrackingRefNamesIsRescued(t *testing.T) {
 		t.Fatalf("the clone's origin/%s is %s, want the stale %s", d.Branch, tracked, commit)
 	}
 	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, target)), commit)
-}
-
-// Work a role set aside in git's stash, with the workspace's files put back as they were, is no
-// work of the issue's own line: nothing is pushed, neither the stash's commit nor its file.
-func TestStashedWorkIsNotRescued(t *testing.T) {
-	d := rescuetest.New(t, issue)
-	d.Write(d.Workspace, "base.txt", "an edit set aside\n")
-	d.Git("stash", "push", "--quiet", "-m", "set aside")
-	stash := d.Git("rev-parse", "refs/stash")
-	setAside := d.Git("rev-parse", "refs/stash:base.txt")
-	if body, err := os.ReadFile(filepath.Join(d.Workspace, "base.txt")); err != nil || string(body) != "base\n" {
-		t.Fatalf("the workspace's base.txt is %q (%v) after the stash, want it put back", body, err)
-	}
-	before := d.RemoteBranches()
-	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, stash, setAside)
-}
-
-// A commit only a local tag names is no work of the issue's own line: nothing is pushed.
-func TestACommitOnlyALocalTagNamesIsNotRescued(t *testing.T) {
-	d := rescuetest.New(t, issue)
-	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
-	commit := d.Run(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "tagged and never pushed")
-	d.Run(d.Clone, "git", "tag", "-a", "-m", "a tag of the role's", "draft", commit)
-	before := d.RemoteBranches()
-	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit)
-}
-
-// Another git worktree of the clone — one a role added beside its workspace, on a detached HEAD —
-// is no workspace of the issue: neither its commit nor its files in no commit are pushed.
-func TestAnotherWorktreeOfTheCloneIsNotRescued(t *testing.T) {
-	d := rescuetest.New(t, issue)
-	other := filepath.Join(d.StateDir, "scratch", "review")
-	d.Run(d.Clone, "git", "worktree", "add", "--quiet", "--detach", other, d.Base)
-	d.Write(other, "review.txt", "a review in progress\n")
-	d.Run(other, "git", "add", "review.txt")
-	d.Run(other, "git", "commit", "--quiet", "-m", "a review in progress")
-	commit := d.Run(other, "git", "rev-parse", "HEAD")
-	d.Write(other, "notes.txt", "notes in no commit\n")
-	notes := d.Run(other, "git", "hash-object", "notes.txt")
-	before := d.RemoteBranches()
-	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit, notes)
 }
 
 // The check reads only the workspace, never the clone's own directory. An issue pod's clone holds

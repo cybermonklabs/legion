@@ -6,6 +6,7 @@ package rescuetest
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -60,7 +61,7 @@ type Disk struct {
 	Env []string
 	// Provisioned is when the pod was made: New and NextPod take it before anything else, and
 	// record it as the workspace's creation in the workspace's .jj (workspace.RecordCreated), which
-	// the launcher's resume check reads. RunBefore dates a commit an hour before it.
+	// the launcher's resume check reads.
 	Provisioned time.Time
 }
 
@@ -276,21 +277,7 @@ func (d *Disk) requireNoCloneTree() {
 // test when it fails.
 func (d *Disk) Run(dir string, argv ...string) string {
 	d.t.Helper()
-	return d.run(dir, nil, argv...)
-}
-
-// RunBefore is Run for a commit someone made before the pod provisioned the workspace: git's
-// author and committer dates, and jj's (JJ_TIMESTAMP), are an hour before Provisioned, as a commit
-// the clone holds from a fetch of something older than the pod is.
-func (d *Disk) RunBefore(dir string, argv ...string) string {
-	d.t.Helper()
-	before := d.Provisioned.Add(-time.Hour).Format(time.RFC3339)
-	return d.run(dir, []string{"GIT_AUTHOR_DATE=" + before, "GIT_COMMITTER_DATE=" + before, "JJ_TIMESTAMP=" + before}, argv...)
-}
-
-func (d *Disk) run(dir string, env []string, argv ...string) string {
-	d.t.Helper()
-	return fixturegit.Runner{TB: d.t, Env: d.Env}.With(env...).Run(dir, argv...)
+	return fixturegit.Runner{TB: d.t, Env: d.Env}.Run(dir, argv...)
 }
 
 // JJ runs jj in the workspace, as a role does: its working copy snapshotted first.
@@ -303,6 +290,37 @@ func (d *Disk) JJ(args ...string) string {
 func (d *Disk) Git(args ...string) string {
 	d.t.Helper()
 	return d.Run(d.Workspace, append([]string{"git"}, args...)...)
+}
+
+// CommitLine makes n commits on the issue's branch with one git fast-import, and returns their
+// ids, oldest first: a line as long as a test needs, made in one process rather than in one
+// command for each commit. Commit i, counted from 1, has subject(i) as its one line of message and
+// writes `work <i>` to work.txt.
+func (d *Disk) CommitLine(n int, subject func(i int) string) []string {
+	d.t.Helper()
+	ref := "refs/heads/" + d.Branch
+	base := d.Git("rev-parse", ref)
+	now := time.Now().Unix()
+	var stream strings.Builder
+	for i := 1; i <= n; i++ {
+		message := subject(i) + "\n"
+		body := fmt.Sprintf("work %d\n", i)
+		fmt.Fprintf(&stream, "commit %s\nmark :%d\ncommitter Legion Test <test@example.invalid> %d +0000\ndata %d\n%s", ref, i, now, len(message), message)
+		if i == 1 {
+			fmt.Fprintf(&stream, "from %s\n", base)
+		}
+		fmt.Fprintf(&stream, "M 100644 inline work.txt\ndata %d\n%s\n", len(body), body)
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir, cmd.Env, cmd.Stdin = d.Workspace, d.Env, strings.NewReader(stream.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		d.t.Fatalf("git fast-import of %d commits: %v\n%s", n, err, out)
+	}
+	line := strings.Fields(d.Git("rev-list", "--reverse", base+".."+ref))
+	if len(line) != n {
+		d.t.Fatalf("the issue's branch holds %d commits over its base, want the %d made", len(line), n)
+	}
+	return line
 }
 
 // Write writes a file under dir.

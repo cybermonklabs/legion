@@ -11,7 +11,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -208,7 +207,7 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 				for _, name := range []string{"old-merge", "abandoned-wip"} {
 					d.Write(side, name+".txt", name+"\n")
 					d.Run(side, "git", "add", name+".txt")
-					d.RunBefore(side, "git", "commit", "--quiet", "-m", name)
+					d.Run(side, "git", "commit", "--quiet", "-m", name)
 					d.Run(side, "git", "push", "--quiet", "origin", "HEAD:refs/heads/"+name)
 				}
 			},
@@ -284,43 +283,13 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 	}
 }
 
-// commitLine makes n commits on the issue's own branch with one git fast-import, each adding a
-// file of its own, and returns their ids, oldest first: a line as long as a test needs, made in
-// one process rather than in one jj command for each commit.
-func commitLine(t *testing.T, d *rescuetest.Disk, n int) []string {
-	t.Helper()
-	ref := "refs/heads/" + d.Branch
-	base := d.Git("rev-parse", ref)
-	now := time.Now().Unix()
-	var stream strings.Builder
-	for i := 1; i <= n; i++ {
-		message := fmt.Sprintf("work %d of the issue's own line\n", i)
-		body := fmt.Sprintf("work %d\n", i)
-		fmt.Fprintf(&stream, "commit %s\nmark :%d\ncommitter Legion Test <test@example.invalid> %d +0000\ndata %d\n%s", ref, i, now, len(message), message)
-		if i == 1 {
-			fmt.Fprintf(&stream, "from %s\n", base)
-		}
-		fmt.Fprintf(&stream, "M 100644 inline work-%03d.txt\ndata %d\n%s\n", i, len(body), body)
-	}
-	cmd := exec.Command("git", "fast-import", "--quiet")
-	cmd.Dir, cmd.Env, cmd.Stdin = d.Workspace, d.Env, strings.NewReader(stream.String())
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git fast-import of %d commits: %v\n%s", n, err, out)
-	}
-	line := strings.Fields(d.Git("rev-list", "--reverse", base+".."+ref))
-	if len(line) != n {
-		t.Fatalf("the issue's branch holds %d commits over its base, want the %d made", len(line), n)
-	}
-	return line
-}
-
 // A rescue of a long line of work is told in a summary that Dispatch takes in one post, and the
 // message links the full list. 300 commits on the issue's own line reach the remote's one rescue
 // branch under the rescue's own commit, so the check pushed 301. The message names the branch,
 // that count and the link, and the document it links lists every one of the 301.
 func TestPodUpdateTellsTheIssueOfALongRescueInASummaryThatLinksTheFullList(t *testing.T) {
 	d := rescuetest.New(t, podUpdateIssue)
-	line := commitLine(t, d, 300)
+	line := d.CommitLine(300, func(i int) string { return fmt.Sprintf("work %d of the issue's own line", i) })
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
 	rig.rescueOn(d)
 	rig.answeredRound(claim.RoleImplementer)

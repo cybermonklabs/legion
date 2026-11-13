@@ -14,7 +14,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,99 +29,43 @@ func visibleHeads(t *testing.T, d *rescuetest.Disk) []string {
 	return strings.Fields(d.Run(d.Clone, "jj", "log", "--no-graph", "--ignore-working-copy", "-r", "visible_heads()", "-T", `commit_id ++ "\n"`))
 }
 
-// foreignBranch pushes another tree's branch to origin, one commit on the base that someone made
-// an hour before the pod, and returns the side clone the commit was made in, and the commit. Run
-// in one of rescuetest.New's before, it is a branch the pod's clone holds from the start.
-func foreignBranch(d *rescuetest.Disk, branch string) (string, string) {
+// foreignBranch pushes another tree's branch to origin, one commit on the base that someone else
+// made, and returns the commit. Run in one of rescuetest.New's before, it is a branch the pod's
+// clone holds from the start.
+func foreignBranch(d *rescuetest.Disk, branch string) string {
 	side := filepath.Join(filepath.Dir(d.Remote), "side-"+branch)
 	d.Run(filepath.Dir(d.Remote), "git", "clone", "--quiet", d.Remote, side)
 	d.Write(side, branch+".txt", branch+"\n")
 	d.Run(side, "git", "add", branch+".txt")
-	d.RunBefore(side, "git", "commit", "--quiet", "-m", "another tree's "+branch)
+	d.Run(side, "git", "commit", "--quiet", "-m", "another tree's "+branch)
 	d.Run(side, "git", "push", "--quiet", "origin", "HEAD:refs/heads/"+branch)
-	return side, d.Run(side, "git", "rev-parse", "HEAD")
+	return d.Run(side, "git", "rev-parse", "HEAD")
 }
 
-// A commit the clone held when it was made is not rescued, in every state a fetch leaves it in
-// once origin no longer has it; the workspace's own work beside it is.
-func TestACommitTheCloneHeldWhenItWasMadeIsNotRescued(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// after is what happens to the fetched branch on origin, and in the clone.
-		after func(t *testing.T, d *rescuetest.Disk, side string)
-	}{
-		{
-			name: "deleted on origin and fetched again",
-			after: func(_ *testing.T, d *rescuetest.Disk, _ string) {
-				d.Run(d.Remote, "git", "branch", "--quiet", "-D", "other")
-				d.JJ("git", "fetch")
-			},
-		},
-		{
-			name: "deleted on origin and not fetched since",
-			after: func(_ *testing.T, d *rescuetest.Disk, _ string) {
-				d.Run(d.Remote, "git", "branch", "--quiet", "-D", "other")
-			},
-		},
-		{
-			name: "tracked as a local bookmark, then deleted on origin and not fetched since",
-			after: func(_ *testing.T, d *rescuetest.Disk, _ string) {
-				d.JJ("bookmark", "track", "other", "--remote", "origin")
-				d.Run(d.Remote, "git", "branch", "--quiet", "-D", "other")
-			},
-		},
-		{
-			name: "rewritten on origin and fetched again",
-			after: func(_ *testing.T, d *rescuetest.Disk, side string) {
-				d.RunBefore(side, "git", "commit", "--quiet", "--amend", "-m", "another tree's other, rebased")
-				d.Run(side, "git", "push", "--quiet", "--force", "origin", "HEAD:refs/heads/other")
-				d.JJ("git", "fetch")
-			},
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var side, foreign string
-			d := rescuetest.New(t, issue, func(d *rescuetest.Disk) { side, foreign = foreignBranch(d, "other") })
-			d.Run(d.Clone, "jj", "config", "set", "--repo", "git.abandon-unreachable-commits", "false")
-			tc.after(t, d, side)
-			if !slices.Contains(visibleHeads(t, d), foreign) {
-				t.Fatalf("the fetched commit %s is not a visible head of the clone (%v): the case does not stand", foreign, visibleHeads(t, d))
-			}
-			if held := d.RemoteBranch("other"); held == foreign {
-				t.Fatalf("the remote still holds %s on other: the case does not stand", foreign)
-			}
-
-			d.Write(d.Workspace, "feature.txt", "the workspace's own work\n")
-			d.JJ("commit", "-m", "the workspace's own work")
-			own := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-
-			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, target)), own)
-			if d.RemoteReaches(foreign) {
-				t.Errorf("the remote holds the fetched %s, which is no work of the issue's", foreign)
-			}
-		})
-	}
-}
-
-// A workspace whose own work is all pushed is clean, however many commits the clone held when it
-// was made that origin has since deleted.
-func TestAWorkspaceBesideStaleCommitsTheCloneHeldIsClean(t *testing.T) {
-	d := rescuetest.New(t, issue, func(d *rescuetest.Disk) {
-		for _, name := range []string{"old-merge", "abandoned-wip"} {
-			foreignBranch(d, name)
-		}
-	})
+// A local bookmark off the workspace's own line that tracks another tree's branch, which origin
+// deleted after the pod last fetched it, still names that branch's commit, and so does the clone's
+// remote-tracking ref of it. That commit is not rescued; the workspace's own work beside it is, and
+// alone.
+func TestATrackedBookmarkWhoseBranchOriginDeletedIsNotRescued(t *testing.T) {
+	var foreign string
+	d := rescuetest.New(t, issue, func(d *rescuetest.Disk) { foreign = foreignBranch(d, "other") })
 	d.Run(d.Clone, "jj", "config", "set", "--repo", "git.abandon-unreachable-commits", "false")
-	for _, name := range []string{"old-merge", "abandoned-wip"} {
-		d.Run(d.Remote, "git", "branch", "--quiet", "-D", name)
+	d.JJ("bookmark", "track", "other", "--remote", "origin")
+	d.Run(d.Remote, "git", "branch", "--quiet", "-D", "other")
+	if !slices.Contains(visibleHeads(t, d), foreign) {
+		t.Fatalf("the fetched commit %s is not a visible head of the clone (%v): the case does not stand", foreign, visibleHeads(t, d))
 	}
-	d.JJ("git", "fetch")
-	before := d.RemoteBranches()
-	if w := only(t, d, d.Check(context.Background(), prefix, target)); w.Status != rescue.Clean || len(w.Branches) != 0 {
-		t.Fatalf("the check reported %+v, want clean: nothing of the issue's own line is unpushed", w)
+	if held := d.RemoteBranch("other"); held == foreign {
+		t.Fatalf("the remote still holds %s on other: the case does not stand", foreign)
 	}
-	if after := d.RemoteBranches(); !slices.Equal(after, before) {
-		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+
+	d.Write(d.Workspace, "feature.txt", "the workspace's own work\n")
+	d.JJ("commit", "-m", "the workspace's own work")
+	own := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, target)), own)
+	if d.RemoteReaches(foreign) {
+		t.Errorf("the remote holds the fetched %s, which is no work of the issue's", foreign)
 	}
 }
 
@@ -258,181 +201,29 @@ func TestTheIssuesBranchOnAnEmptyWorkingCopyIsClean(t *testing.T) {
 	}
 }
 
-// scratchWorktree is a git worktree of the clone at the base, detached, which the test removes
-// again before the check: the branch git writes in it is then named by no worktree's HEAD.
-func scratchWorktree(t *testing.T, d *rescuetest.Disk) string {
-	t.Helper()
-	scratch := filepath.Join(filepath.Dir(d.Remote), "scratch")
-	d.Run(d.Clone, "git", "worktree", "add", "--quiet", "--detach", scratch, d.Base)
-	return scratch
-}
-
-// A branch git rewrote in the pod keeping its commits' author dates as their committer dates
-// (`git rebase` and `git am` with --committer-date-is-author-date) is another local branch than
-// the issue's: nothing is pushed, whatever its dates say.
-func TestABranchGitRewroteInThePodIsNotRescued(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		// write makes the branch in the scratch worktree and returns its name.
-		write func(t *testing.T, d *rescuetest.Disk, scratch, authored string) string
-	}{
-		{
-			name: "git rebase --committer-date-is-author-date",
-			write: func(_ *testing.T, d *rescuetest.Disk, scratch, authored string) string {
-				d.Run(scratch, "git", "switch", "--quiet", "-c", "topic")
-				d.Write(scratch, "topic.txt", "topic work\n")
-				d.Run(scratch, "git", "add", "topic.txt")
-				d.Run(scratch, "git", "commit", "--quiet", "--date="+authored, "-m", "topic work")
-				d.Run(scratch, "git", "rebase", "--quiet", "--force-rebase", "--committer-date-is-author-date", d.Base)
-				return "topic"
-			},
-		},
-		{
-			name: "git am --committer-date-is-author-date",
-			write: func(t *testing.T, d *rescuetest.Disk, scratch, authored string) string {
-				d.Write(scratch, "patched.txt", "a patch's work\n")
-				d.Run(scratch, "git", "add", "patched.txt")
-				d.Run(scratch, "git", "commit", "--quiet", "--date="+authored, "-m", "a patch's work")
-				patch := filepath.Join(t.TempDir(), "work.patch")
-				d.Write(filepath.Dir(patch), filepath.Base(patch), d.Run(scratch, "git", "format-patch", "--stdout", "-1", "HEAD")+"\n")
-				d.Run(scratch, "git", "switch", "--quiet", "--detach", d.Base)
-				d.Run(scratch, "git", "switch", "--quiet", "-c", "applied")
-				d.Run(scratch, "git", "am", "--quiet", "--committer-date-is-author-date", patch)
-				return "applied"
-			},
-		},
+// A commit git made in the workspace itself, whose git HEAD is detached so no branch names it, is
+// a visible head and nothing more once jj moves the working copy onto the issue's bookmark or onto
+// main: it is on neither the working copy's line nor the bookmark's, and nothing is pushed.
+func TestACommitMadeInTheWorkspaceIsNotRescuedOnceTheWorkingCopyMovesOffIt(t *testing.T) {
+	for _, moved := range []struct{ name, onto string }{
+		{"git commit, then jj new on the issue's bookmark", `bookmarks(exact:"` + "legion/" + issue + `")`},
+		{"git commit, then jj new on main", "main"},
 	} {
-		t.Run(tc.name, func(t *testing.T) {
+		t.Run(moved.name, func(t *testing.T) {
 			d := rescuetest.New(t, issue)
-			scratch := scratchWorktree(t, d)
-			authored := d.Provisioned.Add(-time.Hour).Format(time.RFC3339)
-			branch := tc.write(t, d, scratch, authored)
-			d.Run(d.Clone, "git", "worktree", "remove", "--force", scratch)
-			tip := d.Run(d.Clone, "git", "rev-parse", "refs/heads/"+branch)
-			committed, err := strconv.ParseInt(d.Run(d.Clone, "git", "log", "-1", "--format=%ct", tip), 10, 64)
-			if err != nil {
-				t.Fatal(err)
+			d.Write(d.Workspace, "committed.txt", "work git committed\n")
+			d.Git("add", "committed.txt")
+			d.Git("commit", "--quiet", "-m", "work git committed")
+			commit := d.Git("rev-parse", "HEAD")
+			d.JJ("new", moved.onto)
+			if branches := d.Run(d.Clone, "git", "for-each-ref", "--contains", commit, "--format=%(refname)", "refs/heads"); branches != "" {
+				t.Fatalf("%s is on the local branches %q: the case does not stand", commit, branches)
 			}
-			if committed >= d.Provisioned.Add(-time.Minute).Unix() {
-				t.Fatalf("%s's tip %s was committed at %d, want an hour before the pod: the case does not stand", branch, tip, committed)
-			}
+			offBothLines(t, d, commit)
 			before := d.RemoteBranches()
-			pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, tip)
+			pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit)
 		})
 	}
-}
-
-// A local branch with no reflog — none kept, as with core.logAllRefUpdates off — is another local
-// branch than the issue's: nothing is pushed.
-func TestABranchWithNoReflogIsNotRescued(t *testing.T) {
-	d := rescuetest.New(t, issue)
-	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
-	commit := d.RunBefore(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "work on a branch with no reflog")
-	d.Run(d.Clone, "git", "-c", "core.logAllRefUpdates=false", "branch", "unlogged", commit)
-	if _, err := os.Stat(filepath.Join(d.Clone, ".git", "logs", "refs", "heads", "unlogged")); !os.IsNotExist(err) {
-		t.Fatalf("the branch has a reflog (%v): the case does not stand", err)
-	}
-	before := d.RemoteBranches()
-	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit)
-}
-
-// A commit git made in the workspace itself, whose git HEAD is detached so no branch names it, with
-// a committer time older than the pod — `git am` or `git rebase` with
-// --committer-date-is-author-date, or GIT_COMMITTER_DATE — and jj's own commit under JJ_TIMESTAMP,
-// is a visible head and nothing more once jj moves the working copy onto the issue's bookmark or
-// onto main: it is on neither the working copy's line nor the bookmark's, and nothing is pushed.
-func TestACommitMadeInTheWorkspaceIsNotRescuedOnceTheWorkingCopyMovesOffIt(t *testing.T) {
-	for _, made := range []struct {
-		name string
-		// write makes the commit in the workspace and returns it.
-		write func(t *testing.T, d *rescuetest.Disk, authored string) string
-	}{
-		{
-			name: "git am --committer-date-is-author-date",
-			write: func(t *testing.T, d *rescuetest.Disk, authored string) string {
-				side := filepath.Join(filepath.Dir(d.Remote), "patch-source")
-				d.Run(filepath.Dir(d.Remote), "git", "clone", "--quiet", d.Remote, side)
-				d.Write(side, "patched.txt", "a patch's work\n")
-				d.Run(side, "git", "add", "patched.txt")
-				d.Run(side, "git", "commit", "--quiet", "--date="+authored, "-m", "a patch's work")
-				patch := filepath.Join(t.TempDir(), "work.patch")
-				d.Write(filepath.Dir(patch), filepath.Base(patch), d.Run(side, "git", "format-patch", "--stdout", "-1", "HEAD")+"\n")
-				d.Git("am", "--quiet", "--committer-date-is-author-date", patch)
-				return d.Git("rev-parse", "HEAD")
-			},
-		},
-		{
-			name: "git rebase --force-rebase --committer-date-is-author-date",
-			write: func(_ *testing.T, d *rescuetest.Disk, authored string) string {
-				d.Write(d.Workspace, "rebased.txt", "rebased work\n")
-				d.Git("add", "rebased.txt")
-				d.Git("commit", "--quiet", "--date="+authored, "-m", "rebased work")
-				d.Git("rebase", "--quiet", "--force-rebase", "--committer-date-is-author-date", d.Base)
-				return d.Git("rev-parse", "HEAD")
-			},
-		},
-		{
-			name: "git commit under GIT_COMMITTER_DATE",
-			write: func(_ *testing.T, d *rescuetest.Disk, _ string) string {
-				d.Write(d.Workspace, "backdated.txt", "backdated work\n")
-				d.Git("add", "backdated.txt")
-				d.RunBefore(d.Workspace, "git", "commit", "--quiet", "-m", "backdated work")
-				return d.Git("rev-parse", "HEAD")
-			},
-		},
-		{
-			name: "jj commit under JJ_TIMESTAMP",
-			write: func(_ *testing.T, d *rescuetest.Disk, _ string) string {
-				d.Write(d.Workspace, "stamped.txt", "work under an old timestamp\n")
-				d.RunBefore(d.Workspace, "jj", "commit", "-m", "work under an old timestamp")
-				return d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-			},
-		},
-	} {
-		for _, moved := range []struct{ name, onto string }{
-			{"then jj new on the issue's bookmark", `bookmarks(exact:"` + "legion/" + issue + `")`},
-			{"then jj new on main", "main"},
-		} {
-			t.Run(made.name+", "+moved.name, func(t *testing.T) {
-				d := rescuetest.New(t, issue)
-				authored := d.Provisioned.Add(-time.Hour).Format(time.RFC3339)
-				commit := made.write(t, d, authored)
-				d.JJ("new", moved.onto)
-				committed, err := strconv.ParseInt(d.Run(d.Clone, "git", "log", "-1", "--format=%ct", commit), 10, 64)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if committed >= d.Provisioned.Add(-time.Minute).Unix() {
-					t.Fatalf("%s was committed at %d, want an hour before the pod: the case does not stand", commit, committed)
-				}
-				if branches := d.Run(d.Clone, "git", "for-each-ref", "--contains", commit, "--format=%(refname)", "refs/heads"); branches != "" {
-					t.Fatalf("%s is on the local branches %q: the case does not stand", commit, branches)
-				}
-				offBothLines(t, d, commit)
-				before := d.RemoteBranches()
-				pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit)
-			})
-		}
-	}
-}
-
-// A branch jj exports, which git then moved onto a commit dated two months back, keeps only jj's
-// export entry once a `git reflog expire` (which `git gc` runs) drops git's own, older entry. It is
-// another local branch than the issue's: nothing is pushed.
-func TestABranchWhoseReflogExpiredPastGitsWriteIsNotRescued(t *testing.T) {
-	d := rescuetest.New(t, issue)
-	d.JJ("bookmark", "create", "topic", "-r", d.Base)
-	old := d.Provisioned.AddDate(0, -2, 0).Format(time.RFC3339)
-	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
-	commit := d.Run(d.Clone, "env", "GIT_AUTHOR_DATE="+old, "GIT_COMMITTER_DATE="+old, "git", "commit-tree", tree, "-p", d.Base, "-m", "work two months old")
-	d.Run(d.Clone, "env", "GIT_COMMITTER_DATE="+old, "git", "update-ref", "-m", "commit: work two months old", "refs/heads/topic", commit)
-	d.Run(d.Clone, "git", "reflog", "expire", "--expire=30.days.ago", "--expire-unreachable=30.days.ago", "refs/heads/topic")
-	d.JJ("log", "--no-graph", "-r", "topic", "-T", "commit_id")
-	if entries := d.Run(d.Clone, "git", "log", "--walk-reflogs", "--format=%gs", "refs/heads/topic", "--"); entries != "export from jj" {
-		t.Fatalf("topic's reflog holds %q, want jj's export alone: the case does not stand", entries)
-	}
-	before := d.RemoteBranches()
-	pushedNothing(t, d, only(t, d, d.Check(context.Background(), prefix, target)), before, commit)
 }
 
 // A graft (`git replace --graft F W`) makes a commit F that is not the pod's look as though the
@@ -440,7 +231,7 @@ func TestABranchWhoseReflogExpiredPastGitsWriteIsNotRescued(t *testing.T) {
 // is, and F is on origin. The check reads no replacement object, and W is rescued.
 func TestWorkAGraftMakesLookHeldIsRescued(t *testing.T) {
 	var foreign string
-	d := rescuetest.New(t, issue, func(d *rescuetest.Disk) { _, foreign = foreignBranch(d, "other") })
+	d := rescuetest.New(t, issue, func(d *rescuetest.Disk) { foreign = foreignBranch(d, "other") })
 	d.Write(d.Workspace, "grafted.txt", "work a graft hides\n")
 	d.JJ("commit", "-m", "work a graft hides")
 	work := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")

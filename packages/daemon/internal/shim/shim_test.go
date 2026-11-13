@@ -1312,7 +1312,10 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 // which takes minutes for 8,000, and the answer is the same frame either way.
 func TestRescueUnpushedAnswersAReportLongerThanALineInChunksTheDaemonReassembles(t *testing.T) {
 	d := rescuetest.New(t, "WIDGETS-42")
-	line := longLine(t, d, 8000)
+	line := d.CommitLine(8000, func(i int) string {
+		subject := fmt.Sprintf("work %d of the issue's own line, ", i)
+		return subject + strings.Repeat("x", 200-len(subject))
+	})
 	const target = "legion/WIDGETS-42-rescue"
 	// A fetch into the remote, rather than a push from the clone: a pod's git runs the pre-push
 	// hook, and with it the leak guard, on every push.
@@ -1364,37 +1367,6 @@ func TestRescueUnpushedAnswersAReportLongerThanALineInChunksTheDaemonReassembles
 		t.Fatalf("the report carries %d commits, want the %d the branch holds; the first %d are as it holds them, then %q, want %q",
 			len(ids), len(want), same, ids[same:min(same+3, len(ids))], want[same:min(same+3, len(want))])
 	}
-}
-
-// longLine makes n commits on the issue's own branch with one git fast-import, each changing one
-// file and each with a subject of 200 bytes, and returns their ids, oldest first: a line as long
-// as a test needs, made in one process rather than in one command for each commit.
-func longLine(t *testing.T, d *rescuetest.Disk, n int) []string {
-	t.Helper()
-	ref := "refs/heads/" + d.Branch
-	base := d.Git("rev-parse", ref)
-	now := time.Now().Unix()
-	var stream strings.Builder
-	for i := 1; i <= n; i++ {
-		subject := fmt.Sprintf("work %d of the issue's own line, ", i)
-		message := subject + strings.Repeat("x", 200-len(subject)) + "\n"
-		body := fmt.Sprintf("work %d\n", i)
-		fmt.Fprintf(&stream, "commit %s\nmark :%d\ncommitter Legion Test <test@example.invalid> %d +0000\ndata %d\n%s", ref, i, now, len(message), message)
-		if i == 1 {
-			fmt.Fprintf(&stream, "from %s\n", base)
-		}
-		fmt.Fprintf(&stream, "M 100644 inline work.txt\ndata %d\n%s\n", len(body), body)
-	}
-	cmd := exec.Command("git", "fast-import", "--quiet")
-	cmd.Dir, cmd.Env, cmd.Stdin = d.Workspace, d.Env, strings.NewReader(stream.String())
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("git fast-import of %d commits: %v\n%s", n, err, out)
-	}
-	line := strings.Fields(d.Git("rev-list", "--reverse", base+".."+ref))
-	if len(line) != n {
-		t.Fatalf("the issue's branch holds %d commits over its base, want the %d made", len(line), n)
-	}
-	return line
 }
 
 // No runtime tells a pane or a pod LEGION_JJ_PATH (internal/api/version.go, the LEGION-631 entry;
