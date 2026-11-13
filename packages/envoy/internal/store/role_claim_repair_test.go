@@ -175,7 +175,8 @@ func (rig *repairRig) repair() RoleClaimRepairReport {
 // register is one registration of sessionID by the process instance, as POST
 // /v1/interests/subscribe makes it (cmd/listener's subscribeHandler), at the registry clock's
 // current moment: the interest row planned and written for topics (PlanInterest, UpsertPlanned),
-// then the renewal of the session's role claims (RenewRoleClaims). It returns the row it wrote.
+// then the renewal of the session's role claims (RenewRoleClaims) over the row that write
+// returned. It returns that row.
 func (rig *repairRig) register(sessionID, instance string, topics ...string) Interest {
 	rig.t.Helper()
 	ctx := context.Background()
@@ -187,7 +188,7 @@ func (rig *repairRig) register(sessionID, instance string, topics ...string) Int
 	if err != nil {
 		rig.t.Fatalf("write %s's registration: %v", sessionID, err)
 	}
-	if err := rig.reg.RenewRoleClaims(ctx, sessionID, instance); err != nil {
+	if _, err := rig.reg.RenewRoleClaims(ctx, sessionID, instance, row); err != nil {
 		rig.t.Fatalf("renew %s's role claims: %v", sessionID, err)
 	}
 	return row

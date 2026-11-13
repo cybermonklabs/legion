@@ -2555,10 +2555,9 @@ func (d *listenerDeps) registerPass(
 //
 // The renewal is the one thing here that cannot fail the registration. It runs last, once the
 // records this route owns are written, and whatever it could not do is logged and passed over: a
-// claim view that cannot answer yet (store.ErrRoleViewNotReady, which every listener leaves
-// behind it for a while after a restart), a bucket call that did not answer, a renewal that lost
-// its compare-and-swap. A heartbeat refused for any of those would take down the very sessions
-// whose claims it keeps alive.
+// bucket call that did not answer, a claim record this build cannot read, a renewal that lost its
+// compare-and-swap. A heartbeat refused for any of those would take down the very sessions whose
+// claims it keeps alive.
 func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2701,24 +2700,27 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// standing at a deploy ages out for nobody. The write is the registration's last, so
 		// a renewal never costs the records above it.
 		//
-		// What it renews is decided on the claims alone, and on no topic list: a claim a
+		// The roles it weighs are the role topics of the stored row this registration's own
+		// UpsertPlanned returned - the bucket's row, read by that write and merged with the
+		// plan, so no cache that has not yet followed the bucket hides one - and the roles the
+		// role claim copy names for the session, and each of them is renewed only as its own
+		// claim record, read here, says (store.Registry.RenewRoleClaims). A claim the copy lost
+		// is renewed from the row, and one the copy names that the store gives another session
+		// or nobody is left alone. While the copy cannot answer, the row's roles are the set,
+		// which is no failure. Nothing on the row decides a renewal on its own: a claim a
 		// hand-back could not free carries that hand-back as a mark of its own
 		// (store.RoleClaim.HandedBack, written by POST /v1/interests/unsubscribe), and no
 		// registration renews a marked claim, which the role claim reaper then frees at its
-		// first pass past the live window. So this registration's topics - the record it just
-		// wrote, or the absence of a list on the request - say nothing about which roles it
-		// renews.
-		if err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID)); err != nil {
-			switch {
-			case errors.Is(err, store.ErrRoleViewNotReady):
-				logger.Info("listener subscribe renewed no role claim: the role claim view cannot answer yet",
-					slog.String("session_id", body.SessionID),
-					slog.String("error", err.Error()))
-			default:
-				logger.Warn("listener subscribe left a role claim unrenewed",
-					slog.String("session_id", body.SessionID),
-					slog.String("error", err.Error()))
-			}
+		// first pass past the live window.
+		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row)
+		logger.LogEvent(slog.LevelDebug, "listener subscribe weighed the session's role claims",
+			slog.String("session_id", body.SessionID),
+			slog.Any("roles", renewal.Set),
+			slog.Any("renewed", renewal.Renewed))
+		if err != nil {
+			logger.Warn("listener subscribe left a role claim unrenewed",
+				slog.String("session_id", body.SessionID),
+				slog.String("error", err.Error()))
 		}
 		warningCtx, cancelWarnings := context.WithTimeout(ctx, unwiredRepositoryWarningTimeout)
 		defer cancelWarnings()

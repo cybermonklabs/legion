@@ -9,6 +9,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -50,11 +51,11 @@ func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 // seed stores claim as role's record, leaves role's lane topic on its holder's interest record,
 // and waits for the role claim view to give its holder that role.
 //
-// The view is where the renewal takes the roles it renews from, so a case that did not wait
-// would be asking whether a renewal happened before the registration could know of the claim.
-// The lane topic is on the record because a claim puts it there (POST /v1/roles/set writes the
-// holder's topic), and the renewal renews a role only while the registering session's record
-// still names it: a claim seeded without the record its claim would have left is a holder that
+// The renewal weighs the roles of the row the registration stored and the roles the view names,
+// so a case that did not wait would be asking whether a renewal happened before the registration
+// could know of the claim. The lane topic is on the record because a claim puts it there (POST
+// /v1/roles/set writes the holder's topic), and the registration's write keeps it in the row it
+// hands the renewal; a claim seeded without the record its claim would have left is a holder that
 // has handed the role back, which is the case of its own below.
 func (r *roleClaimRenewalRig) seed(role string, claim store.RoleClaim) store.RoleClaim {
 	r.t.Helper()
@@ -186,10 +187,11 @@ func TestARegistrationFromAnotherProcessRenewsNothing(t *testing.T) {
 }
 
 // A listener leaves its role claim view unable to answer for a while after a restart, and every
-// session's heartbeat arrives in that window. The registration is answered 200 all the same, with
-// the renewal passed over and said to be passed over: a heartbeat refused for a view still
-// refilling would take down the sessions it exists to keep.
-func TestARegistrationWhoseRoleClaimViewCannotAnswerStillRegisters(t *testing.T) {
+// session's heartbeat arrives in that window. The registration is answered 200 and renews the
+// claim all the same: the role's lane topic is on the row the registration's own write stored,
+// the claim record names the registering process, and a view that cannot answer is no failure
+// of the renewal, so nothing says the renewal was passed over.
+func TestARegistrationWhoseRoleClaimViewCannotAnswerRenewsTheClaimItsRowNames(t *testing.T) {
 	const (
 		role      = "legion-controller"
 		sessionID = "ses_refilling_view"
@@ -197,14 +199,18 @@ func TestARegistrationWhoseRoleClaimViewCannotAnswerStillRegisters(t *testing.T)
 	rig := newRoleClaimRenewalRig(t)
 	seeded := rig.seed(role, lapsedClaim(sessionID, holdingProcess))
 	refuseRoleClaimView(t, rig.registry)
+	if _, err := rig.registry.RolesHeldBy(sessionID); !errors.Is(err, store.ErrRoleViewNotReady) {
+		t.Fatalf("RolesHeldBy(%s) answered %v, want ErrRoleViewNotReady: the case is a view that cannot answer", sessionID, err)
+	}
 
 	rig.register(sessionID, holdingProcess)
 
-	if stored := rig.stored(role); stored != seeded {
-		t.Fatalf("the claim is now %+v, want it untouched at %+v: no view could say which roles the session holds", stored, seeded)
+	stored := rig.stored(role)
+	if stored.RenewedAt <= seeded.RenewedAt || stored.HolderSessionID != sessionID || stored.ClientInstanceID != holdingProcess {
+		t.Fatalf("the claim is now %+v, want %+v renewed by the registration: its row names the role", stored, seeded)
 	}
-	if !strings.Contains(rig.logs.String(), "the role claim view cannot answer yet") {
-		t.Fatalf("the route logged nothing of the renewal it could not make:\n%s", rig.logs.String())
+	if strings.Contains(rig.logs.String(), "left a role claim unrenewed") {
+		t.Fatalf("the route logged a renewal failure for a view that cannot answer:\n%s", rig.logs.String())
 	}
 }
 

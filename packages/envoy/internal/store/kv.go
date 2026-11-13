@@ -50,6 +50,9 @@ type Registry struct {
 	holdersMu   sync.RWMutex
 	roleHolders kvwatch.Copy[string]
 	roleRepair  roleClaimRepair
+	// renewalFailures is this registry's record of the role claim renewals that failed, by role
+	// and holder session (RenewalFailedWithin), under a mutex of its own (role_renewal.go).
+	renewalFailures renewalFailures
 }
 
 // roleClaimRepairInterval is how long after each whole read of the role claims that completed the

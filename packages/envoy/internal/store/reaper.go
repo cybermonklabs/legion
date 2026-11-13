@@ -250,7 +250,13 @@ type RoleClaimSweep struct {
 // pass's one scan: the release is handed the claim that scan carried
 // (releaseReadExpiredRoleClaim) rather than reading it again, because a pass runs over the whole
 // bucket on every interval.
+//
+// Each pass also prunes this registry's record of the renewals that failed
+// (pruneRenewalFailures) at liveWindow, before its scan, so a pass whose scan fails prunes it
+// too: the reaper is the one caller handed the deployment's live window, and a failure older
+// than that window answers no reader of it (RenewalFailedWithin).
 func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool, sessionTTL, liveWindow time.Duration) (RoleClaimSweep, error) {
+	r.pruneRenewalFailures(liveWindow)
 	claims, err := r.roleClaimsUntil(ctx)
 	if err != nil {
 		return RoleClaimSweep{}, err

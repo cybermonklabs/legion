@@ -273,7 +273,7 @@ func TestAReleaseThatRacesItsOwnHoldersRenewalFreesTheClaim(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 			racing := raceReleaseWith(t, reg, role, 1, func() {
-				if err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
+				if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
 					t.Errorf("the holder's renewal that wins the race: %v", err)
 				}
 			})
@@ -344,7 +344,7 @@ func TestAReleaseLeavesAClaimRenewedUnderEveryDeleteStanding(t *testing.T) {
 	)
 	reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 	racing := raceReleaseWith(t, reg, role, roleClaimReleaseAttempts, func() {
-		if err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
+		if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
 			t.Errorf("the holder's renewal that wins the race: %v", err)
 		}
 	})
@@ -459,7 +459,7 @@ func TestAMarkThatRacesItsOwnHoldersRenewalLandsOnTheClaimThatStands(t *testing.
 	reg := releasableRoleClaim(t, role, holder, roleClaimInstance)
 	racing := &racingUpdateKeyValue{KeyValue: reg.roleKV.Legacy()}
 	racing.beforeFirstUpdate = func() {
-		if err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
+		if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
 			t.Errorf("the holder's renewal that wins the race: %v", err)
 		}
 	}
@@ -592,7 +592,7 @@ func TestAHandBackLeavesAClaimRenewedUnderEveryWriteUnmarked(t *testing.T) {
 		KeyValue:     reg.roleKV.Legacy(),
 		racedUpdates: roleClaimReleaseAttempts,
 		beforeUpdate: func() {
-			if err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
+			if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
 				t.Errorf("the holder's renewal that wins the race: %v", err)
 			}
 		},
@@ -650,7 +650,7 @@ func TestAReleaseThatRacesTheAdoptionOfAClaimNamingNoProcess(t *testing.T) {
 				t.Fatalf("the seeded claim names the process %q, want none: there is nothing to adopt", seeded.ClientInstanceID)
 			}
 			racing := raceReleaseWith(t, reg, role, 1, func() {
-				if err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
+				if _, err := reg.renewRoleClaim(context.Background(), role, holder, roleClaimInstance); err != nil {
 					t.Errorf("the registration that adopts the claim under the release: %v", err)
 				}
 			})

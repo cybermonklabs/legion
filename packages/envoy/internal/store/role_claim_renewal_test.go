@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -269,12 +270,13 @@ const roleClaimSecondInstance = "9b8a7c6d5e4f3a2b9b8a7c6d5e4f3a2b"
 // provenance: a renewal leaves it exactly as the claim that took the role left it.
 const roleClaimPredecessor = "ses_renewal_predecessor"
 
-// renewableRoleClaim opens a registry whose role claim view answers, since RenewRoleClaims takes
-// the roles it renews from that view, and gives holder role through the process instance names.
-// The claim is a soft one continuing a predecessor, so what a renewal leaves alone - the holder,
-// the moment the role was taken, and whom it was taken from - is all on the record to read back.
-// The returned advance moves the registry's clock that far past the claim, which is where every
-// renewal these cases make lands.
+// renewableRoleClaim opens a registry whose role claim view answers, since RenewRoleClaims weighs
+// the roles that view names beside the interest record it is given, and gives holder role through
+// the process instance names, which writes the role's lane topic into holder's interest record
+// too (SetRoleWithPrevious). The claim is a soft one continuing a predecessor, so what a renewal
+// leaves alone - the holder, the moment the role was taken, and whom it was taken from - is all
+// on the record to read back. The returned advance moves the registry's clock that far past the
+// claim, which is where every renewal these cases make lands.
 func renewableRoleClaim(t *testing.T, role, holder, instance string) (*Registry, func(time.Duration)) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
@@ -315,6 +317,28 @@ func storedRoleClaim(t *testing.T, reg *Registry, role string) RoleClaim {
 	return claim
 }
 
+// registeredRow is sessionID's interest record as the bucket holds it now, the row a
+// registration's own write returns and hands to RenewRoleClaims, and a row naming no topic for a
+// session the bucket holds no record for.
+func registeredRow(t *testing.T, reg *Registry, sessionID string) Interest {
+	t.Helper()
+	row, _, err := reg.RefreshAt(context.Background(), sessionID)
+	if errors.Is(err, natsgo.ErrKeyNotFound) {
+		return Interest{SessionID: sessionID}
+	}
+	if err != nil {
+		t.Fatalf("read %s's interest record: %v", sessionID, err)
+	}
+	return row
+}
+
+// renewRoleClaims is RenewRoleClaims over sessionID's stored interest record (registeredRow), the
+// row a registration's write of that same record returns.
+func renewRoleClaims(t *testing.T, reg *Registry, sessionID, instance string) (RoleRenewal, error) {
+	t.Helper()
+	return reg.RenewRoleClaims(context.Background(), sessionID, instance, registeredRow(t, reg, sessionID))
+}
+
 // A registration by the very process a claim names moves that claim's renewal to the moment it
 // registered, which is what makes RenewedAt the holder's heartbeat rather than the instant the
 // role was taken. Everything else on the record is the claim's own provenance and is left as the
@@ -330,7 +354,7 @@ func TestARenewalFromTheProcessTheClaimNamesMovesTheRenewalAndNothingElse(t *tes
 	claimed := storedRoleClaim(t, reg, role)
 	advance(beat)
 
-	if err := reg.RenewRoleClaims(context.Background(), holder, instance); err != nil {
+	if _, err := renewRoleClaims(t, reg, holder, instance); err != nil {
 		t.Fatalf("renew %s's role claims: %v", holder, err)
 	}
 
@@ -370,7 +394,7 @@ func TestTheFirstRenewalOfAClaimThatNamesNoProcessAdoptsItForThatProcess(t *test
 	}
 	advance(beat)
 
-	if err := reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance); err != nil {
+	if _, err := renewRoleClaims(t, reg, holder, roleClaimInstance); err != nil {
 		t.Fatalf("renew %s's role claims: %v", holder, err)
 	}
 
@@ -391,6 +415,8 @@ func TestTheFirstRenewalOfAClaimThatNamesNoProcessAdoptsItForThatProcess(t *test
 // that resumed the holder's session id registers under, not a claim naming a process when the
 // registration states none - an absent instance names no process, so it matches no claim that
 // names one and adopts none either - and not a claim of a session the registration is not for.
+// Each registration's row names the role's lane, so the role is in the renewal's set and its
+// claim record is what leaves it alone, and none of these is a failure to record.
 func TestARenewalMovesNoClaimTheRegisteringProcessDoesNotHold(t *testing.T) {
 	const (
 		role   = "legion-controller"
@@ -411,13 +437,19 @@ func TestARenewalMovesNoClaimTheRegisteringProcessDoesNotHold(t *testing.T) {
 			claimed := storedRoleClaim(t, reg, role)
 			advance(beat)
 
-			if err := reg.RenewRoleClaims(context.Background(), tc.session, tc.instance); err != nil {
+			row := Interest{SessionID: tc.session, Topics: []string{contracts.RoleTopicPrefix + role}}
+			renewal, err := reg.RenewRoleClaims(context.Background(), tc.session, tc.instance, row)
+			if err != nil {
 				t.Fatalf("a renewal by %s of process %q: %v; want it to pass the claim over, not fail", tc.session, tc.instance, err)
 			}
 
+			if !slices.Equal(renewal.Set, []string{role}) || len(renewal.Renewed) != 0 {
+				t.Fatalf("the renewal weighed %v and renewed %v, want %s weighed and nothing renewed", renewal.Set, renewal.Renewed, role)
+			}
 			if stored := storedRoleClaim(t, reg, role); stored != claimed {
 				t.Fatalf("the claim is now %+v, want it exactly as it stood, %+v", stored, claimed)
 			}
+			assertNoRenewalFailure(t, reg, role, tc.session)
 		})
 	}
 }
@@ -446,9 +478,10 @@ func TestARenewalThatLosesItsCompareAndSwapWritesNothingAndIsNotRetried(t *testi
 	}
 	reg.roleKV = bus.NewKeyValue(racing, reg.roleKV.WatchHandle(), reg.roleKV.Streams())
 
-	if err := reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance); err != nil {
+	if _, err := renewRoleClaims(t, reg, holder, roleClaimInstance); err != nil {
 		t.Fatalf("a renewal that lost its compare-and-swap: %v; want it dropped, not reported", err)
 	}
+	assertNoRenewalFailure(t, reg, role, holder)
 
 	if racing.updates != 1 {
 		t.Fatalf("the renewal made %d conditional updates, want exactly one: a lost renewal is never retried", racing.updates)
@@ -495,7 +528,7 @@ func TestNoRegistrationRenewsAClaimItsHolderHandedBack(t *testing.T) {
 
 	// The control: before the hand-back the holder's registration renews the claim.
 	advance(beat)
-	if err := reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance); err != nil {
+	if _, err := renewRoleClaims(t, reg, holder, roleClaimInstance); err != nil {
 		t.Fatalf("renew %s's role claims before the hand-back: %v", holder, err)
 	}
 	renewed := storedRoleClaim(t, reg, role)
@@ -515,13 +548,14 @@ func TestNoRegistrationRenewsAClaimItsHolderHandedBack(t *testing.T) {
 	for _, since := range []time.Duration{2 * beat, liveWindow, liveWindow + beat} {
 		advance(since)
 		for _, instance := range []string{roleClaimInstance, ""} {
-			if err := reg.RenewRoleClaims(context.Background(), holder, instance); err != nil {
+			if _, err := renewRoleClaims(t, reg, holder, instance); err != nil {
 				t.Fatalf("a registration %s after the hand-back by process %q: %v; want it to renew nothing, not fail", since, instance, err)
 			}
 			if stood := storedRoleClaim(t, reg, role); stood != marked {
 				t.Fatalf("the claim %s after the hand-back, registered by process %q, is %+v, want it exactly as the hand-back left it, %+v",
 					since, instance, stood, marked)
 			}
+			assertNoRenewalFailure(t, reg, role, holder)
 		}
 	}
 
@@ -549,7 +583,7 @@ func TestARegistrationThatStatesNoProcessRenewsTheClaimsThatNameNone(t *testing.
 	claimed := storedRoleClaim(t, reg, role)
 	advance(beat)
 
-	if err := reg.RenewRoleClaims(context.Background(), holder, ""); err != nil {
+	if _, err := renewRoleClaims(t, reg, holder, ""); err != nil {
 		t.Fatalf("renew %s's role claims from a registration stating no process: %v", holder, err)
 	}
 
@@ -583,7 +617,7 @@ func TestAHoldersRegistrationsKeepItsClaimRenewedWhileItRuns(t *testing.T) {
 
 	for since := beat; since < 2*liveWindow; since += beat {
 		advance(since)
-		if err := reg.RenewRoleClaims(context.Background(), holder, roleClaimInstance); err != nil {
+		if _, err := renewRoleClaims(t, reg, holder, roleClaimInstance); err != nil {
 			t.Fatalf("renew %s's role claims %s after the claim: %v", holder, since, err)
 		}
 		if renewed := storedRoleClaim(t, reg, role); renewed.RenewedAt != renewed.ClaimedAt+since.Milliseconds() {
