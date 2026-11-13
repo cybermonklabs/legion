@@ -1,6 +1,6 @@
 [
   {
-    "name": "formatted-body",
+    "name": "formatted-body ",
     "markdown": "# Deploy\n\nStop the **deploy** and run `make check` first.\n\n- one item\n- two\n",
     "latest": {
       "type": "doc",
@@ -355,7 +355,7 @@
   },
   {
     "name": "a-mermaid-block",
-    "markdown": "Before.\n\n```mermaid\ngraph TD\n  A --\u003e B\n```\n\nAfter.\n",
+    "markdown": "Before.\n\n```mermaid\ngraph TD\n  A --> B\n```\n\nAfter.\n",
     "latest": {
       "type": "doc",
       "content": [
@@ -376,7 +376,7 @@
           "content": [
             {
               "type": "text",
-              "text": "graph TD\n  A --\u003e B"
+              "text": "graph TD\n  A --> B"
             }
           ]
         },
@@ -411,7 +411,7 @@
           "content": [
             {
               "type": "text",
-              "text": "graph TD\n  A --\u003e B"
+              "text": "graph TD\n  A --> B"
             }
           ]
         },
@@ -557,7 +557,7 @@
   },
   {
     "name": "an-answered-decision",
-    "markdown": ":::ask{#q2 urgency=\"blocking\" multiple=\"false\" state=\"resolved\" answered_by=\"alice\" answered_at=\"2026-09-12T13:20:00Z\" selected=\"[\u0026#x22;REST\u0026#x22;]\" answer=\"Ship REST first.\"}\nWhich transport should we expose?\n\n* REST: matches the platform\n:::\n",
+    "markdown": ":::ask{#q2 urgency=\"blocking\" multiple=\"false\" state=\"resolved\" answered_by=\"alice\" answered_at=\"2026-09-12T13:20:00Z\" selected=\"[&#x22;REST&#x22;]\" answer=\"Ship REST first.\"}\nWhich transport should we expose?\n\n* REST: matches the platform\n:::\n",
     "latest": {
       "type": "doc",
       "content": [
@@ -1391,7 +1391,7 @@
   },
   {
     "name": "a-tag-shaped-run",
-    "markdown": "Use Array\u003cstring\u003e here\n",
+    "markdown": "Use Array<string> here\n",
     "latest": {
       "type": "doc",
       "content": [
@@ -1405,7 +1405,7 @@
             {
               "type": "html",
               "attrs": {
-                "value": "\u003cstring\u003e"
+                "value": "<string>"
               }
             },
             {
@@ -1429,7 +1429,7 @@
             {
               "type": "html",
               "attrs": {
-                "value": "\u003cstring\u003e"
+                "value": "<string>"
               }
             },
             {
