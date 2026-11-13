@@ -1161,7 +1161,7 @@ The merge carries a message the merger writes itself, `--subject '<pull request 
 `enqueuePullRequest` can pass no message, so on a merge-queue base whose setting reads `COMMIT_MESSAGES` the merger enqueues nothing and tells the architect, since only a person can change that setting.
 The merger's completion records its phase row and moves nothing; what closes the issue is the daemon's own reading of the merged pull request.
 The first boot of this release queues, once, a start for each merger that the `awaiting_merge` cutover left stopped, whose pod the idle release of a build before `legion-v20.5.0` took while its issue waited in `awaiting_merge`.
-That merger starts when the issue's admission slot and its tree's design gate allow it.
+That merger starts when its tree's design gate allows it, since `merging` holds no admission slot.
 A head that starts conflicting with its base (GitHub computes no merge ref for such a head and runs no checks on it at all) sends the issue back to `implementing` from `testing`, `reviewing`, `accepting`, `retro` or `merging` alike, and its architect is told with a `checks-red` notice.
 A red check sends nothing back from anywhere: the daemon names every check GitHub reported, with the conclusion GitHub gave it, in one message to the tree's architect, the worker of the issue's current phase and the implementer, and judges none of them.
 GitHub's own merge queue (`merge_group` trigger) is a repository setting Legion does not modify.

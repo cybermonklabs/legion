@@ -17,16 +17,17 @@ import (
 // cutoverMergerTold is the Dispatch message the cutover's repair posts on each issue whose merger
 // it owed a start (cutoverMergerRepair): the message dispatch://INFRA-3274/spec R2 asks for, which
 // says in plain words that the cutover left the merger stopped and owed the merger its merging
-// task. It says the daemon queued that task, not that it gave it: the start waits for the issue's
-// admission slot where the slot rule gives `merging` one (StartOrOwe), and the daemon's outbox
-// holds it while the tree's design gate is closed (the outbox's mergerWaitsForTheDesignGate), so
-// the boot may give the merger nothing yet.
+// task. It says the daemon queued that task, not that it gave it: the start takes the slot mark
+// the slot rule gives `merging` (StartOrOwe), which is none, since merging is past the issue's
+// review (record.KeepsSlot), so admission holds nothing of it; but the daemon's outbox holds it
+// while the tree's design gate is closed (the outbox's mergerWaitsForTheDesignGate), so the boot
+// may give the merger nothing yet.
 const cutoverMergerTold = "The cutover from a Legion build with the phase `awaiting_merge` left the merger of this issue stopped. " +
 	"The idle release stopped the pod of the merger while the issue waited for its merge. " +
 	"Nothing would start the merger again. " +
 	"The cutover owed the merger its merging task. " +
 	"At its boot, the daemon queued that task. " +
-	"The merger starts when the admission slot of this issue and the design gate of its tree allow it."
+	"The merger starts when the design gate of its tree allows it."
 
 // cutoverMergerRepair is the boot's one-time repair of the mergers the `awaiting_merge` cutover
 // left stopped (intake.CutoverMergerRepair, dispatch://INFRA-3274/spec R2). A build with that
@@ -91,11 +92,11 @@ const cutoverMergerTold = "The cutover from a Legion build with the phase `await
 // start that carries that entry. readyWorkerTask gives nothing to a claim holding a task or
 // covered by a queued start of its phase (queuedRowCovers). The silence repair reads no
 // suspended claim and no claim a queued start covers (unpromptedPhaseWorker). A later start
-// through StartOrOwe, while the owed start still waits for its slot, takes it out and writes its
-// own in its place (Store.EnqueueStart). It starts no other role. Once the fact commits, it logs
-// one line per merger with the slot mark of the queued start, and one line with the count and
-// each issue, zero included. It owes nothing without the daemon's pod records (Config.Pods),
-// since it cannot read a backstop without them.
+// through StartOrOwe, while the owed start is still queued and unleased (held by a closed design
+// gate, or not yet run), takes it out and writes its own in its place (Store.EnqueueStart). It
+// starts no other role. Once the fact commits, it logs one line per merger with the slot mark of
+// the queued start, and one line with the count and each issue, zero included. It owes nothing
+// without the daemon's pod records (Config.Pods), since it cannot read a backstop without them.
 func (e *Engine) cutoverMergerRepair(ctx context.Context, tx pgx.Tx, _ intake.CutoverMergerRepair) (intake.Result, error) {
 	owed := []string{}
 	if e.cfg.Pods != nil {

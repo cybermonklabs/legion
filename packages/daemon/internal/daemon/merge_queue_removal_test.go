@@ -108,8 +108,7 @@ const dequeueRetry = 20 * time.Millisecond
 // any of them. Each case then holds the count to the read executor's own lines (one per read), so
 // a read anything else made would fail it.
 //
-// Each case has an issue of its own, each issue its own tree root holding its admission slot, so
-// the nine share one daemon:
+// Each case has an issue of its own, each issue its own tree root, so the nine share one daemon:
 //
 //  1. The removal R1 is about: the issue in merging, the event at the head the record holds,
 //     GitHub answering open, the merger's pod released. GitHub is read once; the merger's claim is
@@ -370,14 +369,16 @@ func newDequeueRig(t *testing.T) *dequeueRig {
 	return rig
 }
 
-// seed records one case's issue before the boot: a tree root of its own standing in stands,
-// holding its admission slot, its lifecycle open under the workflow, on an open pull request
-// GitHub last read mergeable and clean at the issue's head on main, so the boot's start read
-// applies nothing. Its merger's claim stands in merger, where a suspended claim is one the idle
-// release suspended: released, its session kept. An issue in implementing has its implementer
-// released too. No phase row is written, so no role of the issue is behind its entry and the
-// slot repair starts no worker of it (workflow.OwedEntry). gateClosed records the root's design
-// gate closed by a newer version of its spec than the one approved.
+// seed records one case's issue before the boot: a tree root of its own standing in stands, with
+// the slot row seedWorkflowTree writes for every root (which admission's first pass releases for
+// an issue past its review, merging among them: record.KeepsSlot), its lifecycle open under the
+// workflow, on an open pull request GitHub last read mergeable and clean at the issue's head on
+// main, so the boot's start read applies nothing. Its merger's claim stands in merger, where a
+// suspended claim is one the idle release suspended: released, its session kept. An issue in
+// implementing has its implementer released too. No phase row is written, so no role of the
+// issue is behind its entry and the slot repair starts no worker of it (workflow.OwedEntry).
+// gateClosed records the root's design gate closed by a newer version of its spec than the one
+// approved.
 func (r *dequeueRig) seed(t *testing.T, stands phase.Phase, merger supervise.ClaimState, gateClosed bool) dequeueIssue {
 	t.Helper()
 	index := len(r.issues) + 1

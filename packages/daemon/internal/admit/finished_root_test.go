@@ -86,13 +86,13 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 }
 
 // A merged root's close waits for the rest of its tree: the merge leaves the root in merging,
-// still holding its slot, since merging is a worker's phase and an issue keeps its slot until
-// it is done (record.KeepsSlot). No child is disturbed, and the close comes once the last of
-// them leaves — here the architect parking each. That close lingers the tree and opens the
-// root's production check, whose first look its implementer reports, since the tree's close
-// waits for an open check (the workflow's check tests). Nothing is left mid-run by then, so the
-// linger's end hands no child over. A pull request opened from the root's branch while it
-// waits is new work and leaves the merge it waits on standing.
+// holding no slot, since merging is past the root's own review (record.KeepsSlot). No child is
+// disturbed, and the close comes once the last of them leaves — here the architect parking each.
+// That close lingers the tree and opens the root's production check, whose first look its
+// implementer reports, since the tree's close waits for an open check (the workflow's check
+// tests). Nothing is left mid-run by then, so the linger's end hands no child over. A pull
+// request opened from the root's branch while it waits is new work and leaves the merge it waits
+// on standing.
 //
 // One member does not hold the close: the released child that has never started a phase. It
 // stands at admitted beneath a root in merging, which is a root the daemon has already

@@ -116,10 +116,12 @@ const cutoverIdleTick = 250 * time.Millisecond
 // each merger's phases row carries the token that release minted when it started the merger on
 // merging, and the merger's claim carries the same token as the one its worker took. Then
 // Store.Migrate applies the rest of this head's migrations, as a deployment's roll does:
-// 20261029120700 moves the issues in `awaiting_merge` to merging, and the fill of 20261111225552
-// puts each merger at entry 1, given and served, which is where a merger that took its merging
-// task stands after the upgrade. The fill records no task for that entry but S's (below), whose
-// start the old record still holds. The whole daemon then boots on the store (startDaemonWithin).
+// 20261029120700 moves the issues in `awaiting_merge` to merging, 20261110233602 takes the slot
+// mark off every queued start of a phase past the review, and the fill of 20261111225552 puts
+// each merger at entry 1, given and served, which is where a merger that took its merging task
+// stands after the upgrade. The fill records no task for that entry: it reads only a start that
+// still carries the slot mark, and S's (below), the one start the old record still holds, has
+// lost its mark by then. The whole daemon then boots on the store (startDaemonWithin).
 //
 // The ten issues, each a tree root of its own, all but N and T in `awaiting_merge`, and all but N
 // with their merger's READY head and `completed_at` on its phase row. None holds a slot but T:
@@ -169,10 +171,12 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     That release's repair of the slot of an issue whose worker held no task
 //     (ResumeSlottedWorker) wrote it while S stood in merging, at the assignment the merger's
 //     phase row names, and the merger's READY moved S to `awaiting_merge` before the start ran,
-//     where that release kept no slot for it to take. After the upgrade it is S's owed start:
-//     the fill of 20261111225552 takes its task as the work of entry 1 and marks it a resend of
-//     that entry, which a claim it never delivered to takes. A start already covers S's merger
-//     (StartFor answers false), so the repair passes over it.
+//     where that release kept no slot for it to take. After the upgrade it is still S's owed
+//     start: 20261110233602 takes its slot mark off, since merging holds no slot, so it is
+//     claimable at once, and the fill of 20261111225552, which reads only a marked start, leaves
+//     it as it stood, with no entry. A claim takes such a row by the row's id, which it never
+//     delivered (supervise's queue), so the merger is given its task once. A start already
+//     covers S's merger (StartFor answers false), so the repair passes over it.
 //
 // The daemon runs `runtime: kubernetes` over releaseRuntime (idle_release_test.go), the fake
 // runtime that also answers what the idle release asks of a pod, since the boot turns the idle
@@ -190,9 +194,9 @@ const cutoverIdleTick = 250 * time.Millisecond
 //   - Its line for each of them names the slot mark of the start it owed, and that mark is the one
 //     workflow.StartOrOwe writes for a start of `merging`, read here from a start StartOrOwe
 //     writes for a control issue in `merging` inside a transaction the test rolls back. The start
-//     takes the mark the slot rule gives `merging` and no mark of the repair's own, so it waits
-//     for a slot exactly where any start of `merging` waits (decision D9 of dispatch://INFRA-3274's
-//     plan).
+//     takes the mark the slot rule gives `merging` and no mark of the repair's own (decision D9
+//     of dispatch://INFRA-3274's plan), which is no mark, since `merging` holds no slot
+//     (record.KeepsSlot), so it is claimable at once, as any start of `merging` is.
 //   - E's merger is not started while its gate is closed, and gets exactly one task once the test
 //     opens the gate.
 //   - A's merger is relaunched and gets exactly one task, the merging task; G's merger claim is
@@ -208,9 +212,9 @@ const cutoverIdleTick = 250 * time.Millisecond
 //     upgrade left it and its claim as the old record left it, none has a start queued or a
 //     cutover message, and none is started over both boots.
 //   - The repair passes over S's merger too: its phase row keeps its READY head, and S gets no
-//     cutover message. The start the old record queued for it starts it once admission has given
-//     S a slot, which the cap has room for, and gives it exactly one task, the task that start
-//     carries: a merger that another start also starts gets one task, not two (spec R2).
+//     cutover message. The start the old record queued for it, whose slot mark the upgrade took
+//     off, starts it at once and gives it exactly one task, the task that start carries: a merger
+//     that another start also starts gets one task, not two (spec R2).
 //
 // The second boot: G's merger completes with no merge, which records a READY head on its phase
 // row again, the idle release suspends it again, and the test deletes the backstop row that
@@ -268,8 +272,8 @@ func TestTheCutoverStartsTheMergersTheOldBuildLeftStopped(t *testing.T) {
 	rig.settled(t, rig.g)
 	rig.toldOnce(t, rig.a)
 	rig.toldOnce(t, rig.g)
-	// S: the start the old record queued starts S's merger once admission gives S a slot, and its
-	// task is the one task the merger gets: no start of the boot gives it a second.
+	// S: the start the old record queued starts S's merger, and its task is the one task the
+	// merger gets: no start of the boot gives it a second.
 	rig.connect(t, rig.s)
 	rig.settled(t, rig.s)
 	rig.toldTheQueuedTask(t, rig.s)
@@ -491,10 +495,11 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 		t.Fatalf("migrate the record legion-v19.57.3 left to this head's schema: %v", err)
 	}
 	// The record the daemon boots on is the upgraded one: the fill put every merger at entry 1,
-	// given and served, with no task recorded for it but S's merger, whose entry 1 the fill gives
-	// the task of the start the old record still holds for it. A merger left behind its entry
-	// would be sent the same resume task by another rule (workflow's sendOwedEntry, for an entry
-	// with no task), so the prompts the test counts would not tell the two records apart.
+	// given and served, with no task recorded for that entry, S's included, whose start the old
+	// record still holds but which 20261110233602 unmarked before the fill read the marked starts.
+	// A merger left behind its entry would be sent the same resume task by another rule
+	// (workflow's sendOwedEntry, for an entry with no task), so the prompts the test counts would
+	// not tell the two records apart.
 	for _, issue := range rig.roots() {
 		var entry, given, served int64
 		var task string
@@ -503,13 +508,9 @@ func newCutoverRig(t *testing.T) *cutoverRig {
 			&entry, &task, &given, &served); err != nil {
 			t.Fatalf("read the entry of %s's merger after the upgrade: %v", issue.key, err)
 		}
-		owed := ""
-		if issue == rig.s {
-			owed = cutoverSlotRepairTask(issue.key)
-		}
-		if entry != 1 || task != owed || given != 1 || served != 1 {
-			t.Fatalf("%s's merger stands at entry %d with task %q, given %d and served %d after the upgrade; want entry 1 with task %q, given 1 and served 1, where the fill puts a merger that took its merging task",
-				issue.key, entry, task, given, served, owed)
+		if entry != 1 || task != "" || given != 1 || served != 1 {
+			t.Fatalf("%s's merger stands at entry %d with task %q, given %d and served %d after the upgrade; want entry 1 with no task, given 1 and served 1, where the fill puts a merger that took its merging task",
+				issue.key, entry, task, given, served)
 		}
 		rig.upgraded[issue.key] = rig.mergerRow(t, issue)
 	}
@@ -600,10 +601,11 @@ func cutoverReleaseStore(t *testing.T) (*store.Store, string) {
 // token as the one its worker took (claims.serving_assignment), since each of those mergers took
 // its merging task, and each but N's completed it with a READY. That is what the fill of
 // 20261111225552 reads: it puts each merger at entry 1, given and served. It takes no task for
-// that entry but S's, since only S's merger still has a start owed: the start that release's slot
-// repair (cutoverSlotRepairTask) wrote at the assignment the merger's phases row names, waiting
-// for a slot (needsSlot, which that release's StartOrOwe set on every start it wrote), so the fill
-// takes its task and marks it a resend of entry 1. T's tester is the one other role with a phases
+// that entry, since it reads only a start that still carries the slot mark: S's merger is the
+// only one with a start owed, the start that release's slot repair (cutoverSlotRepairTask) wrote
+// at the assignment the merger's phases row names, waiting for a slot (needsSlot, which that
+// release's StartOrOwe set on every start it wrote), and 20261110233602 takes that mark off
+// first, since merging holds no slot. T's tester is the one other role with a phases
 // row: it holds the assignment that release minted when it started the tester on testing, and the
 // tester's claim served it, so the fill puts the tester at entry 1, given and served, too. No
 // other role has a phases row here, and its claim holds no token.
