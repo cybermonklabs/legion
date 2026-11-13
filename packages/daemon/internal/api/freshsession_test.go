@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -871,5 +872,75 @@ func TestAFreshSessionThatCouldNotStartTheClaimAgainAnswersACallerBelow104AsBefo
 				}
 			})
 		}
+	}
+}
+
+// podSupervisor is the harness's supervisor with the project's claims answered from claims, so
+// a caller that states no contract is placed by a pod whose claims record what a row picks. The
+// machines stay the harness's own, so the fresh session acts on the claim it always does.
+type podSupervisor struct {
+	*testSupervisor
+	claims []supervise.Claim
+}
+
+func (s podSupervisor) Claims(context.Context) ([]supervise.Claim, error) {
+	return s.claims, nil
+}
+
+// podPlacedHarness is compactHarness with every request placed in statePodUID: httptest asks
+// from 192.0.2.1, and Options.CallerPod puts that address in the pod. The pod's claims are
+// claims, which the fresh session reads to place a caller that states no contract.
+func podPlacedHarness(t *testing.T, claims []supervise.Claim) *harness {
+	t.Helper()
+	h := newHarness(t)
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: podSupervisor{testSupervisor: h.supervisor, claims: claims}, BootTokens: h.tokens, Project: testProject,
+		OperatorToken: testOperatorToken, Controller: h.store, Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime,
+		Trees: h.store, Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: phase.RoleFor,
+		CallerPod: func(addr netip.Addr) (string, bool) {
+			return statePodUID, addr == netip.MustParseAddr("192.0.2.1")
+		},
+	}).Handler
+	return h
+}
+
+// A caller that states no contract is placed by its pod, and the fresh session's answer follows
+// the pod's lowest contract, as a value strip does (api's readsTheStopAsAFailure). The pod's
+// claims record 103, 104 and 105. A claim that records 105 states its contract in the header,
+// so the pod's reading leaves it out (api's podContracts). The pod reads as lowest 103 and
+// highest 104, and the two readings give different answers: the 103 process reads the 200 as a
+// claim that runs again, so the whole pod gets the failure that the daemon gave before 104.
+func TestAFreshSessionAnswersAPodBelow104ByItsLowestContract(t *testing.T) {
+	pod := []supervise.Claim{
+		claimInPod("legion-legion-legion-208-planner", statePodUID, 103),
+		claimInPod("legion-legion-legion-208-implementer", statePodUID, processReadContract),
+		claimInPod("legion-legion-legion-208-tester", statePodUID, shapedAnswersContract),
+	}
+	if lowest, highest, _ := podContracts(pod, statePodUID); lowest != 103 || highest != processReadContract {
+		t.Fatalf("the pod reads as lowest %d and highest %d, want 103 and %d", lowest, highest, processReadContract)
+	}
+	for _, door := range freshSessionDoors() {
+		t.Run(door.name, func(t *testing.T) {
+			h := podPlacedHarness(t, pod)
+			token := workingAfterTheRelaunchWasRefused(t, h, aDeath())
+			h.runtime.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+
+			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
+
+			if recorder.Code != http.StatusInternalServerError {
+				t.Fatalf("the fresh session asked from a pod at 103 and 104 = %d, want the 500 a refused start answered before 104; body %s",
+					recorder.Code, recorder.Body)
+			}
+			var body map[string]string
+			decodeInto(t, recorder, &body)
+			want := fmt.Sprintf("resume %s: check the launch of %s: the store did not answer", token, token)
+			if len(body) != 1 || body["error"] != want {
+				t.Errorf("the fresh session asked from the pod answered %v, want the one member error %q", body, want)
+			}
+			if after := h.stored(token); after.State != supervise.StateSuspended || after.Session != "" {
+				t.Errorf("the claim is %s recording session %q, want the suspended claim with no session the refused start left",
+					after.State, after.Session)
+			}
+		})
 	}
 }

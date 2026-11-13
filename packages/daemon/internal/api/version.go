@@ -1480,6 +1480,10 @@ package api
 // as the daemon did before 104: the refusal of the step that failed, 409 with the machine's
 // sentence or 500, in the `error` body. A caller at 104 or above gets the 200 with that refusal
 // in `phaseNotRestarted` (`readsTheStopAsAFailure`, `processReadContract`).
+// The operator's door, `legion claims retry --fresh-session`, keeps the 200. The `legion`
+// command is built from the daemon's own tree, and an operator runs the `legion` of the release
+// that the daemon runs. The command states no contract and runs in no pod, so the daemon places
+// it at the daemon's own contract. An older `legion` that asks a newer daemon is not served down.
 // A value is served down as a key is: an issue's
 // `waitingOn.answeredBy` carries a value only to a caller whose own contract admits it, and the
 // records under `packages/contracts/fixtures/daemon-api/contract-shapes.json` hold what this
