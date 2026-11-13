@@ -13,7 +13,8 @@ import (
 func searchRowShapes(t *testing.T, ctx context.Context, store *Store, suffix string) map[string]string {
 	t.Helper()
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core') on conflict do nothing
+		insert into projects (key, name)
+		select 'CORE', 'Core' where not exists (select 1 from projects where key = 'CORE')
 	`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
@@ -86,6 +87,7 @@ func TestSearchTextMigrationKeepsEveryRowShapesVector(t *testing.T) {
 		t.Fatalf("read candidate before: %v", err)
 	}
 
+	nameADefaultAssigneeOnEveryProject(t, store)
 	if err := store.Migrate(ctx); err != nil {
 		t.Fatalf("apply 0056-0062: %v", err)
 	}

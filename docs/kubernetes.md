@@ -1867,6 +1867,22 @@ A turn that daemon did not prompt then takes such an answer back, and that daemo
 A rollback to a release before `legion-v19.16.0` needs no statement: `legion-v19.15.0` names neither column in `packages/daemon/internal/store/claims.go`.
 An earlier release reads no `pod_update_grace_minutes` and refuses it as `unknown key pod_update_grace_minutes`, so remove that key from `legion.yaml` before you pin the earlier image, where the file sets it.
 
+#### Rolling back the release that names what nothing starts
+
+This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a controller notice still queued at the rollback fails on its backoff for ever and the tick reaches nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held';
+```
+
+What the strip costs is one line of one wake: the tick that row carries then names the blocked issues alone, which is what the earlier release's controller reads anyway, and the next tick of the daemon that runs is whole again.
+
+Nothing else of this release needs a rollback step.
+The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
+This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:

@@ -33,6 +33,15 @@
           "LEGION-301"
         ]
       }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "design_gate",
+        "heldBy": [
+          "LEGION-208"
+        ]
+      }
     ]
   },
   "issues": {
@@ -104,7 +113,7 @@
       "workers": {},
       "why": {
         "state": "blocked",
-        "reason": "It waits on LEGION-300, which is not done."
+        "reason": "The design gate of its tree stands shut: LEGION-208 waits for a person's approval of each gated step's document at its current version, and the daemon starts no issue of that tree until it opens."
       }
     },
     "LEGION-210": {
