@@ -28,3 +28,4 @@ export function consumerDelivery(
     gap: options.gap ?? false,
   };
 }
+// INFRA-1413 selection probe, never merged.
