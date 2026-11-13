@@ -1,7 +1,7 @@
 {
-  "commit": "5f86d6c949f92ebc9ffe51f5c618d3b2af25e202",
-  "recordedAtHead": "5f86d6c949f92ebc9ffe51f5c618d3b2af25e202",
-  "recordedAt": "2026-11-10T12:22:57.114Z",
+  "commit": "12ba4e6afa71acf380d0b64738de7a44653f9ea8",
+  "recordedAtHead": "20942176157961571a16c823ba0a58941ca4c962",
+  "recordedAt": "2026-11-13T09:27:21.336Z",
   "open-1440": [
     {
       "name": "1 references on block",
@@ -80,6 +80,10 @@
       "role": "button"
     },
     {
+      "name": "Decline to answer",
+      "role": "button"
+    },
+    {
       "name": "Edit components of LAY-2",
       "role": "button"
     },
@@ -100,6 +104,10 @@
       "role": "button"
     },
     {
+      "name": "Hide pinned agents",
+      "role": "button"
+    },
+    {
       "name": "Hide sidebar",
       "role": "button"
     },
@@ -113,6 +121,10 @@
     },
     {
       "name": "Name version",
+      "role": "button"
+    },
+    {
+      "name": "New document",
       "role": "button"
     },
     {
@@ -149,6 +161,10 @@
     },
     {
       "name": "Release the claim on LAY-2",
+      "role": "button"
+    },
+    {
+      "name": "Remove",
       "role": "button"
     },
     {
@@ -209,6 +225,10 @@
     },
     {
       "name": "Assignee of LAY-2",
+      "role": "combobox"
+    },
+    {
+      "name": "Hand this question to",
       "role": "combobox"
     },
     {
@@ -528,6 +548,10 @@
       "role": "option"
     },
     {
+      "name": "alice (the issue's assignee)",
+      "role": "option"
+    },
+    {
       "name": "Backlog",
       "role": "option"
     },
@@ -549,6 +573,10 @@
     },
     {
       "name": "Needs review",
+      "role": "option"
+    },
+    {
+      "name": "Nobody",
       "role": "option"
     },
     {
@@ -806,6 +834,10 @@
       "role": "button"
     },
     {
+      "name": "Decline to answer",
+      "role": "button"
+    },
+    {
       "name": "Edit components of LAY-2",
       "role": "button"
     },
@@ -831,6 +863,10 @@
     },
     {
       "name": "Name version",
+      "role": "button"
+    },
+    {
+      "name": "New document",
       "role": "button"
     },
     {
@@ -871,6 +907,10 @@
     },
     {
       "name": "Release the claim on LAY-2",
+      "role": "button"
+    },
+    {
+      "name": "Remove",
       "role": "button"
     },
     {
@@ -923,6 +963,10 @@
     },
     {
       "name": "Assignee of LAY-2",
+      "role": "combobox"
+    },
+    {
+      "name": "Hand this question to",
       "role": "combobox"
     },
     {
@@ -1218,6 +1262,10 @@
       "role": "option"
     },
     {
+      "name": "Nobody",
+      "role": "option"
+    },
+    {
       "name": "P0",
       "role": "option"
     },
@@ -1452,6 +1500,10 @@
       "role": "button"
     },
     {
+      "name": "Hide pinned agents",
+      "role": "button"
+    },
+    {
       "name": "Hide sidebar",
       "role": "button"
     },
@@ -1461,6 +1513,10 @@
     },
     {
       "name": "Name version",
+      "role": "button"
+    },
+    {
+      "name": "New document",
       "role": "button"
     },
     {
@@ -1489,6 +1545,10 @@
     },
     {
       "name": "Referenced by (14)",
+      "role": "button"
+    },
+    {
+      "name": "Remove",
       "role": "button"
     },
     {
@@ -2134,6 +2194,10 @@
       "role": "button"
     },
     {
+      "name": "New document",
+      "role": "button"
+    },
+    {
       "name": "Open",
       "role": "button"
     },
@@ -2163,6 +2227,10 @@
     },
     {
       "name": "Referenced by (14)",
+      "role": "button"
+    },
+    {
+      "name": "Remove",
       "role": "button"
     },
     {
