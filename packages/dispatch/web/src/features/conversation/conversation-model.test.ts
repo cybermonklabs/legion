@@ -470,6 +470,29 @@ test("describes a malformed decision block", () => {
   ]);
 });
 
+test("describes a refused ci_check as the check's refusal", () => {
+  const event: Extract<DispatchEvent, { type: "block.invalid" }> = {
+    actor: session,
+    created_at: "2026-09-13T17:01:00Z",
+    id: 10,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      block_id: "k1",
+      version: 4,
+      reason: "ci_check takes when of before_merge",
+      disturbed_by: session,
+      block_type: "check",
+    },
+    seq: 10,
+    type: "block.invalid",
+  };
+
+  expect(activityDescription(event)).toEqual([
+    "refused check k1: ci_check takes when of before_merge",
+  ]);
+});
+
 test("describes a status change out of Done as reopening the issue", () => {
   const reopened = {
     actor: bob,
