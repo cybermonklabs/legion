@@ -411,10 +411,11 @@ RULES = {
     f"{DAEMON}/internal/stream/integration_test.go": [legion_build("internal/stream/integration_test.go:157 go build .../daemon/cmd/legion")],
     f"{DAEMON}/internal/runtime/workerbin/workerbin_test.go": reads((f"{DAEMON}/docker/gh", "internal/runtime/workerbin/workerbin_test.go:58")),
     f"{DAEMON}/internal/textcheck/design_approved_wake_test.go": reads(
-        ("skills/legion-architect/SKILL.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../.."),
-        ("skills/legion-architect/references/design-gate.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../.."),
-        ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../.."),
-        (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:19-26 reads it under ../../../..")),
+        (f"{DAEMON}/internal/workflow/design_approved_wake_extract.txt", "internal/textcheck/design_approved_wake_test.go:23-24 reads the phrase from it, in place of importing internal/workflow"),
+        ("skills/legion-architect/SKILL.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
+        ("skills/legion-architect/references/design-gate.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
+        ("skills/legion-architect/references/wake-routing.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../.."),
+        (f"{DAEMON}/internal/prompts/roles/architect-root.md", "internal/textcheck/design_approved_wake_test.go:33-39 reads it under ../../../..")),
     f"{DAEMON}/internal/textcheck/file_copy_test.go": reads(
         (f"{DAEMON}/**/*.go", "internal/textcheck/file_copy_test.go:22 walks every .go file under packages/daemon (../..)")),
     f"{DAEMON}/internal/textcheck/classify_imports_test.go": reads(

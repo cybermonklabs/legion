@@ -3144,9 +3144,11 @@ jobs:
               - *go_workspace
               - 'packages/envoy/**'
               - 'packages/daemon/**/*.go'
-              # The prompt design_approved_wake_test.go:19-26 holds the resume's wake to, and the
+              # The prompt design_approved_wake_test.go:33-39 holds the resume's wake to, the copy
+              # of the phrase it reads in place of importing internal/workflow (:23-24), and the
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
+              - 'packages/daemon/internal/workflow/design_approved_wake_extract.txt'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
               # The five copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
               # reads to hold them to the texts themselves: the waiting line's four and the way
@@ -3178,7 +3180,7 @@ jobs:
               # way_back_doc_test.go:68).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
-              # holds the architect's prompt to (:19-26).
+              # holds the architect's prompt to (:33-39).
               - 'skills/legion-architect/SKILL.md'
               - 'skills/legion-architect/references/design-gate.md'
               - 'skills/legion-architect/references/wake-routing.md'
