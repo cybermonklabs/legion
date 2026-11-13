@@ -384,9 +384,10 @@ func (s *server) blockReferenceNode(ctx context.Context, query refs.Query, ref t
 // edit of its body, so there is no revision to pin a message's block to and no reference pins one
 // (parseReferencesQuery refuses one).
 //
-// A block of a post its author deleted is gone with the body (refs.TombstoneItem), so the two
-// 404s that answer for it name the deletion as well (itemBlockNotFound): every read of a
-// deleted post says that it is deleted and gives no part of what it said.
+// A block of a post its author deleted is gone with the body (refs.TombstoneItem), so each 404
+// a read of it can reach - no current block, no recorded text at the pin, and a pin past the
+// current revision - names the deletion as well (itemBlockNotFound): every read of a deleted
+// post says that it is deleted and gives no part of what it said.
 func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, ref text.Ref) (model.GraphNode, error) {
 	pool := s.deps.Store.Pool
 	kind := refs.ItemKind(ref.Item)
@@ -420,7 +421,8 @@ func (s *server) itemBlockReferenceNode(ctx context.Context, query refs.Query, r
 	}
 	switch {
 	case ref.Pin > at.Current:
-		return model.GraphNode{}, errorf(http.StatusNotFound, "NOT_FOUND", "no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current)
+		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
+			fmt.Sprintf("no revision %d of %s %s; its current revision is %d", ref.Pin, ref.Item, item.ID, at.Current))
 	case at.Text == nil:
 		return model.GraphNode{}, s.itemBlockNotFound(ctx, kind, item.ID,
 			fmt.Sprintf("no %s %q in %s %s at revision %d", noun, ref.Block, ref.Item, item.ID, ref.Pin))

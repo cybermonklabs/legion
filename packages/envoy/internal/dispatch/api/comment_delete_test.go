@@ -361,6 +361,14 @@ func TestABlockReferenceToADeletedCommentNamesTheDeletion(t *testing.T) {
 			t.Fatalf("%s gives its text: %s", read.name, response.Body.String())
 		}
 	}
+	// A pin past the deleted comment's current revision is refused by the revision it names
+	// rather than by the block, and it says the comment is deleted all the same.
+	pastRevision := graphRequest(t, handler, url.Values{"to": {withdrawnRef + "@v99"}})
+	if body := pastRevision.Body.String(); pastRevision.Code != http.StatusNotFound ||
+		!strings.Contains(body, "no revision 99 of comment "+withdrawnComment.ID) || !strings.Contains(body, deletion) ||
+		strings.Contains(body, withdrawn) {
+		t.Fatalf("a pin past a deleted comment's current revision: status=%d body=%s, want 404 naming the revision and saying %q", pastRevision.Code, body, deletion)
+	}
 
 	if node := readGraph(t, handler, url.Values{"to": {standingRef}}).Node; node.Text != standing || node.Pin != nil {
 		t.Fatalf("the unpinned read of a standing comment's block = %#v, want the text %q and no pin", node, standing)
