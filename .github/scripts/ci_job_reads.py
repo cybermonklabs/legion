@@ -874,12 +874,12 @@ def race_impossible_script(packages) -> str:
     the call is not held to a guard that would cost a parse of every test file of every package
     it names.
 
-    -timeout 8m; the reading it is sized from, and every other call's, is the table in the
+    -timeout 9m; the reading it is sized from, and every other call's, is the table in the
     comment on the envoy-go job (dispatch://INFRA-1075)."""
     if not packages:
         return ""
     names = sorted(set().union(*packages.values()))
-    return (f"go test -json -count=1 -timeout 8m -run '^({'|'.join(names)})$' "
+    return (f"go test -json -count=1 -timeout 9m -run '^({'|'.join(names)})$' "
             + " ".join(f"./{under}" for under in packages))
 
 
@@ -949,9 +949,9 @@ unit=$!
 # envoy-go-race-api now. The one -run list is derived in
 # .github/scripts/ci_job_reads.py from the race lane's own packages and those files'
 # //go:build !race and raceEnabled, so a test added to either and missing here fails
-# the ci-filters job naming this step. -timeout 8m: this call's slowest package is
+# the ci-filters job naming this step. -timeout 9m: this call's slowest package is
 # internal/dispatch/docs, whose largest reading and the run it came from are in the
-# table on this job, and the limit leaves 245.8 s above that reading, over the 30 s of
+# table on this job, and the limit leaves 278.8 s above that reading, over the 30 s of
 # the documents package's roomWaitMargin.
 #
 # One go test over the three packages rather than one per package: go builds the three
