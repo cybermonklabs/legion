@@ -38,3 +38,7 @@ refuse `{}`. The tester's red test `TestPutProjectDefaultAssigneeRefusesABodyWit
 (0940abaf) pinned it. ca8c8b1c refuses `len(input.Assignee) == 0` with `400 INVALID_PROJECT`
 before any lookup or write. `TestPutProjectDefaultAssigneeSetsChangesAndClears` keeps the explicit
 null clearing.
+
+Since INFRA-3090 the worked example's route takes no null at all.
+Every project names a default assignee, so `PUT /api/v1/projects/{key}/default-assignee` refuses an absent, null or blank `assignee` alike and nothing clears a default.
+The rule above still holds wherever a null clears.

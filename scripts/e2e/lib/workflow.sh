@@ -31,13 +31,18 @@
 #   dispatch_token_file
 #                  the file holding the agents' Dispatch bearer, which write_dispatch_header reads
 #                  (Stage 4b's LEGION_E2E_DISPATCH_TOKEN_FILE); only its caller sets it
+#   dispatch_default_assignee
+#                  the email of the person a project ensure_project creates names as its default
+#                  assignee (Stage 4b's LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE), somebody who has
+#                  signed in to that Dispatch; only a caller of ensure_project sets it
 #   pg_container   the container holding the daemon's Postgres database
 #   pr_number      the issue's pull request, once it exists
 #   smoke_file     the one product file that pull request's first implementation changed: the
 #                  spec's one-file change, which every review round's correction appends to
 # and defines note, pass and fail (which exits), and, for a caller of ensure_project, scrub, the
-# filter that hides the run's private hosts in what it prints (ensure_project runs curl's error
-# through it), plus the runtime seam — the only reads that depend on where an agent runs:
+# filter that hides the run's private hosts and its default assignee in what it prints
+# (ensure_project runs curl's error and a refused create's body through it), plus the runtime
+# seam — the only reads that depend on where an agent runs:
 #   assert_claim_endpoints ISSUE ROLE   fails the check when the claim's process could reach a
 #                                       service outside the rig; runs before every instruction
 #   claim_session_text ISSUE ROLE       prints the claim's session file; fails when there is none
@@ -116,16 +121,26 @@ dispatch_agent() {
 }
 # ensure_project creates $project when Dispatch does not already hold it, as a proof-human write
 # like every other (`POST /api/v1/projects` takes any signed-in person or agent session), over the
-# bearer write_dispatch_header already wrote. 201 and 409 PROJECT_EXISTS both leave the project
-# ready for the run; anything else fails loudly, naming the status and the body. Unlike
-# dispatch_human, which only needs the body, this call needs the status to tell a created project
-# from a refusal, so it writes the body to a file and reads %{http_code} off curl's stdout, the
-# pattern every other status-checking call in this proof uses (e.g. stage4b-sandbox-tree.sh's
-# invalid-bearer control). curl's error goes to a file of its own: a failed connection still prints
-# its status, 000, on stdout, and the error is flattened into the one FAIL line.
+# bearer write_dispatch_header already wrote. Every project names the person its unowned work
+# lands on, and the agents' bearer acts for nobody, so the body names dispatch_default_assignee as
+# default_assignee: Dispatch answers a bearer's create naming none 400 INVALID_PROJECT and one
+# naming somebody who never signed in 400 ASSIGNEE_NOT_ALLOWED, both before it reads the key, so
+# an unset person is refused here before any call and a project that already exists is no
+# exception. 201 and 409 PROJECT_EXISTS both leave the project ready for the run; anything else
+# fails loudly, naming the status and the body through the caller's scrub, which replaces the
+# person with the variable's name: ASSIGNEE_NOT_ALLOWED's body names the email it refused, spelled
+# as the operator wrote it, and the repository carries no person's email in any log a run keeps.
+# Unlike dispatch_human, which only needs the body, this call needs the status to tell a created
+# project from a refusal, so it writes the body to a file and reads %{http_code} off curl's stdout,
+# the pattern every other status-checking call in this proof uses (e.g. stage4b-sandbox-tree.sh's
+# invalid-bearer control). curl's error goes to a file of its own: a failed connection still
+# prints its status, 000, on stdout, and the error is flattened into the one FAIL line.
 ensure_project() {
   local status body body_file=$work/create-project.json error_file=$work/create-project.err
-  body=$(proof_human_body "$(jq -cn --arg key "$project" --arg name "$project" '{key: $key, name: $name}')")
+  [ -n "${dispatch_default_assignee:-}" ] ||
+    fail "LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE is unset (dispatch_default_assignee): Dispatch refuses a project the agents' bearer creates naming no default assignee, so $project cannot be ensured"
+  body=$(proof_human_body "$(jq -cn --arg key "$project" --arg name "$project" --arg assignee "$dispatch_default_assignee" \
+    '{key: $key, name: $name, default_assignee: $assignee}')")
   status=$(curl -sS --max-time 20 -o "$body_file" -w '%{http_code}' -X POST \
     -H "@$work/dispatch-human-header" -H 'content-type: application/json' --data "$body" \
     "$(dispatch_url)/api/v1/projects" 2>"$error_file") ||
@@ -134,10 +149,10 @@ ensure_project() {
     201) note "[dispatch] created project $project" ;;
     409)
       jq -e '.code == "PROJECT_EXISTS"' "$body_file" >/dev/null 2>&1 ||
-        fail "Dispatch answered 409 creating $project, not PROJECT_EXISTS: $(cat "$body_file")"
+        fail "Dispatch answered 409 creating $project, not PROJECT_EXISTS: $(scrub <"$body_file")"
       note "[dispatch] project $project already exists"
       ;;
-    *) fail "Dispatch answered $status creating project $project: $(cat "$body_file")" ;;
+    *) fail "Dispatch answered $status creating project $project: $(scrub <"$body_file")" ;;
   esac
 }
 # new_issue TITLE [PARENT] [SPEC] creates an issue in the run's project and prints its key. A root
@@ -629,13 +644,13 @@ smoke_main_leftovers() {
   gh api "repos/$repo/git/trees/main?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | .path | select(startswith(".legion/") or startswith("docs/solutions/"))'
 }
-# merge_when_clean REPO PR MERGE_FLAG... is the proof human's merge of a pull request no accepted
-# READY covers — one merged before its READY, or one whose merger is held at its assignment, as the
-# 4b.13b acceptance holds its — and records who merged it: merge_when_clean_by is "the daemon's
-# submission" or "the proof human", and merge_when_clean_commit the merge commit GitHub records. A
-# pull request an accepted READY covers is await_ready_merge's: the daemon submits that merge
-# itself, and a hand merge would perform the product's own step. merge_when_clean reads the pull
-# request's state first, in one GraphQL query (gh 2.98's `pr view --json` has no merge-queue
+# merge_when_clean REPO PR MERGE_FLAG... is the proof human's merge of a pull request the merger
+# does not merge — one merged before the issue reaches merging, or one whose merger is held at its
+# assignment, as the 4b.13b acceptance holds its — and records who merged it: merge_when_clean_by
+# is "the merger's own merge" or "the proof human", and merge_when_clean_commit the merge commit
+# GitHub records. A pull request the merger reaches is await_merger_merge's: the merge is the
+# merger's own step, and a hand merge would perform it for the agent. merge_when_clean reads the
+# pull request's state first, in one GraphQL query (gh 2.98's `pr view --json` has no merge-queue
 # field): a merged pull request is asserted, MERGED with a merge commit, and merged no further
 # (`gh pr merge` on a merged pull request fails, and would fail the run); an enqueued or auto-merge
 # armed one is never merged by hand, since GitHub merges it the moment the repository's rules are
@@ -653,10 +668,10 @@ smoke_main_leftovers() {
 # request's head existing, and a timeout names the actual state, mergeStateStatus, what is armed
 # and every check that is not a completed success, not only that time ran out. --match-head-commit
 # holds the hand merge to the head this call last read, so a push between the poll and the merge
-# is refused by its own sha instead of silently merging a later one. A merge the daemon submitted
-# can land on the same CLEAN the hand merge acts on, and then refuses it ("Pull request #n is
+# is refused by its own sha instead of silently merging a later one. The merger's own merge can
+# land on the same CLEAN the hand merge acts on, and then refuses it ("Pull request #n is
 # already merged"), so a refused hand merge is followed by one re-read: MERGED with a merge commit
-# is the daemon's outcome, not a failure; a hand merge that succeeds is re-read too, so the record
+# is the merger's outcome, not a failure; a hand merge that succeeds is re-read too, so the record
 # is GitHub's state, not gh's exit status; the hand merge runs as an `if` test, where neither
 # `set -e` nor the ERR trap acts on its failure, so the re-read judges it. When --delete-branch is
 # among the flags and the merge was not the proof human's, the head branch is deleted here, as the
@@ -711,7 +726,7 @@ merge_when_clean() {
     [ "$pull_request_state" != CLOSED ] || fail "$repo_name#$pr was closed without a merge"
     if [ -n "$pull_request_armed" ] && [ "$armed" != "$pull_request_armed" ]; then
       armed=$pull_request_armed
-      note "$repo_name#$pr is armed by the daemon's submission ($armed; mergeStateStatus $pull_request_merge_state): no hand merge, waiting for it to land"
+      note "$repo_name#$pr is armed ($armed; mergeStateStatus $pull_request_merge_state): no hand merge, waiting for it to land"
     fi
     [ -n "$pull_request_armed" ] || [ "$pull_request_merge_state" != CLEAN ] || break
     if ((SECONDS - beat >= 60)); then
@@ -721,14 +736,14 @@ merge_when_clean() {
     sleep "$poll"
   done
   if [ "$pull_request_state" = MERGED ]; then
-    merge_when_clean_by="the daemon's submission"
+    merge_when_clean_by="the merger's own merge"
   elif [ -z "$pull_request_armed" ] && [ "$pull_request_merge_state" = CLEAN ]; then
     note "$repo_name#$pr reads CLEAN with nothing armed; the proof human merges it by hand at $pull_request_head"
     if gh -R "$repo_name" pr merge "$pr" --match-head-commit "$pull_request_head" "$@"; then
       merge_when_clean_by="the proof human"
     else
-      note "the hand merge of $repo_name#$pr was refused (gh's reason is above); re-reading it, since the daemon's submission may have landed first"
-      merge_when_clean_by="the daemon's submission"
+      note "the hand merge of $repo_name#$pr was refused (gh's reason is above); re-reading it, since the merger's own merge may have landed first"
+      merge_when_clean_by="the merger's own merge"
     fi
     merge_when_clean_read "$repo_name" "$pr"
   else
@@ -736,22 +751,21 @@ merge_when_clean() {
   fi
   merge_when_clean_record "$repo_name" "$pr" "$delete_branch"
 }
-# await_ready_merge REPO PR [--delete-branch] sees the merge the daemon submits for an accepted
-# READY land, and never merges by hand: the daemon submits READY's merge itself — a merge queue
-# enqueues it, a pull request GitHub reports mergeable merges at once, a repository that allows
-# auto-merge arms it, and in one that allows neither, as sjawhar/legion-smoke does, the daemon
-# merges it once GitHub reports it mergeable — so a hand merge here would perform the product's own
-# step and hide its failure. It polls merge_when_clean_read within merge_when_clean's bound and
-# poll, fails at once on a pull request closed without a merge, and on a timeout names the state,
-# what is armed and every unsettled check. merge_when_clean_by is "the daemon's submission", and
-# --delete-branch deletes the head branch once it has merged (merge_when_clean_record).
-await_ready_merge() {
+# await_merger_merge REPO PR [--delete-branch] sees the merger's own merge land, and never merges
+# by hand: the merge is the merger agent's step — `gh pr merge --squash --match-head-commit` at the
+# head it read, with the subject and the empty body it passes itself, or an enqueue on a
+# merge-queue base — so a hand merge here would perform the product's own step and hide its
+# failure. It polls merge_when_clean_read within merge_when_clean's bound and poll, fails at once
+# on a pull request closed without a merge, and on a timeout names the state, what is armed and
+# every unsettled check. merge_when_clean_by is "the merger's own merge", and --delete-branch
+# deletes the head branch once it has merged (merge_when_clean_record).
+await_merger_merge() {
   local repo_name=$1 pr=$2 delete_branch=
   [ "${3:-}" != --delete-branch ] || delete_branch=1
   local bound=${MERGE_WHEN_CLEAN_BOUND:-300} poll=${MERGE_WHEN_CLEAN_POLL:-0.5}
   local started=$SECONDS beat=$SECONDS polls=0
   merge_when_clean_by='' merge_when_clean_commit=''
-  note "waiting up to ${bound}s for the daemon's submission of $repo_name#$pr to merge it; nothing merges it by hand"
+  note "waiting up to ${bound}s for the merger of $repo_name#$pr to merge it; nothing merges it by hand"
   while ((SECONDS - started < bound)); do
     polls=$((polls + 1))
     merge_when_clean_read "$repo_name" "$pr"
@@ -759,12 +773,12 @@ await_ready_merge() {
     [ "$pull_request_state" != CLOSED ] || fail "$repo_name#$pr was closed without a merge"
     if ((SECONDS - beat >= 60)); then
       beat=$SECONDS
-      note "still waiting for the daemon to merge $repo_name#$pr: poll $polls, $((SECONDS - started))s of ${bound}s, now ${pull_request_state:-unread}${pull_request_merge_state:+ $pull_request_merge_state}${pull_request_armed:+, $pull_request_armed}"
+      note "still waiting for the merger to merge $repo_name#$pr: poll $polls, $((SECONDS - started))s of ${bound}s, now ${pull_request_state:-unread}${pull_request_merge_state:+ $pull_request_merge_state}${pull_request_armed:+, $pull_request_armed}"
     fi
     sleep "$poll"
   done
   [ "$pull_request_state" = MERGED ] || merge_when_clean_timeout "$repo_name" "$pr" "$started" "$polls"
-  merge_when_clean_by="the daemon's submission"
+  merge_when_clean_by="the merger's own merge"
   merge_when_clean_record "$repo_name" "$pr" "$delete_branch"
 }
 # merge_when_clean_timeout REPO PR STARTED POLLS fails naming the pull request's last read and every
@@ -1004,9 +1018,10 @@ close_unpassed_run_pull_requests() {
 # reviewing) the Dispatch handoff record the role wrote with `dispatch handoff-write` under its own
 # session, its id and version, which the daemon read back from Dispatch and held to the claim's
 # session; for the implementer's implementing round also its pushed tip, which the `legion` tool
-# refuses unpushed; for retro and READY the commit the workspace stands on — emptied when the role's
-# next phase starts, and, on the implementer's row, the review round (its returns to implementing).
-# The issue moves out of each phase only on that phase's completion, so a checker reads the row right
+# refuses unpushed; for retro and the merger the commit the workspace stands on — emptied when the
+# role's next phase starts, and, on the implementer's row, the review round (its returns to
+# implementing). The issue moves out of every phase but merging on that phase's completion, and out
+# of merging on the daemon's read of the merged pull request, so a checker reads the row right
 # after the transition it follows, before the role's next phase can empty it. A production check's
 # look is no phase: its report moves no phase and writes no handoff (a verdict and a summary, no
 # commit, no record), so it is read from the daemon's state's `check`, below, never from this record.
@@ -1202,7 +1217,7 @@ assert_review_of_head() {
 }
 # retro_reported ISSUE: the daemon applied the implementer's retro completion, the one way out of
 # retro.
-retro_reported() { [ -n "$(role_handoff "$1" implementer merging awaiting_merge)" ]; }
+retro_reported() { [ -n "$(role_handoff "$1" implementer merging done)" ]; }
 # assert_round_handoff ISSUE ROUND: the issue reached testing on the implementer's own completion
 # of that implementing round (its pushed tip reported beside its record), never on a push alone.
 assert_round_handoff() {
@@ -1213,7 +1228,7 @@ assert_round_handoff() {
 
 # ---- the production check after the close ---------------------------------------------------------
 
-# The merge closes the issue (awaiting_merge and a merged pull request write done), and the
+# The merge closes the issue (the daemon's read of the merged pull request writes done), and the
 # production check is work after the close, opened only where the project's `production_check`
 # names the role that works it (`off` opens none; `tester` is the key's other word and its
 # default): the daemon opens the check on the merge commit, hands that role its first look, and
@@ -1347,7 +1362,7 @@ worker_notices() {
   while IFS=$'\t' read -r f role; do
     jq -R -r --arg file "${f##*/}" --arg role "$role" '
       fromjson? | select(.customType == "envoy-message") | (.content | tostring)
-      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|design-approved|design-changes-requested|carried-gate-opened|ready-refused|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted) on [^\\n]*)")
+      | capture("summary: (?<summary>(phase-finished|worker-died|held|pr-blocked|pr-merged|pr-closed-unmerged|pull-request-missing|design-approved|design-changes-requested|carried-gate-opened|child-closed|child-status|child-release-stalled|child-not-recorded|catch-up|checks-red|review-stuck|status-reasserted|session-lost|session-store-fault) on [^\\n]*)")
       | "\($file) \($role) \(.summary)"' "$f"
   done < <(worker_sessions "$1")
 }

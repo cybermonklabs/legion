@@ -423,21 +423,21 @@ the missing plan task named only once the issue has a plan document; the gap an 
 answer names and the covered spec that earns none; `dispatch plan-approve`, refused `409
 NOT_PLAN_DOCUMENT` on a spec, and `dispatch request-approval`, refused `409
 PLAN_APPROVED_BY_REVIEW` on a plan; the one request that names a spec and its Verification
-document together; and, in the currency section, the newest result of a check printed with all
-forty characters of its commit, beside a result at a commit that repository does not hold refused
+document together; and, in the reading section, every result of a check printed with all forty
+characters of its commit, beside a result at a commit that repository does not hold refused
 `400 RESULT_COMMIT_UNKNOWN`. Its inputs are `DISPATCH_URL`, the bearer, `PROJECT`, and two
 optional ones:
 
 - `FAKE_GITHUB_PORT`, the harness's fake GitHub, which the server reads as
   `DISPATCH_GITHUB_API_BASE`. The run gives it one repository holding one pull request whose
   title names the issue and one further commit beside that pull request's head, replacing every
-  repository the fake served: where `PROJECT` maps no default repository the currency section
+  repository the fake served: where `PROJECT` maps no default repository the reading section
   seeds a repository of its own, maps it as `PROJECT`'s default and removes the mapping on exit;
-  where `PROJECT` maps one, the setup seeds that repository and maps nothing. A result recorded
-  at that pull request's head reads `current`, a result at the further commit — whose first
-  twelve characters are the head's — is stored, and a result at a commit the repository holds
-  neither of is refused. Unset, one `SKIP: currency …` line stands in for the section, which no
-  other way of running has a pull request's head to read.
+  where `PROJECT` maps one, the setup seeds that repository and maps nothing. The results of the
+  check are then compared with that pull request's head, a result at the further commit — whose
+  first twelve characters are the head's — stands at none of them, and a result at a commit the
+  repository holds neither of is refused. Unset, one `SKIP: reading …` line stands in for the
+  section, which no other way of running has a pull request's head to read.
 - `DEV_SIGNIN_LOGIN`, as `block-graph.sh` takes it. Recording a review is a person's write alone,
   so the two review sections sign that person in with a cookie jar and answer the approval requests
   the script opened; unset, each prints one
@@ -447,7 +447,7 @@ optional ones:
 One rule governs every result the script records, beside the refusals above.
 A result at a 40-character commit the repository of the check's issue does not hold is refused `400 RESULT_COMMIT_UNKNOWN`, naming the commit and that `owner/repo`.
 Only GitHub's `422 No commit found for SHA` refuses, and the script reads `PROJECT`'s repository mappings once, in its setup, to know which of two runs it is.
-Where `PROJECT` maps no default repository, every result recorded outside the currency section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
+Where `PROJECT` maps no default repository, every result recorded outside the reading section is stored because the check's issue resolves to no repository, which is never asked about; inside the section, each stored result names a commit it seeded its fake GitHub with, and the one commit it seeds nothing with is the refusal it drives.
 Where `PROJECT` already maps one, every issue the script writes resolves to that repository, so the setup reads that repository's default-branch head from GitHub with `gh` and every result is recorded at that head: no check stands down, and the run prints no `SKIP` for a recorded result.
 A repository `gh` cannot read fails the run, naming it.
 Where `FAKE_GITHUB_PORT` is set the setup also gives that repository, that head, the look-alike and the pull request to the fake, since a server reading the fake asks the fake and not GitHub; a server reading the real GitHub needs no such seeding, and a fake-backed run proves this script's fixture and its count rather than a server talking to GitHub.
@@ -472,7 +472,44 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
-All three source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+`e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
+document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
+the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
+acts for no person, so the project it creates must name the person its unowned work lands on
+(`400 INVALID_PROJECT` otherwise). It makes the project and the issue it needs, and runs ten
+assertions:
+`dispatch artifact --issue <KEY> --name "Launch notes"`, with neither `--path` nor `--content`,
+exits zero and says the document was made, naming its `dispatch://` reference; that reference
+reads back one version whose markdown is empty; `dispatch read --issue <KEY>` lists the document
+under `Documents:`; `dispatch doc-edit` writes a line into it and the line reads back; the same
+name a second time with no content is refused, naming the document that holds the title; that
+same create with `--force` is refused too, since a create with no content has no version
+`--force` could ask for; `--name rows.jsonl` with no content is refused by the Markdown-name
+rule, which sends nothing; and `--path` and `--content` each still make a document. Each passing
+assertion prints `PASS: <n> <what>` on stderr, the first failure prints `FAIL:` and exits 1, and
+a run that reaches the end writes `all <n> assertions passed` as the one line on stdout, so a run
+cut short fails a reader that reads that line.
+
+`e2e/acceptance/with-harness.sh` runs one command against a stack of its own, for a driver that
+has no server to speak to: it starts `e2e/harness-up.ts`, waits for the stack's exports, applies
+them, runs the command with `DISPATCH_E2E_PORT` and the rest in its environment, and stops the
+stack when the command ends, exiting with the command's own status. From `packages/dispatch`:
+
+```bash
+DATABASE_URL=<a PostgreSQL this run may truncate> bash e2e/acceptance/with-harness.sh \
+  bash -c 'curl -sS -o /dev/null "http://127.0.0.1:$DISPATCH_E2E_PORT/auth/_dev/signin?login=alice" &&
+    DISPATCH_URL=http://127.0.0.1:$DISPATCH_E2E_PORT DISPATCH_TOKEN=e2e-token \
+    DISPATCH_DEFAULT_ASSIGNEE=alice bash e2e/acceptance/create-document.sh'
+```
+
+The `curl` is the harness's dev sign-in (`/auth/_dev/signin`), which records `alice` as a person
+who has signed in, so the project may name her.
+
+`e2e-token` is the agent bearer the harness pins. Until cybermonklabs/legion#3435 the same thing
+was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
+stacks through Playwright's own global setup now, which no shell driver can reach.
+
+All four source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 

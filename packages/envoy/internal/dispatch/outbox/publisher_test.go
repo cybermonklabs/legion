@@ -230,7 +230,8 @@ func (p *recordingPublisher) PublishAsync(item contracts.Envelope) <-chan error 
 }
 
 // Request takes a role forward to roleHolder's subject under the forward's dedupe key as the
-// holder's receipt would answer it, recording the envelope, whose topic is still the role's.
+// stream's acknowledgement of the copy it stored answers it, recording the envelope, whose topic
+// is still the role's.
 func (p *recordingPublisher) Request(subject string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
 	if subject != contracts.AgentSubject(roleHolder) || !strings.HasPrefix(item.DedupeKey, contracts.RoleForwardDedupePrefix) {
 		return answered(fmt.Errorf("a Request to %q with dedupe key %q is no role forward to %s", subject, item.DedupeKey, roleHolder))
@@ -1858,7 +1859,7 @@ func appendEvent(t *testing.T, database *store.Store, broker *events.Broker, eve
 
 func seedIssue(t *testing.T, database *store.Store, key string, route *string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name) values ('TT', 'Test')`); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	if _, err := database.Pool.Exec(context.Background(), `

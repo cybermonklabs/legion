@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+    `dispatch results` prints every result of each check with the reading its role recorded, in
+    the order the API serves them, in place of one result of each check with the check's own words
+    and one word for the comparison. Each check's head line names what the surface compared with
+    and whether a pass stands, with the roles whose passes stand; each result line names the whole
+    40-character commit, where that commit stands, and whether the check's words moved after the
+    result was recorded, with both versions. `--at <commit>` compares every check with one commit,
+    and `--brief` cuts a reading whose result stands at no basis to its first 200 characters.
+time: 2026-11-11T10:11:00.000000000Z
+custom:
+    Issue: pr3530

@@ -36,7 +36,14 @@ const Unrecorded phase.Phase = "unrecorded"
 
 // State is the daemon's own facts, and nothing another system owns (spec: State and store).
 type State struct {
-	Daemon              DaemonInfo           `json:"daemon"`
+	Daemon DaemonInfo `json:"daemon"`
+	// Contract is the contract this body was built at and, where the daemon placed the caller in
+	// a pod of the project, the contract that pod's claims record (ContractView): the two
+	// numbers the narrowing's own log line names (server's stateFor). Absent from a body the
+	// route narrowed, which is every caller below the contract that added it; written on every
+	// other body, the operator's `legion state --json` among them, which is served whole and
+	// says by this which contract it was built at.
+	Contract            *ContractView        `json:"contract,omitempty"`
 	Admission           Admission            `json:"admission"`
 	Issues              map[string]Issue     `json:"issues"` // the issue record, keyed by issue key
 	PendingStatusWrites []PendingStatusWrite `json:"pendingStatusWrites"`
@@ -49,13 +56,31 @@ type State struct {
 	// claim is running or waits on something that will wake it.
 	StrandedClaims []StrandedClaim `json:"strandedClaims"`
 	// WakesWaiting is every wake the daemon's pacing holds until its turn
-	// (worker_wakes_per_minute), in claim order: the wave a restart, a re-admission or a plugin
-	// round raised, as far as it has not gone out. It is the two places a wake waits read as one
-	// list — the launches and plugin tasks the machines hold (supervise.ClaimView.WakeWaiting) and
-	// the catch-ups waiting on their outbox rows (WakesWaitingOf). Never null; empty while nothing
-	// waits, which is every moment outside a wave. With `daemon.startedAt` and each claim's
-	// `updateRound` it is what says whether a wave is still running.
+	// (worker_wakes_per_minute), in claim order: the wave a restart, a re-admission or a
+	// stale-plugin refresh raised, as far as it has not gone out. It is the two places a wake
+	// waits read as one list — the launches and refresh relaunches the machines hold
+	// (supervise.ClaimView.WakeWaiting) and the catch-ups waiting on their outbox rows
+	// (WakesWaitingOf). Never null; empty while nothing waits, which is every moment outside a
+	// wave. With `daemon.startedAt` and ClaimsToRefresh it is what says whether a wave is still
+	// running.
 	WakesWaiting []WakeWaiting `json:"wakesWaiting"`
+	// ClaimsToRefresh is how many claims the stale-plugin lane still has to relaunch onto this
+	// daemon's plugin: a claim with a recorded session, whose process holds a capability, whose
+	// recorded plugin contract is not DaemonAPIVersion, that is in no pod update round, and whose
+	// launch installs a plugin — the set the daemon's own pass walks
+	// (daemon's refreshStalePlugins). Always a number, never null, and 0 when the lane has
+	// nothing left, which is every moment outside a wave (contract 73).
+	//
+	// It is what `wakesWaiting` alone cannot say. The lane holds at most one minute of the
+	// pacing at a time (supervise.RefreshGate), so the wakes waiting are what it has admitted,
+	// never what it has left; a reader of the 2026-11-10 wave counted 395 live processes on the
+	// old contract against about 600 of the lane's wakes and nothing in the body reconciled the
+	// two (dispatch://INFRA-2712 R4).
+	//
+	// A daemon that can relaunch onto no plugin at all is in the count like any other: the
+	// number stands at what that lane cannot act on, beside the Error line such a daemon writes
+	// for each of those claims (supervise.NoPluginSourceMessage).
+	ClaimsToRefresh int `json:"claimsToRefresh"`
 	// ControllerLocator is the project's controller, absent until a session registers as it: with
 	// the capability `legion controller start` fetched, or, under `controller: daemon`, with the boot
 	// token of the daemon's own controller launch.
@@ -67,7 +92,7 @@ type State struct {
 	// Capabilities is the deployment's capability report (capabilities.Deployment.Report), one row
 	// per capability in the table's order: what the worker image was probed for, what the live
 	// sessions' reports prove (present), fail (open) or have not reported yet (unchecked), what a
-	// ruling withholds, and what the deployment's own configuration closes, decides or leaves open
+	// cited issue withholds, and what the deployment's own configuration closes, decides or leaves open
 	// — each open deployment row with the legion.yaml line that records a decision. Never null; a
 	// gap is reported here, never refused (contract 16).
 	Capabilities []CapabilityState `json:"capabilities"`
@@ -90,7 +115,20 @@ type State struct {
 	// when it is empty as when it names a wake, so MarshalJSON leaves the key off that one body
 	// rather than writing it empty, as Admission.treesHidden does for `trees`.
 	wakesWaitingHidden bool
+	// claimsToRefreshHidden is the same for ClaimsToRefresh, set on the copy the route serves a
+	// caller below server.go's claimsToRefreshContract (api's withoutClaimsToRefresh): the count
+	// is written on every other body, 0 included, and a strict reader before that contract
+	// refuses the key when it is zero as surely as when it names a number, so MarshalJSON
+	// leaves it off that one body. The two flags compose on one body: a caller below
+	// wakesWaitingContract is below this contract too, and is served neither key.
+	claimsToRefreshHidden bool
 }
+
+// ClaimsToRefreshField is the name ClaimsToRefresh carries on the wire, read from here by the
+// tests of its contract band, which look for the key rather than repeating the string: whether
+// the key is on the wire at all is what the band is read by, since the reader below it refuses
+// the key when it is 0 as surely as when it names a number (server's withoutClaimsToRefresh).
+const ClaimsToRefreshField = "claimsToRefresh"
 
 // ConsumerLagView is one durable consumer's lag as the state shows it (intake.ConsumerLag): its
 // name; how many messages wait for it (Waiting); the stream time of the oldest and its age in whole
@@ -265,10 +303,27 @@ type AgentSecretsLoginView struct {
 
 // MarshalJSON keeps `issues` an object and `pendingStatusWrites`, `heldOutboxRows`,
 // `strandedClaims`, `wakesWaiting`, `capabilities` and `consumers` arrays on the wire: a nil Go map
-// or slice is `null`, which the plugin's reader refuses. The one exception is a state whose
-// waiting wakes are hidden, which carries no `wakesWaiting` key at all; that body is marshaled
-// through a value whose own nil `wakesWaiting` field, being `omitempty`, shadows the embedded one
-// and so is written by nothing, which is how Admission.MarshalJSON leaves off `trees`.
+// or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
+// contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
+// carries no key of that name at all, and is marshaled through a value whose own field of that
+// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
+// its own block a downgrade hides, with `omitzero` on those fields instead.
+//
+// One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
+// nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
+// `wakesWaiting` every other body carries, `0` for the `claimsToRefresh` of a drained lane. A
+// `[]WakeWaiting` field could not write the empty array, since an empty slice is what
+// `omitempty` drops, so the pointer is what lets one type serve both keys — each field set when
+// its key is not hidden and left nil when it is — rather than a struct per pair of flags. The
+// two bands compose, so a caller below wakesWaitingContract (53) is below claimsToRefreshContract
+// (73) as well and is served neither key; a third banded key is one more field here, not four
+// more shapes.
+//
+// A body that hides neither key is marshaled through the embedded value alone. The shadow's own
+// fields are declared after the embedded one, so encoding/json writes a key that comes from them
+// after every other key of the body, and the fixtures under `packages/contracts/fixtures/daemon-api`
+// pin bodies that hide nothing: marshaling those through the shadow would move both keys to the
+// end of each pinned body.
 func (s State) MarshalJSON() ([]byte, error) {
 	type wire State
 	out := wire(s)
@@ -290,17 +345,24 @@ func (s State) MarshalJSON() ([]byte, error) {
 	if out.Consumers == nil {
 		out.Consumers = []ConsumerLagView{}
 	}
-	if s.wakesWaitingHidden {
-		out.WakesWaiting = nil
-		return json.Marshal(struct {
-			wire
-			WakesWaiting []WakeWaiting `json:"wakesWaiting,omitempty"`
-		}{wire: out})
-	}
 	if out.WakesWaiting == nil {
 		out.WakesWaiting = []WakeWaiting{}
 	}
-	return json.Marshal(out)
+	if !s.wakesWaitingHidden && !s.claimsToRefreshHidden {
+		return json.Marshal(out)
+	}
+	shadow := struct {
+		wire
+		WakesWaiting    *[]WakeWaiting `json:"wakesWaiting,omitempty"`
+		ClaimsToRefresh *int           `json:"claimsToRefresh,omitempty"`
+	}{wire: out}
+	if !s.wakesWaitingHidden {
+		shadow.WakesWaiting = &shadow.wire.WakesWaiting
+	}
+	if !s.claimsToRefreshHidden {
+		shadow.ClaimsToRefresh = &shadow.wire.ClaimsToRefresh
+	}
+	return json.Marshal(shadow)
 }
 
 // DaemonInfo is the running daemon itself: which project it coordinates, the schema its store is
@@ -313,17 +375,38 @@ type DaemonInfo struct {
 	StartedAt     time.Time `json:"startedAt"`
 }
 
+// ContractView is the mark of the narrowing: the contract this body was built at and the
+// contract its caller records (`contract`, contract 75). Daemon is DaemonAPIVersion, what this
+// binary declares and serves; Caller is the plugin contract the claims of the caller's own pod
+// record, absent for a caller the daemon places in no pod — the operator's `legion state
+// --json`, a tmux pane, a pod whose claims record no contract — whose body is served whole and
+// narrowed by nothing. The two stand beside the daemon's own block rather than inside it,
+// because the second number is the caller's and no fact of the daemon.
+//
+// The mark rides under the contract that decided the record (server's recordFieldsContract), so
+// a caller below that contract is served no `contract` key at all (withoutRecordFields): a key
+// added to a narrowed body is exactly what the narrowing exists to prevent, since the plugin
+// that body is narrowed for reads the state with a strict schema and would refuse the whole of
+// it for one key it does not name. Such a caller is told nothing of the narrowing here; the
+// daemon's own log says it, one line per narrowing (server's stateFor).
+type ContractView struct {
+	Daemon int `json:"daemon"`
+	Caller int `json:"caller,omitempty"`
+}
+
 // Admission is the issue cap and the issues under it, in Dispatch rank order. Concurrency is
 // capped on issues, never on workers, so there is no worker queue here.
 type Admission struct {
 	Cap int `json:"cap"`
 	// Active is every issue holding an admission slot, a child as much as a root: the cap counts
 	// the issues the daemon has started rather than the trees (dispatch://INFRA-980), and an
-	// issue keeps its slot from the moment the daemon starts it
-	// until it is done, leaves the workflow or waits only for its merge (record.KeepsSlot). So
-	// one tree with three started children holds three of these, and an issue waiting on a
-	// person, one in accepting, one held and one merging under a closed gate are each here,
-	// while one in awaiting_merge is in neither list.
+	// issue keeps its slot from the moment the daemon starts it until it is done or leaves the
+	// workflow (record.KeepsSlot). So one tree with three started children holds three of these,
+	// and an issue waiting on a person, one in accepting, one held, a merger at work in merging,
+	// one in merging whose start a closed design gate holds (the outbox's
+	// mergerWaitsForTheDesignGate) and a merged root standing in merging while the rest of its
+	// tree runs are each here, while an issue whose phase has left the workflow — done, or a
+	// status Dispatch took it out of the workflow with — is in neither list.
 	Active []string `json:"active"`
 	// Waiting is the admission line, in the line's own order: the issues whose work came back,
 	// oldest first, then the issues whose first phase can start, by their tree root's Dispatch
@@ -338,17 +421,32 @@ type Admission struct {
 	// so a live tree can hold no slot at all — a root still waiting in the line for its tree to
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
-	Trees []string `json:"trees"`
+	Trees []string `json:"trees,omitzero"`
 	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
 	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
 	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
 	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
+	// Held is every issue the daemon's record holds in the workflow that stands in neither
+	// `active` nor `waiting`: the work the daemon runs nothing of and queues nowhere, each row
+	// carrying the one word for why (record.HeldReason) and the issues that hold it, sorted by
+	// issue key. It is the other half of the three lists above — a reader that has `active`,
+	// `waiting` and this one has every issue of the workflow and what each is doing — so the
+	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
+	// the one that waits: a root whose Legion label is off, or an issue none of the other words
+	// is true of; `at_work` names no issue today (record.HeldAtWork). Never null; empty when
+	// every issue of the workflow runs or waits in the line.
+	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
 	// tree, so MarshalJSON leaves the key off that one body rather than writing it empty.
 	treesHidden bool
+	// heldHidden is the same for Held: it is set on the copy served a caller whose plugin is
+	// older than the contract that added the list (api's withoutHeld, below server.go's
+	// heldContract), whose reader refuses `held` emptied as surely as filled, so MarshalJSON
+	// leaves that key off too.
+	heldHidden bool
 }
 
 // BlockedIssue is one issue of Blocked and the issues it waits on that are not done. It is
@@ -356,11 +454,24 @@ type Admission struct {
 // read two ways, and the row is declared once, under both.
 type BlockedIssue = record.BlockedIssue
 
-// MarshalJSON keeps `active`, `waiting`, `trees` and `blocked` arrays on the wire, empty rather
-// than `null` — except on an admission whose trees are hidden, which carries no `trees` key at
-// all. That body is marshaled through a value whose own nil `trees` field, being `omitempty`,
-// shadows the embedded one and so is written by nothing; every other key of the block, including
-// one a later contract adds above, is still written from the one place that writes it.
+// HeldIssue is one issue of Held: the issue, the one word for why nothing of it runs, and the
+// issues that hold it where there are any. It is record.HeldIssue, as BlockedIssue is
+// record.BlockedIssue: the state's `admission.held` and the controller tick's notice are the
+// same list read two ways, and the row is declared once, under both.
+type HeldIssue = record.HeldIssue
+
+// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
+// rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
+// key at all, and one whose held list is hidden, which carries no `held`. Those two keys are
+// tagged `omitzero`, so a nil slice writes no key and an empty one writes `[]`: a hidden list
+// is left nil here and every other list is filled, which is the whole of the rule. The keys
+// keep their place in the object, because they are written from the fields they are declared
+// on and from nowhere else.
+//
+// A caller below treeContract is below heldContract too and is served both strips at once; a
+// caller served the held strip alone is the reader of a contract between the two. Every golden
+// body of this repository is compared byte for byte, so a key written anywhere but on its own
+// field would rewrite them all.
 func (a Admission) MarshalJSON() ([]byte, error) {
 	type wire Admission
 	out := wire(a)
@@ -375,13 +486,13 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 	}
 	if a.treesHidden {
 		out.Trees = nil
-		return json.Marshal(struct {
-			wire
-			Trees []string `json:"trees,omitempty"`
-		}{wire: out})
-	}
-	if out.Trees == nil {
+	} else if out.Trees == nil {
 		out.Trees = []string{}
+	}
+	if a.heldHidden {
+		out.Held = nil
+	} else if out.Held == nil {
+		out.Held = []HeldIssue{}
 	}
 	return json.Marshal(out)
 }
@@ -410,8 +521,29 @@ type Issue struct {
 	// HoldReason is why a held issue is held, when its hold has one: `escalated` once its architect
 	// sent it to the controller. Absent otherwise, and absent while the issue's tree lingers or is
 	// closed: the record keeps the reason, and the view shows it again once the tree is re-admitted.
-	HoldReason string     `json:"holdReason,omitempty"`
-	Architect  *ClaimView `json:"architect,omitempty"`
+	HoldReason string `json:"holdReason,omitempty"`
+	// HeldFrom is the phase the hold took the issue out of (record.Hold.From), and absent for an
+	// issue that is not held. Unlike HoldReason it is shown whatever the issue's tree is doing:
+	// the reason is a decision someone must act on, which a lingering tree has none of, while the
+	// phase is a fact of the record that costs one word, so a reader of this body is held to the
+	// simple rule that every issue at `phase: held` names the phase that stopped.
+	HeldFrom string `json:"heldFrom,omitempty"`
+	// LingerUntil is when the linger of a tree whose work finished runs out
+	// (record.Issue.LingerUntil), and is absent for every issue that is not a lingering root:
+	// only a root carries a linger, and re-admission clears it. It is what keeps HoldReason's
+	// own suppression honest — a held issue of a lingering tree is served no reason, so without
+	// this key an absent reason reads either as a hold nobody has given a reason or as a tree
+	// that lingers, and a reader of the two cannot tell which. The controller's texts turn on
+	// that difference.
+	LingerUntil *time.Time `json:"lingerUntil,omitempty"`
+	// Ancestry is the keys of a labelled root's Dispatch parent chain, from its parent upward
+	// (record.Issue.Ancestry), and is absent for every issue the record holds none for — a root
+	// that ran as a tree of its own, and every member of a tree. It is what a root held under an
+	// unreleased child of a live tree is held by: that root waits for no slot while any live root
+	// stands on its chain, and until now the chain reached no surface at all, so the wait had no
+	// reading on this wire.
+	Ancestry  []string   `json:"ancestry,omitempty"`
+	Architect *ClaimView `json:"architect,omitempty"`
 	// Workers is keyed by the role that holds the claim; the vocabulary of a claim belongs to
 	// `internal/claim`, which the runtime, the worker stream, and the supervisor all speak
 	// without importing this package.
@@ -430,6 +562,14 @@ type Issue struct {
 	// only for an issue that list names, a slot holder whose work came back among them, and
 	// absent for every other issue.
 	WaitingLine *WaitingLineView `json:"waitingLine,omitempty"`
+	// Why is the one rendered answer for an issue that is not working now (WhyView). It sits
+	// here beside `waitingLine` and never inside it, because an issue whose claim has stopped
+	// can stand in the line or outside it — such a member carries this key and its
+	// `waitingLine` both, and reads `claim_stopped`, the state that wins where both hold
+	// (projection's whyStates) — and it is the same answer for every issue that carries one.
+	// The projection decides each issue's state and renders its sentence; an issue that is
+	// working, and one the record does not hold in the workflow, carries no such key.
+	Why *WhyView `json:"why,omitempty"`
 	// WaitingOn is present only while the root is in awaiting_person: what it waits on from a
 	// person, when the wait began and, once a person answered, when and by what act.
 	WaitingOn *WaitingOnView `json:"waitingOn,omitempty"`
@@ -447,6 +587,25 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
+	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
+	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase), and GivenEntry the
+	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
+	// sends the entry's own work to a role whose given number is below the entry its row names, on
+	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
+	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
+	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	//
+	// Both are absent together for an issue whose current phase names no phase worker role: a root
+	// at admitted whose design gate has never opened is at work (record.AtWork) and phase.RoleFor
+	// names no role for that phase, so the sweep passes it over and nothing would ever close a
+	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
+	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
+	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
+	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
+	// value no reader parses empty.
+	PhaseEntry int64 `json:"phaseEntry,omitempty"`
+	GivenEntry int64 `json:"givenEntry,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind
@@ -489,27 +648,201 @@ func (i Issue) MarshalJSON() ([]byte, error) {
 // from a predecessor's. A socket path never appears in the view. A claim with no process (queued,
 // suspended, failed, retired) has no locator; a claim whose session has not reported, or whose
 // role never reports (the controller), has no capabilities. A claim whose agent has stepped —
-// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView).
+// begun a turn, or made a call the daemon's stream saw — carries that step too (StepView), and a
+// claim the daemon holds a failure record for carries why it failed (ClaimFailureView).
 type ClaimView struct {
 	Session      string                `json:"session"`
 	State        string                `json:"state"`
 	Locator      *runtime.Locator      `json:"locator,omitempty"`
 	Capabilities *CapabilityReportView `json:"capabilities,omitempty"`
+	// ServingGeneration is the issue generation of the last confirmed delivery this claim
+	// retired — the run it goes on working until a delivery of another run replaces it
+	// (supervise.Claim.ServingGeneration) — and is absent for a claim that has retired no
+	// confirmed task of a run. It is what says whether the work a claim serves is of this
+	// generation: a reader holding it against the issue's own `generation` sees a worker still
+	// turning over a run its issue has left, which nothing else on this wire says.
+	ServingGeneration uint64 `json:"servingGeneration,omitempty"`
 	// PluginContract is the contract the claim's current registration declared, 0 when none
 	// recorded, always emitted.
 	PluginContract int `json:"pluginContract"`
 	// UpdateRound is the update round the claim is in, and absent when none is open: the pod's
-	// drift round (`pod:<pod uid>`), which every claim of that pod shares, or the claim's own
-	// plugin round (`plugin:<daemon contract>`). Once its worker has answered, the process holding
+	// drift round (`pod:<pod uid>`), which every claim of that pod shares, and which is the one
+	// round this daemon opens. A claim's own plugin round (`plugin:<daemon contract>`) is an
+	// earlier daemon's: the stale-plugin lane asks its worker nothing and opens no round, and a
+	// boot takes every claim out of one it finds (daemon's endPluginRounds), so the key carries
+	// such a round only in the moments before that boot pass reaches it. Once its worker has
+	// answered, the process holding
 	// this claim is waiting to be replaced and the daemon holds the claim's next task. UpdateHead
 	// is the commit the worker reported as the head of its issue branch at origin when it answered
 	// the round, and is absent until it answers and for a worker that reported none (a planner
-	// before its first push). It is the worker's word, which nothing verifies.
-	UpdateRound string `json:"updateRound,omitempty"`
-	UpdateHead  string `json:"updateHead,omitempty"`
+	// before its first push). It is the worker's word, which nothing verifies. UpdateReasons is
+	// what the round was opened for, as the daemon found the drift, and is absent while no round
+	// is open: the worker answering a round is told to act on it, so the seat that answers reads
+	// why its pod is being replaced rather than the task's word for it alone.
+	UpdateRound   string `json:"updateRound,omitempty"`
+	UpdateHead    string `json:"updateHead,omitempty"`
+	UpdateReasons string `json:"updateReasons,omitempty"`
+	// LastTurnStart and LastTurnEnd are when the claim's agent last began a turn and last ended
+	// one, each absent until that happens: a claim that has worked since this release records
+	// them, and one that last ran before it records neither. They are what says whether a worker
+	// is still making progress — a working claim whose turn began hours ago is wedged, and an idle
+	// one that last ended a turn yesterday has been told nothing since.
+	LastTurnStart *time.Time `json:"lastTurnStart,omitempty"`
+	LastTurnEnd   *time.Time `json:"lastTurnEnd,omitempty"`
+	// LastDeathCause is why the claim's process was last found gone, LastStartFailure why its last
+	// start did not produce a running agent — a launcher that refused it, a failed init container,
+	// a pod that never became ready — and LastReady when its agent last said it could be prompted.
+	// Each is absent until it happens. The two causes are separate because they answer separate
+	// questions, and LastReady is what dates them: a cause older than it is one the agent running
+	// now has already survived.
+	LastDeathCause   string     `json:"lastDeathCause,omitempty"`
+	LastStartFailure string     `json:"lastStartFailure,omitempty"`
+	LastReady        *time.Time `json:"lastReady,omitempty"`
+	// ProviderErrorRun is how many turns of this claim ended in a provider error in a row
+	// (supervise.Claim.ProviderErrorRun), and is absent for a claim whose last turn ended with
+	// none. It bounds nothing — a limit here would fail every claim of a project at once in a
+	// provider outage (dispatch://INFRA-956's R2) — and the project's controller is told of it
+	// once, at a run of six, so without this key the number behind that telling stands on no
+	// surface its reader can reach.
+	ProviderErrorRun int `json:"providerErrorRun,omitempty"`
+	// PendingTask is the task the claim holds, reduced to what a reader of this surface decides
+	// on and never carrying its text (PendingTaskView); absent for a claim holding none.
+	PendingTask *PendingTaskView `json:"pendingTask,omitempty"`
 	// Step is what the daemon last saw this claim's agent do (supervise.StepRecord), and is
 	// absent for a claim whose agent has neither begun a turn nor made a call the daemon saw.
 	Step *StepView `json:"step,omitempty"`
+	// Failure is why the claim failed, and is absent for a claim the daemon holds no cause and
+	// sentence for (ClaimFailureView, FailureViewOf). PendingCause beside it is what failed the
+	// process whose relaunch is now in flight (supervise.Claim.PendingCause), and is absent for a
+	// claim relaunching after no failure: a claim that died and whose relaunch the runtime then
+	// refused fails under the cause of the death rather than under the refusal, so the cause of
+	// the death whose relaunch is in flight is what an architect deciding a retry or an
+	// escalation reads while that relaunch is still going on and `failure` is empty.
+	Failure      *ClaimFailureView      `json:"failure,omitempty"`
+	PendingCause supervise.FailureCause `json:"pendingCause,omitempty"`
+	// LeakCheckCause is the sentence the claim's latest launch try was refused with because the
+	// shared public leak check could not be installed in the role's pod
+	// (supervise.Claim.LeakCheckCause), and is absent when that try started its process or failed
+	// for another reason. It sits beside `failure` rather than in it: a claim that runs out of
+	// launches on it fails with `failure.detail` `launch failures ran out: <the error>` and the
+	// cause word the launch chooses, and this key says which check refused it, from the first
+	// refused try on.
+	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+}
+
+// ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
+// one word the site that failed the claim chose (supervise.FailureCause), Detail the sentence
+// that site wrote beside it (supervise.Claim.Failure), At the moment it failed and Attempts the
+// four counts it failed with (supervise.Budgets), which the limits in `settings` are read
+// against. At is absent for a claim whose record carries no moment, which is every failure the
+// migration that added the columns backfilled.
+//
+// A claim carries the record until it is given another run, because that is what clears it: the
+// retry clears the cause with the counts it names and the launch of that run clears it again
+// (supervise's retry and launchNow). A claim an operator retired after it failed carries it
+// still, which is what lets an agent reading a retired claim say why it is there, and a claim
+// that never failed carries none of it.
+type ClaimFailureView struct {
+	Cause    supervise.FailureCause `json:"cause"`
+	Detail   string                 `json:"detail"`
+	At       *time.Time             `json:"at,omitempty"`
+	Attempts BudgetsView            `json:"attempts"`
+}
+
+// FailureViewOf is c's failure record as a claim view shows it, and nil for a claim the daemon
+// holds no cause and sentence for, so no such claim carries the key. It is keyed on the record
+// rather than on the claim's state: the state says where the claim is now, and the record says
+// what the daemon last recorded about it, which outlives a retirement.
+//
+// Both the cause and the sentence are read, because an image rolled back and forward again can
+// leave the one without the other. The release before this one clears `failure` at every launch
+// and names `failure_cause` and `failed_at` in no statement (its upsert), so a claim it
+// relaunched carries a cause and no sentence, and serving that would say a working claim failed.
+// Keying on both loses nothing correct: every live `fail` writes a sentence, and the migration
+// backfills only the rows that hold one. The one state it cannot tell apart is a claim that
+// failed again under the older daemon, which wrote the new sentence and left the cause and the
+// moment of the failure before it: the record then reads with an earlier failure's cause beside
+// a later failure's sentence, and nothing in the row says so.
+func FailureViewOf(c supervise.Claim) *ClaimFailureView {
+	if c.FailureCause == "" || c.Failure == "" {
+		return nil
+	}
+	return &ClaimFailureView{
+		Cause:    c.FailureCause,
+		Detail:   c.Failure,
+		At:       instant(c.FailedAt),
+		Attempts: BudgetsViewOf(c.Budgets),
+	}
+}
+
+// PendingTaskView is the task a claim holds as a claim view shows it (supervise.Delivery),
+// reduced to the five facts a reader of an agent surface decides on: that one is held, which the
+// key's own presence says; Phase, the issue phase it was queued for, empty for a task of no
+// phase (an operator's own, an architect's); QueuedAt, when it was queued; and SendFailures with
+// LastSendError, how many sends of it came back without reaching a turn and the error the last
+// of them failed with, each absent for a task no send has failed for.
+//
+// The task's own text is never here. The operator routes serve it whole (DeliveryView), and what
+// an agent decides on is that a worker holds a task and has held it since a moment it can read,
+// not the prose another seat was sent: a sibling's task text on this surface would be a second
+// copy of the workflow's own words, served to every reader of the state.
+type PendingTaskView struct {
+	Phase         phase.Phase `json:"phase,omitempty"`
+	QueuedAt      time.Time   `json:"queuedAt"`
+	SendFailures  int         `json:"sendFailures,omitempty"`
+	LastSendError string      `json:"lastSendError,omitempty"`
+}
+
+// PendingTaskViewOf is d as a claim view shows it, and nil for a claim holding no task, so no
+// such claim carries the key.
+func PendingTaskViewOf(d *supervise.Delivery) *PendingTaskView {
+	if d == nil {
+		return nil
+	}
+	return &PendingTaskView{
+		Phase:         d.Phase,
+		QueuedAt:      d.QueuedAt,
+		SendFailures:  d.SendFailures,
+		LastSendError: d.LastSendError,
+	}
+}
+
+// ClaimViewOf is c as every agent surface shows it: the one place a claim record becomes the
+// view `read_record` and `read_state` carry, so what those surfaces serve of a claim is decided
+// here and nowhere else (ClaimRecordFields names the decision for each field of the record). The
+// capability report is not of the claim — it is what the claim's session last reported — so its
+// caller sets it beside this.
+func ClaimViewOf(c supervise.Claim) ClaimView {
+	return ClaimView{
+		Session:           c.Session,
+		State:             string(c.State),
+		Locator:           c.Locator,
+		ServingGeneration: c.ServingGeneration,
+		PluginContract:    c.PluginContract,
+		UpdateRound:       c.UpdateRound,
+		UpdateHead:        c.UpdateHead,
+		UpdateReasons:     c.UpdateReasons,
+		ProviderErrorRun:  c.ProviderErrorRun,
+		PendingTask:       PendingTaskViewOf(c.Pending),
+		// What the daemon last saw this claim's agent do, which the stall backstop and an
+		// operator read alike; nil for a claim whose agent has not stepped (StepViewOf).
+		Step: StepViewOf(c.Step),
+		// When the agent last began and last ended a turn, and when it last said it could be
+		// prompted, each absent until it happens: they are what tells a worker still making
+		// progress from one wedged in a turn, and what dates the two causes below.
+		LastTurnStart:    instant(c.LastTurnStart),
+		LastTurnEnd:      instant(c.LastTurnEnd),
+		LastReady:        instant(c.LastReady),
+		LastDeathCause:   c.LastDeathCause,
+		LastStartFailure: c.LastStartFailure,
+		// Why the claim failed, for as long as the daemon holds a record of it: a claim an
+		// operator retired after it failed carries the record still, since nothing but the launch
+		// that runs it again clears it (FailureViewOf). It is keyed on the stored record rather
+		// than on the claim's state for exactly that reason.
+		Failure:        FailureViewOf(c),
+		PendingCause:   c.PendingCause,
+		LeakCheckCause: c.LeakCheckCause,
+	}
 }
 
 // StepView is the claim's step record as a claim view shows it (supervise.StepRecord): when the
@@ -589,18 +922,21 @@ func CapabilityReportViewOf(report capabilities.Report) *CapabilityReportView {
 }
 
 // PhaseView is one phase worker's claim, the handoff of its current phase — the commit its
-// completion reported, the Dispatch handoff record it named — and the rounds the phase has run,
-// with the counts of the moves back that made those rounds.
+// completion reported, the Dispatch handoff record it named — and the three counts the phase
+// carries: the passes it has made through its stretch of the workflow, which every backward move
+// counts one of, the review rounds, which only a review that requested changes counts, and the
+// counts of the moves back, by kind, that made those rounds.
 type PhaseView struct {
 	Claim         ClaimView          `json:"claim"`
 	HandoffCommit string             `json:"handoffCommit,omitempty"`
 	HandoffRecord *HandoffRecordView `json:"handoffRecord,omitempty"`
+	Pass          int                `json:"pass"`
 	Rounds        int                `json:"rounds"`
 	// BackwardMoves is how many times the issue's work has gone back by each kind of move, keyed
 	// "<from>-<to>" as phase.BackwardPairs() writes the pairs: "testing-implementing",
-	// "reviewing-implementing", "awaiting_merge-implementing" and the rest. It is absent, and
-	// never `{}`, for an issue that has had no move back, so a reader tells an issue that carries
-	// no counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
+	// "reviewing-implementing", "merging-implementing" and the rest. It is absent, and never
+	// `{}`, for an issue that has had no move back, so a reader tells an issue that carries no
+	// counts at all from one whose counts the daemon holds. Rounds beside it keeps its meaning
 	// exactly: it rises on every move back, a conflict round included, where no pair counts a
 	// conflict round, since nobody sent the work back. The counts start empty at the migration
 	// that added them and are never filled in from the past, so an issue already in flight reads
@@ -623,15 +959,22 @@ type HandoffRecordView struct {
 // stays through implementing and testing, and an approval through retro and every phase after
 // it; absent until a review in a round decides.
 // State is whether the pull request is open, merged, or closed unmerged, always one of the three:
-// a merged root waits in awaiting_merge for the rest of its tree, so an operator reads the merge
+// a merged root waits in merging for the rest of its tree, so an operator reads the merge
 // here rather than guessing at it.
+// MergeState is GitHub's own merge state for the head, in GitHub's lowercase spelling, as the
+// daemon's last read of the pull request found it (record.PullRequest.MergeState); absent until
+// that read has run. It is what says whether GitHub would merge the head now ("clean") or holds
+// it on a check or a review the repository requires ("blocked").
+// No CI verdict is shown: a CI result moves no issue, so the daemon keeps none
+// (dispatch://INFRA-714/spec R1), and GitHub's own merge state is what says whether a check the
+// repository requires holds the head.
 type PullRequestView struct {
 	// Repo is the repository (owner/name) the pull request is in, its issue's.
 	Repo           string `json:"repo"`
 	Number         int    `json:"number"`
 	Head           string `json:"head"`
 	State          string `json:"state"`
-	ChecksVerdict  string `json:"checksVerdict,omitempty"`
+	MergeState     string `json:"mergeState,omitempty"`
 	ReviewDecision string `json:"reviewDecision,omitempty"`
 }
 
@@ -725,12 +1068,70 @@ type SlotView struct {
 const WaitingLineField = "waitingLine"
 
 // WaitingLineView is the issue's place in `admission.waiting`, where 1 is first in the line,
-// and the length of that list at this read. It says where the issue stands, not what holds it:
-// `admission.blocked` names what holds it.
+// and the length of that list at this read, beside the waiting line's own fields for a program
+// that acts on the line rather than reading the sentence Reason renders: which part the issue
+// waits in and why it waits there (record.LinePart and record.LineKind, whose String methods
+// are the words carried here), its place within its own part and that part's length, whether it
+// already holds one of the cap's slots, and what placed it — the moment its work came back for
+// a member of the returned part, the Dispatch ranks and the tree root's key for a member of the
+// starting part. It says where the issue stands, not what holds it: `admission.blocked` names
+// what holds it.
+//
+// Every field beside Place and Length is omitempty, for two readers at once: a member carries
+// the fields of its own part alone, so a returned member's body names no rank and a starting
+// member's no `since`; and the strip that serves a caller below the contract these fields
+// arrive in empties them from a view it still serves Place and Length on, which must leave no
+// field of theirs on the wire.
 type WaitingLineView struct {
-	Place  int `json:"place"`
-	Length int `json:"length"`
+	Place      int    `json:"place"`
+	Length     int    `json:"length"`
+	Part       string `json:"part,omitempty"`
+	Kind       string `json:"kind,omitempty"`
+	PartPlace  int    `json:"partPlace,omitempty"`
+	PartLength int    `json:"partLength,omitempty"`
+	// HoldsSlot says the member already holds one of the cap's slots (record.LineEntry.Holds),
+	// so its promotion takes no second one. It is a pointer because `false` is one of the two
+	// values this field carries and the strip above is written over the same omitempty: a plain
+	// bool would be absent for every member that holds no slot, which is a fact the view must
+	// state, and would be written as `false` on the emptied view that strip serves, where no
+	// field of this contract is to appear at all.
+	HoldsSlot *bool      `json:"holdsSlot,omitempty"`
+	Since     *time.Time `json:"since,omitempty"`
+	RootRank  string     `json:"rootRank,omitempty"`
+	OwnRank   string     `json:"ownRank,omitempty"`
+	RootKey   string     `json:"rootKey,omitempty"`
+	// Reason is the rendered sentence of this member's wait, the one answer a person reads: what
+	// put it in the line and when, where it stands in its own part, and what that place means
+	// for the slot it waits for. The projection renders it from the fields above and the length
+	// of the other part and from nothing else (projection's waitingLineReason), so the sentence
+	// and the fields a program reads say the same thing about the same member.
+	Reason string `json:"reason,omitempty"`
 }
+
+// WhyView is one rendered answer for an issue that is not working now: State, one of the four
+// words below, and Reason, the sentence that says why. The projection reads the four states in
+// one order over the facts the pass already holds and renders the sentence of whichever holds
+// the issue (projection's whyStates), so an issue carries one answer and never two.
+type WhyView struct {
+	State  WhyState `json:"state"`
+	Reason string   `json:"reason"`
+}
+
+// WhyState is the word WhyView.State carries, a closed set a reader branches on, so it is a type
+// of its own as GatedStepStatus is: a word no daemon writes cannot be put in the field by
+// mistake. A word added to it is a change of the wire that the daemon's own contract number
+// covers (version.go), since a reader before it parses the four with a strict enum.
+type WhyState string
+
+// The four states WhyView.State carries: the issue's claim has stopped (WhyClaimStopped), it
+// waits in the admission line (WhyWaiting), something holds it where it stands (WhyBlocked), or
+// it stands in neither the line nor the work at all (WhyUnlisted).
+const (
+	WhyClaimStopped WhyState = "claim_stopped"
+	WhyWaiting      WhyState = "waiting"
+	WhyBlocked      WhyState = "blocked"
+	WhyUnlisted     WhyState = "unlisted"
+)
 
 // CheckView is an issue's open production check as the state shows it: the repository, pull
 // request and merge commit the check looks for in production (MergeCommit is empty for a pull
@@ -952,8 +1353,8 @@ func StrandedByMove(stranded []StrandedClaim, suspended Suspenders) map[Stranded
 // on the wire as the line that wake writes names it (supervise's wakeRan, the outbox's):
 //
 //   - `launch`, a role process the daemon is about to start, held by the claim's machine;
-//   - `plugin-task`, the update task a stale-plugin round queues to a session already running,
-//     held by the claim's machine too;
+//   - `plugin-refresh`, the relaunch of a process whose plugin speaks an earlier contract than
+//     this daemon's, held by the claim's machine too;
 //   - `catch-up`, the notice a start writes to an architect already running in place of a launch,
 //     which waits on its own outbox row rather than in a machine.
 //
@@ -970,7 +1371,7 @@ type WakeWaiting struct {
 
 // WakesWaitingOf is every wake still waiting, from both of the places one can wait, in claim order:
 // held are the wakes the daemon's machines hold in memory, each as its machine last published it
-// (supervise.Machine.WaitingWake) — the launches and the plugin tasks — and queued are the wakes
+// (supervise.Machine.WaitingWake) — the launches and the refresh relaunches — and queued are the wakes
 // that wait on a durable row, which the caller composes from the store — today the paced catch-ups
 // (daemon's pacedCatchUps). The two are merged here rather than at either source so that one read
 // of the state is one ordered list, whichever lane is holding a wave back: an operator or a

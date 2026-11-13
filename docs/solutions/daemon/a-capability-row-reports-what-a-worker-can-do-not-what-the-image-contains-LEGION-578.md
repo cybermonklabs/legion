@@ -35,7 +35,7 @@ related_issues:
   `dispatch-envoy-tools`, `github`) at its start and sends them with its ready
   (`packages/pi-legion/src/capability-report.ts`), and the daemon renders the row `present` from
   the live reports, `open` naming the failing sessions, or `unchecked` ("no session has reported
-  yet (<ruling>): <summary>") until one reports (LEGION-663; `docs/kubernetes.md`, "The
+  yet (<decision>): <summary>") until one reports (LEGION-663; `docs/kubernetes.md`, "The
   deployment's capability report"). Never `checked live` from a site label, and never a sentence
   naming a proof script as the prover: a site label is not a verdict, and a proof that runs
   elsewhere is not the row's evidence.

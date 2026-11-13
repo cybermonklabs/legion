@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  The `legion-controller` skill, its `backlog-stewardship` reference and the controller's role
+  prompt call a person's direct Dispatch message that settles scope, priority or an owner a
+  "directive". The controller behaves as before: a directive still sets off the full
+  reconciliation pass and a weekly-plan record. The `legion-worker` reference on withheld
+  capabilities says "decision" for the issue that withholds one.

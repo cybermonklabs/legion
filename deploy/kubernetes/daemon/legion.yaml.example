@@ -57,6 +57,17 @@ worker_wakes_per_minute: 8             # how many wakes a minute the daemon lets
                                        # the live proofs under scripts/e2e set.
 worker_wake_burst: 1                   # how many wakes may leave at once before the rate holds the next one
                                        # back; 1 by default, and a value below 1 is refused
+# worker_silence_minutes: 30           # how long a phase worker that is up, between turns and holding
+#                                      # no task may go with no recorded step before the daemon sends it
+#                                      # its phase's task again; 30 by default, and a value under 16 is
+#                                      # refused, since a healthy worker that says it is waiting stays
+#                                      # quiet for 15 minutes before its own reminder comes again
+# worker_background_hours: 4           # how long the background work a phase worker's own session
+#                                      # reports may stand before the daemon names that worker to its
+#                                      # architect, once and with nothing sent: nothing can tell a job
+#                                      # that hung from a long one, so the architect decides. 4 by
+#                                      # default, and a value at or below worker_silence_minutes is
+#                                      # refused
 
 operator_token_file: ./operator-token  # the operator's bearer, in a file only you can read
 dispatch_url: https://dispatch.example.com
@@ -151,7 +162,7 @@ projects:
 #                                      # one event the daemon has. moves are the moves back the
 #                                      # hook counts, each written <from>-<to> of two workflow
 #                                      # phases (testing-implementing, reviewing-implementing,
-#                                      # awaiting_merge-implementing and the 19 other pairs), or
+#                                      # merging-implementing and the 18 other pairs), or
 #                                      # the word any, which a hook that leaves the key out takes
 #                                      # as well. every is a positive whole number: the hook
 #                                      # fires when the counts of the moves it counts, added up,

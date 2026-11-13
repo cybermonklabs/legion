@@ -176,6 +176,23 @@ type Config struct {
 	// inside one run rather than wait out a day of real time.
 	PodUpdateRetask time.Duration
 	PodUpdateNotice time.Duration
+	// WorkerSilence is how long a phase worker's last recorded step may be in the past before the
+	// daemon reads that worker as one nothing will prompt and sends it its phase's task again
+	// (`worker_silence_minutes`, thirty minutes by default): workflow.SilentPhaseWorker takes it as
+	// the bound it judges a worker that is up, between turns and holding no task by. The key is a
+	// number of minutes rather than of hours because the bound is tens of minutes (readMinutes),
+	// and no deployment may set it under its floor (minWorkerSilence, checkWorkerSilence).
+	WorkerSilence time.Duration
+	// WorkerBackground is how long the background work a phase worker's own session reports may
+	// stand before the daemon tells that worker's architect of it (`worker_background_hours`,
+	// four hours by default). A worker whose session reports background work running is left
+	// alone by the silence repair above, because a bound cannot tell a worker with a
+	// forty-minute job from one whose job hung; this is the other half of that, and it sends
+	// nothing at all — the daemon names the worker to its architect once and the architect
+	// decides (internal/daemon's tellSilentPhaseWorkers, workflow's workerBackgroundStalled).
+	// The key is a number of hours because that bound is hours, and no deployment may set it at
+	// or under WorkerSilence (checkWorkerBackground).
+	WorkerBackground time.Duration
 	// PodUpdateMaxOpenRounds is how many issues may hold an open pod-update round at once
 	// (`pod_update_max_open_rounds`), and PodUpdateRoundsPerMinute how many rounds one sweep may
 	// open in a minute (`pod_update_rounds_per_minute`). Both are pointers because a file that
@@ -252,12 +269,36 @@ const (
 	// accepts too.
 	maxTimerSeconds = 2_147_483
 	// maxTimerMinutes is that same bound for a key written in minutes
-	// (runtime.kubernetes.idle_release), computed from it so the two cannot drift. A key in
-	// minutes needs a bound of its own for a second reason: the daemon turns it into a
-	// time.Duration (IdleReleaseConfig.Idle, Backstop), and an unbounded number of minutes
-	// multiplied by time.Minute wraps negative, which is an idle period every pod has already
-	// passed.
+	// (runtime.kubernetes.idle_release, worker_silence_minutes), computed from it so the two
+	// cannot drift. A key in minutes needs a bound of its own for a second reason: the daemon
+	// turns it into a time.Duration (IdleReleaseConfig.Idle, Backstop), and an unbounded number
+	// of minutes multiplied by time.Minute wraps negative, which is an idle period every pod has
+	// already passed.
 	maxTimerMinutes = maxTimerSeconds / 60
+
+	// defaultWorkerSilence is `worker_silence_minutes`'s default (Config.WorkerSilence): half an
+	// hour with no step from a phase worker that is up, between turns and holding no task is
+	// longer than any quiet wait a healthy worker takes of its own accord, and short enough that
+	// an issue whose worker lost its task waits minutes rather than a working day.
+	defaultWorkerSilence = 30 * time.Minute
+	// minWorkerSilence is the floor under `worker_silence_minutes` (checkWorkerSilence). It is a
+	// floor against the longest wait a healthy worker takes in which nothing crosses the wire,
+	// so that to the daemon it reads exactly like silence: the worker's own phase reminder. A
+	// worker that answers a reminder with a WAITING line is reminded again only after
+	// DEFAULT_STALL_LIMITS.waitingMs (`packages/pi-shared/src/stall-limits.ts`), 15 minutes, and
+	// records no step in between. A bound at or below that would have the daemon send a second
+	// task for work the worker already holds, to a worker whose own reminder is about to start a
+	// turn. 16 minutes is the first whole minute past it.
+	minWorkerSilence = 16 * time.Minute
+
+	// defaultWorkerBackground is `worker_background_hours`'s default (Config.WorkerBackground):
+	// four hours is several times the longest background-work hold the reading this work was
+	// filed for measured — two holds of about three quarters of an hour on one pod
+	// (dispatch://INFRA-3163) — so a job of the length a healthy worker runs is never named,
+	// and short enough that a job which hung is named while the working day it hung in lasts.
+	// It has no floor of its own: its floor is the silence bound the deployment sets
+	// (checkWorkerBackground).
+	defaultWorkerBackground = 4 * time.Hour
 )
 
 // durationKeys are the positive-second keys and their defaults (config.ts's DEFAULT_* constants,
@@ -309,7 +350,7 @@ var tossedKeys = map[string]string{
 // own text (Config.Warnings, readKeys), which boot logs and `legion start --check-config`
 // prints, so the operator reads what the refusal would have said and the daemon runs.
 var warnedKeys = map[string]string{
-	"max_fix_attempts": "nothing counts fix attempts any more, a red CI verdict always sends the work back to the implementer however many came before, and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
+	"max_fix_attempts": "nothing counts fix attempts any more, no CI verdict sends work back on its own (what a settlement names is told to the roles that work the issue), and the architect decides when to stop; remove max_fix_attempts from legion.yaml, where review_round_cap is the one cap left that blocks a pull request (dispatch://INFRA-956 R4)",
 }
 
 // migrationKeys are the keys refused with a migration message, mapped to that message verbatim.
@@ -365,6 +406,12 @@ type fileConfig struct {
 	ProductionCheckBound   *time.Duration
 	PodUpdateRetask        *time.Duration
 	PodUpdateNotice        *time.Duration
+	// WorkerSilence is `worker_silence_minutes` and WorkerBackground `worker_background_hours`,
+	// pointers as every other duration key here is: a file that leaves a key out is
+	// distinguishable from one that sets it, so resolve leaves the default standing for the
+	// first and carries the operator's number for the second.
+	WorkerSilence    *time.Duration
+	WorkerBackground *time.Duration
 	// PodUpdateMaxOpenRounds is `pod_update_max_open_rounds` and PodUpdateRoundsPerMinute
 	// `pod_update_rounds_per_minute`; each stays nil when the file leaves its key out, which is
 	// how resolve tells an absent key from a number and leaves Config's own pointer nil.
@@ -520,6 +567,10 @@ func readKeys(root *yaml.Node) (fileConfig, error) {
 			file.PodUpdateRetask, err = readHours(value, key)
 		case "pod_update_notice_hours":
 			file.PodUpdateNotice, err = readHours(value, key)
+		case "worker_silence_minutes":
+			file.WorkerSilence, err = readMinutes(value, key)
+		case "worker_background_hours":
+			file.WorkerBackground, err = readHours(value, key)
 		// Both round caps are read here rather than through countKeys, which carries a default
 		// for every key it holds and so could never report that the operator named neither.
 		case "pod_update_max_open_rounds":
@@ -913,20 +964,48 @@ func readInt(value *yaml.Node, key string) (*int, error) {
 // once and take its workspace with it, bound a check before its first look, or ask an update
 // round's worker again at every tick.
 func readHours(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnit(value, key, time.Hour, maxTimerSeconds/3600)
+}
+
+// readMinutes is readHours' twin for a key written in minutes (`worker_silence_minutes`): a
+// positive number of minutes, a decimal among them, bounded by the timer bound in whole minutes
+// (maxTimerMinutes), and nil for a key the file writes with no value at all.
+//
+// Why this key is in minutes where readHours' four are in hours: its bound is tens of minutes.
+// In hours an operator writes half an hour as 0.5, and a key whose values are written as
+// fractions is a key whose floor gets read as a number of hours: the 16-minute floor would be
+// 0.2666… there, which neither the file nor a refusal naming it could state plainly, and 0.5
+// meant as half an hour is half a minute to a reader of this key. The unit an operator will
+// write the bound in is therefore the unit the key takes.
+//
+// A value too small to hold a nanosecond is refused exactly as a non-positive one is, never read
+// as zero: a bound of zero or less is the repair switched off (workflow.SilentPhaseWorker names
+// no worker silent under one), so a value that rounded to zero would leave that deployment with
+// no silence repair at all while its file read as though it had set one.
+func readMinutes(value *yaml.Node, key string) (*time.Duration, error) {
+	return readUnit(value, key, time.Minute, maxTimerMinutes)
+}
+
+// readUnit is the body readHours and readMinutes share, for a key written as a number of unit
+// and bounded at most of them: a positive number, a decimal among them, refused above most and
+// refused when it is too small to hold a nanosecond of unit, and nil for a key the file writes
+// with no value at all. It is one function because the two keys differ in nothing but their unit
+// and their bound, and because the refusals a test compares whole are then written once.
+func readUnit(value *yaml.Node, key string, unit time.Duration, most int) (*time.Duration, error) {
 	if value.Tag == "!!null" {
 		return nil, nil
 	}
-	var hours float64
-	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&hours) != nil {
+	var read float64
+	if (value.Tag != "!!int" && value.Tag != "!!float") || value.Decode(&read) != nil {
 		return nil, fmt.Errorf("%s must be a number", key)
 	}
-	if !(hours > 0) {
+	if !(read > 0) {
 		return nil, fmt.Errorf("%s must be a positive number", key)
 	}
-	if hours > maxTimerSeconds/3600 {
-		return nil, fmt.Errorf("%s must be at most %d", key, maxTimerSeconds/3600)
+	if read > float64(most) {
+		return nil, fmt.Errorf("%s must be at most %d", key, most)
 	}
-	duration := time.Duration(math.Round(hours * float64(time.Hour)))
+	duration := time.Duration(math.Round(read * float64(unit)))
 	if duration <= 0 {
 		return nil, fmt.Errorf("%s must be a positive number", key)
 	}
@@ -1009,6 +1088,8 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 		ProductionCheckBound: 336 * time.Hour,
 		PodUpdateRetask:      time.Hour,
 		PodUpdateNotice:      4 * time.Hour,
+		WorkerSilence:        defaultWorkerSilence,
+		WorkerBackground:     defaultWorkerBackground,
 		ReviewRoundCap:       3,
 		Warnings:             file.Warnings,
 	}
@@ -1106,6 +1187,12 @@ func resolve(file fileConfig, env func(string) string, configDir string) (Config
 	if err := checkStallBackstops(cfg); err != nil {
 		return Config{}, err
 	}
+	if err := checkWorkerSilence(cfg); err != nil {
+		return Config{}, err
+	}
+	if err := checkWorkerBackground(cfg); err != nil {
+		return Config{}, err
+	}
 	if err := checkMemory(cfg); err != nil {
 		return Config{}, err
 	}
@@ -1193,6 +1280,39 @@ func checkSlackChannels(cfg Config) error {
 		}
 	}
 	return nil
+}
+
+// checkWorkerSilence refuses a `worker_silence_minutes` under the floor every deployment shares
+// (minWorkerSilence, whose comment holds the wait the floor is reckoned from), in the
+// register checkStallBackstops refuses a backstop bound in: the key, the value it read and the
+// floor, since the operator's own number is the only one of the three in the file being read.
+// The default is above the floor, so a file that names the key nowhere is refused nothing, and a
+// value exactly at the floor is taken.
+func checkWorkerSilence(cfg Config) error {
+	if cfg.WorkerSilence >= minWorkerSilence {
+		return nil
+	}
+	return fmt.Errorf("worker_silence_minutes (%s) is below the %s floor under it: a healthy phase worker that answers its reminder with a WAITING line is quiet for the 15m that reply buys before the reminder comes again (DEFAULT_STALL_LIMITS.waitingMs), so a shorter bound would send a second task for work the worker already holds, to a worker whose own reminder is about to start a turn",
+		cfg.WorkerSilence, minWorkerSilence)
+}
+
+// checkWorkerBackground refuses a `worker_background_hours` at or under `worker_silence_minutes`.
+// The floor is a relation rather than a number, so the refusal names both keys and both values:
+// which of the two the operator must move is theirs to choose, and neither number means anything
+// without the other.
+//
+// Under the silence bound the telling would be about a background job that has barely begun, and
+// it would race the silence repair of the same worker: the one sweep reads both bounds over one
+// claim (internal/daemon's tellSilentPhaseWorkers), so a worker whose session reports background
+// work would be named to its architect in the same minute the repair would otherwise have left
+// it alone for. Both defaults hold the relation (four hours against half an hour), so a file
+// that names neither key is refused nothing.
+func checkWorkerBackground(cfg Config) error {
+	if cfg.WorkerBackground > cfg.WorkerSilence {
+		return nil
+	}
+	return fmt.Errorf("worker_background_hours (%s) is at or below worker_silence_minutes (%s): the bound on background work a worker reports must be above the bound on its silence, since a shorter one would name a job that has barely begun and would race the repair that sends the same worker its phase's task again",
+		cfg.WorkerBackground, cfg.WorkerSilence)
 }
 
 // resolveStage2 settles the keys Stage 2 models. Each is read from the file alone: the shipped

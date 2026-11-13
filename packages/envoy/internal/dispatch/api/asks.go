@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 const maxAskOptions = 8
@@ -284,6 +285,16 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The person this question reaches, read under this write's own transaction through the rule
+	// every read of that person shares, so the caller is told whose Inbox it just landed in
+	// rather than having to read the ask again. It is set after the payload above is built:
+	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
+	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
+	ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	event, err := s.appendEvent(r.Context(), tx, owner.event("ask.opened", actor, openedPayload))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -307,7 +318,8 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(appended...)
+	s.publish(r.Context(), appended...)
+	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(nil, ask.Question, ask.Options)...)
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
 	// result on the issue's own advice; one on an unlinked project document searches the
 	// document's and has no issue state to report, so its advice carries the result alone, as does
@@ -319,8 +331,16 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	} else if owner.ArtifactID != nil {
 		source.artifactID = *owner.ArtifactID
 	}
-	suggestions := s.relatedCheck(r.Context(), relatedInput{text: ask.Question, title: ask.Question, source: source, record: true})
-	WriteJSON(w, http.StatusCreated, withSuggestions(ask, advice, suggestions))
+	// The check's own reader: an answered ask it offers carries the tree of that answer where
+	// this request asked for the trees, as every other answer of this response does
+	// (newShapedAsk). It is resolved before the response is written.
+	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	suggestions := s.relatedCheck(r.Context(), relatedInput{
+		text: ask.Question, title: ask.Question, source: source, question: true, record: true,
+		trees: trees,
+	})
+	trees.resolve()
+	WriteJSON(w, http.StatusCreated, withSuggestions(newShapedAsk(ask, wantsDisplayTrees(r)), advice, suggestions))
 }
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.
@@ -560,8 +580,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(event)
-	WriteJSON(w, http.StatusOK, ask)
+	s.publish(r.Context(), event)
+	// The question and options this edit replaced are stored beside the new ones: the row holds
+	// only what the ask says now, and every read of the ask's history (askEditReads) is shown the
+	// previous wording, which no other write would ever store.
+	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(
+		texttrees.AskWrittenTexts(nil, ask.Question, ask.Options), previous.Question, previous.Options)...)
+	WriteJSON(w, http.StatusOK, newShapedAsk(ask, wantsDisplayTrees(r)))
 }
 
 // blockArtifactOf is the document an indexed ask's block lives in. Every write that touches the
@@ -603,8 +628,8 @@ type openAsk struct {
 	HumanReplied bool                `json:"human_replied"`
 	LastReply    *model.AskLastReply `json:"last_reply"`
 	WaitingOn    string              `json:"waiting_on"`
-	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression), empty when
-	// nobody does: an ask on a project document or an unassigned issue that nobody was handed.
+	// WaitingOnPerson is the person the ask waits on (askedOfPersonExpression): the person it
+	// was handed to, else its issue's assignee, else its project's default assignee.
 	WaitingOnPerson string `json:"waiting_on_person"`
 }
 
@@ -673,8 +698,12 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				a.created_at,
 				greatest(0, floor(extract(epoch from (statement_timestamp() - a.created_at))))::bigint as age_seconds,
 				i.priority,
+				-- The issue's own assignee beside its key and title, which is not the person the
+				-- question reaches: a question on an issue nobody holds carries a null assignee
+				-- here and the project's default in waiting_on_person below. The Inbox's rows
+				-- carry the pair the same way (inboxIssue, api/inbox.go).
 				case
-					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title))
+					when i.key is not null then jsonb_build_object('issue', jsonb_build_object('key', i.key, 'title', i.title, 'assignee', i.assignee))
 					else jsonb_build_object('document', jsonb_build_object('project', ar.project_key, 'slug', ar.slug, 'name', ar.name))
 				end as owner,
 				exists (
@@ -687,9 +716,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 				) end as last_reply,
 				`+waitingOnExpression+` as waiting_on,
 				`+askedOfPersonExpression+` as waiting_on_person
-			from mine a
-			left join issues i on i.key = a.issue_key
-			left join artifacts ar on ar.id = a.artifact_id`+lastReplyJoin+`
+			from mine a`+askedOfPersonJoins+lastReplyJoin+`
 			where a.state = 'open' and (i.key is null or i.closed_at is null)
 		)
 		select
@@ -732,7 +759,7 @@ func (s *server) listOpenAsks(w http.ResponseWriter, r *http.Request) {
 // thread and, when the caller asked for it, the thread a card renders. Embedding model.Ask keeps
 // every field a reader already has exactly where it was, so the row stays a superset of the ask.
 type issueAskRow struct {
-	model.Ask
+	shapedAsk
 	LastReply *model.AskLastReply `json:"last_reply"`
 	Thread    *askThread          `json:"thread,omitempty"`
 }
@@ -763,31 +790,36 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
+	// every thread the list carries, are one query and one store.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
 	rows := make([]issueAskRow, len(asks))
 	for index := range asks {
-		rows[index] = issueAskRow{Ask: asks[index]}
+		rows[index].shapedAsk.Ask = asks[index]
+		rows[index].shapedAsk.shape(reader)
 		if reply, ok := lastReplies[asks[index].ID]; ok {
 			rows[index].LastReply = &reply
 		}
 	}
 	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), rows); err != nil {
+		if err := s.attachIssueAskThreads(r.Context(), rows, reader); err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 	}
+	reader.resolve()
 	WriteJSON(w, http.StatusOK, rows)
 }
 
 // attachIssueAskThreads hangs each row's thread off it. loadAskThreads leaves `answers` empty -
 // an Inbox row, its other caller, is an open ask and can have none - so this list, which does
 // carry answered asks, merges them over the same ask ids itself.
-func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow) error {
+func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow, reader *displayTreeReader) error {
 	askIDs := make([]string, len(rows))
 	for index := range rows {
 		askIDs[index] = rows[index].ID
 	}
-	threads, err := s.loadAskThreads(ctx, askIDs)
+	threads, err := s.loadAskThreads(ctx, askIDs, reader)
 	if err != nil {
 		return err
 	}
@@ -795,9 +827,12 @@ func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow) 
 	if err != nil {
 		return err
 	}
+	// The answers this list merges are its own read: loadAskThreads reads none, so the only one
+	// the list's reader already holds is the single answer each ask row carries, and an ask
+	// answered twice shows the superseded one here.
 	for index := range rows {
 		thread := threads[rows[index].ID]
-		thread.Answers = answers[rows[index].ID]
+		thread.Answers = askAnswerReads(answers[rows[index].ID], reader)
 		rows[index].Thread = &thread
 	}
 	return nil
@@ -831,7 +866,7 @@ func parseAskListThread(r *http.Request) (bool, error) {
 // askRead is the body GET /api/v1/asks/{id} answers: the single-ask read is a thread with the
 // ask beside it.
 type askRead struct {
-	Ask model.Ask `json:"ask"`
+	Ask shapedAsk `json:"ask"`
 	askThread
 }
 
@@ -883,9 +918,21 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	}
 	// The single-ask read is a thread with the ask beside it, so it and every Inbox or ask-list
 	// thread serialise through one definition and carry the same keys.
-	WriteJSON(w, http.StatusOK, askRead{Ask: ask, askThread: askThread{
-		Replies: replies, Edits: edits, Answers: answers, Followers: followers, askReach: reaches[ask.ID],
-	}})
+	//
+	// The ask, its replies, the wordings it went through and every answer it was given are one
+	// read of the table: the whole page the dashboard draws from this route in one query.
+	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
+	read := askRead{askThread: askThread{
+		Replies:   shapedComments(replies, reader),
+		Edits:     askEditReads(edits, reader),
+		Answers:   askAnswerReads(answers, reader),
+		Followers: followers,
+		askReach:  reaches[ask.ID],
+	}}
+	read.Ask.Ask = ask
+	read.Ask.shape(reader)
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, read)
 }
 
 // loadAskEdits reads every rewording of an ask back from its ask.edited events,
