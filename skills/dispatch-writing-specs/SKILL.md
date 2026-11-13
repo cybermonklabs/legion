@@ -7,7 +7,7 @@ description: "Use in a session with Dispatch before you write or change a spec, 
 
 ## The conversation
 
-Reach shared understanding at the least cost of the person's time. A spec is a conversation, not a document you write and then ask about. A Legion phase worker writes none (`skill://legion-worker`). In order:
+Reach shared understanding at the least cost of the person's time. A spec is a conversation, not a document you write and then ask about. A Legion phase worker writes none (`skill://legion-worker`).
 
 1. Read the issue, the code and what the person wrote.
 2. Send what you found and the questions it leaves open, a few at a time, before the spec states a design.
@@ -37,7 +37,7 @@ For each spec, ask, comment and message:
 - Write in `skill://asd-ste100`'s strict mode.
 - Write about the current design, never the person or how people reached it, and never quote or upload their words.
 - Link each source where the person wrote it. With no link, state the design.
-- Treat a person's stated preference or past answer as evidence of their taste, never as a decision. A commit attributed to a person is not their decision.
+- Treat a person's stated preference or past answer as evidence of their taste, never as a decision that settles the question. A commit attributed to a person is not their decision.
 - In a spec, cite code by file and symbol, never a line number.
 - A sentence citing a gate passing also says what the pass does not show: "Tests pass: a wrong verdict, not a missing one."
 - Keep only text a reader needs to understand, decide, build or check, and say what each issue you name does for them (`skill://plain-words`).

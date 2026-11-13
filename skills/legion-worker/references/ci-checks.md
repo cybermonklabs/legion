@@ -28,7 +28,7 @@ When the run gives no result, the command prints the case in place of a verdict:
 
 ```
 - <id> (before_merge): no result: <detail> <text>
-  Pull request line: - Check <id> (before_merge): CI run <name> has not concluded (<case>)
+  Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
 ```
 
 The case is one of these:
@@ -51,8 +51,8 @@ pass from the implementer, so it is never an entry in `failures`.
 ## The `Checks` line
 
 The implementer writes the line of each such check in the pull request body's `Checks` block. It
-copies the `Pull request line` that `dispatch results` prints. While the named run has not
-concluded, that line is the not-concluded line. The next role that writes the body reads
+copies the `Pull request line` that `dispatch results` prints. While the named run gives no
+result, that line is the no-result line. The next role that writes the body reads
 `dispatch results` again and puts the derived line in its place.
 
 ## A run that is still going

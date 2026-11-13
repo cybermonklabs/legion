@@ -38,7 +38,7 @@ order. Each is the line `dispatch result` printed when the result was recorded, 
 `Pull request line` that `dispatch results` prints for a check with `ci_check`:
 - Check <block id> (<when>): <pass|fail> at <the commit>, recorded by <role>. <the reading that role recorded, cut with an ellipsis where it is long>
 - Check <block id> (before_merge): <pass|fail> at <the commit>, from CI run <name>. <the check's words>
-- Check <block id> (before_merge): CI run <name> has not concluded (<case>)
+- Check <block id> (before_merge): CI run <name> has no result (<case>)
 - Check <block id> (after_merge): not yet run
 
 **Fast-follow:** "none", or one named cleanup item in a file this pull request does not touch, and where it will land.
