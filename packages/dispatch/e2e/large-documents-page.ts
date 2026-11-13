@@ -163,7 +163,7 @@ async function listenForThePage(page: Page): Promise<Announcements> {
 /** Waits for one of the page's announcements, and fails with `missed` where it never comes.
  *  The wait is the one the caller named, and what it is waiting for is a message the page
  *  sends rather than a reading the run takes, so the build cannot starve it. */
-async function theMomentThePageReached<T>(
+export async function theMomentThePageReached<T>(
   announced: Promise<T>,
   timeoutMs: number,
   missed: string

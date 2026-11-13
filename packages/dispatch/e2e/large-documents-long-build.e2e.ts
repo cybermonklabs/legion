@@ -33,7 +33,12 @@ import { type Browser, expect, type Page, test } from "@playwright/test";
 import { getArtifactText } from "./api";
 import { documentEditor, documentTransport } from "./editor";
 import { documentDiagrams, documentNames, documentTitle, largeDocument } from "./large-documents";
-import { measureDocument, throttleTheCpu, watchTheDocument } from "./large-documents-page";
+import {
+  measureDocument,
+  theMomentThePageReached,
+  throttleTheCpu,
+  watchTheDocument,
+} from "./large-documents-page";
 import {
   blocksBuilt,
   drawnBlocks,
@@ -46,6 +51,29 @@ import {
   topLevelBlocks,
 } from "./large-documents-rows";
 import { asUser } from "./users";
+
+// What a row of this file waits for of the page - its first block in the viewport and its
+// editor open - is an announcement the page makes (`watchTheDocument`), and one that never
+// comes is a promise that never settles. Every such wait here is bounded by the two figures
+// below, which are the ones the first row gives `measureDocument`, so a page that never makes
+// the announcement fails the row by name. Left to the row's own timeout it failed nothing: in
+// run 43385477411 at b6c6a359 the build-time row below started 10 s into shard 5 of 5 and was
+// still waiting when that leg's 9-minute budget ended it, its other 293 rows green, with no row
+// named and no report kept. Where the page announces both it ends in 40 to 80 s
+// (dispatch://INFRA-341).
+
+/** How long a row here waits for the editor's first block to come into the viewport. */
+const firstBlockTimeoutMs = 240_000;
+
+/** How long a row here waits for the editor to open, which is the end of its build. */
+const buildTimeoutMs = 480_000;
+
+const neverInTheViewport =
+  "the editor's first visible block never came into the viewport: either no editor root ever " +
+  'carried `data-write-path="live"` with a block in it, or a taller page header has pushed ' +
+  "that block under the fold";
+
+const neverOpened = "the editor never opened, so its build never ended";
 
 /** How long the row below holds the socket after the document's own draw is on the screen.
  *  Well past the moment the page's own end is reached - the draw is a screenful and a few
@@ -83,10 +111,7 @@ test(`the measurement's window stays open until ${documentNames.large}'s editor 
   try {
     const page = await alice.newPage();
     const transport = await documentTransport(page, { holding: true });
-    const measuring = measureDocument(page, path, {
-      buildTimeoutMs: 480_000,
-      firstBlockTimeoutMs: 240_000,
-    });
+    const measuring = measureDocument(page, path, { buildTimeoutMs, firstBlockTimeoutMs });
     let closed = false;
     const noteClosed = () => {
       closed = true;
@@ -210,10 +235,14 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     // already built, the moment she has that batch: it is in her Yjs document as the insert
     // returns, and the only thing between it and her editor is the socket message that carries
     // it.
-    await reached.firstBlock;
+    await theMomentThePageReached(reached.firstBlock, firstBlockTimeoutMs, neverInTheViewport);
     writer.write(word);
 
-    const openedMs = await reached.editorOpened;
+    const openedMs = await theMomentThePageReached(
+      reached.editorOpened,
+      buildTimeoutMs,
+      neverOpened
+    );
     const whole = await blocksBuilt(page);
     const landed = await page.evaluate(() => window.__theirWord);
     console.log(
@@ -320,8 +349,16 @@ async function theBuildsTime(
       await throttleTheCpu(page);
       await transport.release();
     }
-    const firstBlock = await reached.firstBlock;
-    const openedMs = await reached.editorOpened;
+    const firstBlock = await theMomentThePageReached(
+      reached.firstBlock,
+      firstBlockTimeoutMs,
+      neverInTheViewport
+    );
+    const openedMs = await theMomentThePageReached(
+      reached.editorOpened,
+      buildTimeoutMs,
+      neverOpened
+    );
     return { buildMs: openedMs - firstBlock.at, firstBlockMs: firstBlock.at, openedMs };
   } finally {
     await alice.close();
