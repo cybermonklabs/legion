@@ -16,8 +16,8 @@ import {
 } from "../../theme/classes";
 import { storeAgentState } from "../agents/unread";
 import { Timestamp } from "../refs/Timestamp";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ThreadOwnerLine } from "./AskOwnerLink";
 import { DismissControl } from "./DismissControl";
 import { rowPriority, rowType } from "./list-row";
@@ -103,10 +103,10 @@ export function ThreadRowCard({ thread }: { thread: MyReplyRow }): ReactNode {
               the error's own words are a composer's, of a message. */}
           <QueryError
             message={
-              markRead.error instanceof SendStoppedError
+              endedStopped(markRead)
                 ? stoppedWriteNote("this thread's read mark", "saved", {
                     again: "Retry",
-                    method: "PUT",
+                    method: markRead.method,
                     stopped: markRead.error,
                   })
                 : markRead.error.message

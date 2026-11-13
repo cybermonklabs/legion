@@ -13,15 +13,15 @@ import { retryNote, SendInterruptedError, SendStoppedError } from "./keyed-write
 import { StopTrying } from "./StopTrying";
 import { useWriteSelection, useWrites, type Write } from "./write-store";
 
-/** Why `refusal`, which refused `row`, left it unsaved, in the reader's words. One that ended
- *  without Dispatch's verdict - stopped, its key run out, or interrupted by a reload - may have
- *  landed, and what its Retry does is `retryNote`'s, by whether the write goes under its key
- *  (`Write.keyed`): a `PUT` or a `DELETE` sends none, so no Retry of one asks under a key. */
-function refusalReason(row: Write, refusal: Error): string {
+/** Why `refusal` left a write unsaved, in the reader's words. One that ended without Dispatch's
+ *  verdict - stopped, its key run out, or interrupted by a reload - may have landed, and what its
+ *  Retry does is `retryNote`'s, by whether the write goes under its key (`keyed`, `Write.keyed`):
+ *  a `PUT` or a `DELETE` sends none, so no Retry of one asks under a key. */
+function refusalReason(keyed: boolean, refusal: Error): string {
   if (!(refusal instanceof SendStoppedError)) {
     return apiErrorMessage(refusal, "Dispatch could not be reached");
   }
-  const retry = retryNote(row.keyed, refusal, "saved");
+  const retry = retryNote(keyed, refusal, "saved");
   return refusal instanceof SendInterruptedError
     ? `this page was closed before Dispatch confirmed it. ${retry}`
     : `Dispatch has not confirmed it. ${retry}`;
@@ -109,7 +109,7 @@ export function PendingWritesIndicator(): ReactNode {
                 {row.status === "refused" ? (
                   <>
                     <span className={`min-w-0 flex-1 ${dangerText}`}>
-                      Not saved: {row.label} — {refusalReason(row, row.refusal)}
+                      Not saved: {row.label} — {refusalReason(row.keyed, row.refusal)}
                     </span>
                     <button
                       className={secondaryButtonCompact}

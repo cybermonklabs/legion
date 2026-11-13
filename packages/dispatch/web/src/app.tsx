@@ -68,6 +68,7 @@ import { legacyPinnedAgentsKey, useUserPreference } from "./features/shell/userP
 import { Sidebar } from "./features/sidebar/Sidebar";
 import "./features/writes/kinds";
 import { KeptWrites } from "./features/writes/KeptWrites";
+import { SendStoppedError, stoppedWriteNote } from "./features/writes/keyed-write";
 import { PendingWritesIndicator } from "./features/writes/PendingWritesIndicator";
 import { useKeyedWrite } from "./features/writes/useKeyedWrite";
 import { type Write, writesOf } from "./features/writes/write-store";
@@ -310,6 +311,18 @@ function ShellSkeleton(): ReactNode {
   );
 }
 
+/** What the rail says of a sign-out that did not land, with its Retry beside it. One Dispatch
+ *  refused left the person signed in. One the reader stopped may have ended the session, which the
+ *  page cannot know: it says so, and that Retry - a sign-out of its own, which lands on finding
+ *  the session ended (`isNoIdentity`) - signs them out either way. Neither discarded a change. */
+function signOutFailure(error: Error): string {
+  return error instanceof SendStoppedError
+    ? stoppedWriteNote("the sign-out", "made", {
+        anew: "Every change is still here. Retry ends your session, or finds it ended, and signs you out here.",
+      })
+    : "The sign-out did not go through. You are still signed in, with every change.";
+}
+
 function NavigationContents({
   closeButtonRef,
   compact,
@@ -331,7 +344,8 @@ function NavigationContents({
   onOpenInboxDrawer: () => void;
   onSearch: () => void;
   onSignOut: () => void;
-  signOutError: boolean;
+  /** What the rail says of the last sign-out where it did not land (`signOutFailure`). */
+  signOutError: string | undefined;
   signOutPending: boolean;
   user: AuthenticatedUser;
 }): ReactNode {
@@ -393,15 +407,15 @@ function NavigationContents({
         >
           Sign out
         </button>
-        {signOutError ? (
+        {signOutError === undefined ? null : (
           // A sign-out Dispatch did not answer as done discarded nothing: every write is as it was.
           <p className={`mt-1 px-2 text-sm ${railDangerText}`} role="alert">
-            The sign-out did not go through. You are still signed in, with every change.{" "}
+            {signOutError}{" "}
             <button className="font-medium underline" onClick={onSignOut} type="button">
               Retry
             </button>
           </p>
-        ) : null}
+        )}
       </div>
     </>
   );
@@ -710,7 +724,7 @@ function AppShell({ user }: { user: AuthenticatedUser }): ReactNode {
           signOut.mutate();
         });
       }}
-      signOutError={signOut.isError}
+      signOutError={signOut.isError ? signOutFailure(signOut.error) : undefined}
       signOutPending={signOut.isPending || askingTabs}
       user={user}
     />

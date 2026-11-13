@@ -19,6 +19,7 @@ import {
   apiErrorMessage,
   isSubscriberNotFound,
   issuePatchRequest,
+  removedEvenIfGone,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
 import { projectsQuery, userStateQuery } from "../../api/queries";
@@ -66,7 +67,7 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
@@ -190,19 +191,14 @@ export function IssueHeader({
   // Every write here names `write` before its callbacks: its answer and its variables are what
   // the callbacks below read.
   const unsubscribe = useKeyedWrite({
-    // An unsubscribe is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made
-    // again after one that landed - stopped, or its answer lost - it finds the session no longer
-    // subscribed and is answered `404 SUBSCRIBER_NOT_FOUND`, the unsubscribe done, which lands as
-    // a `204` does. A claim's release needs no such reading: Dispatch answers a release of an
-    // issue nobody holds with the issue, as it answers the first.
+    // An unsubscribe made again after one that landed finds the session no longer subscribed
+    // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
     method: "DELETE",
-    write: async (sessionId: string, bounds) => {
-      try {
-        await api.unsubscribeIssueSession(issue.key, sessionId, bounds);
-      } catch (error) {
-        if (!isSubscriberNotFound(error)) throw error;
-      }
-    },
+    write: (sessionId: string, bounds) =>
+      removedEvenIfGone(
+        api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+        isSubscriberNotFound
+      ),
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
@@ -211,6 +207,8 @@ export function IssueHeader({
     },
   });
   const releaseClaim = useKeyedWrite({
+    // A release made again after one that landed needs no `removedEvenIfGone`: Dispatch answers a
+    // release of an issue nobody holds with the issue, as it answers the first.
     method: "DELETE",
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
@@ -890,10 +888,10 @@ export function IssueHeader({
       {updateState.isError ? (
         <QueryError
           message={
-            updateState.error instanceof SendStoppedError
+            endedStopped(updateState)
               ? stoppedWriteNote("the pin status", "saved", {
                   again: "Retry",
-                  method: "PUT",
+                  method: updateState.method,
                   stopped: updateState.error,
                 })
               : "Could not save pin status."
@@ -905,10 +903,10 @@ export function IssueHeader({
       {unsubscribe.isError ? (
         <QueryError
           message={
-            unsubscribe.error instanceof SendStoppedError
+            endedStopped(unsubscribe)
               ? stoppedWriteNote("this agent's unsubscribe", "made", {
                   again: "Retry",
-                  method: "DELETE",
+                  method: unsubscribe.method,
                   stopped: unsubscribe.error,
                 })
               : "Could not unsubscribe this agent."
@@ -920,10 +918,10 @@ export function IssueHeader({
       {releaseClaim.isError ? (
         <QueryError
           message={
-            releaseClaim.error instanceof SendStoppedError
+            endedStopped(releaseClaim)
               ? stoppedWriteNote("the release of this claim", "made", {
                   again: "Retry",
-                  method: "DELETE",
+                  method: releaseClaim.method,
                   stopped: releaseClaim.error,
                 })
               : "Could not release this claim."

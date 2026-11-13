@@ -129,22 +129,35 @@ export function useIssueTableActions({
     if (failed.length) {
       // A change the reader stopped in Pending changes may have been saved, so it is said apart
       // from a refused one, in the words of a stopped write; the error's own are a composer's.
-      const refused = failed.filter(({ error }) => !(error instanceof SendStoppedError));
-      const stopped = failed.flatMap(({ error, key }) =>
-        error instanceof SendStoppedError ? [{ error, key }] : []
-      );
+      const refused: { error: unknown; key: string }[] = [];
+      const stopped: { error: SendStoppedError; key: string }[] = [];
+      for (const { error, key } of failed) {
+        if (error instanceof SendStoppedError) stopped.push({ error, key });
+        else refused.push({ error, key });
+      }
+      const refusedKeys = refused.map(({ key }) => key).join(", ");
       const unsaved =
-        refused.length === 0
+        refused[0] === undefined
           ? ""
-          : ` Changes not saved: ${refused.map(({ key }) => key).join(", ")}. ${String(refused[0]?.error)}`;
-      const keys = stopped.map(({ key }) => key).join(", ");
-      const unconfirmed =
+          : ` Changes not saved: ${refusedKeys}. ${String(refused[0].error)}`;
+      const stoppedKeys = stopped.map(({ key }) => key).join(", ");
+      const what =
+        stopped.length === 1
+          ? `the change to ${stoppedKeys}`
+          : `the change to each of ${stoppedKeys}`;
+      const note =
         stopped[0] === undefined
-          ? ""
-          : ` ${stoppedWriteNote(stopped.length === 1 ? `the change to ${keys}` : `the change to each of ${keys}`, "saved", { again: "Retry", method: "PATCH", stopped: stopped[0].error })}`;
+          ? undefined
+          : stoppedWriteNote(what, "saved", {
+              again: "Retry",
+              method: "PATCH",
+              stopped: stopped[0].error,
+            });
+      const unconfirmed = note === undefined ? "" : ` ${note}`;
+      const saved = `${operations.length - failed.length} of ${operations.length} changes saved.`;
       throw new Error(
-        `${operations.length - failed.length} of ${operations.length} changes saved.${unsaved}${unconfirmed} Retry each failed change in Pending changes.`,
-        { cause: stopped.length > 0 ? stopped[0]?.error : refused[0]?.error }
+        `${saved}${unsaved}${unconfirmed} Retry each failed change in Pending changes.`,
+        { cause: (stopped[0] ?? refused[0])?.error }
       );
     }
     return operations.map(({ key }) => key);

@@ -6,8 +6,8 @@ import { mergeIssue } from "../../api/issue-cache";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 
 export interface IssueFieldWrite<Value> {
   /** The server's reason after a refused save, or what a save the reader stopped may have done
@@ -131,14 +131,13 @@ export function useIssueFieldWrite<Value>(
   });
   // A save the reader stopped may have been made, and Retry makes that very press again
   // (`retryLast`): the error's own words are a composer's, of a message.
-  const stopped =
-    mutation.error instanceof SendStoppedError
-      ? stoppedWriteNote(field.what, "saved", {
-          again: "Retry",
-          method: "PATCH",
-          stopped: mutation.error,
-        })
-      : undefined;
+  const stopped = endedStopped(mutation)
+    ? stoppedWriteNote(field.what, "saved", {
+        again: "Retry",
+        method: mutation.method,
+        stopped: mutation.error,
+      })
+    : undefined;
   return {
     error: stopped ?? mutation.error?.message,
     failed: mutation.isError,

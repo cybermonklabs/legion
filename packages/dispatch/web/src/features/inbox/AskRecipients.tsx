@@ -1,7 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-import { api, isFollowerNotFound, isSubscriberNotFound, type WriteBounds } from "../../api/client";
+import {
+  api,
+  isFollowerNotFound,
+  isSubscriberNotFound,
+  removedEvenIfGone,
+  type WriteBounds,
+} from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -11,8 +17,8 @@ import { RouteReachUnknownMarker, UnreachableRouteMarker } from "../issue/RouteR
 import { UnsubscribeDialog } from "../issue/UnsubscribeDialog";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { sessionChipClassName, sessionRemoveButtonClassName } from "../refs/SessionChip";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 
 const removeAskFollower = (askId: string, sessionId: string, bounds: WriteBounds): Promise<void> =>
   api.removeAskFollower(askId, sessionId, bounds);
@@ -266,19 +272,13 @@ export function AskRecipients({
   const counted = !subscribersQuery.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
-  // Each is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made again after
-  // one that landed - stopped, or its answer lost - it finds the session off the ask already, and
-  // is answered `404 FOLLOWER_NOT_FOUND` or `404 SUBSCRIBER_NOT_FOUND`. That is the change done,
-  // which is what the person asked, so the write lands on it as on a `204`.
+  // Each is a `DELETE`: made again after one that landed, it finds the session off the ask
+  // already (`404 FOLLOWER_NOT_FOUND`, `404 SUBSCRIBER_NOT_FOUND`), which is the change done
+  // (`removedEvenIfGone`).
   const unfollow = useKeyedWrite({
     method: "DELETE",
-    write: async (sessionId: string, bounds) => {
-      try {
-        await removeFollower(askId, sessionId, bounds);
-      } catch (error) {
-        if (!isFollowerNotFound(error)) throw error;
-      }
-    },
+    write: (sessionId: string, bounds) =>
+      removedEvenIfGone(removeFollower(askId, sessionId, bounds), isFollowerNotFound),
     label: (sessionId) => `${text.sessionText(sessionId, undefined)} taken off this ask`,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ask-thread", askId] }),
   });
@@ -288,11 +288,7 @@ export function AskRecipients({
       if (subscription === undefined) {
         throw new Error("Ask recipients unsubscribe requires an owner.");
       }
-      try {
-        await subscription.remove(sessionId, bounds);
-      } catch (error) {
-        if (!isSubscriberNotFound(error)) throw error;
-      }
+      await removedEvenIfGone(subscription.remove(sessionId, bounds), isSubscriberNotFound);
     },
     label: (sessionId) =>
       `${text.sessionText(sessionId, subscribers.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${subscription?.label ?? "this ask"}`,
@@ -445,10 +441,10 @@ export function AskRecipients({
         <div className="mt-2">
           <QueryError
             message={
-              unfollow.error instanceof SendStoppedError
+              endedStopped(unfollow)
                 ? stoppedWriteNote("the unfollow", "made", {
                     again: "Retry",
-                    method: "DELETE",
+                    method: unfollow.method,
                     stopped: unfollow.error,
                   })
                 : "Could not unfollow."
@@ -462,10 +458,10 @@ export function AskRecipients({
         <div className="mt-2">
           <QueryError
             message={
-              unsubscribe.error instanceof SendStoppedError
+              endedStopped(unsubscribe)
                 ? stoppedWriteNote("the unsubscribe", "made", {
                     again: "Retry",
-                    method: "DELETE",
+                    method: unsubscribe.method,
                     stopped: unsubscribe.error,
                   })
                 : "Could not unsubscribe."

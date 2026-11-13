@@ -314,8 +314,8 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
   }
 });
 
-/** Presses a write of `method` labelled `label` whose attempts go unanswered, waits it late,
- *  stops it, and answers the indicator showing its refusal. */
+/** Presses a write of `method` labelled `label` whose every attempt Dispatch answers `503`, waits
+ *  it late and stops it; answers the indicator, which then shows it stopped, and its unmount. */
 async function stoppedIn(method: WriteMethod, label: string) {
   jest.useFakeTimers();
   const user = userOnFakeClock();

@@ -104,13 +104,14 @@ export interface KeptWrite {
    *  write re-pressed under the key of the one it replaces (a composer's Retry, `supersede`) is
    *  kept as a write that has sent nothing and holds no request, while its key has carried that
    *  earlier press's request all the same. Every write kept here holds the field, and every one
-   *  `load` hands back: the release before this one wrote no such field, and `load` is the one
-   *  place that converts a missing one (`KeptEntry`), so nowhere else is absence a case. */
+   *  `load` hands back: the release before this one writes it too, the one before that wrote no
+   *  such field, and `load` is the one place that converts a missing one (`KeptEntry`), so
+   *  nowhere else is absence a case. */
   readonly carried: WriteMethod | null;
   /** Whether the write goes under its key (`Write.keyed`), as its press registered it, which
-   *  the indicator reads for what its Retry does. Every write kept here holds the field; `load`
-   *  is the one place that reads one the release before this one wrote, which holds none
-   *  (`KeptEntry`). */
+   *  the indicator reads for what its Retry does. Every write kept here holds the field, which
+   *  this release is the first to write; `load` is the one place that reads an entry an older
+   *  release wrote, which holds none (`KeptEntry`). */
   readonly keyed: boolean;
   readonly detail: unknown;
 }
@@ -199,11 +200,11 @@ const keptRequestShape = shape.either(
 
 /** An entry as it is read back: a kept write, whose `carried` and `keyed` can be missing, and
  *  the format's version. The version stands still while a field is only added: the release
- *  before this one wrote neither field - nor did the one before it write `carried` - so an entry
- *  of theirs holds every other field this shape names and still loads here, and an entry this
- *  one writes holds every field those releases read, and so still loads there. Every entry this
- *  release writes holds both fields; a missing one is an entry of an older shape, and `load` is
- *  the one place that converts it, so this shape is the only one that has either absent and
+ *  before this one writes `carried` and no `keyed`, and the one before that wrote neither, so an
+ *  entry of theirs holds every other field this shape names and still loads here, and an entry
+ *  this one writes holds every field those releases read, and so still loads there. Every entry
+ *  this release writes holds both fields; a missing one is an entry of an older shape, and `load`
+ *  is the one place that converts it, so this shape is the only one that has either absent and
  *  nothing downstream of `load` reads one. */
 type KeptEntry = Omit<KeptWrite, "carried" | "keyed"> & {
   readonly carried?: WriteMethod | null;

@@ -29,7 +29,7 @@ import { useSessionSends } from "../conversation/useSessionSends";
 import { AgentName, AgentUnresponsiveNote, useAgentText } from "../refs/AgentName";
 import { ErrorBoundary } from "../shell/ErrorBoundary";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AgentRuntimeThread } from "./AgentRuntimeThread";
 import { sessionCommands, sessionSettingsView } from "./conversation";
@@ -271,8 +271,13 @@ export function AgentConversationPage({
       ) : null}
       {switchRefusal === null ? null : (
         <p className={`mt-2 text-sm ${dangerText}`} data-testid="agent-send-error">
+          {/* A switch the reader stopped, or whose key ran out, may have reached the session.
+              The header offers no Retry of it: picking again is a switch of its own, under a
+              key of its own, so the error's words - a composer's Retry - are not said here. */}
           {switchRefusal instanceof SendStoppedError
-            ? switchRefusal.message
+            ? stoppedWriteNote("the switch", "sent", {
+                anew: "Picking a model or thinking level again sends a new switch.",
+              })
             : `Could not send: ${apiErrorMessage(switchRefusal, "could not reach the session")}`}
         </p>
       )}

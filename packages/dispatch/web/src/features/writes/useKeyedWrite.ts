@@ -11,7 +11,7 @@ import { useCallback, useRef, useState } from "react";
 
 import type { WriteBounds, WriteMethod, WriteRequest } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
-import { retriesUnderItsKey } from "./keyed-write";
+import { retriesUnderItsKey, SendStoppedError } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
 
 /** A write a surface makes for the reader: `useMutation`'s options, but for `mutationFn`, which
@@ -116,7 +116,20 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
    *  key, if the reader stops it again. A press the hook does not hold - out again already, or
    *  decided - is not made, and `again` returns `false`. */
   readonly again: (press: KeyedPress<TVariables>) => boolean;
+  /** The method of the newest press's request where the reader stopped that press, the press
+   *  `retry` makes again, so a surface's sentence of that Retry reads it here rather than stating
+   *  it a second time (`endedStopped`, `stoppedWriteNote`); `undefined` while the newest press did
+   *  not end stopped. */
+  readonly method: WriteMethod | undefined;
 };
+
+/** Whether the newest press of `write` ended with the reader's stop: its `error` is then that
+ *  `SendStoppedError`, and its `method` the method of that press's request. */
+export function endedStopped<
+  W extends { readonly error: unknown; readonly method: WriteMethod | undefined },
+>(write: W): write is W & { readonly error: SendStoppedError; readonly method: WriteMethod } {
+  return write.error instanceof SendStoppedError && write.method !== undefined;
+}
 
 /** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made
  *  of it: each is handed that press's variables, as it would be from a `useMutation` of its own. */
@@ -196,6 +209,13 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     undefined
   );
   const forgetUnanswered = useCallback(() => setUnanswered(undefined), []);
+  /** The method of the request a press of `variables` makes. */
+  const methodOf = (variables: TVariables): WriteMethod =>
+    write === undefined
+      ? request(variables).method
+      : typeof method === "function"
+        ? method(variables)
+        : method;
   const mutation = useMutation<TData | null, DefaultError, Press<TVariables>, TContext>({
     ...options,
     mutationFn: (press) => {
@@ -216,7 +236,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
           ? writes.run({ ...spec, request: request(variables), target: target(variables) })
           : writes.run({
               ...spec,
-              method: typeof method === "function" ? method(variables) : method,
+              method: methodOf(variables),
               write: (bounds) => write(variables, bounds),
             })
       ).then(
@@ -288,6 +308,12 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     [makePress]
   );
   const newest = mutation.variables;
+  // Built only once the newest press ended stopped, when its request went out: a press whose
+  // request could not be built ended with that error instead, which building it here would throw.
+  const newestMethod =
+    newest !== undefined && mutation.error instanceof SendStoppedError
+      ? methodOf(newest.variables)
+      : undefined;
   const retry = useCallback(() => {
     if (newest !== undefined && !again(newest)) mutate(newest.variables);
   }, [again, mutate, newest]);
@@ -297,6 +323,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     ...mutation,
     again,
     forgetUnanswered,
+    method: newestMethod,
     mutate,
     mutateAsync,
     retry,

@@ -28,8 +28,8 @@ import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
 
 export type CreateReply = (
@@ -166,10 +166,10 @@ export function AskReplyComposer({
       {submit.isError ? (
         <QueryError
           message={
-            submit.error instanceof SendStoppedError
+            endedStopped(submit)
               ? stoppedWriteNote("your reply", "posted", {
                   again: "Retry",
-                  method: "POST",
+                  method: submit.method,
                   stopped: submit.error,
                 })
               : "Could not post your reply."

@@ -305,6 +305,24 @@ export function isFollowerNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "FOLLOWER_NOT_FOUND";
 }
 
+/**
+ * A removal - a `DELETE` - that lands on finding the thing gone already. A `DELETE` sends no key,
+ * so Dispatch keeps no answer for one: made again after one that landed - stopped, or its answer
+ * lost - it finds nothing to remove, and Dispatch answers the `404` that `gone` names. That is the
+ * removal done, which is what the person asked, so it resolves as a `204` does; any other error
+ * rejects as `removal` did.
+ */
+export async function removedEvenIfGone(
+  removal: Promise<unknown>,
+  gone: (error: unknown) => boolean
+): Promise<void> {
+  try {
+    await removal;
+  } catch (error) {
+    if (!gone(error)) throw error;
+  }
+}
+
 // A Dispatch with no secrets broker configured (no DISPATCH_AGENT_SECRETS_URL) answers every
 // credential route but the pending list with this 404 — the same class as the architecture-source
 // 404 above it: retrying changes nothing. The pending list, which every page reads, answers `null`

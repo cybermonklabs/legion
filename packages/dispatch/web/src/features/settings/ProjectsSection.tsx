@@ -26,7 +26,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, type KeyedPress, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   settingsFieldLabel,
   settingsMonoInput,
@@ -261,10 +261,10 @@ export function ProjectsSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  createProject.error instanceof SendStoppedError
+                  endedStopped(createProject)
                     ? stoppedWriteNote("the new project", "made", {
                         again: "Retry",
-                        method: "POST",
+                        method: createProject.method,
                         stopped: createProject.error,
                       })
                     : apiErrorMessage(createProject.error, "Couldn't create the project.")

@@ -29,7 +29,9 @@ import {
  * (`snoozeStoppedText`).
  */
 function snoozeRefusalText(failed: readonly AskSnoozeFailure[], of: number): string | undefined {
-  const refused = failed.filter(({ stopped }) => !stopped);
+  const refused = failed.filter(
+    (failure): failure is Extract<AskSnoozeFailure, { stopped: false }> => !failure.stopped
+  );
   const unconfirmed = snoozeStoppedText(failed.length - refused.length, of);
   const first = refused[0];
   if (first === undefined) return unconfirmed;

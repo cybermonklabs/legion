@@ -26,10 +26,10 @@ export interface NewIssueWrite {
   readonly words: string;
 }
 
-/** A write onto an issue the create has already made that did not land: which write it was, in
- *  the words the bar reports it in, and the reason Dispatch gave for refusing it (`why`) - or
- *  that the person stopped it before Dispatch confirmed it (`stopped`), when it may have landed
- *  and there is no refusal to report. */
+/** A write onto an issue the create has already made that Dispatch did not confirm: which write
+ *  it was, in the words the bar reports it in, and either the reason Dispatch gave for refusing
+ *  it (`why`), or that the person stopped it (`stopped`), when it may have landed and there is no
+ *  refusal to report. */
 export type RefusedWrite =
   | { readonly stopped: false; readonly what: string; readonly why: string }
   | { readonly stopped: true; readonly what: string };
@@ -40,9 +40,9 @@ export interface FiledIssue {
   /** The session the issue was routed to and its first message went to; `""` where the
    *  deployment names none, which is the issue made with no conversation started on it. */
   readonly session: string;
-  /** The first write onto the issue that did not land, where one did not: the filing ended
-   *  there, and the issue stands without it, or with it where a stopped one landed. Undefined
-   *  where every write landed. */
+  /** The first write onto the issue that Dispatch did not confirm, where there was one: the
+   *  filing ended there, and the issue stands without it - or with it, where a stopped one
+   *  landed. Undefined where every write landed. */
   readonly refused?: RefusedWrite;
 }
 

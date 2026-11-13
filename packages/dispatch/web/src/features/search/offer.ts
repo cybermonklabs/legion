@@ -3,6 +3,7 @@ import { useState } from "react";
 
 import type { WriteMethod } from "../../api/client";
 import { textMutedOnSurface } from "../../theme/classes";
+import { SendStoppedError } from "../writes/keyed-write";
 import { type Attempt, plainWrite, type Writes } from "../writes/write-store";
 
 /** The one row an offer lists in the bar: the id the arrows and `aria-activedescendant` read,
@@ -70,4 +71,22 @@ export function press<T>(
  *  write: a reader told only "could not" has nothing to act on. */
 export function refusalText(error: unknown, whenSilent: string): string {
   return error instanceof Error && error.message !== "" ? error.message : whenSilent;
+}
+
+/** Where an offer's press of `words` stands once its write threw: stopped by the person before
+ *  Dispatch confirmed it, when it may have landed and there is no refusal to report, or refused,
+ *  with Dispatch's reason (`refusalText`, `whenSilent` where it gave none). */
+export type UnconfirmedPress =
+  | { readonly kind: "refused"; readonly refusal: string; readonly words: string }
+  | { readonly kind: "stopped"; readonly words: string };
+
+/** The state an offer's press of `words` is left in by `error`, its write's (`UnconfirmedPress`). */
+export function unconfirmedPress(
+  error: unknown,
+  words: string,
+  whenSilent: string
+): UnconfirmedPress {
+  return error instanceof SendStoppedError
+    ? { kind: "stopped", words }
+    : { kind: "refused", refusal: refusalText(error, whenSilent), words };
 }

@@ -1,9 +1,15 @@
 import { useRef, useState } from "react";
 
-import { api, apiErrorCodeIn, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  api,
+  apiErrorCodeIn,
+  apiErrorMessage,
+  type WriteBounds,
+  type WriteMethod,
+} from "../../api/client";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 
 export type CommentAction = "accept" | "reject" | "resolve" | "reopen";
 
@@ -28,20 +34,22 @@ const permanentRefusals = new Set([
   "INVALID_OP",
 ]);
 
-/** What the card says of a failed action. One the reader stopped may have been saved, and the
- *  card's Retry makes it again under its key (`retryItem`). */
-function actionFailure(id: string, error: Error): CommentActionFailure {
+/** What the card says of `action`'s failed press, of the comment `id`. One the reader stopped may
+ *  have been saved, and the card's Retry makes it again under its key (`retryItem`). */
+function actionFailure(
+  id: string,
+  action: { readonly error: Error; readonly method: WriteMethod | undefined }
+): CommentActionFailure {
   return {
     id,
-    message:
-      error instanceof SendStoppedError
-        ? stoppedWriteNote("this action", "saved", {
-            again: "Retry",
-            method: "POST",
-            stopped: error,
-          })
-        : apiErrorMessage(error, "Could not save this action."),
-    retryable: !apiErrorCodeIn(error, permanentRefusals),
+    message: endedStopped(action)
+      ? stoppedWriteNote("this action", "saved", {
+          again: "Retry",
+          method: action.method,
+          stopped: action.error,
+        })
+      : apiErrorMessage(action.error, "Could not save this action."),
+    retryable: !apiErrorCodeIn(action.error, permanentRefusals),
   };
 }
 
@@ -125,7 +133,7 @@ export function useCommentActionQueue<TContext = undefined>({
   return {
     actionFailure:
       action.isError && action.variables !== undefined
-        ? actionFailure(action.variables.id, action.error)
+        ? actionFailure(action.variables.id, action)
         : undefined,
     mutateItem: (input: CommentActionInput) => {
       if (start(input)) return;

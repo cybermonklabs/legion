@@ -2,10 +2,17 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { ReactNode } from "react";
 
 import { newIssueSettingsQuery } from "../../api/queries";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { useWrites, type Writes } from "../writes/write-store";
 import { type FiledIssue, fileNewIssue, type NewIssueWrite } from "./new-issue";
-import { barNoteClassName, type Offer, type OfferRow, refusalText, useWordsState } from "./offer";
+import {
+  barNoteClassName,
+  type Offer,
+  type OfferRow,
+  type UnconfirmedPress,
+  unconfirmedPress,
+  useWordsState,
+} from "./offer";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
  *  `aria-activedescendant` read. */
@@ -20,8 +27,7 @@ export const NEW_ISSUE_OPTION_ID = "search-option-new-issue";
 type OfferState =
   | { readonly kind: "making"; readonly words: string }
   | { readonly filed: FiledIssue | undefined; readonly kind: "made"; readonly words: string }
-  | { readonly kind: "refused"; readonly refusal: string; readonly words: string }
-  | { readonly kind: "stopped"; readonly words: string };
+  | UnconfirmedPress;
 
 /** How the offer writes; the tests pass their own. */
 export type FileNewIssue = (
@@ -93,15 +99,7 @@ export function useNewIssueOffer({
         }
       },
       (error: unknown) => {
-        setState(
-          error instanceof SendStoppedError
-            ? { kind: "stopped", words }
-            : {
-                kind: "refused",
-                refusal: refusalText(error, "the write did not reach Dispatch."),
-                words,
-              }
-        );
+        setState(unconfirmedPress(error, words, "the write did not reach Dispatch."));
       }
     );
   };

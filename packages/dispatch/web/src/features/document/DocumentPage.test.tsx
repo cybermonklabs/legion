@@ -249,8 +249,8 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
 });
 
 /** The page with one removable subscriber, its unsubscribe answered by `unsubscribe`, which is
- *  handed the subscribers the list then reads so it can empty them. Answers the region and the
- *  dialog's Confirm, the press not yet made. */
+ *  handed the subscribers the list reads so it can empty them. Presses Unsubscribe and answers
+ *  the dialog's Confirm button, for the case to press. */
 async function unsubscribing(unsubscribe: (subscribers: Subscriber[]) => Promise<void>) {
   const subscribers: Subscriber[] = [
     {

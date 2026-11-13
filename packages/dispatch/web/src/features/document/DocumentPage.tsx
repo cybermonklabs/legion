@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { api, isSubscriberNotFound } from "../../api/client";
+import { api, isSubscriberNotFound, removedEvenIfGone } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
@@ -20,8 +20,8 @@ import {
 } from "../refs/routes";
 import { firstHighlightTerm } from "../search/search-model";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { useProjectArtifact } from "./useProjectArtifact";
 
 export function DocumentPage(): ReactNode {
@@ -53,20 +53,17 @@ export function DocumentPage(): ReactNode {
   const unsubscribe = useKeyedWrite({
     label: (sessionId: string) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,
-    // An unsubscribe is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made
-    // again after one that landed - stopped, or its answer lost - it finds the session no longer
-    // subscribed and is answered `404 SUBSCRIBER_NOT_FOUND`. That is the unsubscribe done, which
-    // is what the person asked, so the write lands on it as on a `204`.
+    // An unsubscribe made again after one that landed finds the session no longer subscribed
+    // (`404 SUBSCRIBER_NOT_FOUND`), which is the unsubscribe done (`removedEvenIfGone`).
     method: "DELETE",
     write: async (sessionId: string, bounds) => {
       if (artifact.data === undefined) {
         throw new Error("Document unsubscribe requires an artifact.");
       }
-      try {
-        await api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds);
-      } catch (error) {
-        if (!isSubscriberNotFound(error)) throw error;
-      }
+      await removedEvenIfGone(
+        api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds),
+        isSubscriberNotFound
+      );
     },
     onSuccess: () => {
       if (artifact.data !== undefined) {
@@ -150,10 +147,10 @@ export function DocumentPage(): ReactNode {
         {unsubscribe.isError ? (
           <QueryError
             message={
-              unsubscribe.error instanceof SendStoppedError
+              endedStopped(unsubscribe)
                 ? stoppedWriteNote("this agent's unsubscribe", "made", {
                     again: "Retry",
-                    method: "DELETE",
+                    method: unsubscribe.method,
                     stopped: unsubscribe.error,
                   })
                 : "Could not unsubscribe this agent."

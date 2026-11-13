@@ -5,7 +5,7 @@ import { api, askSnoozeRequest } from "../../api/client";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow } from "../../api/types";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { plainWrite, useWrites } from "../writes/write-store";
 
 export interface AskSnoozeWrite {
@@ -64,16 +64,14 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   });
   return {
     // A save the reader stopped may have been made, and Retry makes it again (`retry`): the
-    // error's own words are a composer's, of a message. A snooze is a `PUT` and bringing the row
-    // back a `DELETE`.
-    error:
-      mutation.error instanceof SendStoppedError
-        ? stoppedWriteNote(mutation.variables === null ? "the un-snooze" : "the snooze", "saved", {
-            again: "Retry",
-            method: mutation.variables === null ? "DELETE" : "PUT",
-            stopped: mutation.error,
-          })
-        : mutation.error?.message,
+    // error's own words are a composer's, of a message.
+    error: endedStopped(mutation)
+      ? stoppedWriteNote(mutation.variables === null ? "the un-snooze" : "the snooze", "saved", {
+          again: "Retry",
+          method: mutation.method,
+          stopped: mutation.error,
+        })
+      : mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
     pendingUntil: mutation.isPending ? mutation.variables : undefined,
@@ -82,15 +80,13 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   };
 }
 
-/** One ask the server refused, with the reason it gave - the same message the per-row control
- *  shows, so a sign-out never reads like a validation refusal - or one whose snooze the reader
- *  stopped (`stopped`), which may have been saved and is no refusal: its `reason` is then the
- *  error's own words, a composer's, which nothing shows. */
-export interface AskSnoozeFailure {
-  askId: string;
-  reason: string;
-  stopped: boolean;
-}
+/** One ask whose snooze Dispatch did not confirm: one it refused, with the reason it gave - the
+ *  same message the per-row control shows, so a sign-out never reads like a validation refusal -
+ *  or one the reader stopped (`stopped`), which may have been saved and is no refusal, so it
+ *  carries no reason. */
+export type AskSnoozeFailure =
+  | { readonly askId: string; readonly reason: string; readonly stopped: false }
+  | { readonly askId: string; readonly stopped: true };
 
 export interface AskSnoozeManyWrite {
   /** True while a bulk save is in flight. */
@@ -144,15 +140,16 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
           })
         )
       );
-      const failed = ids.flatMap((askId, index) => {
+      const failed = ids.flatMap((askId, index): AskSnoozeFailure[] => {
         const result = results[index];
         if (result === undefined || result.status !== "rejected") return [];
         const reason: unknown = result.reason;
+        if (reason instanceof SendStoppedError) return [{ askId, stopped: true }];
         return [
           {
             askId,
             reason: reason instanceof Error ? reason.message : String(reason),
-            stopped: reason instanceof SendStoppedError,
+            stopped: false,
           },
         ];
       });

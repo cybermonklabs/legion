@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage, isSourceNotFound } from "../../api/client";
+import { api, apiErrorMessage, isSourceNotFound, removedEvenIfGone } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -19,8 +19,8 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { Timestamp } from "../refs/Timestamp";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import {
   ownerRepoPattern,
   settingsFieldLabel,
@@ -70,17 +70,14 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const deleteSource = useKeyedWrite({
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
-    // A removal is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made again
-    // after one that landed - stopped, or its answer lost - it finds no source and is answered
-    // `404 SOURCE_NOT_FOUND`. That is the removal done, which lands as a `204` does.
+    // A removal made again after one that landed finds no source (`404 SOURCE_NOT_FOUND`), which
+    // is the removal done (`removedEvenIfGone`).
     method: "DELETE",
-    write: async (source, bounds) => {
-      try {
-        await api.deleteArchitectureSource(source.project, source.repo, bounds);
-      } catch (error) {
-        if (!isSourceNotFound(error)) throw error;
-      }
-    },
+    write: (source, bounds) =>
+      removedEvenIfGone(
+        api.deleteArchitectureSource(source.project, source.repo, bounds),
+        isSourceNotFound
+      ),
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
@@ -290,10 +287,10 @@ export function ArchitectureSourcesSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  saveSource.error instanceof SendStoppedError
+                  endedStopped(saveSource)
                     ? stoppedWriteNote("the architecture source", "saved", {
                         again: "Retry",
-                        method: "PUT",
+                        method: saveSource.method,
                         stopped: saveSource.error,
                       })
                     : apiErrorMessage(saveSource.error, "Couldn't save the architecture source.")
@@ -307,10 +304,10 @@ export function ArchitectureSourcesSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  deleteSource.error instanceof SendStoppedError
+                  endedStopped(deleteSource)
                     ? stoppedWriteNote("the removal of the architecture source", "made", {
                         again: "Retry",
-                        method: "DELETE",
+                        method: deleteSource.method,
                         stopped: deleteSource.error,
                       })
                     : "Couldn't delete the architecture source."
@@ -324,10 +321,10 @@ export function ArchitectureSourcesSection(): ReactNode {
             <div className="mt-4">
               <QueryError
                 message={
-                  refreshSource.error instanceof SendStoppedError
+                  endedStopped(refreshSource)
                     ? stoppedWriteNote("the refresh of the architecture source", "made", {
                         again: "Retry",
-                        method: "POST",
+                        method: refreshSource.method,
                         stopped: refreshSource.error,
                       })
                     : apiErrorMessage(

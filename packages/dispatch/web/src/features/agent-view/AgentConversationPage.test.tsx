@@ -38,9 +38,10 @@ import { Sidebar } from "../sidebar/Sidebar";
 import {
   KEYED_SEND_ATTEMPT_MS,
   SEND_DEADLINE_MS,
-  SendExpiredError,
   SendStoppedError,
+  stoppedWriteNote,
 } from "../writes/keyed-write";
+import { writesOf } from "../writes/write-store";
 import { AgentConversationPage } from "./AgentConversationPage";
 
 /** What each attempt of the live view's send is held to, beside the message it carries: its own
@@ -1951,9 +1952,15 @@ test("a refused switch shows the session's reason and the header keeps its value
   expect(picker("Thinking level").value).toBe("auto");
 });
 
-// A switch tried until Dispatch has forgotten its key is sent no more: the page says so in the
-// refusal's own words - a Retry of it is a new message, delivered a second time if the first one
-// was - and the pickers are the reader's again, to send a new switch with.
+/** What the header says of a switch the reader stopped or whose key ran out: it may have reached
+ *  the session, and picking again is a switch of its own, since the header offers no Retry. */
+const stoppedSwitch = stoppedWriteNote("the switch", "sent", {
+  anew: "Picking a model or thinking level again sends a new switch.",
+});
+
+// A switch tried until Dispatch has forgotten its key is sent no more: the page says it may have
+// been sent and that picking again sends a new switch, and the pickers are the reader's again, to
+// send that new switch with.
 test("a switch whose key has run out says so, and frees the pickers", async () => {
   const createAgentMessage = answerAgentMessages().mockRejectedValue(
     new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
@@ -1970,7 +1977,38 @@ test("a switch whose key has run out says so, and frees the pickers", async () =
     // One jump crosses the key's whole life in a single round, which the shared stepping `tick`
     // would walk 500 ms at a time.
     await jump(IDEMPOTENCY_KEY_TTL_MS);
-    expect(screen.getByTestId("agent-send-error").textContent).toBe(new SendExpiredError().message);
+    expect(screen.getByTestId("agent-send-error").textContent).toBe(stoppedSwitch);
+    expect(held(picker("Model"))).toBe(false);
+  });
+});
+
+// A switch the reader stopped may have reached the session, and the header offers no Retry of it:
+// picking again sends a switch of its own, under a new key. So the page says that, and not the
+// composer's words, which promise a Retry under the same key that nothing here makes.
+test("a switch the reader stopped says picking again sends a new switch", async () => {
+  const createAgentMessage = answerAgentMessages().mockRejectedValue(
+    new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" })
+  );
+  spies.push(createAgentMessage);
+  const view = renderLiveView({
+    agentState: {},
+    messages: [],
+    putAgentState: answerAgentStates().mockResolvedValue({ unread_replies: 0 }),
+    replay: [settingsFrame(1), commandsFrame(2, SWITCHES)],
+  });
+  await screen.findByRole("combobox", { name: "Model" });
+
+  await onFakeClock(async () => {
+    const user = userOnFakeClock();
+    await user.selectOptions(picker("Model"), "anthropic/model-b");
+    await jump(SEND_DEADLINE_MS);
+    const late = writesOf(view)
+      .rows()
+      .find((row) => row.label.startsWith("Switch "));
+    expect(late?.status).toBe("late");
+    act(() => writesOf(view).stop(late?.id ?? 0));
+    await jump(30 * 60_000);
+    expect(screen.getByTestId("agent-send-error").textContent).toBe(stoppedSwitch);
     expect(held(picker("Model"))).toBe(false);
   });
 });

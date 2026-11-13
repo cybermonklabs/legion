@@ -17,6 +17,7 @@ import {
   SIGN_OUT_SETTLE_MS,
   type UnsentChange,
 } from "./features/shell/sign-in-channel";
+import { SEND_DEADLINE_MS, stoppedWriteNote } from "./features/writes/keyed-write";
 import { plainWrite, writesOf } from "./features/writes/write-store";
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */
@@ -230,6 +231,41 @@ test("a sign-out discards only once Dispatch answers it, and one that fails keep
   } finally {
     realClock();
     tab.close();
+    app.teardown();
+  }
+});
+
+// A sign-out the reader stopped may have ended the session, which the page cannot know it did
+// not: so it does not say the person is still signed in. It says Dispatch has not confirmed the
+// sign-out, that every change is still here, and what its Retry does.
+test("a sign-out the reader stopped does not say the person is still signed in", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const app = renderApp({
+    logout: () =>
+      Promise.reject(new NetworkError("/auth/logout", new TypeError("Failed to fetch"))),
+    whoAmI: async () => ({ event_head: "0", kind: "user", login: "alice" }),
+  });
+  try {
+    await screen.findByText("Signed in as alice");
+    await user.click(screen.getByRole("button", { name: "Sign out" }));
+    await waitFor(() => expect(app.logout).toHaveBeenCalledTimes(1));
+    await tick(SEND_DEADLINE_MS + 1_000);
+    const late = writesOf(app.queryClient)
+      .rows()
+      .find((row) => row.label === "Sign out");
+    expect(late?.status).toBe("late");
+    act(() => writesOf(app.queryClient).stop(late?.id ?? 0));
+    await tick(60_000);
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(
+      `${stoppedWriteNote("the sign-out", "made", {
+        anew: "Every change is still here. Retry ends your session, or finds it ended, and signs you out here.",
+      })} Retry`
+    );
+  } finally {
+    realClock();
     app.teardown();
   }
 });

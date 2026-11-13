@@ -7,7 +7,7 @@ import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { buildIssuePath, buildProjectPath } from "../refs/routes";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";
@@ -18,10 +18,13 @@ import { TitleForm } from "./TitleForm";
  *  being read keeps its own (`CLOSED_ISSUE_UPLOAD_REFUSAL`). */
 export const CLOSED_ISSUE_DOCUMENT_REFUSAL = "This issue is closed. Reopen it to add a document.";
 
-/** What the form says of a create the reader stopped: Dispatch may have made it, and a press of
- *  Create again is a new write, which Dispatch refuses where the first one made the document. */
-export function stoppedCreate(title: string): string {
-  return `Dispatch has not confirmed the document “${title}”. It may have been made: press Create again, and if it was, Dispatch says that title is taken and the list shows the document.`;
+/** What the form says of a create the reader stopped (`stoppedWriteNote`): Dispatch may have made
+ *  it, and a press of Create again is a new write, which Dispatch refuses where the first one made
+ *  the document. */
+function stoppedCreate(title: string): string {
+  return stoppedWriteNote(`the document “${title}”`, "made", {
+    anew: "Press Create again: if it was, Dispatch says that title is taken and the list shows the document.",
+  });
 }
 
 /** Who holds a new document: an issue, or a project. An agent's conversation holds files only. */

@@ -10,7 +10,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact } from "../../api/types";
-import { stoppedCreate } from "../artifacts/CreateDocument";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { DocumentList } from "./DocumentList";
 
 function document(overrides: Partial<Artifact> = {}): Artifact {
@@ -274,7 +274,11 @@ test("a New document the reader stopped says what pressing Create again does", a
     await user.click(screen.getByRole("button", { name: "Create" }));
     await stopTheLateWrite(queryClient);
 
-    expect(screen.getByRole("alert").textContent).toBe(stoppedCreate("Design notes"));
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the document “Design notes”", "made", {
+        anew: "Press Create again: if it was, Dispatch says that title is taken and the list shows the document.",
+      })
+    );
     // The form stands, with the title in it, for the person to press Create again.
     expect(screen.getByRole("form", { name: "New document" })).toBeInTheDocument();
   } finally {

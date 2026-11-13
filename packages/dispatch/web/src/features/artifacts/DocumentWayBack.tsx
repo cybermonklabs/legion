@@ -1,13 +1,19 @@
 import { type QueryClient, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { type ArtifactOwner, api, apiErrorMessage, isArtifactNotFound } from "../../api/client";
+import {
+  type ArtifactOwner,
+  api,
+  apiErrorMessage,
+  isArtifactNotFound,
+  removedEvenIfGone,
+} from "../../api/client";
 import type { Artifact } from "../../api/types";
 import { RefusableButton } from "../../components/RefusableButton";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { dangerText } from "../../theme/classes";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { refreshOwnerArtifacts } from "./ArtifactUpload";
 import { TitleForm } from "./TitleForm";
 
@@ -200,19 +206,12 @@ export function RemoveDocument({
     // The document's name is what the press is of, as the indicator names it; the route takes
     // its id.
     label: (name: string) => `Remove ${name}`,
-    // A removal is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made again
-    // after a removal that landed - one the reader stopped, or one whose answer was lost - it is a
-    // new `DELETE`, which finds no document and is answered `404 ARTIFACT_NOT_FOUND`. That answer
-    // is the removal done, since the document is gone, which is what the person asked: the write
-    // lands on it as on a `204` (`onSuccess`), and no refusal is shown.
+    // A removal made again after one that landed finds no document (`404 ARTIFACT_NOT_FOUND`),
+    // which is the removal done (`removedEvenIfGone`): it lands as a `204` does (`onSuccess`), and
+    // no refusal is shown.
     method: "DELETE",
-    write: async (_name: string, bounds) => {
-      try {
-        await api.deleteArtifact(artifact.id, bounds);
-      } catch (error) {
-        if (!isArtifactNotFound(error)) throw error;
-      }
-    },
+    write: (_name: string, bounds) =>
+      removedEvenIfGone(api.deleteArtifact(artifact.id, bounds), isArtifactNotFound),
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
       refreshArtifact(queryClient, artifact);
@@ -221,10 +220,10 @@ export function RemoveDocument({
   });
   // A removal the reader stopped may have been made, and Remove is its Retry (`onPress`).
   const problem = remove.isError
-    ? remove.error instanceof SendStoppedError
+    ? endedStopped(remove)
       ? stoppedWriteNote(`the removal of “${artifact.name}”`, "made", {
           again: "Remove",
-          method: "DELETE",
+          method: remove.method,
           stopped: remove.error,
         })
       : apiErrorMessage(remove.error, "Could not remove the document.")

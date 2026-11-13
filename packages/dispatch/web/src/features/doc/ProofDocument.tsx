@@ -1033,7 +1033,7 @@ export function ProofDocument({
   return (
     <section aria-label="Document editor" className="space-y-4">
       <NameVersionDialog
-        error={nameVersion.isError ? nameVersion.error : null}
+        error={nameVersion.error}
         onClose={() => {
           nameVersion.reset();
           setIsNameDialogOpen(false);

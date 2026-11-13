@@ -6,9 +6,15 @@ import type { IssueDetails } from "../../api/types";
 import { claimHoldingFromRead } from "../issue/ClaimChip";
 import { useAgentText } from "../refs/AgentName";
 import { type AgentRegistry, useAgentRegistry } from "../refs/agent-registry";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { useWrites } from "../writes/write-store";
-import { barNoteClassName, type Offer, refusalText, useWordsState } from "./offer";
+import {
+  barNoteClassName,
+  type Offer,
+  type UnconfirmedPress,
+  unconfirmedPress,
+  useWordsState,
+} from "./offer";
 import { type SendToAgent, sendToAgent } from "./send-to-agent";
 
 /** The group the offer's one row sits in, and the row's own id, which the bar's arrows and
@@ -22,8 +28,7 @@ export const SEND_TO_AGENT_OPTION_ID = "search-option-send-to-agent";
 type OfferState =
   | { readonly kind: "sending"; readonly words: string }
   | { readonly agent: string; readonly kind: "sent"; readonly words: string }
-  | { readonly kind: "refused"; readonly refusal: string; readonly words: string }
-  | { readonly kind: "stopped"; readonly words: string };
+  | UnconfirmedPress;
 
 /**
  * The session a live agent holds this issue's claim with, or undefined where no such agent does:
@@ -98,15 +103,7 @@ export function useSendToAgentOffer({
         );
       },
       (error: unknown) => {
-        setState(
-          error instanceof SendStoppedError
-            ? { kind: "stopped", words }
-            : {
-                kind: "refused",
-                refusal: refusalText(error, "the message did not reach Dispatch."),
-                words,
-              }
-        );
+        setState(unconfirmedPress(error, words, "the message did not reach Dispatch."));
       }
     );
   };

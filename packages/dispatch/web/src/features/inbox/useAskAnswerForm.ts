@@ -1,7 +1,13 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, useEffect, useId, useRef, useState } from "react";
 
-import { ApiError, api, apiErrorMessage, type WriteBounds } from "../../api/client";
+import {
+  ApiError,
+  api,
+  apiErrorMessage,
+  type WriteBounds,
+  type WriteMethod,
+} from "../../api/client";
 import { whoAmIQuery } from "../../api/queries";
 import type {
   AnswerAskInput,
@@ -14,8 +20,8 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { stoppedWriteNote } from "../writes/keyed-write";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
 import {
@@ -60,17 +66,21 @@ interface AskAnswerFailure {
  * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
  * may pass on a retry.
  */
-function answerFailure(error: Error): AskAnswerFailure {
-  if (error instanceof SendStoppedError) {
+function answerFailure(answer: {
+  readonly error: Error;
+  readonly method: WriteMethod | undefined;
+}): AskAnswerFailure {
+  if (endedStopped(answer)) {
     return {
       message: stoppedWriteNote("your answer", "saved", {
         again: "Retry",
-        method: "POST",
-        stopped: error,
+        method: answer.method,
+        stopped: answer.error,
       }),
       retryable: true,
     };
   }
+  const { error } = answer;
   if (error instanceof ApiError) {
     switch (error.code) {
       case "ASK_ANSWER_CHANGED":
@@ -407,7 +417,7 @@ export function useAskAnswerForm({
   const unsentAnswer = completed !== null && justAnswered === null ? answerText : "";
 
   return {
-    answerFailure: mutation.error === null ? null : answerFailure(mutation.error),
+    answerFailure: mutation.error === null ? null : answerFailure(mutation),
     answerFieldId,
     answerPlaceholder,
     answers,

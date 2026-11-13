@@ -26,9 +26,9 @@ import {
 } from "../../theme/classes";
 import { buildIssuePath, routeProjectOf } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
-import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 import { RelatedItems } from "./RelatedItems";
 
 const createIssue = (input: CreateIssueInput, bounds: WriteBounds): Promise<Issue> =>
@@ -193,10 +193,10 @@ export function CreateIssueDialog({
                 message={
                   // A create the reader stopped may have made the issue, and Retry makes that
                   // very press again (`retryLast`); Create is a press of its own.
-                  mutation.error instanceof SendStoppedError
+                  endedStopped(mutation)
                     ? stoppedWriteNote("the new issue", "made", {
                         again: "Retry",
-                        method: "POST",
+                        method: mutation.method,
                         stopped: mutation.error,
                       })
                     : mutation.error instanceof ApiError

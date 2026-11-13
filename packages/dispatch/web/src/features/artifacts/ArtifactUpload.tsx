@@ -18,6 +18,7 @@ import {
   isArtifactNotFound,
   isDocumentSchemaError,
   type WriteBounds,
+  type WriteMethod,
 } from "../../api/client";
 import type { Artifact, Version } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
@@ -37,9 +38,9 @@ import {
   textMutedOnSurfaceMuted,
 } from "../../theme/classes";
 import { buildDispatchReference, type DispatchReferenceRoute } from "../refs/routes";
-import { retriesUnderItsKey, SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
+import { retriesUnderItsKey, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { endedStopped, useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** Why a closed issue's Artifacts tab, or its document's repair, takes no upload: Dispatch refuses
  *  one until the issue is reopened. */
@@ -182,10 +183,15 @@ export const UPLOAD_BASE_UNREADABLE_REFUSAL =
 // sentences, not one - the document moved under the upload, the upload named no version where
 // Dispatch requires one, and the token could not be read at all - and a person told the wrong
 // one of those is told something untrue. An upload the reader stopped is no refusal: it may have
-// been stored, and `again` names the surface's control that makes that very press again, or is
-// undefined where uploading the file again is a press of its own.
-export function uploadErrorMessage(error: unknown, again: string | undefined): string {
-  if (error instanceof SendStoppedError) {
+// been stored, and `again` names the surface's control that makes that very press again, under
+// the method the hook read for it (`KeyedWriteResult.method`), or is undefined where uploading the
+// file again is a press of its own.
+export function uploadErrorMessage(
+  upload: Pick<DraftUpload, "error" | "method">,
+  again: string | undefined
+): string {
+  const { error } = upload;
+  if (endedStopped(upload)) {
     return stoppedWriteNote(
       "the upload",
       "stored",
@@ -193,7 +199,7 @@ export function uploadErrorMessage(error: unknown, again: string | undefined): s
         ? {
             anew: "Uploading the file again is a new upload, which Dispatch may store a second time.",
           }
-        : { again, method: "POST", stopped: error }
+        : { again, method: upload.method, stopped: upload.error }
     );
   }
   if (error instanceof UploadBaseUnreadableError) {
@@ -286,6 +292,9 @@ export interface DraftUpload {
   /** Uploads still out. */
   pending: number;
   error: unknown;
+  /** The method of the newest upload's request where the reader stopped it
+   *  (`KeyedWriteResult.method`). */
+  method: WriteMethod | undefined;
   isError: boolean;
   isPending: boolean;
   /** The name of the last file Dispatch stored with no answer to give for it, so its reference
@@ -369,6 +378,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
     isPending: upload.isPending,
     madeUnanswered:
       upload.unanswered === undefined ? null : upload.unanswered.variables.file.name || "the file",
+    method: upload.method,
     paste: (event, owner) => receive(event.clipboardData.files, owner, event),
     pending,
     retry: () => {
@@ -409,7 +419,7 @@ export function DraftUploadStatus({ upload }: { upload: DraftUpload }): ReactNod
       ) : null}
       {upload.isError ? (
         <QueryError
-          message={uploadErrorMessage(upload.error, "Retry")}
+          message={uploadErrorMessage(upload, "Retry")}
           onRetry={upload.retry}
           retrying={upload.isPending}
         />
@@ -446,6 +456,9 @@ export interface ArtifactUpload {
   isPending: boolean;
   /** The name of the last file Dispatch stored with no answer to give for it; null otherwise. */
   madeUnanswered: string | null;
+  /** The method of the newest upload's request where the reader stopped it
+   *  (`KeyedWriteResult.method`). */
+  method: WriteMethod | undefined;
   openPicker(): void;
   pendingFile: File | null;
   /** Why no file can be uploaded here - its issue is closed - or null while one can. */
@@ -583,6 +596,7 @@ export function useArtifactUpload(
       upload.unanswered === undefined
         ? null
         : (name ?? (upload.unanswered.variables.file.name || "the file")),
+    method: upload.method,
     openPicker: () => {
       if (refusal === null) fileInputRef.current?.click();
     },
@@ -683,7 +697,7 @@ export function ArtifactUploadStatus({ upload }: { upload: ArtifactUpload }): Re
     const staged = upload.pendingFile !== null && upload.pendingFile === upload.refusedFile;
     return (
       <p className={`w-full text-sm ${dangerText}`} role="alert">
-        {uploadErrorMessage(upload.error, staged ? "Upload" : undefined)}
+        {uploadErrorMessage(upload, staged ? "Upload" : undefined)}
       </p>
     );
   }
