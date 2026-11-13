@@ -137,9 +137,10 @@ func providerErrorCause(status int) string {
 	return "a provider error"
 }
 
-// providerErrorTask is the sentence a task taken back by a provider error is sent behind, as
-// interruptedTask is the sentence a task taken back by a death is sent behind. Another agent
-// reads it, so it follows ASD-STE100: one instruction per sentence, and active voice.
+// providerErrorTask is the sentence a task taken back by a provider error is sent behind, as the
+// relaunch's sentence is the one a task taken back from a turn its process could not finish is
+// sent behind (relaunchSentence, interruptedTask). Another agent reads it, so it follows
+// ASD-STE100: one instruction per sentence, and active voice.
 func providerErrorTask(cause string) string {
 	return "Your previous turn on this task stopped because of " + cause + ". Your work did not cause it. " +
 		"The daemon sends you the task again. Read what that turn already did in your workspace and on the " +
@@ -174,9 +175,14 @@ func (m *Machine) waitsForProviderError(delivery string) bool {
 }
 
 // replaceable is whether a newer task takes this pending task's place rather than waiting behind
-// it (queue). One task answers true: the one the ladder's wait stands for
+// it (queue). Two deliveries answer true. One is the task the ladder's wait stands for
 // (waitsForProviderError), which the claim owes with nothing working it and with a wait that
-// the next provider error only makes longer. R2 has a newer task replace it.
+// the next provider error only makes longer. R2 has a newer task replace it. The other is the
+// daemon's own delivery of a relaunch's record (relaunchTask, queueRelaunch) while no prompt of
+// it is waiting on a result (Machine.outstanding): it holds no work of the claim's, only the
+// record's sentence, which the newer task carries in front of itself while the record is untold
+// (Delivery.message). Once Oh My Pi has acknowledged a prompt of it, that prompt's turn is the
+// session's next, and the newer task waits for it as for any task's.
 //
 // Every other pending task waits for its turn, the task a provider error took back on a claim
 // the operator stopped among them: the ladder's wait went with the claim's timers (letGo), and
@@ -193,20 +199,24 @@ func (m *Machine) waitsForProviderError(delivery string) bool {
 // its turn is armed — so a newer task would take the place of a task already in the agent's
 // hands: that task's agent_start would confirm the task that replaced it, and the turn's end
 // would retire that one unsent, with the outbox row that gave it already recorded as delivered.
+// The relaunch's delivery is held to the same rule by its outstanding prompt, which that
+// acknowledgement records (acked) and which stands until Oh My Pi answers that prompt or the
+// turn it ran is over for the machine (Machine.outstanding).
 func (m *Machine) replaceable(p *Delivery) bool {
 	if !p.ConfirmedAt.IsZero() || m.send != nil {
 		return false
 	}
-	return m.waitsForProviderError(p.ID)
+	return m.waitsForProviderError(p.ID) || (relaunchTask(p.ID) && !m.awaitsResult())
 }
 
-// replaceOwedTask has a newer task take the place of the task a provider error took back, and
-// reports whether it did. Both places a newer task arrives at a claim that owes one run it: the
-// task queue is given (queue), and the operator's task that runs a launch the pacing parked
-// (runParkedLaunchNow). A pending task no ladder's wait stands for is replaced by neither, and
-// each caller answers that its own way, so this reports it rather than deciding it. The task it
-// replaces is the one the claim owes (m.claim.Pending), which is the one task either caller
-// could mean, and a claim owing none replaces none.
+// replaceOwedTask has a newer task take the place of a pending delivery a newer task replaces
+// (replaceable) — the task a provider error took back, or the daemon's own unprompted delivery of
+// a relaunch's record — and reports whether it did. Both places a newer task arrives at a claim
+// that holds one run it: the task queue is given (queue), and the operator's task that runs a
+// launch the pacing parked (runParkedLaunchNow). A pending task no newer one replaces is replaced
+// by neither, and each caller answers that its own way, so this reports it rather than deciding
+// it. The delivery it replaces is the one the claim holds (m.claim.Pending), which is the one
+// either caller could mean, and a claim holding none replaces none.
 //
 // The replaced task's row ends as any other retirement ends it (retirePending), and the question
 // a restart armed for that task is answered in the same step (answerAskFirstAfterDrop), so the

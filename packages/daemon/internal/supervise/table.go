@@ -2509,8 +2509,19 @@ func ready(m *Machine, ctx context.Context, _ Event) error {
 
 // finishReady persists the current claim before publishing ready or delivering work. reready may
 // reach it while the claim is idle or working, so it must not rewrite the state to ready.
+//
+// Between the ready's durable report and the send, a claim that holds no delivery while its
+// record of what the last let-go ended is untold is given the daemon's own delivery of that
+// record (queueRelaunch), so the send carries the sentence to the new process at once. The order
+// is the point: the report is the workflow's ready, read in its own transaction while this
+// decision runs (Machine.OnDurableState, the daemon's applyTerminal), and it must find the claim
+// holding nothing, or a phase worker's ready would queue no resume task (workflow's
+// readyWorkerTask). A claim that holds a delivery is sent it with the sentence in front.
 func finishReady(m *Machine, ctx context.Context) error {
 	if err := m.durableWrite(ctx, StateReady, m.persist); err != nil {
+		return err
+	}
+	if err := m.queueRelaunch(ctx); err != nil {
 		return err
 	}
 	return m.sendPending(ctx)
@@ -2935,8 +2946,9 @@ func updateRoundOf(id string) (string, bool) {
 }
 
 // rotateTaskID is the new id a task going back to waiting takes, under which the shim's record
-// holds nothing: an ask of an update round keeps that round (updateTaskID), and every other task
-// takes a fresh word, as an operator's own delivery id does (queue).
+// holds nothing: an ask of an update round keeps that round (updateTaskID), the daemon's own
+// delivery of a relaunch's record keeps its prefix (relaunchTaskID), and every other task takes a
+// fresh word, as an operator's own delivery id does (queue).
 //
 // The round must survive the rotation. A delivery id is the only record of which round an ask is
 // of, and three paths rotate one in the middle of a round — a late agent_start (noTurn), Oh My
@@ -2945,9 +2957,17 @@ func updateRoundOf(id string) (string, bool) {
 // dropUpdateTask, askForUpdate's guard and takeBackSignal. The round's end would then leave that
 // task pending, the worker would be prompted with the words of a round whose pod is already
 // replaced, and every task of its next phase would wait behind it (ErrDeliveryPending).
+//
+// The relaunch's prefix must survive for the same reason: it is the only record that the
+// delivery is the record's sentence and no work of the claim's. Lost, the delivery would be
+// prompted as a task behind that same sentence (Delivery.message), and a newer task would wait
+// behind it rather than take its place (replaceable).
 func rotateTaskID(id string) string {
 	if round, ok := updateRoundOf(id); ok {
 		return updateTaskID(round)
+	}
+	if relaunchTask(id) {
+		return relaunchTaskID()
 	}
 	return rand.Text()
 }

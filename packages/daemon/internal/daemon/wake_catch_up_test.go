@@ -132,7 +132,7 @@ func pacedCatchUp(t *testing.T, pool *pgxpool.Pool, records record.Store, root s
 		if err != nil || stored == nil {
 			return fmt.Errorf("read %s: %w", root, err)
 		}
-		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, now, at)
+		return workflow.QueueCatchUp(ctx, tx, records, config.DesignGateRootIssues.Steps(), *stored, launch, "", now, at)
 	}); err != nil {
 		t.Fatalf("queue the paced catch-up of %s: %v", root, err)
 	}

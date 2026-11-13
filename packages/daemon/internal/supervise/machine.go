@@ -244,8 +244,9 @@ type Claim struct {
 	// claim that cannot start and a claim that keeps dying are different faults, and each is kept
 	// until another of its own kind replaces it. LastReady is when the agent last said it could be
 	// prompted, which is what says how old either cause is. All three are persisted: the operator
-	// reading a claim after a restart is the one who has to act on them, and the restarted worker
-	// is told the death's cause (interruptedTask).
+	// reading a claim after a restart is the one who has to act on them, and the death's cause is
+	// what the record of that death names (endDied, EndedWork), which the restarted worker is told
+	// (RelaunchSentence, interruptedTask).
 	LastDeathCause   string
 	LastStartFailure string
 	LastReady        time.Time
@@ -1152,6 +1153,17 @@ type Machine struct {
 	// the process. It is memory only: a daemon restarted inside such a park records the end
 	// without it, from what the claim still holds.
 	cutTurnOf string
+	// carriedEnd is whether a prompt this machine sent to the claim's current process carried the
+	// sentence of the claim's untold record of what its last let-go ended (EndedWork,
+	// RelaunchSentence), or the abandoned session's sentence in its place (Delivery.message): the
+	// prompt was composed while the record still told. It is what confirm reads to mark the record
+	// told, so a turn whose prompt went out before the record existed — the takeover of a process
+	// another runtime still runs, whose relaunch the pacing parks — tells nothing. It is set where
+	// the send goes out (startSend), and goes with the process (letGo) and with the record it was
+	// for (recordEnd), since a newer record is words no earlier prompt carried. It is memory only:
+	// a daemon restarted inside the turn of such a prompt reads none, so the next prompt carries the
+	// sentence again — told twice rather than not at all.
+	carriedEnd bool
 	// compacting is the compaction the claim is in (Machine.Compact), nil for none: the claim is
 	// working for as long as one runs, and this is what tells that working apart from a turn's —
 	// a turn that ends under a compaction leaves the claim where it is (turnEnded), and only
@@ -2758,7 +2770,8 @@ func (m *Machine) retire(ctx context.Context) error {
 // task's, and the background work its own activity report named. It is read here, first,
 // because everything it reads goes with the process below, and the launch that follows clears
 // the report. noEnd records nothing. The mark of a task taken back from that process's turn goes
-// with the process too (cutTurnOf).
+// with the process too (cutTurnOf), and so does the mark of a prompt to it that carried the
+// record's sentence (carriedEnd): the next process has been sent nothing yet.
 func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.recordEnd(ctx, cause)
 	m.disarmAll()
@@ -2769,7 +2782,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 	m.held = nil
 	m.staleRelaunch = nil
 	m.unseenTurn, m.busyTurn = false, false
-	m.turnsDelivery, m.cutTurnOf = "", ""
+	m.turnsDelivery, m.cutTurnOf, m.carriedEnd = "", "", false
 	m.compacting = nil
 	m.processGone, m.claim.DeathCharged = false, false
 	if enrollment := ClearEnrollment(&m.claim); enrollment != nil {

@@ -485,7 +485,12 @@ func TestResumeAfterARestartHasNoIncarnationToWaitOut(t *testing.T) {
 
 func TestADeliveryToASuspendedClaimResumesIt(t *testing.T) {
 	h := newHarness(t)
-	h.reach(StateSuspended)
+	// The agent's session reports at its turn's end that nothing of its own runs, as Oh My Pi's
+	// does, so the suspension ends no work and the task goes as it was queued (recordEnd).
+	h.reach(StateIdle)
+	h.reportActivity()
+	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
+	h.wantState(StateSuspended)
 
 	h.must(RequestDeliver{Claim: testToken, Task: "answer the review"})
 

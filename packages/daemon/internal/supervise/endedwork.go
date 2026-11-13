@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 )
 
@@ -11,10 +12,13 @@ import (
 // agent had running (dispatch://INFRA-3276 R3): when, why in the daemon's own words, whether a
 // turn was cut off and whether that turn was the pending task's, what background work the
 // process's own activity report named, whether that process had made a report at all, and
-// whether the record has been told. The next process is told it in a prompt (the sentence is
-// composed and told elsewhere); this is the record that sentence is built from, written where
-// the machine lets the process go (letGo, recordEnd) and persisted on the claim's row
-// (store's ended_work), since that prompt can be a relaunch, a wake and a daemon restart away.
+// whether the record has been told. The next process is told it in a prompt: the sentence
+// RelaunchSentence composes from it, in front of the task the claim holds or as a delivery of the
+// daemon's own when it holds none (Delivery.message, queueRelaunch), and marked told at the
+// confirmation of the prompt that carried it (confirm). This is the record that sentence is built
+// from, written where the machine lets the process go (letGo, recordEnd) and persisted on the
+// claim's row (store's ended_work), since that prompt can be a relaunch, a wake and a daemon
+// restart away.
 //
 // The zero value is a claim whose let-go ended nothing worth telling, or that has been let go of
 // none: Cause is empty.
@@ -50,8 +54,11 @@ type EndedWork struct {
 	// nothing (dispatch://INFRA-3276 R3, "unknown is not silence").
 	Reported bool `json:"reported"`
 	// Told is whether a prompt carrying the record's sentence has been confirmed by a turn of a
-	// later process. A record not yet told is replaced by a newer one only as the union of the
-	// two (joined), so what the earlier let-go ended is not lost before anyone reads it.
+	// later process (confirm, Machine.carriedEnd). It is set at the turn's start rather than at the
+	// prompt's acknowledgement, because Oh My Pi acknowledges a prompt at its admission and can then
+	// answer it busy, and a sentence marked told there would reach nobody. A record not yet told is
+	// replaced by a newer one only as the union of the two (joined), so what the earlier let-go
+	// ended is not lost before anyone reads it.
 	Told bool `json:"told,omitempty"`
 }
 
@@ -93,6 +100,12 @@ type ActivityReport struct {
 // cause of a let-go that records nothing: a launch of a claim that records no process to let go
 // — a spawn, a resume, a retry, and every relaunch whose process an earlier step of the same
 // recovery already let go — and a retirement, which ends the claim (retire).
+//
+// The cause is read into an agent's prompt as it stands (RelaunchSentence), so every word of it
+// that is not the daemon's own — the runtime's account of a death, the failure sentence that can
+// carry a provider's or a launcher's text — is quoted as a Go string (strconv.Quote), as
+// abandonedTask quotes the provider's reason: the quotes bound it, and a newline or a quote inside
+// it is escaped rather than read as a sentence of the daemon's own.
 const (
 	noEnd          = ""
 	endRetired     = "the daemon retired it after its prompts came to nothing"
@@ -101,8 +114,8 @@ const (
 	endRepointed   = "its address changed"
 )
 
-// endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause).
-func endDied(cause string) string { return "the process died: " + cause }
+// endDied is a death's cause, with the runtime's own account of it (Claim.LastDeathCause), quoted.
+func endDied(cause string) string { return "the process died: " + strconv.Quote(cause) }
 
 // endStalled is the stall backstop's cause, with the bound the turn passed.
 func endStalled(bound time.Duration) string {
@@ -112,8 +125,9 @@ func endStalled(bound time.Duration) string {
 // endSuspended is a suspension's cause, naming who suspended the claim.
 func endSuspended(by SuspendSource) string { return fmt.Sprintf("it was suspended (%s)", by) }
 
-// endFailed is a failure's cause, with the sentence the failure is recorded under (fail).
-func endFailed(why string) string { return "its claim failed: " + why }
+// endFailed is a failure's cause, with the sentence the failure is recorded under (fail), quoted:
+// it can carry the provider's refusal or the launcher's error.
+func endFailed(why string) string { return "its claim failed: " + strconv.Quote(why) }
 
 // endNeverReady is the registration deadline's cause, with what its agent never did
 // (registrationDeadline).
@@ -135,6 +149,10 @@ func endNeverReady(never string) string { return "the daemon retired it because 
 // which can have started no background work; a process that ran a turn and left no report is
 // recorded as unreported rather than as having ended nothing. A record still untold is replaced
 // as the union of the two (joined).
+//
+// A record written here is new words, so a prompt that carried the sentence of the record it
+// replaces carried none of this one: the mark of such a prompt goes (Machine.carriedEnd), and only
+// a prompt sent from here on tells this record when its turn begins (confirm).
 //
 // It writes nothing itself: the record is a field of the claim, and the let-go's own write — the
 // launch's, the suspension's, the failure's, or the death's charge — carries it. So it costs the
@@ -169,7 +187,7 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	if held := m.claim.EndedWork; held.Tells() {
 		ended = held.joined(ended)
 	}
-	m.claim.EndedWork = ended
+	m.claim.EndedWork, m.carriedEnd = ended, false
 }
 
 // launchActivity is the activity report the store holds for the launch the claim records now

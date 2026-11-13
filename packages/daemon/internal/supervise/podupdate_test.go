@@ -1388,8 +1388,16 @@ func TestAPluginRoundAnEarlierDaemonLeftEndsAndReleasesTheTaskItHeld(t *testing.
 				h.relaunched()
 			}
 
-			if got := h.wantPrompts(sent + 2)[sent+1]; got.Message != next {
-				t.Fatalf("the prompt after the end is %+v, want the task %q the round held back", got, next)
+			// The suspension let a process go that had run a turn and left no report the daemon
+			// took (its plugin is stale here), so the resumed claim's task carries the sentence
+			// of what it may have ended (dispatch://INFRA-3276 R3); the live claim's process was
+			// never let go, and its task goes as it was queued.
+			want := next
+			if tc.suspend {
+				want = relaunchSentence(h.claim().EndedWork, true) + "\n\n" + next
+			}
+			if got := h.wantPrompts(sent + 2)[sent+1]; got.Message != want {
+				t.Fatalf("the prompt after the end is %+v, want the task %q the round held back", got, want)
 			}
 		})
 	}

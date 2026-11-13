@@ -1003,6 +1003,14 @@ type ClaimReady struct {
 	// the same wake. A fact applies once for the row that wrote it (ApplyFact's id), so the turn
 	// is taken once per start row however often the row runs.
 	Paced bool
+	// Relaunch is the sentence that tells the claim's new process what the last let-go of its
+	// process ended (supervise.RelaunchSentence), while the claim's record of it is untold
+	// (supervise.EndedWork.Tells), and "" otherwise. The first source alone sets it, from the claim
+	// its ready wrote (the daemon's applyTerminal): a root architect's catch-up opens with it
+	// (workflow's QueueCatchUp), because the first turn of a relaunched root architect can be that
+	// catch-up's rather than its prompt's. The catch-up's copy tells nothing: the record is told
+	// by the prompt the claim's machine sends, at that prompt's confirmation.
+	Relaunch string
 }
 
 func (ClaimReady) isFact() {}

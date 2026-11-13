@@ -610,18 +610,19 @@ func (m *Machine) dropWakeFor(ev Event) *wake {
 // than launching (wakeNow, endHeld), which is not what a task asks for, and the task is queued
 // and kept until the hold lifts whichever process the claim is running (sendPending).
 //
-// The one pending task that is not that refusal is the task a provider error took back while
-// the ladder's wait stands for it and nothing works it (replaceable): a newer task takes its
-// place rather than waiting out a wait the next error only makes longer (queue,
-// dispatch://INFRA-956 R2). The claim takes an operator's task over such a one, so a person is
-// waiting on a task this claim will work, and the launch runs for it. The replacement is made
-// here, before that launch, and not left to the row (replaceOwedTask, the one path both places
-// a task replaces an owed one take): the launch takes the ladder's wait with the claim's timers
-// (letGo), and that wait is the whole of what makes the owed task replaceable, so queue —
-// reading the claim the launch leaves — would refuse the very task the launch had just replaced
-// a live process for. Nothing is lost if the launch's own lifecycle
-// recheck refuses (runWake): the row that follows queues the operator's task into a claim
-// holding none, which is where R2 leaves it either way.
+// The one pending delivery that is not that refusal is one a newer task replaces (replaceable):
+// the task a provider error took back while the ladder's wait stands for it and nothing works it,
+// or the daemon's own delivery of a relaunch's record while no prompt of it waits on a result. A
+// newer task takes its place rather than waiting out a wait the next error only makes longer
+// (queue, dispatch://INFRA-956 R2), or behind a sentence it carries itself (Delivery.message).
+// The claim takes an operator's task over such a one, so a person is waiting on a task this claim
+// will work, and the launch runs for it. The replacement is made here, before that launch, and
+// not left to the row (replaceOwedTask, the one path both places a task replaces an owed one
+// take): the launch takes the ladder's wait with the claim's timers (letGo), and that wait is the
+// whole of what makes the owed task replaceable, so queue — reading the claim the launch leaves —
+// would refuse the very task the launch had just replaced a live process for. Nothing is lost if
+// the launch's own lifecycle recheck refuses (runWake): the row that follows queues the
+// operator's task into a claim holding none, which is where R2 leaves it either way.
 //
 // The launch takes no second token — the reservation was taken once, at the gate — so the wakes
 // behind it keep the turns they already hold, and the line it writes says the pacing did not
@@ -639,8 +640,13 @@ func (m *Machine) runParkedLaunchNow(ctx context.Context, ev Event) error {
 		if err != nil || !replaced {
 			return err
 		}
-		m.log.Info("supervise: the operator's task replaces the one a provider error took back, and the launch parked over the claim's process runs for it",
-			"owed", owed, "attempt", attempt)
+		if relaunchTask(owed) {
+			m.log.Info("supervise: the operator's task replaces the daemon's delivery of the relaunch's record, and the launch parked over the claim's process runs for it",
+				"replaced", owed)
+		} else {
+			m.log.Info("supervise: the operator's task replaces the one a provider error took back, and the launch parked over the claim's process runs for it",
+				"owed", owed, "attempt", attempt)
+		}
 	}
 	waiting := m.wake
 	m.wake = nil

@@ -1184,6 +1184,11 @@ func (w *workflowRuntime) claimDurableState(c supervise.Claim, state supervise.C
 // (`controller: daemon`) holds a claim on no issue, so neither is a workflow fact for it: its
 // relaunch is the controller keeper's (controllerKeeper).
 //
+// The ready carries the sentence the claim's untold record of what its last let-go ended is told
+// in (supervise.RelaunchSentence, intake.ClaimReady.Relaunch), read from the claim the ready
+// wrote, so a root architect's catch-up opens with it (workflow's QueueCatchUp). The boot's replay
+// of a ready reads the stored claim, whose record is persisted, and carries what is still untold.
+//
 // The failure carries what a notice of it says beside the sentence: the cause the site that
 // failed the claim chose, the claim's budgets as that failure left them, and the limits those
 // budgets ran out against, which this runtime took from the supervisor at attach. The boot's
@@ -1196,7 +1201,11 @@ func (w *workflowRuntime) applyTerminal(ctx context.Context, c supervise.Claim, 
 	var fact intake.Fact
 	switch state {
 	case supervise.StateReady:
-		fact = intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
+		ready := intake.ClaimReady{Issue: c.Issue, Role: c.Role, Launch: c.Generation}
+		if c.EndedWork.Tells() {
+			ready.Relaunch = supervise.RelaunchSentence(c.EndedWork)
+		}
+		fact = ready
 	case supervise.StateFailed:
 		fact = intake.ClaimFailed{Issue: c.Issue, Role: c.Role, Reason: c.Failure,
 			Death: c.LastDeathCause, StartFailure: c.LastStartFailure,
