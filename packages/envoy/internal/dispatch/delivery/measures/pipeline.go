@@ -2,6 +2,7 @@ package measures
 
 import (
 	"cmp"
+	"maps"
 	"math"
 	"slices"
 	"strconv"
@@ -23,6 +24,13 @@ import (
 // How many days are shown is the caller's (INFRA-1077): GET /api/v1/delivery/pipeline reads a
 // window, and ShownDayCount is what it answers a caller that names none. How far the
 // failing-jobs table looks back is not: it is always FailingWindow back from the window's end.
+//
+// Each card is a day builder and a fold (parts.go): PRChecks, DeployJobs and LeadTimes put their
+// rows on the shown UTC days, build each day's parts (PRChecksDay, DeployJobsDay and the lead-time
+// builders of measures.go), and fold each day's parts alone and the shown days' together
+// (FoldTiming, FoldSlowestJobs, FoldLeadTime), the folds the CI and delivery evals read stored
+// parts with. The failing-jobs table is no day part: FailingJobs reads the run jobs of the
+// FailingWindow before the window's end.
 
 // ShownDayCount is how many UTC days the Pipeline page shows when its caller names no window,
 // ending on the day its clock is on (pipeline.py:19).
@@ -93,12 +101,10 @@ type Timing struct {
 	Total Cell  `json:"total"`
 }
 
-// Sample is one result of one stage: the UTC day its run started, its outcome, and its minutes
-// when timed (nil otherwise).
-type Sample struct {
-	Day     string
-	Outcome Outcome
-	Minutes *float64
+// sample is one result of one stage: its outcome, and its minutes when timed (nil otherwise).
+type sample struct {
+	outcome Outcome
+	minutes *float64
 }
 
 // JobTiming is one PR-checks job's timing, by its name.
@@ -173,29 +179,41 @@ func roundTo(x float64, places int) float64 {
 	return rounded
 }
 
-// cell is samples' Cell (pipeline.py:80-92): the timed results' median and p90 to one decimal,
-// each outcome counted, and the success rate to four.
-func cell(samples []Sample) Cell {
-	var result Cell
-	var timedMinutes []float64
-	for _, sample := range samples {
-		switch sample.Outcome {
+// timingPart is a timing series' part of one day, from its results that day: the minutes of the
+// timed ones (success or failure, with a known duration), and how many ended in each outcome.
+func timingPart(day time.Time, series string, samples []sample) DayPart {
+	var minutes []float64
+	counts := map[string]float64{CountSuccess: 0, CountFailure: 0, CountCancelled: 0}
+	for _, result := range samples {
+		switch result.outcome {
 		case OutcomeSuccess:
-			result.Success++
+			counts[CountSuccess]++
 		case OutcomeFailure:
-			result.Failure++
+			counts[CountFailure]++
 		case OutcomeCancelled:
-			result.Cancelled++
+			counts[CountCancelled]++
 		}
-		if sample.Outcome.timed() && sample.Minutes != nil {
-			timedMinutes = append(timedMinutes, *sample.Minutes)
+		if result.outcome.timed() && result.minutes != nil {
+			minutes = append(minutes, *result.minutes)
 		}
 	}
-	result.N = len(timedMinutes)
-	if len(timedMinutes) > 0 {
-		slices.Sort(timedMinutes)
-		result.MedianMinutes = new(roundTo(Quantile(timedMinutes, 0.5), 1))
-		result.P90Minutes = new(roundTo(Quantile(timedMinutes, 0.9), 1))
+	return samplesPart(day, series, minutes, counts)
+}
+
+// cellOf is series' parts folded into one Cell (pipeline.py:80-92): the median and p90 of the
+// merge of their minutes to one decimal, each outcome summed, and the success rate to four.
+func cellOf(parts []DayPart, series string) Cell {
+	sorted := mergedSamples(parts, series)
+	counts := foldSeries(parts, series).counts
+	result := Cell{
+		N:         len(sorted),
+		Success:   int(counts[CountSuccess]),
+		Failure:   int(counts[CountFailure]),
+		Cancelled: int(counts[CountCancelled]),
+	}
+	if len(sorted) > 0 {
+		result.MedianMinutes = new(roundTo(Quantile(sorted, 0.5), 1))
+		result.P90Minutes = new(roundTo(Quantile(sorted, 0.9), 1))
 	}
 	if decided := result.Success + result.Failure; decided > 0 {
 		result.SuccessRate = new(roundTo(float64(result.Success)/float64(decided), 4))
@@ -203,26 +221,47 @@ func cell(samples []Sample) Cell {
 	return result
 }
 
-// ComputeTiming is samples per shown day and over all of them (pipeline.py:95-106): a sample whose
-// day is not shown is dropped, and the last day is partial.
-func ComputeTiming(samples []Sample, days []string) Timing {
+// FoldTiming is a CI eval over parts (pr-ci's runs, staging-e2e, staging-deploy and
+// production-deploy): its SeriesMinutes parts folded into one Cell. Its median, p90 and success
+// rate are nil when no part holds a result.
+func FoldTiming(parts []DayPart) Cell {
+	return cellOf(parts, SeriesMinutes)
+}
+
+// timingByDay is parts on each shown day folded alone by fold, and the shown days' parts folded
+// together (pipeline.py:95-106): a part of a day not shown is dropped, and the last day is
+// partial.
+func timingByDay(parts []DayPart, days []string, fold func([]DayPart) Cell) Timing {
+	byDay := partsByDay(parts)
+	timing := Timing{Days: make([]Day, len(days))}
+	var shown []DayPart
+	for i, d := range days {
+		timing.Days[i] = Day{Day: d, Partial: i == len(days)-1, Cell: fold(byDay[d])}
+		shown = append(shown, byDay[d]...)
+	}
+	timing.Total = fold(shown)
+	return timing
+}
+
+// onShownDays is each shown day's UTC midnight and the rows whose time is on it, oldest first; a
+// row on no shown day is in none, since the Pipeline counts only the days it shows.
+func onShownDays[T any](rows []T, timeOf func(T) time.Time, days []string) ([]time.Time, [][]T) {
+	midnights := make([]time.Time, len(days))
 	index := make(map[string]int, len(days))
 	for i, d := range days {
-		index[d] = i
+		parsed, err := time.Parse(time.DateOnly, d)
+		if err != nil {
+			panic("measures: a shown day is not a date: " + err.Error())
+		}
+		midnights[i], index[d] = parsed, i
 	}
-	byDay := make([][]Sample, len(days))
-	var shown []Sample
-	for _, sample := range samples {
-		if i, ok := index[sample.Day]; ok {
-			byDay[i] = append(byDay[i], sample)
-			shown = append(shown, sample)
+	byDay := make([][]T, len(days))
+	for _, row := range rows {
+		if i, shown := index[utcDay(timeOf(row))]; shown {
+			byDay[i] = append(byDay[i], row)
 		}
 	}
-	timing := Timing{Days: make([]Day, len(days)), Total: cell(shown)}
-	for i, d := range days {
-		timing.Days[i] = Day{Day: d, Partial: i == len(days)-1, Cell: cell(byDay[i])}
-	}
-	return timing
+	return midnights, byDay
 }
 
 // utcDay is t's UTC day, YYYY-MM-DD.
@@ -238,64 +277,73 @@ func elapsedMinutes(start, end *time.Time) *float64 {
 	return new(minutesBetween(*start, *end))
 }
 
-// jobTimings is each PR-checks job's timing by name (pipeline.py:121-135): its samples come only
-// from runs that ended in success or failure, whose jobs the prototype fetches, and only from
-// jobs that did, the only ones it stores (github_source.py:287-299). A job's minutes are its
-// duration rounded to the whole second, as the prototype stores its seconds.
-func jobTimings(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string) map[string]Timing {
-	samples := map[string][]Sample{}
+// PRChecksDay is pr-ci's parts of one UTC day, from the PR-checks workflow's pull_request runs
+// started that day and their jobs (pipeline.py:113-135): SeriesMinutes, each run's wall time from
+// its start to its completion and its outcome; and one series per job with a result that day
+// (JobSeriesPrefix and its name), whose results come only from runs that ended in success or
+// failure, whose jobs the prototype fetches, and only from jobs that did, the only ones it stores
+// (github_source.py:287-299), each job's minutes its duration rounded to the whole second, as the
+// prototype stores its seconds. A run still running adds nothing until it concludes, when its day
+// is built again. The failing-jobs table is no part of a day: it is FailingJobs' read of the 24
+// hours before a window's end, over the same runs and jobs.
+func PRChecksDay(day time.Time, runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob) []DayPart {
+	runSamples := make([]sample, 0, len(runs))
+	jobSamples := map[string][]sample{}
 	for _, run := range runs {
-		if outcome, ok := OutcomeOf(run.Conclusion); !ok || !outcome.timed() {
+		outcome, ok := OutcomeOf(run.Conclusion)
+		if !ok {
 			continue
 		}
-		runDay := utcDay(run.StartedAt)
+		result := sample{outcome: outcome}
+		if outcome.timed() {
+			result.minutes = elapsedMinutes(&run.StartedAt, run.CompletedAt)
+		}
+		runSamples = append(runSamples, result)
+		if !outcome.timed() {
+			continue
+		}
 		for _, job := range jobsByRun[run.RunID] {
-			outcome, ok := OutcomeOf(job.Conclusion)
-			if !ok || !outcome.timed() {
+			jobOutcome, ok := OutcomeOf(job.Conclusion)
+			if !ok || !jobOutcome.timed() {
 				continue
 			}
 			var minutes *float64
 			if job.StartedAt != nil && job.CompletedAt != nil {
 				minutes = new(math.Round(job.CompletedAt.Sub(*job.StartedAt).Seconds()) / 60)
 			}
-			samples[job.Name] = append(samples[job.Name], Sample{Day: runDay, Outcome: outcome, Minutes: minutes})
+			jobSamples[job.Name] = append(jobSamples[job.Name], sample{outcome: jobOutcome, minutes: minutes})
 		}
 	}
-	timings := make(map[string]Timing, len(samples))
-	for name, jobSamples := range samples {
-		timings[name] = ComputeTiming(jobSamples, days)
+	parts := []DayPart{timingPart(day, SeriesMinutes, runSamples)}
+	for _, name := range slices.Sorted(maps.Keys(jobSamples)) {
+		parts = append(parts, timingPart(day, JobSeriesPrefix+name, jobSamples[name]))
+	}
+	return parts
+}
+
+// jobTimings is each PR-checks job's timing by name over the shown days: each job series of
+// pr-ci's parts, folded per day and over the shown days.
+func jobTimings(parts []DayPart, days []string) map[string]Timing {
+	bySeries := map[string][]DayPart{}
+	for _, part := range parts {
+		if strings.HasPrefix(part.Series, JobSeriesPrefix) {
+			bySeries[part.Series] = append(bySeries[part.Series], part)
+		}
+	}
+	timings := make(map[string]Timing, len(bySeries))
+	for series, jobParts := range bySeries {
+		timings[strings.TrimPrefix(series, JobSeriesPrefix)] = timingByDay(jobParts, days, func(parts []DayPart) Cell { return cellOf(parts, series) })
 	}
 	return timings
 }
 
-// PRChecks is the PR-checks workflow's Pipeline numbers (pipeline.py:113-167): run, every run's
-// wall time from its start to its completion and its outcome; slowest, the SlowestJobs jobs with
-// SlowestMinResults timed results by their median over the shown days, slowest first, then by
-// name; and failing, every job that failed in a run completed in the FailingWindow up to end (a
-// run that completed after end, which a window pinned in the past can read, is not counted), most
-// failures first, then by name. end is where the window stops, and the failing table always
-// looks FailingWindow back from it. The failing tally reads only runs that ended in success or
-// failure (a cancelled run's jobs are not the prototype's to count) and only their jobs that
-// did, and leaves out rollupJob (none when empty) and every summary or guard job
-// (delivery.IsSummaryOrGuardJob). The caller passes the shown days' runs, each with its event
-// and branch already selected.
-func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, end time.Time, rollupJob string) (run Timing, slowest []JobTiming, failing []FailingJob) {
-	runSamples := make([]Sample, 0, len(runs))
-	for _, r := range runs {
-		outcome, ok := OutcomeOf(r.Conclusion)
-		if !ok {
-			continue
-		}
-		sample := Sample{Day: utcDay(r.StartedAt), Outcome: outcome}
-		if outcome.timed() {
-			sample.Minutes = elapsedMinutes(&r.StartedAt, r.CompletedAt)
-		}
-		runSamples = append(runSamples, sample)
-	}
-	run = ComputeTiming(runSamples, days)
-
-	slowest = []JobTiming{}
-	for name, timing := range jobTimings(runs, jobsByRun, days) {
+// FoldSlowestJobs is pr-ci's slowest-jobs table over parts (pipeline.py:137-142): the SlowestJobs
+// jobs with SlowestMinResults timed results over the shown days (the job series' min_n), by
+// their median over those days, slowest first, then by name, each with its cell of every shown
+// day; never nil.
+func FoldSlowestJobs(parts []DayPart, days []string) []JobTiming {
+	slowest := []JobTiming{}
+	for name, timing := range jobTimings(parts, days) {
 		if timing.Total.N >= SlowestMinResults {
 			slowest = append(slowest, JobTiming{Name: name, Timing: timing})
 		}
@@ -307,14 +355,39 @@ func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Delive
 		}
 		return cmp.Compare(a.Name, b.Name)
 	})
-	slowest = slowest[:min(len(slowest), SlowestJobs)]
-
-	return run, slowest, failingJobs(runs, jobsByRun, end, rollupJob)
+	return slowest[:min(len(slowest), SlowestJobs)]
 }
 
-// failingJobs is PRChecks' failing tally (pipeline.py:144-157), over the FailingWindow ending at
-// end.
-func failingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, end time.Time, rollupJob string) []FailingJob {
+// prChecksParts is pr-ci's parts of each shown day, built from the runs started on it.
+func prChecksParts(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string) []DayPart {
+	midnights, byDay := onShownDays(runs, func(run delivery.DeliveryRun) time.Time { return run.StartedAt }, days)
+	var parts []DayPart
+	for i, d := range midnights {
+		parts = append(parts, PRChecksDay(d, byDay[i], jobsByRun)...)
+	}
+	return parts
+}
+
+// PRChecks is the PR-checks workflow's Pipeline numbers (pipeline.py:113-167), from the parts
+// PRChecksDay builds of each shown day's runs: run, every run's wall time from its start to its
+// completion and its outcome, each day folded alone and the shown days together by FoldTiming;
+// slowest, FoldSlowestJobs; and failing, FailingJobs up to end, where the window stops. A run on
+// no shown day adds to no cell. The caller passes the shown days' runs, each with its event and
+// branch already selected.
+func PRChecks(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, days []string, end time.Time, rollupJob string) (run Timing, slowest []JobTiming, failing []FailingJob) {
+	parts := prChecksParts(runs, jobsByRun, days)
+	return timingByDay(parts, days, FoldTiming), FoldSlowestJobs(parts, days), FailingJobs(runs, jobsByRun, end, rollupJob)
+}
+
+// FailingJobs is PRChecks' failing tally (pipeline.py:144-157): every job that failed in a run
+// completed in the FailingWindow up to end (a run that completed after end, which a window pinned
+// in the past can read, is not counted), most failures first, then by name. It reads only runs
+// that ended in success or failure (a cancelled run's jobs are not the prototype's to count) and
+// only their jobs that did, and leaves out rollupJob (none when empty) and every summary or guard
+// job (delivery.IsSummaryOrGuardJob). It is no day part: the 24 hours it looks back over end at
+// any instant, not at a UTC day's end, so it is read from the run jobs themselves, the rows the
+// PR-checks parts are built from, as an items read is.
+func FailingJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, end time.Time, rollupJob string) []FailingJob {
 	horizon := end.Add(-FailingWindow)
 	var recent []delivery.DeliveryRun
 	for _, run := range runs {
@@ -374,16 +447,16 @@ type DeployJobCard struct {
 	delivery.Production
 }
 
-// DeployJobs is each card's timing keyed by its CardID, read from runs in one pass
-// (pipeline.py:170-185): each followed job's outcome (its conclusion as the card's
-// delivery.Production reads it, so a job that applied nothing is not counted), its minutes from its
-// start to its completion when timed, and the day its run started. The caller passes the deploy
-// workflow's push runs on main started in the shown days. A run without a followed job, or whose job
-// is not counted, adds nothing; every card gets a timing, all of its days empty when no run lists
-// its jobs, and its job field is its names joined by " or ". A run adds no more than one sample to a
-// card, from its Production.Job. A name two cards follow counts for the first.
-func DeployJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, cards []DeployJobCard, days []string) map[DeployJobCardID]DeployJobTiming {
-	samples := make([][]Sample, len(cards))
+// DeployJobsDay is each card's part of one UTC day, keyed by its CardID (staging-e2e,
+// staging-deploy and production-deploy; pipeline.py:170-185), read in one pass from the deploy
+// workflow's push runs on main started that day: each followed job's outcome (its conclusion as
+// the card's delivery.Production reads it, so a job that applied nothing is not counted) and its
+// minutes from its start to its completion when timed. A run without a followed job, or whose job
+// is not counted, adds nothing; every card gets a part. A run adds no more than one result to a
+// card, from its Production.Job. A name two cards follow counts for the first. A run whose job is
+// still running adds nothing until the job concludes, when its day is built again.
+func DeployJobsDay(day time.Time, runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, cards []DeployJobCard) map[DeployJobCardID][]DayPart {
+	samples := make([][]sample, len(cards))
 	cardOf := map[string]int{}
 	for i, card := range cards {
 		for _, name := range card.JobNames {
@@ -402,7 +475,6 @@ func DeployJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Deli
 				cardJobs[i] = append(cardJobs[i], job)
 			}
 		}
-		runDay := utcDay(run.StartedAt)
 		for i, jobs := range cardJobs {
 			job := cards[i].Job(jobs)
 			if job == nil {
@@ -412,64 +484,65 @@ func DeployJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Deli
 			if !ok {
 				continue
 			}
-			sample := Sample{Day: runDay, Outcome: outcome}
+			result := sample{outcome: outcome}
 			if outcome.timed() {
-				sample.Minutes = elapsedMinutes(job.StartedAt, job.CompletedAt)
+				result.minutes = elapsedMinutes(job.StartedAt, job.CompletedAt)
 			}
-			samples[i] = append(samples[i], sample)
+			samples[i] = append(samples[i], result)
+		}
+	}
+	parts := make(map[DeployJobCardID][]DayPart, len(cards))
+	for i, card := range cards {
+		parts[card.CardID] = []DayPart{timingPart(day, SeriesMinutes, samples[i])}
+	}
+	return parts
+}
+
+// DeployJobs is each card's timing keyed by its CardID, from the parts DeployJobsDay builds of each
+// shown day's runs, each day folded alone and the shown days together by FoldTiming. The caller
+// passes the deploy workflow's push runs on main started in the shown days; a run on no shown day
+// adds nothing. Every card gets a timing, all of its days empty when no run lists its jobs, and
+// its job field is its names joined by " or ".
+func DeployJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.DeliveryRunJob, cards []DeployJobCard, days []string) map[DeployJobCardID]DeployJobTiming {
+	midnights, byDay := onShownDays(runs, func(run delivery.DeliveryRun) time.Time { return run.StartedAt }, days)
+	parts := make(map[DeployJobCardID][]DayPart, len(cards))
+	for i, d := range midnights {
+		for card, cardParts := range DeployJobsDay(d, byDay[i], jobsByRun, cards) {
+			parts[card] = append(parts[card], cardParts...)
 		}
 	}
 	timings := make(map[DeployJobCardID]DeployJobTiming, len(cards))
-	for i, card := range cards {
-		timings[card.CardID] = DeployJobTiming{Job: strings.Join(card.JobNames, " or "), Timing: ComputeTiming(samples[i], days)}
+	for _, card := range cards {
+		timings[card.CardID] = DeployJobTiming{Job: strings.Join(card.JobNames, " or "), Timing: timingByDay(parts[card.CardID], days, FoldTiming)}
 	}
 	return timings
 }
 
-// leadTimeCell is minutes' count, median, p90 and longest (pipeline.ts:21-29), unrounded.
-func leadTimeCell(minutes []float64) LeadTimeCell {
-	cell := LeadTimeCell{N: len(minutes)}
-	if len(minutes) == 0 {
-		return cell
-	}
-	sorted := slices.Sorted(slices.Values(minutes))
-	cell.MedianMinutes = new(Quantile(sorted, 0.5))
-	cell.P90Minutes = new(Quantile(sorted, 0.9))
-	cell.MaxMinutes = new(sorted[len(sorted)-1])
-	return cell
-}
-
-// leadTimeTiming is byDay's cells, one per shown day, and the cell of all of them.
-func leadTimeTiming(byDay [][]float64, days []string) LeadTimeTiming {
+// leadTimeByDay is parts on each shown day folded alone by FoldLeadTime, and the shown days' parts
+// folded together: a part of a day not shown is dropped, and the last day is partial.
+func leadTimeByDay(parts []DayPart, days []string) LeadTimeTiming {
+	byDay := partsByDay(parts)
 	timing := LeadTimeTiming{Days: make([]LeadTimeDay, len(days))}
-	var all []float64
+	var shown []DayPart
 	for i, d := range days {
-		timing.Days[i] = LeadTimeDay{Day: d, Partial: i == len(days)-1, LeadTimeCell: leadTimeCell(byDay[i])}
-		all = append(all, byDay[i]...)
+		timing.Days[i] = LeadTimeDay{Day: d, Partial: i == len(days)-1, LeadTimeCell: FoldLeadTime(byDay[d])}
+		shown = append(shown, byDay[d]...)
 	}
-	timing.Total = leadTimeCell(all)
+	timing.Total = FoldLeadTime(shown)
 	return timing
 }
 
-// LeadTimes is the two lead-time cards (pipeline.ts:31-58), each PR bucketed by its UTC merge day:
+// LeadTimes is the two lead-time cards (pipeline.ts:31-58), each PR on its UTC merge day:
 // mergeToProduction, the DORA lead time, over the PRs that deployed (one still waiting has none
-// yet), and openedToMerge over every PR, deployed or not.
+// yet), and openedToMerge over every PR, deployed or not; each shown day's PRs built into that
+// day's parts (MergeToProductionDay, OpenToMergeDay) and folded by FoldLeadTime. A PR merged on no
+// shown day adds nothing.
 func LeadTimes(prs []PR, days []string) (mergeToProduction, openedToMerge LeadTimeTiming) {
-	index := make(map[string]int, len(days))
-	for i, d := range days {
-		index[d] = i
+	midnights, byDay := onShownDays(prs, func(pr PR) time.Time { return pr.MergedAt }, days)
+	var merged, opened []DayPart
+	for i, d := range midnights {
+		merged = append(merged, MergeToProductionDay(d, byDay[i])...)
+		opened = append(opened, OpenToMergeDay(d, byDay[i])...)
 	}
-	merged := make([][]float64, len(days))
-	opened := make([][]float64, len(days))
-	for _, pr := range prs {
-		i, ok := index[utcDay(pr.MergedAt)]
-		if !ok {
-			continue
-		}
-		opened[i] = append(opened[i], minutesBetween(pr.CreatedAt, pr.MergedAt))
-		if pr.DeployedAt != nil {
-			merged[i] = append(merged[i], minutesBetween(pr.MergedAt, *pr.DeployedAt))
-		}
-	}
-	return leadTimeTiming(merged, days), leadTimeTiming(opened, days)
+	return leadTimeByDay(merged, days), leadTimeByDay(opened, days)
 }

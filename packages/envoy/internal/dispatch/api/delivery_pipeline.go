@@ -199,7 +199,10 @@ func (s *server) readPipelinePopulation(ctx context.Context, settings delivery.D
 }
 
 // deliveryPipelineCompute is GET /api/v1/delivery/pipeline's body for window, from a population
-// read for it or narrowed to it. It reads nothing; now is only computed_at.
+// read for it or narrowed to it. It reads nothing; now is only computed_at. The PR checks, the
+// deploy cards and the lead times build each shown day's rows into day parts and fold them with
+// the folds the CI and delivery evals read stored parts with (measures.PRChecks, DeployJobs and
+// LeadTimes); the failing-jobs table is read from the run jobs themselves (measures.FailingJobs).
 func deliveryPipelineCompute(settings delivery.DeliverySettings, pop pipelinePopulation, window pipelineWindow, now time.Time) deliveryPipelineResponse {
 	days := window.days()
 	rollup := ""
@@ -273,9 +276,9 @@ func (p pipelinePopulation) narrowedTo(settings delivery.DeliverySettings, windo
 	return narrowed
 }
 
-// pipelineNextExpiry is the next UTC midnight (measures.ShownDays, pipeline.go:142) or the earliest
+// pipelineNextExpiry is the next UTC midnight (measures.ShownDays, pipeline.go:156) or the earliest
 // failing-jobs edge, whichever comes first: just past a timed PR-checks run's completion +
-// measures.FailingWindow (pipeline.go:33), when it leaves the 24 hours the table counts, or a timed
+// measures.FailingWindow (pipeline.go:48), when it leaves the 24 hours the table counts, or a timed
 // run's completion itself when that is after now (a clock ahead of Dispatch's), when it enters them.
 func pipelineNextExpiry(pop pipelinePopulation, now time.Time) time.Time {
 	next := nextUTCMidnight(now)

@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -189,6 +190,26 @@ type DayRow struct {
 	ViaRepository int                `json:"via_repository"`
 	BuiltBy       string             `json:"built_by"`
 	UpdatedAt     time.Time          `json:"updated_at"`
+}
+
+// Part is the row as the folds read it (measures.DayPart): every column but its key's project,
+// eval and repository, its listing and its bookkeeping (built_by, updated_at, the read's range),
+// which WithPart keeps.
+func (d DayRow) Part() measures.DayPart {
+	return measures.DayPart{
+		Series: d.Series, Day: d.Day, N: d.N, Sum: d.Sum, Num: d.Num, Den: d.Den, Max: d.Max,
+		Samples: d.Samples, Counts: d.Counts, LastValue: d.LastValue, LastAt: d.LastAt,
+		ViaRepository: d.ViaRepository,
+	}
+}
+
+// WithPart is the row holding part's columns in place of its own, and its own project, eval,
+// repository, listing, bookkeeping and range: the row a builder's part is written as, so
+// row.WithPart(row.Part()) is row.
+func (d DayRow) WithPart(part measures.DayPart) DayRow {
+	d.Series, d.Day, d.N, d.Sum, d.Num, d.Den, d.Max = part.Series, part.Day, part.N, part.Sum, part.Num, part.Den, part.Max
+	d.Samples, d.Counts, d.LastValue, d.LastAt, d.ViaRepository = part.Samples, part.Counts, part.LastValue, part.LastAt, part.ViaRepository
+	return d
 }
 
 // The two ranges a DayWindow read answers rows for.

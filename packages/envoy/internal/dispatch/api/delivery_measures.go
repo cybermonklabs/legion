@@ -91,6 +91,8 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 // succeeded. A deploy's shipped-PR count is every window pull request whose first shipping apply is
 // that run, before the facets (derived.shipped), so deploys_with_prs belongs to the deploy, not the
 // filter. The measures route and the timeline both answer through it, so the two never disagree.
+// measures.Compute builds the window's rows into day parts with the day builders and folds them
+// with the folds the delivery evals read stored parts with, one fold per measure.
 func deliveryMeasuresOver(settings delivery.DeliverySettings, pop deliveryPopulation, derived deliveryDerived, from, to, now time.Time) deliveryMeasuresResponse {
 	applies := delivery.ProductionApplies(pop.windowRuns, pop.windowJobs, settings.Production()).Applies
 	reached := map[int64]bool{}

@@ -648,9 +648,9 @@ func runsWhere(runs []delivery.DeliveryRun, jobs map[int64][]delivery.DeliveryRu
 // present, loses something the population holds or its daily series moves: just past the oldest
 // row's merge + n, the oldest run start (each list that filters on starts) + n, the oldest creation
 // among the runs ListRuns read + n, and each waiting entry's ship time + n; and the next UTC
-// midnight (measures.DailySeries, measures.go:240), where a whole-day window's first and last days
-// move together. Nothing else in the timeline or the measures reads the present (the LEGION-690 PR's
-// Task 0 checks, Step 17).
+// midnight (measures.DailySeries's days, measures.go:211), where a whole-day window's first and
+// last days move together. Nothing else in the timeline or the measures reads the present (the
+// LEGION-690 PR's Task 0 checks, Step 17).
 func nextExpiry(pop deliveryPopulation, n time.Duration, now time.Time) time.Time {
 	next := nextUTCMidnight(now)
 	consider := func(leaves time.Time) {

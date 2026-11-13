@@ -143,21 +143,25 @@ func TestRound1MatchesPython(t *testing.T) {
 	}
 }
 
-// TestComputeTimingGivesEachDayAndTheWeekAMedianP90AndSuccessRate is test_pipeline.py:37-66.
-func TestComputeTimingGivesEachDayAndTheWeekAMedianP90AndSuccessRate(t *testing.T) {
-	var samples []Sample
+// TestATimingFoldsEachDayAloneAndTheWeekTogether is test_pipeline.py:37-66, over the day parts
+// the results of each day make: each shown day folded alone, the shown days together, a day
+// before the first shown day dropped.
+func TestATimingFoldsEachDayAloneAndTheWeekTogether(t *testing.T) {
+	var lastDay []sample
 	for _, minutes := range []float64{10, 20, 30, 40} {
-		samples = append(samples, Sample{Day: "2026-10-02", Outcome: OutcomeSuccess, Minutes: new(minutes)})
+		lastDay = append(lastDay, sample{outcome: OutcomeSuccess, minutes: new(minutes)})
 	}
-	samples = append(samples,
-		Sample{Day: "2026-10-02", Outcome: OutcomeFailure, Minutes: new(60.0)},
-		Sample{Day: "2026-10-02", Outcome: OutcomeCancelled},
-		Sample{Day: "2026-10-01", Outcome: OutcomeSuccess, Minutes: new(15.0)},
-		Sample{Day: "2026-10-01", Outcome: OutcomeSuccess, Minutes: new(25.0)},
+	lastDay = append(lastDay, sample{outcome: OutcomeFailure, minutes: new(60.0)}, sample{outcome: OutcomeCancelled})
+	parts := []DayPart{
+		timingPart(at(32, 0, 0), SeriesMinutes, lastDay),
+		timingPart(at(31, 0, 0), SeriesMinutes, []sample{
+			{outcome: OutcomeSuccess, minutes: new(15.0)},
+			{outcome: OutcomeSuccess, minutes: new(25.0)},
+		}),
 		// Before the first shown day.
-		Sample{Day: "2026-09-25", Outcome: OutcomeFailure, Minutes: new(500.0)},
-	)
-	timing := ComputeTiming(samples, pipelineDays)
+		timingPart(at(25, 0, 0), SeriesMinutes, []sample{{outcome: OutcomeFailure, minutes: new(500.0)}}),
+	}
+	timing := timingByDay(parts, pipelineDays, FoldTiming)
 
 	if len(timing.Days) != 7 {
 		t.Fatalf("days = %d, want 7", len(timing.Days))
@@ -323,7 +327,7 @@ func TestAFailingJobsLastRunIsTheSameInEveryRunOrder(t *testing.T) {
 // docs job add nothing.
 func TestPRChecksJobCellsCountOnlyTimedJobsOfTimedRuns(t *testing.T) {
 	c := failingFixture()
-	timings := jobTimings(c.runs, c.jobs, pipelineDays)
+	timings := jobTimings(prChecksParts(c.runs, c.jobs, pipelineDays), pipelineDays)
 	unit, ok := timings["build / unit"]
 	if !ok {
 		t.Fatal("no build / unit timing")
