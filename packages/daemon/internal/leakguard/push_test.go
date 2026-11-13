@@ -175,6 +175,70 @@ func TestAPushThatAddsNoCommitReadsNoCommit(t *testing.T) {
 	}
 }
 
+// A push that fast-forwards a branch far behind the destination's main reads only the commits
+// of its own. The destination holds the branch at an old main, and the push is that branch based
+// on today's main, so every main commit between the two tips stands between the branch's old tip
+// and its new one; each is on the destination's main already, on a remote-tracking ref of this
+// repository, so the push publishes nothing of it. One of those main commits has an author a rule
+// refuses, as main's own commits once refused the push of a branch the destination held at a main
+// of weeks before. The control is a commit of the push's own with that same author: it is
+// refused, and the report names it and nothing of main's.
+func TestAPushOverTheDestinationsMainReadsOnlyItsOwnCommits(t *testing.T) {
+	home, root := t.TempDir(), t.TempDir()
+	remote, repo := filepath.Join(root, "remote.git"), filepath.Join(root, "repo")
+	fixture := fixturegit.Isolated(t, home)
+	fixture.Run(root, fixturegit.InitBare(remote, "main")...)
+	fixture.Run(root, fixturegit.InitWorkTree(repo, "main")...)
+	write := func(t *testing.T, name, content string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func(t *testing.T, message string, env ...string) string {
+		t.Helper()
+		fixture.Run(repo, "git", "add", "-A")
+		fixture.With(env...).Run(repo, "git", "commit", "--quiet", "-m", message)
+		return fixture.Run(repo, "git", "rev-parse", "HEAD")
+	}
+	const branch = "refs/heads/legion/LEGION-1"
+	write(t, "README.md", "one\n")
+	old := commit(t, "the main the branch was cut from")
+	// The destination holds main and the branch, both at that old main.
+	fixture.Run(repo, "git", "remote", "add", "origin", remote)
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main", "main:"+branch)
+	// Main moves on at the destination, and this repository's origin/main moves with it, as a
+	// fetch would leave it. The first of those commits has an author a rule refuses.
+	write(t, "README.md", "one\ntwo\n")
+	commit(t, "a main commit", "GIT_AUTHOR_EMAIL=builder@"+theHost)
+	write(t, "README.md", "one\ntwo\nthree\n")
+	commit(t, "a later main commit")
+	fixture.Run(repo, "git", "push", "--quiet", "origin", "main")
+	// The branch is based on today's main, and the destination still holds it at the old one.
+	fixture.Run(repo, "git", "checkout", "--quiet", "-b", "legion/LEGION-1", "origin/main")
+	push := func(t *testing.T, head string) error {
+		t.Helper()
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public)
+		return guard.Push(bound(t), PushRequest{
+			Dir:     repo,
+			Remote:  "origin",
+			URL:     "https://github.com/invented-org/invented-repo.git",
+			Updates: []Update{{LocalRef: branch, LocalSHA: head, RemoteRef: branch, RemoteSHA: old}},
+		})
+	}
+	write(t, "work.md", "a line of the branch's own\n")
+	own := commit(t, "the branch's own commit")
+	if err := push(t, own); err != nil {
+		t.Fatalf("a push over main's commits whose own commit names nothing: %v", err)
+	}
+	write(t, "work.md", "a line of the branch's own\nand another\n")
+	named := commit(t, "a second commit of the branch's own", "GIT_AUTHOR_EMAIL=builder@"+theHost)
+	want := []string{"commit " + short(named) + " author: " + theClass}
+	if refused := refusal(t, push(t, named)); !slices.Equal(refused.Lines, want) {
+		t.Errorf("the report is %q, want %q: the push's own commit, and none of main's", refused.Lines, want)
+	}
+}
+
 // A root commit's own added lines are read. A root commit has no parent to diff against, so a
 // diff-tree asked for one answers nothing at all, and the first push of a repository — the one
 // push that is all root commit — would carry every line of every file past the rules. The
