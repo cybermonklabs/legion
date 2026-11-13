@@ -1687,15 +1687,20 @@ func adminInterestsHandler(registry *store.Registry, sessions *session.SessionRe
 // live session's id is refused the 409 naming the holder, and reads the lookup to see which
 // process holds the role; a request that states no instance, and a claim record that names none,
 // both reach the renewal test rather than a case of their own, since an absent instance matches
-// nothing. That renewal test is read only while the role claim view can answer
-// (store.Registry.RoleViewErr): nothing but a registration renews a claim, a registration renews
-// through that view, and so a view that cannot answer leaves every claim's renewal ageing with
-// nothing able to move it - a refill longer than the live window would hand a live holder's role
-// to the second process. While it cannot answer, that one arm is the bus-unavailable 503 with
-// Retry-After: 1 naming the view (writeBusUnavailable), and nothing is claimed; a claim from the
-// process the standing claim names rests on no renewal and is granted through it, since it is
-// that holder re-claiming its own role after a listener restart. A hard claim reads no holder and
-// lands last-claim-wins as it always has.
+// nothing. A renewal older than the window is read as the holder having stopped only while this
+// listener can vouch for that: nothing but a registration renews a claim, and the claim record
+// reads the same whether its holder stopped registering or this listener failed to renew it. So
+// the claim is refused, with the bus-unavailable 503 and Retry-After: 1 naming the state
+// (writeBusUnavailable) and nothing claimed, while the role claim view cannot be served
+// (store.Registry.RoleViewErr), while the copy's last whole read of the role bucket is past its
+// repair bound or none has completed (store.Registry.RoleClaimRepairErr), and while this
+// listener's own renewal of that role's claim for its holder failed inside the live window
+// (store.Registry.RenewalFailedWithin, which a renewal of that claim that writes clears). Without
+// them a listener whose renewals stopped landing would hand a live holder's role to the second
+// process once the window passed. A claim from the process the standing claim names rests on no
+// renewal and is granted through all three, since it is that holder re-claiming its own role
+// after a listener restart. A hard claim reads no holder and lands last-claim-wins as it always
+// has.
 //
 // A claim that landed also hands the role's kept lane to its new holder: whatever the listener
 // kept while the role had none is forwarded to the claimant (runKeptRoleDrain, which reads the
@@ -1857,9 +1862,11 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 		// asks: it reads no holder and claims last-claim-wins.
 		//
 		// The error is non-nil for the claim read that did not answer, which carries no
-		// verdict, and with roleHolderUnread, which is a read of the holder's session record or
-		// of the role claim view that did not answer; the two are answered differently and the
-		// verdict is what tells them apart.
+		// verdict, and with roleHolderUnread, which is a read of the holder's session record
+		// that did not answer or, for a role held under the claimant's own session id, a state
+		// in which this listener cannot vouch that the holder stopped renewing its claim (the
+		// role claim view, its repair or this listener's own renewal of that claim); the two
+		// are answered differently and the verdict is what tells them apart.
 		//
 		// The registry sees only interest rows; a holder that is another session is the session
 		// bucket's call (roleSupersessionVerdict, through liveSessionEntry and
@@ -1884,7 +1891,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				// An unheld role is the claimant's: there is nobody to supersede.
 				return nil, claim, roleUnclaimed, nil
 			case holder == body.SessionID:
-				verdict, err = roleOwnSessionVerdict(d.registry, claim, claimantInstanceID, liveWindow)
+				verdict, err = roleOwnSessionVerdict(d.registry, body.Role, claim, claimantInstanceID, liveWindow)
 			default:
 				// The predecessor rule reads the claimant's own registration where the
 				// request states no instance. Without that fallback a client that sends none
@@ -1943,7 +1950,8 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				supersedable, claim, verdict, decideErr = decideSoftClaim()
 				switch {
 				case verdict == roleHolderUnread:
-					// A read that did not answer takes nothing from a holder.
+					// A read that did not answer, or a renewal this listener cannot vouch
+					// for, takes nothing from a holder.
 					writeBusUnavailable(w, decideErr)
 					return
 				case decideErr != nil:
@@ -2558,6 +2566,14 @@ func (d *listenerDeps) registerPass(
 // bucket call that did not answer, a claim record this build cannot read, a renewal that lost its
 // compare-and-swap. A heartbeat refused for any of those would take down the very sessions whose
 // claims it keeps alive.
+//
+// Passed over is not forgotten. A claim the renewal could not read or write is recorded against
+// its role and this session (store.Registry.RenewalFailedWithin), and so is every role the
+// session may hold when the registration fails before its renewal runs - the interest record's
+// read or write, or the session entry's write - since such a registration renews nothing
+// (store.Registry.RecordRenewalFailures). That record is what keeps POST /v1/roles/set from
+// reading a claim this listener failed to renew as one its holder abandoned
+// (roleOwnSessionVerdict), and the next renewal of that claim that writes clears it.
 func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -2627,13 +2643,23 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// words and not the interest row's: the row is stored, and nothing tells another reader
 		// the session is here (sessionEntryWriteError). It is answered before the ordinary store
 		// error below, and nothing past here reads a registration whose entry was never written.
+		//
+		// Either failure ends the registration before its renewal, so no claim the session
+		// holds is renewed by this heartbeat. Each is recorded as a failed renewal of every role
+		// the session may hold - the roles the role claim copy names for it and the role topics
+		// of its cached interest row, read with no bucket call, since the bus is what just
+		// failed - before the answer, so a second process of the session is not granted a role
+		// whose renewal this listener could not make (store.Registry.RecordRenewalFailures,
+		// roleOwnSessionVerdict).
 		var entryErr *sessionEntryWriteError
 		if errors.As(err, &entryErr) {
+			d.registry.RecordRenewalFailures(body.SessionID, err)
 			logger.Error("listener session registry put failed", slog.String("session_id", body.SessionID), slog.String("error", entryErr.cause.Error()))
 			writeStoreError(ctx, w, fmt.Errorf("session registry unavailable: %w", entryErr.cause), http.StatusServiceUnavailable)
 			return
 		}
 		if err != nil {
+			d.registry.RecordRenewalFailures(body.SessionID, err)
 			logger.Warn("listener could not register the session's interest",
 				slog.String("session_id", body.SessionID),
 				slog.Any("topics", body.Topics),
@@ -2714,6 +2740,13 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// (store.RoleClaim.HandedBack, written by POST /v1/interests/unsubscribe), and no
 		// registration renews a marked claim, which the role claim reaper then frees at its
 		// first pass past the live window.
+		//
+		// A role whose claim read or write did not answer or failed is the renewal's failure:
+		// it is in the error logged below, and the renewal records it against that role and
+		// this session, where POST /v1/roles/set reads it (store.Registry.RenewalFailedWithin,
+		// roleOwnSessionVerdict) until a renewal of that claim writes and clears it. A lost
+		// compare-and-swap, a claim another session or process holds, a handed-back claim and a
+		// role with no claim record are none: the record said what stands.
 		renewal, err := d.registry.RenewRoleClaims(ctx, body.SessionID, strings.TrimSpace(body.ClientInstanceID), registered.row)
 		logger.LogEvent(slog.LevelDebug, "listener subscribe weighed the session's role claims",
 			slog.String("session_id", body.SessionID),

@@ -217,8 +217,8 @@ const (
 	// predecessor and its entry carries the claimant's own client instance id, the same
 	// conversation continuing inside the instance that held the role. The role held under the
 	// claimant's own session id is taken on this verdict too, where the standing claim names
-	// the claimant's own process or nobody renewed it inside the live window
-	// (roleOwnSessionVerdict).
+	// the claimant's own process, or nobody renewed it inside the live window while this
+	// listener can say the renewal was the holder's to make (roleOwnSessionVerdict).
 	roleTakenFromHolder
 	// roleTakenFromUnidentifiedPredecessor is roleTakenFromHolder for the one case
 	// session.InstanceMatches accepts without two ids to compare: a live named predecessor
@@ -233,10 +233,12 @@ const (
 	// the route can log the second process being held off, which a bare 409 naming the
 	// claimant's own session id does not show an operator.
 	roleHeldByAnotherProcess
-	// roleHolderUnread: a read that did not answer - the holder's session record, or the role
-	// claim view a renewal is only worth reading while it can answer - so nothing is taken
-	// from anyone. It comes with the error the route answers (writeBusUnavailable), already
-	// worded for the read that failed.
+	// roleHolderUnread: nothing is taken from anyone, because what the verdict would rest on
+	// cannot be vouched for now - a read that did not answer (the holder's session record), or,
+	// for the role held under the claimant's own session id, a state in which this listener
+	// cannot tell a holder that stopped renewing its claim from a renewal of it that did not land
+	// (roleOwnSessionVerdict). It comes with the error the route answers (writeBusUnavailable),
+	// already worded for the read or the state that refused.
 	roleHolderUnread
 	// roleUnclaimed: no claim stands for the role, so there is no holder to supersede and
 	// nothing to log. Only the route's own read of the claim answers it (roleSetHandler),
@@ -244,7 +246,7 @@ const (
 	roleUnclaimed
 )
 
-// roleOwnSessionVerdict decides a soft claim of a role whose standing claim is held under the
+// roleOwnSessionVerdict decides a soft claim of role whose standing claim is held under the
 // claimant's own session id, which is no reason to hand the role over: a second process can
 // resume a live session's id, and the session record names whichever process registered that id
 // last, not the one holding the role. So this verdict is made on the standing claim alone -
@@ -252,6 +254,8 @@ const (
 // from roleSupersessionVerdict. claimantInstanceID is the client instance the claimant's request
 // stated, with no fallback to the registration: an absent instance names no process and matches
 // no claim, so a request that states none reaches the renewal test rather than a case of its own.
+// role is the role claimed: this listener's record of the renewals that failed is kept by role
+// and holder session, so the verdict reads it by the two.
 //
 // A claim naming the claimant's very process is the holder re-claiming its own role
 // (store.RoleClaim.HeldByProcess), granted at once however recently it was renewed: it rests on
@@ -263,17 +267,38 @@ const (
 // (store.RoleClaim.LastAnsweredAt), so it is kept while it is newer than the window and granted
 // once it is older - the same rule, not a case of its own.
 //
-// That reading is only worth anything while renewals can still move. What moves them is a
-// registration (POST /v1/interests/subscribe), which renews every claim the registering session
-// holds through the role claim view (store.Registry.RenewRoleClaims, over RolesHeldBy); while
-// that view cannot answer - the state a listener restart leaves for as long as its first read of
-// the bucket takes - no registration renews any claim, so every claim's renewal is ageing with
-// nothing able to move it. A refill longer than the live window would then read a live holder's
-// claim as abandoned and hand its role to a second process, the very takeover the refusal exists
-// to make. So the renewal test fails closed on the view's own state (store.Registry.RoleViewErr,
-// the one test of it, which makes no bucket call): roleHolderUnread with the error the route
-// answers, nothing claimed and nothing written, and the claimant retries.
-func roleOwnSessionVerdict(registry *store.Registry, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
+// That reading is only worth anything while a renewal older than the window means the holder
+// stopped, and the claim record alone cannot say so: it reads the same whether the holder stopped
+// registering or this listener failed to renew the claim of a holder that goes on registering.
+// What moves a renewal is a registration (POST /v1/interests/subscribe), which renews each claim
+// of the roles named by the interest row its own write returned and by the role claim copy, each
+// as that claim's own record says (store.Registry.RenewRoleClaims). So, once the claim's renewal
+// is older than the window, three states of this listener refuse the claim, each answering
+// roleHolderUnread with an error that names it, nothing claimed and nothing written, and the
+// claimant retries. None of the three makes a bucket call.
+//
+//   - The role claim view cannot be served (store.Registry.RoleViewErr): there is no watcher, its
+//     watcher ended terminally, or its copy is refilling - the state a listener restart leaves for
+//     as long as its first read of the bucket takes - or has not followed the bucket for longer
+//     than the stale bound. A renewal then weighs the row's roles alone, so a role only the copy
+//     would have named goes unrenewed, and no other arm covers the window after the watcher ends
+//     terminally.
+//   - The copy's last whole read of the role bucket completed longer ago than
+//     store.RoleClaimRepairBound, or none has completed (store.Registry.RoleClaimRepairErr). The
+//     repair is what puts back a claim the copy lost when the interest row does not name it
+//     either, so past the bound such a claim may have gone unrenewed for as long as the live
+//     window leaves its holder.
+//   - This listener's own renewal of role's claim for the holder failed inside liveWindow
+//     (store.Registry.RenewalFailedWithin): a claim read or write that did not answer or failed,
+//     or a registration whose store work failed before its renewal could run
+//     (store.Registry.RecordRenewalFailures, from subscribeHandler). A renewal of that claim for
+//     that holder that wrote clears the record, so this arm refuses only until the holder's next
+//     registration lands. The record is this listener's own and is lost at a restart, and a
+//     claim may reach another listener, so the repair's bound and not this record is what bounds
+//     the harm. The record's error is quoted and not wrapped: a renewal that failed on a key the
+//     bus refuses would otherwise be answered as the caller's bad request (writeNATSError), when
+//     what this answer says is that the claim may be retried.
+func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.RoleClaim, claimantInstanceID string, liveWindow time.Duration) (roleSupersession, error) {
 	if claim.HeldByProcess(claimantInstanceID) {
 		return roleTakenFromHolder, nil
 	}
@@ -282,6 +307,13 @@ func roleOwnSessionVerdict(registry *store.Registry, claim store.RoleClaim, clai
 	}
 	if viewErr := registry.RoleViewErr(); viewErr != nil {
 		return roleHolderUnread, fmt.Errorf("read role claim view: %w", viewErr)
+	}
+	if repairErr := registry.RoleClaimRepairErr(); repairErr != nil {
+		return roleHolderUnread, fmt.Errorf("role claim repair: %w", repairErr)
+	}
+	if failure, failed := registry.RenewalFailedWithin(role, claim.HolderSessionID, liveWindow); failed {
+		return roleHolderUnread, fmt.Errorf("role %s's renewal for %s failed on this listener at %s, inside the %s live window: %v",
+			role, claim.HolderSessionID, failure.At.UTC().Format(time.RFC3339), liveWindow, failure.Err)
 	}
 	return roleTakenFromHolder, nil
 }
