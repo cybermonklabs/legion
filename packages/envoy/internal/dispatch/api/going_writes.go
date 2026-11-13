@@ -367,12 +367,14 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	}
 	// The call is known now: the claim holds, before anything of it is sent, the requests it
 	// resumes after - a taken-over write's own landings, then what of the rest of it the
-	// invocation's writes landed - and what it sends (goingLandings.plan).
+	// invocation's writes landed, marked as theirs (goingInherited) - and what it sends
+	// (goingLandings.plan).
 	resume := goingResumeAfter(run, input, specs)
 	if taken != nil && claim.write.ID == taken.ID {
 		own := claim.write.Requests
-		resume = append(slices.Clone(own), resume[min(len(own), len(resume)):]...)
-		claim.write.Target, claim.write.Fields, claim.write.Before = taken.Target, taken.Fields, taken.Before
+		resume = append(slices.Clone(own), goingInherited(resume[min(len(own), len(resume)):])...)
+	} else {
+		resume = goingInherited(resume)
 	}
 	claim.write.Requests, claim.write.Sends = resume, len(specs)
 	if claim.write.Target == "" {
@@ -489,10 +491,11 @@ func (s *server) claimGoingWrite(ctx context.Context, w http.ResponseWriter, r *
 			err = s.claimGoingRunWrite(ctx, run.ID, login, write, "")
 		case latest.Pending:
 			write.ID, write.Requests = latest.ID, slices.Clone(goingLanded(latest.Requests))
+			write.Target, write.Fields, write.Before, write.Sends = latest.Target, slices.Clone(latest.Fields), latest.Before, latest.Sends
 			err = s.adoptGoingRunWrite(ctx, run.ID, login, latest.ID, write.At)
 		default:
 			prefilled := write
-			prefilled.Requests = slices.Clone(goingLanded(latest.Requests))
+			prefilled.Requests = goingInherited(goingLanded(latest.Requests))
 			err = s.claimGoingRunWrite(ctx, run.ID, login, prefilled, latest.ID)
 		}
 		if err == nil {
@@ -562,14 +565,25 @@ func goingPendingWrite(run goingRun, id string) *goingRunWrite {
 	return nil
 }
 
+// goingInherited is a copy of requests an earlier write of the invocation landed, marked as that
+// write's (goingWriteRequest.Inherited), for the record of a write that resumes after them.
+func goingInherited(requests []goingWriteRequest) []goingWriteRequest {
+	inherited := slices.Clone(requests)
+	for index := range inherited {
+		inherited[index].Inherited = true
+	}
+	return inherited
+}
+
 // settleGoingTakenOver records taken, a write whose process ended and whose claim this request
 // took over, as it stands, for a call that does not send first what it landed (its arguments
 // changed), and reports whether that answered the request. Where every request of it landed (its
 // Sends), it went through: it is recorded so, the value after it unread, and the request is
 // answered its line, as one for an invocation whose write went through is. Otherwise it is
-// recorded refused, naming what landed (goingRefusal.after), with no Idempotency-Key marked, and
-// the invocation is claimed afresh after it, for the call: that claim is answered, or, where
-// another request claimed the invocation in between, 429 GOING_WRITE_IN_PROGRESS.
+// recorded refused, naming what it landed itself (goingRefusal.after) and none it holds from an
+// earlier write (goingWriteRequest.Inherited), with no Idempotency-Key marked, and the invocation
+// is claimed afresh after it, for the call: that claim is answered, or, where another request
+// claimed the invocation in between, 429 GOING_WRITE_IN_PROGRESS.
 func (s *server) settleGoingTakenOver(claim goingWriteClaim, taken goingRunWrite, input goingWriteInput) (goingRunWrite, bool) {
 	landed := goingLanded(taken.Requests)
 	claim.write = taken
@@ -583,8 +597,9 @@ func (s *server) settleGoingTakenOver(claim goingWriteClaim, taken goingRunWrite
 		}
 		return goingRunWrite{}, true
 	}
+	own := slices.DeleteFunc(slices.Clone(landed), func(request goingWriteRequest) bool { return request.Inherited })
 	claim.write.Outcome = goingRefusal{Status: http.StatusConflict, Code: codeGoingWriteUnsettled,
-		Message: "the process making this write ended before all of it was sent, and the invocation was then sent with other arguments, so the rest of it is never sent"}.after(landed).outcome()
+		Message: "the process making this write ended before all of it was sent, and the invocation was then sent with other arguments, so the rest of it is never sent"}.after(own).outcome()
 	claim.ctx = store.WithoutBeforeCommit(claim.ctx)
 	if !claim.record("") {
 		return goingRunWrite{}, true
@@ -709,8 +724,12 @@ func (c goingWriteClaim) refuse(before goingObservation, err error) {
 	}
 	if refused {
 		refusal = refusal.after(goingLanded(c.write.Requests))
-		c.write.Target, c.write.Fields = before.target, before.fields
-		c.write.Before, c.write.After = goingJSONOrNull(before.value), json.RawMessage("null")
+		if before.target != "" {
+			// A refusal before anything was read keeps the item, fields and value before the
+			// write planned, a taken-over write's among them (claimGoingWrite).
+			c.write.Target, c.write.Fields, c.write.Before = before.target, before.fields, goingJSONOrNull(before.value)
+		}
+		c.write.After = json.RawMessage("null")
 		c.write.Outcome = refusal.outcome()
 		c.ctx = store.WithoutBeforeCommit(c.ctx)
 		if c.record(before.issue) {

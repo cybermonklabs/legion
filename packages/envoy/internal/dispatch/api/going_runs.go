@@ -125,13 +125,16 @@ type goingRunWrite struct {
 // (goingSend.digest), how it went, and the id of the item it made where it made one
 // (goingMadeID). A request is the same request as another only where all three match
 // (goingSameSend); one recorded before the body's digest was, with none, is matched by its method
-// and path alone.
+// and path alone. Inherited is a request an earlier write of the invocation landed, which this
+// write resumes after and holds a copy of (goingInherited): it stands for the call, and is never
+// named as one this write landed itself (settleGoingTakenOver).
 type goingWriteRequest struct {
 	Method     string            `json:"method"`
 	Path       string            `json:"path"`
 	BodySHA256 string            `json:"body_sha256,omitempty"`
 	Outcome    goingWriteOutcome `json:"outcome"`
 	Made       string            `json:"made,omitempty"`
+	Inherited  bool              `json:"inherited,omitempty"`
 }
 
 // goingSameSend reports whether the recorded request is the request spec sends: the same method

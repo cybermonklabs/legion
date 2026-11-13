@@ -855,3 +855,79 @@ func TestGoingWriteWithAnotherReasonPostsItsOwn(t *testing.T) {
 		})
 	}
 }
+
+// TestGoingWriteTakenOverAndRefusedByItsTranslationNamesItsLandingsOnce (review round 9,
+// finding 1): a reasoned close whose process ended after its reason landed is taken over by a
+// press with the same arguments after someone closed the issue; the translation refuses it. The
+// refusal names the landed reason once, and the record keeps the item and fields the write
+// planned.
+func TestGoingWriteTakenOverAndRefusedByItsTranslationNamesItsLandingsOnce(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		t.Run(row.action, func(t *testing.T) {
+			issue := rig.issue(t, "Reasoned, ended, then closed")
+			arguments, first, _ := row.on(t, rig, issue)
+			run := rig.proposed(t, "alice", false, row.action, arguments)
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			rig.served.inProcess = goingDiesAfter(inner, first)
+			rig.dieWriting(t, run, press)
+			rig.served.inProcess = inner
+			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"status": "done"})
+			rig.ageGoingWrites(t, run)
+			refused := rig.write(t, "alice", run, press)
+			refusal := goingRefusalSeenOf(t, refused)
+			_, path, _ := strings.Cut(first, " ")
+			if refused.Code != http.StatusConflict || strings.Count(refusal.Error, path) != 1 {
+				t.Fatalf("the taken-over press answered %d %+v, want it refused naming %s once", refused.Code, refusal, first)
+			}
+			writes := rig.record(t, "alice", run).Writes
+			if len(writes) != 1 || writes[0].Pending || writes[0].Target != issue || len(writes[0].Fields) == 0 {
+				t.Fatalf("the run keeps %+v, want the one write, refused, keeping its item %s and the fields it planned", writes, issue)
+			}
+		})
+	}
+}
+
+// TestGoingWriteTakenOverBeforeItsPlanNamesNothingItInherited (review round 9, finding 2): a
+// reasoned close of A lands its reason and is refused 503; the next press's claim, which starts
+// out holding that landed reason, ends before its call is planned; a press for B takes it over.
+// The taken-over write is settled naming nothing it did not land itself, and B is closed.
+func TestGoingWriteTakenOverBeforeItsPlanNamesNothingItInherited(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		t.Run(row.action, func(t *testing.T) {
+			a, b := rig.issue(t, "Half closed, then pressed again"), rig.issue(t, "Pressed after")
+			argumentsA, firstA, ownA := row.on(t, rig, a)
+			argumentsB, _, _ := row.on(t, rig, b)
+			run := rig.proposed(t, "alice", false, row.action, argumentsA)
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method+" "+r.URL.Path == ownA {
+					writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "A's close was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			rig.write(t, "alice", run, press)
+			rig.served.inProcess = goingDiesBefore(inner, http.MethodGet+" /api/v1/issues/"+a)
+			rig.dieWriting(t, run, press)
+			rig.served.inProcess = inner
+			rig.ageGoingWrites(t, run)
+			press["arguments"] = argumentsB
+			line := goingLineOf(t, rig.write(t, "alice", run, press))
+			_, pathA, _ := strings.Cut(firstA, " ")
+			recorded := rig.requestsRecorded(t, run)
+			if !line.Outcome.OK || rig.issueRead(t, b).Status != "done" || len(recorded) != 3 || recorded[1].Pending ||
+				recorded[1].Outcome.OK || strings.Contains(recorded[1].Outcome.Message, pathA) {
+				t.Fatalf("the press on %s answered %+v and the run keeps %+v, want the taken-over write settled naming nothing of %s and %s done",
+					b, line.Outcome, recorded, firstA, b)
+			}
+		})
+	}
+}

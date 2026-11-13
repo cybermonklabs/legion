@@ -25,13 +25,15 @@ import (
 
 // goingRefusal is a refusal of a request the going writes made in-process, or one of their own
 // in the same shape: its status, its code and its words, and the answer exactly as the route
-// wrote it where a route wrote one, which the writes route then answers whole.
+// wrote it where a route wrote one, which the writes route then answers whole. named is a
+// refusal whose words already name what of its write landed (after).
 type goingRefusal struct {
 	Status  int
 	Code    string
 	Message string
 	header  http.Header
 	body    []byte
+	named   bool
 }
 
 func (e goingRefusal) Error() string {
@@ -78,9 +80,10 @@ func (e goingRefusal) write(w http.ResponseWriter) {
 // after is the refusal of a request a write sent once the requests before it had landed: the
 // route's status, code and headers, in the shared error shape, its words followed by each request
 // that landed and the item it made, since those stand. A line that shows the refusal so says what
-// of the write is done.
+// of the write is done. A refusal that already names what landed is left as it is, so the
+// landings are named once.
 func (e goingRefusal) after(landed []goingWriteRequest) goingRefusal {
-	if len(landed) == 0 {
+	if len(landed) == 0 || e.named {
 		return e
 	}
 	stands := make([]string, 0, len(landed))
@@ -93,7 +96,7 @@ func (e goingRefusal) after(landed []goingWriteRequest) goingRefusal {
 	}
 	e.Message = fmt.Sprintf("%s (refused after this write's earlier request landed, which stands and is not sent again: %s)",
 		e.Message, strings.Join(stands, "; "))
-	e.body = nil
+	e.body, e.named = nil, true
 	return e
 }
 
