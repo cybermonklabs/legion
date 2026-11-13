@@ -1842,6 +1842,22 @@ The step costs an operator one statement with the daemon stopped, and it leaves 
 
 Rolling back afterwards needs nothing of those rows: the notice told an architect where its root stood in the line and that the daemon would start it again, and either release starts it again without saying so.
 
+#### Rolling back the release that names what nothing starts
+
+This release writes a new field, `held`, on the controller tick notice: every issue the daemon's record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one word for why nothing of it runs and the issues that hold it.
+An earlier release decodes an outbox payload strictly (`DisallowUnknownFields` in `record/outbox.go`) and knows no such field, so a controller notice still queued at the rollback fails on its backoff for ever and the tick reaches nobody.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+update outbox set payload = payload - 'held' where kind = 'controller_notice' and payload ? 'held';
+```
+
+What the strip costs is one line of one wake: the tick that row carries then names the blocked issues alone, which is what the earlier release's controller reads anyway, and the next tick of the daemon that runs is whole again.
+
+Nothing else of this release needs a rollback step.
+The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
+This change writes no column and runs no migration, so no dump and no `alter table` belong here.
+
 #### Rolling back below the release that trims an issue pod's volume
 
 The release that added the cache trimmer added one architect notice kind, `volume-near-full`, and one member of the notice payload, `volume`.

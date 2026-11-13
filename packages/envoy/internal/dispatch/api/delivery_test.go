@@ -72,7 +72,7 @@ func TestGetDeliveryTimelineComputesDeployedStatusAndFacets(t *testing.T) {
 	// the deploy repository, plus one merged in a different repository the configured deploy
 	// pipeline never tracks (not_tracked). acme/widgets#1 also names a P0 issue, for the priority
 	// facet case below.
-	if _, err := pool.Exec(ctx, `insert into projects (key, name) values ('ACME', 'Acme') on conflict do nothing`); err != nil {
+	if _, err := pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
 	if _, err := pool.Exec(ctx, `insert into issues (key, project_key, number, title, status, priority, created_by, rank) values ('ACME-1', 'ACME', 1, 'x', 'todo', 0, '{"kind":"system","id":"test"}', 'U')`); err != nil {
@@ -406,7 +406,7 @@ func seedDeliveryIssueFacts(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := t.Context()
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('ACME', 'Acme') on conflict do nothing`,
+		`insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`,
 		`insert into architecture_sources (project_key, id, repo, branch, installation_id, created_by) values
 			('ACME', 1, 'acme/arch', 'main', 1, '{"kind":"system","id":"test"}'),
 			('ACME', 2, 'acme/docs', 'main', 1, '{"kind":"system","id":"test"}')`,

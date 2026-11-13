@@ -155,7 +155,7 @@ func seedCommentReplyBacklog(t *testing.T, database *store.Store, broker *events
 func seedUnclaimedCommentBacklog(t *testing.T, database *store.Store, broker *events.Broker, issues, count int) []model.Event {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name) values ('TT', 'Test')`); err != nil {
+	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	person := model.Actor{Kind: "user", ID: "alice"}
@@ -215,7 +215,7 @@ func seedUnclaimedCommentBacklog(t *testing.T, database *store.Store, broker *ev
 // messages' ids.
 func seedLoadMessageIssues(t *testing.T, database *store.Store, issues int) ([]string, []string) {
 	t.Helper()
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name) values ('TT', 'Test')`); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('TT', 'Test', 'alice')`); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
 	keys := make([]string, issues)
