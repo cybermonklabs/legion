@@ -484,12 +484,12 @@ test.each([
 });
 
 // The texts the rows above name are the ones a reader is sent to; the replaced rule could stand in
-// any other. So this row reads the tree: every text file git tracks under the directories that say
-// who a question reaches (the contract, the command line, the server, the web app and its
-// end-to-end rows, the skills, the documentation site) and every tracked `AGENTS.md` of the
-// repository, all but this file, and fails on each sentence that states the two-step rule - the
-// person the ask was handed to, else the issue's assignee, with no project default after them -
-// or says a question can reach nobody.
+// any other. So this row reads the tree: every text file git lists, tracked or untracked and not
+// ignored, under the directories that say who a question reaches (the contract, the command line,
+// the server, the web app and its end-to-end rows, the skills, the documentation site) and every
+// such `AGENTS.md` of the repository, all but this file, and fails on each sentence that states the
+// two-step rule - the person the ask was handed to, else the issue's assignee, with no project
+// default after them - or says a question can reach nobody.
 //
 // A sentence is read as prose: each line loses its comment marker and the quotes of a string
 // concatenated across lines, so a phrase wrapped over two lines of a comment or a tool description
