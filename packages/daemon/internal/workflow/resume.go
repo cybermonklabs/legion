@@ -227,12 +227,17 @@ func (e *Engine) suspendedPhaseOwners(ctx context.Context, tx pgx.Tx) (phaseOwne
 // (record.SuperviseRequest.RuleResume). It names this door, the boot's start of a claim the
 // daemon itself suspended, by rule (booted) or by the idle release (cutoverMergerRepair), and not
 // the task's text, so both starts carry it.
+//
+// Both starts are re-assertions (startMarks.reasserts): the boot is the daemon coming back, no
+// fact of the issue, and the work each sends is work the record already owes the role, so neither
+// marks a movement of the issue. sendOwedEntry sets the mark itself on the start it writes, and
+// the resume task's start sets it here.
 func (e *Engine) startSuspendedOwner(ctx context.Context, tx pgx.Tx, owner suspendedOwner, row record.PhaseRow) (behind bool, err error) {
 	if OwedEntry(owner.run, owner.root, row.Entry) {
 		return true, e.sendOwedEntry(ctx, tx, owner.issue, owner.role, row, startMarks{ruleResume: true})
 	}
 	return false, e.started(ctx, tx, owner.issue, owner.role, ResumePhaseTask(owner.issue), 0,
-		startMarks{resumeTask: true, ruleResume: true})
+		startMarks{resumeTask: true, ruleResume: true, reasserts: true})
 }
 
 // sweepMerged closes every issue of the project that awaits a merge GitHub already reported

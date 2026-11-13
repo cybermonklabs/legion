@@ -96,14 +96,25 @@ func Reading(status int, report string) string {
 		refusal + fmt.Sprintf("exit %d\n", status)
 }
 
-// Write writes script as the body of a stand-in shared check in dir, under the real check's own
-// name, and answers its path. The file is executable, since the guard runs it as a program, and a
-// second call over the same directory replaces it, which is how a test moves a disk from one
-// stand-in to another.
-func Write(t testing.TB, dir, script string) string {
-	t.Helper()
+// WriteFile writes script as the body of a stand-in shared check in dir, under the real check's
+// own name, and answers its path. The file is executable, since the guard runs it as a program,
+// and a second call over the same directory replaces it, which is how a test moves a disk from
+// one stand-in to another. It answers an error rather than failing, for the caller that has no
+// *testing.T to fail: a TestMain, which runs before any test has one (internal/workspace's
+// stand-in, written once for the package's own home).
+func WriteFile(dir, script string) (string, error) {
 	path := filepath.Join(dir, CheckName)
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+script), 0o700); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// Write is WriteFile for a test, which it fails rather than answering the error to.
+func Write(t testing.TB, dir, script string) string {
+	t.Helper()
+	path, err := WriteFile(dir, script)
+	if err != nil {
 		t.Fatal(err)
 	}
 	return path

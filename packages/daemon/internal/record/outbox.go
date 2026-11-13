@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -161,10 +162,29 @@ type ClaimRelease struct{}
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
-// marker.
+// marker. Artifact, when set, is a document the body links (dispatch://<issue>/artifact/<name>):
+// the runner puts it on the issue before it posts the body, so the link never comes before its
+// document.
 type MessagePost struct {
-	Body string `json:"body"`
+	Body     string           `json:"body"`
+	Artifact *MessageArtifact `json:"artifact,omitempty"`
 }
+
+// MessageArtifact is the markdown document a message links. Name is the slug Dispatch files it
+// under, so the message can link it before it exists: a name that is no slug is refused, since
+// Dispatch would file it under another (its artifactSlug). Content is the markdown, at most
+// MaxMessageArtifactBytes.
+type MessageArtifact struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+// MaxMessageArtifactBytes is the most bytes a message's artifact may hold: Dispatch's own bound on
+// one markdown document (pmdoc.MaxDocumentBytes), past which it refuses the upload.
+const MaxMessageArtifactBytes = 1 << 20
+
+// artifactSlug is the grammar of a Dispatch slug, which every reader of a dispatch:// link spells.
+var artifactSlug = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 func (MessagePost) OutboxKind() OutboxKind { return OutboxKindDispatchMessage }
 
@@ -589,7 +609,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // keeps the slot it holds while it waits (workflow's enterAwaiting). The controller takes no issue for any of
 // the three (skill://legion-controller, "Free slots"). A tick is the daemon's periodic wake, whose
 // issue is the project key. An unslotted notice names a root admission found in the workflow with
-// neither a slot nor a place in the waiting line, which it took out of the workflow; its reason
+// neither a slot nor a place in the waiting line, which it then put in phase.Done; its reason
 // names the status the root stood at. An update-stalled notice names an issue whose pod the
 // daemon opened an update round over and cannot replace: a worker has not answered within
 // `pod_update_notice_hours`, a turn that will not end holds the replacement, or the replacement
@@ -599,8 +619,19 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // words built from structured fields alone (supervise's tellControllerOfProviderErrors). It is
 // told once, and not again until a turn with no error puts that run back to zero; nothing is
 // held and nothing is bounded, because a chain's bottom refusing deterministically costs one
-// request every ten minutes. When admission sends each is its rule (admit.Admission.wakeController and its
-// callers, admit's releaseUnslotted, admit.Admission.TellController).
+// request every ten minutes. A tree-stalled notice names a root of the daemon's own whose tree
+// has stopped: nothing of the tree has moved for longer than `stalled_tree_notice_hours`, no
+// claim of it is at work, and either at least one issue of it waits by no rule of the daemon's
+// own or the project's line can no longer move — a tree every quiet issue of which waits by one
+// of those rules is told to nobody while some issue of the project holds a slot and waits by
+// none of them, or some claim of the project is at work (admit's tellStalledTrees, lineCanMove).
+// Its issue is that root, and its Reason names the tree's quiet hours, each
+// issue the workflow still runs with its phase, the role whose turn it is and the state of its
+// pull request, and what the controller is to decide. It is told once for each stall: the
+// daemon marks the root with the movement the notice was told for, and tells again only once
+// the tree moves past that mark. When admission sends each is its rule
+// (admit.Admission.wakeController and its callers, admit's releaseUnslotted,
+// admit.Admission.TellController).
 //
 // A parked-decision notice names a person's decision on a tree Legion is not running, which
 // nobody inside the tree will hear: a spec decision the notice executor could not deliver to the
@@ -620,22 +651,34 @@ const (
 	ParkedDecisionNotice NoticeKind = "parked-decision"
 	UpdateStalledNotice  NoticeKind = "update-stalled"
 	ProviderErrorsNotice NoticeKind = "provider-errors"
+	TreeStalledNotice    NoticeKind = "tree-stalled"
 )
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the
 // issue and the role that names it — rather than one per project
 // (admit.Admission.wakeController reads it before it queues a wake).
 //
-// A provider-errors notice is the one such kind: it names the claim whose turns keep ending in a
+// Two kinds answer true. A provider-errors notice names the claim whose turns keep ending in a
 // provider error, and in an outage every claim of the project has a notice of its own to send.
 // It is told at exactly the sixth turn in a row and never again until a turn with no error puts
-// that run back to zero, so a second claim's notice dropped behind the first claim's would never
-// be sent at all. Two claims of one issue are two such claims — an issue's architect and its
-// worker fail their turns in the same outage — so the issue alone is not the key; the role is
-// the rest of it. Every other kind says something about the project — a free slot, a todo issue,
-// the day's tick — which one wake carries however many facts find it pending.
+// that run back to zero, so a second claim's notice dropped behind the first claim's would
+// never be sent at all. Two claims of one issue are two such claims — an issue's architect and
+// its worker fail their turns in the same outage — so the issue alone is not the key; the role
+// is the rest of it.
+//
+// A tree-stalled notice names one root whose tree has stopped, and carries no role: the stall
+// is the whole tree's and not one agent's. So its key is the issue alone, which is what an
+// empty role gives it — the role is a term the pending read leaves out when the caller names
+// none (Store.ControllerNoticePending) — and the issue is the tree's root. It is keyed that way
+// because a project can have two trees stopped at once, which is the very shape its controller
+// most needs to read: keyed per project, the second tree's notice would be dropped for as long
+// as the first tree's waited in the outbox, and no pass could tell the controller of it until
+// that first notice was published.
+//
+// Every other kind says something about the project — a free slot, a todo issue, the day's tick
+// — which one wake carries however many facts find it pending.
 func NoticePerClaim(kind NoticeKind) bool {
-	return kind == ProviderErrorsNotice
+	return kind == ProviderErrorsNotice || kind == TreeStalledNotice
 }
 
 // SuperviseOp identifies a worker-session operation: "start" starts, resumes, or retries the role's
@@ -710,15 +753,19 @@ type SuperviseRequest struct {
 	// claim spends its launch budget, the runner finishes this row rather than retrying it as
 	// RequestRetry with fresh budgets: the failed claim stays failed for the boot report to name.
 	RuleResume bool `json:"ruleResume,omitempty"`
-	// NeedsSlot marks a phase worker's start as one that waits for its issue's admission slot.
-	// The cap counts the issues the daemon has started, so what it must bound is the start that
-	// puts a worker to work; everything else the transition writes — the phase, the Dispatch
-	// status, the entry and its task on the role's phases row, the notices — is written in the
-	// transition's own transaction and waits for nothing. The hold is on this row's claimability
-	// alone (store.go's outboxInOrder): a row that is merely unclaimable takes no lease, so none
-	// of its issue's later rows is held behind it. The row carries the worker's task whether or
-	// not it is marked, since a start is one row either way (workflow.StartOrOwe); what the mark
-	// decides is when the worker comes back with it.
+	// NeedsSlot marks a start whose phase holds one of the cap's slots (PhaseKeepsSlot) as one
+	// that waits for its issue's admission slot. The cap counts the issues the daemon has
+	// started whose change is still to write, so what it must bound is the start of a phase that
+	// holds a row; everything else the transition writes — the phase, the Dispatch status, the
+	// entry and its task on the role's phases row, the notices — is written in the transition's
+	// own transaction and waits for nothing. A start into accepting, retro or merging carries no
+	// mark, since an issue past its review holds no row for such a start to wait for, and it is
+	// claimable the moment it commits. workflow.StartOrOwe is the
+	// one writer of the mark, which it reads from the start's own phase, so no caller decides
+	// it. The hold is on this row's claimability alone (store.go's outboxInOrder): a row that is
+	// merely unclaimable takes no lease, so none of its issue's later rows is held behind it.
+	// The row carries the worker's task whether or not it is marked, since a start is one row
+	// either way; what the mark decides is when the worker comes back with it.
 	NeedsSlot bool `json:"needsSlot,omitempty"`
 	// Relaunch is written by nothing. It marked the task-less half of the two rows a phase
 	// worker's start used to be, before a start became one row that carries its task
@@ -1344,7 +1391,21 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" {
 			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
 		}
-	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case MessagePost:
+		// Each is a refusal Dispatch would make of the upload on every run, or a link that would
+		// name no document, so the row is refused before it is queued.
+		if artifact := value.Artifact; artifact != nil {
+			if !artifactSlug.MatchString(artifact.Name) {
+				return fmt.Errorf("a message's artifact is named %q, which is no Dispatch slug: runs of lowercase ASCII letters and digits, each two joined by one dash", artifact.Name)
+			}
+			if strings.TrimSpace(artifact.Content) == "" {
+				return fmt.Errorf("a message's artifact %s holds no content", artifact.Name)
+			}
+			if len(artifact.Content) > MaxMessageArtifactBytes {
+				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
+			}
+		}
+	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -1633,7 +1694,8 @@ func validateNoticeEscalation(kind NoticeKind, reason, escalation string) error 
 // architect's.
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
-	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice, UpdateStalledNotice, ProviderErrorsNotice:
+	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, UnslottedNotice, AwaitingPersonNotice, ParkedDecisionNotice,
+		UpdateStalledNotice, ProviderErrorsNotice, TreeStalledNotice:
 		return true
 	default:
 		return false
