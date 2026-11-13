@@ -10,8 +10,9 @@ body: |-
   file compiled into the binary, and changing one leaves an open editor writing.
 
   `envoy-dispatch census --store` reads what the store and the projections disagree about,
-  `census --store --sizing` prints how large the log gets, and `envoy-dispatch erase` is the one
-  statement that removes a node's bytes. It takes them out of every store that holds them, a
-  document's live editing history and the search index among them, redacts the event log in
-  place rather than deleting its rows, lists what it will rewrite before it changes anything,
-  and refuses rather than reporting success when a document spells the bytes otherwise.
+  holding each row to the tuples that answer it, `census --store --sizing` prints how large the
+  log gets, and `envoy-dispatch erase` is the one statement that removes a node's bytes. It takes
+  them out of every store that holds them, a document's live editing history, the search index
+  and the embedding store among them, redacts the event log in place rather than deleting its
+  rows, lists what it will rewrite before it changes anything, refuses a type node, and refuses
+  rather than reporting success when a document spells the bytes otherwise.

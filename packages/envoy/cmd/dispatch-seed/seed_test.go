@@ -14,6 +14,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -47,6 +50,9 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 	t.Run("every arm of graph_edges holds rows", func(t *testing.T) {
 		assertEveryGraphArmHoldsRows(t, first)
+	})
+	t.Run("the store census reads no difference and every comment its author", func(t *testing.T) {
+		assertStoreCensusAgrees(t, first)
 	})
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
@@ -546,6 +552,153 @@ func assertEveryAskHasItsOpeningEvent(t *testing.T, database *store.Store) {
 	if len(missing) > 0 {
 		t.Errorf("%d of %d asks have no opening event, the first few: %v",
 			len(missing), len(askIDs), missing[:min(5, len(missing))])
+	}
+}
+
+// assertStoreCensusAgrees runs `census --store` over the seeded database as the subcommand runs
+// it (graphcensus.StoreCensus, on a connection of its own) and holds it to zero differences over
+// a census that read comment rows. The census holds each comment row to the authored_by tuple
+// graphstore.AuthorOf reads off the row's author, so a comment the seed wrote with an author and
+// no authored_by is one difference of the comment kind, which the printed report names.
+//
+// Each comment is then read through the store's own current read (graphstore.CurrentOut): one
+// that names an author holds exactly one current authored_by, ending at the node AuthorOf names,
+// and that node is live and states its two base attributes. A comment that names nobody holds
+// none.
+//
+// The seed states its author through its batch write and not through graphstore.Authored, so
+// Authored is run again over one seeded comment, in a transaction rolled back, and held to
+// adding nothing but that comment's authored_by: no node, since the seed already made the
+// author's, and no alias the seed left out.
+func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
+	t.Helper()
+	ctx := context.Background()
+	report, err := graphcensus.StoreCensus(ctx, databaseURLOf(t, database), false)
+	if err != nil {
+		t.Fatalf("take the store census: %v", err)
+	}
+	var printed strings.Builder
+	report.Write(&printed)
+	var commentRows int64
+	for _, kind := range report.Kinds {
+		if kind.Kind == commentNodeKind {
+			commentRows = kind.Rows
+		}
+	}
+	if commentRows == 0 {
+		t.Fatalf("the store census read no comment row, so it proves nothing about them:\n%s", printed.String())
+	}
+	if report.Differences() != 0 || report.Refused() {
+		t.Errorf("the store census reads %d difference(s) over the seeded database:\n%s",
+			report.Differences(), printed.String())
+	}
+
+	type commentAuthor struct {
+		id        string
+		author    model.Actor
+		createdAt time.Time
+	}
+	rows, err := database.Pool.Query(ctx, `select id::text, author, created_at from comments order by id`)
+	if err != nil {
+		t.Fatalf("list the comments: %v", err)
+	}
+	comments, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (commentAuthor, error) {
+		var comment commentAuthor
+		err := row.Scan(&comment.id, &comment.author, &comment.createdAt)
+		return comment, err
+	})
+	if err != nil {
+		t.Fatalf("list the comments: %v", err)
+	}
+	var sample commentAuthor
+	authored := 0
+	authors := map[[2]string]struct{}{}
+	wrong := []string{}
+	for _, comment := range comments {
+		held, err := graphstore.CurrentOut(ctx, database.Pool, commentNodeKind, comment.id,
+			[]string{graphstore.TupleAuthoredBy})
+		if err != nil {
+			t.Fatalf("read who wrote comment %s: %v", comment.id, err)
+		}
+		kind, id, ok := graphstore.AuthorOf(comment.author)
+		if !ok {
+			if len(held) != 0 {
+				wrong = append(wrong, fmt.Sprintf("%s names nobody and holds %d authored_by", comment.id, len(held)))
+			}
+			continue
+		}
+		if authored == 0 {
+			sample = comment
+		}
+		authored++
+		if len(held) != 1 || held[0].ToKind != kind || held[0].ToID != id {
+			wrong = append(wrong, fmt.Sprintf("%s holds %d current authored_by, want one to %s:%s",
+				comment.id, len(held), kind, id))
+			continue
+		}
+		authors[[2]string{kind, id}] = struct{}{}
+	}
+	if authored == 0 {
+		t.Fatalf("none of the %d seeded comments names an author, so this check proves nothing", len(comments))
+	}
+	if len(wrong) > 0 {
+		t.Errorf("%d of %d seeded comments do not hold their author, the first few: %v",
+			len(wrong), len(comments), wrong[:min(5, len(wrong))])
+	}
+	for author := range authors {
+		node, found, err := graphstore.ReadNode(ctx, database.Pool, author[0], author[1])
+		if err != nil {
+			t.Fatalf("read the node of %s:%s: %v", author[0], author[1], err)
+		}
+		if !found || node.State != graphstore.StateLive {
+			t.Errorf("the authored_by tuples end at %s:%s, which the store holds as %+v (found %t), not live",
+				author[0], author[1], node, found)
+		}
+		for attribute, want := range map[string]string{
+			"visibility": graphstore.VisibilityProject, "state": graphstore.StateLive,
+		} {
+			value, held, err := graphstore.CurrentValue(ctx, database.Pool, author[0], author[1], attribute)
+			if err != nil {
+				t.Fatalf("read the %s of %s:%s: %v", attribute, author[0], author[1], err)
+			}
+			if !held || value != want {
+				t.Errorf("%s:%s states %s %q (held %t), want %q", author[0], author[1], attribute, value, held, want)
+			}
+		}
+	}
+
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open the transaction Authored runs in: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var lastSeq, nodesBefore, nodesAfter int64
+	if err := tx.QueryRow(ctx, `select coalesce(max(seq), 0), (select count(*) from graph_nodes) from graph_tuples`).
+		Scan(&lastSeq, &nodesBefore); err != nil {
+		t.Fatalf("read the store before Authored: %v", err)
+	}
+	if err := graphstore.Authored(ctx, tx, commentNodeKind, sample.id, sample.author, sample.createdAt,
+		graphstore.NoEvent); err != nil {
+		t.Fatalf("state the author of comment %s through Authored: %v", sample.id, err)
+	}
+	if err := tx.QueryRow(ctx, `select count(*) from graph_nodes`).Scan(&nodesAfter); err != nil {
+		t.Fatalf("count the nodes after Authored: %v", err)
+	}
+	rows, err = tx.Query(ctx, `
+		select from_kind || ':' || from_id || ' ' || kind || ' ' || to_kind || ':' || to_id
+		from graph_tuples where seq > $1 order by seq`, lastSeq)
+	if err != nil {
+		t.Fatalf("read what Authored appended: %v", err)
+	}
+	appended, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read what Authored appended: %v", err)
+	}
+	kind, id, _ := graphstore.AuthorOf(sample.author)
+	want := []string{commentNodeKind + ":" + sample.id + " " + graphstore.TupleAuthoredBy + " " + kind + ":" + id}
+	if nodesAfter != nodesBefore || !slices.Equal(appended, want) {
+		t.Errorf("Authored over comment %s made %d node(s) and appended %v, want no node and %v: the seed"+
+			" states less of its author than Authored does", sample.id, nodesAfter-nodesBefore, appended, want)
 	}
 }
 

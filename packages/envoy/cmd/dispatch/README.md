@@ -2387,6 +2387,7 @@ It migrates the database first, as the other backfills do, and exits 1 when it s
 
 `envoy-dispatch erase --node <kind>:<id>` is the one path in Dispatch that deletes a tuple row or a node row; everything else the store does is an append.
 It is reached by the command and the database credential alone: no HTTP route serves it, no agent bearer and no session reaches it, and it migrates nothing.
+It refuses a type node, a `supertag` or an `attribute`, before it opens a connection: a type is data the block schema seeds, and no route and no command deletes one.
 
 It removes, in one transaction: the tuples out of the node, the tuples whose far end it is, every projection row of it (`comments`, `document_blocks` and `block_refs`, found by the `node_kind`/`node_address` pair migration `20261109022248` gave all three) and the rows that cannot exist without one of them, the whole text of every block it projects onto (`document_block_texts`, which references `artifacts` alone, so no foreign key into those tables names it and it is deleted by the block's own `artifact_id` and `block_id`), the `artifact_versions` rows whose markdown holds the erased text, and each `artifact_reviews` row whose `content_sha256` covered those bytes.
 It cannot rewrite such a review: `artifact_review_content_sha256_update` raises on any statement that moves a stored digest, so an approval over erased bytes ends rather than drifting, and the command names every one it ended by its document and its version.
@@ -2398,7 +2399,7 @@ An excerpt is cut again from the rewritten text the way the indexer cuts it, and
 It redacts `events.payload` in place for the same reason the log is append-only: the row stays with its id, its time and its actor untouched and the marker where the bytes were.
 Each of those is counted on its own `redacted:` line of the report, beside the `rows:` lines of what was deleted.
 
-A document holds the erased bytes in four more stores, and the same transaction takes them out of each.
+A document holds the erased bytes in five more stores, and the same transaction takes them out of each.
 
 - **The live editing state** (`doc_updates`, with `doc_checkpoints` and `doc_snapshots`) is the ygo history a document's room loads from.
   A deleted item keeps its bytes in those rows until a fold collects it, and a text substitution inside an update would leave one no load decodes, so no row is edited.
@@ -2427,7 +2428,11 @@ A document holds the erased bytes in four more stores, and the same transaction 
   The keys are held in the command's memory alone, since each is the digest of an erased text: no row, record or log keeps them, so a sweep that fails or is interrupted cannot be run again, and the command says so and exits 2 after printing the report of the erase that did commit.
   The bound starts when the read's store does, after the read itself, so a read still building its answer at the commit can store later than 30 seconds after it by as long as that read took.
 
-Each store is counted on the report as the others are: the rows each history held under `rows: doc_updates` (and `doc_checkpoints`, `doc_snapshots`), the one seed under `redacted: doc_updates`, the search rows under `rows:` or `redacted: document_search`, an issue's vector under `redacted: issues`, the queue rows under `rows: search_term_queue` and the trees under `rows: text_trees`, with a `term statistics counted again:` line naming the projects.
+- **The embedding store** (`embeddings`, with `embedding_window_states`) holds the text each vector was made from in `text_snapshot`, written by the block index tick's window arm (`refs.WriteItemWindows`, `refs.WriteDocumentWindows`) and by the issue trigger of migration `0140`.
+  Before anything is deleted, the erase deletes the node's own rows and its window state, the document windows whose `covers` name a block it deletes or rewrites, and every `issue`, `document` or `document_block` row whose snapshot holds the erased text.
+  It then writes each such issue's row again with the statement that trigger runs, and marks each document whose windows it deleted owed them (`document_block_versions.windows_owed_at`), so the window arm writes them again from the latest version left; a document with no version left is not marked.
+
+Each store is counted on the report as the others are: the rows each history held under `rows: doc_updates` (and `doc_checkpoints`, `doc_snapshots`), the one seed under `redacted: doc_updates`, the search rows under `rows:` or `redacted: document_search`, an issue's vector under `redacted: issues`, the queue rows under `rows: search_term_queue`, the trees under `rows: text_trees`, the embedding rows and window states under `rows: embeddings` and `rows: embedding_window_states`, the issue rows written again under `redacted: embeddings`, with a `term statistics counted again:` line naming the projects.
 Every one of those statements runs in the erase's own transaction, the two that `docs` and `api` own included (`graphcensus.Stores`, which `cmd/dispatch`'s `eraseStores` fills), so a failure in any of them rolls back the whole erase, nodes and all.
 `e2e/acceptance/graph-erase.sh` then searches every column of every table of the database for the erased bytes, with a control row planted in the same search, so a store added later is searched without anyone naming it.
 

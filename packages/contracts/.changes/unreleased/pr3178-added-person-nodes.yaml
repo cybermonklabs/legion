@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The Dispatch API contract describes `GET /api/v1/people/{login}/nodes`, a person's own page of
+  what they wrote and what reached them, newest first, with its `PersonNodes` answer and the
+  `PersonNode` row it lists.
