@@ -180,16 +180,18 @@ type rawField struct {
 //
 // A field named here is left out of its object's `required` by its json tag alone: absent is one
 // of the three states the handler reads, so a document that required every such field would deny
-// a write the server takes. The two whose handler does refuse an absent field say so with
-// `required:"true"`, the tag jsonschema-go reads, as every other request field does. An entry
-// whose key names no field of any emitted type fails the emit, so the table cannot rot.
+// a write the server takes. The one whose handler does refuse an absent field, answerAskInput's
+// expected_edited_at, says so with `required:"true"`, the tag jsonschema-go reads, as every other
+// request field does. An entry whose key names no field of any emitted type fails the emit, so
+// the table cannot rot.
 var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseAnswerPrecondition (ask_transitions.go): absent is no precondition, null the
 	// precondition that the value is unset, a string the value it must hold.
 	{reflect.TypeOf(answerAskInput{}), "expected_answer_at"}: rawField{Fragment: openAPITimestamp, Nullable: true},
 	{reflect.TypeOf(answerAskInput{}), "expected_edited_at"}: rawField{Fragment: openAPITimestamp, Nullable: true},
-	// parseIssueAssignee (issue_assignee.go) reads create and update alike: null clears the
-	// assignee, a string names a person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise).
+	// parseIssueAssignee (issue_assignee.go) reads create and update alike: a string names a
+	// person who has signed in (400 ASSIGNEE_NOT_ALLOWED otherwise); null clears the assignee on
+	// an update, and on a create names nobody, so the create's chain fills it in (defaultAssignee).
 	{reflect.TypeOf(createIssueInput{}), "assignee"}: rawField{Fragment: openAPIPersonEmail, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "assignee"}: rawField{Fragment: openAPIPersonEmail, Nullable: true},
 	// parseIssueComponents (issue_components.go) reads create and update alike: null is back to
@@ -204,10 +206,6 @@ var rawFieldSchemas = map[rawFieldKeyOf]rawField{
 	// parseIssueRepo (issue_repo.go): null clears the repository, a string is "owner/name".
 	{reflect.TypeOf(createIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
 	{reflect.TypeOf(updateIssueInput{}), "repo"}: rawField{Fragment: openAPIRepository, Nullable: true},
-	// putProjectDefaultAssignee (project_default_assignee.go): null clears the default, a string
-	// names a person who has signed in. Absent is refused (400 INVALID_PROJECT), so a PUT of `{}`
-	// cannot wipe a default, which is why the handler holds the bytes rather than a *string.
-	{reflect.TypeOf(projectDefaultAssigneeInput{}), "assignee"}: rawField{Fragment: openAPIPersonEmail, Nullable: true},
 	// An upload refuses `primary` whenever it carries one, JSON or multipart (artifacts.go):
 	// primary is fixed at issue creation. The field is described so a client reading the document
 	// knows what the bytes would have to be, never because one may send them.

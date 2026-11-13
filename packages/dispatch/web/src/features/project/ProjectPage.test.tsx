@@ -24,8 +24,9 @@ function LocationProbe() {
 }
 
 /** One open ask. The person it waits on is resolved as the server resolves it
- *  (`coalesce(a.asked_of, i.assignee)`), so an override that moves the issue's assignee, or
- *  hands the ask to somebody, moves that person with it. */
+ *  (`coalesce(a.asked_of, i.assignee, p.default_assignee)`, through `withWaitingOnPerson`), so
+ *  an override that moves the issue's assignee, or hands the ask to somebody, moves that person
+ *  with it. */
 function inboxRow(overrides: Partial<InboxRow> = {}): InboxRow {
   const row: InboxRow = {
     anchor: null,

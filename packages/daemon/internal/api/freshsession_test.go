@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -358,7 +359,7 @@ func freshSessionLine(t *testing.T, h *harness, records record.Store) ([]record.
 		if facts, err = record.ReadLineFacts(h.ctx, tx, records, testDispatchProject, issues, config.DesignGateRootIssues.Steps()); err != nil {
 			return err
 		}
-		_, facts, line, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil)
+		_, facts, line, _, err = blockers.JudgeLine(h.ctx, tx, records, testDispatchProject, issues, slots, facts, nil, time.Now())
 		return err
 	}); err != nil {
 		t.Fatalf("read the waiting line: %v", err)

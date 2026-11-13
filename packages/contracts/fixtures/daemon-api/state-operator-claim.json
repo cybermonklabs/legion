@@ -12,7 +12,8 @@
     "active": [],
     "waiting": [],
     "trees": [],
-    "blocked": []
+    "blocked": [],
+    "held": []
   },
   "issues": {
     "AC91849371-900": {
