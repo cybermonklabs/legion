@@ -1,4 +1,4 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import type { UserEvent } from "@testing-library/user-event";
@@ -6,9 +6,13 @@ import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
-import { ApiError, api } from "../../api/client";
+import { realClock } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArtifactUploadResponse, Issue, Message } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { firstCriterion } from "./new-issue";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
@@ -244,6 +248,57 @@ test("a write refused after the create reports the issue as made and offers to c
     );
     expect(bar.createIssue).toHaveBeenCalledTimes(1);
   } finally {
+    bar.restore();
+  }
+});
+
+// A create the person stopped may have made the issue: the line says so, and that pressing the
+// row again sends a new create, rather than "Could not make the issue" in the stopped write's own
+// words, which are a composer's.
+test("a create the person stopped says it may have been made, not that it could not be", async () => {
+  const user = userEvent.setup();
+  const bar = openBar({ label: "from-the-bar", session: "sess-1" });
+  try {
+    bar.createIssue.mockRejectedValue(
+      new NetworkError("/api/v1/issues", new TypeError("Failed to fetch"))
+    );
+    const row = await offerFor(user);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(row);
+    await stopTheLateWrite(bar.queryClient);
+    expect(screen.getByTestId("search-new-issue-said").textContent).toBe(
+      stoppedWriteNote("the new issue", "made", {
+        anew: "Pressing Make a new issue again sends it as a new create.",
+      })
+    );
+  } finally {
+    realClock();
+    bar.restore();
+  }
+});
+
+// A write onto the issue the person stopped may have landed: the line says the issue is made and
+// that Dispatch has not confirmed that write, rather than calling it refused in the stopped
+// write's own words.
+test("a write onto the issue the person stopped says it may have landed, not that it was refused", async () => {
+  const user = userEvent.setup();
+  const bar = openBar({ label: "from-the-bar", session: "sess-1" });
+  try {
+    bar.uploadArtifact.mockRejectedValue(
+      new NetworkError("/api/v1/issues/CORE-7/artifacts", new TypeError("Failed to fetch"))
+    );
+    const row = await offerFor(user);
+    jest.useFakeTimers();
+    await userOnFakeClock().click(row);
+    await stopTheLateWrite(bar.queryClient);
+    expect(screen.getByTestId("search-new-issue-said").textContent).toBe(
+      `CORE-7 is made. ${stoppedWriteNote("its first criterion", "made", {
+        anew: "Nothing here makes it again: open CORE-7 to see whether it was.",
+      })}`
+    );
+    expect(bar.patchIssue).not.toHaveBeenCalled();
+  } finally {
+    realClock();
     bar.restore();
   }
 });

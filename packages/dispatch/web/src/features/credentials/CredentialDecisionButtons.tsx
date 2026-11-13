@@ -13,6 +13,7 @@ import {
   secondaryButtonHoverBorder,
   secondaryButtonText,
 } from "../../theme/classes";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 
 /**
  * The Approve/Deny button pair `MachineLoginPage` renders for a pending machine login: that page
@@ -53,13 +54,25 @@ export function CredentialDecisionButtons({
           Deny
         </button>
       </div>
+      {/* A decision the reader stopped may have been made, and each button is a press of its own,
+          under a key of its own: none makes the stopped decision again. */}
       {approve?.isError ? (
         <p className={dangerText}>
-          {apiErrorMessage(approve.error, "Could not approve this request.")}
+          {approve.error instanceof SendStoppedError
+            ? stoppedWriteNote("the approval", "made", {
+                anew: "Pressing Approve again sends a new approval.",
+              })
+            : apiErrorMessage(approve.error, "Could not approve this request.")}
         </p>
       ) : null}
       {deny.isError ? (
-        <p className={dangerText}>{apiErrorMessage(deny.error, "Could not deny this request.")}</p>
+        <p className={dangerText}>
+          {deny.error instanceof SendStoppedError
+            ? stoppedWriteNote("the denial", "made", {
+                anew: "Pressing Deny again sends a new denial.",
+              })
+            : apiErrorMessage(deny.error, "Could not deny this request.")}
+        </p>
       ) : null}
     </div>
   );

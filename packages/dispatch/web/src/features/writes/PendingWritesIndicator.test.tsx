@@ -9,19 +9,27 @@ import { jump, realClock } from "../../__tests__/fake-clock";
 import { keptTab, keyMinted } from "../../__tests__/kept-sends-harness";
 import { answerSends } from "../../__tests__/send-answers";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api, type WriteBounds } from "../../api/client";
-import { expiredRetryNote, FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "./keyed-write";
+import { ApiError, api, type WriteBounds, type WriteMethod } from "../../api/client";
+import {
+  expiredRetryNote,
+  FIRST_BACKOFF_MS,
+  SEND_DEADLINE_MS,
+  sameKeyRetryNote,
+} from "./keyed-write";
 import { PendingWritesIndicator } from "./PendingWritesIndicator";
+import { KEPT_SEND_RESUME_MS } from "./write-storage";
 import { plainWrite, type Writes, writesOf } from "./write-store";
 
-/** One write the indicator shows, labelled `label`, its attempt `write`. */
+/** One write the indicator shows, labelled `label`, its attempt `write`, which makes a request of
+ *  `method`. */
 function indicatorWrite(
   writes: Writes,
   label: string,
+  method: WriteMethod,
   write: (bounds: WriteBounds) => Promise<unknown>
 ): void {
   void writes
-    .run({ detail: null, kind: plainWrite, label, presentation: "indicator", write })
+    .run({ detail: null, kind: plainWrite, label, method, presentation: "indicator", write })
     .catch(() => undefined);
 }
 
@@ -71,10 +79,10 @@ test("the indicator counts the writes out, names a late one, and clears when it 
   const writes = writesOf(client);
 
   try {
-    indicatorWrite(writes, "CORE-1 set to done", (bounds) =>
+    indicatorWrite(writes, "CORE-1 set to done", "PATCH", (bounds) =>
       api.patchIssue("CORE-1", { status: "done" }, bounds)
     );
-    indicatorWrite(writes, "CORE-2 pinned", (bounds) =>
+    indicatorWrite(writes, "CORE-2 pinned", "PUT", (bounds) =>
       api.putIssueState("CORE-2", { pinned: true }, bounds)
     );
     await settle();
@@ -143,7 +151,7 @@ test("a refused write names Dispatch's reason, and Retry sends it again", async 
   const writes = writesOf(client);
 
   try {
-    indicatorWrite(writes, "CORE-1 set to done", (bounds) =>
+    indicatorWrite(writes, "CORE-1 set to done", "PATCH", (bounds) =>
       api.patchIssue("CORE-1", { status: "done" }, bounds)
     );
     await settle();
@@ -220,7 +228,7 @@ test("an upload in progress reads Uploading… N% until an attempt fails", async
   const first = Promise.withResolvers<never>();
   let attempts = 0;
   try {
-    indicatorWrite(writes, "Upload of spec.md", (bounds) => {
+    indicatorWrite(writes, "Upload of spec.md", "POST", (bounds) => {
       attempts += 1;
       bounds.sent?.({
         body: { name: "spec.md" },
@@ -271,6 +279,7 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
         key: spent,
         kind: plainWrite,
         label: "CORE-1 set to done",
+        method: "PATCH",
         presentation: "indicator",
         write: (bounds) => {
           attempts += 1;
@@ -302,5 +311,92 @@ test("a write whose key has run out says a Retry saves it again, with Retry and 
   } finally {
     unmount();
     realClock();
+  }
+});
+
+/** Presses a write of `method` labelled `label` whose attempts go unanswered, waits it late,
+ *  stops it, and answers the indicator showing its refusal. */
+async function stoppedIn(method: WriteMethod, label: string) {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const { client, unmount } = mountIndicator();
+  indicatorWrite(writesOf(client), label, method, (bounds) => {
+    bounds.sent?.({ method, path: "/api/v1/issues/CORE-1" });
+    return Promise.reject(refusal);
+  });
+  await settle();
+  await jump(SEND_DEADLINE_MS);
+  const indicator = screen.getByTestId("pending-writes");
+  await user.click(within(indicator).getByRole("button", { name: "Stop trying" }));
+  await jump(30 * 60_000);
+  return { indicator, unmount };
+}
+
+// A `PUT` or a `DELETE` sends no key (`goesUnderKey`), and the store knows that of each write
+// from its press (`Write.keyed`): a stopped one says its Retry sends the same change again, not
+// that it asks again under the same key.
+test("a stopped write that sends no key says its Retry sends the same change again", async () => {
+  const { indicator, unmount } = await stoppedIn("DELETE", "Source removed");
+  try {
+    expect(
+      within(indicator).getByText(
+        "Not saved: Source removed — Dispatch has not confirmed it. A Retry sends the same change again, which is the same however often it is made."
+      )
+    ).toBeTruthy();
+  } finally {
+    unmount();
+    realClock();
+  }
+});
+
+test("a stopped write that goes under its key says its Retry asks again under that key", async () => {
+  const { indicator, unmount } = await stoppedIn("PATCH", "CORE-1 set to done");
+  try {
+    expect(
+      within(indicator).getByText(
+        `Not saved: CORE-1 set to done — Dispatch has not confirmed it. ${sameKeyRetryNote("saved")}`
+      )
+    ).toBeTruthy();
+  } finally {
+    unmount();
+    realClock();
+  }
+});
+
+// A write a reload interrupted too long ago comes back refused, for the reader to Retry: a `PUT`
+// kept from its press as one that sends no key (`KeptWrite.keyed`) says its Retry sends the same
+// change again, not that it asks again under the same key.
+test("a write a reload interrupted says what its Retry does by whether it sends a key", async () => {
+  const key = "kept-pin";
+  window.sessionStorage.setItem(
+    `dispatch.write:${key}`,
+    JSON.stringify({
+      carried: "PUT",
+      detail: null,
+      key,
+      keyed: false,
+      kind: plainWrite.name,
+      label: "CORE-2 pinned",
+      login: "alice",
+      presentation: "indicator",
+      pressedAt: Date.now() - KEPT_SEND_RESUME_MS - 1,
+      request: { body: { pinned: true }, method: "PUT", path: "/api/v1/me/issues/CORE-2/state" },
+      sent: true,
+      state: { status: "sending" },
+      target: null,
+      version: 1,
+    })
+  );
+  const { client, unmount } = mountIndicator();
+  try {
+    act(() => writesOf(client).resume("alice"));
+    expect(
+      await screen.findByText(
+        "Not saved: CORE-2 pinned — this page was closed before Dispatch confirmed it. A Retry sends the same change again, which is the same however often it is made."
+      )
+    ).toBeTruthy();
+  } finally {
+    unmount();
+    window.sessionStorage.removeItem(`dispatch.write:${key}`);
   }
 });

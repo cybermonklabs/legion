@@ -292,6 +292,19 @@ export function isArtifactNotFound(error: unknown): boolean {
   return error instanceof ApiError && error.status === 404 && error.code === "ARTIFACT_NOT_FOUND";
 }
 
+// An unsubscribe of a session the owner's subscriptions no longer name: removed already - by an
+// earlier unsubscribe whose answer the page never had, or by someone else - which is the state
+// the unsubscribe asks for.
+export function isSubscriberNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "SUBSCRIBER_NOT_FOUND";
+}
+
+// An unfollow of a session that does not follow the ask: taken off already, which is the state
+// the unfollow asks for.
+export function isFollowerNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404 && error.code === "FOLLOWER_NOT_FOUND";
+}
+
 // A Dispatch with no secrets broker configured (no DISPATCH_AGENT_SECRETS_URL) answers every
 // credential route but the pending list with this 404 — the same class as the architecture-source
 // 404 above it: retrying changes nothing. The pending list, which every page reads, answers `null`

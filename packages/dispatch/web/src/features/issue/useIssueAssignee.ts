@@ -4,7 +4,8 @@ import type { InboxRow, IssueDetails, IssueSummary } from "../../api/types";
 import { inboxKey, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 export interface IssueAssigneeWrite {
-  /** The server's reason after a refused save (an unlisted login), until the next attempt. */
+  /** The server's reason after a refused save (an unlisted login), or what a save the reader
+   *  stopped may have done and what Retry does with it, until the next attempt. */
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
@@ -55,5 +56,6 @@ export function useIssueAssignee(issueKey: string): IssueAssigneeWrite {
     label: (assignee) => `${issueKey} assigned to ${assignee ?? "nobody"}`,
     patch: (assignee) => ({ assignee }),
     show: showAssignee,
+    what: `the assignee of ${issueKey}`,
   });
 }

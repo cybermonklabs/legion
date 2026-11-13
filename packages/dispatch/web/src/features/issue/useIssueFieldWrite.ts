@@ -6,16 +6,21 @@ import { mergeIssue } from "../../api/issue-cache";
 import { inboxQuery } from "../../api/queries";
 import type { InboxRow, IssueDetails, IssueSummary, UpdateIssueInput } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 export interface IssueFieldWrite<Value> {
-  /** The server's reason after a refused save, until the next attempt. */
+  /** The server's reason after a refused save, or what a save the reader stopped may have done
+   *  and what Retry does with it (`stopped`), until the next attempt. */
   error: string | undefined;
   /** True after a save failed until the next attempt starts. */
   failed: boolean;
   pending: boolean;
   /** Repeats the failed save; a no-op while one is in flight. */
   retry: () => void;
+  /** What a save the reader stopped may have done and what Retry does with it, until the next
+   *  attempt; undefined after any other end. */
+  stopped: string | undefined;
   /** Saves `value`. A pick made while a save is in flight shows at once and is saved when that
    *  save settles; the newest such pick is the one saved. */
   submit: (value: Value) => void;
@@ -46,6 +51,9 @@ export function useIssueFieldWrite<Value>(
     show: (value: Value) => void;
     /** What the shell's indicator names one save of this field. */
     label: (value: Value) => string;
+    /** What the field is in the sentence a save the reader stopped says (`stoppedWriteNote`):
+     *  `the priority of KEY`. */
+    what: string;
   }
 ): IssueFieldWrite<Value> {
   const queryClient = useQueryClient();
@@ -121,13 +129,24 @@ export function useIssueFieldWrite<Value>(
       void queryClient.invalidateQueries({ queryKey: inboxKey });
     },
   });
+  // A save the reader stopped may have been made, and Retry makes that very press again
+  // (`retryLast`): the error's own words are a composer's, of a message.
+  const stopped =
+    mutation.error instanceof SendStoppedError
+      ? stoppedWriteNote(field.what, "saved", {
+          again: "Retry",
+          method: "PATCH",
+          stopped: mutation.error,
+        })
+      : undefined;
   return {
-    error: mutation.error?.message,
+    error: stopped ?? mutation.error?.message,
     failed: mutation.isError,
     pending: mutation.isPending,
     retry: () => {
       guard.retryLast(mutation);
     },
+    stopped,
     submit: (value) => {
       if (guard.guard(() => mutation.mutate(value))) {
         return;

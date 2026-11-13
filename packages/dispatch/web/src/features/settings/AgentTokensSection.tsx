@@ -169,6 +169,7 @@ export function AgentTokensSection(): ReactNode {
     inline: true,
     label: (input: { name: string; before: readonly string[]; scopes: readonly DispatchScope[] }) =>
       `New agent token ${input.name}`,
+    method: "POST",
     write: ({ name: label, scopes }, bounds) =>
       api.createAgentToken({ name: label, scopes: [...scopes] }, bounds),
     onSuccess: (created) => {
@@ -195,6 +196,7 @@ export function AgentTokensSection(): ReactNode {
   });
   const revokeToken = useKeyedWrite({
     label: (id: string) => `Agent token ${id} revoked`,
+    method: "DELETE",
     write: (id: string, bounds) => api.revokeAgentToken(id, bounds),
     onSuccess: (_result, id) => {
       queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
@@ -209,6 +211,7 @@ export function AgentTokensSection(): ReactNode {
   const setTokenScopes = useKeyedWrite({
     label: (input: { id: string; name: string; scopes: DispatchScope[] }) =>
       `What agent token ${input.name} may do`,
+    method: "PATCH",
     write: (input, bounds) => api.setAgentTokenScopes(input.id, input.scopes, bounds),
     onSuccess: (updated, input) => {
       queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>

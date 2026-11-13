@@ -214,6 +214,7 @@ function ConversationReply({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(reply.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(root.root.target, agents);
@@ -710,6 +711,7 @@ function CommentTurn({
       `Delivery of the comment to ${agentText.part(targetPart(delivery.target))} again, as ${MODE_LABELS[delivery.delivery]}`,
     onSettled: () => retryGuard.release(),
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["comments", issueKey] }),
+    method: "POST",
     write: (delivery, bounds) =>
       api.createCommentDelivery(delivery.comment_id, delivery.target, delivery.delivery, bounds),
   });
@@ -847,6 +849,7 @@ function TargetedMessageTurn({
     label: (delivery: MessageDeliveryMode) =>
       `Delivery to ${text.part(targetName)} again, as ${MODE_LABELS[delivery]}`,
     onSuccess: () => void queryClient.invalidateQueries({ queryKey: ["issue-messages", issueKey] }),
+    method: "POST",
     write: (delivery, bounds) => api.createMessageDelivery(item.root.id, delivery, bounds),
   });
   const capabilities = capabilitiesForTarget(item.root.target, agents);

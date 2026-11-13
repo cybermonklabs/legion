@@ -83,6 +83,7 @@ export function CorrectTitle({
   const rename = useKeyedWrite({
     inline: true,
     label: (name: string) => `Rename ${artifact.name} to ${name}`,
+    method: "PATCH",
     write: (name: string, bounds) => api.renameArtifact(artifact.id, { name }, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: () => {
@@ -204,6 +205,7 @@ export function RemoveDocument({
     // new `DELETE`, which finds no document and is answered `404 ARTIFACT_NOT_FOUND`. That answer
     // is the removal done, since the document is gone, which is what the person asked: the write
     // lands on it as on a `204` (`onSuccess`), and no refusal is shown.
+    method: "DELETE",
     write: async (_name: string, bounds) => {
       try {
         await api.deleteArtifact(artifact.id, bounds);

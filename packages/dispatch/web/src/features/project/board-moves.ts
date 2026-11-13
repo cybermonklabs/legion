@@ -4,6 +4,7 @@ import { useCallback, useState } from "react";
 import { ApiError, issuePatchRequest } from "../../api/client";
 import { boardMoveMutationKey } from "../../api/queries";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { type IssueStatus, moveIssue, moveIssueToLane, type PriorityLane } from "./board-model";
 import { projectIssuesQueryKey } from "./issue-filters";
@@ -86,11 +87,17 @@ export function useBoardMoves(
       } catch (cause) {
         queryClient.setQueryData(queryKey, previous);
         setError(
-          cause instanceof ApiError
-            ? cause.code === "RANK_INPUT"
-              ? staleBoardMessage
-              : cause.message
-            : "Could not move the card."
+          // A move the reader stopped may have been made: the card goes back to where the page
+          // last read it, and the read below shows where Dispatch holds it.
+          cause instanceof SendStoppedError
+            ? stoppedWriteNote(`the move of ${key}`, "made", {
+                anew: "The board is read again from Dispatch, and moving the card again sends a new move.",
+              })
+            : cause instanceof ApiError
+              ? cause.code === "RANK_INPUT"
+                ? staleBoardMessage
+                : cause.message
+              : "Could not move the card."
         );
       } finally {
         await queryClient.invalidateQueries({ queryKey });

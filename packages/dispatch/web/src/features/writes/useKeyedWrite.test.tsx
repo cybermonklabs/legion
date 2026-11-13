@@ -20,6 +20,7 @@ function renderAnswerWrite() {
     useKeyedWrite({
       inline: true,
       label: () => "Answer to “Ship?”",
+      method: "POST",
       write: (input: { selected: string[] }, bounds) =>
         api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
     })
@@ -33,6 +34,7 @@ function renderRenameWrite() {
     useKeyedWrite({
       inline: true,
       label: (name: string) => `Rename to ${name}`,
+      method: "PATCH",
       write: (name: string, bounds) => api.renameArtifact("artifact-1", { name }, bounds),
     })
   );
@@ -248,6 +250,7 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
         rolledBack += 1;
       },
       onSuccess: (data) => succeeded.push(data),
+      method: "POST",
       write: (input: { selected: string[] }, bounds) =>
         api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
     })

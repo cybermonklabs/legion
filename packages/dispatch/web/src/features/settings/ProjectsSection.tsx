@@ -45,6 +45,7 @@ export function ProjectsSection(): ReactNode {
   const createProject = useKeyedWrite({
     inline: true,
     label: (input: CreateProjectInput) => `New project ${input.key}`,
+    method: "POST",
     write: (input, bounds) => api.createProject(input, bounds),
     onSettled: () => projectSubmitGuard.release(),
     // Made either way, so the form empties; with no answer to give, it says what was made
@@ -331,6 +332,7 @@ function useDefaultAssigneeWrite(project: string): {
     // The row shows its newest save's refusal itself, beside the control it was refused over.
     inline: true,
     label: (pick) => `${project}'s default assignee ${pick.assignee ?? "cleared"}`,
+    method: "PUT",
     write: async (pick, bounds): Promise<ProjectDefaultAssignee | DefaultAssigneeSuperseded> => {
       // The cache lists mutations in the order they were made, so the last pending one is the
       // newest pick. Any other is waiting behind this save, and only it need reach the server.

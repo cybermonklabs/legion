@@ -1,6 +1,7 @@
 import type { ReactNode } from "react";
 import { useState } from "react";
 
+import type { WriteMethod } from "../../api/client";
 import { textMutedOnSurface } from "../../theme/classes";
 import { type Attempt, plainWrite, type Writes } from "../writes/write-store";
 
@@ -44,15 +45,22 @@ export function useWordsState<T extends { readonly words: string }>(
 export const barNoteClassName = `shrink-0 px-3 py-2 text-xs ${textMutedOnSurface}`;
 
 /** One request, under a key of its own, tried until Dispatch decides it and named in the shell's
- *  indicator while it is out. A filing is four of these rather than one, because one write
- *  makes one request (`OneRequestPerWriteError`): Dispatch would refuse a second request under a
- *  key it has already decided. `inline` because the bar says a refusal itself. */
-export function press<T>(writes: Writes, label: string, write: Attempt<T>): Promise<T | null> {
+ *  indicator while it is out: `method` is the request's, which `write` makes. A filing is four
+ *  of these rather than one, because one write makes one request (`OneRequestPerWriteError`):
+ *  Dispatch would refuse a second request under a key it has already decided. `inline` because
+ *  the bar says a refusal itself. */
+export function press<T>(
+  writes: Writes,
+  label: string,
+  method: WriteMethod,
+  write: Attempt<T>
+): Promise<T | null> {
   return writes.run({
     detail: null,
     inline: true,
     kind: plainWrite,
     label,
+    method,
     presentation: "indicator",
     write,
   });

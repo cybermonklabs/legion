@@ -790,6 +790,106 @@ test("a hand-on the reader stopped says what Retry does, not a message's words",
   }
 });
 
+/** A fetch that failed, which the write is tried again after: it goes late, for the reader to
+ *  stop. */
+const dropped = (path: string) => new NetworkError(path, new TypeError("Failed to fetch"));
+
+/** An open question on its card over the held clock, its answer write `answerAsk`: the reader
+ *  picks Ship and presses Answer. */
+async function answerOpenQuestion(answerAsk: () => Promise<Ask>) {
+  const open = answeredAsk({ answer: null, state: "open" });
+  const rendered = renderCard(
+    <AskCard answerAsk={answerAsk} ask={open} initialThread={thread(open, [])} />
+  );
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const card = within(rendered.view.container);
+  await user.click(await card.findByRole("radio", { name: "Ship" }));
+  await user.click(card.getByRole("button", { name: "Answer" }));
+  return { ...rendered, card, open };
+}
+
+// An answer the reader stopped may have been saved: the card says so, and that its Retry asks
+// again under the answer's key (`retryLast`), rather than a failure it cannot know of.
+test("an answer the reader stopped says Retry asks again under its key, not that it failed", async () => {
+  const { card, queryClient, view } = await answerOpenQuestion(() =>
+    Promise.reject(dropped("/api/v1/asks/ask-1/answer"))
+  );
+  try {
+    await stopTheLateWrite(queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("your answer", "saved", {
+        again: "Retry",
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// Once the question has closed the card shows its record and no form, so no Retry either: a
+// stopped answer says what the card shows instead of promising a Retry it does not offer.
+test("an answer stopped on a question that closed promises no Retry the card does not show", async () => {
+  const { card, open, queryClient, view } = await answerOpenQuestion(() =>
+    Promise.reject(dropped("/api/v1/asks/ask-1/answer"))
+  );
+  try {
+    await stopTheLateWrite(queryClient);
+    act(() => {
+      queryClient.setQueryData<AskRead>(
+        ["ask-thread", open.id],
+        thread(answeredAsk({ answer: firstAnswer, state: "answered" }))
+      );
+    });
+    await waitFor(() =>
+      expect(card.queryByRole("button", { name: "Answer" })).not.toBeInTheDocument()
+    );
+    expect(card.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("your answer", "saved", {
+        anew: "The question has closed, and the record above shows how.",
+      })
+    );
+  } finally {
+    realClock();
+    view.unmount();
+  }
+});
+
+// A question back the reader stopped may have been sent: the card says so, and that its Retry
+// asks again under its key, rather than a failure it cannot know of.
+test("a clarification the reader stopped says Retry asks again under its key, not that it failed", async () => {
+  const createComment = spyOn(api, "createComment").mockRejectedValue(
+    dropped("/api/v1/issues/CORE-1/comments")
+  );
+  const open = answeredAsk({ answer: null, state: "open" });
+  const { queryClient, view } = renderCard(<AskCard ask={open} initialThread={thread(open, [])} />);
+  const card = within(view.container);
+  try {
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    const field = card.getByLabelText("Your answer");
+    await user.click(field);
+    await user.paste("Ship what, exactly?");
+    await user.click(card.getByRole("button", { name: "Ask back" }));
+    await stopTheLateWrite(queryClient);
+    expect(card.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("your clarification", "sent", {
+        again: "Retry",
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    view.unmount();
+    createComment.mockRestore();
+  }
+});
+
 /** The thread's reply bodies, in the order the card draws them. */
 function threadReplyBodies(thread: HTMLElement): (string | null | undefined)[] {
   return Array.from(

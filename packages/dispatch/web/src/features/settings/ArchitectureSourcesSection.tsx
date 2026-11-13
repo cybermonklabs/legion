@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type FormEvent, type ReactNode, useState } from "react";
 
-import { api, apiErrorMessage } from "../../api/client";
+import { api, apiErrorMessage, isSourceNotFound } from "../../api/client";
 import { architectureSourcesQuery, projectsQuery } from "../../api/queries";
 import { QueryError } from "../../components/QueryError";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
@@ -56,6 +56,7 @@ export function ArchitectureSourcesSection(): ReactNode {
     inline: true,
     label: (input: { project: string; repo: string; branch: string }) =>
       `${input.project}'s architecture source ${input.repo}`,
+    method: "PUT",
     write: (input, bounds) =>
       api.putArchitectureSource(input.project, input.repo, { branch: input.branch }, bounds),
     onSettled: () => submitGuard.release(),
@@ -69,7 +70,17 @@ export function ArchitectureSourcesSection(): ReactNode {
   });
   const deleteSource = useKeyedWrite({
     label: (source: SourceKey) => `${source.project}'s architecture source ${source.repo} removed`,
-    write: (source, bounds) => api.deleteArchitectureSource(source.project, source.repo, bounds),
+    // A removal is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made again
+    // after one that landed - stopped, or its answer lost - it finds no source and is answered
+    // `404 SOURCE_NOT_FOUND`. That is the removal done, which lands as a `204` does.
+    method: "DELETE",
+    write: async (source, bounds) => {
+      try {
+        await api.deleteArchitectureSource(source.project, source.repo, bounds);
+      } catch (error) {
+        if (!isSourceNotFound(error)) throw error;
+      }
+    },
     onSuccess: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),
   });
@@ -79,6 +90,7 @@ export function ArchitectureSourcesSection(): ReactNode {
   const refreshSource = useKeyedWrite({
     label: (source: SourceKey) =>
       `Refresh of ${source.project}'s architecture source ${source.repo}`,
+    method: "POST",
     write: (source, bounds) => api.syncArchitectureSource(source.project, source.repo, bounds),
     onSettled: () =>
       void queryClient.invalidateQueries({ queryKey: architectureSourcesQuery().queryKey }),

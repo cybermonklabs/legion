@@ -19,6 +19,7 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { settingsTableWrapper } from "../settings/classes";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** One column of a `RevocableList`: its header, and what a row shows under it. The first column
@@ -53,6 +54,7 @@ export function RevocableList<Row>({
   query,
   revoke,
   revokeError,
+  revokeStopped,
   rowKey,
   unrevocable,
 }: {
@@ -66,9 +68,12 @@ export function RevocableList<Row>({
   noun: string;
   onRevoked: () => void;
   query: UseQueryResult<readonly Row[]>;
-  /** One attempt of `row`'s revoke, under the write's key. */
+  /** One attempt of `row`'s revoke - a `POST` of its revoke route - under the write's key. */
   revoke: (row: Row, bounds: WriteBounds) => Promise<void>;
   revokeError: string;
+  /** What a revoke is called in the sentence the list says of one the reader stopped
+   *  (`stoppedWriteNote`): `the revoke of this grant`. */
+  revokeStopped: string;
   rowKey: (row: Row) => string;
   /** Why nobody may revoke `row`, in place of its Revoke button, and null for a row anybody
    *  listed here may revoke. A section gives it where the broker refuses every person's revoke
@@ -82,6 +87,7 @@ export function RevocableList<Row>({
     label: (row: Row) => `${heading}: revoke ${rowKey(row)}`,
     onSettled: () => submitGuard.release(),
     onSuccess: onRevoked,
+    method: "POST",
     write: revoke,
   });
   const press = (row: Row) => {
@@ -167,8 +173,16 @@ export function RevocableList<Row>({
           </table>
         </div>
       ) : null}
+      {/* A revoke the reader stopped may have been made, and Revoke is a press of its own, under
+          a key of its own: it never makes the stopped revoke again. */}
       {mutation.isError ? (
-        <p className={`mt-2 ${dangerText}`}>{apiErrorMessage(mutation.error, revokeError)}</p>
+        <p className={`mt-2 ${dangerText}`}>
+          {mutation.error instanceof SendStoppedError
+            ? stoppedWriteNote(revokeStopped, "made", {
+                anew: "Pressing Revoke again sends a new revoke.",
+              })
+            : apiErrorMessage(mutation.error, revokeError)}
+        </p>
       ) : null}
     </section>
   );

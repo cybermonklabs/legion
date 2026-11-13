@@ -81,6 +81,7 @@ export function CreateDocument({
   const create = useKeyedWrite({
     inline: true,
     label: (name: string) => `New document ${name}`,
+    method: "POST",
     write: (name: string, bounds) => api.uploadArtifact(owner, { name }, bounds),
     onSettled: () => submitGuard.release(),
     onSuccess: (made) => {

@@ -9,7 +9,7 @@ import {
 } from "@tanstack/react-query";
 import { useCallback, useRef, useState } from "react";
 
-import type { WriteBounds, WriteRequest } from "../../api/client";
+import type { WriteBounds, WriteMethod, WriteRequest } from "../../api/client";
 import { newSendKey } from "../../lib/send-key";
 import { retriesUnderItsKey } from "./keyed-write";
 import { plainWrite, useWrites } from "./write-store";
@@ -37,19 +37,25 @@ export type KeyedWriteOptions<TData, TVariables, TContext> = Omit<
 } & KeyedWriteMade<TData, TVariables>;
 
 /** How a write is made: by an attempt of its own (`write`, under the bounds the store gives it:
- *  its key, its login and its deadline), or, on a line, from its request alone. Writes to one
- *  target - one issue's fields - go out in press order, so an older one never lands after a newer
- *  one; each names the request its client method's builder makes (`issuePatchRequest`), which is
- *  what goes out (`api.send`) and what a write waiting its turn is kept as for a reload, so the
- *  two can never differ, and nothing of it runs until its turn comes (`WriteSpec.request`). */
+ *  its key, its login and its deadline), with the `method` of the request it makes, which the
+ *  write names because no attempt says it until it goes out (`WriteSpec.method`); or, on a line,
+ *  from its request alone. Writes to one target - one issue's fields - go out in press order, so
+ *  an older one never lands after a newer one; each names the request its client method's
+ *  builder makes (`issuePatchRequest`), which is what goes out (`api.send`) and what a write
+ *  waiting its turn is kept as for a reload, so the two can never differ, and nothing of it runs
+ *  until its turn comes (`WriteSpec.request`). */
 export type KeyedWriteMade<TData, TVariables> =
   | {
       readonly write: (variables: TVariables, bounds: WriteBounds) => Promise<TData>;
+      /** The method of the request `write` makes, or, where a press's variables decide it, the
+       *  method of that press's. */
+      readonly method: WriteMethod | ((variables: TVariables) => WriteMethod);
       readonly target?: undefined;
       readonly request?: undefined;
     }
   | {
       readonly write?: undefined;
+      readonly method?: undefined;
       readonly target: (variables: TVariables) => string | undefined;
       readonly request: (variables: TVariables) => WriteRequest<TData>;
     };
@@ -172,6 +178,7 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
   file,
   inline,
   label,
+  method,
   onError,
   onMutate,
   onSettled,
@@ -207,7 +214,11 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
       return (
         write === undefined
           ? writes.run({ ...spec, request: request(variables), target: target(variables) })
-          : writes.run({ ...spec, write: (bounds) => write(variables, bounds) })
+          : writes.run({
+              ...spec,
+              method: typeof method === "function" ? method(variables) : method,
+              write: (bounds) => write(variables, bounds),
+            })
       ).then(
         (answer) => {
           if (answer === null) setUnanswered({ at: Date.now(), variables });

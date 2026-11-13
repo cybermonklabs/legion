@@ -2,7 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useCallback, useState } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { api, isSubscriberNotFound } from "../../api/client";
 import { QueryError } from "../../components/QueryError";
 import { dangerText } from "../../theme/classes";
 import { ArtifactDocument } from "../artifacts/ArtifactDocument";
@@ -53,11 +53,20 @@ export function DocumentPage(): ReactNode {
   const unsubscribe = useKeyedWrite({
     label: (sessionId: string) =>
       `${agentText.sessionText(sessionId, subscribers.data?.find((row) => row.session_id === sessionId)?.title)} unsubscribed from this document`,
-    write: (sessionId: string, bounds) => {
+    // An unsubscribe is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made
+    // again after one that landed - stopped, or its answer lost - it finds the session no longer
+    // subscribed and is answered `404 SUBSCRIBER_NOT_FOUND`. That is the unsubscribe done, which
+    // is what the person asked, so the write lands on it as on a `204`.
+    method: "DELETE",
+    write: async (sessionId: string, bounds) => {
       if (artifact.data === undefined) {
         throw new Error("Document unsubscribe requires an artifact.");
       }
-      return api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds);
+      try {
+        await api.unsubscribeArtifactSession(artifact.data.id, sessionId, bounds);
+      } catch (error) {
+        if (!isSubscriberNotFound(error)) throw error;
+      }
     },
     onSuccess: () => {
       if (artifact.data !== undefined) {

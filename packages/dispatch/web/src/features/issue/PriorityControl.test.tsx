@@ -1,12 +1,17 @@
-import { expect, test } from "bun:test";
+import { expect, jest, test } from "bun:test";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: this file keeps fireEvent for the bare mouse, pointer and touch presses a draggable parent must not see, which user-event has no form for
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { NetworkError } from "../../api/client";
 import type { InboxRow, Issue, IssueDetails, IssueSummary } from "../../api/types";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 
@@ -355,5 +360,32 @@ test("PriorityControl keeps mouse, pointer and touch presses on the select out o
     expect(reached).toEqual([]);
   } finally {
     view.unmount();
+  }
+});
+
+// A pick the reader stopped may have been saved: the control says so, and that its Retry asks
+// again under the save's key (`retryLast`), rather than a failure it cannot know of.
+test("a priority the reader stopped says Retry asks again under its key, not that it failed", async () => {
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const { queryClient, unmount } = renderControl();
+  try {
+    jest.useFakeTimers();
+    await userOnFakeClock().selectOptions(select(), "0");
+    await stopTheLateWrite(queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the priority of CORE-1", "saved", {
+        again: "Retry",
+        method: "PATCH",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    unmount();
+    queryClient.clear();
+    patchIssue.mockRestore();
   }
 });

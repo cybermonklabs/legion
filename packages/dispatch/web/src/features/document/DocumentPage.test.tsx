@@ -1,16 +1,20 @@
-import { afterAll, expect, spyOn, test } from "bun:test";
+import { afterAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, Subscriber } from "../../api/types";
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { DocumentPage } from "./DocumentPage";
 
 const getReferences = spyOn(api, "getReferences").mockResolvedValue({
@@ -70,7 +74,7 @@ function renderDocumentPage() {
       </QueryClientProvider>
     </MemoryRouter>
   );
-  return { runtime, view };
+  return { queryClient, runtime, view };
 }
 
 test("renders the header, the document, versions, and Referenced by for an unlinked document", async () => {
@@ -241,5 +245,96 @@ test("shows Subscribed agents and unsubscribes after confirming the dialog", asy
     getArtifactText.mockRestore();
     getArtifact.mockRestore();
     getProjectArtifact.mockRestore();
+  }
+});
+
+/** The page with one removable subscriber, its unsubscribe answered by `unsubscribe`, which is
+ *  handed the subscribers the list then reads so it can empty them. Answers the region and the
+ *  dialog's Confirm, the press not yet made. */
+async function unsubscribing(unsubscribe: (subscribers: Subscriber[]) => Promise<void>) {
+  const subscribers: Subscriber[] = [
+    {
+      last_seen: 1,
+      live: true,
+      removable: true,
+      session_id: "0123456789abcdef",
+      title: "Planner (live)",
+      topics: [],
+    },
+  ];
+  const mocks = [
+    spyOn(api, "getProjectArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifact").mockResolvedValue(artifact),
+    spyOn(api, "getArtifactText").mockResolvedValue({
+      markdown: "# Design notes",
+      version: 1,
+      token: "sha256:design-notes",
+    }),
+    spyOn(api, "getArtifactSubscribers").mockImplementation(async () => [...subscribers]),
+    spyOn(api, "unsubscribeArtifactSession").mockImplementation(() => unsubscribe(subscribers)),
+    spyOn(api, "listAgents").mockResolvedValue([]),
+  ];
+  const { queryClient, runtime, view } = renderDocumentPage();
+  await screen.findByTestId("artifact-header");
+  await waitFor(() => expect(runtime.connections).toHaveLength(1));
+  runtime.sync();
+  const subscribed = await screen.findByRole("region", { name: "Subscribed agents" });
+  await userEvent
+    .setup()
+    .click(await within(subscribed).findByRole("button", { name: "Unsubscribe" }));
+  const confirm = within(await screen.findByRole("dialog")).getByRole("button", {
+    name: "Confirm",
+  });
+  return {
+    confirm,
+    queryClient,
+    restore: () => {
+      view.unmount();
+      queryClient.clear();
+      for (const mock of mocks) mock.mockRestore();
+    },
+  };
+}
+
+// An unsubscribe the reader stopped may have been made: the page says so, and that its Retry
+// sends the same `DELETE` again, which is the same however often it is made.
+test("an unsubscribe the reader stopped says Retry sends it again, not that it failed", async () => {
+  const page = await unsubscribing(() =>
+    Promise.reject(new NetworkError("/api/v1/artifacts/artifact-1", new TypeError("Failed")))
+  );
+  try {
+    jest.useFakeTimers();
+    await userOnFakeClock().click(page.confirm);
+    await stopTheLateWrite(page.queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("this agent's unsubscribe", "made", {
+        again: "Retry",
+        method: "DELETE",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    page.restore();
+  }
+});
+
+// A `DELETE` sends no key, so one made again after an unsubscribe that landed finds the session
+// unsubscribed already and is answered `404 SUBSCRIBER_NOT_FOUND`: the unsubscribe done, which
+// the page takes as it takes a `204`, not as a refusal.
+test("an unsubscribe answered SUBSCRIBER_NOT_FOUND is the unsubscribe done, not a refusal", async () => {
+  const page = await unsubscribing(async (subscribers) => {
+    subscribers.splice(0);
+    throw new ApiError(404, { code: "SUBSCRIBER_NOT_FOUND", error: "session is not subscribed" });
+  });
+  try {
+    await userEvent.setup().click(page.confirm);
+    await waitFor(() =>
+      expect(screen.queryByRole("region", { name: "Subscribed agents" })).not.toBeInTheDocument()
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  } finally {
+    page.restore();
   }
 });

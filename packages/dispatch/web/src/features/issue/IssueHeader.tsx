@@ -17,6 +17,7 @@ import {
   api,
   apiErrorCodeIn,
   apiErrorMessage,
+  isSubscriberNotFound,
   issuePatchRequest,
 } from "../../api/client";
 import { mergeIssue } from "../../api/issue-cache";
@@ -186,10 +187,22 @@ export function IssueHeader({
   const subscriberList = subscribers.isError ? [] : (subscribers.data ?? []);
   // The count is a claim about who is subscribed, so only a read that answered makes it.
   const subscribersCounted = !subscribers.isError && subscribers.data !== undefined;
-  // Every write here names `write` first: its answer and its variables are what the callbacks
-  // below read.
+  // Every write here names `write` before its callbacks: its answer and its variables are what
+  // the callbacks below read.
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => api.unsubscribeIssueSession(issue.key, sessionId, bounds),
+    // An unsubscribe is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made
+    // again after one that landed - stopped, or its answer lost - it finds the session no longer
+    // subscribed and is answered `404 SUBSCRIBER_NOT_FOUND`, the unsubscribe done, which lands as
+    // a `204` does. A claim's release needs no such reading: Dispatch answers a release of an
+    // issue nobody holds with the issue, as it answers the first.
+    method: "DELETE",
+    write: async (sessionId: string, bounds) => {
+      try {
+        await api.unsubscribeIssueSession(issue.key, sessionId, bounds);
+      } catch (error) {
+        if (!isSubscriberNotFound(error)) throw error;
+      }
+    },
     inline: true,
     label: (sessionId) =>
       `${agentText.sessionText(sessionId, subscriberList.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${issue.key}`,
@@ -198,6 +211,7 @@ export function IssueHeader({
     },
   });
   const releaseClaim = useKeyedWrite({
+    method: "DELETE",
     write: (_variables, bounds) => api.releaseIssueClaim(issue.key, bounds),
     inline: true,
     label: () => `Claim on ${issue.key} released`,
@@ -306,6 +320,7 @@ export function IssueHeader({
   const pinGuard = useSubmitGuard();
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
+    method: "PUT",
     write: (pinned: boolean, bounds) => api.putIssueState(issue.key, { pinned }, bounds),
     onSettled: () => {
       pinGuard.release();

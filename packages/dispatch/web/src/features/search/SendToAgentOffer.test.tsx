@@ -1,4 +1,4 @@
-import { expect, type Mock, spyOn, test } from "bun:test";
+import { expect, jest, type Mock, spyOn, test } from "bun:test";
 import type { IssueClaimHolderState } from "@legion/contracts";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -6,10 +6,14 @@ import type { UserEvent } from "@testing-library/user-event";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { realClock } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError } from "../../api/client";
 import type { IssueClaim, IssueDetails, Message } from "../../api/types";
 import { BLOCK_ID_ATTRIBUTE } from "../doc/block-id";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { SearchPalette } from "./SearchPalette";
 import { searchAnswer } from "./search-fixture";
 import { handoffBody } from "./send-to-agent";
@@ -86,6 +90,7 @@ function issueDetails(
 
 interface Stubs {
   readonly createAgentMessage: Mock<typeof api.createAgentMessage>;
+  readonly queryClient: QueryClient;
   readonly restore: () => void;
 }
 
@@ -111,6 +116,7 @@ function openBar(claim: IssueClaim | null, holderState: IssueClaimHolderState | 
   );
   return {
     createAgentMessage,
+    queryClient,
     restore: () => {
       for (const stub of [search, getIssue, listAgents, createAgentMessage]) {
         stub.mockRestore();
@@ -260,5 +266,31 @@ test("Tab narrows the chip to the block, and the message names that block before
   } finally {
     bar.restore();
     block.remove();
+  }
+});
+
+// A send the person stopped may have reached the agent: the line says so, and that pressing the
+// row again sends a new message, rather than "Could not send it" in the stopped write's own
+// words, which promise a Retry the bar does not offer.
+test("a send the person stopped says it may have been sent, not that it could not be", async () => {
+  const user = userEvent.setup();
+  const bar = openBar(sessionClaim, "live");
+  try {
+    bar.createAgentMessage.mockRejectedValue(
+      new NetworkError("/api/v1/agents/session-one/messages", new TypeError("Failed to fetch"))
+    );
+    await typeWords(user);
+    const row = await waitFor(() => screen.getByText(offerLabel));
+    jest.useFakeTimers();
+    await userOnFakeClock().click(row);
+    await stopTheLateWrite(bar.queryClient);
+    expect(screen.getByTestId("search-send-to-agent-said").textContent).toBe(
+      stoppedWriteNote(`your message to the agent on ${issueKey}`, "sent", {
+        anew: "Pressing Send this to the agent again sends it as a new message.",
+      })
+    );
+  } finally {
+    realClock();
+    bar.restore();
   }
 });

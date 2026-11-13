@@ -10,7 +10,7 @@ import type { CreateIssueInput, Issue, IssueDetails, IssueSummary } from "../../
 import { readSelectedIssues } from "../search/bar-scope";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
-import { SendStoppedError } from "../writes/keyed-write";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { IssuesTable } from "./IssuesTable";
 import { ISSUE_TABLE_COLUMNS } from "./issues-table-model";
@@ -743,6 +743,93 @@ test("Start next stops at a refused predecessor and names every issue that did n
   );
   expect(sent).toEqual(["/api/v1/issues/CORE-3"]);
   expect(writesOf(client).rows()).toHaveLength(1);
+});
+
+/** What the table says of a step to `key` the reader stopped in Pending changes: Dispatch may
+ *  have saved it, and its Retry there asks again under its key. */
+const stoppedStep = (key: string) =>
+  stoppedWriteNote(`the change to ${key}`, "saved", {
+    again: "Retry",
+    method: "PATCH",
+    stopped: new SendStoppedError(),
+  });
+
+// A step the reader stopped may have moved its issue up: the table does not list it among those
+// that did not, and says of it what a stopped write is, rather than the stopped write's own
+// words, which are a composer's, of a message.
+test("Start next names a stopped step as unconfirmed, not as an issue that did not move up", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockRejectedValue(new SendStoppedError());
+  restores.push(() => send.mockRestore());
+  table([
+    issue("CORE-1", { labels: ["legion"], rank: "A" }),
+    issue("CORE-2", { labels: ["legion"], rank: "B" }),
+    issue("CORE-3", { labels: ["legion"], rank: "C" }),
+  ]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-2" }));
+  await user.click(screen.getByRole("checkbox", { name: "Select CORE-3" }));
+  await user.click(within(screen.getByRole("toolbar")).getByRole("button", { name: "Start next" }));
+  const said = (await screen.findByRole("alert")).textContent;
+  expect(said).toContain(
+    `Did not move up: CORE-2. 0 of 1 changes saved. ${stoppedStep("CORE-3")} Retry each failed change in Pending changes.`
+  );
+  expect(said).not.toContain("CORE-3, CORE-2");
+});
+
+// A move of a merge the reader stopped may have been made: the table says so of it, and that the
+// source stays open, rather than the stopped write's own words.
+test("a merge with a stopped move says the move may have been made and the source stays open", async () => {
+  const user = userEvent.setup();
+  const send = spyOn(api, "send").mockImplementation(async (request) => {
+    if (request.path.endsWith("CORE-3")) throw new SendStoppedError();
+    return savedIssue("CORE-4") as never;
+  });
+  restores.push(() => send.mockRestore());
+  table(
+    [
+      issue("CORE-1", { labels: ["epic"], title: "Source" }),
+      issue("CORE-2", { labels: ["epic"], title: "Target" }),
+      issue("CORE-3", { parent: "CORE-1" }),
+      issue("CORE-4", { parent: "CORE-1" }),
+    ],
+    "?group=epic"
+  );
+  const source = (await screen.findByRole("link", { name: "CORE-1 · Source" })).closest("tr");
+  if (!source) throw new Error("The source epic has no heading row");
+  await user.click(within(source).getByRole("button", { name: "Epic actions ▾" }));
+  await user.selectOptions(
+    screen.getByRole("combobox", { name: "Merge into another epic" }),
+    "CORE-2"
+  );
+  await user.click(screen.getByRole("button", { name: "Merge…" }));
+  await user.click(
+    within(await screen.findByRole("dialog", { name: "Merge this epic?" })).getByRole("button", {
+      name: /^Merge$/,
+    })
+  );
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    `The source epic CORE-1 remains open. 1 of 2 changes saved. ${stoppedStep("CORE-3")} Retry each failed change in Pending changes.`
+  );
+});
+
+// An epic's create the reader stopped may have made the epic: the table says so, and that its
+// Retry in Pending changes asks again under its key, rather than the stopped write's own words.
+test("a stopped epic creation says the epic may have been made, not a message's words", async () => {
+  const user = userEvent.setup();
+  const create = spyOn(api, "createIssue").mockRejectedValue(new SendStoppedError());
+  const named = nameTheEpic(user, "Committed once");
+  restores.push(() => create.mockRestore());
+  table([issue("CORE-1")]);
+  await user.click(await screen.findByRole("checkbox", { name: "Select CORE-1" }));
+  await user.click(screen.getByRole("button", { name: "New epic from these" }));
+  await named;
+  expect((await screen.findByRole("alert")).textContent).toContain(
+    `${stoppedWriteNote("the epic “Committed once”", "made", {
+      again: "Retry",
+      method: "POST",
+      stopped: new SendStoppedError(),
+    })} Retry it in Pending changes.`
+  );
 });
 
 test("x selects the focused issue and the bar is told, in the order the table lists them", async () => {

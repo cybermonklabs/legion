@@ -5,6 +5,7 @@ import { mergeIssue } from "../../api/issue-cache";
 import type { IssueSummary, UpdateIssueInput } from "../../api/types";
 import { newSendKey } from "../../lib/send-key";
 import { settledWithLimit } from "../../lib/settled";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { plainWrite, useWrites } from "../writes/write-store";
 import {
   buildItems,
@@ -122,13 +123,30 @@ export function useIssueTableActions({
     );
     const failed = results.flatMap((result, index) =>
       result.status === "rejected"
-        ? [{ key: operations[index]?.key ?? "Unknown issue", error: result.reason }]
+        ? [{ key: operations[index]?.key ?? "Unknown issue", error: result.reason as unknown }]
         : []
     );
-    if (failed.length)
-      throw new Error(
-        `${operations.length - failed.length} of ${operations.length} changes saved. Changes not saved: ${failed.map(({ key }) => key).join(", ")}. ${String(failed[0]?.error)} Retry each failed change in Pending changes.`
+    if (failed.length) {
+      // A change the reader stopped in Pending changes may have been saved, so it is said apart
+      // from a refused one, in the words of a stopped write; the error's own are a composer's.
+      const refused = failed.filter(({ error }) => !(error instanceof SendStoppedError));
+      const stopped = failed.flatMap(({ error, key }) =>
+        error instanceof SendStoppedError ? [{ error, key }] : []
       );
+      const unsaved =
+        refused.length === 0
+          ? ""
+          : ` Changes not saved: ${refused.map(({ key }) => key).join(", ")}. ${String(refused[0]?.error)}`;
+      const keys = stopped.map(({ key }) => key).join(", ");
+      const unconfirmed =
+        stopped[0] === undefined
+          ? ""
+          : ` ${stoppedWriteNote(stopped.length === 1 ? `the change to ${keys}` : `the change to each of ${keys}`, "saved", { again: "Retry", method: "PATCH", stopped: stopped[0].error })}`;
+      throw new Error(
+        `${operations.length - failed.length} of ${operations.length} changes saved.${unsaved}${unconfirmed} Retry each failed change in Pending changes.`,
+        { cause: stopped.length > 0 ? stopped[0]?.error : refused[0]?.error }
+      );
+    }
     return operations.map(({ key }) => key);
   };
   const perform = async (
@@ -236,12 +254,15 @@ export function useIssueTableActions({
     void perform(
       `${named(queued)} now ${queued.length === 1 ? "starts" : "start"} next.`,
       async () => {
-        const ran = await runStartNext(
-          record,
-          items,
-          (remaining, error) =>
-            `Did not move up: ${remaining.join(", ")}. ${error instanceof Error ? error.message : String(error)}`
-        );
+        const ran = await runStartNext(record, items, (remaining, error) => {
+          // One step goes at a time, so the first of `remaining` is the one `apply` wrote. One
+          // the reader stopped may have moved up, which `apply`'s own words say, so it is not
+          // listed as one that did not.
+          const stopped = error instanceof Error && error.cause instanceof SendStoppedError;
+          const unmoved = stopped ? remaining.slice(1) : remaining;
+          const why = error instanceof Error ? error.message : String(error);
+          return unmoved.length === 0 ? why : `Did not move up: ${unmoved.join(", ")}. ${why}`;
+        });
         if (!ran) return undefined;
         recovery.dismiss();
         return queued;
@@ -295,6 +316,7 @@ export function useIssueTableActions({
           key,
           label: `Create epic “${title}”`,
           presentation: "indicator",
+          method: "POST",
           write: (bounds) =>
             api.createIssue(
               { project, title, labels: ["epic"], ...(force ? { force: true } : {}) },
@@ -302,7 +324,17 @@ export function useIssueTableActions({
             ),
         });
         recovery.watch(key, `Create epic “${title}”`);
-        const epic = await creation;
+        // A create the reader stopped in Pending changes may have made the epic, which its words
+        // say in place of the error's own, a composer's; its Retry there makes that very create
+        // again under its key.
+        const epic = await creation.catch((error: unknown) => {
+          throw error instanceof SendStoppedError
+            ? new Error(
+                `${stoppedWriteNote(`the epic “${title}”`, "made", { again: "Retry", method: "POST", stopped: error })} Retry it in Pending changes.`,
+                { cause: error }
+              )
+            : error;
+        });
         if (!recovery.active(record.id)) return undefined;
         if (epic === null) {
           setUnansweredEpic(title);

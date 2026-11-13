@@ -107,6 +107,7 @@ export function AskReplyComposer({
   const uploading = upload.pending > 0;
   // The form shows a refused reply itself, with Retry, under the draft it kept.
   const submit = useKeyedWrite({
+    method: "POST",
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {
         if (ask.artifact_id === null || ask.artifact_id === undefined) {

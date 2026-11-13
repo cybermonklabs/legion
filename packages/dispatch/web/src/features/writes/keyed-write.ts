@@ -162,6 +162,22 @@ export function retriesUnderItsKey(refusal: Error | undefined): boolean {
   return refusal instanceof SendStoppedError && !(refusal instanceof SendExpiredError);
 }
 
+/**
+ * What a Retry of a write `refusal` ended does, in the reader's words: the one account of it a
+ * surface's sentence (`stoppedWriteNote`) and the shell's indicator both end with. A write that
+ * goes under its key (`keyed`: a `POST` or a `PATCH`, `goesUnderKey`) is asked again under it
+ * while Dispatch holds it (`sameKeyRetryNote`), and made as a new write once Dispatch has
+ * forgotten it (`expiredRetryNote`), as `retriesUnderItsKey` says of `refusal`. A `PUT` or a
+ * `DELETE` sends no key, and Dispatch keeps nothing under one for it, so neither promise is true
+ * of its Retry: that sends the same change again, which is the same however often it is made.
+ */
+export function retryNote(keyed: boolean, refusal: Error, made: string): string {
+  if (!keyed) {
+    return "A Retry sends the same change again, which is the same however often it is made.";
+  }
+  return retriesUnderItsKey(refusal) ? sameKeyRetryNote(made) : expiredRetryNote(made);
+}
+
 /** What a surface's control does with a write the reader stopped (`stoppedWriteNote`): `again`
  *  names a control that makes that very press again (`retry`, `again`), and `method` is the
  *  write's own, which says whether that press goes under its key (`goesUnderKey`); `anew` says
@@ -173,13 +189,10 @@ export type StoppedControl =
 /**
  * What a surface says of its write the reader stopped, in place of a failure it cannot know of:
  * Dispatch has not confirmed `what`, which may have been `made`, and what pressing the surface's
- * control does now. A control that makes the stopped press of a `POST` or a `PATCH` again asks
- * under its key while Dispatch holds it (`sameKeyRetryNote`), and makes a new write once
- * Dispatch has forgotten it (`expiredRetryNote`), as `retry` does then. A `PUT` or a `DELETE`
- * sends no key, and Dispatch keeps nothing under one for it, so neither promise is true of its
- * Retry: that sends the same change again, which is the same however often it is made. A control
- * that is a press of its own says what it sends. `SendStoppedError`'s own words are a
- * composer's, of a message and its Retry, so a form says these instead.
+ * control does now. A control that makes the stopped press again ends with what that Retry does
+ * (`retryNote`), by the write's method. A control that is a press of its own says what it sends.
+ * `SendStoppedError`'s own words are a composer's, of a message and its Retry, so a form says
+ * these instead.
  */
 export function stoppedWriteNote(what: string, made: string, control: StoppedControl): string {
   const unconfirmed = `Dispatch has not confirmed ${what}: it may have been ${made}.`;
@@ -187,11 +200,7 @@ export function stoppedWriteNote(what: string, made: string, control: StoppedCon
     return `${unconfirmed} ${control.anew}`;
   }
   const pressed = control.again === "Retry" ? "" : ` Pressing ${control.again} again retries it.`;
-  const note = !goesUnderKey(control.method)
-    ? "A Retry sends the same change again, which is the same however often it is made."
-    : retriesUnderItsKey(control.stopped)
-      ? sameKeyRetryNote(made)
-      : expiredRetryNote(made);
+  const note = retryNote(goesUnderKey(control.method), control.stopped, made);
   return `${unconfirmed}${pressed} ${note}`;
 }
 

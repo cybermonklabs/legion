@@ -8,10 +8,12 @@ import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { CreateIssueInput, Issue } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { CreateIssueDialog } from "./CreateIssueDialog";
 
 const projects = [
@@ -77,6 +79,7 @@ function renderDialog(
     </MemoryRouter>
   );
   return {
+    queryClient,
     user,
     unmount: () => {
       view.unmount();
@@ -231,6 +234,34 @@ test("a possible duplicate names the candidate and Create anyway forces the crea
     );
     expect(calls.map((call) => call.force)).toEqual([undefined, true]);
   } finally {
+    view.unmount();
+  }
+});
+
+// A create the reader stopped may have made the issue: the dialog says so, and that its Retry
+// asks again under the create's key (`retryLast`), rather than a failure it cannot know of.
+test("a create the reader stopped says Retry asks again under its key, not that it failed", async () => {
+  jest.useFakeTimers();
+  const view = renderDialog(userOnFakeClock(), () =>
+    Promise.reject(new NetworkError("/api/v1/issues", new TypeError("Failed to fetch")))
+  );
+  try {
+    await screen.findByRole("combobox", { name: "Project" });
+    await view.user.click(screen.getByRole("textbox", { name: "Title" }));
+    await view.user.paste("Flaky create");
+    // The form's own submit: user-event has no form for it.
+    fireEvent.submit(screen.getByRole("dialog", { name: "Create issue" }));
+    await stopTheLateWrite(view.queryClient);
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the new issue", "made", {
+        again: "Retry",
+        method: "POST",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
     view.unmount();
   }
 });

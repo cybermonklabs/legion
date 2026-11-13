@@ -61,6 +61,7 @@ import { textSourceOf } from "../refs/text-references";
 import { composerFirst } from "../threads/thread-layout";
 import { useThreadOrder } from "../threads/thread-order";
 import { askRepliesOwner, useMarkThreadRead } from "../threads/useMarkThreadRead";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AskAnchorHeader } from "./AskAnchorLink";
 import { AskApprovalLink } from "./AskApprovalLink";
 import { AskBlockLink } from "./AskBlockLink";
@@ -692,7 +693,19 @@ export function AskCard({
             </p>
           </div>
         )}
-        {answerFailure === null ? null : <QueryError message={answerFailure.message} />}
+        {answerFailure === null ? null : (
+          <QueryError
+            message={
+              // This branch offers no Retry: the question has closed, so an answer the reader
+              // stopped is said with what the card shows in place of its form.
+              mutation.error instanceof SendStoppedError
+                ? stoppedWriteNote("your answer", "saved", {
+                    anew: "The question has closed, and the record above shows how.",
+                  })
+                : answerFailure.message
+            }
+          />
+        )}
         {referencedByNode}
         {threadNode}
       </>
@@ -954,7 +967,17 @@ export function AskCard({
         )}
         {clarification.isError ? (
           <QueryError
-            message="Could not send your clarification."
+            message={
+              // A question back the reader stopped may have been sent, and Retry makes that very
+              // press again (`retryLast`).
+              clarification.error instanceof SendStoppedError
+                ? stoppedWriteNote("your clarification", "sent", {
+                    again: "Retry",
+                    method: "POST",
+                    stopped: clarification.error,
+                  })
+                : "Could not send your clarification."
+            }
             onRetry={() => submitGuard.retryLast(clarification)}
             retrying={clarification.isPending}
           />

@@ -104,6 +104,7 @@ function aliceWrite(
       detail: null,
       kind: plainWrite,
       label,
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         attempts.push(label);

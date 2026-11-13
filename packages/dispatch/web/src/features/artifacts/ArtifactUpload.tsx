@@ -323,6 +323,7 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
     { file: File; owner: ArtifactOwner; result: UploadResult },
     { base: UploadBase; file: File; owner: ArtifactOwner }
   >({
+    method: "POST",
     write: async ({ base, file, owner }, bounds) => ({
       file,
       owner,
@@ -490,6 +491,7 @@ export function useArtifactUpload(
   // that read would be a second upload, which `isPending` is too late to hold.
   const pressGuard = useSubmitGuard();
   const upload = useKeyedWrite<UploadResult, { base: UploadBase; file: File }>({
+    method: "POST",
     write: ({ base, file }, bounds) =>
       uploadFile(
         owner,

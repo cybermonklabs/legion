@@ -106,6 +106,7 @@ function aliceWrite(
       detail: null,
       kind: plainWrite,
       label: refuse ? "CORE-2 set to done" : "CORE-1 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         attempts.push(bounds.login ?? "nobody");
@@ -257,6 +258,7 @@ test("a lapsed session keeps every write, and the same person's sign-in resumes 
       detail: null,
       kind: plainWrite,
       label: "CORE-1 set to done",
+      method: "PATCH",
       presentation: "indicator",
       write: (bounds) => {
         keys.push(bounds.key);

@@ -40,6 +40,7 @@ export function useAskHandOn(ask: Ask): AskHandOnWrite {
   const inboxKey = inboxQuery().queryKey;
   // The card says why its hand-on was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
+    method: "PUT",
     write: (askedOf: string, bounds) => api.handAskTo(ask.id, askedOf, bounds),
     inline: true,
     label: (askedOf) => `Ask handed to ${askedOf}`,

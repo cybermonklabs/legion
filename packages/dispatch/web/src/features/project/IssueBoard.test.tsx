@@ -17,10 +17,12 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerIssuePatches } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Issue, IssueSummary, UserState } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { issueStatuses } from "./board-model";
 import { staleBoardMessage, useBoardMoves } from "./board-moves";
 import { IssueBoard } from "./IssueBoard";
@@ -1004,5 +1006,38 @@ test("a labelled move writes the rendered list, names its neighbours, and refetc
   } finally {
     hook.unmount();
     patchIssue.mockRestore();
+  }
+});
+
+// A move the reader stopped may have been made: the board goes back to where the page read it,
+// reads itself again, and says so, rather than a failure it cannot know of.
+test("a move the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, issues);
+  const patchIssue = answerIssuePatches().mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1", new TypeError("Failed to fetch"))
+  );
+  const listIssues = spyOn(api, "listIssues").mockResolvedValue(issues);
+  const hook = renderMoves(queryClient);
+  try {
+    let moved: Promise<void> | undefined;
+    act(() => {
+      moved = hook.result.current.moveCard("CORE-1", "todo", 1);
+    });
+    await stopTheLateWrite(queryClient);
+    await act(async () => moved);
+    expect(hook.result.current.error).toBe(
+      stoppedWriteNote("the move of CORE-1", "made", {
+        anew: "The board is read again from Dispatch, and moving the card again sends a new move.",
+      })
+    );
+  } finally {
+    realClock();
+    hook.unmount();
+    queryClient.clear();
+    patchIssue.mockRestore();
+    listIssues.mockRestore();
   }
 });

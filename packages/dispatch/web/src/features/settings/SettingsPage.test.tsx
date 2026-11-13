@@ -299,3 +299,60 @@ test("a mapping removal the reader stopped says Retry makes it again, not that i
     }
   }
 });
+
+// A mapping's save the reader stopped may have been made: the page says so, and that its Retry
+// sends the same `PUT` again, which is the same however often it is made.
+test("a mapping save the reader stopped says Retry sends it again, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const unrelated = stubUnrelatedQueries();
+  unrelated.listProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      gated_steps: [],
+      key: "CORE",
+      name: "Core",
+      open_asks: 0,
+    },
+  ]);
+  unrelated.listRepoProjects.mockResolvedValue([
+    {
+      created_at: "2026-09-01T00:00:00Z",
+      created_by: { id: "alice", kind: "user" },
+      default: false,
+      project: "CORE",
+      renamed_to: null,
+      repo: "acme/api",
+    },
+  ]);
+  const getCredentialPending = spyOn(api, "getCredentialPending").mockResolvedValue(null);
+  const putRepoProject = spyOn(api, "putRepoProject").mockRejectedValue(
+    new NetworkError("/api/v1/repo-projects/acme/api", new TypeError("Failed to fetch"))
+  );
+
+  try {
+    const queryClient = renderPage();
+    queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+    await user.click(
+      await screen.findByRole("radio", { name: "Default repository of CORE: acme/api" })
+    );
+    await stopTheLateWrite(queryClient);
+
+    // The alert's paragraph, without its Retry button's name.
+    expect(screen.getByRole("alert").querySelector("p")?.textContent).toBe(
+      stoppedWriteNote("the mapping of acme/api", "saved", {
+        again: "Retry",
+        method: "PUT",
+        stopped: new SendStoppedError(),
+      })
+    );
+  } finally {
+    realClock();
+    cleanup();
+    getCredentialPending.mockRestore();
+    putRepoProject.mockRestore();
+    for (const spy of Object.values(unrelated)) {
+      spy.mockRestore();
+    }
+  }
+});

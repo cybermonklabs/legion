@@ -51,6 +51,7 @@ import {
 import { textSourceOf, uniquePrefixMatch } from "../refs/text-references";
 import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { AskBlockCard } from "./AskBlockCard";
@@ -390,6 +391,7 @@ export function ProofDocument({
   const nameVersion = useKeyedWrite({
     // `write` comes first: `onSuccess` reads its answer.
     write: (summary: string, bounds) => api.createArtifactVersion(artifact.id, { summary }, bounds),
+    method: "POST",
     inline: true,
     label: () => `New version of ${artifact.name}`,
     onSuccess: (created) => {
@@ -416,6 +418,7 @@ export function ProofDocument({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["artifact", artifact.id] });
     },
+    method: "POST",
     write: (_variables, bounds) => api.rebuildArtifact(artifact.id, undefined, bounds),
   });
   const liveMarkdown = liveTextQuery.data?.markdown ?? "";
@@ -1030,7 +1033,7 @@ export function ProofDocument({
   return (
     <section aria-label="Document editor" className="space-y-4">
       <NameVersionDialog
-        error={nameVersion.isError}
+        error={nameVersion.isError ? nameVersion.error : null}
         onClose={() => {
           nameVersion.reset();
           setIsNameDialogOpen(false);
@@ -1078,9 +1081,15 @@ export function ProofDocument({
           </button>
           {rebuild.isError ? (
             <p className={dangerText}>
-              {rebuild.error instanceof Error
-                ? rebuild.error.message
-                : "Could not rebuild this document."}
+              {/* A rebuild the reader stopped may have been made, and the button above is a
+                  press of its own, under a key of its own. */}
+              {rebuild.error instanceof SendStoppedError
+                ? stoppedWriteNote(`the rebuild of ${artifact.name}`, "made", {
+                    anew: "Rebuilding again sends a new rebuild.",
+                  })
+                : rebuild.error instanceof Error
+                  ? rebuild.error.message
+                  : "Could not rebuild this document."}
             </p>
           ) : null}
         </div>

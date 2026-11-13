@@ -1,7 +1,7 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { type ReactNode, useState } from "react";
 
-import { api, type WriteBounds } from "../../api/client";
+import { api, isFollowerNotFound, isSubscriberNotFound, type WriteBounds } from "../../api/client";
 import type { Ask, AskFollower, IssueDetails, Subscriber } from "../../api/types";
 import { DisclosureToggle } from "../../components/DisclosureToggle";
 import { QueryError } from "../../components/QueryError";
@@ -266,17 +266,33 @@ export function AskRecipients({
   const counted = !subscribersQuery.isError;
   const [confirming, setConfirming] = useState<Confirming | undefined>(undefined);
   const [open, setOpen] = useState(false);
+  // Each is a `DELETE`, which sends no key, so Dispatch keeps no answer for one: made again after
+  // one that landed - stopped, or its answer lost - it finds the session off the ask already, and
+  // is answered `404 FOLLOWER_NOT_FOUND` or `404 SUBSCRIBER_NOT_FOUND`. That is the change done,
+  // which is what the person asked, so the write lands on it as on a `204`.
   const unfollow = useKeyedWrite({
-    write: (sessionId: string, bounds) => removeFollower(askId, sessionId, bounds),
+    method: "DELETE",
+    write: async (sessionId: string, bounds) => {
+      try {
+        await removeFollower(askId, sessionId, bounds);
+      } catch (error) {
+        if (!isFollowerNotFound(error)) throw error;
+      }
+    },
     label: (sessionId) => `${text.sessionText(sessionId, undefined)} taken off this ask`,
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["ask-thread", askId] }),
   });
   const unsubscribe = useKeyedWrite({
-    write: (sessionId: string, bounds) => {
+    method: "DELETE",
+    write: async (sessionId: string, bounds) => {
       if (subscription === undefined) {
         throw new Error("Ask recipients unsubscribe requires an owner.");
       }
-      return subscription.remove(sessionId, bounds);
+      try {
+        await subscription.remove(sessionId, bounds);
+      } catch (error) {
+        if (!isSubscriberNotFound(error)) throw error;
+      }
     },
     label: (sessionId) =>
       `${text.sessionText(sessionId, subscribers.find((row) => row.session_id === sessionId)?.title)} unsubscribed from ${subscription?.label ?? "this ask"}`,

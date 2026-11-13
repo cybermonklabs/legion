@@ -37,6 +37,8 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
   const inboxKey = inboxQuery().queryKey;
   // The row says why its snooze was refused, where the reader pressed it.
   const mutation = useKeyedWrite({
+    // A snooze is a `PUT`, and bringing the row back a `DELETE`.
+    method: (until: string | null) => (until === null ? "DELETE" : "PUT"),
     write: (until: string | null, bounds) =>
       until === null
         ? api.unsnoozeAsk(askId, bounds)
@@ -81,10 +83,13 @@ export function useAskSnooze(askId: string): AskSnoozeWrite {
 }
 
 /** One ask the server refused, with the reason it gave - the same message the per-row control
- *  shows, so a sign-out never reads like a validation refusal. */
+ *  shows, so a sign-out never reads like a validation refusal - or one whose snooze the reader
+ *  stopped (`stopped`), which may have been saved and is no refusal: its `reason` is then the
+ *  error's own words, a composer's, which nothing shows. */
 export interface AskSnoozeFailure {
   askId: string;
   reason: string;
+  stopped: boolean;
 }
 
 export interface AskSnoozeManyWrite {
@@ -143,7 +148,13 @@ export function useAskSnoozeMany(): AskSnoozeManyWrite {
         const result = results[index];
         if (result === undefined || result.status !== "rejected") return [];
         const reason: unknown = result.reason;
-        return [{ askId, reason: reason instanceof Error ? reason.message : String(reason) }];
+        return [
+          {
+            askId,
+            reason: reason instanceof Error ? reason.message : String(reason),
+            stopped: reason instanceof SendStoppedError,
+          },
+        ];
       });
       const refused = new Set(failed.map(({ askId }) => askId));
       for (const [key, data] of refused.size === 0 ? [] : previous) {

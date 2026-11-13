@@ -24,5 +24,6 @@ export function useIssueRepo(issueKey: string): IssueFieldWrite<string | null> {
     label: (repo) => `${issueKey} on ${repo ?? "its project's repository"}`,
     patch: (repo) => ({ repo }),
     show,
+    what: `the repository of ${issueKey}`,
   });
 }

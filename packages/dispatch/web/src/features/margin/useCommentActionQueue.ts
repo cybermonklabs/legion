@@ -86,6 +86,8 @@ export function useCommentActionQueue<TContext = undefined>({
     // The card that offered the action shows its refusal (`CommentActionFailure`).
     inline: true,
     label: ({ kind }) => ACTION_LABELS[kind],
+    // Every action is a `POST` of its own route (`submitCommentAction`).
+    method: "POST",
     write: submitCommentAction,
     onError,
     onMutate,

@@ -1,12 +1,15 @@
-import { afterEach, beforeAll, expect, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
 import { displayTree } from "../../__tests__/display-trees";
+import { realClock } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
-import { api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { api, NetworkError } from "../../api/client";
 import type {
   Artifact,
   AskRead,
@@ -18,6 +21,7 @@ import type {
   IssueDecisions,
 } from "../../api/types";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { DecisionsPanel } from "./DecisionsPanel";
 
 const documentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
@@ -125,8 +129,9 @@ beforeAll(async () => {
 
 afterEach(cleanup);
 
-function renderPanel() {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPanel(
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   queryClient.setQueryData(["whoami"], { kind: "user", login: "alice" });
   return render(
     <MemoryRouter>
@@ -245,6 +250,62 @@ test("Change opens the comment composer on decisions.md, quoting the decision's 
       },
     ]);
   } finally {
+    read.mockRestore();
+    comment.mockRestore();
+  }
+});
+
+// A Keep or a change the reader stopped may have been made: the card says so, and that its
+// button is a press of its own, rather than the stopped write's own words, which are a
+// composer's and promise a Retry the card does not offer.
+test("a Keep the reader stopped says it may have been made, not a message's words", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
+  const keep = spyOn(api, "keepDecision").mockRejectedValue(
+    new NetworkError("/api/v1/decisions/keep", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(within(waiting).getByRole("button", { name: "Keep" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(waiting).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the Keep of “Store notices in a table”", "made", {
+        anew: "Pressing Keep again sends a new Keep.",
+      })
+    );
+  } finally {
+    realClock();
+    queryClient.clear();
+    read.mockRestore();
+    keep.mockRestore();
+  }
+});
+
+test("a change the reader stopped says it may have been posted, not a message's words", async () => {
+  const read = spyOn(api, "getIssueDecisions").mockResolvedValue(issueView());
+  const comment = spyOn(api, "createComment").mockRejectedValue(
+    new NetworkError("/api/v1/issues/CORE-1/comments", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  try {
+    renderPanel(queryClient);
+    const waiting = await screen.findByRole("region", { name: "Waiting for your review" });
+    jest.useFakeTimers();
+    const user = userOnFakeClock();
+    await user.click(within(waiting).getByRole("button", { name: "Change" }));
+    const composer = within(waiting).getByRole("form", { name: "Change Store notices in a table" });
+    await user.click(within(composer).getByLabelText("Your change"));
+    await user.paste("Use a queue instead.");
+    await user.click(within(composer).getByRole("button", { name: "Send" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(composer).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("your change", "posted", { anew: "Send posts it again as a new comment." })
+    );
+  } finally {
+    realClock();
+    queryClient.clear();
     read.mockRestore();
     comment.mockRestore();
   }

@@ -8,6 +8,7 @@ import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api, NetworkError } from "../../api/client";
 import type { Artifact, ArtifactApproval, ArtifactReview } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { ApprovalChip } from "./ApprovalChip";
 
 function artifact(approval: ArtifactApproval | undefined): Artifact {
@@ -246,6 +247,43 @@ test("approving again after a stopped approval and a change request goes under i
   } finally {
     createArtifactReview.mockRestore();
     view.unmount();
+    realClock();
+  }
+});
+
+// A change request the reader stopped may have been made: the dialog says so, and that Request
+// changes is a press of its own, rather than a failure it cannot know of.
+test("a change request the reader stopped says it may have been made, not that it failed", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const createArtifactReview = spyOn(api, "createArtifactReview").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/artifact-1/reviews", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { mutations: { retry: false }, queries: { retry: false } },
+  });
+  const view = render(
+    <QueryClientProvider client={queryClient}>
+      <ApprovalChip
+        artifact={artifact({ latest_version: 3, state: "awaiting" })}
+        variant="header"
+      />
+    </QueryClientProvider>
+  );
+  try {
+    await user.click(screen.getByRole("button", { name: "Request changes" }));
+    const dialog = screen.getByRole("dialog", { name: "Request changes" });
+    await user.click(within(dialog).getByLabelText("Reason"));
+    await user.paste("Needs another pass");
+    await user.click(within(dialog).getByRole("button", { name: "Request changes" }));
+    await stopTheLateWrite(queryClient);
+    expect(within(dialog).getByRole("alert").textContent).toBe(
+      stoppedWriteNote("your review", "made", { anew: "Request changes sends a new review." })
+    );
+  } finally {
+    createArtifactReview.mockRestore();
+    view.unmount();
+    queryClient.clear();
     realClock();
   }
 });

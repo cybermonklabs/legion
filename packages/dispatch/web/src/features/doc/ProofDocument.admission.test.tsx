@@ -1,8 +1,9 @@
-import { beforeEach, expect, spyOn, test } from "bun:test";
+import { beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { fakeDocumentRuntime } from "../../__tests__/document-runtime";
+import { realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRequests } from "../../__tests__/network";
 import {
@@ -13,8 +14,11 @@ import {
   flushLoadFailure,
   renderProofDocument,
 } from "../../__tests__/proof-document";
-import { ApiError, api } from "../../api/client";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { ArtifactText } from "../../api/types";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { openPendingEdits } from "./pending-edits";
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the
@@ -388,6 +392,45 @@ test("ProofDocument offers a rebuild for a history that cannot load and reconnec
     ).not.toBeInTheDocument();
   } finally {
     view.unmount();
+    confirm.mockRestore();
+    rebuildArtifact.mockRestore();
+    getArtifactText.mockRestore();
+  }
+});
+
+// A rebuild the reader stopped may have been made: the page says so, and that its button is a
+// press of its own, rather than the stopped write's own words, which are a composer's.
+test("a rebuild the reader stopped says it may have been made, not a message's words", async () => {
+  const getArtifactText = spyOn(api, "getArtifactText").mockRejectedValue(
+    new ApiError(409, {
+      code: "DOCUMENT_UNLOADABLE",
+      error: "the document's stored history cannot load; rebuild it from its latest saved version",
+    })
+  );
+  const rebuildArtifact = spyOn(api, "rebuildArtifact").mockRejectedValue(
+    new NetworkError("/api/v1/artifacts/rebuild", new TypeError("Failed to fetch"))
+  );
+  const confirm = spyOn(window, "confirm").mockReturnValue(true);
+  const queryClient = createQueryClient();
+  const { view } = renderProofDocument({ queryClient });
+  try {
+    await screen.findByRole("button", { name: "Rebuild from the latest version" });
+    jest.useFakeTimers();
+    await userOnFakeClock().click(
+      screen.getByRole("button", { name: "Rebuild from the latest version" })
+    );
+    await stopTheLateWrite(queryClient);
+    expect(
+      screen.getByText(
+        stoppedWriteNote(`the rebuild of ${artifact.name}`, "made", {
+          anew: "Rebuilding again sends a new rebuild.",
+        })
+      )
+    ).not.toBeNull();
+  } finally {
+    realClock();
+    view.unmount();
+    queryClient.clear();
     confirm.mockRestore();
     rebuildArtifact.mockRestore();
     getArtifactText.mockRestore();

@@ -14,6 +14,7 @@ import type {
 } from "../../api/types";
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
@@ -55,9 +56,21 @@ interface AskAnswerFailure {
  * The refusals the same answer is refused with again however often it is sent, and what the card
  * says for each: the ask was answered or closed elsewhere, its question changed (the card reloads
  * it, so the next answer is to the new wording), or writing even its server state would leave the
- * document's live state past what the server can decode. Any other failure may pass on a retry.
+ * document's live state past what the server can decode. An answer the reader stopped may have
+ * been saved, and the card's Retry makes that very press again (`retryLast`). Any other failure
+ * may pass on a retry.
  */
 function answerFailure(error: Error): AskAnswerFailure {
+  if (error instanceof SendStoppedError) {
+    return {
+      message: stoppedWriteNote("your answer", "saved", {
+        again: "Retry",
+        method: "POST",
+        stopped: error,
+      }),
+      retryable: true,
+    };
+  }
   if (error instanceof ApiError) {
     switch (error.code) {
       case "ASK_ANSWER_CHANGED":
@@ -163,6 +176,7 @@ export function useAskAnswerForm({
   const mutation = useOutstandingAnswerWrite({
     askId: ask.id,
     label: () => `Answer to “${ask.question}”`,
+    method: "POST",
     write: (input: AnswerAskInput, bounds) => answer(ask.id, input, bounds),
     // A change to an answer the server has already recorded leaves the Inbox alone: the ask has
     // no open row there to take out.
@@ -224,6 +238,7 @@ export function useAskAnswerForm({
   const clarification = useKeyedWrite({
     inline: true,
     label: () => `Question back on “${ask.question}”`,
+    method: "POST",
     write: (text: string, bounds) => {
       if (ask.issue_key === null) {
         return api.createArtifactComment(

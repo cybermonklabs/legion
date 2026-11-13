@@ -27,6 +27,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 
 /** The version an approval speaks for: `version` when the review named one, else the document's
@@ -192,8 +193,15 @@ function RequestChangesDialog({
           {error === null ? null : (
             <p className={`text-sm ${dangerText}`} role="alert">
               {/* A reason Dispatch refused for its length says so in its own words, which name
-                  the block and the bound; any other failure is worth another try. */}
-              {isCapExceeded(error) ? error.message : "Could not request changes. Try again."}
+                  the block and the bound; a review the reader stopped may have been made, and
+                  Request changes is a press of its own; any other failure is worth another try. */}
+              {isCapExceeded(error)
+                ? error.message
+                : error instanceof SendStoppedError
+                  ? stoppedWriteNote("your review", "made", {
+                      anew: "Request changes sends a new review.",
+                    })
+                  : "Could not request changes. Try again."}
             </p>
           )}
           <div className="flex items-center justify-end gap-2">
@@ -256,6 +264,7 @@ export function ApprovalChip({
     label: (input: CreateArtifactReviewInput) =>
       `${input.state === "approved" ? "Approval" : "Change request"} on ${artifact.name}`,
     onSettled: () => submitGuard.release(),
+    method: "POST",
     write: (input, bounds) => api.createArtifactReview(artifact.id, input, bounds),
     onSuccess: () => {
       setRequestChangesOpen(false);

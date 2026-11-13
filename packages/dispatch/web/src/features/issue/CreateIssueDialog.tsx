@@ -26,6 +26,7 @@ import {
 } from "../../theme/classes";
 import { buildIssuePath, routeProjectOf } from "../refs/routes";
 import { useDialog } from "../shell/useDialog";
+import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { RelatedItems } from "./RelatedItems";
@@ -66,6 +67,7 @@ export function CreateIssueDialog({
     inline: true,
     label: (input: CreateIssueInput) => `New issue “${input.title}”`,
     onSettled: () => submitGuard.release(),
+    method: "POST",
     write: create,
     onSuccess: (issue) => {
       void queryClient.invalidateQueries({ queryKey: ["issues"] });
@@ -189,9 +191,17 @@ export function CreateIssueDialog({
             duplicate === undefined ? (
               <QueryError
                 message={
-                  mutation.error instanceof ApiError
-                    ? mutation.error.message
-                    : "Could not create the issue."
+                  // A create the reader stopped may have made the issue, and Retry makes that
+                  // very press again (`retryLast`); Create is a press of its own.
+                  mutation.error instanceof SendStoppedError
+                    ? stoppedWriteNote("the new issue", "made", {
+                        again: "Retry",
+                        method: "POST",
+                        stopped: mutation.error,
+                      })
+                    : mutation.error instanceof ApiError
+                      ? mutation.error.message
+                      : "Could not create the issue."
                 }
                 onRetry={() => submitGuard.retryLast(mutation)}
                 retrying={mutation.isPending}

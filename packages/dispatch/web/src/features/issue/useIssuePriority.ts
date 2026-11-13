@@ -9,6 +9,9 @@ export interface IssuePriorityWrite {
   pending: boolean;
   /** Repeats the failed save; a no-op while one is in flight. */
   retry: () => void;
+  /** What a save the reader stopped may have done and what Retry does with it, until the next
+   *  attempt; undefined after any other end. */
+  stopped: string | undefined;
   /** Saves `priority`. A pick made while a save is in flight shows at once and is saved when
    *  that save settles; the newest such pick is the one saved. */
   submit: (priority: IssuePriority | null) => void;
@@ -38,6 +41,13 @@ export function useIssuePriority(issueKey: string): IssuePriorityWrite {
     label: (priority) => `${issueKey} set to ${priority === null ? "no priority" : `P${priority}`}`,
     patch: (priority) => ({ priority }),
     show: showPriority,
+    what: `the priority of ${issueKey}`,
   });
-  return { failed: write.failed, pending: write.pending, retry: write.retry, submit: write.submit };
+  return {
+    failed: write.failed,
+    pending: write.pending,
+    retry: write.retry,
+    stopped: write.stopped,
+    submit: write.submit,
+  };
 }

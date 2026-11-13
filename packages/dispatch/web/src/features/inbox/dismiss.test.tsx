@@ -4,14 +4,17 @@
  * (INFRA-450).
  */
 
-import { afterEach, expect, spyOn, test } from "bun:test";
+import { afterEach, expect, jest, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { answerInboxDismisses } from "../../__tests__/send-answers";
-import { ApiError, api } from "../../api/client";
+import { realClock } from "../../__tests__/fake-clock";
+import { answerAskSnoozes, answerInboxDismisses } from "../../__tests__/send-answers";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import {
   dismissedThreadsQuery,
   inboxQuery,
@@ -22,6 +25,7 @@ import {
 import type { InboxRow, IssueDetails, MyRepliesResponse, MyReplyRow } from "../../api/types";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { plannerAgentRow, replyRow } from "../threads/replies-fixture";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { Inbox } from "./Inbox";
 import { issueAsk } from "./inbox-fixture";
 import {
@@ -307,4 +311,69 @@ test("Select all in the paged Dismissed view sends the narrowing with that list'
     kind: ["reply", "agent"],
     restore: true,
   });
+});
+
+// A dismissal the reader stopped may have been made: the rows come back as after a refusal, but
+// the page says Dispatch may have made it and that the next press is one of its own, rather
+// than a refusal in the stopped write's own words, which are a composer's.
+test("a dismissal the reader stopped says it may have been made, not that it was refused", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const dismissed = answerInboxDismisses();
+  dismissed.mockRejectedValue(
+    new NetworkError("/api/v1/me/inbox/dismiss", new TypeError("Failed to fetch"))
+  );
+  const client = seeded([replyRow("c1"), replyRow("c9")]);
+  renderInbox(client);
+  try {
+    await waitFor(() => expect(rowIds()).toEqual(["reply:c1", "reply:c9"]));
+    await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
+    await stopTheLateWrite(client);
+    expect(screen.getByRole("alert").textContent).toBe(
+      stoppedWriteNote("the dismissal of 1 thread", "made", {
+        anew: "Dismissing it again sends a new write.",
+      })
+    );
+  } finally {
+    realClock();
+    client.clear();
+  }
+});
+
+// A bulk snooze the reader stopped may have been saved: the bar says so apart from any refusal,
+// and that the next pick is a press of its own, rather than "Could not snooze" in the stopped
+// write's own words, which are a composer's.
+test("a bulk snooze the reader stopped says it may have been saved, not that it was refused", async () => {
+  const snoozes = answerAskSnoozes().mockRejectedValue(
+    new NetworkError("/api/v1/me/asks/ask-1/snooze", new TypeError("Failed to fetch"))
+  );
+  restores.push(snoozes);
+  const ask = issueAsk({ id: "ask-1", question: "Which approach?" });
+  // The pick reads the Inbox again once its writes settle.
+  restores.push(spyOn(api, "getInbox").mockResolvedValue([ask]));
+  const client = seeded([], [ask]);
+  renderInbox(client);
+  try {
+    await screen.findByText("Which approach?");
+    const user = userEvent.setup();
+    const asksMark = [...document.querySelectorAll<HTMLElement>('input[type="checkbox"]')][0];
+    await user.click(asksMark as HTMLElement);
+    await screen.findByText("1 selected");
+    jest.useFakeTimers();
+    await userOnFakeClock().selectOptions(
+      screen.getByLabelText("Snooze selected asks"),
+      "tomorrow"
+    );
+    await stopTheLateWrite(client);
+    await waitFor(() =>
+      expect(screen.getByRole("alert").textContent).toBe(
+        stoppedWriteNote("the snooze of 1 of 1", "saved", {
+          anew: "It stays marked, and the next pick snoozes it as a new write.",
+        })
+      )
+    );
+  } finally {
+    realClock();
+    client.clear();
+  }
 });

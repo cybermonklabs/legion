@@ -81,6 +81,7 @@ export function SettingsPage(): ReactNode {
     MappingInput,
     { previous: RepoProject[] | undefined }
   >({
+    method: "PUT",
     write: ({ repo, ...input }, bounds) => api.putRepoProject(repo, input, bounds),
     inline: true,
     label: ({ repo, project: mapped }) => `${repo} mapped to ${mapped}`,
@@ -139,6 +140,7 @@ export function SettingsPage(): ReactNode {
     onSettled: () => queryClient.invalidateQueries({ queryKey: ["repo-projects"] }),
   });
   const deleteMapping = useKeyedWrite<void, string, { previous: RepoProject[] | undefined }>({
+    method: "DELETE",
     write: (repo: string, bounds) => api.deleteRepoProject(repo, bounds),
     inline: true,
     label: (repo) => `${repo}'s mapping removed`,
