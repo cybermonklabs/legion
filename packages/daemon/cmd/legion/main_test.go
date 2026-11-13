@@ -2180,9 +2180,10 @@ func TestPlainStateGivesEachDurableConsumersLag(t *testing.T) {
 	}
 }
 
-// An operator reading plain `legion state` is told which issues Legion is waiting to start behind
-// a Dispatch issue nobody has finished (api.Admission.Blocked): each by issue and what it waits
-// on, roots and held children alike, on one line however many there are; with none the line says
+// An operator reading plain `legion state` is told which issues Legion waits on a Dispatch issue
+// nobody has finished for (api.Admission.Blocked): each by issue and what it waits on, roots and
+// held children alike, and a started issue that gave its slot back for the wait, on one line
+// however many there are; with none the line says
 // so. Nothing here is the daemon's to clear, so the line names them and stops.
 func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 	admission := func(blocked string) string {

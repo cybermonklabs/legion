@@ -368,8 +368,9 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // notice of the same kind still waits in the outbox, so a burst of events or ticks queues one
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
-// (ReportCapabilities) and every issue Legion is waiting to start behind an unfinished Dispatch
-// issue (blocked), the turn that posts the day's report. Every other kind is queued as the
+// (ReportCapabilities) and every issue Legion waits on an unfinished Dispatch issue for, one it
+// has still to start or one it started that gave its slot back (blocked), the turn that posts
+// the day's report. Every other kind is queued as the
 // caller built it, so a kind that says something of its own — the role and the reason of
 // TellController's — carries it here.
 //
