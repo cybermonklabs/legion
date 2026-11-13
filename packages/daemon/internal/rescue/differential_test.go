@@ -18,29 +18,36 @@ package rescue_test
 // read's tree must be in the jj route's with the same path, the same mode and the same blob, and
 // the jj route's tree may hold no path the git read's lacks, but for the exceptions below. Each
 // is checked for exactly the paths it covers, so an allowance that grew fails as loudly as a lost
-// entry does, and so does one that no longer describes the route: a declared path the two trees
-// hold at the same entry fails. A conflicted path is no exception: it is carried in jj's own
-// shape, which is checked path for path on its own (carriedAsItsSides).
+// entry does, and so does one that no longer describes the route. A conflicted path is no
+// exception: it is carried in jj's own shape, which is checked path for path on its own
+// (carriedAsItsSides).
 //
 // The exceptions are these, each a row of its own:
 //
 //   - An embedded git repository, which the git read records as a gitlink and the route records
 //     as nothing (gitlinks).
-//   - A file a role forced into the index with `git add -f` that .gitignore ignores, under an
-//     unborn git HEAD. The git read copies the worktree's index only where HEAD names a commit,
-//     and otherwise starts from an empty index (`read-tree --empty`), so it loses that file; the
-//     route reads the copy of the index whatever HEAD is, so it keeps the file.
-//   - A tracked file rewritten at its size with its mtime set back to the one jj recorded. jj's
-//     stat rule passes over it, as the role's own jj commit would, so jj's tree keeps the old
-//     blob; the git read carries the new one only because the index jj writes has no stat data
-//     and git hashes every file.
-//   - A skip-worktree entry whose file is gone. The git read leaves the entry alone and keeps its
-//     blob; the route reads the missing path as a deletion.
-//   - A committed submodule whose own HEAD moved. The git read records the submodule's new HEAD;
-//     jj's tree keeps the gitlink it holds.
+//   - Gained: a file a role forced into the index with `git add -f` that .gitignore ignores,
+//     under an unborn git HEAD. The git read copies the worktree's index only where HEAD names a
+//     commit, and otherwise starts from an empty index (`read-tree --empty`), so it loses that
+//     file; the route reads the copy of the index whatever HEAD is, so it keeps the file.
+//   - Changed: a tracked file rewritten at its size with its mtime set back to the one jj
+//     recorded. jj's stat rule passes over it, as the role's own jj commit would, so jj's tree
+//     keeps the old blob; the git read carries the new one only because the index jj writes has
+//     no stat data and git hashes every file.
+//   - Lost: a skip-worktree entry whose file is gone. The git read leaves the entry alone and
+//     keeps its blob; the route reads the missing path as a deletion.
+//   - Changed: a committed submodule whose own HEAD moved. The git read records the submodule's
+//     new HEAD; jj's tree keeps the gitlink it holds.
 //
-// The last four are declared by name in the row's differs, each with its reason. Everywhere else
-// the route must answer the git read's tree exactly.
+// The last four are declared by name in the row, each with its reason, under the word for what
+// the two trees hold there. A path declared changed is one both trees hold, at different
+// entries. A path declared lost is one the git read's tree holds and the jj route's does not. A
+// path declared gained is one the jj route's tree holds and the git read's does not, and one row
+// alone declares any: the unborn HEAD's, and a second must be argued for. There are kinds at all
+// because a declared absence is how a loss looks, so a path the route drops must be written as
+// lost, where a reader sees the word, never as an allowance that the two trees may differ. Each
+// declaration is checked against what the two trees hold, and a path declared in two kinds
+// fails. Everywhere else the route must answer the git read's tree exactly.
 //
 // A row whose route fails says so, and the failure is asserted: a workspace that fails is never a
 // silent loss, since its pod is not replaced for it. A row that expects a tree and gets a failure,
@@ -193,14 +200,20 @@ var conflictTerm = regexp.MustCompile(`^\.jjconflict-(?:base|side)-[0-9]+/(.+)$`
 // and is checked for exactly the paths it covers: the row names them, and an exception covering
 // one more or one fewer than the row names fails, as a lost entry does.
 //
-// The second is a path the row declares in differs, each by name with its reason: a path the jj
-// route's tree may hold at another entry than the git read's, or not hold, or hold where the git
-// read's holds nothing. It is checked the same way, path for path: a difference at a path the row
-// does not declare fails, and so does a declared path the two trees hold at the same entry, or
-// both lack, so an allowance that no longer describes the route fails as loudly as a loss does.
+// The second is a path the row declares by name with its reason, under the word for what the two
+// trees hold there: changed, lost or gained. The walk over the git read's entries passes over a
+// path declared in any kind, which is checked below; the walk over the jj route's paths the git
+// read's lacks passes over only a path declared gained. Then each declaration is held to what the
+// two trees hold. A path declared changed must be in both trees, at different entries: one both
+// hold at the same entry fails as an allowance that no longer describes the route, and one either
+// tree lacks fails, since that is a loss or a gain and is declared as one. A path declared lost
+// must be in the git read's tree and not in the jj route's. A path declared gained must be in the
+// jj route's tree and not in the git read's. A path declared in more than one kind fails. There
+// are kinds at all because a declared absence is how a loss looks: a path the route drops passes
+// only written as lost, where a reader sees the word, never as an allowance that the trees differ.
 //
 // And it fails the test for every path of the jj route's tree that the git read's lacks, but for
-// the paths the row declares.
+// the paths the row declares gained.
 //
 // Beside them, and not one of them, is a conflicted path, carried as its sides
 // (carriedAsItsSides): a path jj lists as conflicted in the working-copy commit, where the git
@@ -241,9 +254,17 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 		slices.Sort(paths)
 		return paths
 	}
+	kinds := []struct {
+		word     string
+		declared map[string]string
+	}{{"changed", row.changed}, {"lost", row.lost}, {"gained", row.gained}}
 	declared := func(path string) bool {
-		_, ok := row.differs[path]
-		return ok
+		for _, kind := range kinds {
+			if _, ok := kind.declared[path]; ok {
+				return true
+			}
+		}
+		return false
 	}
 	var coveredAsGitlinks []string
 	for _, path := range sorted(was) {
@@ -272,7 +293,10 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 	}
 	var gained []string
 	for _, path := range sorted(now) {
-		if _, held := was[path]; held || declared(path) {
+		if _, held := was[path]; held {
+			continue
+		}
+		if _, ok := row.gained[path]; ok {
 			continue
 		}
 		if len(listed) > 0 {
@@ -293,21 +317,54 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 		gained = append(gained, path)
 	}
 	if len(gained) > 0 {
-		t.Errorf("gained: the jj route's tree holds %q, which the git read's lacks and the row does not declare", gained)
+		t.Errorf("gained: the jj route's tree holds %q, which the git read's lacks and the row does not declare gained", gained)
 	}
-	declaredPaths := make([]string, 0, len(row.differs))
-	for path := range row.differs {
-		declaredPaths = append(declaredPaths, path)
+	holding := func(entries map[string]entry, path string) string {
+		if e, ok := entries[path]; ok {
+			return fmt.Sprintf("mode %s blob %s", e.mode, e.object)
+		}
+		return "no such path"
 	}
-	slices.Sort(declaredPaths)
-	for _, path := range declaredPaths {
-		before, inWas := was[path]
-		after, inNow := now[path]
-		switch {
-		case !inWas && !inNow:
-			t.Errorf("the row declares that the two trees may differ at %q (%s), and neither tree holds that path: the allowance no longer describes the route", path, row.differs[path])
-		case inWas && inNow && before == after:
-			t.Errorf("the row declares that the two trees may differ at %q (%s), and both hold it at mode %s blob %s: the allowance no longer describes the route", path, row.differs[path], before.mode, before.object)
+	for i, kind := range kinds {
+		paths := make([]string, 0, len(kind.declared))
+		for path := range kind.declared {
+			paths = append(paths, path)
+		}
+		slices.Sort(paths)
+		for _, path := range paths {
+			reason := kind.declared[path]
+			var also []string
+			for _, other := range kinds[i+1:] {
+				if why, ok := other.declared[path]; ok {
+					also = append(also, fmt.Sprintf("%s (%s)", other.word, why))
+				}
+			}
+			if len(also) > 0 {
+				t.Errorf("the row declares %q %s (%s) and also %s, where a path is declared in one kind: the git read's tree holds %s and the jj route's %s", path, kind.word, reason, strings.Join(also, " and "), holding(was, path), holding(now, path))
+			}
+			before, inWas := was[path]
+			after, inNow := now[path]
+			switch kind.word {
+			case "changed":
+				switch {
+				case !inWas && !inNow:
+					t.Errorf("the row declares %q changed (%s), and neither tree holds that path: the allowance no longer describes the route", path, reason)
+				case !inNow:
+					t.Errorf("the row declares %q changed (%s), and the jj route's tree holds no such path, where the git read's holds %s: a path one tree lacks is a loss or a gain, and is declared as one", path, reason, holding(was, path))
+				case !inWas:
+					t.Errorf("the row declares %q changed (%s), and the git read's tree holds no such path, where the jj route's holds %s: a path one tree lacks is a loss or a gain, and is declared as one", path, reason, holding(now, path))
+				case before == after:
+					t.Errorf("the row declares %q changed (%s), and both trees hold it at mode %s blob %s: the allowance no longer describes the route", path, reason, before.mode, before.object)
+				}
+			case "lost":
+				if !inWas || inNow {
+					t.Errorf("the row declares %q lost (%s), and the git read's tree holds %s and the jj route's %s: a lost path is one the git read's tree holds and the jj route's does not", path, reason, holding(was, path), holding(now, path))
+				}
+			case "gained":
+				if inWas || !inNow {
+					t.Errorf("the row declares %q gained (%s), and the git read's tree holds %s and the jj route's %s: a gained path is one the jj route's tree holds and the git read's does not", path, reason, holding(was, path), holding(now, path))
+				}
+			}
 		}
 	}
 }
@@ -401,11 +458,14 @@ type differentialRow struct {
 	fails string
 	// gitlinks is the entries the embedded-repository exception covers in this row, sorted.
 	gitlinks []string
-	// differs is every path the jj route's tree may hold at another entry than the git read's,
-	// or not hold, or hold where the git read's holds nothing, each with the reason it may: the
-	// exceptions the comment at the head of this file lists, each checked for exactly its path
-	// (heldAsRuled).
-	differs map[string]string
+	// changed, lost and gained are the paths the row declares the two trees differ at, each with
+	// the reason they may: the exceptions the comment at the head of this file lists, each checked
+	// for exactly its path against what the two trees hold (heldAsRuled). changed is a path both
+	// trees hold, at different entries. lost is a path the git read's tree holds and the jj
+	// route's does not, written under that word because a declared absence is how a loss looks.
+	// gained is a path the jj route's tree holds and the git read's does not, and one row alone
+	// declares any (TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps).
+	changed, lost, gained map[string]string
 	// holds is paths both trees must hold, and absent is paths neither may: the comparison
 	// alone passes two trees that agree in losing a file, or in keeping one they should not.
 	holds, absent []string
@@ -884,7 +944,7 @@ var differentialRows = []differentialRow{
 				t.Fatalf("the workspace's git HEAD is %s, want it unborn, which this row stands on", head)
 			}
 		},
-		differs: map[string]string{
+		gained: map[string]string{
 			"forced.log": "the index the role forced it into holds it, and the git read, which starts from an empty index where HEAD is unborn, does not read that index",
 		},
 		holds: []string{".gitignore"},
@@ -982,7 +1042,7 @@ var differentialRows = []differentialRow{
 			pushedByTheRole(t, d, "the file rewritten at the same size")
 			rewrittenAtTheSameSize(t, d, "f.txt", "BBBB", true)
 		},
-		differs: map[string]string{
+		changed: map[string]string{
 			"f.txt": "an mtime set back on purpose to the value jj recorded hides a same-size rewrite from jj's stat rule, the role's own jj commit misses it the same way, and the git read carried it only because the stat-less index makes git hash every file",
 		},
 		holds: []string{"f.txt"},
@@ -1024,7 +1084,7 @@ var differentialRows = []differentialRow{
 			d.Git("update-index", "--skip-worktree", "forced.log")
 			deleted(t, d, "forced.log")
 		},
-		differs: map[string]string{
+		lost: map[string]string{
 			"forced.log": "the git read leaves a skip-worktree entry alone and keeps its blob, where the route reads the missing path as a deletion and does not seed it",
 		},
 	},
@@ -1037,7 +1097,7 @@ var differentialRows = []differentialRow{
 			d.Run(at, "git", "add", "loose.txt")
 			d.Run(at, "git", "commit", "--quiet", "-m", "a commit made inside the submodule")
 		},
-		differs: map[string]string{
+		changed: map[string]string{
 			"sub": "the git read records the submodule's new HEAD, and jj's tree keeps the gitlink it holds",
 		},
 		holds: []string{"sub"},
@@ -1164,8 +1224,18 @@ func heldAndAbsent(t *testing.T, d *rescuetest.Disk, row differentialRow, trees 
 // The whole-worktree git read and the jj route answer the same tree, row by row: every entry the
 // git read keeps, the jj route keeps at the same path, mode and blob, and the jj route keeps no
 // path the git read lacks, but for the exceptions heldAsRuled names, each checked for exactly the
-// paths a row names; and where the route fails, the row says so.
+// paths a row names under its kind; one row at most declares a path gained; and where the route
+// fails, the row says so.
 func TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps(t *testing.T) {
+	var gaining []string
+	for _, row := range differentialRows {
+		if len(row.gained) > 0 {
+			gaining = append(gaining, row.name)
+		}
+	}
+	if len(gaining) > 1 {
+		t.Errorf("the rows %q each declare a path gained, one the jj route's tree holds and the git read's lacks, want one row at most: the unborn HEAD's is the one, and a second must be argued for", gaining)
+	}
 	for _, row := range differentialRows {
 		t.Run(row.name, func(t *testing.T) {
 			d := rescuetest.New(t, issue)
