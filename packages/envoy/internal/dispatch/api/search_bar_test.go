@@ -332,16 +332,18 @@ func TestSearchAnswersAQueryThatMatchesFromTheQueryAsTyped(t *testing.T) {
 
 // A query only the fallback can answer - the AND of its words matches nothing at all - is
 // broadened, whatever its length, and the words the question excludes are ANDed onto the
-// fallback's own, so a -word still leaves its rows out.
+// fallback's own, so a -word still leaves its rows out. The query's words are ones the project's
+// seeded evals-md (dispatch://INFRA-2916, R5) does not hold, so the issue and the comment are the
+// only items holding any of them.
 func TestSearchBroadensAQuestionThatAnswersNothing(t *testing.T) {
 	handler := newTestHandler(t)
-	issue := createInteractionIssue(t, handler, "SRCH", "Controller restarts deploy", "")
-	comment := searchComment(t, handler, issue.Key, "alice", "The agent pool is drained first.")
+	issue := createInteractionIssue(t, handler, "SRCH", "Gateway restarts rollout", "")
+	comment := searchComment(t, handler, issue.Key, "alice", "The courier fleet is drained first.")
 
 	// Six words, one of them ("zebraquill") in nothing: the issue holds three of them and the
 	// comment two, and the AND of all six holds nowhere.
 	body := searchResponse(t, handler,
-		url.Values{"q": {"controller restarts deploy agent pool zebraquill"}}.Encode())
+		url.Values{"q": {"gateway restarts rollout courier fleet zebraquill"}}.Encode())
 	if !body.Query.Broadened {
 		t.Fatalf("query reading = %#v, want the fallback for a question nothing answers", body.Query)
 	}
@@ -357,7 +359,7 @@ func TestSearchBroadensAQuestionThatAnswersNothing(t *testing.T) {
 	// stays. Without the exclusion ANDed onto the fallback's words, ORing them back in would
 	// return the comment the question refused.
 	less := searchResponse(t, handler,
-		url.Values{"q": {"controller restarts deploy agent pool zebraquill -drained"}}.Encode())
+		url.Values{"q": {"gateway restarts rollout courier fleet zebraquill -drained"}}.Encode())
 	if !less.Query.Broadened || !slices.Equal(less.Query.Operators, []string{contracts.SearchOperatorExclude}) {
 		t.Fatalf("query reading = %#v, want a broadened query read as excluding a word", less.Query)
 	}
@@ -371,7 +373,7 @@ func TestSearchBroadensAQuestionThatAnswersNothing(t *testing.T) {
 
 	// A short question is broadened on the same terms: five words, one of them in nothing, is the
 	// fallback's as much as a sentence is.
-	brief := searchResponse(t, handler, url.Values{"q": {"controller restarts deploy agent zebraquill"}}.Encode())
+	brief := searchResponse(t, handler, url.Values{"q": {"gateway restarts rollout courier zebraquill"}}.Encode())
 	if !brief.Query.Broadened {
 		t.Fatalf("query reading = %#v, want the fallback: no item holds all five words", brief.Query)
 	}
