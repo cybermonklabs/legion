@@ -217,14 +217,16 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
   // spent a second or more laying the whole document out for it, which is what the row would
   // have been measuring instead of her build (`theOtherPersonsPen`). He is in the room before
   // her page loads, so the only thing left for him to do while she builds is write. The pattern
-  // he stamps his words by is this one word, with the stop in it escaped.
+  // he stamps his words by is this one word taken literally: every character a pattern reads
+  // specially is escaped, the backslash among them, as `agent-name.e2e.ts` escapes a name, so a
+  // word that later holds one still matches only itself.
   //
   // Opened inside the row's own `try`, as the timer row of
   // `large-documents-build-serves.e2e.ts` opens him: a room that refuses him
   // leaves neither him nor her context behind.
   let writer: TheOtherPersonsPen | undefined;
   try {
-    writer = await theOtherPersonsPen(artifactId, word.replace(/\./g, "\\."));
+    writer = await theOtherPersonsPen(artifactId, word.replace(/[\\^$.*+?()[\]{}|]/g, "\\$&"));
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
