@@ -611,6 +611,117 @@ test("each call records the agent the run named, and none when it names one", ()
   expect(recorded.slice(1).map((call) => call.by)).toEqual(["implementer", undefined]);
 });
 
+/** Every call line of the record under `dir`, the opening line left out. */
+const recordedCalls = (dir: string) =>
+  readFileSync(path.join(dir, "calls.jsonl"), "utf8")
+    .split("\n")
+    .filter((line) => line !== "")
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .filter((line) => !("opened" in line));
+
+// Catches: a record that leaves the daemon stand-in to read the run's reviews a second way. It
+// moves the issue on a review of the head (daemon-standin.ts's `roundOutcome`),
+// and reading the calls again itself would be a third reader of one call beside this stand-in
+// and the score; so each call that left a review records the state and the head this stand-in
+// answered it with — a create, the submit of a pending one, a `gh pr review` the world answered —
+// and no other call records one: a `gh pr review` no route answered (gh's 404, no review on
+// GitHub) and a review of another repository's pull request among them.
+test("each call that leaves a review records the state and head it was answered with, and no other call does", () => {
+  const { dir, first } = runDir({ fixture: true });
+  answer(dir, ["pr", "review", "1001", "--approve"]);
+  const fixtures = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8"));
+  fixtures.routes.unshift({ match: "^gh pr review", stdout: "https://example.invalid/pull/1001" });
+  writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify(fixtures));
+  const body = path.join(dir, "review.json");
+  writeFileSync(body, JSON.stringify({ commit_id: first, event: "APPROVE", body: "approved" }));
+  expect(apiPost(dir, REVIEWS, "--input", body).exitCode).toBe(0);
+  createPending(dir, { commit_id: first, body: "two findings" });
+  expect(apiPost(dir, `${REVIEWS}/6001/events`, "-f", "event=REQUEST_CHANGES").exitCode).toBe(0);
+  answer(dir, ["pr", "review", "1001", "--approve"]);
+  answer(dir, ["pr", "review", "1001", "-R", "other/widgets", "--approve"]);
+  answer(dir, ["pr", "view", "1001"]);
+  expect(recordedCalls(dir).map((call) => call.review)).toEqual([
+    undefined,
+    { state: "APPROVED", head: first },
+    { state: "PENDING", head: first },
+    { state: "CHANGES_REQUESTED", head: first },
+    { state: "APPROVED", head: first },
+    undefined,
+    undefined,
+  ]);
+});
+
+// Catches: checks frozen into the world, which read green on a head whose check the world's
+// check-runs route says is still running, and a running check that follows the pull request
+// onto the next head. Every reader of the head's checks is answered from the world's check-runs
+// answer for the head the run's remote is at: `gh pr checks`, which gh exits 8 on while a check
+// is pending, and the pull request's `statusCheckRollup`. Its merge state is the world's for
+// that head (`mergeStates`), in gh's spelling and the REST one.
+test("the head's checks are the world's check runs on the remote's tip, for gh pr checks and the rollup", () => {
+  const { dir, first, second } = runDir({ fixture: true });
+  const fixtures = JSON.parse(readFileSync(path.join(dir, "fixtures.json"), "utf8"));
+  const run = (name: string, status: string) => ({
+    name,
+    status,
+    conclusion: status === "completed" ? "success" : null,
+    html_url: `https://example.invalid/${name}`,
+  });
+  fixtures.routes.unshift(
+    {
+      match: `^gh api .*commits/${first.slice(0, 7)}[0-9a-f]*/check-runs`,
+      stdout: { check_runs: [run("test", "in_progress"), run("lint", "completed")] },
+    },
+    {
+      match: "^gh api .*check-runs",
+      stdout: { check_runs: [run("test", "completed"), run("lint", "completed")] },
+    }
+  );
+  fixtures.mergeStates = { [first]: "BLOCKED" };
+  fixtures.routes = fixtures.routes.map((route: { match: string; stdout?: unknown }) =>
+    route.match === "^gh pr view" || route.match === "^gh api .*pulls/1001"
+      ? {
+          ...route,
+          stdout: {
+            ...(route.stdout as object),
+            statusCheckRollup: [],
+            mergeStateStatus: "CLEAN",
+            mergeable_state: "clean",
+          },
+        }
+      : route
+  );
+  writeFileSync(path.join(dir, "fixtures.json"), JSON.stringify(fixtures));
+  const checks = () =>
+    Bun.spawnSync(["bun", STANDIN, "gh", "pr", "checks", "1001"], {
+      env: { ...process.env, SKILL_SCENARIO_RUN: dir },
+    });
+  const merge = () => [
+    answer(dir, ["pr", "view", "1001", "--json", "mergeStateStatus", "--jq", ".mergeStateStatus"]),
+    answer(dir, ["api", "repos/example/widgets/pulls/1001", "--jq", ".mergeable_state"]),
+  ];
+  const rollup = () =>
+    answer(dir, [
+      "pr",
+      "view",
+      "1001",
+      "--json",
+      "statusCheckRollup",
+      "--jq",
+      '[.statusCheckRollup[].status] | join(",")',
+    ]);
+  const pending = checks();
+  expect([pending.exitCode, pending.stdout.toString()]).toEqual([
+    8,
+    "test\tpending\t0s\thttps://example.invalid/test\nlint\tpass\t0s\thttps://example.invalid/lint\n",
+  ]);
+  expect(rollup()).toBe("IN_PROGRESS,COMPLETED");
+  expect(merge()).toEqual(["BLOCKED", "blocked"]);
+  git(path.join(dir, "remote.git"), "update-ref", "refs/heads/legion/LWEVAL-1", second);
+  expect(checks().exitCode).toBe(0);
+  expect(rollup()).toBe("COMPLETED,COMPLETED");
+  expect(merge()).toEqual(["CLEAN", "clean"]);
+});
+
 // Catches: a record nothing opens, where a run whose agents called no gh and no bun leaves no
 // calls.jsonl and scores as the rig error of a record nothing wrote rather than as the run that
 // called nothing (score.ts's `unscored`). rig.sh's worker_boot asks for that line with `--open`

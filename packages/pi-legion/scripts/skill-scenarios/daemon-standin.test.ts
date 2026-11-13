@@ -104,8 +104,8 @@ async function standin(role: string, startIn = "", world = { repo: WORLD_REPO, b
     z.looseObject({ settings: z.record(z.string(), z.unknown()) }).parse(await body()).settings;
   /** `POST /legion/v1/handoff/complete` on a grant minted for it, naming a handoff record when
    * `handoff` and naming none otherwise, which is the completion of a worker that has written
-   * no record. */
-  const complete = async (handoff: boolean) => {
+   * no record; `extra` is any key a label's own contract sends beside them. */
+  const complete = async (handoff: boolean, extra: Record<string, unknown> = {}) => {
     const minted = await (
       await fetch(`${url}/legion/v1/grants`, {
         method: "POST",
@@ -125,6 +125,7 @@ async function standin(role: string, startIn = "", world = { repo: WORLD_REPO, b
         summary: "the round is in",
         verdict: "pass",
         ...(handoff ? { handoffId: "h-review", handoffVersion: 1 } : {}),
+        ...extra,
       }),
     });
   };
@@ -134,23 +135,234 @@ async function standin(role: string, startIn = "", world = { repo: WORLD_REPO, b
       .split("\n")
       .filter((line) => line !== "")
       .map((line) => JSON.parse(line) as Record<string, unknown>);
-  return { body, phase, record, complete, settings, logged, stop: () => child.kill() };
+  return { dir, body, phase, record, complete, settings, logged, stop: () => child.kill() };
 }
 
-// Catches: a stand-in that serves one frozen state, where a reviewer that obeys its own rule —
-// tell the implementer once `read_record` shows the issue in `accepting`
-// (review-threads.md step 1) — reads `reviewing` for ever and never sends, so the scenario
-// scores a correct agent as one that skipped the step. Measured on the batch of
-// 2026-11-08T13:08Z: five of five head runs approved correctly and every one read
-// `toldImplementer=false`.
+/** Runs git in `dir` under an identity of its own and no configuration of the host's. */
+function git(dir: string, ...args: string[]): string {
+  const result = Bun.spawnSync(
+    ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", dir, ...args],
+    { env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null" } }
+  );
+  if (result.exitCode !== 0) throw new Error(`git ${args.join(" ")}: ${result.stderr.toString()}`);
+  return result.stdout.toString().trim();
+}
+
+/** The pull request of the run under `dir`, in the shapes rig.sh's fixture_write writes it: a
+ * bare remote whose issue branch is at the head, no review on it, the create route every world
+ * answers a review with, and the merge state GitHub reports while the pull request is at that
+ * head, `state` (`CLEAN` unless the row names another), every other head being `CLEAN` (rig.sh's
+ * `blocked_at`, gh-call.ts's `mergeStateOn`). `push` puts a commit above the tip and returns it;
+ * `approve` and `requestChanges` submit a review of a head through the gh stand-in itself, so the
+ * review the daemon stand-in reads is the one the world answered the call with. */
+function pullRequest(dir: string, state = "CLEAN") {
+  const work = path.join(dir, "work");
+  mkdirSync(work);
+  git(work, "init", "-q", "-b", "legion/LWEVAL-1");
+  writeFileSync(path.join(work, "greet.ts"), "export const greet = () => 1;\n");
+  git(work, "add", "-A");
+  git(work, "commit", "-qm", "the approved head");
+  const head = git(work, "rev-parse", "HEAD");
+  git(dir, "clone", "-q", "--bare", work, path.join(dir, "remote.git"));
+  writeFileSync(
+    path.join(dir, "fixtures.json"),
+    JSON.stringify({
+      mergeStates: { [head]: state },
+      routes: [
+        {
+          match: "^gh api .*pulls/1001/reviews",
+          methods: ["POST"],
+          stdout: {
+            id: 6001,
+            html_url: "https://example.invalid/pull/1001#pullrequestreview-6001",
+          },
+        },
+        { match: "^gh api .*pulls/1001/(reviews|comments)", stdout: [] },
+      ],
+    })
+  );
+  const review = (event: string, commit: string) => {
+    const body = path.join(dir, `review-${event}.json`);
+    writeFileSync(body, JSON.stringify({ commit_id: commit, event, body: "the round's review" }));
+    const call = Bun.spawnSync(
+      [
+        "bun",
+        path.join(import.meta.dir, "gh-standin.ts"),
+        "gh",
+        "api",
+        "--method",
+        "POST",
+        "repos/example/widgets/pulls/1001/reviews",
+        "--input",
+        body,
+      ],
+      { env: { ...process.env, SKILL_SCENARIO_RUN: dir } }
+    );
+    if (call.exitCode !== 0) throw new Error(`the review was refused: ${call.stderr.toString()}`);
+  };
+  return {
+    head,
+    push: () => {
+      writeFileSync(path.join(work, "docs.md"), `the text fix ${Math.random()}\n`);
+      git(work, "add", "-A");
+      git(work, "commit", "-qm", "docs: the text fix");
+      git(work, "push", "-q", path.join(dir, "remote.git"), "legion/LWEVAL-1");
+      return git(work, "rev-parse", "HEAD");
+    },
+    approve: (commit = head) => review("APPROVE", commit),
+    requestChanges: (commit = head) => review("REQUEST_CHANGES", commit),
+  };
+}
+
+// Catches: a stand-in that moves the issue to `accepting` on the reviewer's completion. Main's
+// engine ends the round on the review, not the completion (review.go's `reviewRound`,
+// review_test.go's "after the review alone"), so a completed round with no review on the pull
+// request is still `reviewing`. The stand-in that moved on any accepted completion
+// (`daemon-standin.ts`, round 14) hid the case review 5887659447's finding 3 is about.
 test.skipIf(skip)(
-  "an accepted completion of reviewing leaves the issue in accepting, as the daemon does",
+  "an accepted completion with no approval leaves the issue in reviewing",
   async () => {
     const daemon = await standin("reviewer");
     try {
+      pullRequest(daemon.dir);
       expect(await daemon.phase()).toBe("reviewing");
       expect((await daemon.complete(true)).status).toBe(200);
+      expect(await daemon.phase()).toBe("reviewing");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that ends the round on the approval whatever GitHub reports for the head.
+// The engine moves an approval only on a merge state the issue may advance on
+// (`record.MergeState.Mergeable`), and waits in `reviewing` on every other: `BLOCKED`, which a
+// check the base requires holds the head in while it runs — the normal case while CI runs at the
+// approved head — and `DIRTY`, a head that conflicts with its base.
+test.skipIf(skip)(
+  "an approval of a head GitHub reports BLOCKED or DIRTY leaves the issue in reviewing",
+  async () => {
+    for (const state of ["BLOCKED", "DIRTY"]) {
+      const daemon = await standin("reviewer");
+      try {
+        pullRequest(daemon.dir, state).approve();
+        expect((await daemon.complete(true)).status).toBe(200);
+        expect([state, await daemon.phase()]).toEqual([state, "reviewing"]);
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in whose record never leaves `reviewing`, where a reviewer that reads it
+// after an approval the engine would have taken reads a round that never ended; and one that
+// takes a narrower set of states than `Mergeable` does. An approval of the head GitHub reports
+// `CLEAN`, `UNSTABLE` or `HAS_HOOKS` ends the round with no completion at all.
+test.skipIf(skip)(
+  "an approval of a head GitHub reports CLEAN, UNSTABLE or HAS_HOOKS moves the issue to accepting",
+  async () => {
+    for (const state of ["CLEAN", "UNSTABLE", "HAS_HOOKS"]) {
+      const daemon = await standin("reviewer");
+      try {
+        pullRequest(daemon.dir, state).approve();
+        expect([state, await daemon.phase()]).toEqual([state, "accepting"]);
+      } finally {
+        daemon.stop();
+      }
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that reads a change request as no decision, or as one of the head alone.
+// `reviewRound` ends the round rejected on a change request whatever head it names and whatever
+// the merge state, and the issue goes back to `implementing` (`TriggerReviewRejected`), which
+// reviewer-text-findings' defect case reaches in `reviewing`; an approval after it moves nothing.
+test.skipIf(skip)(
+  "a change request sends the issue back to implementing, and an approval after it moves nothing",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      const pull = pullRequest(daemon.dir);
+      pull.requestChanges("0".repeat(40));
+      expect(await daemon.phase()).toBe("implementing");
+      pull.approve();
+      expect(await daemon.phase()).toBe("implementing");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that reads an approval of any head as an approval of the pull request's.
+// A push while the record is `reviewing` leaves the approval on a head that is no longer the
+// pull request's, which sets it aside (`classify.ApprovalSetAside`, `stuckApprovedOtherCode`),
+// and only an approval of the new head ends the round. Once the record is in `accepting` a push
+// lands outside any round and moves nothing (review_test.go's "the approval of the head, then a
+// push"). The approved head is `BLOCKED` and the fix head `CLEAN`, as threads-closed's
+// text-fixes world serves them (rig.sh's approved_world).
+test.skipIf(skip)(
+  "a push after the approval leaves the issue in reviewing until the new head is approved",
+  async () => {
+    const daemon = await standin("implementer", "reviewing");
+    try {
+      const pull = pullRequest(daemon.dir, "BLOCKED");
+      pull.approve();
+      expect(await daemon.phase()).toBe("reviewing");
+      const fixed = pull.push();
+      expect(await daemon.phase()).toBe("reviewing");
+      pull.approve(fixed);
       expect(await daemon.phase()).toBe("accepting");
+      pull.push();
+      expect(await daemon.phase()).toBe("accepting");
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a stand-in that takes the request keys of this checkout's contract alone. The base
+// label, built from main `ff2a10ef`, sends `ready` on every completion, and #2539 took it out of
+// this checkout's strict request, so every base completion of 2026-11-12 was answered 400
+// `unrecognized_keys` and that arm measured a world of its own (review 5887659447, finding 1).
+// A key no label sends is still refused, as the daemon refuses an undecodable body.
+test.skipIf(skip)(
+  "a completion carrying the base label's ready is answered as that label's daemon answered it",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      expect((await daemon.complete(true, { ready: true })).status).toBe(200);
+      expect((await daemon.complete(true, { pushed: true })).status).toBe(400);
+    } finally {
+      daemon.stop();
+    }
+  },
+  600_000
+);
+
+// Catches: a log whose refusal lines carry no code, where a reader cannot tell the daemon's own
+// refusal of a run's completion from a body the stand-in could not take at all (score.ts's
+// `unscored`, which makes the second a rig error and keeps the first a reading of the run).
+test.skipIf(skip)(
+  "a refusal's log line carries its code, and a body the stand-in cannot take carries none",
+  async () => {
+    const daemon = await standin("reviewer");
+    try {
+      await daemon.complete(false);
+      await daemon.complete(true, { pushed: true });
+      const completions = daemon
+        .logged()
+        .filter((line) => line.path === "/legion/v1/handoff/complete");
+      expect(completions).toMatchObject([
+        { status: 400, code: "HANDOFF_RECORD_REQUIRED" },
+        { status: 400 },
+      ]);
+      expect(completions[1]).not.toHaveProperty("code");
     } finally {
       daemon.stop();
     }

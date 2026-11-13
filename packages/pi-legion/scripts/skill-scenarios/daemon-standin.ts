@@ -20,8 +20,9 @@
  * other phase, every `handoff_complete` is refused 409 `HANDOFF_NOT_CURRENT_PHASE`, as the
  * workflow refuses a completion of a phase the completing role does not run
  * (`packages/daemon/internal/workflow/engine.go`, `RoleFor(issue.Phase) != fact.Role`, whose
- * refusal `effects.go`'s `refused` makes a 409). That is the loop after an approval, which runs
- * in `accepting`: the architect's phase, which neither the implementer nor the reviewer runs.
+ * refusal `effects.go`'s `refused` makes a 409). That is the loop after an approval for the half
+ * whose phase it is not: the implementer in `reviewing` or `accepting`, and the reviewer in
+ * `accepting`, the architect's phase, which neither of them runs.
  * The real daemon's earlier fence, the 409 `HANDOFF_NO_RUN` of a completion it can attribute to
  * no run (`internal/api/handoff.go`, `noRunCompletion`), is not the one a rig half meets: both
  * halves are live registered workers serving generation 1, so the route finds a run and the
@@ -32,7 +33,9 @@
  * positive `handoffVersion`, and is
  * refused 400 `HANDOFF_RECORD_REQUIRED` otherwise; a completion of a phase that ends with none
  * and names one is refused 409 `HANDOFF_RECORD_MISMATCH`; both as the real daemon refuses them
- * (`L/api/handoff.go`). Any other completion answers `{}`. A backward move answers `{}` once its
+ * (`L/api/handoff.go`). Any other completion answers `{}` and moves nothing: the record moves
+ * on the review, as main's engine moves it (`servedPhase`). The body may carry every key any
+ * label's contract sends (`CompleteRequest`). A backward move answers `{}` once its
  * grant redeems, as the daemon's does for a phase worker, and names no issue but this one
  * (`ISSUE_NOT_GRANTS`, 400, the daemon's refusal of a worker that moves another issue). The
  * stand-in reads no record from
@@ -40,9 +43,10 @@
  * the rig's scorer reads that record back from Dispatch and holds it to the run's session
  * (score.ts testerProof).
  *
- * Every request appends one JSON line to the log file: `{at, path, status, grantId?, sessionId?,
- * mintedGrantId?, handoffId?, handoffVersion?, to?, reason?}`, the run's record of what reached
- * the daemon; a completion's line carries the record it named, and a backward move's the phase it
+ * Every request appends one JSON line to the log file: `{at, path, status, code?, grantId?,
+ * sessionId?, mintedGrantId?, handoffId?, handoffVersion?, to?, reason?}`, the run's record of
+ * what reached the daemon; a refusal's line carries its code where the answer has one, a
+ * completion's line carries the record it named, and a backward move's the phase it
  * asked for and why (score.ts threadsClosed). The record opens with one line of its own,
  * `{at, opened}`, written when this starts listening, as record-publishes.ts writes its
  * `recording` line: a log holding that line alone is a run whose agent never reached the
@@ -58,11 +62,14 @@
  * comment). The issue stands in [phase], or,
  * where the caller names none, in the first phase its role works (daemon-pane.go's `phase
  * <role>`): the implementer works implementing and retro, and the daemon starts it in either.
+ * An issue in `reviewing` moves on what the same run directory reports: its remote's tip, the
+ * reviews of its world and of its gh record, and the merge state its world reports for that tip
+ * (`servedPhase`).
  * Prints `listening on http://127.0.0.1:<port>` once the socket is open (port 0: the kernel's
  * pick).
  */
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync } from "node:fs";
 import { appendFile } from "node:fs/promises";
 import { isLegionRole, roleToken } from "@legion/contracts";
 import {
@@ -71,8 +78,10 @@ import {
   LegionPhaseBackwardRequest,
   LegionStateResponse,
 } from "@legion/contracts/legion-api";
+import { z } from "zod";
 import { DAEMON_MODULE, runDaemonPane, worldOf } from "./daemon-pane";
-import { openingLine } from "./run-records";
+import { mergeStateOn, routeFor } from "./gh-call";
+import { CALLS, openingLine } from "./run-records";
 
 const GRANT_TTL_MS = 60_000;
 const [portArg, logFile, bootTokenFile, project, issue, runDir, role, phaseArg = ""] =
@@ -99,7 +108,8 @@ if (!isLegionRole(role)) {
  * (daemon-pane.ts's `worldOf`): this stand-in answers a `read_record` out of it, the record's
  * `repo` and `defaultBranch` being the repository the world is on and the branch its pull
  * request is open against. */
-const { repo, base } = worldOf(runDir, "daemon-standin");
+const world = worldOf(runDir, "daemon-standin");
+const { repo, base } = world;
 /** The owner of the run's repository, which is the one owner the project maps. */
 const [REPO_OWNER = ""] = repo.split("/");
 if (REPO_OWNER === "" || !repo.includes("/")) {
@@ -205,31 +215,121 @@ const stateIn = (phase: string) =>
     consumers: [],
   });
 
-/** The phase the stand-in serves now, which starts as the phase it was started for and moves
- * when that phase ends. The daemon ends a review round on both halves, the review fact and the
- * completion, and the issue then stands in `accepting`, where the loop after an approval that
- * leaves text findings open runs (`skills/legion-worker/references/review-threads.md`, step 1).
- * That step has the reviewer read its record and send to the implementer only once the record
- * shows `accepting`, so a stand-in whose state never moved would answer `reviewing` for ever and
- * make the step unreachable: a reviewer that obeyed the rule would score as one that never sent.
- * Measured on the batch of 2026-11-08T13:08Z, where all five head runs approved correctly and
- * every one read `toldImplementer=false` for this reason. Only `reviewing` moves: the rig's run
- * ends with any other phase's completion, and no scenario reads the record after it. It moves on
- * any accepted completion of that phase, a round that submitted `REQUEST_CHANGES` included,
- * because this stand-in sees no review: the gh stand-in records those, and the two share nothing.
- * That is wider than the daemon, which moves an issue to `accepting` only on an approval, and it
- * is safe for these scenarios because `reviewer-text-findings` is the one of them that stands in
- * `reviewing` at all, and its `defect` case the score reads by the submission rather than by the
- * record. threads-closed's reviewer completes its round too, but both its halves are started in
- * `accepting` (rig.sh's run_threads_closed), where no completion is accepted and nothing moves.
- * A scenario that read the record after a `REQUEST_CHANGES` would need the review recorded here
- * first. */
+/** The phase the stand-in serves now, which starts as the phase it was started for and moves as
+ * main's engine moves it: `reviewRound` (`packages/daemon/internal/workflow/review.go`), and the
+ * transitions its outcomes take (`workflow/table.go`). Only `reviewing` moves: the rig's run ends
+ * with any other phase's completion, and no scenario reads the record after it.
+ *
+ * The review decides the round and the completion does not, so this moves on what the run's
+ * world reports and never on a completion (`roundOutcome`, read at each state read): the head is
+ * the tip of the run's own remote, the decision is the last `APPROVED` or `CHANGES_REQUESTED`
+ * among the reviews the world held when the run began and those the run left, and GitHub's merge
+ * state for the head is the world's (gh-call.ts's `mergeStateOn`). It does what `reviewRound`
+ * does with them:
+ *   - a change request ends the round rejected whatever head it names and whether or not the
+ *     reviewer has completed, and the issue goes back to `implementing` (`TriggerReviewRejected`).
+ *     reviewer-text-findings' defect case reaches it, in `reviewing`;
+ *   - an approval of the head (`classify.ApprovalStands`) ends the round approved when GitHub
+ *     reports the head `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (`record.MergeState.Mergeable`), and the
+ *     issue moves to `accepting` (`TriggerReviewApproved`), on the approval alone
+ *     (`review_test.go`'s "after the review alone"). Any other state — `BLOCKED`, which a check
+ *     the base requires holds the head in while it runs, `BEHIND`, `DIRTY`, `UNKNOWN` — leaves
+ *     the issue in `reviewing`, where the engine waits on GitHub's answer or reports the round
+ *     stuck, and neither moves the record;
+ *   - an approval of another head is set aside (`classify.ApprovalSetAside`, the round
+ *     `stuckApprovedOtherCode`), which is what a push while the record is `reviewing` leaves, and
+ *     the issue stays in `reviewing` until a review of the new head decides the round.
+ * Once the record has moved it stays where it moved to: a push in `accepting` lands outside any
+ * round (`review.go`'s `issue.Phase != phase.Reviewing`, `review_test.go`'s "the approval of the
+ * head, then a push"). A reviewer's completion after its decision is accepted, as the engine
+ * records it on the reviewer's own row (engine's `leftItsPhase`).
+ *
+ * The check runs of a head are no part of the move, as they are none of `reviewRound`'s but for
+ * the report of a stuck round (`classify.ChecksConcludedOnHead`), which moves nothing: they are
+ * what an agent reads (gh-standin.ts's `headRuns`). Not modelled: a push on its way
+ * (`classify.CodeOnItsWay`), since the run's remote takes each push whole and its tip is never a
+ * head the pull request is still waiting for. */
 let servedPhase = PHASE;
+
+/** The part of the run's world.json this stand-in reads beyond the record's two names: the
+ * issue branch of the run's own remote, whose tip is the pull request's head, and the pull
+ * request's number, whose reviews the world's routes answer. */
+const issueBranch = z.object({ branch: z.string(), pr: z.number() }).safeParse(world);
+if (!issueBranch.success) {
+  console.error(`daemon-standin: ${runDir}/world.json is no world: ${issueBranch.error.message}`);
+  process.exit(2);
+}
+const { branch: BRANCH, pr: PR } = issueBranch.data;
+/** The routes of the run's world and the merge state it reports for each head (rig.sh's
+ * fixture_write), read afresh at each look, since the gh stand-in rewrites the file when a call
+ * edits the pull request's body. A run with no fixtures.json has no world to read and no round
+ * that ends. */
+const Fixtures = z.looseObject({
+  routes: z.array(
+    z.looseObject({
+      match: z.string(),
+      methods: z.array(z.string()).optional(),
+      stdout: z.unknown().optional(),
+    })
+  ),
+  mergeStates: z.unknown().optional(),
+});
+/** A review as the world's reviews route lists it, and one line of the gh stand-in's record,
+ * which carries the review that call left as that stand-in answered it (gh-standin.ts's
+ * `answered`). */
+const ListedReview = z.looseObject({ state: z.string(), commit_id: z.string() });
+const RecordedCall = z.looseObject({
+  review: z.object({ state: z.string(), head: z.string() }).optional(),
+});
+/** The states a review decides a round with (`classify`'s `DecidesRound`): a COMMENT and a
+ * pending review decide nothing, and leave the decision before them standing. */
+const DECIDES = ["APPROVED", "CHANGES_REQUESTED"];
+/** The merge states the issue may advance on (`record.MergeState.Mergeable`). */
+const MERGEABLE = ["CLEAN", "UNSTABLE", "HAS_HOOKS"];
+
+/** The phase the review round moves the issue to on what the run's world reports now, or
+ * undefined while it stays in `reviewing` (`servedPhase`). */
+function roundOutcome(): "accepting" | "implementing" | undefined {
+  const tip = Bun.spawnSync([
+    "git",
+    "-C",
+    `${runDir}/remote.git`,
+    "rev-parse",
+    `refs/heads/${BRANCH}`,
+  ]);
+  if (tip.exitCode !== 0 || !existsSync(`${runDir}/fixtures.json`)) return undefined;
+  const head = tip.stdout.toString().trim();
+  const { routes, mergeStates } = Fixtures.parse(
+    JSON.parse(readFileSync(`${runDir}/fixtures.json`, "utf8"))
+  );
+  const listed = routeFor(routes, ["api", `repos/${repo}/pulls/${PR}/reviews`])?.stdout;
+  const recorded = existsSync(`${runDir}/${CALLS}`)
+    ? readFileSync(`${runDir}/${CALLS}`, "utf8")
+        .split("\n")
+        .filter((line) => line.trim() !== "")
+        .flatMap((line) => {
+          const review = RecordedCall.safeParse(JSON.parse(line)).data?.review;
+          return review === undefined ? [] : [review];
+        })
+    : [];
+  const decision = [
+    ...(Array.isArray(listed) ? listed : []).flatMap((review: unknown) => {
+      const read = ListedReview.safeParse(review);
+      return read.success ? [{ state: read.data.state, head: read.data.commit_id }] : [];
+    }),
+    ...recorded,
+  ].findLast((review) => DECIDES.includes(review.state));
+  if (decision?.state === "CHANGES_REQUESTED") return "implementing";
+  const stands =
+    decision !== undefined && decision.head.length >= 7 && head.startsWith(decision.head);
+  return stands && MERGEABLE.includes(mergeStateOn(mergeStates, head)) ? "accepting" : undefined;
+}
 
 interface LogLine {
   readonly at: string;
   readonly path: string;
   readonly status: number;
+  readonly code?: string;
   readonly grantId?: string;
   readonly sessionId?: string;
   readonly mintedGrantId?: string;
@@ -246,6 +346,26 @@ if (expectedBootToken.length === 0) {
 }
 
 const grants = new Map<string, { readonly expiresAt: number }>();
+
+/** `POST /legion/v1/handoff/complete`'s body: every key any label's contract sends, not this
+ * checkout's alone, for the reason the state body carries every settings key (`stateIn`): a
+ * label's agents load the plugin of their own checkout. The base label, built from main
+ * `ff2a10ef`, sends `ready`, a boolean its contract requires on every completion; #2539 took it
+ * out of this checkout's request, a strict object, so a stand-in parsing with this checkout's
+ * alone answered every base completion 400 with zod's `unrecognized_keys`. Measured on
+ * 2026-11-12: all 20 base runs of k1 and k2 logged `handoff/complete` 400 and nothing else, and
+ * each scored a world of its own (review 5887659447, finding 1). The object stays strict, so a
+ * key no label sends is still refused, and the daemon of that label answered a completion
+ * carrying `ready` 200, as this does. A key a later contract drops stays here for as long as a
+ * label the rig builds still sends it. */
+const CompleteRequest = LegionHandoffCompleteRequest.extend({ ready: z.boolean().optional() });
+
+/** The phase a state read serves now: `servedPhase`, moved where the round sends the issue the
+ * first time a read finds the round over while the record is `reviewing` (`roundOutcome`). */
+function served(): string {
+  if (servedPhase === "reviewing") servedPhase = roundOutcome() ?? servedPhase;
+  return servedPhase;
+}
 
 function json(status: number, body: unknown): Response {
   return Response.json(body, { status });
@@ -327,14 +447,15 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
       };
     }
     case "/legion/v1/handoff/complete": {
-      const parsed = LegionHandoffCompleteRequest.safeParse(body);
+      const parsed = CompleteRequest.safeParse(body);
       if (!parsed.success) return { response: json(400, { error: parsed.error.message }) };
       const refused = resolveGrant(parsed.data.grantId);
       if (refused) return { response: refused };
       // The workflow refuses a completion of a phase the completing role does not run:
       // `RoleFor(issue.Phase) != fact.Role` answers 409 HANDOFF_NOT_CURRENT_PHASE
       // (packages/daemon/internal/workflow/engine.go). The loop after an approval runs in
-      // `accepting`, whose role is the architect, so neither of its halves may complete there.
+      // `reviewing` or `accepting`: the first is the reviewer's and never the implementer's, and
+      // the second the architect's, so the implementer may complete in neither.
       // The earlier HANDOFF_NO_RUN fence of the route is not reached: a rig half is a live
       // registered worker serving generation 1, so the route attributes its completion to a run
       // and leaves the phase to the workflow. The comparison is with ROLE_PHASE, the role's
@@ -364,9 +485,8 @@ function handle(path: string, body: unknown): { response: Response; mintedGrantI
           ),
         };
       }
-      // The round the completion ends takes the issue with it: a reviewing phase that completes
-      // leaves the issue in `accepting`, which is what the reviewer's next step reads.
-      if (PHASE === "reviewing") servedPhase = "accepting";
+      // An accepted completion moves nothing: the review decides the round, and the record
+      // moves when the world reports a decision that ends it (`servedPhase`, `roundOutcome`).
       return { response: json(200, {}) };
     }
     case "/legion/v1/phase/backward": {
@@ -407,12 +527,18 @@ const server = Bun.serve({
       request.method === "POST"
         ? handle(path, body)
         : request.method === "GET" && path === "/legion/v1/state"
-          ? { response: json(200, stateIn(servedPhase)) }
+          ? { response: json(200, stateIn(served())) }
           : { response: json(404, { error: `no route for ${request.method} ${path}` }) };
+    // A refusal's line carries its code, the daemon's `Failure` code where the answer has one, so
+    // a reader of the log can tell the daemon's own answer to a run (HANDOFF_NOT_CURRENT_PHASE)
+    // from a body this stand-in could not take at all, whose 400 has none (score.ts's
+    // `unscored`).
+    const refusal: unknown = response.status >= 400 ? await response.clone().json() : undefined;
     const line: LogLine = {
       at: new Date().toISOString(),
       path,
       status: response.status,
+      ...carried("code", stringField(refusal, "code")),
       ...carried("grantId", stringField(body, "grantId")),
       ...carried("sessionId", stringField(body, "sessionId")),
       ...carried("mintedGrantId", mintedGrantId),

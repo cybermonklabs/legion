@@ -2,13 +2,18 @@
 // Stand-in for `gh` on a skill scenario's PATH. Each call is recorded to
 // $SKILL_SCENARIO_RUN/calls.jsonl (argv, the contents of any file or stdin it hands GitHub a body
 // through, its exit status, the agent that made the call when the run names one
-// ($SKILL_SCENARIO_AGENT, a run that boots one agent per role), and the pull request body it
-// kept, if any), then answered from the
+// ($SKILL_SCENARIO_AGENT, a run that boots one agent per role), the pull request body it
+// kept, if any, and the review it left, if any: its state and head, as answered), then answered
+// from the
 // first route in $SKILL_SCENARIO_RUN/fixtures.json whose regex matches "gh <argv...>". Three
 // answers are the run's own remote rather than a route's, since each is a fact of the run and no
 // frozen answer could tell one run from another: the pull request's head, which a route carries
 // and this answer replaces, and its diff and the comparison of two commits, which need no route
-// at all (`branchDiff`, `comparison`). A fourth answer is this file's own and no world's: the
+// at all (`branchDiff`, `comparison`). The checks of that head (`gh pr checks` and the pull
+// request's `statusCheckRollup`) are the world's check-runs answer for the head the remote is at
+// (`headRuns`), and its merge state (`mergeStateStatus`, `mergeable_state`) the one the world
+// reports for that head (gh-call.ts's `mergeStateOn`). A fourth answer is this file's own and
+// no world's: the
 // submit of a review (`…/reviews/<id>/events`), which GitHub answers from the review's own
 // state (`reviewSubmission`). A call no route matches and no answer of this file's own serves
 // prints `gh: Not Found (HTTP 404)` and exits 1. Nothing is sent anywhere.
@@ -36,11 +41,15 @@ import { z } from "zod";
 // stand-in answered as a submission and the score read as a read of the route — or the other
 // way round — is a run scored against a world that answered it something else.
 import {
+  type CheckRun,
+  checkRunsOn,
   FIELD_FLAGS,
   flagValue,
   isPost,
+  mergeStateOn,
   methodOf,
   reviewsRoute,
+  routeFor,
   sentBody,
   submitsReview,
   valueAt,
@@ -172,19 +181,26 @@ const joined = `${as} ${args.join(" ")}`;
 /** The verb gh sends this call with, which the routes that answer one verb and not another are
  * chosen by (`Fixtures`). */
 const verb = methodOf(args);
-const route = routes.find(
-  (candidate) =>
-    (candidate.methods === undefined || candidate.methods.includes(verb)) &&
-    new RegExp(candidate.match, "s").test(joined)
-);
+/** The route that answers this call, chosen by that verb and the call's whole text
+ * (`routeFor`, the rule the daemon stand-in reads this world by too). */
+const route = routeFor(routes, args, as);
+/** The review this call left on the pull request, as this stand-in answered it: its state and
+ * the head it stands at. Set for a create the world answered with a review, for a submit of the
+ * pending one, and for a `gh pr review`, which GitHub takes as a review at the pull request's
+ * head; undefined for every other call. The daemon stand-in reads the run's reviews from these
+ * and from nothing else (daemon-standin.ts's `roundOutcome`), so the approval the record moves on
+ * is the one the world answered the agent with, read once, here. */
+let answered: { state: string; head: string } | undefined;
 /** Records the call with the status it exits with, then exits. `by` is the agent the run gave
  * this call's environment, so a run that boots one agent per role has each call say which role
- * made it; a run that names none records no `by`. */
+ * made it; a run that names none records no `by`. A call that left a review records it
+ * (`answered`) whatever its status: a submit answered 200 whose `--jq` then failed exits 1, and
+ * GitHub holds the review all the same. */
 function exit(status: number): never {
   const by = process.env.SKILL_SCENARIO_AGENT;
   appendFileSync(
     RECORD,
-    `${JSON.stringify({ at, as, by, argv: args, files, stdin, route: route?.match ?? null, body: kept, exit: status })}\n`
+    `${JSON.stringify({ at, as, by, argv: args, files, stdin, route: route?.match ?? null, body: kept, review: answered, exit: status })}\n`
   );
   process.exit(status);
 }
@@ -491,6 +507,69 @@ function answeredId(match: string | null | undefined): string | undefined {
   return typeof id === "number" || typeof id === "string" ? String(id) : undefined;
 }
 const submitted = reviewSubmission();
+if (submitted !== undefined)
+  answered = { state: String(submitted.state), head: String(submitted.commit_id) };
+/** The check runs the world reports on the pull request's head as it stands, read at the call
+ * from the run's own remote (`branchTip`) and the world's check-runs answer for that head
+ * (`checkRunsOn`), or undefined for a run with no world or no remote of its own. Every answer
+ * that reports the head's checks is built from these, so a world that has a check still running
+ * on one head and none on the next — the push that set an approval aside, then the head its
+ * checks concluded on — tells `gh pr checks`, the pull request's own `statusCheckRollup` and
+ * the check-runs route one thing. */
+function headRuns(): CheckRun[] | undefined {
+  const repo = worldOf()?.repo;
+  const tip = branchTip();
+  return repo === undefined || tip === undefined ? undefined : checkRunsOn(routes, repo, tip);
+}
+/** `gh pr checks`, as gh prints it to a pipe: one line per check, its name, `pass`, `fail`,
+ * `skipping` or `pending`, the seconds it ran and its link; and gh's own exit, 8 while a check is
+ * pending and 1 once one failed. Undefined for any other call, and for a run with no world. */
+function prChecks(): { text: string; status: number } | undefined {
+  if (as !== "gh" || args[0] !== "pr" || args[1] !== "checks") return undefined;
+  const runs = headRuns();
+  if (runs === undefined) return undefined;
+  const lines = runs.map((run) => {
+    let bucket = "pending";
+    if (run.status === "completed")
+      bucket =
+        run.conclusion === "skipped"
+          ? "skipping"
+          : ["success", "neutral"].includes(run.conclusion ?? "")
+            ? "pass"
+            : "fail";
+    const seconds =
+      run.started_at === undefined || run.completed_at === undefined
+        ? 0
+        : Math.round((Date.parse(run.completed_at) - Date.parse(run.started_at)) / 1000);
+    return { bucket, line: `${run.name}\t${bucket}\t${seconds}s\t${run.html_url ?? ""}` };
+  });
+  const buckets = lines.map(({ bucket }) => bucket);
+  return {
+    text: lines.map(({ line }) => line).join("\n"),
+    status: buckets.includes("fail") ? 1 : buckets.includes("pending") ? 8 : 0,
+  };
+}
+const checked = prChecks();
+/** The event each `gh pr review` flag submits, and the state GitHub leaves its review in. */
+const PR_REVIEW_STATE: Record<string, string> = {
+  "-a": "APPROVED",
+  "--approve": "APPROVED",
+  "-r": "CHANGES_REQUESTED",
+  "--request-changes": "CHANGES_REQUESTED",
+  "-c": "COMMENTED",
+  "--comment": "COMMENTED",
+};
+// `gh pr review` submits a review at the pull request's head as it stands, on the repository the
+// call names or, naming none, the checkout's own: the world's, where a route of the world
+// answers it.
+if (route !== undefined && as === "gh" && args[0] === "pr" && args[1] === "review") {
+  const world = worldOf();
+  const named = flagValue(args, ["-R", "--repo"]);
+  const state = args.map((arg) => PR_REVIEW_STATE[arg]).find((one) => one !== undefined);
+  const tip = branchTip();
+  if (world !== undefined && (named === undefined || named === world.repo) && state && tip)
+    answered = { state, head: tip };
+}
 /** The pull request's diff, where this call asks for one the run's remote can answer. It is read
  * before the route check for the same reason: rig.sh's worlds carry no `gh pr diff` route, since
  * a diff frozen into a fixture would read the same whatever the run pushed, and a 404 here reads
@@ -499,7 +578,13 @@ const diffed =
   as === "gh" && args[0] === "pr" && args[1] === "diff"
     ? branchDiff(args.includes("--name-only"))
     : undefined;
-if (!route && compared === undefined && diffed === undefined && submitted === undefined) {
+if (
+  !route &&
+  compared === undefined &&
+  diffed === undefined &&
+  submitted === undefined &&
+  checked === undefined
+) {
   console.error(as === "gh" ? "gh: Not Found (HTTP 404)" : `unknown command: ${args.join(" ")}`);
   exit(1);
 }
@@ -560,16 +645,22 @@ if (
   const head = typeof sent.commit_id === "string" ? sent.commit_id : branchTip();
   if (state !== undefined)
     output = { ...output, state, ...(head === undefined ? {} : { commit_id: head }) };
+  if (state !== undefined && head !== undefined) answered = { state, head };
 }
 // What GitHub answers for a pull request's head is read from the run's own remote, and only for
 // an answer that carries one: the tip is a `git` call, which a call answered by any other route
-// never makes.
+// never makes. The checks the object reports (`statusCheckRollup`) are that head's own, in the
+// spelling GitHub's GraphQL gives them (`headRuns`): a rollup frozen into the world read green
+// on a head whose check the check-runs route said was still running. So is its merge state, in
+// gh's spelling (`mergeStateStatus`) and the REST one (`mergeable_state`), which the daemon
+// stand-in moves the record on (daemon-standin.ts's `roundOutcome`).
 if (
   (Array.isArray(output) ? output : [output]).some(
     (one) => typeof one === "object" && one !== null && "headRefOid" in one
   )
 ) {
   const tip = branchTip();
+  const runs = headRuns();
   if (tip !== undefined)
     output = eachAnswer(output, (one) => {
       if (!("headRefOid" in one)) return one;
@@ -577,9 +668,25 @@ if (
         "head" in one && typeof one.head === "object" && one.head !== null
           ? { head: { ...one.head, sha: tip } }
           : {};
-      return { ...one, headRefOid: tip, ...nested };
+      const rollup =
+        "statusCheckRollup" in one && runs !== undefined
+          ? {
+              statusCheckRollup: runs.map((run) => ({
+                name: run.name,
+                status: run.status.toUpperCase(),
+                conclusion: (run.conclusion ?? "").toUpperCase(),
+              })),
+            }
+          : {};
+      const state = mergeStateOn(fixtures.mergeStates, tip);
+      const merge = {
+        ...("mergeStateStatus" in one ? { mergeStateStatus: state } : {}),
+        ...("mergeable_state" in one ? { mergeable_state: state.toLowerCase() } : {}),
+      };
+      return { ...one, headRefOid: tip, ...nested, ...rollup, ...merge };
     });
 }
+if (checked !== undefined) output = checked.text;
 // An empty diff is GitHub's own answer for a pull request whose branch carries no change, so it
 // stands as the answer rather than falling back to the route's.
 if (diffed !== undefined) output = diffed === "" ? "" : `${diffed}\n`;
@@ -605,5 +712,6 @@ if (text !== "") process.stdout.write(text.endsWith("\n") ? text : `${text}\n`);
 if (route?.stderr && submitted === undefined) process.stderr.write(route.stderr);
 // A submit this stand-in answered is GitHub's own answer, whatever the route behind it says:
 // the review and 200 for the one review this run left pending, which is every review of these
-// worlds a run left pending itself.
+// worlds a run left pending itself. `gh pr checks` exits as gh does on the checks it printed.
+if (checked !== undefined) exit(checked.status);
 exit(submitted === undefined ? (route?.exit ?? 0) : 0);

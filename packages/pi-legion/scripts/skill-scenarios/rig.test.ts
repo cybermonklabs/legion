@@ -732,13 +732,15 @@ describe("round_world and the worlds' own text findings", () => {
       [
         fn("fail"),
         fn(world),
+        fn("resolution_protection_routes"),
+        fn("blocked_at"),
         'round_world() { printf "%s\\n" "$@" >"$R/round-args"; C1=0123456789abcdef0123;',
         "  worker_pr=1001; worker_pr_url=https://example.invalid/pull/1001;",
         '  resolve_route=\'{"match":"r"}\'; }',
         "fixture_body() { :; }",
         "fixture_checks() { :; }",
         "fixture_write() { :; }",
-        "R=$1 worker_key=LWEVAL-1",
+        "R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=main",
         "text_finding_doc_line=THE-DOC-LINE text_finding_trigger=THE-TRIGGER",
         `${world} 1 100 "$2"`,
       ].join("\n"),
@@ -843,6 +845,7 @@ describe("worker_boot", () => {
         fn("fail"),
         fn("worker_boot"),
         fn("fixture_write"),
+        fn("concluded_checks"),
         'start_process() { printf "%s\\n" "$*" >"$R/started-$1"; }',
         "await_start() { :; }",
         "base_env() { :; }",
@@ -1071,10 +1074,16 @@ describe("run_threads_closed", () => {
     ]);
   });
 
-  test("text-fixes boots the reviewer on an empty wake, which it fails on", () => {
+  // Catches, beside the empty wake: a text-fixes loop booted in `accepting`, where its approved
+  // head's running check would have left main's engine in `reviewing` (rig.sh's approved_world),
+  // so the push that sets the approval aside and the fix head's approval that ends the round are
+  // a path no run of this rig could take (review 5887659447, finding 3). code-defect stays in
+  // `accepting` (the two rows above): its control reads the message to the architect as the one
+  // route, which a `REQUEST_CHANGES` in `reviewing` would not leave it.
+  test("text-fixes boots both halves in reviewing, and the reviewer on an empty wake, which it fails on", () => {
     expect(loop("text-fixes", "[]\n").boots).toEqual([
-      "the-run-implementer skillsproject1 implementer accepting",
-      "the-run-reviewer skillsproject1 reviewer accepting",
+      "the-run-implementer skillsproject1 implementer reviewing",
+      "the-run-reviewer skillsproject1 reviewer reviewing",
     ]);
   });
 
@@ -1130,6 +1139,7 @@ describe("fixture_write", () => {
     const result = bash(
       [
         fn("fixture_write"),
+        fn("concluded_checks"),
         `R=$1 worker_key=LWEVAL-1 worker_repo=example/widgets worker_base=${base}`,
         "C1=0123456789abcdef0123 body=a-body worker_pr=1001",
         "worker_pr_url=https://example.invalid/pull/1001",
@@ -1256,6 +1266,9 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
           "fixture_checks",
           "fixture_body",
           "fixture_write",
+          "concluded_checks",
+          "resolution_protection_routes",
+          "blocked_at",
           "round_world",
           world,
         ].map(fn),
@@ -1352,6 +1365,96 @@ describe("the worlds' routes, in the order the stand-in matches them", () => {
     const dir = built("review_world");
     expect(answer(dir, ...RESOLVE)).toEqual({ code: 0, out: "true" });
     expect(answer(dir, ...threadQuery(IDS))).toEqual({ code: 0, out: "PRRT_kwDOrig0001" });
+  });
+
+  // Catches: a world GitHub could not produce, and one that leaves the reviewing path
+  // unexercised. Main's engine keeps the record in `reviewing` until GitHub reports the approved
+  // head `CLEAN`, `UNSTABLE` or `HAS_HOOKS` (review 5887659447, finding 3); a head `BLOCKED` with
+  // every check green and an approval standing is one whose base requires conversation
+  // resolution while a thread is open, so a world serving that state must answer that rule at
+  // both reads the merge gate makes of its base — the branch's rules and the branch itself, and
+  // the protection endpoint — with no required check, so the gate's reads of its checks print
+  // nothing and exit 0. A world whose head is `CLEAN` keeps the unprotected base. Every head's
+  // checks are concluded: `BLOCKED` comes from the threads, not from CI.
+  test("a BLOCKED head's base requires conversation resolution, every check green, and a CLEAN head's base is unprotected", () => {
+    for (const [world, guard, blocked] of [
+      ["review_world", "", true],
+      ["review_world", "dropped", true],
+      ["approved_world", "", true],
+      ["approved_world", "dropped", false],
+    ] as const) {
+      const dir = built(world, guard);
+      const head = headOf(dir);
+      const states = '[.check_runs[] | .name + "=" + .status] | join(",")';
+      const checks = call(dir, "pr", "checks", "1001");
+      expect([
+        world,
+        guard,
+        answer(dir, "api", `repos/example/widgets/commits/${head}/check-runs`, "--jq", states),
+        checks.code,
+        checks.out.split("\n").map((line) => line.split("\t")[1]),
+        answer(
+          dir,
+          "pr",
+          "view",
+          "1001",
+          "--json",
+          "mergeStateStatus",
+          "--jq",
+          ".mergeStateStatus"
+        ),
+        answer(dir, "api", "repos/example/widgets/pulls/1001", "--jq", ".mergeable_state"),
+      ]).toEqual([
+        world,
+        guard,
+        { code: 0, out: "test=completed,lint=completed" },
+        0,
+        ["pass", "pass"],
+        { code: 0, out: blocked ? "BLOCKED" : "CLEAN" },
+        { code: 0, out: blocked ? "blocked" : "clean" },
+      ]);
+      // The rule, at each read of the base, and the merge gate's own reads of its required
+      // checks (skill://legion-worker/references/merge-gate.md), which name none either way.
+      const base = "repos/example/widgets/branches/main";
+      const rules = "repos/example/widgets/rules/branches/main";
+      expect([
+        world,
+        guard,
+        answer(dir, "api", base, "--jq", ".protected"),
+        answer(dir, "api", base, "--jq", ".protection.required_conversation_resolution.enabled"),
+        answer(
+          dir,
+          "api",
+          `${base}/protection`,
+          "--jq",
+          ".required_conversation_resolution.enabled"
+        ),
+        answer(
+          dir,
+          "api",
+          rules,
+          "--jq",
+          '[.[] | select(.type=="pull_request") | .parameters.required_review_thread_resolution] | any'
+        ),
+        answer(dir, "api", base, "--jq", ".protection.required_status_checks.checks[].context"),
+        answer(
+          dir,
+          "api",
+          rules,
+          "--jq",
+          '.[] | select(.type=="required_status_checks") | .parameters.required_status_checks[].context'
+        ),
+      ]).toEqual([
+        world,
+        guard,
+        { code: 0, out: String(blocked) },
+        { code: 0, out: blocked ? "true" : "null" },
+        blocked ? { code: 0, out: "true" } : { code: 1, out: "" },
+        { code: 0, out: String(blocked) },
+        { code: 0, out: "" },
+        { code: 0, out: "" },
+      ]);
+    }
   });
 
   // Catches: a world that carries a behavioural defect of its own, which is what the

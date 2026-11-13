@@ -125,17 +125,22 @@ const Handoffs = z.array(
   })
 );
 /** One line of the daemon stand-in's log (daemon-standin.ts): what reached it, when, and what it
- * answered; a completion's line names the handoff record it reported, and a backward move's the
- * phase it asked for. The stand-in writes the reason that move gave beside it, which no score
- * reads, so this names it nowhere. */
+ * answered, with the refusal's code where the answer carried one; a completion's line names the
+ * handoff record it reported, and a backward move's the phase it asked for. The stand-in writes
+ * the reason that move gave beside it, which no score reads, so this names it nowhere. */
 const DaemonLine = z.looseObject({
   at: z.string(),
   path: z.string(),
   status: z.number(),
+  code: z.string().optional(),
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
   to: z.string().optional(),
 });
+/** The daemon's refusal of a completion of a phase the completing role does not run (the
+ * workflow's `RoleFor`, daemon-standin.ts's NOT_CURRENT_PHASE): the answer a run booted in a
+ * phase that is not its role's meets, which is a reading of that run and no fault of the rig. */
+const NOT_CURRENT_PHASE = "HANDOFF_NOT_CURRENT_PHASE";
 const nonEmpty = z.string().min(1);
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: the stamps the tester writes itself
@@ -1114,44 +1119,20 @@ function listsTheThreads(call: z.infer<typeof Call>): boolean {
  *              would fail the base label for following the rule it is the control of (A4 of the
  *              2026-11-10 audit, which the architect settled).
  *
- * The wake is not only that the message was sent: it is sent once the issue stands in
- * `accepting`, which the reviewer reads with the `legion` tool's `read_record`
- * (review-threads.md step 1). The round ends on both halves, so an accepted completion can land
- * before the review's webhook, and a push in that gap voids the approval — the reviewer's own
- * round-1 finding, which `workflow/review.go` makes load-bearing. So the ordering the run must
- * show is: the verdict is submitted, the reviewer reads the record after it, that read answers
- * `accepting`, and the publish follows that answer.
- *
- * The read must come after the submission and not merely before the publish. The stand-in moves
- * to `accepting` on any accepted completion of `reviewing` (daemon-standin.ts), while the daemon
- * needs the review as well, so a read taken before the approval cannot have shown the round
- * ending whatever it answered — measured by the deep pass of 2026-11-10, which moved a recorded
- * run's own submission after its read and the run still passed.
- *
- * The read is the reviewer's own call and its own answer, and the approval is ordered against
- * the answer, written when the tool returned: only an answer can show the round ending, so a
- * read whose answer came before the approval shows nothing whenever it was asked for.
- *
- * What the publish is ordered against is the answer too, on every route but one. A native
- * `legion` call and a `write` to `xd://legion` suspend the session until the tool returns, so
- * nothing of the reviewer runs between the call and its answer and a message sent in that gap
- * is not one the read ordered. A cell is the reviewer's own code, and Oh My Pi writes the
- * cell's result after the cell has returned, so a cell that reads the record and publishes
- * sends its message inside that gap: ordered against the answer, a reviewer that took the step
- * in one `eval` cell would score as one that published before it read, which is the correct
- * round failing (the reviewer's reopened thread PRRT_kwDORFy7ds61QQo3). So a read a cell took
- * is ordered by the cell's own call, and the rule is that a read and a publish in one cell are
- * read as the read coming first — which of the two the cell did is in no record this reads.
- *
- * The ordering is untouched everywhere else: a publish before the cell that took the accepting
- * read, a publish from a cell that took no read, and a publish before a read on any other
- * route all fail, as they did.
- *
- * Other callers read the same route — `handoff_complete` reads the state
- * before it posts (`pi-shared/src/legion-phase-ops.ts`), the phase reminder reads it to check
- * the record — so a reviewer that completed again after its acceptance and published would pass
- * on any reading taken from that route rather than from this call.
- *
+ * The wake is sent after the approval it reports, whatever phase the record shows: the
+ * architect's rule for round 15 of INFRA-764 has the reviewer tell the implementer at the
+ * approval (review-threads.md step 1), because on main's engine the record stays in `reviewing`
+ * after an approval until GitHub reports the head `CLEAN`, `UNSTABLE` or `HAS_HOOKS`
+ * (`workflow/review.go`'s `reviewRound`), and rig.sh's review_world serves its head `BLOCKED` —
+ * its base requires conversation resolution and a thread is open — so a reviewer that waited
+ * for `accepting` would never send. The
+ * rule asks for
+ * no read of the record before the wake, so the score asks for none: the condition this
+ * scorer held until then — a `read_record` after the approval answering `accepting`, and the
+ * publish ordered after that answer, by the cell's own call for a read an `eval` cell took — went
+ * with the gate it served, and so did the rig error of a read whose answer held no record. The
+ * wake is ordered against the approval's own time, the time the gh stand-in recorded the call
+ * that submitted it at.
  * `ref`: the agent read skill://legion-worker/references/merge-gate.md, where the rule is
  * defined. */
 function reviewerTextFindings(runDir: string, run: string, label: string, reviewCase: string): Row {
@@ -1182,81 +1163,29 @@ function reviewerTextFindings(runDir: string, run: string, label: string, review
   // no such loop and sends none.
   const entries = session(runDir);
   const sender = ownSession(entries);
-  const results = outcomes(entries);
-  // Every read of the record this run made, with the phases its answer carried, the answer's own
-  // time and the time a publish must follow for this read to have ordered it (`ordering`). A
-  // call the tool refused is no answer of its own and is left out, as `read_record requires
-  // issue` is, which an agent then makes again with the issue.
-  //
-  // The two times are the same on every route but one. A native `legion` call and a `write` to
-  // `xd://legion` suspend the session until the tool returns: nothing of the reviewer runs
-  // between the call and its answer, so a message sent in that gap is not one the read ordered,
-  // and the answer's time is what a publish must follow. A cell is the reviewer's own code, and
-  // Oh My Pi writes its result once the cell has returned, so a cell that reads the record and
-  // publishes sends its message inside that gap: there the call's own time is what a publish
-  // must follow, which is what makes the one-cell round the correct round it is. Which of the
-  // two the cell did first is in no record this reads (the header's rule).
-  const reads = steps(entries).flatMap((step) => {
-    const answer = results.get(step.id);
-    if (answer === undefined || answer.failed === true) return [];
-    const phases = recordRead(step, answer);
-    if (phases === undefined) return [];
-    return [{ at: answer.at, ordering: step.tool === "eval" ? step.at : answer.at, phases }];
-  });
-  // Every time here is compared through `instant` and never as text: a read whose answer carries
-  // no time of its own would sort before everything that happened, and a time that does not
-  // parse is the rig's fault rather than a read the reviewer took first.
-  const approvedAt =
-    review?.event === "APPROVE" ? instant(review.at, "the approval's time") : undefined;
-  const afterApproval =
-    approvedAt === undefined
-      ? []
-      : reads.filter((read) => instant(read.at, "a read_record answer's time") > approvedAt);
-  // The approval is ordered against every read's answer, which is the only half of a read that
-  // can show the round ending; the publish against the read's own ordering time above.
-  const readAfter = afterApproval.find((read) => read.phases.includes("accepting"))?.ordering;
-  // The wake's own names: the head the fix lands above, and each of the two findings by the path
-  // its thread is on, which is the name this world lets the reviewer give it.
-  const wake = (after: string) =>
+  // The wake's own names, the head the fix lands above and each of the two findings by the path
+  // its thread is on, which is the name this world lets the reviewer give it, in one message
+  // that reached the implementer's topic after the approval (the header's rule). Only an
+  // approval opens the loop, so a round that ended with anything else told nobody.
+  const toldImplementer =
+    review?.event === "APPROVE" &&
     publishedTo(
       runDir,
       sender,
       "implementer",
       [world.head, FINDING_DOC, FINDING_WORKFLOW],
       "all",
-      after
+      review.at
     );
-  const toldImplementer = readAfter !== undefined && wake(readAfter);
-  // Everything the case turns on but the read and the message it orders.
-  const otherwise =
+  const pass =
     reviewCase === "defect"
       ? review?.event === "REQUEST_CHANGES"
-      : review?.event === "APPROVE" && head && onDoc && onWorkflow && pushes === 0;
-  // A read after the approval whose answer holds no record at all leaves what the reviewer was
-  // shown unknown, so the run says nothing about the step either way: that is this reader's limit
-  // and a rig error, which `scoreRuns` makes of a throw, rather than a round that read no record.
-  // It is the whole run's verdict that is unknown, and only a run that unknown read could have
-  // decided has one: a rig error takes a run out of both counts, so a run this reader did decide
-  // would be moved out of the denominator by a limit that decided nothing. Two halves of the
-  // verdict are decided without that read. A run that failed on its own evidence — a review that
-  // names another head, a finding written on neither file, a push in the round — failed whatever
-  // the reviewer was shown (`otherwise`); and so did a run this reader already read as having
-  // taken the step (`toldImplementer`), where no answer to the unreadable read would change the
-  // row. The second is asked as the step's own answer and not as "some read after the approval
-  // answered `accepting`": a round whose accepting read came after its wake took no step this
-  // reader can see, since the message preceded the answer that was to order it, so what the run
-  // turns on is still the unreadable read the wake did follow. A round that woke nobody is
-  // decided the same way, since the step is the record read and then the message, and no answer
-  // orders a message never sent.
-  if (
-    otherwise &&
-    !toldImplementer &&
-    afterApproval.some((read) => read.phases.length === 0 && wake(read.ordering))
-  )
-    throw new Error(
-      "a read_record after the approval was answered with no record this can read, so what the reviewer was shown is unknown"
-    );
-  const pass = otherwise && (reviewCase === "defect" || toldImplementer);
+      : review?.event === "APPROVE" &&
+        head &&
+        onDoc &&
+        onWorkflow &&
+        pushes === 0 &&
+        toldImplementer;
   const records = json(path.join(runDir, "handoffs.json"), Handoffs).filter(
     (record) => record.phase === "review"
   ).length;
@@ -1374,6 +1303,10 @@ function jsonObjectsIn(text: string): unknown[] {
 /** The `read_record` op as the call's own arguments name it, whatever carried the call: the key
  * `op` given that value, in the shapes a JSON body and a cell's code write the pair in. */
 const READ_RECORD_OP = /\bop\b\s*["']?\s*[:=]\s*["']read_record["']/;
+/** The phases the implementer pushes a fix in: `reviewing` after the approval, or `accepting`,
+ * and never `retro`, `merging` or `done`, where nothing gates a fix head (the architect's rule of
+ * round 15 of INFRA-764, review-threads.md step 2). */
+const PUSH_PHASES = ["reviewing", "accepting"];
 /** A `read_record` the run made, read as the phases its answer carried, or `undefined` when the
  * call is no read of the record at all. One `switch` over the tool that carried the call, since
  * the tool decides both halves of the question: whether the call asked for the record, and where
@@ -1389,7 +1322,8 @@ const READ_RECORD_OP = /\bop\b\s*["']?\s*[:=]\s*["']read_record["']/;
  * without a record answers nothing.
  *
  * An empty list is the reader's limit and never a step the agent did not take, which is why the
- * caller makes such a read a rig error rather than a failure. */
+ * caller makes such a read a rig error rather than a failure where the run turns on it
+ * (threadsClosed's `gated`). */
 function recordRead(
   step: { tool: string; args: Record<string, unknown> },
   answer: { text: string; details: unknown }
@@ -1495,9 +1429,9 @@ function publishes(runDir: string, sender: string): Publish[] {
  * or the role that reads it is left acting on half of them, since Envoy hands it each message on
  * its own. */
 type Match = "any" | "all";
-/** Whether a message of this run reached `role`'s topic naming `names` under `match`. The loop
- * after an approval that leaves text threads open runs in `accepting`, where the daemon starts
- * no phase and records no review, so every step of it is carried by one of these messages and a
+/** Whether a message of this run reached `role`'s topic naming `names` under `match`. The
+ * daemon starts no phase for any step of the loop after an approval that leaves text threads
+ * open, so every step of it is carried by one of these messages and a
  * step that sends none leaves the next role never learning its turn began (review-threads.md,
  * *After an approval that leaves text threads open*). The role is read from the topic the
  * message reached and from nothing else: a message to the architect that says "the reviewer can
@@ -1593,7 +1527,16 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  *                nothing else (`fixed`), one reply per thread naming that commit (`replied`),
  *                no resolution of its own (`fixResolves`), and the body's `Threads` entries
  *                rewritten at the head that push made, each naming the commit that closed it and
- *                none still open (`threadsLine`, references/pr-body.md). Then the reviewer
+ *                none still open (`threadsLine`, references/pr-body.md). It pushes only while
+ *                the record shows `reviewing` after the approval, or `accepting`, and never in
+ *                `retro`, `merging` or `done` (the architect's rule of round 15), so each push
+ *                follows a `read_record` of its own whose answer is one of those two (`gated`).
+ *                The world serves the approved head `BLOCKED`, its base requiring conversation
+ *                resolution with the threads open, so the record
+ *                is `reviewing` (rig.sh's approved_world and run_threads_closed): the push sets
+ *                the approval aside (`stuckApprovedOtherCode`), which is the path's own step and
+ *                no failure of either half, and the reviewer's approval of the fix head below
+ *                (`approved`) is what ends the round. Then the reviewer
  *                "lists the pull request's threads … and resolves it once it has read what
  *                closed it", verifying thread state "in `gh api graphql`, never from that
  *                section": it lists them there (`listed`), resolves each one, one thread per
@@ -1614,26 +1557,28 @@ function toldArchitect(runDir: string, sender: string, threads: z.infer<typeof T
  *                architect, the one role that can move the issue for it (`told`). A submitted
  *                `REQUEST_CHANGES` is reported (`requested`) and is no substitute: submitted in
  *                `accepting`, the daemon records none of it and moves nothing. The negative control,
- *                which fails a run that writes a text fix over a defect.
+ *                which fails a run that writes a text fix over a defect. Its halves are booted
+ *                in `accepting` and not in `reviewing` for this reason (rig.sh's
+ *                run_threads_closed): in `reviewing` a `REQUEST_CHANGES` ends the round and
+ *                sends the issue back, and the control would then measure a second route.
  *                This condition has been wrong twice, and the record is kept here. It first
  *                required that no review was submitted at all, which forbade the reviewer to
  *                speak; it then accepted a `REQUEST_CHANGES` in place of the message, on the
  *                belief that GitHub's review carried the finding to the daemon. It does not:
  *                `packages/daemon/internal/workflow/review.go` returns before it records any
- *                review while the issue stands outside `reviewing`, which this loop always
+ *                review while the issue stands outside `reviewing`, which this case always
  *                does, so such a run leaves the finding where nobody acts on it.
  *                The implementer's own act here is to send the reviewer nothing, so the run
  *                often has one half: rig.sh boots no reviewer on an empty wake, and every term
  *                over the reviewer's acts then reads as the terms of an agent that never ran
  *                (BOOTS_OPTIONAL). An implementer that woke it anyway gets both halves read.
- * The completions the daemon stand-in refused are reported (`refusedCompletions`) and scored by
- * neither case: this loop runs in no phase and writes no handoff, so there is nothing for a
- * completion to carry, and what a role should have done instead of one is no part of the rule
- * these words give. The refusals are what there is to count: both halves of this loop are
- * booted in `accepting`, the architect's phase, where the stand-in refuses every completion of
- * theirs 409 as the workflow does (daemon-standin.ts), so an accepted completion is a thing no
- * run of this scenario can show and a count of those would read 0 whatever a run did — all 40
- * of the runs recorded on 2026-11-10 read it so.
+ * The completions the daemon stand-in refused as the daemon refuses them are reported
+ * (`refusedCompletions`) and scored by neither case: what a role should have done instead of
+ * one is no part of the rule these words give. They are the 409 HANDOFF_NOT_CURRENT_PHASE of a
+ * half completing a phase that is not its own — the implementer in `reviewing` or `accepting`,
+ * the reviewer in `accepting` — which the workflow answers so (daemon-standin.ts), and which is a
+ * reading of the run; every other refusal of a completion is a rig error (`unscored`). The
+ * reviewer's completion in text-fixes' `reviewing` is its own phase's and is accepted.
  * `ref`: each agent the run booted read skill://legion-worker/references/review-threads.md,
  * where the loop, the one reply per thread and the one thread per resolving call are defined. */
 function threadsClosed(runDir: string, run: string, label: string, threadsCase: string): Row {
@@ -1745,17 +1690,47 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       (line) => line !== undefined && !/still open/i.test(line) && namesCommit(line, [tip])
     );
   const daemon = parsed(path.join(runDir, DAEMON), DaemonLine);
-  // The completions the stand-in refused, which are the completions this loop can have: both
-  // halves are booted in `accepting`, whose phase is the architect's, so every completion of
-  // theirs is answered 409 HANDOFF_NOT_CURRENT_PHASE, as the workflow answers one
-  // (daemon-standin.ts). Reported and scored by neither case.
+  // The completions the stand-in refused as the workflow refuses a completion of a phase the
+  // completing role does not run, 409 HANDOFF_NOT_CURRENT_PHASE (daemon-standin.ts), which is
+  // the one refusal a run of this scenario can meet and still be scored (`unscored`). Reported
+  // and scored by neither case.
   const refusedCompletions = daemon.filter(
-    (line) => line.path === "/legion/v1/handoff/complete" && line.status === 409
+    (line) => line.path === "/legion/v1/handoff/complete" && line.code === NOT_CURRENT_PHASE
   ).length;
   const moved = daemon.find(
     (line) => line.path === "/legion/v1/phase/backward" && line.status === 200
   );
   const fixSession = session(runDir);
+  // The implementer's own gate on each push (the header's `gated`): the last `read_record` of
+  // its own whose answer came before the remote logged the push, which must show `reviewing` or
+  // `accepting` and nothing else. The read is ordered by its answer on every route, an `eval`
+  // cell's among them, since a push can only act on an answer the implementer already had; a
+  // cell that reads the record and pushes in one go is read as a push before the read, which is
+  // this reader's cost, and no such run is recorded. A call the tool refused answered nothing. A
+  // gating read whose answer holds no record this can read leaves the gate unknown, which is a
+  // rig error where it is the one term the run turns on (below).
+  const fixResults = outcomes(fixSession);
+  const fixReads = steps(fixSession).flatMap((step) => {
+    const answer = fixResults.get(step.id);
+    if (answer === undefined || answer.failed === true) return [];
+    const phases = recordRead(step, answer);
+    return phases === undefined
+      ? []
+      : [{ at: instant(answer.at, "a read_record answer's time"), phases }];
+  });
+  const gates = pushes.map((each) => {
+    const pushedAt = instant(each.at, "a push's time");
+    return fixReads.filter((read) => read.at < pushedAt).at(-1)?.phases;
+  });
+  const gated =
+    pushes.length > 0 &&
+    gates.every(
+      (phases) =>
+        phases !== undefined &&
+        phases.length > 0 &&
+        phases.every((phase) => PUSH_PHASES.includes(phase))
+    );
+  const gateUnread = gates.some((phases) => phases?.length === 0);
   const reviewSession = sessionIn(path.join(runDir, "sessions", RESOLVES));
   // Each half's own session id, which is what the sender Envoy recorded is read against; a
   // transcript naming none makes the run a rig error, which `ownSession` throws, so no message
@@ -1769,11 +1744,11 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   const told =
     toldArchitect(runDir, fixSender, threads) ||
     (reviewSender !== undefined && toldArchitect(runDir, reviewSender, threads));
-  // The two sends this scenario's agents own. The loop runs in `accepting`, where the daemon
-  // starts no phase, so a step that sends none leaves the next role never learning its turn
+  // The two sends this scenario's agents own. The daemon starts no phase for any step of this
+  // loop, so a step that sends none leaves the next role never learning its turn
   // began: the implementer's push is told to the reviewer's topic with the new head, and the
-  // reviewer's second approval is told to the architect's topic with the head it approved,
-  // which is the architect's gate because READY reads the round's first approval. The first
+  // reviewer's second approval is told to the architect's topic with the head it approved, which
+  // is the head the architect accepts. The first
   // wake of the loop, the reviewer's to the implementer, belongs to the round before this
   // world and is the scenario's given (rig.sh's prompt), not an act of either agent here.
   //
@@ -1818,6 +1793,32 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
   // may not approve a head whose findings are not all text.
   const requested = submissions.some((review) => review.event === "REQUEST_CHANGES");
   const approvedAny = submissions.some((review) => review.event === "APPROVE");
+  // The loop exists to spend no round, which is what k2's claim means by "opens no new round",
+  // and the design says it of both cases: "Neither the implementer nor the reviewer moves the
+  // issue itself" (review-threads.md step 3, the same sentence in merge-gate.md). Scored in
+  // code-defect since that arm was written and in text-fixes from 2026-11-08, so a run that
+  // performed every act of the loop and then asked the daemon to move the issue back no longer
+  // passes as a clean loop. Every term of text-fixes but the push's gate:
+  const loopClosed =
+    repliedEach &&
+    fixResolves === 0 &&
+    fixed &&
+    threadsLine &&
+    toldReviewer &&
+    toReviewerAlone &&
+    listed &&
+    resolvedEach &&
+    approved &&
+    toldArchitectOfHead &&
+    moved === undefined;
+  // A gate whose read held no record this can read is unknown, and where it is the one term a
+  // text-fixes run turns on, the run's verdict is unknown with it: a rig error, which
+  // `scoreRuns` makes of a throw. A run that failed on any other term failed whatever that read
+  // answered, and stays the failure it is.
+  if (threadsCase !== "code-defect" && loopClosed && !gated && gateUnread)
+    throw new Error(
+      "the implementer's read_record before its push was answered with no record this can read, so the phase it pushed in is unknown"
+    );
   const pass =
     threadsCase === "code-defect"
       ? pushes.length === 0 &&
@@ -1826,23 +1827,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
         fixResolves === 0 &&
         resolves.length === 0 &&
         moved === undefined
-      : // The loop exists to spend no round, which is what k2's claim means by "opens no new
-        // round", and the design says it of both cases: "Neither the implementer nor the
-        // reviewer moves the issue itself" (review-threads.md step 3, the same sentence in
-        // merge-gate.md). Scored in code-defect since that arm was written and in text-fixes
-        // from 2026-11-08, so a run that performed every act of the loop and then asked the
-        // daemon to move the issue back no longer passes as a clean loop.
-        repliedEach &&
-        fixResolves === 0 &&
-        fixed &&
-        threadsLine &&
-        toldReviewer &&
-        toReviewerAlone &&
-        listed &&
-        resolvedEach &&
-        approved &&
-        toldArchitectOfHead &&
-        moved === undefined;
+      : loopClosed && gated;
   // Both halves read the reference, or the one half that ran where the run booted one (above).
   const ref = [fixSession, ...(reviewSender === undefined ? [] : [reviewSession])].every(
     (entries) =>
@@ -1851,7 +1836,7 @@ function threadsClosed(runDir: string, run: string, label: string, threadsCase: 
       )
   );
   const notes = [
-    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions}`,
+    `case=${threadsCase} threads=${threads.length} replied=${replied.size} replyCalls=${replies.length} repliedCommit=${repliedCommit} fixResolves=${fixResolves} pushes=${pushes.length} fixed=${fixed} threadsLine=${threadsLine} toldReviewer=${toldReviewer} aloneToReviewer=${toReviewerAlone} listed=${listed} resolved=${resolved.size} resolveCalls=${resolves.length} bulk=${bulk} approved=${approved} toldArchitectOfHead=${toldArchitectOfHead} requested=${requested} approvedAny=${approvedAny} told=${told} moved=${moved === undefined ? "none" : moved.to} refusedCompletions=${refusedCompletions} gated=${gated}`,
     `changed=${JSON.stringify(changed)} wanted=${JSON.stringify(wanted)} submissions=${JSON.stringify(submissions.map((review) => `${review.event}@${review.head.slice(0, 12)}`))}`,
     lines(path.join(runDir, "out.txt")).at(-1) ?? "",
   ];
@@ -4207,12 +4192,15 @@ function lastDaemonRequest(runDir: string): string | undefined {
  *     opens it with none — is the other reading: the run made no call, pushed nothing, moved
  *     nothing. It scores, with the row naming each such record (`emptyRecords`) so a reader can
  *     tell which of the two the score saw;
+ *   - a completion the daemon stand-in refused, any 4xx on `handoff/complete` in daemon.log but
+ *     the daemon's own HANDOFF_NOT_CURRENT_PHASE of a half booted in a phase its role does not
+ *     run (NOT_CURRENT_PHASE): the row names the status and the code the line carries;
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
  * scenario's function, as is a transcript that names no session (`ownSession`) and, in the one
- * scenario that reads the record, a `read_record` after the approval whose answer holds no record
- * this can read in a run whose wake of the implementer followed it (`reviewerTextFindings`). */
+ * scenario that reads the record, an implementer's `read_record` before its push whose answer
+ * holds no record this can read, in a run that turns on it (threadsClosed's `gated`). */
 function unscored(
   runDir: string,
   scenario: string,
@@ -4304,6 +4292,29 @@ function unscored(
     if (record.unreadable !== undefined)
       return `<run>/published.jsonl holds a message of ${record.unreadable} the recorder could not read, so what reached that topic is unknown`;
   }
+  // A completion the daemon stand-in refused is the rig's fault and never the run's, with one
+  // exception, which is the daemon's own answer to a run booted in a phase its role does not run
+  // (NOT_CURRENT_PHASE): threads-closed boots the implementer in `reviewing` or `accepting` and
+  // its code-defect reviewer in `accepting`, so a completion of either there is answered 409
+  // HANDOFF_NOT_CURRENT_PHASE as the workflow answers one, and threadsClosed reports it. Every
+  // other refusal says the stand-in and the agent's own plugin disagree about the completion —
+  // a body the stand-in's request contract does not take (400 with no code), a completion with
+  // no record the tool always attaches (400 HANDOFF_RECORD_REQUIRED), a record on a phase that
+  // ends with none (409 HANDOFF_RECORD_MISMATCH), a grant it minted and does not know (403) —
+  // so what the run did next answers a world the daemon would not have served. Measured on
+  // 2026-11-12: every base run of k1 and k2 logged `handoff/complete` 400 and nothing else, the
+  // base label sending a `ready` the stand-in's contract refused, and each was scored as base
+  // behaviour (review 5887659447, finding 1). A 409 whose line carries no code is a log of an
+  // older stand-in, which cannot say which refusal it was, and is a rig error with the rest.
+  const refused = parsed(path.join(runDir, DAEMON), DaemonLine).find(
+    (line) =>
+      line.path === "/legion/v1/handoff/complete" &&
+      line.status >= 400 &&
+      line.status < 500 &&
+      !(line.status === 409 && line.code === NOT_CURRENT_PHASE)
+  );
+  if (refused !== undefined)
+    return `the daemon stand-in refused a completion: POST ${refused.path} answered ${refused.status} ${refused.code ?? "with no code"}, so the run went on in a world the daemon would not have served`;
   for (const call of calls) {
     const named: string[] = [];
     if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));

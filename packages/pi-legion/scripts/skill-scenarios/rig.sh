@@ -1651,12 +1651,17 @@ round_world() {
 # one unresolved bot thread, whose finding is a wording nit the reviewer answers and closes
 # nothing for. `dropped` is that change with the blank-name guard gone, the negative control's
 # behavioural finding. A push to legion/<key> is this world's own failure, since a review round
-# pushes nothing at all.
+# pushes nothing at all. The base requires conversation resolution (resolution_protection_routes)
+# and the bot's thread is open, so GitHub reports the head `BLOCKED` with every check green
+# (blocked_at): the approval then waits in `reviewing`, as main's engine leaves it (review.go's
+# `reviewRound`, which reports the round `stuckMergeState`), so a reviewer that reads the record
+# after its approval reads `reviewing`, and the wake of the implementer it owns at the approval
+# is the one step that starts the fix (review 5887659447, finding 3).
 review_world() {
   local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body resolve_route extra
   round_world "$index" "$start" "$guard" "$text_finding_doc_line" "$text_finding_trigger"
   fixture_body "**Threads:** 0 resolved, 1 unresolved." "$(fixture_checks implementer tester)"
-  extra=$(jq -n --argjson resolve "$resolve_route" '[
+  extra=$(jq -n --argjson resolve "$resolve_route" --argjson protection "$(resolution_protection_routes)" '$protection + [
     $resolve,
     {match:"^gh api .*graphql",
      stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null},
@@ -1664,7 +1669,7 @@ review_world() {
                comments:{nodes:[{author:{login:"style-bot[bot]"},
                  body:"greet.test.ts:4: `greets by name` names the same thing the next test does; name each test for the case it covers."}]}}]}}}}}}
   ]')
-  fixture_write "$extra" '""' '[]'
+  fixture_write "$extra" '""' '[]' "$(blocked_at "$C1")"
 }
 
 # The world an approval that left text threads open leaves behind, which threads-closed's two
@@ -1676,12 +1681,12 @@ review_world() {
 # answers as GitHub answers a role with write access: success. It encodes no verdict of its own —
 # a stand-in that refused the mutation would prove the claim the scenario is there to measure —
 # and the day a live reviewer finds GitHub refusing it, this answer and the rule change together
-# on that evidence. The base branch is protected by nothing, which GitHub answers with 200 at
-# both reads the merge gate prescribes — an empty list of rules, and a branch with
-# `protected: false` and no required check — and fixture_write serves both, since a 404 there is
-# a refused read, which the rule has a reviewer report and never guess around (the batch of
-# 2026-11-10 holds 91 refused reads of this kind). `gh pr checks` is
-# green at the head, and `gh pr diff` is the diff of the run's own remote at the call, so the
+# on that evidence. The base branch's protection is read at both reads the merge gate prescribes
+# — the rules of the branch and the branch itself — and fixture_write serves both, since a 404
+# there is a refused read, which the rule has a reviewer report and never guess around (the
+# batch of 2026-11-10 holds 91 refused reads of this kind); neither ever names a required
+# check. `gh pr diff` is the diff of the run's own
+# remote at the call, so the
 # reviewer reads the fix the implementer pushed and no world freezes a diff of its own
 # (gh-standin.ts). The `reviewThreads` route is the fixture's own answer and no record of the run:
 # a reply the implementer wrote does not appear under its thread, and a thread the reviewer
@@ -1690,10 +1695,20 @@ review_world() {
 # its own call sees them as the approval left them.
 #
 # Without the guard dropped it leaves the review world's two text findings as two threads, which
-# one commit of text closes. `dropped` is the change with the blank-name guard gone, an honest
+# one commit of text closes. Its base requires conversation resolution
+# (resolution_protection_routes), so with those threads open GitHub reports the approved head
+# `BLOCKED` with every check green (blocked_at): the approval waits in `reviewing`, as main's
+# engine leaves it (review.go's `reviewRound`, reporting the round `stuckMergeState`), the
+# implementer's push sets it aside (`stuckApprovedOtherCode`), and the reviewer's approval of the
+# fix head is what ends the round (daemon-standin.ts's `servedPhase`; run_threads_closed boots
+# both halves in `reviewing`). The fix head is `CLEAN`: by the time the reviewer approves it, it
+# has resolved each thread, which is what lifts the rule. `dropped` is the change
+# with the blank-name guard gone, an honest
 # workflow comment, and one thread on the docs/cli.md sentence the change adds, which says that a
 # blank name exits 2: that sentence is false only because the code is wrong, so no text fix closes
-# the thread and it is a message to the architect. It is the negative control.
+# the thread and it is a message to the architect. It is the negative control: its base is
+# protected by nothing and its approved head is `CLEAN`, so the round ended on the approval and
+# the loop runs in `accepting` (run_threads_closed says why).
 approved_world() {
   local index=$1 start=$2 guard=$3 src when worker_pr worker_pr_url C1 body resolve_route extra
   local threads entries threads_line reviews
@@ -1769,8 +1784,17 @@ $entries"
   # A world that answers what GitHub refuses is the same defect as a record naming another
   # repository, and a refusal written here would have been one world's while the defect control
   # that passed on it was built by review_world.
+  #
+  # Text-fixes' base requires conversation resolution, which its open threads hold the approved
+  # head `BLOCKED` on, and the negative control's base is protected by nothing and its head
+  # `CLEAN` (the header above says why each).
+  local protection='[]' states='{}'
+  if [ -z "$guard" ]; then
+    protection=$(resolution_protection_routes)
+    states=$(blocked_at "$C1")
+  fi
   extra=$(jq -n --argjson resolve "$resolve_route" --arg url "$worker_pr_url" --argjson number "$worker_pr" \
-    --argjson threads "$threads" --argjson reviews "$reviews" '[
+    --argjson threads "$threads" --argjson reviews "$reviews" --argjson protection "$protection" '$protection + [
     $resolve,
     {match:"^gh api .*addPullRequestReviewThreadReply",
      stdout:{data:{addPullRequestReviewThreadReply:{comment:{id:"PRRC_kwDOfix900", url:($url+"#discussion_r900")}}}}},
@@ -1786,7 +1810,7 @@ $entries"
      stdout:$reviews[0]},
     {match:("^gh api .*pulls/" + ($number|tostring) + "/reviews"), stdout:$reviews}
   ]')
-  fixture_write "$extra" '"APPROVED"' "$reviews"
+  fixture_write "$extra" '"APPROVED"' "$reviews" "$states"
 }
 
 # The steps the three worlds are built from. Each reads and sets the world function's own
@@ -2006,7 +2030,8 @@ $2
 # rulesets' required checks and its branch protection's"), and that rule has a refused read
 # reported to the architect and never guessed, so a 404 stops a reviewer where GitHub would have
 # answered it — the batch of 2026-11-10 holds 91 refused reads of this kind. Nothing protects
-# this world's base, which GitHub answers on a public repository with 200 twice: an empty list
+# a world's base unless its own routes say so (resolution_protection_routes, which they stand
+# ahead of), and GitHub answers that base on a public repository with 200 twice: an empty list
 # of rules, and the branch itself with `protected: false` and no required check. The bodies hold
 # the fields that answer those two reads and leave out the commit and link fields no reader of
 # this gate reads. Both are ahead of the check-runs route, which matches the word `status`
@@ -2025,21 +2050,28 @@ $2
 # `--method=POST`, `-XPOST` or in lower case is the create `--method POST` is. Written out as
 # `(-X|--method) ?POST`, it sent each of those spellings to a GET route below it, which answered
 # a create with the list of reviews already there and left the run no pending review to submit.
+#
+# fixture_write EXTRA DECISION REVIEWS [MERGE_STATES] writes MERGE_STATES, a JSON object from a
+# head's SHA to the merge state GitHub reports for the pull request while it is at that head
+# (GitHub's names: `CLEAN`, `BLOCKED`, …), beside the routes as `mergeStates`, and every head it
+# names none for is `CLEAN` (gh-call.ts's `mergeStateOn`). The pull request's own answers carry
+# the state of the head the run's remote is at (gh-standin.ts), and the daemon stand-in moves the
+# record on it as main's engine moves on `record.MergeState` (daemon-standin.ts's `servedPhase`).
 fixture_write() {
   jq -n --arg head "$C1" --arg body "$body" --arg url "$worker_pr_url" --arg ref "legion/$worker_key" \
     --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson number "$worker_pr" --argjson extra "$1" \
-    --argjson decision "$2" --argjson reviews "$3" '
+    --argjson decision "$2" --argjson reviews "$3" --argjson runs "$(concluded_checks)" \
+    --argjson states "${4:-"{}"}" '
     {number:$number, url:$url, html_url:$url, title:("feat: greet() (" + $key + ")"), state:"OPEN", isDraft:false,
      headRefName:$ref, headRefOid:$head, baseRefName:$base, body:$body, mergeable:"MERGEABLE",
+     mergeStateStatus:"CLEAN", mergeable_state:"clean",
      reviewDecision:$decision, reviews:$reviews, latestReviews:$reviews,
      head:{sha:$head, ref:$ref}, base:{ref:$base},
-     statusCheckRollup:[{name:"test", status:"COMPLETED", conclusion:"SUCCESS"},
-                        {name:"lint", status:"COMPLETED", conclusion:"SUCCESS"}]} as $pr
-    | {routes:($extra + [
+     statusCheckRollup:[$runs[] | {name, status:(.status|ascii_upcase), conclusion:(.conclusion|ascii_upcase)}]} as $pr
+    | {mergeStates:$states, routes:($extra + [
       {match:"^gh pr view", stdout:$pr},
       {match:"^gh pr list", stdout:[$pr]},
-      {match:"^gh pr checks", stdout:"lint\tpass\t10s\thttps://example.invalid/1\ntest\tpass\t20s\thttps://example.invalid/2"},
       {match:"^gh pr (edit|comment|review|ready)", stdout:($url+"#issuecomment-1")},
       {match:"^gh api .*graphql", stdout:{data:{repository:{pullRequest:{reviewThreads:{pageInfo:{hasNextPage:false, endCursor:null}, nodes:[]}}}}}},
       {match:"^gh api ", methods:["POST","PATCH","PUT"], stdout:{id:6001, html_url:($url+"#issuecomment-6001")}},
@@ -2051,13 +2083,66 @@ fixture_write() {
        stdout:{name:$base, protected:false,
          protection:{enabled:false, required_status_checks:{enforcement_level:"off", contexts:[], checks:[]}},
          protection_url:("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection")}},
-      {match:"^gh api .*(check-runs|status)", stdout:{total_count:2, check_runs:[{name:"test", status:"completed", conclusion:"success"}, {name:"lint", status:"completed", conclusion:"success"}]}},
+      {match:"^gh api .*(check-runs|status)", stdout:{total_count:($runs|length), check_runs:$runs}},
       {match:("^gh api .*pulls/" + ($number|tostring)), stdout:$pr},
       {match:"^gh (api user|auth status)", stdout:{login:"rig[bot]"}}
     ])}' >"$R/fixtures.json"
   jq -n --arg key "$worker_key" --arg repo "$worker_repo" --arg base "$worker_base" \
     --argjson pr "$worker_pr" --arg head "$C1" \
     '{key:$key, repo:$repo, pr:$pr, branch:("legion/" + $key), base:$base, head:$head}' >"$R/world.json"
+}
+
+# concluded_checks prints the check runs GitHub reports on a head whose CI has finished: `test`
+# and `lint`, each completed with success, in the shape of the check-runs route, with the link
+# and the times `gh pr checks` prints from them. It is the answer every head of every world
+# takes: no world holds a head's CI running, since what holds an approved head `BLOCKED` here is
+# the open threads (resolution_protection_routes), not a check.
+concluded_checks() {
+  jq -n '[
+    {name:"test", status:"completed", conclusion:"success", html_url:"https://example.invalid/2",
+     started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:20Z"},
+    {name:"lint", status:"completed", conclusion:"success", html_url:"https://example.invalid/1",
+     started_at:"2026-01-01T00:00:00Z", completed_at:"2026-01-01T00:00:10Z"}]'
+}
+
+# resolution_protection_routes prints the routes of a base branch ($worker_base of
+# $worker_repo) whose protection requires conversation resolution and no check: the one rule
+# that holds a pull request `BLOCKED` with every check green and an approval standing, while a
+# review thread is open. GitHub states it at each read the merge gate prescribes, which a world
+# puts ahead of fixture_write's unprotected answers: the branch's rules, in the ruleset form
+# (`pull_request` with `required_review_thread_resolution`); the branch, `protected: true` with
+# `required_conversation_resolution` enabled; and its protection endpoint, which answers the same
+# protection rather than 404. Each names its required checks as an empty list, so the gate's
+# reads of those print nothing and exit 0 as they do on an unprotected base. In that order, since
+# the branch route's regex matches the other two paths as well.
+resolution_protection_routes() {
+  jq -n --arg repo "$worker_repo" --arg base "$worker_base" '
+    ("https://api.github.com/repos/" + $repo + "/branches/" + $base + "/protection") as $url
+    | {required_status_checks:{enforcement_level:"off", contexts:[], checks:[]},
+       required_conversation_resolution:{enabled:true}} as $rules
+    | [
+      {match:("^gh api .*/rules/branches/" + $base),
+       stdout:[{type:"pull_request", ruleset_source_type:"Repository", ruleset_source:$repo, ruleset_id:1,
+         parameters:{dismiss_stale_reviews_on_push:false, require_code_owner_review:false,
+           require_last_push_approval:false, required_approving_review_count:0,
+           required_review_thread_resolution:true}}]},
+      {match:("^gh api .*/branches/" + $base + "/protection"),
+       stdout:($rules + {url:$url, enforce_admins:{enabled:false}, allow_force_pushes:{enabled:false},
+         allow_deletions:{enabled:false}})},
+      {match:("^gh api .*/branches/" + $base),
+       stdout:{name:$base, protected:true, protection:($rules + {enabled:true}), protection_url:$url}}
+    ]'
+}
+
+# blocked_at HEAD prints fixture_write's MERGE_STATES for a world whose HEAD GitHub reports
+# `BLOCKED` and every other head `CLEAN`. The world's base requires conversation resolution
+# (resolution_protection_routes) and its approved HEAD has threads open, which is what GitHub
+# holds it `BLOCKED` on with every check green; main's engine reads that state for an approval
+# that stands and reports the round `stuckMergeState` (review.go's `reviewRound` and
+# `stuckMergeStateReason`), leaving the issue in `reviewing`. A head the reviewer approves after
+# resolving each thread is `CLEAN`, since resolving them is what lifts the rule.
+blocked_at() {
+  jq -n --arg head "$1" '{($head): "BLOCKED"}'
 }
 
 # run_project SCENARIO CASE LABEL N [BATCH] prints the Legion project token of one worker run.
@@ -2090,9 +2175,10 @@ run_project() {
 # silently, since the recorder would subscribe to one project's topics while the agents published
 # on another's and every send would read as never made. PHASE is the phase the issue stands in
 # while this agent runs, empty for the phase the role's own worker is started in (the daemon
-# stand-in's default); threads-closed passes `accepting`, which is no phase of either half's
-# role, so the stand-in refuses a completion there as the daemon refuses one of a phase the
-# role does not run (daemon-standin.ts, HANDOFF_NOT_CURRENT_PHASE).
+# stand-in's default); threads-closed passes `reviewing` or `accepting` by its case
+# (run_threads_closed), neither of which is the implementer's phase and the second of which is
+# not the reviewer's, so the stand-in refuses a completion there as the daemon refuses one of a
+# phase the role does not run (daemon-standin.ts, HANDOFF_NOT_CURRENT_PHASE).
 #
 # A run that boots a second agent calls this again with that agent's role, after writing its
 # prompt: the two run one after the other on the one run directory, so the second reads the gh
@@ -2290,14 +2376,30 @@ reviewer_wake() {
 # is told what to do with a thread: that is the rule the scenario measures. The case is in the
 # run's name and in <run>/case.txt, which threadsClosed reads back and holds to the name.
 #
-# Both halves are booted in `accepting`: the round ended on the reviewer's approval, and that is
-# where the issue stands while the architect reads it (review-threads.md step 1). So each half's
-# `read_record` answers `accepting`, and the daemon stand-in refuses either half's
-# `handoff_complete` as the daemon does: `accepting` is the architect's phase, which neither an
-# implementer nor a reviewer runs, so the workflow refuses the completion 409
-# HANDOFF_NOT_CURRENT_PHASE (packages/daemon/internal/workflow/engine.go, RoleFor).
+# The phase both halves are booted in is the one main's engine leaves the issue in after the
+# world's approval (review.go's `reviewRound`, daemon-standin.ts's `servedPhase`):
+#   text-fixes   `reviewing`. The base requires conversation resolution and the approval left
+#                threads open, so GitHub reports the approved head `BLOCKED` with its checks green
+#                (approved_world), and the approval waits in `reviewing` (review 5887659447,
+#                finding 3). The implementer's push sets the approval aside
+#                (`stuckApprovedOtherCode`), the record stays `reviewing`, and the reviewer's
+#                approval of the fix head, `CLEAN` once it has resolved the threads, ends the
+#                round and moves it to `accepting`. The implementer's
+#                `handoff_complete` is refused 409
+#                HANDOFF_NOT_CURRENT_PHASE, `reviewing` being the reviewer's phase and never the
+#                implementer's; the reviewer's is the completion of its own phase.
+#   code-defect  `accepting`. Its approved head is `CLEAN`, so the round ended on the
+#                approval, and the issue stands where the architect reads it. It stays there
+#                because a `REQUEST_CHANGES` submitted in `reviewing` ends the round and moves
+#                the issue back (review.go's `roundRejected`), which would make the reviewer's
+#                review a route for the finding, and the control reads the message to the
+#                architect as the one route (score.ts's threadsClosed). So each half's
+#                `read_record` answers `accepting`, and the stand-in refuses either half's
+#                completion 409 HANDOFF_NOT_CURRENT_PHASE, as the workflow does: `accepting` is
+#                the architect's phase (packages/daemon/internal/workflow/engine.go, RoleFor).
 run_threads_closed() {
-  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake
+  local name=$1 project=$2 index=$3 start=$4 threads_case=$5 pr head open wake phase=reviewing
+  [ "$threads_case" = text-fixes ] || phase=accepting
   start_recorder "$project"
   worker_run_world "$index" "$start" "$threads_case"
   seed_ts tester-result "$R/fixture.json" "$R/test.json" "$head"
@@ -2307,9 +2409,9 @@ run_threads_closed() {
   open=$(jq -r '.[] | "- Thread \(.id), \(.path): \(.body)"' "$R/threads.json")
   printf 'Reviewer → implementer, %s. I approved PR #%s (%s, repository %s) at %s. Its only open findings are text, and each is the review thread I wrote on it:\n%s\nOver to you.\n' \
     "$worker_key" "$pr" "https://github.com/$worker_repo/pull/$pr" "$worker_repo" "$head" "$open" >"$R/prompt.txt"
-  worker_boot "$name-implementer" "$project" implementer accepting
-  # The reviewer's own wake is the implementer's message and nothing else: this loop runs in
-  # `accepting`, where the daemon starts no phase and no architect speaks, so the reviewer learns
+  worker_boot "$name-implementer" "$project" implementer "$phase"
+  # The reviewer's own wake is the implementer's message and nothing else: the daemon starts no
+  # phase for this loop and no architect speaks, so the reviewer learns
   # the fix is pushed from that message alone (review-threads.md step 2). An implementer that
   # published none leaves the reviewer with no wake at all; inventing one here would hand the
   # reviewer the head the implementer never named. What the reviewer was given is kept whole in
@@ -2331,7 +2433,7 @@ run_threads_closed() {
   if [ "$threads_case" = code-defect ] && [ "$(jq length <<<"$wake")" -eq 0 ]; then
     note "$name: no reviewer half — the implementer sent the reviewer nothing, which is the act code-defect asks for"
   else
-    worker_boot "$name-reviewer" "$project" reviewer accepting
+    worker_boot "$name-reviewer" "$project" reviewer "$phase"
   fi
   # What the run left on its issue: every handoff record, each with its body, beside the calls the
   # gh stand-in recorded and the pushes the remote logged, which are what the score reads.

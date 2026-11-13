@@ -178,3 +178,91 @@ export function sentBody(call: {
   if (input === undefined) for (const [key, value] of fields) body[key] = value;
   return body;
 }
+
+/** One route of a world's `fixtures.json` (rig.sh's fixture_write), as far as choosing it and
+ * reading its answer go: the regex it matches the whole call against, the verbs it answers when
+ * it answers some and not others, and its answer. */
+export interface Route {
+  readonly match: string;
+  readonly methods?: readonly string[] | undefined;
+  readonly stdout?: unknown;
+}
+
+/** The route of `routes` that answers `<program> <argv...>`: the first whose verbs, when it names
+ * any, include the call's (`methodOf`) and whose regex matches the whole call. The gh stand-in
+ * answers every call by this rule, and the daemon stand-in reads what the world reports about
+ * the pull request by it too (daemon-standin.ts's `roundOutcome`), so the world the agent was
+ * answered from and the world the record moves on are one world. */
+export function routeFor<R extends Route>(
+  routes: readonly R[],
+  argv: readonly string[],
+  program = "gh"
+): R | undefined {
+  const verb = methodOf(argv);
+  const joined = `${program} ${argv.join(" ")}`;
+  return routes.find(
+    (candidate) =>
+      (candidate.methods === undefined || candidate.methods.includes(verb)) &&
+      new RegExp(candidate.match, "s").test(joined)
+  );
+}
+
+/** One check run as GitHub's check-runs route reports it: its name, `queued`, `in_progress` or
+ * `completed`, and the conclusion a completed one came to (`null` until then). */
+export interface CheckRun {
+  readonly name: string;
+  readonly status: string;
+  readonly conclusion: string | null;
+  readonly html_url?: string;
+  readonly started_at?: string;
+  readonly completed_at?: string;
+}
+
+/** The check runs the world reports on `head` of `repo`: its answer to
+ * `gh api repos/<repo>/commits/<head>/check-runs` (`routeFor`), or none when that answer holds no
+ * `check_runs` list. A world says what a head's checks are with a route of that head's own
+ * ahead of the one every other head takes, so the head the pull request is at decides what every
+ * reader of its checks is told. The daemon stand-in moves on no check run: main's engine moves
+ * on the merge state (`mergeStateOn`). */
+export function checkRunsOn(routes: readonly Route[], repo: string, head: string): CheckRun[] {
+  const answer = routeFor(routes, ["api", `repos/${repo}/commits/${head}/check-runs`])?.stdout;
+  const runs =
+    typeof answer === "object" && answer !== null && "check_runs" in answer
+      ? answer.check_runs
+      : undefined;
+  if (!Array.isArray(runs)) return [];
+  return runs.flatMap((run: unknown) =>
+    typeof run === "object" &&
+    run !== null &&
+    "name" in run &&
+    typeof run.name === "string" &&
+    "status" in run &&
+    typeof run.status === "string"
+      ? [
+          {
+            ...(run as Record<string, unknown>),
+            name: run.name,
+            status: run.status,
+            conclusion:
+              "conclusion" in run && typeof run.conclusion === "string" ? run.conclusion : null,
+          } as CheckRun,
+        ]
+      : []
+  );
+}
+
+/** The merge state GitHub reports for the pull request while it is at `head`, in GitHub's own
+ * names (`CLEAN`, `UNSTABLE`, `HAS_HOOKS`, `BLOCKED`, `BEHIND`, `DIRTY`, `UNKNOWN`): the state the
+ * world's `mergeStates` names for that head — keyed by the head's SHA or a prefix of seven
+ * digits or more — or `CLEAN` for a head the world names none for. The world writes it in its
+ * fixtures.json beside its routes (rig.sh's fixture_write), since GitHub reports it of the pull
+ * request as it stands and no route of a commit answers it. The gh stand-in answers the pull
+ * request's `mergeStateStatus` and `mergeable_state` with it, and the daemon stand-in moves the
+ * record on it, as main's engine moves on `record.MergeState` (daemon-standin.ts's
+ * `roundOutcome`). */
+export function mergeStateOn(mergeStates: unknown, head: string): string {
+  if (typeof mergeStates === "object" && mergeStates !== null)
+    for (const [named, state] of Object.entries(mergeStates))
+      if (named.length >= 7 && head.startsWith(named) && typeof state === "string") return state;
+  return "CLEAN";
+}
