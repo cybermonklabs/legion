@@ -190,6 +190,26 @@ func TestCIWaitNeedsAnOpenPullRequestARequiredCheckAndNoVerdict(t *testing.T) {
 	}
 }
 
+// TestCIWaitIsEmptyOnEveryReadEvenOneCarryingARequiredCheckMark is segment 3 as the spec has it
+// since version 36: CI wait is not measured, and is empty on every bar, because no source carries
+// a required-check mark — cybermonklabs/legion#2539 stopped the daemon reading a base branch's
+// required checks and took `checksVerdict` out of its state. A read that still carries the old
+// mark is one only an old daemon or a fixture could send, and the spec's acceptance criterion A3
+// asks for no test of such a read, since it proves a path nothing runs. So this row hands the
+// computation the very fixture TestCIWaitNeedsAnOpenPullRequestARequiredCheckAndNoVerdict books
+// two CI-wait hours off, and asks for none: the bar's three hours are idle.
+func TestCIWaitIsEmptyOnEveryReadEvenOneCarryingARequiredCheckMark(t *testing.T) {
+	root := newIssue("INFRA-1").worked("implementer", hour(0)).closedAt(hour(3)).
+		observeString(legion.FieldPhase, hour(0), "implementing").
+		observeString(legion.FieldPhase, hour(3), "done").
+		observeString(legion.FieldPullRequestState, hour(1), "open").
+		observe(legion.FieldPullRequestRequiresChecks, hour(1), "true")
+	bar := barOf(t, Compute(fixture(hour(-24), hour(24), root), ScopeAll, hour(24)), "implementer")
+	if bar.Segments.CIWait != 0 {
+		t.Fatalf("CI wait = %g hours, want 0: spec version 37 has segment 3 empty on every read, and no source now carries a required-check mark: %+v", bar.Segments.CIWait, bar.Segments)
+	}
+}
+
 // TestTheRootRecordedInAwaitingPersonClaimsItsChildsHours is segment 1's other half: the wait the
 // daemon recorded on the root, which claims the hours of a child in a phase of its own.
 func TestTheRootRecordedInAwaitingPersonClaimsItsChildsHours(t *testing.T) {
