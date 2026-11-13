@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, jest, test } from "bun:test";
 import { join } from "node:path";
 import {
   type FakeDispatchServer,
@@ -441,6 +441,19 @@ describe("agentViewRefusal", () => {
 });
 
 describe("awaitSeededInbox", () => {
+  // Every row runs on Bun's fake timers. The helper's deadline, its sleeps and each read's budget
+  // are `setTimeout`s and `Date.now()` readings, so a row moves the clock with
+  // `jest.advanceTimersByTime` and decides by where the clock stands, never by how fast the
+  // machine runs.
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  // A fake clock left behind stops the timers of every row the same worker runs after this one.
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   /** Five rows like the seed's: four of its own asks, the runbook's on a document and no issue,
    *  and the spec's decision row, declared by its block id on its issue. */
   const declared: readonly SeededInboxRow[] = [
@@ -477,7 +490,7 @@ describe("awaitSeededInbox", () => {
   const owner =
     "  These rows are written by the seed (packages/dispatch/e2e/workspace.ts) and by Dispatch's " +
     "own document settlement, not by the change under test.";
-  /** For every row that waits out its deadline, so none costs the 15 second default. */
+  /** For every row that waits out its deadline: 300 ms on the moved clock. */
   const quick = { deadlineMs: 300, intervalMs: 20 };
 
   /** A reader that answers `answer(call)` for its 1-based call, or throws it when it is an error,
@@ -495,6 +508,42 @@ describe("awaitSeededInbox", () => {
     return made;
   }
 
+  /** Lets every promise the helper chained run as far as it goes without the clock moving. */
+  async function settle(): Promise<void> {
+    for (let turn = 0; turn < 30; turn += 1) await Promise.resolve();
+  }
+
+  /** Answers whether `waiting` has settled yet, without awaiting it. */
+  function watch(waiting: Promise<unknown>): () => boolean {
+    let settled = false;
+    const done = () => {
+      settled = true;
+    };
+    waiting.then(done, done);
+    return () => settled;
+  }
+
+  /** Moves the fake clock `ms` on one millisecond at a time, and lets what each step released run
+   *  before the next, so a sleep or a read the helper starts inside the span is timed from the
+   *  moment it starts. One jump is not enough: once the process has spawned a child, Bun fires
+   *  every timer of the span before the helper's continuations run, and the next sleep then
+   *  starts at the end of the span. */
+  async function pass(ms: number): Promise<void> {
+    await settle();
+    for (let step = 0; step < ms; step += 1) {
+      jest.advanceTimersByTime(1);
+      await settle();
+    }
+  }
+
+  /** Moves the clock `ms` on and checks that `waiting` has settled by then, so a wait that never
+   *  ends fails on this line rather than on the runner's timeout. */
+  async function settledAfter(ms: number, waiting: Promise<unknown>): Promise<void> {
+    const settled = watch(waiting);
+    await pass(ms);
+    expect(settled()).toBe(true);
+  }
+
   /** The message `waiting` rejects with, which must be an Error ending in the owner line. */
   async function failureOf(waiting: Promise<unknown>): Promise<string> {
     const error = await waiting.then(
@@ -509,10 +558,10 @@ describe("awaitSeededInbox", () => {
 
   test("a row that arrives late is waited for", async () => {
     const inbox = reader((call) => (call < 3 ? shortSet : wholeSet));
-    const match = await awaitSeededInbox(declared, inbox.read, {
-      deadlineMs: 10_000,
-      intervalMs: 20,
-    });
+    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 10_000, intervalMs: 20 });
+    // Reads at 0, 20 and 40 ms.
+    await settledAfter(40, waiting);
+    const match = await waiting;
     expect(match.reads).toBe(3);
     expect(match.line).toBe("inbox rows: 5 of 5 declared rows matched in 3 reads");
   });
@@ -521,7 +570,9 @@ describe("awaitSeededInbox", () => {
     // The stray row carries the declared block id on another issue, so it is not the decision row.
     const stray: InboxRowRead = { block_id: "b-9f3c1a", id: "ask-stray", issue_key: "CORE-7" };
     const inbox = reader(() => [...shortSet, stray]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain(
       [
         "  missing (the seed declares it, the Inbox did not list it):",
@@ -536,7 +587,9 @@ describe("awaitSeededInbox", () => {
   test("every declared row and one more names the extra row and no missing row", async () => {
     const extra: InboxRowRead = { block_id: null, id: "ask-extra", issue_key: "CORE-9" };
     const inbox = reader(() => [...wholeSet, extra]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain(
       [
         "  missing (the seed declares it, the Inbox did not list it):",
@@ -551,7 +604,14 @@ describe("awaitSeededInbox", () => {
   test("a row that never arrives is named missing after the deadline", async () => {
     const inbox = reader(() => shortSet);
     const started = Date.now();
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    const settled = watch(waiting);
+    await pass(quick.deadlineMs - 1);
+    expect(settled()).toBe(false);
+    await pass(1);
+    expect(settled()).toBe(true);
+    const message = await failureOf(waiting);
+    // Both readings are of the moved clock: the row's own and the wait the helper reports.
     expect(Date.now() - started).toBeGreaterThanOrEqual(300);
     const waited = message.match(
       new RegExp(
@@ -572,9 +632,26 @@ describe("awaitSeededInbox", () => {
     expect(message).not.toContain("the last read failed");
   });
 
+  test("a wait given no options ends at the 15 s default deadline", async () => {
+    // `e2e/workspace.e2e.ts` passes no options, so this deadline is the one its wait has.
+    const inbox = reader(() => shortSet);
+    const waiting = awaitSeededInbox(declared, inbox.read);
+    const settled = watch(waiting);
+    await pass(15_000 - 1);
+    expect(settled()).toBe(false);
+    await pass(1);
+    expect(settled()).toBe(true);
+    const message = await failureOf(waiting);
+    expect(message.split("\n")[0]).toBe(
+      `inbox rows: the Inbox and the seed still disagree after 15.0 s and ${inbox.calls} reads.`
+    );
+  });
+
   test("the whole set at once returns on the first read", async () => {
     const inbox = reader(() => wholeSet);
-    const match = await awaitSeededInbox(declared, inbox.read);
+    const waiting = awaitSeededInbox(declared, inbox.read);
+    await settledAfter(0, waiting);
+    const match = await waiting;
     expect(inbox.calls).toBe(1);
     expect(match.reads).toBe(1);
     expect(match.line).toBe("inbox rows: 5 of 5 declared rows matched in 1 read");
@@ -592,20 +669,20 @@ describe("awaitSeededInbox", () => {
       { deadlineMs: 10_000, intervalMs: 20, signal: stopping.signal }
     );
     await asked.promise;
-    const aborted = Date.now();
+    // The clock does not move after the abort: "at once" is before any timer fires.
     stopping.abort();
+    await settledAfter(0, waiting);
     await expect(waiting).rejects.toBeInstanceOf(Interrupted);
-    expect(Date.now() - aborted).toBeLessThan(1_000);
   });
 
   test("reads that fail first and then answer the whole set return", async () => {
     const inbox = reader((call) =>
       call <= 3 ? new Error("GET /api/v1/inbox failed: 502 bad gateway") : wholeSet
     );
-    const match = await awaitSeededInbox(declared, inbox.read, {
-      deadlineMs: 10_000,
-      intervalMs: 20,
-    });
+    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 10_000, intervalMs: 20 });
+    // Reads at 0, 20, 40 and 60 ms.
+    await settledAfter(60, waiting);
+    const match = await waiting;
     expect(inbox.calls).toBe(4);
     expect(match.reads).toBe(inbox.calls);
     expect(match.line).toBe(`inbox rows: 5 of 5 declared rows matched in ${inbox.calls} reads`);
@@ -613,7 +690,9 @@ describe("awaitSeededInbox", () => {
 
   test("reads that always fail say that no read answered, and the last error", async () => {
     const inbox = reader((call) => new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`));
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
       new RegExp(
@@ -629,7 +708,9 @@ describe("awaitSeededInbox", () => {
 
   test("a second copy of a declared row is unexpected, and no row is missing", async () => {
     const inbox = reader(() => [...wholeSet, shortSet[1]]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain(
       [
         "  missing (the seed declares it, the Inbox did not list it):",
@@ -645,7 +726,9 @@ describe("awaitSeededInbox", () => {
     const inbox = reader((call) =>
       call === 1 ? shortSet : new Error(`GET /api/v1/inbox failed: 500 attempt ${call}`)
     );
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toStartWith("inbox rows: the Inbox and the seed still disagree after ");
     expect(message).toContain(
       [
@@ -661,11 +744,13 @@ describe("awaitSeededInbox", () => {
   });
 
   test("a read that never answers is a failed read once the deadline passes", async () => {
-    const started = Date.now();
-    const message = await failureOf(
-      awaitSeededInbox(declared, () => new Promise<never>(() => {}), quick)
-    );
-    expect(Date.now() - started).toBeLessThan(2_000);
+    const waiting = awaitSeededInbox(declared, () => new Promise<never>(() => {}), quick);
+    const settled = watch(waiting);
+    await pass(quick.deadlineMs - 1);
+    expect(settled()).toBe(false);
+    await pass(1);
+    expect(settled()).toBe(true);
+    const message = await failureOf(waiting);
     expect(message.split("\n").slice(1)).toEqual([
       "  the seed declares 5 rows.",
       "  the last read failed: the read had not answered within 0.3 s",
@@ -682,8 +767,13 @@ describe("awaitSeededInbox", () => {
       calls += 1;
       return Date.now() - started < 200 ? Promise.resolve(shortSet) : new Promise<never>(() => {});
     };
-    const message = await failureOf(awaitSeededInbox(declared, read, quick));
-    expect(Date.now() - started).toBeLessThan(450);
+    const waiting = awaitSeededInbox(declared, read, quick);
+    const settled = watch(waiting);
+    await pass(quick.deadlineMs - 1);
+    expect(settled()).toBe(false);
+    await pass(1 + quick.intervalMs);
+    expect(settled()).toBe(true);
+    const message = await failureOf(waiting);
     expect(calls).toBeGreaterThan(1);
     const lines = message.split("\n");
     expect(lines[0]).toMatch(
@@ -708,9 +798,13 @@ describe("awaitSeededInbox", () => {
     // Reads at 0 ms and at 200 ms; the second sleep is cut to the 100 ms the deadline leaves, so
     // no third read starts at 400 ms with no time left to answer in.
     const inbox = reader(() => shortSet);
-    const message = await failureOf(
-      awaitSeededInbox(declared, inbox.read, { deadlineMs: 300, intervalMs: 200 })
-    );
+    const waiting = awaitSeededInbox(declared, inbox.read, { deadlineMs: 300, intervalMs: 200 });
+    const settled = watch(waiting);
+    await pass(299);
+    expect(settled()).toBe(false);
+    await pass(1);
+    expect(settled()).toBe(true);
+    const message = await failureOf(waiting);
     expect(inbox.calls).toBeLessThanOrEqual(2);
     expect(message.split("\n")[0]).toMatch(/ and [12] reads?\.$/);
     expect(message).not.toContain("the last read failed");
@@ -724,7 +818,9 @@ describe("awaitSeededInbox", () => {
       issue_key: null,
     };
     const inbox = reader(() => [...wholeSet, stray]);
-    const message = await failureOf(awaitSeededInbox(declared, inbox.read, quick));
+    const waiting = awaitSeededInbox(declared, inbox.read, quick);
+    await settledAfter(quick.deadlineMs, waiting);
+    const message = await failureOf(waiting);
     expect(message).toContain("    - ask ask-notes on the document Notes (block none)\n");
   });
 
@@ -735,18 +831,18 @@ describe("awaitSeededInbox", () => {
       asked.resolve();
       return shortSet;
     });
-    const started = Date.now();
     const waiting = awaitSeededInbox(declared, inbox.read, {
       deadlineMs: 10_000,
       intervalMs: 5_000,
       signal: stopping.signal,
     });
-    // The first read has answered, and one macrotask turn later the helper is in its 5 s sleep.
+    // The first read has answered, and once its promises have run the helper is in its 5 s
+    // sleep. The clock does not move after the abort: "at once" is before any timer fires.
     await asked.promise;
-    await nextTurn();
+    await settle();
     stopping.abort();
+    await settledAfter(0, waiting);
     await expect(waiting).rejects.toBeInstanceOf(Interrupted);
-    expect(Date.now() - started).toBeLessThan(1_000);
     expect(inbox.calls).toBe(1);
   });
 });
