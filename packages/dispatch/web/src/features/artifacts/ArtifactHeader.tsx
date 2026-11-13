@@ -289,13 +289,29 @@ export function ArtifactHeader({
                 </label>
               ) : null}
               {toolbar === undefined ? null : (
-                // Two boxes. The outer one wraps, because at 320 px the actions are wider than
-                // the header card. The inner one does not: the dot says whether this page is
-                // live on the document these actions write to, so it shares that box with the
-                // action beside it — the diff button on a version view, Name version where
-                // there is none — and travels with it instead of wrapping onto a line of its
-                // own.
-                <div className="flex flex-wrap items-center gap-3">
+                // The document's own actions stand in this row and in no box of their own, so
+                // each of them takes the room there is beside the control before it and only
+                // the one that does not fit starts a line. A box of their own wraps whole: at
+                // 390 px it fitted neither beside the version picker nor, once on a line of
+                // its own, inside the card, so the picker, the two way-back controls and Name
+                // version took three lines of 44 px touch target (`web/src/styles.css`), the
+                // header stood 224 px tall, and the first block of the server's own drawn
+                // first screen stood at 646..672 px of a 664 px viewport - the reader's first
+                // line of their document cut by the fold, which is the one thing that draw
+                // exists to prevent (dispatch://INFRA-341 R11; the row `a reader who opens a
+                // document has its first block inside the viewport, unscrolled` in
+                // `e2e/large-documents-first-screen.e2e.ts`). Packed into this row they take
+                // two lines, the header is 168 px and the block stands at 590..616, whole and
+                // above the fold. At every width with room for the row on one line - 528 px
+                // of header card at 1280, measured - this lays out exactly as the box did,
+                // the items and the gaps between them being the same.
+                //
+                // The dot keeps the one box that is left, which does not wrap: the dot says
+                // whether this page is live on the document these actions write to, so it
+                // shares that box with the action beside it - the diff button on a version
+                // view, Name version where there is none - and travels with it instead of
+                // wrapping onto a line of its own.
+                <>
                   {!correctionIsOffered(artifact) ? null : (
                     <CorrectTitle
                       artifact={artifact}
@@ -332,7 +348,7 @@ export function ArtifactHeader({
                     )}
                     <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
                   </div>
-                </div>
+                </>
               )}
             </div>
           ) : null}

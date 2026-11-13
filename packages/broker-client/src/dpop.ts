@@ -70,9 +70,11 @@ export async function newDpopKey(): Promise<DpopKey> {
         htu: targetUri(request.url),
         iat: Math.floor(Date.now() / 1000),
       };
-      if (request.nonce !== undefined && request.nonce !== "") claims.nonce = request.nonce;
+      // biome-ignore lint/complexity/useLiteralKeys: nonce is a key of this record's index signature, and claude-envoy compiles this file with noPropertyAccessFromIndexSignature, which rejects the dot form.
+      if (request.nonce !== undefined && request.nonce !== "") claims["nonce"] = request.nonce;
       if (request.accessToken !== undefined && request.accessToken !== "") {
-        claims.ath = await accessTokenHash(request.accessToken);
+        // biome-ignore lint/complexity/useLiteralKeys: ath comes from the same index signature, so claude-envoy's typecheck requires the bracket form here too.
+        claims["ath"] = await accessTokenHash(request.accessToken);
       }
       return await new SignJWT(claims)
         .setProtectedHeader({ typ: "dpop+jwt", alg: ALGORITHM, jwk: publicJwk })

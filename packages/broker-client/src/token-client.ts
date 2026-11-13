@@ -291,10 +291,12 @@ export class BrokerTokenClient {
         const said = error instanceof Error ? error.message : String(error);
         throw new Error(`read the machine this person signed in on: ${said}`, { cause: error });
       }
-      form.actor_token = actor.token;
+      // biome-ignore lint/complexity/useLiteralKeys: form is keyed by an index signature, and claude-envoy's typecheck refuses dot access on such a key.
+      form["actor_token"] = actor.token;
       // The same token under the type that says what it proves here: not who is asking, but which
       // box the person is asking from.
-      form.actor_token_type =
+      // biome-ignore lint/complexity/useLiteralKeys: the same index signature, so the bracket form is what claude-envoy accepts.
+      form["actor_token_type"] =
         actor.tokenType === SUBJECT_TOKEN_TYPE_GOOGLE ? ACTOR_TOKEN_TYPE_MACHINE : actor.tokenType;
     }
     const endpoint = this.#brokerUrl + TOKEN_PATH;
@@ -419,8 +421,9 @@ export class BrokerTokenClient {
         `the broker at ${endpoint} answered no usable expires_in (${JSON.stringify(answered.expires_in)})`
       );
     }
-    const expiresAtText =
-      typeof answered.credential_expires_at === "string" ? answered.credential_expires_at : "";
+    // biome-ignore lint/complexity/useLiteralKeys: credential_expires_at is no declared field of TokenEndpointResponse, so it arrives through that type's index signature, and claude-envoy compiles this file with noPropertyAccessFromIndexSignature, which refuses the dot form. Read once, so one suppression covers the key.
+    const answeredExpiresAt = answered["credential_expires_at"];
+    const expiresAtText = typeof answeredExpiresAt === "string" ? answeredExpiresAt : "";
     let credentialExpiresAt: Date | null = null;
     if (expiresAtText !== "") {
       credentialExpiresAt = new Date(expiresAtText);
@@ -434,7 +437,8 @@ export class BrokerTokenClient {
       accessToken: answered.access_token,
       tokenType,
       expiresAt: new Date(this.#now() + seconds * 1000),
-      credentialId: typeof answered.credential_id === "string" ? answered.credential_id : "",
+      // biome-ignore lint/complexity/useLiteralKeys: credential_id likewise arrives through the index signature, so the bracket form is the one that compiles.
+      credentialId: typeof answered["credential_id"] === "string" ? answered["credential_id"] : "",
       credentialExpiresAt,
     };
   }

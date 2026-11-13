@@ -530,7 +530,8 @@ export async function resolveOwnerArguments(
   // A retraction names one stored result by its id, and the server reads that result's issue for
   // itself. LEGION_ISSUE must not fill an issue in here: issue is a record's argument, and a
   // retraction that carried one would be refused as a record mixed with a retraction.
-  if (tool === "dispatch_result" && typeof args.retract === "string") {
+  // biome-ignore lint/complexity/useLiteralKeys: ToolArguments names no retract of its own, so the key comes from that type's index signature, and claude-envoy's typecheck refuses dot access on such a key.
+  if (tool === "dispatch_result" && typeof args["retract"] === "string") {
     return { args, ref, owner: null };
   }
   const legionIssue = env.LEGION_ISSUE;
