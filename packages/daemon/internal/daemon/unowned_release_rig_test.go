@@ -251,6 +251,12 @@ func releasedWithNoLiveClaim(t *testing.T, rig *idleWakeRig, issue idleRigIssue)
 
 	rig.awaitUnownedReleased(issue)
 
+	// The teardown deletes the pod, its Sandbox and its disk (SuspendIssue) and only then writes
+	// its line, so the wait above can see the pod gone a moment before the line is logged: the
+	// line is waited for under the bound a written record gets, and then counted exactly.
+	idleRigEventually(t, idleRigRecordWait, "the daemon's line for the teardown of "+issue.key+"'s pod", func() bool {
+		return rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}) > teardowns
+	})
 	if now := rig.logged(idleRigUnownedTeardown, map[string]string{"issue": issue.key}); now != teardowns+1 {
 		t.Errorf("the daemon logged the teardown of %s's pod %d times, want the %d it had and this release's one",
 			issue.key, now, teardowns+1)

@@ -2228,3 +2228,56 @@ func TestPlainStateNamesWhatLegionIsBlockedOn(t *testing.T) {
 		})
 	}
 }
+
+// `legion state` prints what the project holds beside what it waits on: how many issues the
+// admission list holds and how many of each word for why, in the ladder's own order
+// (record.HeldReasons) whatever order the state lists them in, and `none` where it holds
+// nothing, as the blocked line reads. The prefix names the admission list, which is what tells
+// a reader the line from the held lifecycle rows the same output prints below it. A grep of the
+// source would pass on a comment, so this reads what the command prints.
+func TestLegionStatePrintsTheHeldIssues(t *testing.T) {
+	admission := func(held string) string {
+		return `"admission":{"cap":2,"active":["LEGION-208"],"waiting":["LEGION-211"],"blocked":[],"held":` + held + `}`
+	}
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},`
+	for _, tc := range []struct {
+		name, held, want string
+	}{
+		{
+			name: "two words, counted in the ladder's order",
+			held: `[{"issue":"LEGION-209","reason":"design_gate","heldBy":["LEGION-208"]},` +
+				`{"issue":"LEGION-210","reason":"tree_parked","heldBy":["LEGION-212"]},` +
+				`{"issue":"LEGION-213","reason":"design_gate","heldBy":["LEGION-208"]}]`,
+			want: "admission.held: 3 issues — tree_parked 1, design_gate 2\n",
+		},
+		{
+			name: "one issue no word is true of",
+			held: `[{"issue":"LEGION-209","reason":"unclassified"}]`,
+			want: "admission.held: 1 issue — unclassified 1\n",
+		},
+		{name: "none", held: `[]`, want: "admission.held: none\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			served := "{" + daemon + admission(tc.held) + `,"issues":{},"pendingStatusWrites":[]}`
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+			if !strings.Contains(out.String(), "held lifecycle rows: none\n") {
+				t.Fatalf("legion state printed %q, want the held lifecycle rows on a line of their own: the admission list is not those rows", out.String())
+			}
+		})
+	}
+}
