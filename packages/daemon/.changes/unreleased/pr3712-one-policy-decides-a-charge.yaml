@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  One policy decides whether a claim's failure charges a budget, over one closed set of outcomes,
+  and every charge site asks it. A prompt refusal is busy only when its frame carries
+  `code: session_busy`; a refusal with no code is charged as unrecognised and logged at warn, so an
+  Oh My Pi that sends only the busy sentence is seen.
