@@ -814,7 +814,8 @@ primary_issue() {
   begin primary-architect-posts-and-registers-spec
   # Every root's architect registers a closed gate on its own and its root then waits on the
   # person, keeping the admission slot it took at its admission: an issue holds its row from the
-  # moment the daemon starts it until it is done or leaves the workflow.
+  # moment the daemon starts it until it is done or leaves the workflow, except while it waits on
+  # another issue, and a root waiting on a person keeps it even then.
   # So the human's approval resumes this root on the next pass whatever the cap says, and the 1800 s
   # bound below is slack: nothing has to give a row back first. admission_cap stays 2, which is the
   # peak this lane needs under that rule: the two roots the daemon starts here hold both rows for

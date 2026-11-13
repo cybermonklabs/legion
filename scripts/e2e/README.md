@@ -759,7 +759,7 @@ A file, URL or token that prevents Dispatch fails the baseline read, naming it; 
 The scratch Dispatch runs with `HOME` and `XDG_CONFIG_HOME` in the run's work directory, so it reads no envoy.json of the operator's.
 
 It proves admission order and a child that stands in its tree with no slot of its own
-— a slot is one issue the daemon has started, and an issue keeps it until it is done or leaves the workflow; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
+— a slot is one issue the daemon has started, and an issue keeps it until it is done or leaves the workflow, except while it waits on another issue; this child's tree has not opened its design gate, so the daemon has not started the child and it waits at `admitted` in no line; it is parked to `backlog` as soon as that is seen, which is all it was filed for, so it holds up no issue above it
 — then drives a root from `todo` through an architect's spec and gate registration, which the architect does on its own (the proof never prompts it:
 its first turn is the daemon's `catch-up` notice, and the root's primary document is the proof's one-file smoke spec), the root's wait on the human at its gate (`awaiting_person`, the slot it took at its admission kept, architect live), the human approval, the root's resume with no further slot, planner, implementer pull request, tester, reviewer, the architect's acceptance at `accepting`, retro, the merger's own merge of the head it read, which closes the issue (`merger-merge`), and the tester's production check after the close, its first look, the look that look's own `wake_at` starts and the bound's last look (`production-check-bound`).
 It also proves three changes-requested rounds, each posted by the reviewer pane and ended by that reviewer's completion
@@ -2174,7 +2174,7 @@ A pass proves that and no more:
 
 - The pod is an issue pod; the daemon's own controller pod, under `controller: daemon`, is not launched or checked.
 
-Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each of which keeps its slot until it is done or leaves the workflow:
+Four roots run under `admission_cap: 4`, a cap of the issues the daemon has started rather than of trees (dispatch://INFRA-980), each of which keeps its slot until it is done or leaves the workflow, except while it waits on another issue:
 
 - Tree 1 runs the whole workflow with real agents to `done`, through one changes-requested review round in a thread the reviewer opens and the architect's acceptance at `accepting`;
   the daemon's merge closes it, its tester runs the production check after the close (the first look, then the bound's last look) while the tree lingers, and the tree closes at the linger's expiry.

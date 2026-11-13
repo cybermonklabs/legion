@@ -45,9 +45,10 @@ func carriedRoot(t *testing.T, pool *pgxpool.Pool, key string, carries phase.Pha
 }
 
 // A handed-over root that carries accepting takes a row, because an issue keeps its row from
-// the moment the daemon starts it until it is done, leaves the workflow or waits only for its
-// merge, and accepting is none of those (record.KeepsSlot). So the cap does hold such a root
-// back: its tree is opened on the pass that finds a row free, and not before.
+// the moment the daemon starts it until it is done or leaves the workflow, and accepting is
+// neither (record.KeepsSlot); such a root keeps that row even while it waits on another issue.
+// So the cap does hold such a root back: its tree is opened on the pass that finds a row free,
+// and not before.
 //
 // The fixture: the cap's one row is held by a tree already at work, a released child of that
 // tree stands at admitted waiting for its own first phase, and the handed-over root ranks

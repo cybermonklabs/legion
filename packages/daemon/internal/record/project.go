@@ -683,25 +683,28 @@ func KeepsSlot(issue Issue) bool {
 
 // NeedsSlot says whether issue must hold one of the cap's slots now: its tree is running — live,
 // with a root that does not linger after its close — and the issue keeps a slot where it stands
-// (KeepsSlot). An issue holds its admission slot from the first moment the daemon starts it
-// until it is done or leaves the workflow, so the cap counts the issues the daemon has started
-// and has still to finish, rather than the ones a worker of them is running this second. Nothing
-// of a tree that has left the workflow works until its re-admission runs it again, which is why
-// the tree's own terms are here.
+// (KeepsSlot). An issue holds its admission slot from when the daemon starts it until it is done
+// or leaves the workflow, except while it waits on another issue, so the cap counts the issues
+// the daemon has started and has still to finish, rather than the ones a worker of them is
+// running this second. Nothing of a tree that has left the workflow works until its
+// re-admission runs it again, which is why the tree's own terms are here.
 //
 // The Dispatch status KeepsSlot reads is asked because a person's park, close or icebox takes
 // the issue out of the workflow before anything moves its phase: the workflow's own leave
 // records the linger in the same fact, but a pass that reads the record between the two would
 // otherwise count a parked root's slot against the cap for good.
 //
-// It is the one statement of the release, and the two readers that must never disagree both
-// call it: admission releases the slot of every issue it answers false for (admit's
-// releaseSlots), and the waiting line offers a returning issue a slot only where it answers
-// true (Waiting). root is the record of the issue's tree root; live is whether the tree is
-// live (LiveRoots). The design gate is read by no part of this: a gate open or closed changes
-// neither whether the tree runs nor whether the issue's phase keeps a row (KeepsSlot). The slot
-// is accounting only: taking one away suspends no claim,
-// moves no phase and writes no Dispatch status.
+// It is the one statement of the release of an issue that needs no slot at all, and the two
+// readers that must never disagree both call it: admission releases the slot of every issue it
+// answers false for (admit's releaseSlots), and the waiting line offers a returning issue a slot
+// only where it answers true (Waiting). The other release, of a started issue that goes on
+// working and waits on another issue, is not stated here: it is admit's releaseSlotsForWaits,
+// judged by blockers.waitsOf. This answers true of such an issue all the same, so the issue
+// keeps its place in the line and takes a slot again when the wait ends. root is the record of
+// the issue's tree root; live is whether the tree is live (LiveRoots). The design gate is read
+// by no part of this: a gate open or closed changes neither whether the tree runs nor whether
+// the issue's phase keeps a row (KeepsSlot). The slot is accounting only: taking one away
+// suspends no claim, moves no phase and writes no Dispatch status.
 func NeedsSlot(issue, root Issue, live bool) bool {
 	return live && !root.Lingers() && KeepsSlot(issue)
 }
@@ -710,9 +713,11 @@ func NeedsSlot(issue, root Issue, live bool) bool {
 // workflow, standing at admitted and not lingering after its close, a worker of it has work
 // there (AtWork), and the daemon has started it, which is what the slot row it holds says
 // (slotted). The row no longer says a worker of the issue has work — an issue keeps it while it
-// waits as well (KeepsSlot) — it says this root is one of the issues the daemon has started and
-// not yet finished with. A root with no row was never started and has no work of its own to
-// hand to anybody.
+// waits on a person or on its review (KeepsSlot), and a root like this one, at admitted with a
+// design gate that has never opened, keeps it while it waits on another issue too
+// (blockers.waitsOf) — it says this root is one of the issues the daemon has started and not yet
+// finished with. A root with no row was never started and has no work of its own to hand to
+// anybody.
 //
 // At admitted, AtWork is true for a tree root whose design gate has never opened — the architect
 // writing the spec, which holds the whole of the tree's work — so the gate is read here too: a
@@ -930,13 +935,13 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) []LineEntry {
 		// A queued root holding a row the daemon granted it in this tree is one it has already
 		// started — a root whose architect is writing the spec, which a person set back to todo
 		// — and a second promotion would reopen an open tree and start a second architect. A
-		// root that arrived from another tree is the other half of that branch and stays: an
-		// issue holds its row from the first moment the daemon starts it until it is done or
-		// leaves the workflow (KeepsSlot), so such a root carries the row of the tree it left
-		// (HandedOverFrom, the one mark of that arrival, which ran is written over and the
-		// promotion that opens the root's own tree clears) while the tree of its
-		// own has still to be opened. Dropped from the line, nothing would promote it, the
-		// release would keep its row (NeedsSlot) and no later pass would find it again. The
+		// root that arrived from another tree is the other half of that branch and stays: such a
+		// root keeps the row it carries until it is done or leaves the workflow (KeepsSlot), even
+		// while it waits on another issue (blockers.waitsOf leaves a queued root out), so it
+		// carries the row of the tree it left (HandedOverFrom, the one mark of that arrival, which
+		// ran is written over and the promotion that opens the root's own tree clears) while the
+		// tree of its own has still to be opened. Dropped from the line, nothing would promote
+		// it, the release would keep its row (NeedsSlot) and no later pass would find it again. The
 		// tree it left usually takes that row back first — its root lingers from its close, and
 		// the release reads the linger in the transaction that records the close, before the
 		// hand-over writes the root of its own — so the carried row is the case this is written

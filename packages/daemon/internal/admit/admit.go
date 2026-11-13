@@ -1102,15 +1102,16 @@ func (a *Admission) keepStaleApproval(ctx context.Context, tx pgx.Tx, key string
 }
 
 // releaseSlots releases the slot of every issue of this project that no longer needs one
-// (record.NeedsSlot, the one statement of the release, whose phase half the grant reads too —
-// record.KeepsSlot) and reports those issues in slot order. Each release is logged once the
-// fact commits. It is the release for good: a tree leaving the workflow, a root finishing, an
-// issue reaching its done, and a linger all read the same predicate, so one rule says when an
-// issue has stopped needing a slot at all. The daemon makes one other
-// release, releaseSlotsForWaits, which frees the row of an issue that goes on working and waits
-// on another issue; the two are apart because they free rows for opposite reasons — this one
-// because there is no more work to hold a row for, that one because the work is held — and only
-// that one leaves a mark, since only its issue stands in the line for the row again.
+// (record.NeedsSlot, the one statement of the release of an issue that needs no slot at all,
+// whose phase half the grant reads too — record.KeepsSlot) and reports those issues in slot
+// order. Each release is logged once the fact commits. It is the release for good: a tree
+// leaving the workflow, a root finishing, an issue reaching its done, and a linger all read the
+// same predicate, so one rule says when an issue has stopped needing a slot at all. The daemon
+// makes one other release, releaseSlotsForWaits, judged by blockers.waitsOf rather than by
+// record.NeedsSlot, which frees the row of an issue that goes on working and waits on another
+// issue; the two are apart because they free rows for opposite reasons — this one because there
+// is no more work to hold a row for, that one because the work is held — and only that one
+// leaves a mark, since only its issue stands in the line for the row again.
 //
 // It reads the slotted issues in one query (record.Store.SlottedIssues), never a record per slot
 // and never the whole issues table: every fact applies this under the one fact lock
@@ -1170,13 +1171,14 @@ func (a *Admission) releaseSlots(ctx context.Context, tx pgx.Tx, issues []record
 }
 
 // releaseSlotsForWaits takes back the row of every issue of this project that holds one and
-// waits on another issue (record.LineFacts.Waits, the pass's own judgement), and reports the
-// issues it took one from. It is the release for a wait, beside releaseSlots, which frees the
-// row of an issue that needs none at all: an issue this one frees goes on working and keeps its
-// place in the line, so the row comes back to it by itself when the wait ends, which is why the
-// two are written apart and why this one marks the issue. The cap counts the issues Legion is
-// working on, and an issue waiting for another issue to finish is not one of them, so its row
-// goes to the line and it stands there for a row of its own again. Nothing else of it moves —
+// waits on another issue (record.LineFacts.Waits, the pass's own judgement by blockers.waitsOf),
+// and reports the issues it took one from. It is the release for a wait, beside releaseSlots,
+// which frees the row of an issue that needs none at all (record.NeedsSlot): an issue this one
+// frees goes on working and keeps its place in the line, so the row comes back to it by itself
+// when the wait ends, which is why the two are written apart and why this one marks the issue.
+// The cap counts the issues Legion is working on, and an issue waiting for another issue to
+// finish is not one of them, so its row goes to the line and it stands there for a row of its
+// own again. Nothing else of it moves —
 // no claim is suspended, no phase changes, no Dispatch status is written.
 //
 // The release is one statement an issue (record.Store.ReleaseSlotForWait): the delete of the row

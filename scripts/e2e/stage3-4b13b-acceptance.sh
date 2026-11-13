@@ -251,8 +251,9 @@ start_dispatch() {
 
 # The one difference from Stage 3's configuration: admission_cap 5, for the five issues this lane
 # runs at once. Five is this lane's peak under the slot rule of INFRA-1909, where an issue keeps
-# the row the daemon gave it until it is done or leaves the workflow. Its three roots hold a row
-# each from their admission on, the wait on the person at their gates included, and the two
+# the row the daemon gave it until it is done or leaves the workflow, except while it waits on
+# another issue. Its three roots hold a row each from their admission on, the wait on the person
+# at their gates included, and the two
 # children of root 1 run beside them at rerun-a-closed-child: the parked child, rerun into
 # planning, and the closed child, reopened into it. 3 + 2 = 5. A cap of three, which this lane
 # set while a waiting root gave its row back, now leaves the first child waiting at the gates

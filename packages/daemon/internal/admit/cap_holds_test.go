@@ -15,11 +15,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
-// What the cap can and cannot hold back, now that an issue holds its row from the first moment
-// the daemon starts it until it is done or leaves the workflow
-// (record.KeepsSlot). An issue that holds a row starts its next phase whatever admission_cap
-// says, because its promotion takes no second row (admit's slotFor); an issue that holds none
-// takes one when the daemon starts it, and waits in the line while the project is at its cap.
+// What the cap can and cannot hold back, now that an issue holds its row from when the daemon
+// starts it until it is done or leaves the workflow (record.KeepsSlot), except while it waits on
+// another issue (releaseSlotsForWaits). An issue that holds a row starts its next phase whatever
+// admission_cap says, because its promotion takes no second row (admit's slotFor); an issue that
+// holds none takes one when the daemon starts it, and waits in the line while the project is at
+// its cap.
 
 // capMember records key under root in stands, with the Dispatch status a member in that phase
 // shows. It writes no row: what each case here is about is whether the issue holds one.

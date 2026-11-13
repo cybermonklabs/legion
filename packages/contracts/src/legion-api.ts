@@ -723,13 +723,17 @@ const legionBlockedIssue = z.object({
  * the cap counts the issues the daemon has started rather than the trees (dispatch://INFRA-980):
  * `active` is every issue holding a slot and `waiting` the admission line, children as much as
  * roots, so one tree with three started children holds three slots. An issue takes its slot when
- * the daemon starts it and keeps it until it is done or leaves the workflow, so `active` carries
- * an issue waiting on a person, one in `accepting`, one `held`, a merger at work in `merging`,
- * one in `merging` whose start a closed design gate holds, and a merged root standing in
- * `merging` while the rest of its tree runs, while an issue whose phase has left the workflow —
- * `done`, or a status Dispatch took it out of the workflow with — is in neither list. An issue
- * holding a slot is in `waiting` as well while its work comes back to it, an answered root until
- * the pass that resumes it. `trees` is the root of every live tree, sorted, which a reader needs
+ * the daemon starts it and keeps it until it is done or leaves the workflow, except while it
+ * waits on another issue, so `active` carries an issue waiting on a person, one in `accepting`,
+ * one `held`, a merger at work in `merging`, one in `merging` whose start a closed design gate
+ * holds, and a merged root standing in `merging` while the rest of its tree runs, while an issue
+ * whose phase has left the workflow — `done`, or a status Dispatch took it out of the workflow
+ * with — is in neither list. A started issue that waits on another issue is missing from `active`
+ * too: it gives its slot back for that wait and stands in `waiting` and in `blocked` until the
+ * wait ends, which is how a reader tells it from an issue a person parked, which stands in none
+ * of the three. An issue holding a slot is in `waiting` as well while its work comes back to it,
+ * an answered root until the pass that resumes it. `trees` is the root of every live tree,
+ * sorted, which a reader needs
  * because a running tree may hold no slot at all — the controller reads it where it read
  * `active` as the running
  * trees. A daemon at this contract writes it on every state, empty rather than null, and it is
@@ -738,8 +742,9 @@ const legionBlockedIssue = z.object({
  * claims record a contract below 51 (`api.stateFor`, `withoutTrees`). A reader that finds it
  * absent has been served that stripped body and learns nothing about which trees run; it is
  * never a daemon older than this plugin, whom the boot gate and `legion probe-image` refuse.
- * `blocked` is every root and every child Legion is waiting to start behind a Dispatch
- * issue nobody has finished, by issue key; a blocked issue the line carries is in `waiting` too.
+ * `blocked` is every issue Legion waits on a Dispatch issue nobody has finished for, by issue
+ * key: a root or a child Legion is waiting to start, and a started issue that gave its slot back
+ * for the wait; a blocked issue the line carries is in `waiting` too.
  * The controller names them in the day's report and takes nothing for them. */
 const legionAdmission = z.object({
   cap: z.number().int().nonnegative(),

@@ -13,9 +13,9 @@ import (
 // A waiting issue is reported waiting and blocked. This half reads what an operator running
 // plain `legion state` is told of one: an issue the daemon started and that waits on another
 // issue stands on the `blocked on Dispatch links:` line with the keys it waits on, beside the
-// issues Legion has not started that a link holds, because `blocked` is one list of everything
-// Legion is waiting to start behind a Dispatch issue nobody has finished and the command names
-// it whatever put each issue there (blockedSummary). What the state itself carries for them is
+// issues Legion has not started that a link holds, because `blocked` is one list of every issue
+// Legion waits on a Dispatch issue nobody has finished for, and the command names it whatever
+// put each issue there (blockedSummary). What the state itself carries for them is
 // the other half, under this name in packages/daemon/internal/api: the `admission` object the
 // route serves. Neither half reads the other's reader, so neither proves what the other does.
 //

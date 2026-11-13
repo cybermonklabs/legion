@@ -34,9 +34,10 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 //
 // A start is one row since INFRA-1573, and that row carries the worker's task, so the mark now
 // decides when the worker comes back. An issue holds its slot from the moment the daemon starts
-// it until its work ends (record.KeepsSlot), merging included, so the mark costs the resume of
-// a slot holder nothing: the row is runnable the moment the boot writes it, and the merger is
-// reached. What the mark buys is the other issue: one whose tree runs but which holds no slot —
+// it until its work ends (record.KeepsSlot), merging included, except while it waits on another
+// issue, so the mark costs the resume of a slot holder nothing: the row is runnable the moment
+// the boot writes it, and the merger is reached. What the mark buys is the other issue: one
+// whose tree runs but which holds no slot —
 // a member of a re-admitted tree still waiting in the line while the cap is full — whose row
 // waits for the slot instead of putting a worker to work on an issue admission has not admitted,
 // and runs when the slot comes.

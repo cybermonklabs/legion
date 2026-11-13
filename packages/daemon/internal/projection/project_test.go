@@ -474,9 +474,9 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 	}
 }
 
-// The state names every issue Legion is waiting to start behind a Dispatch issue nobody has
-// finished, judged from the project's mirror in the same transaction the rest of the state is
-// read in: the waiting root admission skips and the child the workflow holds at `admitted`, in
+// The state names every issue Legion waits on a Dispatch issue nobody has finished for, judged
+// from the project's mirror in the same transaction the rest of the state is read in: here the
+// waiting root admission skips and the child the workflow holds at `admitted`, in
 // one list sorted by issue key. A root carrying a run is never judged, whatever its links say,
 // and a state with nothing blocked carries an empty list rather than none.
 func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {

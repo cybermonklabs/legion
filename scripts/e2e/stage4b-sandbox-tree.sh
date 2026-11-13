@@ -242,8 +242,9 @@ pod_sessions_dir=/home/legion/.omp/profiles/legion/agent/sessions
 stream=ENVOY_NOTIFICATIONS
 # The issues the run's daemon runs at once. Since dispatch://INFRA-980 a slot is one issue the
 # daemon has started, a root or a child, so tree 1's children count against this cap as its root
-# does, and since INFRA-1909 an issue keeps that slot until it is done or leaves
-# the workflow. Four is the run's own peak under that rule, reached twice. At
+# does, and since INFRA-1909 an issue keeps that slot until it is done or leaves the workflow,
+# except while it waits on another issue. Four is the run's own peak under that rule, reached
+# twice. At
 # issue-independence: tree 1's root and its two children beside tree 2's root, which is where the
 # cap stands full and tree 3, set todo there, waits for it. At children-first-acceptance: tree 1's
 # root, which keeps its slot in `accepting` now, beside tree 3 and children 3 and 4 — tree 2 has
