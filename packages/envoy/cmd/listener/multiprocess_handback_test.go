@@ -261,9 +261,9 @@ const mpParkedQuiet = 5 * time.Second
 
 // mpRetryOutstanding registers on pod a two healthy sessions, named after row, and leaves the
 // machine's durable holding messages no pod of it can settle, by the route production reaches that
-// state on: the backlog. Messages are left unacknowledged on the machine's durable by an outage of
-// the pod receiving it, and the session they are for registers at its real resume point, past
-// them, so its consumer starts after them. The session follows a stored topic and is live, but its
+// state on: the backlog. An outage of the pod receiving the durable leaves messages unacknowledged
+// on it, and any registration of their session after them, at its real resume point or fresh,
+// gives it a consumer starting after them. The session follows a stored topic and is live, but its
 // consumer cannot carry those messages (session.Resolve's "one whose consumer cannot carry this
 // message", internal/session/session.go), so when the durable delivers them again the fan-out's
 // resolution of that live session fails, which the durable path NAKs for durableRetryDelay (30 s;
