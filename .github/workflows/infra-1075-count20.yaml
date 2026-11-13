@@ -1,0 +1,54 @@
+# Temporary, for dispatch://INFRA-1075's check 97f10c0b only: the twenty repeats of the two
+# rows that check asks for, run in CI rather than on a pod, at a commit whose packages/envoy
+# tree is the head's. It is deleted in the commit after the run it records, so no lane carries
+# it and nothing of main's CI reads it.
+name: INFRA-1075 twenty runs
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  count20:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    services:
+      postgres:
+        # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
+        image: ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+        # The lane's disposable Postgres, as every service of ci.yaml runs it.
+        command: >-
+          postgres
+          -c fsync=off
+          -c full_page_writes=off
+          -c synchronous_commit=off
+          -c max_connections=500
+          -c max_prepared_transactions=20
+        env:
+          POSTGRES_PASSWORD: ci
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 1s
+          --health-timeout 5s
+          --health-retries 50
+    env:
+      DISPATCH_TEST_DATABASE_URL: postgres://postgres:ci@localhost:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-bun
+      - run: bun install --frozen-lockfile
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: packages/envoy/go.mod
+          cache: false
+      - name: Twenty runs of the embedqueue boot-drain row
+        run: go test -count=20 -run '^TestRunMakesNoStatementOnceItsBootDrainAndPassAreDone$' ./internal/dispatch/embedqueue/
+        working-directory: packages/envoy
+      - name: Twenty runs of the upload lock row
+        run: go test -count=20 -run '^TestAnUploadHoldsNoIssueLockWhileTheStoreWrites$' ./internal/dispatch/api/
+        working-directory: packages/envoy
