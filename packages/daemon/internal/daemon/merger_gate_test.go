@@ -65,6 +65,49 @@ func TestTheMergersStartWaitsWhileItsTreesDesignGateIsClosed(t *testing.T) {
 	}
 }
 
+// Under `root-issues` a root that registered its Verification document as criteria holds its
+// tree on that document too (record.TreeSteps), so a new version of it holds the merger's start
+// as a new spec version does, with the spec itself approved, and the approval of that version
+// runs the same row.
+func TestTheMergersStartWaitsWhileItsTreesRegisteredVerificationDocumentIsClosed(t *testing.T) {
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+		Project: "LEGION", Tree: "LEGION-208", Title: "a reviewed root", Phase: phase.Merging, Generation: 1, Status: "retro"}
+	putOutboxIssue(t, pool, records, issue)
+	putOutboxGate(t, pool, records, record.DesignGate{Issue: issue.Key, Step: record.DesignStepSpec, ArtifactID: "artifact-208",
+		LatestVersion: 4, ApprovedVersion: new(4)})
+	// The Verification document as a new version leaves it: version 2 with the approval at 1.
+	putOutboxGate(t, pool, records, record.DesignGate{Issue: issue.Key, Step: record.DesignStepCriteria, ArtifactID: "artifact-208-verification",
+		LatestVersion: 2, ApprovedVersion: new(1)})
+	sup, runtime := newOutboxSupervisor(t, "legion", t.TempDir())
+	runner := &outbox{log: quietLogger(), dispatchProject: "LEGION", pool: pool, records: records, supervisor: sup,
+		trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
+		gatedSteps: config.DesignGateRootIssues.Steps(),
+		provision: func(context.Context, workspace.Request) (workspace.Workspace, error) {
+			return workspace.Workspace{Dir: t.TempDir(), Bookmark: "legion/LEGION-208"}, nil
+		},
+	}
+	row := mustOutboxRow(t, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleMerger,
+		Generation: issue.Generation, Phase: phase.Merging, Task: "Merge it."}, time.Now())
+
+	if err := runner.execute(context.Background(), row); !errors.Is(err, wait.ErrWaiting) {
+		t.Fatalf("the merger's start under a closed Verification document = %v, want it held (wait.ErrWaiting)", err)
+	}
+	if spawns := len(runtime.CallsOf("Spawn")); spawns != 0 {
+		t.Fatalf("the runtime spawned %d sessions while the Verification document was closed, want none", spawns)
+	}
+
+	putOutboxGate(t, pool, records, record.DesignGate{Issue: issue.Key, Step: record.DesignStepCriteria, ArtifactID: "artifact-208-verification",
+		LatestVersion: 2, ApprovedVersion: new(2)})
+	if err := runner.execute(context.Background(), row); err != nil {
+		t.Fatalf("the merger's start once the Verification document is approved = %v, want it run", err)
+	}
+	if spawns := len(runtime.CallsOf("Spawn")); spawns != 1 {
+		t.Fatalf("the runtime spawned %d sessions once the Verification document was approved, want the merger's one", spawns)
+	}
+}
+
 // putOutboxGate records a tree's design gate.
 func putOutboxGate(t *testing.T, pool *store.Pool, records record.Store, gate record.DesignGate) {
 	t.Helper()

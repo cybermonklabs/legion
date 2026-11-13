@@ -708,3 +708,206 @@ func TestLegacyPolicyOffBehavesAsItDoesToday(t *testing.T) {
 		t.Fatalf("the root = %s under the empty list once its spec is registered, want planning", got)
 	}
 }
+
+// Under `root-issues` the spec is the one step every root must register, and a root that also
+// registers its Verification document as criteria is held on it too (record.TreeSteps). Nothing
+// binds that document to the step before: the registration writes the criteria row itself, and
+// writes it closed, since a person has still to approve the document. So one approval of both
+// documents, which Dispatch records as one artifact.approved for each, opens the tree only at
+// the second of them, whichever comes first; the child released into the tree waits with it.
+func TestARegisteredVerificationDocumentHoldsTheTreeUntilItsOwnApproval(t *testing.T) {
+	for _, tc := range []struct {
+		name          string
+		first, second intake.DispatchArtifact
+	}{
+		{name: "the spec approved first",
+			first:  stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 7}),
+			second: stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 8})},
+		{name: "the Verification document approved first",
+			first:  stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 7}),
+			second: stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 8})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			apply := applyFacts(t, pool, engine)
+			seedGatedTree(t, pool)
+
+			apply("register-criteria", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 2})
+			apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4})
+			applyMirrored(t, pool, engine, "child-todo", intake.DispatchIssue{Key: "LEGION-209", ResolvedRepo: "sjawhar/legion",
+				Seq: 2, Type: "issue.updated", Status: "todo", Title: "child", Parent: gatedRoot, Rank: "V"})
+			if criteria := gatesOf(t, pool, gatedRoot)[record.DesignStepCriteria]; criteria.LatestVersion != 2 || criteria.ApprovedVersion != nil {
+				t.Fatalf("the criteria row = %#v, want it registered at version 2 and closed: a person has still to approve it", criteria)
+			}
+
+			apply("approve-first", tc.first)
+			admissionPass(t, pool, engine)
+			for _, held := range []string{gatedRoot, "LEGION-209"} {
+				if got := phaseOf(t, pool, held); got != phase.Admitted {
+					t.Fatalf("%s after the first approval = %s, want it admitted: the other document is not approved", held, got)
+				}
+			}
+			if engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+				t.Fatal("the standing gate is open after the first approval, want it closed until the second")
+			}
+
+			apply("approve-second", tc.second)
+			admissionPass(t, pool, engine)
+			for _, released := range []string{gatedRoot, "LEGION-209"} {
+				if got := phaseOf(t, pool, released); got != phase.Planning {
+					t.Fatalf("%s once both documents are approved = %s, want planning", released, got)
+				}
+			}
+			if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+				t.Fatal("the standing gate is closed once both documents are approved, want it open")
+			}
+		})
+	}
+}
+
+// A new version of a registered Verification document closes the standing gate under the workers
+// already running, as a new spec version does: the merger and the root architect are told it
+// closed, and the predicate the merger's start hold reads (standingGateOpen, which the outbox's
+// designGateClosed asks through classify.StandingGate) holds the merge until a person approves
+// that version. The approval opens the gate, and they are told that too.
+func TestANewVerificationVersionClosesTheGateAndHoldsTheMerger(t *testing.T) {
+	pool := migratedPool(t)
+	seedMergingRoot(t, pool)
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc,
+		LatestVersion: 1, ApprovedVersion: new(1)})
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepSpec, ArtifactID: gateDoc,
+		LatestVersion: 3, ApprovedVersion: new(3)})
+	seedSlot(t, pool, record.Slot{Issue: gatedRoot, Index: 0, AdmittedAt: time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+		t.Fatal("the standing gate is closed with both documents approved, want it open")
+	}
+
+	applyMirrored(t, pool, engine, "criteria-2", intake.DispatchArtifact{
+		Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion, Version: 2})
+	closed := gateMovedBody(record.DesignStepCriteria, criteriaDoc, 2, false)
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
+	})
+	if engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+		t.Fatal("the standing gate is open under a new Verification version nobody approved, want it closed: the merge waits")
+	}
+
+	applyMirrored(t, pool, engine, "criteria-approved-2", stepApproval(gatedRoot, criteriaDoc, 2, record.EventMark{Seq: 11}))
+	opened := gateMovedBody(record.DesignStepCriteria, criteriaDoc, 2, true)
+	assertRoleMessages(t, pool, gatedRoot, []record.RoleMessage{
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: closed},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleMerger), Body: opened},
+		{Role: treeRoleToken(t, gatedRoot, claim.RoleArchitect), Body: opened},
+	})
+	if !engine.standingGateOpen(gatesOf(t, pool, gatedRoot)) {
+		t.Fatal("the standing gate is closed once the new Verification version is approved, want it open")
+	}
+}
+
+// A tree whose root registered no Verification document is gated on the spec alone, as every
+// gate registered before register_gate took criteria is: a version of that document reaches no
+// row, and the spec's approval opens the tree.
+func TestATreeWithNoCriteriaRowIsGatedOnTheSpecAlone(t *testing.T) {
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	apply := applyFacts(t, pool, engine)
+	seedGatedTree(t, pool)
+
+	apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4})
+	apply("criteria-version", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion,
+		Version: 3, Mark: record.EventMark{Seq: 6}})
+	apply("approve-spec", stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 7}))
+	admissionPass(t, pool, engine)
+	if got := phaseOf(t, pool, gatedRoot); got != phase.Planning {
+		t.Fatalf("the root = %s with its spec approved and no Verification document registered, want planning", got)
+	}
+	if gates := gatesOf(t, pool, gatedRoot); len(gates) != 1 {
+		t.Fatalf("the gates = %#v, want the spec row alone: nothing but the registration writes a criteria row", gates)
+	}
+}
+
+// Under `gates.design: off` no step holds a tree, a criteria row among them. register_gate
+// records a Verification document as the spec step there (internal/api's
+// TestRegisterGateStepRefusals), and a criteria row a tree kept from a deployment that gated spec
+// holds nothing, closed as it stands: the spec's registration opens the tree at once, and a new
+// version of the kept document moves no row and tells nobody.
+func TestUnderOffAKeptCriteriaRowGatesNothing(t *testing.T) {
+	pool := migratedPool(t)
+	engine := testEngine(config.DesignGateOff, nil)
+	apply := applyFacts(t, pool, engine)
+	seedGatedTree(t, pool)
+	seedGate(t, pool, record.DesignGate{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, LatestVersion: 2})
+
+	apply("register", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4})
+	admissionPass(t, pool, engine)
+	if got := phaseOf(t, pool, gatedRoot); got != phase.Planning {
+		t.Fatalf("the root = %s under off with a closed criteria row kept, want planning", got)
+	}
+	apply("criteria-3", intake.DispatchArtifact{Key: gatedRoot, ArtifactID: criteriaDoc, Kind: intake.DispatchArtifactVersion,
+		Version: 3, Mark: record.EventMark{Seq: 8}})
+	if criteria := gatesOf(t, pool, gatedRoot)[record.DesignStepCriteria]; criteria.LatestVersion != 2 {
+		t.Fatalf("the kept criteria row = %#v after a new version of its document, want it left at version 2", criteria)
+	}
+	assertOutboxCount(t, pool, "role_message", 0)
+}
+
+// "Ever opened" is whether the tree's work was ever released, and a Verification document
+// registered as criteria reads right in both orders. Registered before the first opening, with
+// the spec approved first, it holds that release: the tree reads never opened and closed, so the
+// root still has its design to finish at admitted and waits on the person for that document.
+// Registered after the gate already opened, it joins a tree its gate released: the row is
+// written as ever opened, and the tree reads opened once and closed.
+func TestAVerificationDocumentReadsEverOpenedByWhenItWasRegistered(t *testing.T) {
+	t.Run("registered before the first opening", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		apply := applyFacts(t, pool, engine)
+		seedGatedTree(t, pool)
+
+		apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4})
+		// The registration reads an approval request of the Verification document open on the
+		// person's turn, so it hands that document to the person.
+		apply("register-criteria", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 2,
+			RequestAsk: "ask-criteria", Since: record.EventMark{Seq: 6}})
+		apply("approve-spec", stepApproval(gatedRoot, gateDoc, 4, record.EventMark{Seq: 7}))
+
+		gate := record.TreeGate{Steps: engine.cfg.Steps, Rows: gatesOf(t, pool, gatedRoot)}
+		if gate.EverOpened() || gate.Open() {
+			t.Fatalf("the tree reads ever opened %t, open %t; want neither until the Verification document is approved", gate.EverOpened(), gate.Open())
+		}
+		if entered := reconcileAwaiting(t, pool, engine); len(entered) != 1 || entered[0] != gatedRoot {
+			t.Fatalf("the pass returned %v, want the root, which handed its Verification document to the person", entered)
+		}
+		if waiting := recordedRoot(t, pool); waiting.Awaiting == nil || waiting.Awaiting.Artifact != criteriaDoc || waiting.Awaiting.GateVersion != 2 {
+			t.Fatalf("the root waits on %#v, want the Verification document at version 2", waiting.Awaiting)
+		}
+	})
+
+	t.Run("registered after the gate opened", func(t *testing.T) {
+		pool := migratedPool(t)
+		engine := testEngine(config.DesignGateRootIssues, nil)
+		apply := applyFacts(t, pool, engine)
+		seedGatedTree(t, pool)
+
+		apply("register-spec", intake.GateRegistered{Issue: gatedRoot, ArtifactID: gateDoc, Version: 4, ApprovedVersion: 4,
+			ReviewedBy: dispatch.Actor{Kind: "user", ID: "alice"}})
+		admissionPass(t, pool, engine)
+		if got := phaseOf(t, pool, gatedRoot); got != phase.Planning {
+			t.Fatalf("the root = %s once its spec is approved, want planning", got)
+		}
+		apply("register-criteria", intake.GateRegistered{Issue: gatedRoot, Step: record.DesignStepCriteria, ArtifactID: criteriaDoc, Version: 2})
+
+		gates := gatesOf(t, pool, gatedRoot)
+		if criteria := gates[record.DesignStepCriteria]; !criteria.EverOpened || criteria.ApprovedVersion != nil {
+			t.Fatalf("the criteria row = %#v, want it closed and written as ever opened: it joined a released tree", criteria)
+		}
+		gate := record.TreeGate{Steps: engine.cfg.Steps, Rows: gates}
+		if !gate.EverOpened() || gate.Open() {
+			t.Fatalf("the tree reads ever opened %t, open %t; want it opened once and closed now", gate.EverOpened(), gate.Open())
+		}
+	})
+}

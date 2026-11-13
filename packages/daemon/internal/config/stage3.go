@@ -23,6 +23,13 @@ import (
 
 // DesignGate is the word `gates.design` took before it took a list of steps, and which it still
 // accepts in place of one: `root-issues` for the single step spec, `off` for no step at all.
+//
+// The steps a word names are the ones every root must register, which is not every step a root
+// can be held on. Under `root-issues` a root's architect may also register its Verification
+// document as the step criteria, and from then on that root's tree is held on it as on the spec
+// (record.TreeSteps); a root that registers none is held on the spec alone. Under `off` no step
+// holds a tree: a registration records spec whatever step it names, and a criteria row kept
+// from a deployment that gated spec holds nothing.
 type DesignGate string
 
 const (
@@ -56,11 +63,15 @@ type Gates struct {
 	Design []record.DesignStep
 }
 
-// Steps is the design-gate steps the deployment gates, in the order it named them. The daemon
-// keeps one gate record for each step, and every reader of the gate asks this list
-// (classify.RequiredSteps). A nil list is the unset field, which gates the single step spec as
-// the gate did before a deployment could name a list, so a Config built without its Gates field
-// gates rather than waves through; a non-nil empty list is `off` and gates no step.
+// Steps is the design-gate steps the deployment gates, in the order it named them: the steps
+// every root must register before its tree works. The daemon keeps one gate record for each step
+// a root registers, and every reader of the gate asks this list through record.TreeSteps, so a
+// list that names spec and not criteria also holds a tree on criteria once its root's architect
+// registers the Verification document as that step: a tree can be gated on one step more than
+// this list names, never fewer. A nil list is the unset field, which gates the single step spec
+// as the gate did before a deployment could name a list, so a Config built without its Gates
+// field gates rather than waves through; a non-nil empty list is `off` and gates no step, and no
+// step joins it.
 func (g Gates) Steps() []record.DesignStep {
 	if g.Design == nil {
 		return DesignGateRootIssues.Steps()

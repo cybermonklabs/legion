@@ -238,14 +238,17 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 				ApprovedVersion: gate.ApprovedVersion,
 			}
 		}
-		// The deployment's gate as this root stands in it, one entry for each step it gates. Only
-		// a root holds gate rows — a child's work is held at its root's steps — so a child answers
-		// no entry at all rather than one unregistered step for each the deployment gates. The
-		// entries are the configured steps and not the rows: a row of a step the deployment no
-		// longer gates is kept in the record, where a deployment that gates it again reads its
-		// true state, and is in no entry here, since it holds nothing (classify.DesignGatesOpen).
+		// The tree's gate as this root stands in it, one entry for each step the tree is gated on
+		// (record.TreeSteps): each step the deployment gates, and criteria where the root's
+		// architect registered its Verification document beside a deployment of spec alone, since
+		// that row holds the tree as the spec's does. Only a root holds gate rows — a child's work
+		// is held at its root's steps — so a child answers no entry at all rather than one
+		// unregistered step for each the deployment gates. The entries are the tree's steps and
+		// not the rows: a row of a step the deployment no longer gates is kept in the record,
+		// where a deployment that gates it again reads its true state, and is in no entry here,
+		// since it holds nothing (classify.DesignGatesOpen).
 		if issue.Key == issue.Tree {
-			view.GatedSteps = api.GatedStepViewsOf(steps, gates)
+			view.GatedSteps = api.GatedStepViewsOf(record.TreeSteps(steps, gates), gates)
 		}
 		if check, ok := checks[issue.Key]; ok {
 			view.Check = checkView(check)

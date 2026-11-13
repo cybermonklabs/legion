@@ -522,10 +522,12 @@ type CatchUp struct {
 // has still to register.
 //
 // A catch-up carries one entry for each step the root must hold open before its tree works
-// (classify.RequiredSteps), so a deployment that gates nothing carries the one spec entry with
-// Gated false: that registration opens the step at once and asks no person, which is what the
-// policy word `off` said. The list replaced that word, because one word cannot name a list and
-// each entry now says its own step's part of it.
+// (classify.RequiredSteps over the steps the tree is gated on, TreeSteps), so a deployment that
+// gates nothing carries the one spec entry with Gated false: that registration opens the step at
+// once and asks no person, which is what the policy word `off` said. The list replaced that
+// word, because one word cannot name a list and each entry now says its own step's part of it. A
+// criteria row the architect registered beside a deployment that gates spec alone of the two is
+// an entry with Gated true, since that row holds the tree as the spec's does.
 type CatchUpGate struct {
 	Step         DesignStep `json:"step"`
 	Gated        bool       `json:"gated"`

@@ -549,15 +549,16 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 // step the person was asked about (classify.StandingGate), which is the one the resume answers
 // for; else the first required step that is not open, which nobody has registered and whose
 // document the architect has still to register; and when every required step is open the first
-// required step, whose version the resume says the work runs at. The row is nil for the
-// unregistered step, as a root nobody has registered a gate for holds none.
+// required step, whose version the resume says the work runs at. The required steps are the
+// ones the tree is gated on (classify.TreeSteps), as in the two rules it reads. The row is nil
+// for the unregistered step, as a root nobody has registered a gate for holds none.
 func gateInQuestion(steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate) (record.DesignStep, *record.DesignGate) {
 	if gate, standing := classify.StandingGate(steps, gates); standing {
 		return gate.Step, &gate
 	}
 	step, _, closed := classify.FirstClosedStep(steps, gates)
 	if !closed {
-		step = classify.RequiredSteps(steps)[0]
+		step = classify.RequiredSteps(classify.TreeSteps(steps, gates))[0]
 	}
 	gate, ok := gates[step]
 	if !ok {

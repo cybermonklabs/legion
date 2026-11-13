@@ -14,11 +14,18 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// gatesStep says whether the deployment gates step, so a person must approve that step's document
-// before the tree works. A row of any other step is kept and holds nothing: its registration
-// opens it at once and no artifact event moves it (artifactIgnored).
+// gatesStep says whether a person must approve step's document before the tree works: a step the
+// deployment gates, or the one that joins the tree whose root registers it
+// (record.JoinsByRegistration: criteria, under a deployment that gates spec and not criteria).
+// It reads no rows, so the step being registered counts as gated in its own registration: a
+// rule over the tree's rows (record.TreeSteps) would find no criteria row before the
+// registration writes one, approve it at once (gateRegistered's ungated branch), and let the
+// spec's approval alone open a tree whose Verification document a person has still to approve.
+// The two answers are the same rule, since a criteria row exists only by such a registration.
+// A row of any other step is kept and holds nothing: its registration opens it at once and no
+// artifact event moves it (artifactIgnored).
 func (e *Engine) gatesStep(step record.DesignStep) bool {
-	return slices.Contains(e.cfg.Steps, step)
+	return slices.Contains(e.cfg.Steps, step) || record.JoinsByRegistration(e.cfg.Steps, step)
 }
 
 // gateOfDocument is the gate of gates registered on document, nil when none is: the row an event
@@ -34,16 +41,17 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 
 // gateRegistered records the gate an architect registered for its root, and logs it. The row it
 // writes is the one of the step the registration names, which register_gate bound to the document
-// it carries. On a step the deployment does not gate it is approved at once, whatever the gate
-// held before; once every step the deployment gates is open the registration advances the
-// admitted tree. What register_gate read of Dispatch's approval travels with the registration, so
-// a person's review given before the architect registered is applied here: an approval of the
-// latest version (ApprovedVersion) records the gate open, and the root keeps its slot and starts
-// planning; a changes request on it (ChangesRequestedVersion) records it closed with the architect
-// told, unless the gate already records that same review as told, and the root keeps its slot at
-// admitted to revise. The architect is told the version the gate opened at, which an approval
-// carried to a later version makes the later one, and is not told it again when the gate of that
-// document was already open at that version.
+// it carries. On a step no person approves (gatesStep) it is approved at once, whatever the gate
+// held before; a criteria row a deployment of spec alone takes is written closed, like a gated
+// step's, and holds the tree from then on. Once every step the tree is gated on is open the
+// registration advances the admitted tree. What register_gate read of Dispatch's approval
+// travels with the registration, so a person's review given before the architect registered is
+// applied here: an approval of the latest version (ApprovedVersion) records the gate open, and
+// the root keeps its slot and starts planning; a changes request on it (ChangesRequestedVersion)
+// records it closed with the architect told, unless the gate already records that same review as
+// told, and the root keeps its slot at admitted to revise. The architect is told the version the
+// gate opened at, which an approval carried to a later version makes the later one, and is not
+// told it again when the gate of that document was already open at that version.
 //
 // The approval request the registration's read found open is mirrored as the read found it
 // (mirrorRegisteredRequest), before anything decides whether the registration changes the gate:
@@ -88,9 +96,10 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if held, found := gates[step]; found && held.ArtifactID == fact.ArtifactID {
 		stored = &held
 	}
-	// A step the deployment does not gate asks no person: its registration opens it at once, as
+	// A step no person approves (gatesStep) asks no person: its registration opens it at once, as
 	// every registration did under `gates.design: off`, and no artifact event moves it
-	// (artifactIgnored).
+	// (artifactIgnored). A criteria row a deployment of spec alone takes is gated from this,
+	// its first write.
 	ungated := !e.gatesStep(step)
 	sameDocument := stored != nil
 	// The version the gate is registered at is the newest either side knows of: the caller's, or
@@ -116,7 +125,16 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 			"artifact", fact.ArtifactID, "version", version, "open", classify.DesignGateOpen(*stored), "since_seq", fact.Since.Seq)
 		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
 	}
-	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
+	// A row that joins a tree its gate has already released — the Verification document an
+	// architect registers as criteria once the spec opened the tree — did not hold that release,
+	// so it is written as ever opened (record.DesignGate.EverOpened): the tree still reads as
+	// released (record.TreeGate.EverOpened) while the new row holds its gate closed. The rows are
+	// read before this one exists, so a row registered before the first opening finds the tree
+	// never opened and is written as never opened, and holds that answer until a person approves
+	// it. Any other row's mark is the one it already holds, which the write keeps
+	// (record.Store.PutGate).
+	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version,
+		EverOpened: record.TreeGate{Steps: e.cfg.Steps, Rows: gates}.EverOpened()}
 	// An approval of an older version the gate of this document holds is kept, as a version event
 	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.
 	if sameDocument && stored.ApprovedVersion != nil && *stored.ApprovedVersion < version {
@@ -521,8 +539,9 @@ func (e *Engine) mirrorRegisteredRequest(ctx context.Context, tx pgx.Tx, root re
 // gate above the seed's read is one no Dispatch version ever matched: a daemon that registered the
 // caller's version unchecked recorded it. Left there, every review of the document's real latest
 // version would be dropped as a review of an older one. The row it resets is the one the read's
-// document names. A step the deployment does not gate has its reset row approved, as its
-// registration would leave it.
+// document names. A step no person approves (gatesStep) has its reset row approved, as its
+// registration would leave it; a criteria row under a deployment of spec alone is reset closed,
+// as a gated step's is.
 func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.GateAboveDispatch) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Read.Key)
 	if err != nil || issue == nil || issue.Generation != fact.Generation {
@@ -696,15 +715,17 @@ func (e *Engine) recordHandover(ctx context.Context, tx pgx.Tx, gate record.Desi
 }
 
 // artifactIgnored says why an artifact event changes no gate state, if it does not: ungated when
-// the deployment does not gate the row's step, so no artifact event moves that row, and stale for
-// a review of a version older than the gate's latest, or one the gate has already seen superseded
-// (classify.StaleReview). A version event is never stale. applyArtifact and recordHandover both
-// read it, so the two never disagree on which events a gate takes.
+// no person approves the row's step (gatesStep), so no artifact event moves that row, and stale
+// for a review of a version older than the gate's latest, or one the gate has already seen
+// superseded (classify.StaleReview). A version event is never stale. applyArtifact and
+// recordHandover both read it, so the two never disagree on which events a gate takes.
 //
 // Under a deployment that gates no step, every row is ungated, which is what `gates.design: off`
 // has always done: the registration approves the gate, and no review or version of its document
 // closes it. A row of a step a deployment gated before and does not gate now is ignored the same
-// way, and is kept, so gating that step again reads its true state.
+// way, and is kept, so gating that step again reads its true state. A criteria row under a
+// deployment that gates spec and not criteria is gated (record.JoinsByRegistration), so a new
+// version of the Verification document closes it and a person's approval opens it.
 func (e *Engine) artifactIgnored(gate record.DesignGate, fact intake.DispatchArtifact) (ungated, stale bool) {
 	ungated = !e.gatesStep(gate.Step)
 	stale = fact.Kind != intake.DispatchArtifactVersion &&
@@ -807,7 +828,7 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 // order: the told record holds only the newest review, so it alone cannot recognise a request a
 // later review replaced, and the key per review can.
 //
-// On a row of a step the deployment does not gate, no artifact event moves the gate: the row is
+// On a row of a step no person approves (gatesStep), no artifact event moves the gate: the row is
 // approved at registration (gateRegistered), and a review or a version of the document it names
 // must not close it. Under a deployment that gates no step that is every row, which is what
 // `gates.design: off` has always done. The same return keeps an approval from opening a carried
@@ -1047,13 +1068,16 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 }
 
 // standingGateOpen is whether the tree's work stands released under gates, the rows an issue
-// holds by step: no step the deployment gates is closed with a row of its own
-// (classify.StandingGate). It is the one predicate the message and the merger's start hold both
-// read — the hold asks it as the outbox's designGateClosed — so a member is never told the gate
-// opened while the hold still holds its merger, nor left untold when the hold lets it go. A step
-// the deployment gates that nothing has registered holds the tree's work (FirstClosedStep) but
-// names no document, so nobody can be asked about it and nothing can be said of it: it is why the
-// message reads StandingGate rather than DesignGatesOpen, and the one difference between them.
+// holds by step: no step the tree is gated on (record.TreeSteps: the deployment's, and a
+// criteria row its architect registered beside a deployment of spec alone) is closed with a row
+// of its own (classify.StandingGate). So a new version of a registered Verification document
+// closes it as a new spec version does. It is the one predicate the message and the merger's
+// start hold both read — the hold asks it as the outbox's designGateClosed — so a member is
+// never told the gate opened while the hold still holds its merger, nor left untold when the
+// hold lets it go. A step the deployment gates that nothing has registered holds the tree's
+// work (FirstClosedStep) but names no document, so nobody can be asked about it and nothing can
+// be said of it: it is why the message reads StandingGate rather than DesignGatesOpen, and the
+// one difference between them.
 func (e *Engine) standingGateOpen(gates map[record.DesignStep]record.DesignGate) bool {
 	_, held := classify.StandingGate(e.cfg.Steps, gates)
 	return !held

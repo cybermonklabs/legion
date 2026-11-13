@@ -222,6 +222,37 @@ func TestACatchUpNamesEveryIssueWaitingForTheArchitectsAcceptance(t *testing.T) 
 	}
 }
 
+// A Verification document its architect registered as criteria beside a deployment of spec alone
+// holds the tree as the spec does, so the catch-up states it as a step of its own, after the
+// spec and gated as the spec is. A root that registered none is told the spec alone, as before.
+func TestACatchUpStatesARegisteredVerificationDocumentAsAGatedStep(t *testing.T) {
+	spec := record.CatchUpGate{Step: record.DesignStepSpec, Gated: true, Artifact: "artifact-1", Version: 4, Approved: 4, Open: true}
+	for _, tc := range []struct {
+		name     string
+		criteria bool
+		want     []record.CatchUpGate
+	}{
+		{name: "a criteria row registered", criteria: true, want: []record.CatchUpGate{spec,
+			{Step: record.DesignStepCriteria, Gated: true, Artifact: "artifact-1-verification", Version: 2}}},
+		{name: "no criteria row", want: []record.CatchUpGate{spec}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedAdmittedTree(t, pool, 1)
+			seedGate(t, pool, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+				LatestVersion: 4, ApprovedVersion: new(4)})
+			if tc.criteria {
+				seedGate(t, pool, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepCriteria, ArtifactID: "artifact-1-verification",
+					LatestVersion: 2})
+			}
+			claimReady(t, pool, testEngine(config.DesignGateRootIssues, nil), "LEGION-1", claim.RoleArchitect, 1)
+			if got := lastCatchUp(t, pool).Gates; fmt.Sprint(got) != fmt.Sprint(tc.want) {
+				t.Fatalf("the catch-up states %#v, want %#v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Only a live tree's root architect is told its tree. A tree that lingers or has left the
 // workflow is told nothing, nor is a sub-architect, nor a phase worker on the root.
 func TestOnlyALiveTreesRootArchitectIsToldItsTree(t *testing.T) {

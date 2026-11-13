@@ -461,6 +461,11 @@ func RepositoriesSentence(view api.RepositoriesView) string {
 // nothing would read as a line the daemon failed to fill. What each step asks of the architect,
 // and which document each records, is in its role parts (prompts/roles/architect-root.md and
 // prompts/go/architect-root.md).
+//
+// The steps the line names are the ones every root must register. A deployment that gates spec
+// and not criteria holds a root on criteria too once its architect registers the Verification
+// document as that step (record.TreeSteps), so its line says that as a sentence of its own: a
+// step no root must register, and that holds the root that registers it.
 func DesignGateFragment(steps []record.DesignStep) string {
 	if len(steps) == 0 {
 		return "Design gate steps: none."
@@ -469,7 +474,11 @@ func DesignGateFragment(steps []record.DesignStep) string {
 	for i, step := range steps {
 		quoted[i] = "`" + string(step) + "`"
 	}
-	return fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	line := fmt.Sprintf("Design gate steps: %s.", strings.Join(quoted, ", "))
+	if record.JoinsByRegistration(steps, record.DesignStepCriteria) {
+		line += " A root that registers its Verification document as `criteria` is held on that step too."
+	}
+	return line
 }
 
 // SlackChannelsFragment names the project's Slack channels, the list the controller answers

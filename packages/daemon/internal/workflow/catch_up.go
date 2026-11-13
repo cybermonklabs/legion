@@ -236,7 +236,9 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 
 // treeCatchUp is root's tree as the record holds it: whether a hand-over created the root at this
 // generation, and whether its old root's gate came with it, each design-gate step the root must
-// hold open and how it stands, and every issue of the tree in key order. With it come the keys,
+// hold open and how it stands, and every issue of the tree in key order. The steps are the ones
+// the tree is gated on (classify.TreeSteps), so a criteria row the architect registered beside a
+// deployment of spec alone is listed after the spec, gated as the spec is. With it come the keys,
 // in key order, of the tree's issues waiting for the architect's acceptance: each in accepting
 // and still in the workflow. No worker runs in accepting, and the one phase-finished notice that
 // moved an issue there is ended undelivered when the architect's claim has failed (the outbox's
@@ -256,10 +258,11 @@ func treeCatchUp(ctx context.Context, tx pgx.Tx, store record.Store, steps []rec
 	if err != nil {
 		return record.CatchUp{}, nil, err
 	}
-	required := classify.RequiredSteps(steps)
+	gated := classify.TreeSteps(steps, gates)
+	required := classify.RequiredSteps(gated)
 	catchUp.Gates = make([]record.CatchUpGate, 0, len(required))
 	for _, step := range required {
-		stated := record.CatchUpGate{Step: step, Gated: slices.Contains(steps, step)}
+		stated := record.CatchUpGate{Step: step, Gated: slices.Contains(gated, step)}
 		if recorded, ok := gates[step]; ok {
 			stated.Artifact, stated.Version, stated.Open = recorded.ArtifactID, recorded.LatestVersion, classify.DesignGateOpen(recorded)
 			if recorded.ApprovedVersion != nil {

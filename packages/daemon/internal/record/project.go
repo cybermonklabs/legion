@@ -608,9 +608,11 @@ func GateOpen(gate DesignGate) bool {
 }
 
 // RequiredSteps is the steps a root must hold an open gate at before its tree works: the steps
-// the deployment gates, in the order it names them, or the single step spec when it gates none.
-// It is the one statement of the rule, which classify.RequiredSteps calls; internal/classify
-// reads this package, so the rule lives here, where every reader can reach it.
+// it is given, in their order, or the single step spec when it is given none. It is the one
+// statement of the rule, which classify.RequiredSteps calls; internal/classify reads this
+// package, so the rule lives here, where every reader can reach it. It takes no rows, so a
+// caller that holds a root's rows gives it the steps that tree is gated on (TreeSteps) rather
+// than the deployment's list.
 //
 // The empty list keeps its own hold. A deployment that gates no step asks no person to approve
 // anything, and its registration opens the gate at once; but the registration itself is still
@@ -624,12 +626,50 @@ func RequiredSteps(configured []DesignStep) []DesignStep {
 	return configured
 }
 
+// TreeSteps is the steps one tree is gated on: the steps the deployment gates, in the order it
+// names them, and criteria after them when the tree's root holds a criteria row and the
+// deployment gates spec but not criteria (JoinsByRegistration). gates are the root's rows by
+// step.
+//
+// `gates.design` names the steps every root must register before its tree works, and any step a
+// root registers holds its tree too: under a deployment that gates spec alone of the two, an
+// architect may register its root's Verification document as criteria (api's registeredStep),
+// and from then on a person's approval of that document holds the tree as the spec's does, and a
+// new version of it closes the gate. A criteria row exists only by the architect's registration:
+// nothing else writes one, so a tree whose architect registered none — every gate registered
+// before register_gate took the step — stays gated on the deployment's steps alone. A row kept
+// after a switch to `gates.design: off` gates nothing: that deployment gates no step, so no step
+// joins its list.
+//
+// Every rule that asks whether a tree is gated reads this list. TreeGate and classify's
+// StandingGate, DesignGatesOpen and FirstClosedStep apply it themselves, so a caller passes them
+// the deployment's list; a caller that walks the steps itself walks this answer. The answer is
+// the deployment's own slice when nothing joins it, and a fresh one otherwise, so no caller
+// writes into the configured list.
+func TreeSteps(deployment []DesignStep, gates map[DesignStep]DesignGate) []DesignStep {
+	if _, registered := gates[DesignStepCriteria]; !registered || !JoinsByRegistration(deployment, DesignStepCriteria) {
+		return deployment
+	}
+	return append(slices.Clip(deployment), DesignStepCriteria)
+}
+
+// JoinsByRegistration says whether step is one the deployment does not gate that still gates a
+// tree whose root registers it (TreeSteps): criteria, under a deployment that gates spec and not
+// criteria. It is the one statement of which step that is: register_gate reads it to take the
+// step (api's registeredStep), and the workflow reads it to gate the row from its first write
+// (Engine.gatesStep), so the registration and every reader of the rows agree on it.
+func JoinsByRegistration(deployment []DesignStep, step DesignStep) bool {
+	return step == DesignStepCriteria && slices.Contains(deployment, DesignStepSpec) && !slices.Contains(deployment, DesignStepCriteria)
+}
+
 // TreeGate is one tree's design gate as every rule over it reads it: the steps the deployment
 // gates (Steps, the empty list standing for the single step spec, RequiredSteps) and the row the
 // tree's root holds for each step its architect has registered (Rows, nil for a root that has
 // registered none). The gate is a list of steps and the work waits on all of them, so a rule
 // that used to read one row reads this instead and no reader can answer from one step where the
-// deployment gates three.
+// deployment gates three. The steps the work waits on are the ones the tree is gated on
+// (TreeSteps over Steps and Rows), which Open, EverOpened and OpenedAt all read in the one form
+// (required).
 //
 // The zero value is the gate of a root with nothing registered, which is the answer a reader
 // wants for a tree the pass holds no gate row for: it is open at no step and has opened at none.
@@ -638,12 +678,19 @@ type TreeGate struct {
 	Rows  map[DesignStep]DesignGate
 }
 
+// required is the steps the tree's work waits on: RequiredSteps over the steps the tree is gated
+// on (TreeSteps), so a criteria row its architect registered beside a deployment's spec holds the
+// tree in every rule of the gate alike.
+func (g TreeGate) required() []DesignStep {
+	return RequiredSteps(TreeSteps(g.Steps, g.Rows))
+}
+
 // Open is whether the gate lets the tree's work run: a person's approval stands on the current
 // document version of every required step (GateOpen). A required step with no row holds the
 // work, as an unregistered gate always has, so a root with no row at all is held too. It is the
 // one rule for the question, which classify.DesignGatesOpen reads it through.
 func (g TreeGate) Open() bool {
-	for _, step := range RequiredSteps(g.Steps) {
+	for _, step := range g.required() {
 		if row, registered := g.Rows[step]; !registered || !GateOpen(row) {
 			return false
 		}
@@ -655,9 +702,12 @@ func (g TreeGate) Open() bool {
 // (DesignGate.EverOpened), which is what says the root's architect has had its whole design
 // approved once: after that the root stands at admitted with its own first phase waiting in the
 // line, and its children do the work. A step with no row has never opened, so a gate the
-// architect has still to finish registering has not either.
+// architect has still to finish registering has not either. A criteria row registered after
+// that release is written as opened (workflow's gateRegistered), so a tree whose gate opened
+// before its architect registered its Verification document still reads as released; one
+// registered before the first opening holds this answer until a person approves it.
 func (g TreeGate) EverOpened() bool {
-	for _, step := range RequiredSteps(g.Steps) {
+	for _, step := range g.required() {
 		if row, registered := g.Rows[step]; !registered || !row.EverOpened {
 			return false
 		}
@@ -678,7 +728,7 @@ func (g TreeGate) OpenedAt() time.Time {
 		return time.Time{}
 	}
 	var at time.Time
-	for _, step := range RequiredSteps(g.Steps) {
+	for _, step := range g.required() {
 		at = later(at, g.Rows[step].ApprovedMark.At)
 	}
 	return at

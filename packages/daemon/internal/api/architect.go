@@ -29,9 +29,10 @@ import (
 type EmptyResponse struct{}
 
 // GateRegisterRequest records the document version an architect asked a human to approve, for one
-// step of the deployment's design gate. Step is the step the document is for, which a deployment
-// that gates one step alone may leave out; the deployment's list says which steps it takes, and
-// each step binds to a document of its own (gateRegister).
+// step of the tree's design gate. Step is the step the document is for, which a deployment that
+// gates one step alone may leave out; the deployment's list says which steps it takes, with
+// criteria beside a list that names spec and not criteria (registeredStep), and each step binds
+// to a document of its own (gateRegister).
 type GateRegisterRequest struct {
 	GrantID    string            `json:"grantId"`
 	Issue      string            `json:"issue"`
@@ -370,6 +371,11 @@ func (s *server) gateRegister(w http.ResponseWriter, r *http.Request) {
 // which is every call a one-step deployment's architect makes. A deployment of several steps
 // needs the call to say which one it registers, since the document alone would leave the daemon
 // guessing.
+//
+// A deployment that gates spec and not criteria also takes criteria, for the root's Verification
+// document (record.JoinsByRegistration): that step is not one every root must register, and a
+// root that registers it is held on it as on the spec (record.TreeSteps), so one approval of
+// both documents opens the tree. Any other step the deployment does not gate is refused.
 func (s *server) registeredStep(w http.ResponseWriter, named record.DesignStep) (record.DesignStep, bool) {
 	switch {
 	case len(s.steps) == 0:
@@ -380,7 +386,7 @@ func (s *server) registeredStep(w http.ResponseWriter, named record.DesignStep) 
 		writeFailure(w, http.StatusBadRequest, "GATE_STEP_REQUIRED", fmt.Sprintf(
 			"this deployment gates the design-gate steps %s; name the step this document is for", stepNames(s.steps)))
 		return "", false
-	case !slices.Contains(s.steps, named):
+	case !slices.Contains(s.steps, named) && !record.JoinsByRegistration(s.steps, named):
 		writeFailure(w, http.StatusConflict, "GATE_STEP_NOT_CONFIGURED", fmt.Sprintf(
 			"this deployment does not gate the design-gate step %s; it gates %s", named, stepNames(s.steps)))
 		return "", false
