@@ -1008,8 +1008,8 @@ Its deadline is the stop's grace less the proxy's 1 s drain.
 This save is best effort: at the 9 s floor of `worker_stop_timeout_seconds`, a worker that spends its whole 5 s agent grace can leave it no time.
 A hard kill (a node lost, a SIGKILL) makes no last save.
 The table then holds what the last committed save left: the transcript up to a newline, without at most the lines of its last 2 s.
-The daemon sends an interrupted task again, behind a sentence that names what the relaunch ended (the turn, its tool calls and each kind of background work the process last reported), so the worker checks what that turn did and does the rest again.
-A process that left no activity report is told instead that the daemon has no report of its background work, so every subagent and background job it started is gone.
+The daemon sends an interrupted task again, behind a sentence that names what the relaunch ended (the turn, its tool calls and each kind of background work the process last reported) and says that the subagents and background jobs of that turn are gone, so the worker checks what that turn did and does the rest again.
+A Claude Code worker reports only at its Stop hook, so its newest report is older than the turn cut off: the sentence adds that the daemon has no report of what that turn started, and a process that left no activity report at all is told that every subagent and background job it started is gone.
 
 The recreated-workspace notice reaches a Claude Code role too:
 its own MCP server (`packages/claude-envoy`) reads `LEGION_WORKSPACE_RECREATED` at start and writes the same text into the session over the bridge's inbox, once per launch, recorded beside the phase reminder's state so a restarted server does not repeat it.

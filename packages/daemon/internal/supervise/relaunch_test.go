@@ -61,12 +61,24 @@ func wantSays(t *testing.T, prompt string, statements ...string) {
 	}
 }
 
+// wantSaysNot fails the test for each statement the prompt makes.
+func wantSaysNot(t *testing.T, prompt string, statements ...string) {
+	t.Helper()
+	for _, statement := range statements {
+		if strings.Contains(prompt, statement) {
+			t.Errorf("the prompt %q says %q, want it not to", prompt, statement)
+		}
+	}
+}
+
 // A task whose turn a death cut off is sent to the relaunched process behind the record's
 // sentence, and behind that sentence alone: it names the cause in the runtime's own words, quoted
 // so no word of them reads as the daemon's; that the task's turn was interrupted and its tool calls
-// never answered; the subagent the process's own report named; that no result will come and the
-// transcript does not say so; and that the agent checks what was done before it repeats it. The
-// turn that takes that prompt tells the record, and the next task carries nothing.
+// never answered; the subagent the process's own report named, and then that the subagents and
+// background jobs of that turn are gone, which a report read in the turn does not rule out; that
+// no result will come and the transcript does not say so; and that the agent checks what was done
+// before it repeats it. The turn that takes that prompt tells the record, and the next task
+// carries nothing.
 func TestARelaunchSentenceGoesInFrontOfAPendingTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -94,10 +106,11 @@ func TestARelaunchSentenceGoesInFrontOfAPendingTask(t *testing.T) {
 		"Your previous turn on this task was interrupted.",
 		"Your process ended because the process died: "+strconv.Quote(deathCause(observation))+".",
 		"Your tool calls in flight were never answered.",
-		"Each subagent that you started stopped with that process.",
+		saysSubagentStopped+" "+saysTurnGone,
 		"No result of that work will come to you.",
 		"Your transcript does not say so.",
 		"Before you do any of that work again, check what it already did. Then continue the task.")
+	wantSaysNot(t, resent.Message, saysNoReport, saysEveryOtherGone)
 	if strings.Count(resent.Message, "interrupted") != 1 {
 		t.Errorf("the prompt %q says its turn was interrupted more than once, want one sentence of the relaunch", resent.Message)
 	}

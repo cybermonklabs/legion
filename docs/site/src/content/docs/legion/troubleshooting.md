@@ -1208,10 +1208,11 @@ On such a daemon, an update round or a message wake can take the author of the c
   claim's held task is dropped at its send: the issue left the task's phase, the task's update
   round is over, or a root architect's held task names nothing any more. A root
   architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
-  in front of its start message. A process whose newest activity report is older than the start
-  of its last turn, or that left none, is told that the daemon has no report of its background
-  work, so the subagents and background jobs of that turn are gone. Nothing to do; the agent
-  checks what that work did before it repeats it.
+  in front of its start message. Every turn cut off is told that its subagents and background
+  jobs are gone. A process whose newest activity report is older than the start of its last
+  turn is told the background work that report named, and that the daemon has no report of what
+  that turn started; one that left no report is told that every subagent and background job it
+  started is gone. Nothing to do; the agent checks what that work did before it repeats it.
 - **`supervise: a turn took the prompt that told the agent what its relaunch ended`** and
   **`supervise: a turn took the prompt that told the agent of the session its claim abandoned`**
   at Info, each with the `delivery`, mark the claim's record told. A record is told when a turn

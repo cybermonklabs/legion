@@ -30,12 +30,24 @@ func RelaunchSentence(ended EndedWork) string { return relaunchSentence(ended, f
 //     whose turn the let-go cut off it says first that this turn was interrupted;
 //   - whether a turn was cut off, and that its tool calls in flight were never answered, or that
 //     the agent was in no turn;
-//   - each kind of background work the process's own last report named, all of which ended with
-//     it, or — for a process the record holds no report of (EndedWork.Reported): one that left
-//     none, or whose newest report is older than the start of its last turn and so says nothing
-//     of that turn — that the daemon has no report of it, so the subagents and background jobs of
-//     the turn, and every other one the process started, are gone: unknown is said, never read as
-//     nothing;
+//   - for a turn cut off, what of the background work ended: first each kind of it the record
+//     names (EndedWork.Kinds), all of which ended with the process, or background work of no
+//     named kind — a report older than the turn still names what ran in the process (recordEnd);
+//     then, for a record that holds no report of that turn (EndedWork.Reported: the process left
+//     none, or its newest report is older than the turn's start), that the daemon has none; then
+//     that the subagents and background jobs of that turn are gone, which is said of every turn
+//     cut off, since no report shows all that a turn started: Oh My Pi reads its background work
+//     every five seconds (pi-legion's SESSION_ACTIVITY_PERIOD_MS), so even a report read after
+//     the turn began can miss what it started in its last seconds; and last, for a record that
+//     holds no report of the turn and names no background work at all, that every other subagent
+//     and background job the process started is gone too;
+//   - with no turn cut off, each kind of background work the record names; for a record that
+//     holds no report of the process's last turn (EndedWork.Reported) and names background work,
+//     which only a report read before that turn began gives it, that work and then that the
+//     daemon has no report of what that turn started, so its subagents and background jobs are
+//     gone too; and for a record that holds no report and names no background work, that the
+//     daemon has no report of the process's background work, so every subagent and background job
+//     it started is gone: unknown is said, never read as nothing;
 //   - that no result of that work will come, and that the transcript does not say so, since the
 //     resumed session shows neither a lost tool call nor a lost subagent as missing
 //     (dispatch://INFRA-714 R6);
@@ -43,7 +55,8 @@ func RelaunchSentence(ended EndedWork) string { return relaunchSentence(ended, f
 //
 // The two statements the sentence of an interrupted task made before this record existed — the
 // tool calls in flight never answered, and the subagents and background jobs of that turn gone —
-// keep their words, which agents and the daemon's own tests read.
+// keep their words, which agents and the daemon's own tests read, and are said of every turn cut
+// off, as they were then.
 //
 // The words of the background work are the three kinds the store keeps (backgroundKind); a kind
 // it does not know is not read into the prompt, and a report that named none of them is said as
@@ -68,21 +81,41 @@ func relaunchSentence(ended EndedWork, task bool) string {
 	default:
 		said = append(said, because, "You were not in a turn then.")
 	}
-	if turn {
-		said = append(said, "Your tool calls in flight were never answered.")
-	}
+	// stopped is what the record names of the background work that ended with the process, or ""
+	// for a record that names none.
+	var stopped string
 	switch kinds := backgroundKinds(ended.Kinds); {
-	case !ended.Reported && turn:
-		said = append(said, "The daemon has no report of your background work in that process.",
-			"So the subagents and background jobs of that turn are gone.",
-			"Every other subagent and background job that you started in that process is gone too.")
+	case kinds != "":
+		stopped = "Each " + kinds + " that you started stopped with that process."
+	case ended.Background:
+		stopped = "The background work that you started stopped with that process."
+	}
+	switch {
+	case turn:
+		said = append(said, "Your tool calls in flight were never answered.")
+		if stopped != "" {
+			said = append(said, stopped)
+		}
+		if ended.Reported {
+			said = append(said, "The subagents and background jobs of that turn are gone.")
+			break
+		}
+		said = append(said, "The daemon has no report of the background work of that turn.",
+			"So the subagents and background jobs of that turn are gone.")
+		if stopped == "" {
+			said = append(said, "Every other subagent and background job that you started in that process is gone too.")
+		}
+	case !ended.Reported && stopped != "":
+		// A record with background work and no report of the process's last turn holds a report
+		// read before that turn began (recordEnd): it names what ran then, and says nothing of what
+		// that turn started.
+		said = append(said, stopped, "The daemon has no report of the background work of your last turn.",
+			"So the subagents and background jobs of that turn are gone too.")
 	case !ended.Reported:
 		said = append(said, "The daemon has no report of your background work in that process.",
 			"So every subagent and background job that you started in that process is gone.")
-	case kinds != "":
-		said = append(said, "Each "+kinds+" that you started stopped with that process.")
-	case ended.Background:
-		said = append(said, "The background work that you started stopped with that process.")
+	case stopped != "":
+		said = append(said, stopped)
 	}
 	said = append(said, "No result of that work will come to you.", "Your transcript does not say so.")
 	if task {

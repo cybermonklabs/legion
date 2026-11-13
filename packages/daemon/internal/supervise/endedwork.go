@@ -44,18 +44,21 @@ type EndedWork struct {
 	// Background is whether the process's own last activity report of its launch said background
 	// work of its session was running, and Kinds the kinds that report named (the store keeps the
 	// known ones alone: claim.BackgroundWork.KnownKinds). A report that said work ran and named no
-	// known kind is Background with no Kinds.
+	// known kind is Background with no Kinds. They are taken from that report however old it is: a
+	// report read before the start of the process's last turn still says what background work ran
+	// in that process, though it says nothing of that turn (Reported, recordEnd).
 	Background bool     `json:"background,omitempty"`
 	Kinds      []string `json:"kinds,omitempty"`
 	// Reported is whether the store held an activity report of that launch (Deps.ClaimActivity)
 	// that speaks of what the process last did: for a process that ran a turn, a report read no
 	// earlier than the start of its last turn (Claim.LastTurnStart), since a report older than
-	// that turn has said nothing about it — the idle rule's own rule (pods.IdleClaim.Reported) —
-	// and the record takes nothing of such a report's background work (recordEnd). A record that
-	// is not Reported is one whose process ran a turn and left no report of it — a Claude Code
-	// worker reports only at its Stop hook, so a turn cut off before its end has none and the
-	// newest report is the turn before's, and a stale plugin's report is refused — so what
-	// background work it ran is unknown, which is said rather than read as nothing
+	// that turn has said nothing about it — the idle rule's own rule (pods.IdleClaim.Reported).
+	// Such a report still gives the record its Background and Kinds, so a record that is not
+	// Reported can name background work. A record that is not Reported is one whose process ran a
+	// turn and left no report of it — a Claude Code worker reports only at its Stop hook, so a turn
+	// cut off before its end has none and the newest report is the turn before's, and a stale
+	// plugin's report is refused — so what background work that turn started is unknown, as is all
+	// of the process's where it left no report at all, which is said rather than read as nothing
 	// (dispatch://INFRA-3276 R3, "unknown is not silence").
 	Reported bool `json:"reported"`
 	// Told is whether the record has been told to a later process, and ToldBy the delivery whose
@@ -154,15 +157,15 @@ func endNeverReady(never string) string { return "its agent " + never + ", so th
 // launch's own activity report from the store (launchActivity), read here because the machine's
 // claim holds only what it read at its own boot and because the launch that follows clears it
 // (store's putClaim). Of a process that ran a turn, a report read before that turn began
-// (Claim.LastTurnStart) is no report of it, as the idle rule holds (pods.IdleClaim.Reported): the
-// record is not Reported and takes nothing of that report's background work, so the sentence says
-// that the daemon has no report and that the background work of the process, a cut turn's first,
-// is gone (relaunchSentence), rather than reading the turn before's "nothing runs" as this one's.
-// Nothing is written when no turn was running, no delivery was in a turn and the report says
-// nothing runs, or when no turn was running and none had run in this process, which can have
-// started no background work; a process that ran a turn and left no report of it is recorded as
-// unreported rather than as having ended nothing. A record still untold is replaced as the union
-// of the two (joined).
+// (Claim.LastTurnStart) is no report of that turn, as the idle rule holds
+// (pods.IdleClaim.Reported): the record is not Reported, rather than reading the turn before's
+// "nothing runs" as this one's. It still takes that report's background work, which the report saw
+// running in this process, so the sentence of a turn cut off names that work and then says that
+// the daemon has no report of what the turn started (relaunchSentence). Nothing is written when no
+// turn was running, no delivery was in a turn and a report of the last turn says nothing runs, or
+// when no turn was running and none had run in this process, which can have started no background
+// work; a process that ran a turn and left no report of it is recorded as unreported rather than as
+// having ended nothing. A record still untold is replaced as the union of the two (joined).
 //
 // A record written here is new words, so a prompt that carried the sentence of the record it
 // replaces carried none of this one: the mark of such a prompt goes (Machine.carried), and only a
@@ -186,18 +189,16 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 	// end, and a relaunched process comes up through ready.
 	ranTurn := m.claim.State == StateWorking || m.claim.State == StateIdle
 	report, reported := m.launchActivity(ctx)
-	// A report read before the claim's last turn began has said nothing about that turn
-	// (pods.IdleClaim.Reported), so it is no report of it. LastTurnStart is when this daemon, or
-	// the one before it, first learned that turn had begun: its agent_start (beginTurn), or the
-	// busy answer that recorded a turn whose start it never read (recordBusyTurn).
-	if reported && ranTurn && report.At.Before(m.claim.LastTurnStart) {
-		reported = false
-	}
-	ended.Reported = reported
 	if reported && report.Background {
 		ended.Background, ended.Kinds = true, slices.Clone(report.Kinds)
 	}
-	if !ended.Turn && !ended.TaskTurn && !ended.Background && (reported || !ranTurn) {
+	// A report read before the claim's last turn began has said nothing about that turn
+	// (pods.IdleClaim.Reported), so it is no report of it, though the background work it saw is
+	// kept above. LastTurnStart is when this daemon, or the one before it, first learned that turn
+	// had begun: its agent_start (beginTurn), or the busy answer that recorded a turn whose start
+	// it never read (recordBusyTurn).
+	ended.Reported = reported && !(ranTurn && report.At.Before(m.claim.LastTurnStart))
+	if !ended.Turn && !ended.TaskTurn && !ended.Background && (ended.Reported || !ranTurn) {
 		return
 	}
 	ended.At = m.deps.Clock.Now()
@@ -216,7 +217,8 @@ func (m *Machine) recordEnd(ctx context.Context, cause string) {
 // writes a report onto the launch it was authenticated for alone, and clears the report on the
 // write that moves the generation, so a report of an earlier launch is never this one's. Whether
 // the report it reads speaks of the turn the process last ran is recordEnd's to decide: one read
-// before that turn began is no report of it (pods.IdleClaim.Reported).
+// before that turn began is no report of that turn (pods.IdleClaim.Reported), though the background
+// work it says ran is kept.
 //
 // The read is bounded by the claim-write deadline, as the writes of a decision are, so a store that
 // has stopped answering costs the record and never holds the let-go: a read that fails, and a daemon
