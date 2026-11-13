@@ -324,17 +324,19 @@ close_issue() {
   pass "$1" "closed $2"
 }
 
-# upload SECTION ISSUE FILE: uploads FILE as ISSUE's verification.md through the CLI.
+# upload SECTION ISSUE FILE: uploads FILE as ISSUE's verification.md through the CLI. ISSUE holds
+# no verification.md yet, so the upload replaces no version and names no token.
 upload() {
   run "$1" "upload verification.md to $2" artifact --issue "$2" --name verification.md \
     --path "$3" --force
   pass "$1" "uploaded verification.md to $2"
 }
 
-# document_body FILE: the JSON an artifact POST takes for FILE as verification.md.
+# document_body FILE BASE: the JSON an artifact POST takes for FILE as verification.md, replacing
+# the version whose document token is BASE.
 document_body() {
-  jq -cn --arg a "$session" --rawfile c "$1" \
-    '{actor: {kind: "session", id: $a}, name: "verification.md", content: $c}'
+  jq -cn --arg a "$session" --rawfile c "$1" --arg t "$2" \
+    '{actor: {kind: "session", id: $a}, name: "verification.md", content: $c, precondition: {document: $t}}'
 }
 
 # artifact_id SECTION ISSUE: sets $artifact to the id of ISSUE's verification.md.
@@ -350,6 +352,14 @@ version_of() {
   get "/api/v1/issues/$2/artifacts/verification-md/text"
   want_status 200 "$1" "read $2's verification.md version"
   version="$(jq -er '.version' "$work/body")" || fail "$1" "read $2's verification.md version" "$(body)"
+}
+
+# token_of SECTION ISSUE: sets $doc_token to the document token of ISSUE's verification.md, the
+# base a write replacing it names.
+token_of() {
+  get "/api/v1/issues/$2/artifacts/verification-md/text"
+  want_status 200 "$1" "read $2's verification.md token"
+  doc_token="$(jq -er '.token' "$work/body")" || fail "$1" "read $2's verification.md token" "$(body)"
 }
 
 # check_block ID CI_CHECK WORDS: a check CI proves, as markdown writes it.
@@ -484,11 +494,12 @@ pass k1 "recorded a tester's pass for c-held at $held_commit"
 version_of k1 "$k1"
 readonly k1_version="$version"
 
-# refused_write WHAT FILE BLOCK RULE: posting FILE as k1's verification.md is refused 400
-# INVALID_CI_CHECK, naming BLOCK and RULE.
+# refused_write WHAT FILE BLOCK RULE: posting FILE as k1's verification.md, naming the token of its
+# live version, is refused 400 INVALID_CI_CHECK, naming BLOCK and RULE.
 refused_write() {
   local message
-  send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$2")"
+  token_of k1 "$k1"
+  send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$2" "$doc_token")"
   want_status 400 k1 "$1"
   expect k1 "$1 is refused INVALID_CI_CHECK" '"INVALID_CI_CHECK"' '.code'
   message="$(jq -er '.error' "$work/body")" || fail k1 "$1 names $3" "no error in: $(body)"
@@ -523,7 +534,8 @@ version_of k1 "$k1"
 pass k1 "the four refused writes store nothing: verification.md is still at version $k1_version"
 
 k1_document "$work/k1-fresh.md" "$k1_held" "$k1_fresh"
-send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$work/k1-fresh.md")"
+token_of k1 "$k1"
+send POST "/api/v1/issues/$k1/artifacts" "$(document_body "$work/k1-fresh.md" "$doc_token")"
 [[ "$status" == 2?? ]] || fail k1 "ci_check on the fresh id c-fresh is accepted" "HTTP $status: $(body)"
 pass k1 "ci_check on the fresh id c-fresh is accepted, HTTP $status"
 run k1 "read verification.md back" doc-read --issue "$k1" --artifact verification.md
