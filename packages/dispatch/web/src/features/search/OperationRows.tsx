@@ -61,11 +61,13 @@ const OWN_OFFERS: Readonly<Record<string, true>> = {
 type Fills = Readonly<Record<number, string>>;
 
 /** What the person asked to run: the action the decision chose, `undefined` while the decision
- *  that names it has not arrived, and how the write came to run. */
+ *  that names it has not arrived, how the write came to run, and the invocations a row the person
+ *  picked names, by index, `undefined` where the approval alone says which run (`runIndexes`). */
 interface Wanted {
   readonly action: string | undefined;
   readonly approved: GoingApproval;
   readonly fills: Fills;
+  readonly picked?: readonly number[];
 }
 
 /**
@@ -101,6 +103,7 @@ type Step =
       readonly action: string;
       readonly approved: GoingApproval;
       readonly fills: Fills;
+      readonly picked: readonly number[] | undefined;
     };
 
 /** The offer of `action` the proposal offered something to run for. */
@@ -108,14 +111,20 @@ function offerOf(proposal: Proposal | undefined, action: string): GoingOffer | u
   return proposal?.offers.find((offer) => offer.action === action && offer.offered);
 }
 
-/** The invocations of `offer` a write of the bar runs, by their index in it: every one where the
- *  person picked the action, and otherwise - a submit, and its confirmation - only those the
- *  proposal marked automatic. An invocation naming an item neither the page nor the person's
- *  words named came from text someone stored, and runs only when the person picks it. */
-function runIndexes(offer: GoingOffer | undefined, approved: GoingApproval): number[] {
-  return (offer?.invocations ?? []).flatMap((invocation, index) =>
-    approved === "person" || invocation.automatic ? [index] : []
-  );
+/** The invocations of `offer` a write of the bar runs, by their index in it: those a row the
+ *  person picked names (`picked`); every one where the person picked the action itself; and
+ *  otherwise - a submit, and its confirmation - only those the proposal marked automatic. An
+ *  invocation naming an item neither the page nor the person's words named came from text
+ *  someone stored, and runs only when the person picks it. */
+function runIndexes(
+  offer: GoingOffer | undefined,
+  approved: GoingApproval,
+  picked?: readonly number[]
+): number[] {
+  return (offer?.invocations ?? []).flatMap((invocation, index) => {
+    if (picked !== undefined) return picked.includes(index) ? [index] : [];
+    return approved === "person" || invocation.automatic ? [index] : [];
+  });
 }
 
 /** `offer` with only the invocations at `indexes`, for a row that names their items alone. */
@@ -176,19 +185,32 @@ function nextStep(
   }
   const offer = offerOf(answer.proposal, action);
   if (offer === undefined) return { action, kind: "unoffered", words };
-  const runs = runIndexes(offer, wanted.approved);
+  const runs = runIndexes(offer, wanted.approved, wanted.picked);
   if (runs.length === 0) return { action, kind: "picks", words };
   const unfilled = runs.some(
     (index) =>
       offer.invocations[index]?.missing !== null && (wanted.fills[index] ?? "").trim() === ""
   );
   if (unfilled)
-    return { action, approved: wanted.approved, fills: wanted.fills, kind: "filling", words };
+    return {
+      action,
+      approved: wanted.approved,
+      fills: wanted.fills,
+      kind: "filling",
+      picked: wanted.picked,
+      words,
+    };
   if (wanted.approved === "auto") {
     if (confirmWrites === undefined) return { ...wanted, action, kind: "preparing", words };
     if (confirmWrites) return { action, fills: wanted.fills, kind: "confirming", words };
   }
-  return { action, approved: wanted.approved, fills: wanted.fills, kind: "run" };
+  return {
+    action,
+    approved: wanted.approved,
+    fills: wanted.fills,
+    kind: "run",
+    picked: wanted.picked,
+  };
 }
 
 /** One row of the bar's operation group, as the list draws it: its label, its trailing control,
@@ -277,13 +299,18 @@ export function useGoingOperations({
     field?.focus();
   }, []);
 
-  const run = (action: string, approved: GoingApproval, fills: Fills) => {
+  const run = (
+    action: string,
+    approved: GoingApproval,
+    fills: Fills,
+    picked?: readonly number[]
+  ) => {
     const offer = offerOf(proposal, action);
     if (runId === undefined || current === undefined || offer === undefined) return;
     setStage({ kind: "idle", words });
     void runGoingWrites(
       writes,
-      runIndexes(offer, approved).flatMap((index) => {
+      runIndexes(offer, approved, picked).flatMap((index) => {
         const invocation = offer.invocations[index];
         if (invocation === undefined) return [];
         return [
@@ -309,7 +336,7 @@ export function useGoingOperations({
     );
   };
   const apply = (step: Step) => {
-    if (step.kind === "run") run(step.action, step.approved, step.fills);
+    if (step.kind === "run") run(step.action, step.approved, step.fills, step.picked);
     else setStage(step);
   };
   const begin = (wanted: Wanted) => apply(nextStep(words, wanted, current, confirmWrites));
@@ -326,7 +353,12 @@ export function useGoingOperations({
 
   const submit = () => {
     if (stage?.kind === "filling") {
-      begin({ action: stage.action, approved: stage.approved, fills: stage.fills });
+      begin({
+        action: stage.action,
+        approved: stage.approved,
+        fills: stage.fills,
+        picked: stage.picked,
+      });
       return;
     }
     if (stage?.kind === "confirming" || stage?.kind === "preparing") return;
@@ -380,7 +412,7 @@ export function useGoingOperations({
             id: offerOptionId(acted),
             kind: "offer",
             label,
-            select: () => begin({ action: acted, approved: "person", fills: {} }),
+            select: () => begin({ action: acted, approved: "person", fills: {}, picked: offered }),
           },
         });
       }
@@ -487,7 +519,7 @@ export function useGoingOperations({
             offer={offerOf(proposal, stage.action)}
             onFill={(fills) => setStage({ ...stage, fills })}
             onSubmit={submit}
-            runs={runIndexes(offerOf(proposal, stage.action), stage.approved)}
+            runs={runIndexes(offerOf(proposal, stage.action), stage.approved, stage.picked)}
           />
         ) : null}
         {stage?.kind === "confirming" ? (

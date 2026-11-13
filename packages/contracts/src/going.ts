@@ -227,11 +227,14 @@ export interface GoingMissingArgument {
 /** One run of an action: the arguments the answer and the page filled, each checked against the
  *  action's own schema, the one argument still missing, null where none is, and whether it may
  *  run at once on submit: only where every item it names is the chip's issue or project, where the
- *  words are about the page, or is named whole in the person's own words. Any other invocation
- *  came from text someone stored and is an offer the person picks, which the server refuses to
- *  run as `auto` (`GOING_NOT_AUTOMATIC`). `target_argument` is the argument naming the item the
- *  invocation acts on, as the row it reaches binds that item into its path, `""` for none: a write
- *  that makes its item, or one addressing the caller's own session. */
+ *  words are about the page, or is named by a reference in the person's own words (an issue key,
+ *  a project key typed in upper case, an id, a `dispatch://` reference; a document's name only
+ *  under an owner so named), and every route or assignee it sets is named in the words or already
+ *  the issue's. Any other invocation came from text someone stored and is an offer the person
+ *  picks, which the server refuses to run as `auto` (`GOING_NOT_AUTOMATIC`). `target_argument` is
+ *  the argument naming the item the invocation acts on, as the row it reaches binds that item into
+ *  its path, `""` for none: a write that makes its item, or one addressing the caller's own
+ *  session. */
 export interface GoingInvocation {
   readonly arguments: Readonly<Record<string, unknown>>;
   readonly missing: GoingMissingArgument | null;

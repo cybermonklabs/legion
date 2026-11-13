@@ -422,7 +422,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 	claimOnPage := goingPropose(
 		goingDecision{Context: going.ContextPage, offered: []string{"dispatch_claim", "dispatch_resolve_ask"}},
 		&going.Final{Arguments: `{"dispatch_claim":[{}]}`},
-		goingRunStart{chip: chip, actions: browser})
+		goingRunStart{chip: chip, actions: browser}, nil)
 	if got := offer(claimOnPage, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 ||
 		!reflect.DeepEqual(got.Invocations[0], goingInvocation{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true, TargetArgument: "issue"}) {
 		t.Errorf("on the page the claim is offered as %+v, want the chip's issue filled and nothing missing", got)
@@ -434,7 +434,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 	claimNamed := goingPropose(
 		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_claim"}},
 		&going.Final{Arguments: `{}`},
-		goingRunStart{chip: chip, actions: browser})
+		goingRunStart{chip: chip, actions: browser}, nil)
 	want := goingInvocation{Arguments: map[string]any{}, Missing: &goingMissingArgument{Field: "issue", Kind: goingPromptItem, Item: "issue"}, Automatic: true, TargetArgument: "issue"}
 	if got := offer(claimNamed, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 || !reflect.DeepEqual(got.Invocations[0], want) {
 		t.Errorf("about items the words name, the claim is offered as %+v, want the issue asked for as an item", got)
@@ -443,7 +443,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 	follow := goingPropose(
 		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_follow"}},
 		&going.Final{Arguments: `{"dispatch_follow":[{"ask":"0199e2a0-2222-7000-8000-000000000002"}]}`},
-		goingRunStart{actions: session, session: "0199e2a0-1111-7000-8000-000000000001"})
+		goingRunStart{actions: session, session: "0199e2a0-1111-7000-8000-000000000001"}, nil)
 	wantFollow := goingInvocation{
 		Arguments:      map[string]any{"ask": "0199e2a0-2222-7000-8000-000000000002"},
 		Missing:        &goingMissingArgument{Field: "action", Kind: goingPromptEnum, Choices: []string{"follow", "unfollow"}},
@@ -455,7 +455,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 	browserFollow := goingPropose(
 		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_follow"}},
 		&going.Final{Arguments: `{"dispatch_follow":[{"ask":"0199e2a0-2222-7000-8000-000000000002"}]}`},
-		goingRunStart{actions: browser})
+		goingRunStart{actions: browser}, nil)
 	if got := offer(browserFollow, "dispatch_follow"); got.Offered {
 		t.Errorf("a browser's follow missing its action and its session is offered as %+v, want it not offered", got)
 	}
@@ -463,7 +463,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 	dropped := goingPropose(
 		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_issue_update"}},
 		&going.Final{Arguments: `{"dispatch_issue_update":[{"issue":12},{"issue":"DEMO-3","colour":"red"},{"issue":"DEMO-4","status":"done"}]}`},
-		goingRunStart{actions: browser})
+		goingRunStart{actions: browser}, nil)
 	if got := offer(dropped, "dispatch_issue_update"); !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-4", "status": "done"}, TargetArgument: "issue"}}) {
 		t.Errorf("the update is offered as %+v, want the one element its schema accepts", got)
 	}
@@ -471,7 +471,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 	fallback := goingPropose(
 		goingDecision{Context: going.ContextPage, offered: []string{"dispatch_claim"}},
 		nil,
-		goingRunStart{chip: chip, actions: browser})
+		goingRunStart{chip: chip, actions: browser}, nil)
 	if got := offer(fallback, "dispatch_claim"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true, TargetArgument: "issue"}}) {
 		t.Errorf("with no structured reply the claim is offered as %+v, want it filled from the page", got)
 	}

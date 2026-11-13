@@ -245,12 +245,13 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	// run is detached from it, and the row keeps no credential (model.Actor.Recorded).
 	credential := goingCredentialOf(r, caller, cookie)
 	start := goingRunStart{
-		words:   words,
-		chip:    chip,
-		login:   goingRunLogin(caller),
-		actions: s.going.runnableBy(credential),
-		session: credential.session(),
-		reads:   s.goingReadsFor(credential, scoped),
+		words:     words,
+		chip:      chip,
+		login:     goingRunLogin(caller),
+		actions:   s.going.runnableBy(credential),
+		session:   credential.session(),
+		reads:     s.goingReadsFor(credential, scoped),
+		serverURL: s.deps.ServerURL,
 	}
 	// Detached from the request, as a broadcast's deliveries are (broadcasts.go): SIGTERM
 	// cancels the server's lifetime before the HTTP drain begins, so a run bound to either the
@@ -511,7 +512,7 @@ func (g *goingRunning) finish(ctx context.Context, reads *goingReadRun, decision
 		// A run whose answer came to nothing - it failed before the model answered or refused -
 		// proposes nothing either.
 		if decision != nil {
-			proposal := goingPropose(*decision, outcome.Final, g.start)
+			proposal := goingPropose(*decision, outcome.Final, g.start, g.s.goingHeldBy(ctx))
 			if err := g.emit(going.Event{Name: contracts.GoingEventProposal, Data: proposal}); err != nil {
 				return err
 			}

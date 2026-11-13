@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
-	"strings"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
@@ -120,14 +119,16 @@ func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
 // goingRunStart is what a run is started with beyond its request row: the person's typed words,
 // the context chip, the login its record is kept under ("" for a caller that is no person, whose
 // run keeps no record), the actions its caller may be offered, the session its caller's
-// credential proved, and the read tools its caller may call (goingReadsFor).
+// credential proved, the read tools its caller may call (goingReadsFor), and the server's own URL,
+// against which the words' dashboard addresses are read (goingNamedBy).
 type goingRunStart struct {
-	words   string
-	chip    *goingContext
-	login   string
-	actions []GoingAction
-	session string
-	reads   []string
+	words     string
+	chip      *goingContext
+	login     string
+	actions   []GoingAction
+	session   string
+	reads     []string
+	serverURL string
 }
 
 // action is the runnable action of that name, and whether the caller may be offered one.
@@ -338,8 +339,11 @@ type goingMissingArgument struct {
 // one the bar cannot prompt for, dropped. An action the answer wrote arguments for that the
 // decision did not offer - one outside the catalogue among them - is no part of the proposal and
 // so never runs. With no structured reply (final nil), or no arguments for an
-// action, the action is offered on what the page and one prompted argument fill.
-func goingPropose(decision goingDecision, final *going.Final, start goingRunStart) goingProposal {
+// action, the action is offered on what the page and one prompted argument fill. Each invocation
+// is marked automatic by what the words name and what held says each issue holds now
+// (goingAutomatic); a nil held reads no issue, so a hand-over runs at once only where the words
+// name it.
+func goingPropose(decision goingDecision, final *going.Final, start goingRunStart, held goingHeld) goingProposal {
 	written := map[string]json.RawMessage{}
 	if final != nil && final.Arguments != "" {
 		if err := json.Unmarshal([]byte(final.Arguments), &written); err != nil {
@@ -352,6 +356,7 @@ func goingPropose(decision goingDecision, final *going.Final, start goingRunStar
 	if decision.Context == going.ContextPage {
 		chip = start.chip
 	}
+	named := goingNamedBy(start.words, start.serverURL)
 	proposal := goingProposal{Offers: []goingOffer{}}
 	for _, name := range decision.offered {
 		action, runnable := start.action(name)
@@ -378,7 +383,7 @@ func goingPropose(decision goingDecision, final *going.Final, start goingRunStar
 		offer := goingOffer{Action: name, Invocations: []goingInvocation{}}
 		for _, arguments := range calls {
 			if invocation, kept := goingInvocationOf(action, arguments, chip, start.session); kept {
-				invocation.Automatic = goingAutomatic(invocation.Arguments, chip, start.words)
+				invocation.Automatic = goingAutomatic(invocation.Arguments, chip, named, held)
 				offer.Invocations = append(offer.Invocations, invocation)
 			}
 		}
@@ -386,82 +391,6 @@ func goingPropose(decision goingDecision, final *going.Final, start goingRunStar
 		proposal.Offers = append(proposal.Offers, offer)
 	}
 	return proposal
-}
-
-// goingItemArguments are the arguments that name an item of Dispatch's an invocation acts on or
-// links to: every argument the search lists an item for (goingItemFields), the project, the
-// session a message goes to and the result a retraction names.
-var goingItemArguments = func() map[string]bool {
-	named := map[string]bool{"project": true, "session": true, "retract": true}
-	for argument := range goingItemFields {
-		named[argument] = true
-	}
-	return named
-}()
-
-// goingAutomatic reports whether an invocation may run at once, on submit: only where every item
-// it names (goingItemArguments, each text and each text of a list) is the chip's issue or project
-// - chip is nil where the decision did not read the words as about the page - or is named in the
-// person's own typed words (goingWordsName). The answer model writes the invocations from items
-// any person or agent wrote, so an item only that text names is offered for the person to pick and
-// never runs by itself. The one argument the bar asks the person for is not among the arguments
-// here: what the person fills is theirs.
-func goingAutomatic(arguments map[string]any, chip *goingContext, words string) bool {
-	for argument, value := range arguments {
-		if !goingItemArguments[argument] {
-			continue
-		}
-		values := []any{value}
-		if list, isList := value.([]any); isList {
-			values = list
-		}
-		for _, element := range values {
-			text, isText := element.(string)
-			if !isText || strings.TrimSpace(text) == "" {
-				continue
-			}
-			if !goingChipNames(chip, text) && !goingWordsName(words, text) {
-				return false
-			}
-		}
-	}
-	return true
-}
-
-// goingChipNames reports whether the chip's issue or project is item.
-func goingChipNames(chip *goingContext, item string) bool {
-	if chip == nil {
-		return false
-	}
-	return (chip.Issue != "" && strings.EqualFold(chip.Issue, item)) ||
-		(chip.Project != "" && strings.EqualFold(chip.Project, item))
-}
-
-// goingWordsName reports whether the typed words name item literally: item occurs in them, with
-// case ignored, as a whole word - neither end runs on into a letter, a digit, a hyphen or an
-// underscore - so DEMO-12 names DEMO-12 and not DEMO-123, and "spec." names the document spec.
-func goingWordsName(words, item string) bool {
-	haystack, needle := strings.ToLower(words), strings.ToLower(strings.TrimSpace(item))
-	if needle == "" {
-		return false
-	}
-	for from := 0; ; {
-		at := strings.Index(haystack[from:], needle)
-		if at < 0 {
-			return false
-		}
-		start, end := from+at, from+at+len(needle)
-		if (start == 0 || !goingWordRune(haystack[start-1])) && (end == len(haystack) || !goingWordRune(haystack[end])) {
-			return true
-		}
-		from = start + 1
-	}
-}
-
-// goingWordRune reports whether b continues a word an item is named by: a letter, a digit, a
-// hyphen or an underscore, or any byte of a character past ASCII.
-func goingWordRune(b byte) bool {
-	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '_' || b >= 0x80
 }
 
 // goingInvocationOf holds one element of the answer's arguments to its action's schema and fills

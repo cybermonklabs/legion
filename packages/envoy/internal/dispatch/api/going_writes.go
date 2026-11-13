@@ -218,10 +218,11 @@ type goingWriteLine struct {
 // (409 GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
 // GOING_NOT_PROPOSED). `auto` is refused, 409 GOING_APPROVAL_REQUIRED, for the two writes that
 // always ask and for any but the action the decision chose at or above the action threshold, 409
-// GOING_NOT_AUTOMATIC for an invocation the proposal did not mark automatic (goingAutomatic), and
-// 409 GOING_CONFIRMATION_REQUIRED where the caller turned confirm_writes on. The value before is
-// read, the write performed and the value after read, each in-process as the caller; the write,
-// refused or not, is recorded in the place of its claim. A refusal by the route the write ran
+// GOING_NOT_AUTOMATIC for an invocation the proposal did not mark automatic (goingAutomatic) or
+// one sent with arguments replacing its own, and 409 GOING_CONFIRMATION_REQUIRED where the caller
+// turned confirm_writes on. The value before is read, the write performed and the value after
+// read, each in-process as the caller; the write, refused or not, is recorded in the place of its
+// claim, with the undo the row it went through states. A refusal by the route the write ran
 // through, or by a read the write needed, is answered as that route answered it, status, code
 // and all.
 func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +257,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Approved == goingApprovedAuto {
-		if refused := s.goingAutoRefusal(r.Context(), run, input.Offer, invocation, caller.ID); refused != nil {
+		if refused := s.goingAutoRefusal(r.Context(), run, input, invocation, caller.ID); refused != nil {
 			s.writeHandlerError(w, refused)
 			return
 		}
@@ -274,8 +275,9 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Bounded as a keyed request's handler is, keyed or not, so a claim older than
-	// goingClaimBound is one no request is still making.
-	ctx, cancel := context.WithTimeout(r.Context(), s.goingClaimBound())
+	// goingClaimBound - this bound and the bookkeeping that records the write after it - is one
+	// no request is still making.
+	ctx, cancel := context.WithTimeout(r.Context(), s.keyedRunLimit())
 	defer cancel()
 	write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved, At: time.Now().UTC()}
 	if err := s.claimGoingRunWrite(ctx, run.ID, caller.ID, write); err != nil {
@@ -307,6 +309,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		claim.refuse(goingObservation{}, err)
 		return
 	}
+	claim.write.Undo = prepared.route.Undo.Kind
 	observer := goingObserver{read: performer.reader(), s: s}
 	before, err := observer.observe(ctx, prepared, nil, goingObservation{})
 	if err != nil {
@@ -507,9 +510,11 @@ func goingProposedInvocation(run goingRun, input goingWriteInput) (goingInvocati
 // goingAutoRefusal is why a write may not run at once, nil where it may: the two writes that
 // always ask, any action but the one the decision chose at or above the action
 // threshold (the decision's act), an invocation the proposal did not mark automatic - one that
-// acts on an item neither the page nor the person's words named (goingAutomatic) - and a caller
-// who asked to confirm every write.
-func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action string, invocation goingInvocation, login string) error {
+// acts on an item neither the page nor the person's words named (goingAutomatic) - or one sent
+// with arguments replacing its own, since the proposal marked automatic only the arguments it
+// holds, and a caller who asked to confirm every write.
+func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, input goingWriteInput, invocation goingInvocation, login string) error {
+	action := input.Offer
 	if goingAlwaysAsk[action] {
 		return errorf(http.StatusConflict, codeGoingApprovalRequired,
 			"%s always asks before it runs: send it as approved person or confirmed", action)
@@ -521,7 +526,11 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action stri
 	}
 	if !invocation.Automatic {
 		return errorf(http.StatusConflict, codeGoingNotAutomatic,
-			"this invocation of %s acts on an item neither the page nor the person's own words named, so it runs only when the person picks it: send it as approved person or confirmed", action)
+			"this invocation of %s names an item, or hands the work to a session or a person, that neither the page nor the person's own words named, so it runs only when the person picks it: send it as approved person or confirmed", action)
+	}
+	if len(input.Arguments) > 0 {
+		return errorf(http.StatusConflict, codeGoingNotAutomatic,
+			"this write of %s replaces arguments the proposal marked automatic, so it runs only when the person picks it: send it as approved person or confirmed, or send no arguments", action)
 	}
 	settings, err := s.readGoingSettings(ctx, login)
 	if err != nil {

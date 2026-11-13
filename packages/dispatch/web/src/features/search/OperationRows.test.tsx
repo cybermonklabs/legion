@@ -406,6 +406,23 @@ test("a submit runs only the invocations the proposal marked automatic, and the 
   }
 });
 
+test("a pick of the offered row before any submit runs only the invocations the row names", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), injected, ended);
+    const offered = await screen.findByRole("option", { name: /^Run issue update on LEGION-4/ });
+
+    await user.click(offered);
+    await waitFor(() => expect(screen.getAllByTestId("going-write-line")).toHaveLength(1));
+    await tick(1000);
+    expect(sent()).toEqual([{ approved: "person", invocation: 1, offer: "dispatch_issue_update" }]);
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("with the person's setting on, the confirm step lists only the automatic invocations and confirms only those", async () => {
   settings.mockResolvedValue({ confirm_writes: true });
   const user = userOnFakeClock();

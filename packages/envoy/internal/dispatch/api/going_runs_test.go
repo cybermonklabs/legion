@@ -96,7 +96,7 @@ func statusWrite(id, issue string) goingRunWrite {
 		ID: id, Action: "dispatch_issue_update", Target: issue, Fields: []string{"status"},
 		Before: json.RawMessage(`"todo"`), After: json.RawMessage(`"in_progress"`),
 		Outcome:  goingWriteOutcome{OK: true, Status: http.StatusOK},
-		Approved: "auto", At: time.Now().UTC().Truncate(time.Microsecond),
+		Approved: "auto", At: time.Now().UTC().Truncate(time.Microsecond), Undo: goingUndoWriteBack,
 	}
 }
 

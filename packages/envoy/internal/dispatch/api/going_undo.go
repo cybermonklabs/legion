@@ -116,8 +116,9 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Bounded as a keyed request's handler is, keyed or not, so a claim older than
-	// goingClaimBound is one no request is still making.
-	ctx, cancel := context.WithTimeout(r.Context(), s.goingClaimBound())
+	// goingClaimBound - this bound and the bookkeeping that records each undo after it - is one no
+	// request is still making.
+	ctx, cancel := context.WithTimeout(r.Context(), s.keyedRunLimit())
 	defer cancel()
 	claimedAt := time.Now().UTC().Truncate(time.Microsecond)
 	var run goingRun
@@ -236,20 +237,21 @@ type goingUndoer struct {
 	reason   string
 }
 
-// undo undoes one write by the undo its catalogue row states, and answers how it went. The row's
-// kind chooses the path: a trace is recorded undone and erases nothing, and each other kind runs
-// the undo of its own action. A row whose kind names an undo this server has none of for its
-// action is refused, 501 GOING_UNDO_UNSERVED, rather than recorded undone with nothing undone.
+// undo undoes one write by the undo the catalogue row it went through states, as its record keeps
+// it (goingRunWrite.Undo). That kind chooses the path: a trace is recorded undone and erases
+// nothing, and each other kind runs the undo of its own action. A write of an action the catalogue
+// no longer holds, or whose record names no undo, is refused, 409 GOING_UNDO_UNKNOWN, and a kind
+// that names an undo this server has none of for its action, 501 GOING_UNDO_UNSERVED, rather than
+// recorded undone with nothing undone.
 func (u goingUndoer) undo(ctx context.Context, write goingRunWrite) goingUndoLine {
 	line := goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Now: json.RawMessage("null")}
-	action, held := u.s.going.Lookup(write.Action)
-	if !held || len(action.Routes) == 0 {
+	if _, held := u.s.going.Lookup(write.Action); !held || write.Undo == "" {
 		line.Undo = goingUndoTrace
 		line.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoUnknown,
-			Message: fmt.Sprintf("%s is no action of the catalogue now, so its undo is unknown", write.Action)}
+			Message: fmt.Sprintf("%s is no action of the catalogue now, or its write's record names no undo, so its undo is unknown", write.Action)}
 		return line
 	}
-	line.Undo = action.Routes[0].Undo.Kind
+	line.Undo = write.Undo
 	var now any
 	var outcome goingWriteOutcome
 	var fields []goingUndoField

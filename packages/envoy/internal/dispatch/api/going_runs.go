@@ -72,7 +72,8 @@ type goingWriteOutcome struct {
 // and the fields of that item it changed, the value before it and the value after it as read
 // back, how it went, how it came to run - the run made it at once (auto), the person ran it from
 // the bar (person), or the person confirmed it when asked (confirmed) - when, the items it made
-// before its own request, and for a send to an agent the message's last delivery.
+// before its own request, for a send to an agent the message's last delivery, and the undo the
+// row it went through states.
 //
 // Pending is a write claimed and not yet recorded: the request making it is under way, or it
 // ended - its process died, or its record could not be written - after its write may have
@@ -99,6 +100,10 @@ type goingRunWrite struct {
 	// other write and for a message that has none: the route answers a send 201 even where its
 	// delivery failed, so this is what tells a failed send.
 	Delivery *goingDelivery `json:"delivery,omitempty"`
+	// Undo is the undo the catalogue row the write went through states (GoingUndo.Kind), which
+	// is the undo it gets: the rows of one action may state different undos. It is absent for a
+	// write that never reached a row - one refused before its row was chosen and translated.
+	Undo goingUndoKind `json:"undo,omitempty" enum:"reverse,write_back,close_created,trace"`
 }
 
 // goingDelivery is one delivery of a message as a send to an agent records it: its state
@@ -265,11 +270,12 @@ func (s *server) fillGoingRun(ctx context.Context, id string, parts goingRunPart
 
 // goingClaimBound is how long a claim on a run (claimGoingRunWrite, claimGoingRunUndos) speaks for
 // a request still under way: the longest a keyed request's handler runs (keyedRunLimit), which
-// the writes and undo routes hold their unkeyed requests to as well. A pending write older than it
-// is answered as a write whose outcome is unknown, and a pending undo older than it no longer
-// holds off another undo of the run.
+// the writes and undo routes hold their unkeyed requests to as well, and the bookkeeping after it
+// (keyedBookkeeping, goingBookkeeping) in which that request records what it did. A pending write
+// older than it is answered as a write whose outcome is unknown, and no record of it can follow
+// that answer; a pending undo older than it no longer holds off another undo of the run.
 func (s *server) goingClaimBound() time.Duration {
-	return s.keyedRunLimit()
+	return s.keyedRunLimit() + keyedBookkeeping
 }
 
 // goingRunWriteClaimed is the condition that holds where the run r already holds a write of

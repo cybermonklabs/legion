@@ -659,22 +659,64 @@ func TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled(t *testing.T)
 	}
 }
 
-// TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused: a row whose undo kind names no undo
-// this server runs for its action is refused, 501 GOING_UNDO_UNSERVED, which settles nothing,
-// rather than recorded as undone with nothing undone.
+// TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused: a write recorded through a row whose
+// undo kind names no undo this server runs for its action is refused, 501 GOING_UNDO_UNSERVED,
+// which settles nothing, rather than recorded as undone with nothing undone.
 func TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused(t *testing.T) {
 	catalogue, err := BuildGoingCatalogue()
 	if err != nil {
 		t.Fatal(err)
 	}
-	// A row added later whose undo is stated as a reverse, with no reverse written for it here.
-	resolve := catalogue.byAction["dispatch_resolve_ask"]
-	for index := range catalogue.actions[resolve].Routes {
-		catalogue.actions[resolve].Routes[index].Undo = GoingUndo{Kind: goingUndoReverse, Routes: []string{goingAskResolveRoute}}
-	}
 	undoer := goingUndoer{s: &server{going: catalogue}}
-	line := undoer.undo(context.Background(), goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"}, Outcome: goingWriteOutcome{OK: true}})
+	// A row added later whose undo is stated as a reverse, with no reverse written for it here.
+	line := undoer.undo(context.Background(), goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"},
+		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoReverse})
 	if line.Outcome.OK || line.Outcome.Status != http.StatusNotImplemented || line.Outcome.Code != codeGoingUndoUnserved || goingUndoSettles(line.Outcome) {
 		t.Fatalf("the undo of a reverse row with no reverse answered %+v, want 501 %s, unsettled", line.Outcome, codeGoingUndoUnserved)
+	}
+}
+
+// TestGoingUndoRunsTheUndoOfTheRowTheWriteWentThrough (review finding 4): the rows of one action
+// may state different undos, so a write is undone by the undo of the row it went through, as its
+// record keeps it, and never by the action's first row's; a write whose record names no undo is
+// refused, 409 GOING_UNDO_UNKNOWN, with nothing undone.
+func TestGoingUndoRunsTheUndoOfTheRowTheWriteWentThrough(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The resolve's first row now states a reverse this server has none of; the write went
+	// through a row stating a trace.
+	resolve := catalogue.byAction["dispatch_resolve_ask"]
+	catalogue.actions[resolve].Routes[0].Undo = GoingUndo{Kind: goingUndoReverse, Routes: []string{goingAskResolveRoute}}
+	undoer := goingUndoer{s: &server{going: catalogue}}
+	write := goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Fields: []string{"state"},
+		Outcome: goingWriteOutcome{OK: true}, Undo: goingUndoTrace}
+	if line := undoer.undo(context.Background(), write); !line.Outcome.OK || line.Undo != goingUndoTrace {
+		t.Fatalf("the undo of a write through a trace row answered %+v by %s, want it recorded undone by its trace", line.Outcome, line.Undo)
+	}
+	write.Undo = ""
+	if line := undoer.undo(context.Background(), write); line.Outcome.OK || line.Outcome.Code != codeGoingUndoUnknown {
+		t.Fatalf("the undo of a write whose record names no undo answered %+v, want 409 %s", line.Outcome, codeGoingUndoUnknown)
+	}
+}
+
+// TestGoingWriteRecordsTheUndoOfTheRowItWentThrough: each write the route makes keeps, on the run,
+// the undo the catalogue row it went through states: a claim's reverse and an update's write back.
+func TestGoingWriteRecordsTheUndoOfTheRowItWentThrough(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Recorded undo", "The spec.\n").Key
+	for _, tc := range []struct {
+		action    string
+		arguments map[string]any
+		undo      goingUndoKind
+	}{
+		{"dispatch_claim", map[string]any{"issue": issue}, goingUndoReverse},
+		{"dispatch_issue_update", map[string]any{"issue": issue, "title": "Renamed by the bar"}, goingUndoWriteBack},
+	} {
+		run, _ := rig.runOne(t, tc.action, tc.arguments, nil)
+		if writes := rig.record(t, "alice", run).Writes; len(writes) != 1 || writes[0].Undo != tc.undo {
+			t.Fatalf("the run of %s records %+v, want one write undone by %s", tc.action, writes, tc.undo)
+		}
 	}
 }
