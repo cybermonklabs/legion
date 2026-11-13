@@ -128,7 +128,7 @@ func TestNoForUpdateOnOwnerTables(t *testing.T) {
 	}
 	if len(rowLocks) > 0 {
 		t.Errorf("a row lock on %s is refused outside the write phase's owner-row lock (events.lockEventOwner):\n\t%s\n"+
-			"Take the owner's advisory lock (store.LockOwner, LockOwners, LockOwnerShared or TryLockOwners) "+
+			"Take the owner's advisory lock (store.LockOwner, LockOwners, LockOwnersShared or TryLockOwners) "+
 			"and read the row plainly in the statement after it.",
 			strings.Join(ownerRowTables, ", "), strings.Join(rowLocks, "\n\t"))
 	}

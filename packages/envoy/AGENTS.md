@@ -1377,7 +1377,7 @@ No lock taken before the write phase is a row lock, so a write transaction holds
 its read phase - the owner lock, its reads, every document operation's work and its write advice - holds none, a writer waiting its turn on the owner lock holds none (`TestTwoWritersOfOneOwnerSerializeWithoutATransactionID`), and its write phase sends its statements as one pipelined batch and commits (`ledger.Commit`, above).
 A reader that waits for every older transaction id to end therefore waits only for other writes' statements.
 One cost remains: the read phase still holds its pooled connection, idle in transaction.
-`refreshAnchors`' writes, an update and a `*.anchor_refreshed` append per changed anchor, ride in the same batch, so they add statements to the server's work but no round trip (folding them into one statement is INFRA-605's).
+`refreshAnchors`' writes ride in the same batch: one `unnest` update per table whose anchors moved (`asks`, `comments`), writing only the quote and the orphan flag, and a `*.anchor_refreshed` append per changed anchor, so they add statements to the server's work but no round trip.
 A process of a release that serialised on the owner row and a process of this one do not exclude each other's writes to one owner, so the release that moved owners onto the advisory lock rolls out with `Recreate` at one replica.
 
 **One caller, one connection.**
@@ -3141,7 +3141,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   It takes that lock exclusively, where it once took it in shared mode, so that it can take the project of the event it appends before its own update rather than after it, and so hold no transaction id while it waits for that project (INFRA-636):
   the Inbox's Mark all read holds a caller's row while it waits for the project, and only an exclusive hold of the owner keeps the two apart (`markInboxReadThreads`).
   It appends `user_thread_state.updated` (`{login, thread_id}`, owned by the row's project, never notifying) only when the mark moved, so a revisit announces nothing.
-  That is the Inbox's read-mark lock order over one thread, written once on `markInboxReadThreads` (`api/inbox_read.go`).
+  It is ordered against the Inbox's Mark all read and its dismissal by the thread's owner alone, not by their read-mark lock order, whose row and project steps it takes the other way round:
+  why the two never cross is written once, on `markInboxReadThreads` (`api/inbox_read.go`).
   A person's own reply or answer needs no call: the trigger moves their mark in the write's own transaction.
 
 - `POST /api/v1/me/inbox/read` (needs the `person` scope, `api/inbox_read.go`) is the Inbox's Mark all read: one request marks every thread the list route would show the caller as unread, loaded on the page or not.
@@ -3151,8 +3152,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   a thread written in since stays unread, and one already read past the mark keeps its later mark.
   An Agent row carries no issue, no document, no project and no priority, so any narrowing to one of those leaves it out;
   no thread of either kind carries an urgency - only an ask the Inbox lists in Waiting on you does - so a request that names urgencies without `none` marks nothing at all.
-  It takes the read-mark lock order `PUT /api/v1/me/threads/{id}/read` takes, over every thread it marks rather than one, and prunes the agent-reply rows its sessions' own marks now cover: that order, and which cycles it rules out, is written once, on `markInboxReadThreads` (`api/inbox_read.go`).
-  Every statement runs under a ten-second `statement_timeout`, because that transaction holds those owner rows and a statement that hangs holds every comment, answer and issue message on them behind it.
+  It takes the Inbox's read-mark lock order over every thread it marks, and prunes the agent-reply rows its sessions' own marks now cover: that order, and which cycles it rules out, is written once, on `markInboxReadThreads` (`api/inbox_read.go`).
+  Every statement runs under a ten-second `statement_timeout`, because that transaction holds those owners' locks and a statement that hangs holds every comment, answer and issue message on them behind it.
   It appends one `user_thread_state.updated` per project it marked in, naming no thread (`{login}`, the payload's `thread_id` being optional for exactly this), and one `user_agent_state.updated` per session whose replies it wrote, as `putUserAgentState` appends one.
   A request that moved nothing appends none and answers `{"marked": 0}`.
   Marking read takes no thread out of the Inbox; the Dismiss below does.

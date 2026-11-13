@@ -28,7 +28,7 @@ func CountLockWaits(ctx context.Context, database *store.Store, like string) (in
 }
 
 // OwnerLockWaiters counts the backends of database waiting on an owner lock (the statements
-// store.LockOwner and LockOwnerShared run, which name their result owner_lock), and how many of
+// store.LockOwner and LockOwnersShared run, which name their result owner_lock), and how many of
 // them hold a transaction id while they wait: every writer takes its owner's lock in its read
 // phase, before its first write, so a waiter holding a transaction id is holding one open behind
 // the lock. The caller's own backend is left out. It reads through the pool, as CountLockWaits

@@ -79,8 +79,7 @@ type OwnerLocker interface {
 // a session waiting on one is told apart in pg_stat_activity from a wait on the copy lock
 // (docs.projectCopiesLock), and no scan of this module's SQL mistakes one for the other.
 const (
-	ownerLock       = `select pg_advisory_xact_lock($1, hashtext($2::text)) as owner_lock`
-	ownerLockShared = `select pg_advisory_xact_lock_shared($1, hashtext($2::text)) as owner_lock`
+	ownerLock = `select pg_advisory_xact_lock($1, hashtext($2::text)) as owner_lock`
 	// ownersLock takes the locks of several owners in one statement, in the order of their second
 	// key. The subquery is sorted and deduplicated before the outer select calls the lock function
 	// on each row it hands up, and a subquery with ORDER BY or DISTINCT is never flattened into its
@@ -88,8 +87,7 @@ const (
 	ownersLock = `
 		select pg_advisory_xact_lock($1, keyed.hash) as owner_lock
 		from (select distinct hashtext(owner) as hash from unnest($2::text[]) as owner order by hash) as keyed`
-	// ownersLockShared is ownersLock in shared mode, for a transaction that takes several owners
-	// as LockOwnerShared takes one (LockOwnersShared).
+	// ownersLockShared is ownersLock in shared mode (LockOwnersShared).
 	ownersLockShared = `
 		select pg_advisory_xact_lock_shared($1, keyed.hash) as owner_lock
 		from (select distinct hashtext(owner) as hash from unnest($2::text[]) as owner order by hash) as keyed`
@@ -202,28 +200,21 @@ func lockKeys(owners []Owner) []string {
 	return keys
 }
 
-// LockOwnerShared takes owner's lock in shared mode. It conflicts with LockOwner's exclusive lock
-// exactly as `for share` conflicted with the writers' `for no key update` on the owner row, and with
-// no other shared holder: a transaction that writes only rows every owner writer orders itself
-// against, and must not interleave with one (the Inbox's Mark all read and its dismissal, which
-// take their owners through LockOwnersShared below), waits for the writer that holds the owner and
-// holds off the next one. The read it guards is a separate statement after it, as LockOwner's is.
-func LockOwnerShared(ctx context.Context, q OwnerLocker, owner Owner) error {
-	if _, err := q.Exec(ctx, ownerLockShared, OwnerLockNamespace, owner.LockKey()); err != nil {
-		return fmt.Errorf("lock %s %s for share: %w", owner.Kind, owner.Key, err)
-	}
-	return nil
-}
-
 // OwnersLockShared is the statement LockOwnersShared runs, exported so a test can watch for a
 // session waiting on it in pg_stat_activity (api/inbox_dismiss_race_test.go).
 const OwnersLockShared = ownersLockShared
 
-// LockOwnersShared takes the locks of every owner in owners in shared mode (LockOwnerShared), in
-// one statement, sorted and deduplicated by the lock's key as LockOwners sorts them, so a
-// transaction taking several waits for them in the one order every other transaction does. It
-// runs the same statement however many owners it takes, so a session waiting on it is told apart
-// by the owners it named rather than by its text. Owners of none takes nothing.
+// LockOwnersShared takes the locks of every owner in owners in shared mode, in one statement. A
+// shared lock conflicts with LockOwner's exclusive one exactly as `for share` conflicted with the
+// writers' `for no key update` on the owner row, and not with another shared one: a transaction
+// that writes only rows every owner writer orders itself against, and must not interleave with
+// one (the Inbox's Mark all read and its dismissal, api's lockInboxReadOwners), waits for the
+// writer that holds the owner and holds off the next one. The reads it guards come in statements
+// after this one, as LockOwner's do. The owners are sorted and deduplicated by the lock's key as
+// LockOwners sorts them, so a transaction taking several waits for them in the one order every
+// other transaction does. It runs the same statement however many owners it takes, so a session
+// waiting on it is told apart by the owners it named rather than by its text. Owners of none takes
+// nothing.
 func LockOwnersShared(ctx context.Context, q OwnerLocker, owners ...Owner) error {
 	if len(owners) == 0 {
 		return nil

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -33,9 +32,10 @@ import (
 // The table is the point. A serving writer of an item row is covered by adding a row that names
 // it and drives it - a route through its handler, a command through its function - not by writing
 // another reason into another test. Every writer the census names is placed: it is a row here, or
-// it is named in itemRowLockNoRow with why it has none, and
-// TestTheLockTablePlacesEveryWriterTheCensusNames holds the two lists to the census and to each
-// other, so a census entry added or renamed on one side alone reds rather than leaving this table
+// it is named in itemRowLockNoRow, this table's gap map, with why it has none. The gap map and
+// TestTheLockTablePlacesEveryWriterTheCensusNames, which holds the two lists to the census and to
+// each other, live beside the census (item_writer_census_test.go), since they read names alone; a
+// census entry added or renamed on one side alone reds there rather than leaving this table
 // quietly stale.
 //
 // Each row runs the writer on a store with one connection of its own, so the backend the wait
@@ -105,9 +105,12 @@ type itemRowLockCase struct {
 func (c itemRowLockCase) writer() string { return c.file + " " + c.function }
 
 // itemRowLockTable is the table: the serving writers of item rows this test holds behind an owner
-// lock. Every serving writer the census names is here - the five comment routes, the four ask
-// routes, the two approval-request writers, the two message writers and the anchor-block backfill
-// - and a serving writer added to the census is added here too, as a row of its own.
+// lock. Every writer the census names that takes its owner lock in a transaction of its own is
+// here - the five comment routes, the four ask routes, the two approval-request writers, the two
+// message writers and the anchor-block backfill - and such a writer added to the census is added
+// here too, as a row of its own. Those that write inside a transaction their caller opened rest
+// on that caller's lock, which no row here drives; the gap map (itemRowLockNoRow) names each with
+// why, and TestTheLockTablePlacesEveryWriterTheCensusNames keeps the two lists one.
 var itemRowLockTable = []itemRowLockCase{
 	{
 		name:     "the comment create route",
@@ -193,130 +196,6 @@ var itemRowLockTable = []itemRowLockCase{
 		function: "backfillAnchorBlock",
 		ready:    readyAnchorBlockBackfill,
 	},
-}
-
-// itemRowCallersTransaction is why a writer that runs inside another writer's transaction has no
-// row: the caller's transaction holds the owner, so a row here would prove the caller's lock and
-// say nothing about the callee.
-const itemRowCallersTransaction = "runs inside another writer's transaction, which already holds " +
-	"the owner, so a row here would prove the caller's lock and say nothing about the callee. " +
-	"Covering it costs driving its caller - a version write and the settlement behind it, or the " +
-	"block-index tick - and then telling the callee's statement from its caller's, which one call " +
-	"on one backend does not tell"
-
-// itemRowNoOwnerLock is why a writer that takes no owner lock has no row: there is nothing for it
-// to wait for, and the census entry says why it takes none.
-const itemRowNoOwnerLock = "takes no owner lock at all, which is its census entry's exception: " +
-	"there is nothing for it to wait for, and a row asserting that it does not wait would prove " +
-	"the exception rather than the rule"
-
-// itemRowLockNoRow is every writer of the census that this table does not drive, with why it has
-// no row. Together with itemRowLockTable it accounts for the census exactly, which
-// TestTheLockTablePlacesEveryWriterTheCensusNames holds it to: a writer of an item row added
-// tomorrow is a row above, or it is named here with what its row would cost - the fixture it
-// needs - and either way nobody has to read the table to find out which writers it left out.
-var itemRowLockNoRow = map[string]map[string]string{
-	// Writers whose statements run in a transaction some other writer opened and locked.
-	"internal/dispatch/docs/anchor_refresh.go": {"refreshAnchors": itemRowCallersTransaction},
-	"internal/dispatch/docs/approval_ask.go":   {"RewriteApprovalAsk": itemRowCallersTransaction},
-	"internal/dispatch/docs/approval_carry.go": {"answerApprovalAsk": itemRowCallersTransaction},
-	"internal/dispatch/docs/ask_blocks.go": {
-		"createAskBlock":      itemRowCallersTransaction,
-		"reconcileAskBlocks":  itemRowCallersTransaction,
-		"restoreRetractedAsk": itemRowCallersTransaction,
-	},
-	"internal/dispatch/docs/ask_row.go": {
-		"queueAskResolution": itemRowCallersTransaction,
-		"WriteRestoredAsks":  itemRowCallersTransaction,
-	},
-	"internal/dispatch/refs/item_blocks.go": {
-		"clearItemWindowsOwed": itemRowCallersTransaction,
-		"markItemBlocksOwed":   itemRowCallersTransaction,
-		"queueBlockRefs":       itemRowCallersTransaction,
-		"queueBlocks":          itemRowCallersTransaction,
-		"queueRecordIndexed":   itemRowCallersTransaction,
-		"queueStateLock":       itemRowCallersTransaction,
-	},
-	"internal/dispatch/refs/refs.go": {"queueStamp": itemRowCallersTransaction},
-
-	// Writers that take no owner lock, each by its census entry's own exception.
-	"cmd/dispatch-seed/write_items.go": {
-		"writeAsks":     itemRowNoOwnerLock,
-		"writeComments": itemRowNoOwnerLock,
-		"writeMessages": itemRowNoOwnerLock,
-	},
-	"internal/dispatch/api/broadcasts.go":       {"writeBroadcast": itemRowNoOwnerLock},
-	"internal/dispatch/docs/decided_wording.go": {"restoreWordings": itemRowNoOwnerLock},
-	"internal/dispatch/refs/rebuild.go": {
-		"RebuildAll": itemRowNoOwnerLock,
-		// The drain's settle runs under the owner lock the drain took for the row it settles.
-		"settleOwedStatement": itemRowCallersTransaction,
-	},
-}
-
-// TestTheLockTablePlacesEveryWriterTheCensusNames holds the lock table and the census to each
-// other. The census names every writer of an item row (itemRowWriters); this table drives the
-// ones a server runs, and itemRowLockNoRow names the rest with why they have none. Three things
-// red here:
-//
-//   - a row naming a writer no census entry holds, which is a function renamed or taken out on
-//     one side alone, leaving a row that drives something the census does not call a writer;
-//   - a writer the census names that is on no row and in no gap, which is the serving writer
-//     added to the census and not to this table - the stale table this check exists to prevent;
-//   - a writer both driven and excused, where the two lists disagree about what was paid for.
-//
-// It reads names alone and needs no database, as the census does: what the rows prove about locks
-// is TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites's half.
-func TestTheLockTablePlacesEveryWriterTheCensusNames(t *testing.T) {
-	placed := map[string]string{}
-	var unknown, twice []string
-	place := func(file, function, where string) {
-		writer := file + " " + function
-		if _, named := itemRowWriters[file][function]; !named {
-			unknown = append(unknown, writer+" ("+where+")")
-		}
-		if already, repeated := placed[writer]; repeated {
-			twice = append(twice, writer+" ("+already+" and "+where+")")
-			return
-		}
-		placed[writer] = where
-	}
-	for _, row := range itemRowLockTable {
-		place(row.file, row.function, "the row "+row.name)
-	}
-	for file, functions := range itemRowLockNoRow {
-		for function := range functions {
-			place(file, function, "itemRowLockNoRow")
-		}
-	}
-	slices.Sort(unknown)
-	if len(unknown) > 0 {
-		t.Errorf("this file names a writer the census does not (itemRowWriters):\n\t%s\n"+
-			"A writer is spelled here as the census spells it, the path within the module and the "+
-			"function. Rename it on both sides, or take it out of both.", strings.Join(unknown, "\n\t"))
-	}
-	slices.Sort(twice)
-	if len(twice) > 0 {
-		t.Errorf("a writer is both driven by a row and excused from having one:\n\t%s\n"+
-			"Each writer is placed once: drive it, or say why it has no row.", strings.Join(twice, "\n\t"))
-	}
-	var unplaced []string
-	for file, functions := range itemRowWriters {
-		for function := range functions {
-			if _, found := placed[file+" "+function]; !found {
-				unplaced = append(unplaced, file+" "+function)
-			}
-		}
-	}
-	slices.Sort(unplaced)
-	if len(unplaced) > 0 {
-		t.Errorf("a writer of an item row is on no row of the lock table and in no gap of it:\n\t%s\n"+
-			"A writer a server runs gets a row of its own in itemRowLockTable, which holds it behind "+
-			"the owner lock of the row it writes. One that cannot have a row yet goes in "+
-			"itemRowLockNoRow with why - the fixture its row would cost, or the caller whose "+
-			"transaction it runs in - so that what this table leaves out is read off this file "+
-			"rather than counted against the census.", strings.Join(unplaced, "\n\t"))
-	}
 }
 
 // TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites holds the owner lock of the

@@ -134,20 +134,17 @@ func (s *server) putUserState(w http.ResponseWriter, r *http.Request) {
 	// row's `for update` serialised before: this route is the only writer of user_issue_state,
 	// and two writes of one row take this same lock, since a row names one issue and an issue
 	// names one project.
-	if err := store.LockOwner(r.Context(), tx, store.ProjectOwner(project)); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	// The row as it stands under that lock, read in the statement after it, so it holds whatever
-	// the lock's previous holder committed. No row is the row this write creates, read as the
-	// column defaults it is inserted with (migrations 0001 and 0042): unpinned, nothing read,
-	// nothing dismissed, seq 0.
+	//
+	// The row as it stands under that lock, read in the statement after it
+	// (store.LockOwnerAndRead), so it holds whatever the lock's previous holder committed. No row
+	// is the row this write creates, read as the column defaults it is inserted with (migrations
+	// 0001 and 0042): unpinned, nothing read, nothing dismissed, seq 0.
 	value := userIssueState{Dismissed: []string{}}
 	var encodedDismissed []byte
-	err = tx.QueryRow(r.Context(), `
+	err = store.LockOwnerAndRead(r.Context(), tx, store.ProjectOwner(project), `
 		select pinned, last_read_seq, dismissed, seq
 		from user_issue_state where login = $1 and issue_key = $2
-	`, actor.ID, key).Scan(&value.Pinned, &value.LastReadSeq, &encodedDismissed, &value.Seq)
+	`, []any{actor.ID, key}, &value.Pinned, &value.LastReadSeq, &encodedDismissed, &value.Seq)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 	case err != nil:

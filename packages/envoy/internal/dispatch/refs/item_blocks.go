@@ -936,12 +936,14 @@ func OwedItemBlocks(ctx context.Context, q Queryer, limit int) ([]OwedItemBlock,
 // such lock and needs none, since nothing ever rewrites a message's body. It takes no item row: a
 // row lock would assign the transaction a transaction id to hold through everything it reads and
 // plans, and what it would exclude beyond the owner lock is a writer of the item row that takes
-// no owner lock, which no writer a server runs is: api's lock table holds every serving writer
-// of these rows behind a held owner lock
-// (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites), and the writers that take
-// none are named with why they take none (LockItemOwner). Reading and planning come first
-// and its writes follow back to back (IndexItemIfOwed). A new block and a new mention take the
-// time the item's text was written: a comment's and an ask's
+// no owner lock, which no writer a server runs is: api's lock table holds behind a held owner
+// lock the serving writers of these rows that open their own transaction
+// (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites), those that write inside a
+// transaction their caller opened rest on the lock that caller took, which that table does not
+// drive, and the writers that take none are named with why they take none (LockItemOwner). Which
+// writer is which is kept true by TestTheLockTablePlacesEveryWriterTheCensusNames.
+// Reading and planning come first and its writes follow back to back (IndexItemIfOwed). A new
+// block and a new mention take the time the item's text was written: a comment's and an ask's
 // coalesce(edited_at, created_at), a message's created_at. An item a write site indexed since it
 // was listed is no longer owed and is left alone; one deleted since, before the lock or while it
 // waited, took its state row with it (on delete cascade), so nothing is owed.
@@ -1003,8 +1005,14 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 // The half that holds a writer behind this lock is the lock table
 // (TestEveryWriterOnTheLockTableWaitsForTheOwnerLockOfTheRowItWrites,
 // item_row_owner_lock_test.go): it takes an item's owner lock in a transaction of its own and
-// requires each serving writer of these rows to queue behind it with nothing written yet, so a
-// writer that stops taking its lock reds there.
+// requires each serving writer of these rows that opens its own transaction to queue behind it
+// with nothing written yet, so one of them that stops taking its lock reds there. The writers
+// that write inside a transaction their caller opened - docs' helpers that a version write, a
+// settlement or a route calls, this package's block-index statements, the drain's settle and the
+// stamp - take no lock of their own: they rest on the lock that caller took, which that table
+// does not drive, and its gap map (itemRowLockNoRow, item_writer_census_test.go) names each with
+// why it has no row. TestTheLockTablePlacesEveryWriterTheCensusNames holds every census name to
+// one of the two.
 //
 // The other half is a census of names (TestEveryWriterOfAnItemRowIsOnTheOwnerLockCensus): it
 // finds every write of those rows in the module and reds unless the function making it is on a
@@ -1022,7 +1030,9 @@ func IndexOwedItemBlocks(ctx context.Context, pool Pool, item OwedItemBlock, ser
 // the copy locks alone (RestoreDecidedWordings) and refuses its restoration when the rows moved
 // under it; and RebuildAll raises the owed markers of every comment, message and ask so the
 // index re-derives them, and writes no item row and no other column of a state row. Every other
-// writer, the backfill included, holds the owner this takes.
+// writer holds the owner this takes: those the lock table drives, the backfill among them, by
+// taking it themselves, and those its gap map names as running inside a caller's transaction,
+// through the lock that caller took.
 //
 // A new writer of one of those rows takes this lock before it reads what it writes:
 // store.LockOwner on store.OwnerOf(the row's issue key, its artifact id), as this function,

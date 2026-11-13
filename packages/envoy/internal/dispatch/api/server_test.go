@@ -1822,14 +1822,16 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 		t.Fatalf("create state: status=%d body=%s", initial.Code, initial.Body.String())
 	}
 
+	// The project's owner lock, the one putUserState takes before it reads the row: both writes
+	// queue behind it, and each reads the row only once the write before it has committed, so the
+	// second keeps the field the first wrote.
 	lock, err := database.Pool.Begin(context.Background())
 	if err != nil {
-		t.Fatalf("begin user state lock: %v", err)
+		t.Fatalf("begin the project lock's holder: %v", err)
 	}
 	defer func() { _ = lock.Rollback(context.Background()) }()
-	var login string
-	if err := lock.QueryRow(context.Background(), `select login from user_issue_state where login = 'alice' and issue_key = $1 for update`, issue.Key).Scan(&login); err != nil {
-		t.Fatalf("lock user state: %v", err)
+	if err := store.LockOwner(context.Background(), lock, store.ProjectOwner("TEST")); err != nil {
+		t.Fatalf("hold the project's owner lock: %v", err)
 	}
 	responses := make(chan *httptest.ResponseRecorder, 2)
 	go func() {
@@ -1845,7 +1847,7 @@ func TestConcurrentPartialUserStateUpdatesPreserveFields(t *testing.T) {
 	}()
 	waitForDatabaseLocks(t, lock, 2)
 	if err := lock.Commit(context.Background()); err != nil {
-		t.Fatalf("release user state lock: %v", err)
+		t.Fatalf("release the project's owner lock: %v", err)
 	}
 	for range 2 {
 		response := awaitResponse(t, responses)

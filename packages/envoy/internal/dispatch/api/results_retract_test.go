@@ -8,12 +8,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // recordResultAsSession records one result as a session rather than as a person: the shared
@@ -262,5 +264,73 @@ func TestResultRetractionIsTakenOnAClosedIssueAndForAnAfterMergeCheck(t *testing
 		if _, stands := storedRetraction(t, database, id); !stands {
 			t.Fatalf("result %s carries no retraction row", id)
 		}
+	}
+}
+
+// Two retractions of one result sent at once are taken one after the other: the route takes the
+// check issue's owner lock before it reads whether a retraction stands (retractCheckResult), so
+// the second reads the first's row and answers 409 RESULT_RETRACTED. Without that lock both read
+// no retraction while another writer holds the owner, both meet the lock only in the batch that
+// appends their event, and the second's insert then hits check_result_retractions' primary key,
+// which its caller reads as a 500.
+//
+// TestXidWindowResultRetracted cannot tell the two apart: the append's batch takes the same lock
+// as its first statement, so the window holds the same three statements either way. Holding the
+// lock until both retractions wait on it does.
+func TestTwoRetractionsOfOneResultSentAtOnceAnswerOneRetractionAndOneConflict(t *testing.T) {
+	// An hour's settle keeps the upload's settlement, which takes the same owner lock, out of the
+	// queue this test counts.
+	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
+	issue := createInteractionIssue(t, handler, "RETR", "Raced", "A spec\n")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", twoChecks)
+	result := recordResultAsSession(t, handler, issue.Key, "ses-recorder", resultBody("k1", "pass", headCommit, nil))
+
+	ctx := context.Background()
+	holder, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the holder transaction: %v", err)
+	}
+	defer holder.Rollback(ctx)
+	if err := store.LockOwner(ctx, holder, store.IssueOwner(result.CheckIssueKey)); err != nil {
+		t.Fatalf("hold the check issue's owner lock: %v", err)
+	}
+
+	answers := make(chan *httptest.ResponseRecorder, 2)
+	go func() { answers <- retractAsSession(t, handler, result.ID, "ses-recorder", "The suite was stale.") }()
+	go func() { answers <- retractAsPerson(t, handler, result.ID, "The commit was wrong.") }()
+	if waiting := storetest.WaitForLockWaiters(t, holder, 2, 10*time.Second); waiting < 2 {
+		t.Fatalf("%d retractions queued behind the check issue's owner lock, want both", waiting)
+	}
+	if err := holder.Rollback(ctx); err != nil {
+		t.Fatalf("release the check issue's owner lock: %v", err)
+	}
+
+	codes := map[string]int{}
+	for range 2 {
+		var answer *httptest.ResponseRecorder
+		select {
+		case answer = <-answers:
+		case <-time.After(30 * time.Second):
+			t.Fatal("a retraction never answered once the lock was released")
+		}
+		switch code, _ := refusalOf(t, answer); {
+		case answer.Code == http.StatusCreated:
+			codes["201"]++
+		case answer.Code == http.StatusConflict && code == "RESULT_RETRACTED":
+			codes["409 RESULT_RETRACTED"]++
+		default:
+			t.Fatalf("a raced retraction: status=%d body=%s, want 201 or 409 RESULT_RETRACTED: the route read "+
+				"whether a retraction stands before it held the check issue's owner lock (store.LockOwner)",
+				answer.Code, answer.Body.String())
+		}
+	}
+	if codes["201"] != 1 || codes["409 RESULT_RETRACTED"] != 1 {
+		t.Fatalf("the raced retractions answered %v, want one 201 and one 409 RESULT_RETRACTED", codes)
+	}
+	if _, stands := storedRetraction(t, database, result.ID); !stands {
+		t.Fatalf("result %s carries no retraction row", result.ID)
+	}
+	if events := retractionEventsOn(t, database, result.CheckIssueKey); events != 1 {
+		t.Fatalf("the check's issue holds %d result.retracted events, want one", events)
 	}
 }

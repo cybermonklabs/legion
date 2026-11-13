@@ -730,6 +730,12 @@ type threadReadInput struct {
 	ReadThrough *string `json:"read_through" required:"true"`
 }
 
+// threadReadMoves is the predicate a thread mark moves the caller's row by: login $1's row of
+// thread $2, read short of least($3, now()), $3 being the caller's read_through cast by Postgres
+// from its own text and now() the transaction's own start. putThreadRead's read of whether the
+// mark moves and its update both write it, so the two judge the row by one rule.
+const threadReadMoves = `login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())`
+
 // putThreadRead answers PUT /api/v1/me/threads/{id}/read: it moves the caller's read mark on one
 // thread forward to read_through (stored as no later than now, as the Agents page's read mark is),
 // so a row a tab read less of a moment ago never comes back. A thread the caller has no row for
@@ -743,16 +749,10 @@ type threadReadInput struct {
 // transaction a transaction id to wait on it with.
 //
 // The owner is taken exclusively (store.LockOwner), where this route once took it in shared
-// mode, and that is what lets the project be taken before the row. Every writer that moves a
-// user_threads row holds that owner's lock while it does: a comment, an answer or an issue
-// message exclusively from its read phase on, before its trigger fires, and the Inbox's Mark all
-// read and its dismissal in shared mode (markInboxReadThreads, api/inbox_read.go), which take
-// their rows before the projects their events name. So a transaction holding one of this
-// caller's rows holds the thread's owner too, and this one, holding that owner, waits for no row
-// any other transaction can be holding; a shared lock here would conflict with none of theirs,
-// and a mark-all holding the row while it waited for the project would meet this route holding
-// the project and waiting for the row. Which locks that order rules out is written on
-// markInboxReadThreads, where the whole read-mark lock order is written down.
+// mode, and that is what lets the project be taken before the row. Why that order closes no
+// cycle with any other writer of the row, the Inbox's Mark all read and its dismissal among
+// them, is written once, on markInboxReadThreads (api/inbox_read.go), with the rest of the
+// read-mark lock order.
 func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	actor, ok := s.actingPerson(w, r)
 	if !ok {
@@ -802,32 +802,30 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	}
 	// A closed issue is not refused: reading a thread on a closed issue is reading it. The lock
 	// is the one every reader and writer of the thread's rows takes (store.OwnerOf), and it is
-	// advisory, so this route waits for it holding no transaction id. A row naming no owner
-	// takes none, and no trigger writes one: user_threads_record returns before its insert when
-	// the thread's issue or document names no project, so every row read above names an issue or
-	// a document.
-	if owner := store.OwnerOf(issueKey, artifactID); owner != nil {
-		if err := store.LockOwner(r.Context(), tx, *owner); err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
+	// advisory, so this route waits for it holding no transaction id. Every row names an owner:
+	// user_threads_record returns before its insert when the thread's issue or document names no
+	// project, so every row read above names an issue or a document. A row naming neither is
+	// refused rather than marked: a mark that went on without the thread's lock would hold the
+	// project while it waited for a row the Inbox's Mark all read may hold while it waits for that
+	// project, the cycle markInboxReadThreads rules out.
+	owner := store.OwnerOf(issueKey, artifactID)
+	if owner == nil {
+		s.writeHandlerError(w, fmt.Errorf("%s's user_threads row of thread %s names no issue and no document", login, threadID))
+		return
 	}
-	// Whether the mark moves at all, read under that lock in the statement after it and by the
-	// predicate the update below writes by, against the same now(), which is this transaction's
-	// own start. Nothing can move the row between the two statements: every writer of it holds
-	// the owner this transaction now holds exclusively.
+	// Whether the mark moves at all, read under that lock in the statement after it
+	// (store.LockOwnerAndRead) and by the predicate the update below writes by, against the same
+	// now(), which is this transaction's own start. Nothing can move the row between the read and
+	// the update: every writer of it holds the owner this transaction now holds exclusively.
 	//
 	// A revisit that moves nothing stops here, having taken no project lock and no transaction
 	// id: the thread on screen marks itself on every visit, and a mark that announced one would
 	// refetch the count in every tab the viewer has open, and would queue every such visit behind
 	// every write of events in that project.
 	var moves bool
-	if err := tx.QueryRow(r.Context(), `
-		select exists (
-			select 1 from user_threads
-			where login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())
-		)
-	`, login, threadID, *input.ReadThrough).Scan(&moves); err != nil {
+	if err := store.LockOwnerAndRead(r.Context(), tx, *owner,
+		`select exists (select 1 from user_threads where `+threadReadMoves+`)`,
+		[]any{login, threadID, *input.ReadThrough}, &moves); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -845,19 +843,13 @@ func (s *server) putThreadRead(w http.ResponseWriter, r *http.Request) {
 	// time: an answer's time carries nanoseconds, which the trigger's cast of the answer rounds to
 	// the microsecond while pgx truncates a bound time, so a mark through the answer's own time
 	// would otherwise fall a microsecond short of the answer and leave the thread unread. The
-	// predicate is the update's own rather than the read's verdict, because this is the statement
+	// predicate is written on the update as well as on the read, because this is the statement
 	// that must never move a mark back, whatever was read before it; under the owner's lock it
-	// moves the row the read said it would.
-	moved, err := tx.Exec(r.Context(), `
+	// moves the row the read said it would, so the event below is appended for a mark that moved.
+	if _, err := tx.Exec(r.Context(), `
 		update user_threads set read_through = least($3::text::timestamptz, now())
-		where login = $1 and thread_id = $2 and read_through < least($3::text::timestamptz, now())
-	`, login, threadID, *input.ReadThrough)
-	if err != nil {
+		where `+threadReadMoves, login, threadID, *input.ReadThrough); err != nil {
 		s.writeHandlerError(w, err)
-		return
-	}
-	if moved.RowsAffected() == 0 {
-		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 	event, err := s.appendEvent(r.Context(), tx, projectOwner(project).event(
