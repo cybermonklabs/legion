@@ -204,13 +204,13 @@ func (e *Engine) tellReparented(ctx context.Context, tx pgx.Tx, issue *record.Is
 // linger, hold or Dispatch chain (record.Issue.Ancestry: a member waits in no line), no
 // hand-over fence and its generation's facts cleared. A todo record enters the tree's run
 // admitted, as an unrecorded todo child does (enterChild), so it starts its first phase at the
-// slot the waiting line gives it, unless it waits on an unfinished Dispatch issue: enterChild then
-// holds it at phase.Admitted, on the union of the mirror's row and the list the release read, and
-// StartUnblockedChildren starts it once nothing holds it. Only the adopted root itself carries
-// that list: a member of its tree was named by no release, and waits on what the mirror says. Any
-// other status keeps it as a parked child at done, which a todo runs again (ReenterChild). The
-// tree's architect is told with a child-status notice. Everything is written in the caller's
-// transaction.
+// slot the waiting line gives it, unless it waits on an unfinished Dispatch issue: it is held at
+// phase.Admitted on the mirror's row, which the release's own read wrote before the adoption ran
+// (the mirror's intake.ChildAdoption arm), and StartUnblockedChildren starts it once nothing
+// holds it. Only the adopted root itself carries that read: a member of its tree was named by no
+// release, and waits on what the mirror says. Any other status keeps it as a parked child at
+// done, which a todo runs again (ReenterChild). The tree's architect is told with a child-status
+// notice. Everything is written in the caller's transaction.
 func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue, child intake.AdoptedChild) error {
 	members, err := e.store.TreeIssues(ctx, tx, issue.Key)
 	if err != nil {
@@ -246,10 +246,11 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // (record.Issue.Ancestry: a member waits in no line).
 //
 // child is the release's own read of the issue it names (intake.AdoptedChild). The member it
-// names takes that Dispatch parent, and enterChild holds it on the blockers that read found as
-// well as on the mirror's row. Every other member keeps the parent its own record carries and
-// the mirror's row alone. Everything is written in the caller's transaction; the notice, the
-// catch-up and the log line are each route's own.
+// names takes that Dispatch parent. The blockers that read found hold it through the mirror,
+// which the release's intake.ChildAdoption fact wrote before this ran (blockers' Mirror), and
+// not through enterChild, which reads no blocker. Every other member keeps the parent its own
+// record carries and the mirror's row alone. Everything is written in the caller's transaction;
+// the notice, the catch-up and the log line are each route's own.
 func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root record.Issue, child intake.AdoptedChild) error {
 	if member.Generation == ^uint64(0) {
 		return fmt.Errorf("adopt %s into %s: generation overflows", member.Key, root.Tree)
