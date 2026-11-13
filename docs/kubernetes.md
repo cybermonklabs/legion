@@ -426,6 +426,8 @@ The Envoy plugin ships these skills in its `dist/skills`:
 
 - `agent-secrets`
 
+- `approval-review`
+
 - `asd-ste100`
 
 - `dispatch`
