@@ -655,7 +655,8 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 // own work its remote lacks, and that work is pushed to the issue's one rescue branch, as this
 // role and with its own credential (internal/rescue). The disk is the one the shim's
 // LEGION_WORKSPACE is on; a shim without one (the project controller's) has no workspace and
-// refuses.
+// refuses. The report names every commit each branch carries, so the result crosses the lane as
+// an rpc_chunk sequence when it is larger than one line.
 func (s *shim) rescue(request shimwire.RescueUnpushed) {
 	result := shimwire.RescueUnpushedResult{ID: request.ID, OK: true}
 	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
@@ -677,7 +678,7 @@ func (s *shim) rescue(request shimwire.RescueUnpushed) {
 		})
 		cancel()
 	}
-	s.toDaemon(result)
+	s.toDaemonChunked(result)
 }
 
 // adoptionArgs is the one adoption command both executors run (adoptWorkingCopyCommand,
@@ -735,7 +736,8 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 
 // toDaemonChunked sends a frame that may be larger than one line: under the limit it is one line,
 // and over it the rpc_chunk sequence the daemon's reader reassembles (shimwire.SplitChunks). The
-// bundle result is the one frame of this shim's that can be: everything else fits a line.
+// bundle result and the push check's result, whose report names every commit of each branch with
+// no bound on their number, are this shim's frames that can be: everything else fits a line.
 func (s *shim) toDaemonChunked(frame shimwire.Frame) {
 	line, err := json.Marshal(frame)
 	if err != nil {

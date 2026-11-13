@@ -468,6 +468,46 @@ func (p *peer) next(t *testing.T) shimwire.Frame {
 	return frame
 }
 
+// nextWhole is the shim's next frame as the daemon's reader takes it (stream.Conn.read), read
+// within limit: an rpc_chunk sequence is put back together and read as the frame it carries. A
+// whole frame in the middle of a sequence would make the daemon drop that sequence, so it fails
+// the test.
+func (p *peer) nextWhole(t *testing.T, limit time.Duration) shimwire.Frame {
+	t.Helper()
+	if err := p.conn.SetReadDeadline(time.Now().Add(limit)); err != nil {
+		t.Fatalf("set a read deadline: %v", err)
+	}
+	var chunks shimwire.Reassembler
+	for {
+		line, err := p.r.ReadLine()
+		if err != nil {
+			t.Fatalf("read a frame from the shim: %v", err)
+		}
+		frame, err := shimwire.Decode(line)
+		if err != nil {
+			t.Fatalf("decode a frame from the shim: %v", err)
+		}
+		chunk, ok := frame.(shimwire.RPCChunk)
+		if !ok {
+			if err := chunks.Interrupt(); err != nil {
+				t.Fatalf("the shim sent a %s frame in the middle of an rpc_chunk sequence: %v", frame.FrameType(), err)
+			}
+			return frame
+		}
+		whole, err := chunks.Push(chunk)
+		if err != nil {
+			t.Fatalf("reassemble the shim's rpc_chunk sequence: %v", err)
+		}
+		if whole == nil {
+			continue
+		}
+		if frame, err = shimwire.Decode(whole); err != nil {
+			t.Fatalf("decode the shim's reassembled frame: %v", err)
+		}
+		return frame
+	}
+}
+
 func (p *peer) expect(t *testing.T, want shimwire.Frame) {
 	t.Helper()
 	if got := p.next(t); !reflect.DeepEqual(got, want) {
@@ -1256,6 +1296,105 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The push check's answer carries every commit each branch carries, each with a subject of up to
+// 200 bytes, so the answer for a long line of work is longer than one line of the stream
+// (shimwire.MaxFrameBytes). A writer refuses such a line, and the shim's outbox would close the
+// connection and send the same line again on every reconnect, so the role's stream would stay down
+// and the replacement would be refused. The shim sends that answer as an rpc_chunk sequence, as it
+// sends a bundle, and the daemon's reader puts it back together: a report of 8,000 commits with
+// 200-byte subjects reaches the daemon whole, with every commit id in order.
+//
+// The disk is in the state a second check of the same pod meets: the issue's rescue branch on the
+// remote already holds the line, so the check pushes nothing and reports the 8,000 commits only
+// that branch holds. A push of them would have the leak guard read the records of each commit,
+// which takes minutes for 8,000, and the answer is the same frame either way.
+func TestRescueUnpushedAnswersAReportLongerThanALineInChunksTheDaemonReassembles(t *testing.T) {
+	d := rescuetest.New(t, "WIDGETS-42")
+	line := longLine(t, d, 8000)
+	const target = "legion/WIDGETS-42-rescue"
+	// A fetch into the remote, rather than a push from the clone: a pod's git runs the pre-push
+	// hook, and with it the leak guard, on every push.
+	d.Run(d.Remote, "git", "fetch", "--quiet", d.Clone, "refs/heads/"+d.Branch+":refs/heads/"+target)
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.Env = append(slices.Clone(d.Env), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker, "FAKE_OMP_LOG="+child.log,
+		"LEGION_WORKSPACE="+d.Workspace)
+	run(t, cfg, newClock())
+	p := daemon.accept(t)
+	p.open(t)
+
+	request := shimwire.RescueUnpushed{
+		ID: "long", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", Target: target,
+		WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
+	}
+	p.send(t, request)
+	got, ok := p.nextWhole(t, rescue.Timeout).(shimwire.RescueUnpushedResult)
+	if !ok || got.ID != request.ID {
+		t.Fatalf("the shim answered %#v, want a result for %s", got, request.ID)
+	}
+	if !got.OK || len(got.Workspaces) != 1 || got.Workspaces[0].Status != "rescued" || len(got.Workspaces[0].Branches) != 1 {
+		t.Fatalf("the shim answered OK %v, error %q, workspaces %+v, want one rescued branch of %s",
+			got.OK, got.Error, got.Workspaces, d.Workspace)
+	}
+	if encoded, err := json.Marshal(got); err != nil || len(encoded) < shimwire.MaxFrameBytes {
+		t.Fatalf("the answer is %d bytes (%v), want one longer than a line's %d: the case is a report that does not fit one line",
+			len(encoded), err, shimwire.MaxFrameBytes)
+	}
+	b := got.Workspaces[0].Branches[0]
+	if b.Name != target || b.Pushed || b.Commit != line[len(line)-1] {
+		t.Fatalf("the shim reported the branch %s at %s, pushed %v, want %s at the line's tip %s, pushed by no check of this one",
+			b.Name, b.Commit, b.Pushed, target, line[len(line)-1])
+	}
+	// rev-list's order: the line, newest first.
+	want := slices.Clone(line)
+	slices.Reverse(want)
+	ids := make([]string, len(b.Commits))
+	for i, c := range b.Commits {
+		ids[i] = c.ID
+	}
+	if !slices.Equal(ids, want) {
+		same := 0
+		for same < len(ids) && same < len(want) && ids[same] == want[same] {
+			same++
+		}
+		t.Fatalf("the report carries %d commits, want the %d the branch holds; the first %d are as it holds them, then %q, want %q",
+			len(ids), len(want), same, ids[same:min(same+3, len(ids))], want[same:min(same+3, len(want))])
+	}
+}
+
+// longLine makes n commits on the issue's own branch with one git fast-import, each changing one
+// file and each with a subject of 200 bytes, and returns their ids, oldest first: a line as long
+// as a test needs, made in one process rather than in one command for each commit.
+func longLine(t *testing.T, d *rescuetest.Disk, n int) []string {
+	t.Helper()
+	ref := "refs/heads/" + d.Branch
+	base := d.Git("rev-parse", ref)
+	now := time.Now().Unix()
+	var stream strings.Builder
+	for i := 1; i <= n; i++ {
+		subject := fmt.Sprintf("work %d of the issue's own line, ", i)
+		message := subject + strings.Repeat("x", 200-len(subject)) + "\n"
+		body := fmt.Sprintf("work %d\n", i)
+		fmt.Fprintf(&stream, "commit %s\nmark :%d\ncommitter Legion Test <test@example.invalid> %d +0000\ndata %d\n%s", ref, i, now, len(message), message)
+		if i == 1 {
+			fmt.Fprintf(&stream, "from %s\n", base)
+		}
+		fmt.Fprintf(&stream, "M 100644 inline work.txt\ndata %d\n%s\n", len(body), body)
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir, cmd.Env, cmd.Stdin = d.Workspace, d.Env, strings.NewReader(stream.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import of %d commits: %v\n%s", n, err, out)
+	}
+	line := strings.Fields(d.Git("rev-list", "--reverse", base+".."+ref))
+	if len(line) != n {
+		t.Fatalf("the issue's branch holds %d commits over its base, want the %d made", len(line), n)
+	}
+	return line
 }
 
 // No runtime tells a pane or a pod LEGION_JJ_PATH (internal/api/version.go, the LEGION-631 entry;
