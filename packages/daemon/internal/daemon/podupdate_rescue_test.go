@@ -24,8 +24,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
-// podUpdateRescueBranch is the prefix of every rescue branch of the rig's pod.
+// podUpdateRescueBranch is the per-pod prefix the rig's push check names beside the issue's one
+// branch, which an older shim numbers from 1.
 var podUpdateRescueBranch = "legion/" + podUpdateIssue + "-rescue-" + podUpdatePod[:8]
+
+// podUpdateRescueTarget is the issue's one rescue branch, which the check pushes the disk's work to.
+var podUpdateRescueTarget = "legion/" + podUpdateIssue + "-rescue"
+
+// rescuedOver is the commit the remote's rescue branch holds, and its first parent: the check puts
+// the disk's work under a rescue commit of its own (internal/rescue), so the work it found is that
+// parent. Both are "" when the remote has no such branch.
+func rescuedOver(t *testing.T, d *rescuetest.Disk) (tip, work string) {
+	t.Helper()
+	if tip = d.RemoteBranch(podUpdateRescueTarget); tip == "" {
+		return "", ""
+	}
+	return tip, d.Run(d.Remote, "git", "rev-parse", tip+"^1")
+}
 
 // rescueOn points the rig's runtime at d: every push check runs the real one over d's disk, as
 // the shim of the claim it is asked through would run it in the pod.
@@ -63,7 +78,8 @@ func (r *podUpdateRig) awaitRescues(n int, what string) {
 
 // Each state of the issue's workspace, from a pod with nothing to lose to one whose only copy of
 // a commit is jj's view: the pod is replaced once the check has carried what it found off the
-// disk, the remote holds each rescue branch, and the issue is told each branch it must bring in.
+// disk, the remote holds the issue's one rescue branch, and the issue is told the branch it must
+// bring in.
 // The check is asked through the implementer, the role that acts as the implement App, though the
 // architect's claim comes first in the group.
 func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
@@ -72,8 +88,9 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 		// before, when set, pushes to the remote before the pod's clone is made, so the clone holds
 		// what it pushed from the start (rescuetest.New).
 		before func(d *rescuetest.Disk)
-		// leave puts the workspace in its state and returns the commit the rescue branch must
-		// hold, "" when nothing is to be rescued, and a check of that commit's shape.
+		// leave puts the workspace in its state and returns the commit the rescue commit on the
+		// remote's branch must stand on, "" when nothing is to be rescued, and a check of that
+		// commit's shape.
 		leave func(t *testing.T, d *rescuetest.Disk) (string, func(commit string))
 	}{
 		{
@@ -178,8 +195,8 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 				t.Errorf("the push check was asked through %s for %+v, want the implementer's claim and branch %s with the check's bounds",
 					got.Pod.Claim, got.Rescue, podUpdateRescueBranch)
 			}
-			branch := podUpdateRescueBranch + "-1"
-			held := d.RemoteBranch(branch)
+			branch := podUpdateRescueTarget
+			held, rescued := rescuedOver(t, d)
 			messages := rig.messages()
 			if want == "" {
 				if held != "" || len(messages) != 0 {
@@ -187,14 +204,14 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 				}
 				return
 			}
-			if held == "" || (want != "a new commit" && held != want) {
-				t.Fatalf("the remote holds %s at %q, want %s", branch, held, want)
+			if held == "" || (want != "a new commit" && rescued != want) {
+				t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over %s", branch, held, rescued, want)
 			}
 			if shape != nil {
-				shape(held)
+				shape(rescued)
 			}
-			if extra := d.RemoteBranch(podUpdateRescueBranch + "-2"); extra != "" {
-				t.Fatalf("the remote holds %s-2 at %s, want one rescue branch: the workspace's own work is one head", podUpdateRescueBranch, extra)
+			if extra := d.RemoteBranch(podUpdateRescueBranch + "-1"); extra != "" {
+				t.Fatalf("the remote holds %s-1 at %s, want the issue's one rescue branch alone", podUpdateRescueBranch, extra)
 			}
 			if len(messages) != 1 || !strings.Contains(messages[0], "`"+branch+"` (commit "+held+")") || !strings.Contains(messages[0], d.Workspace) {
 				t.Fatalf("the issue was told %q, want one message naming %s at %s from %s", messages, branch, held, d.Workspace)
@@ -260,9 +277,8 @@ func TestPodUpdateCarriesAnAccountDriftedPodToItsReplacement(t *testing.T) {
 		t.Errorf("the push check was asked through %s for %+v, want the implementer's claim and branch %s",
 			got.Pod.Claim, got.Rescue, podUpdateRescueBranch)
 	}
-	branch := podUpdateRescueBranch + "-1"
-	if held := d.RemoteBranch(branch); held != commit {
-		t.Fatalf("the remote holds %s at %q, want the commit the disk still held %s", branch, held, commit)
+	if held, rescued := rescuedOver(t, d); rescued != commit {
+		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over the commit the disk still held %s", podUpdateRescueTarget, held, rescued, commit)
 	}
 	for _, role := range roles {
 		rig.awaitClaim(role, "its round to end with the replacement", func(c supervise.Claim) bool {
@@ -285,8 +301,8 @@ func TestPodUpdateRescuesWhatAFailedClaimLeftOnTheDisk(t *testing.T) {
 	rig.answeredRound(claim.RoleImplementer)
 
 	rig.awaitReplacement(1, "once the implementer answered, the failed planner asked nothing")
-	if held := d.RemoteBranch(podUpdateRescueBranch + "-1"); held != commit {
-		t.Fatalf("the remote holds %s-1 at %q, want the failed planner's commit %s", podUpdateRescueBranch, held, commit)
+	if held, rescued := rescuedOver(t, d); rescued != commit {
+		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over the failed planner's commit %s", podUpdateRescueTarget, held, rescued, commit)
 	}
 }
 
@@ -343,8 +359,8 @@ func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 		t.Fatal(err)
 	}
 	rig.awaitReplacement(1, "once the remote takes the push")
-	if held := d.RemoteBranch(podUpdateRescueBranch + "-1"); held != commit {
-		t.Fatalf("the remote holds %s-1 at %q, want %s", podUpdateRescueBranch, held, commit)
+	if held, rescued := rescuedOver(t, d); rescued != commit {
+		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over %s", podUpdateRescueTarget, held, rescued, commit)
 	}
 	if notices := rig.notices(); len(notices) != 1 {
 		t.Errorf("the controller was told %d times in all, want the one notice", len(notices))

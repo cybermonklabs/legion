@@ -1167,9 +1167,11 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 }
 
 // `rescue-unpushed` is answered by the shim itself, as its role and in its role's environment: it
-// checks every workspace on the disk its LEGION_WORKSPACE is on, pushes what the remote lacks to a
-// rescue branch, and answers one entry per workspace; OMP never sees the frame. A shim with no
-// LEGION_WORKSPACE has no disk to check and refuses.
+// checks every workspace on the disk its LEGION_WORKSPACE is on, pushes the issue's own work the
+// remote lacks to the branch the frame's target names, and answers one entry per workspace; OMP
+// never sees the frame. A shim with no LEGION_WORKSPACE has no disk to check and refuses. A target
+// the shim dropped would send the check to the frame's per-pod branch, with nothing failing, so
+// the branch it pushed to is read back as the frame's target.
 //
 // The test process's own environment names a decoy disk in LEGION_WORKSPACE, as a Legion issue
 // pod's does its live workspace: neither case may check it or push from it, so the disk's
@@ -1213,7 +1215,7 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 			// check a pod's pre-push hook makes (rescue.GuardReserve), and a smaller bound here
 			// would be refused for want of time rather than checked.
 			request := shimwire.RescueUnpushed{
-				ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a",
+				ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", Target: "legion/WIDGETS-42-rescue",
 				WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
 			}
 			p.send(t, request)
@@ -1226,12 +1228,21 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 					t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE", got)
 				}
 			} else {
-				want := []shimwire.RescueWorkspace{{Dir: d.Workspace, Status: "rescued", Branches: []shimwire.RescueBranch{{Name: request.Branch + "-1", Commit: commit}}}}
-				if !got.OK || !reflect.DeepEqual(got.Workspaces, want) {
-					t.Fatalf("the shim answered %#v, want %+v", got, want)
+				if !got.OK || len(got.Workspaces) != 1 || got.Workspaces[0].Dir != d.Workspace || got.Workspaces[0].Status != "rescued" || len(got.Workspaces[0].Branches) != 1 {
+					t.Fatalf("the shim answered %#v, want one rescued branch of %s", got, d.Workspace)
 				}
-				if held := d.RemoteBranch(request.Branch + "-1"); held != commit {
-					t.Fatalf("the remote holds %s-1 at %q, want %s", request.Branch, held, commit)
+				b := got.Workspaces[0].Branches[0]
+				if b.Name != request.Target || !b.Pushed || b.Previous != "" || len(b.Commits) == 0 {
+					t.Fatalf("the shim reported %+v, want the frame's target %s pushed as a new branch, with its commits", b, request.Target)
+				}
+				if held := d.RemoteBranch(request.Target); held != b.Commit {
+					t.Fatalf("the remote holds %s at %q, want %s", request.Target, held, b.Commit)
+				}
+				if parents := strings.Fields(d.Run(d.Remote, "git", "log", "-1", "--format=%P", b.Commit)); !reflect.DeepEqual(parents, []string{commit}) {
+					t.Fatalf("the rescue commit %s's parents are %v, want the workspace's own %s", b.Commit, parents, commit)
+				}
+				if held := d.RemoteBranch(request.Branch); held != "" {
+					t.Fatalf("the remote holds the per-pod %s at %s, want only the frame's target", request.Branch, held)
 				}
 			}
 

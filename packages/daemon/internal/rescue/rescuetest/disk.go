@@ -114,8 +114,7 @@ func (d *Disk) RecordUpdates() (read func() []string) {
 // out a working tree), whose remote holds one commit on main and on the issue's branch, and whose
 // workspace stands on that commit with nothing in it the remote lacks. Each of before runs once the
 // remote holds that commit and before the pod's clone is made, so what it pushes to the remote the
-// clone holds from the start; the clone records what it held then, as provisioning records it
-// (workspace.RecordHeld).
+// clone holds from the start.
 func New(t testing.TB, issue string, before ...func(d *Disk)) *Disk {
 	t.Helper()
 	return newDisk(t, issue, before, cloneColocated, addWorkspace)
@@ -236,11 +235,10 @@ func layOut(t testing.TB, issue string) (*Disk, string) {
 }
 
 // provision makes the pod's shared clone of Remote with clone and the issue's workspace of it with
-// add, and writes the records provisioning writes — what the clone held when it was made
-// (workspace.RecordHeld), when the workspace was created (workspace.RecordCreated) — with the
-// issue's bookmark tracked. root, which clone is given, is the directory the disk is laid out
-// under, where a jj that opens no repository runs, as provisioning runs those in the clone's
-// parent (workspace.cloneSteps).
+// add, and writes the record provisioning writes of when the workspace was created
+// (workspace.RecordCreated), with the issue's bookmark tracked. root, which clone is given, is the
+// directory the disk is laid out under, where a jj that opens no repository runs, as provisioning
+// runs those in the clone's parent (workspace.cloneSteps).
 func (d *Disk) provision(root string, clone func(d *Disk, root string), add func(d *Disk)) {
 	d.t.Helper()
 	if err := os.MkdirAll(filepath.Dir(d.Clone), 0o755); err != nil {
@@ -250,9 +248,6 @@ func (d *Disk) provision(root string, clone func(d *Disk, root string), add func
 		d.t.Fatal(err)
 	}
 	clone(d, root)
-	if err := workspace.RecordHeld(context.Background(), workspace.NewRunner(time.Minute, d.tools()), d.Clone); err != nil {
-		d.t.Fatal(err)
-	}
 	add(d)
 	if err := workspace.RecordCreated(d.Workspace, d.Provisioned); err != nil {
 		d.t.Fatal(err)
@@ -331,6 +326,19 @@ func (d *Disk) RemoteBranch(branch string) string {
 	return strings.TrimSpace(string(out))
 }
 
+// RemoteReaches says whether a ref of the remote reaches object, a commit, tree or blob: whether
+// anyone who reads the remote can read it. An object the remote still stores once no ref reaches
+// it, such as a commit of a branch deleted there, is not reached.
+func (d *Disk) RemoteReaches(object string) bool {
+	d.t.Helper()
+	for line := range strings.Lines(d.Run(d.Remote, "git", "rev-list", "--objects", "--all")) {
+		if id, _, _ := strings.Cut(strings.TrimSpace(line), " "); id == object {
+			return true
+		}
+	}
+	return false
+}
+
 // RemoteBranches is every branch the remote has.
 func (d *Disk) RemoteBranches() []string {
 	d.t.Helper()
@@ -350,8 +358,8 @@ func (d *Disk) RefuseWrites() {
 
 // Check runs the push check over the disk as a role's shim runs it (shim.rescue), under the
 // disk's environment. prefix and target are the request's Branch and Target (rescue.Request): the
-// per-pod prefix rescue branches are named from, and the issue's one rescue branch, which is ""
-// for a request that names none, as an older daemon's does.
+// per-pod prefix an older shim names its branches from, and the issue's one rescue branch, which
+// is "" for a request that names none, as an older daemon's does. The check then pushes to prefix.
 //
 // The bounds are the check's own, the ones the daemon sets on every request
 // (rescue.WorkspaceTimeout and rescue.Timeout, derived from rescue.GuardReserve): the guard's
@@ -365,18 +373,4 @@ func (d *Disk) Check(ctx context.Context, prefix, target string) []shimwire.Resc
 		StateDir: d.StateDir, Branch: prefix, Target: target, Env: d.Env,
 		WorkspaceTimeout: rescue.WorkspaceTimeout, Deadline: time.Now().Add(rescue.Timeout),
 	})
-}
-
-// tools is the git and jj on PATH, as boot resolves them for provisioning's runner.
-func (d *Disk) tools() map[string]string {
-	d.t.Helper()
-	tools := map[string]string{}
-	for _, tool := range []string{"git", "jj"} {
-		path, err := exec.LookPath(tool)
-		if err != nil {
-			d.t.Fatalf("the push check's tests drive a real %s: %v", tool, err)
-		}
-		tools[tool] = path
-	}
-	return tools
 }
