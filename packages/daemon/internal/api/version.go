@@ -1377,7 +1377,57 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 109: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// 104: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
+// reaches a claim stored working that no process stands behind. Such a claim was refused
+// `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
+// dead architect. Both doors now read that claim's process at the moment of the request
+// (`supervise.Machine.ReadProcess`) rather than the daemon's memory of an old report, which a
+// restart forgets. `fresh_session`, the controller's and the operator's
+// `legion claims retry --fresh-session` alike, reaches such a claim: it is suspended where the
+// request arrives, it leaves the session it recorded behind, and it is started again with the
+// task its dead turn held. The machine lands that suspension where it arrives rather than
+// holding it for a turn that will never end (`supervise`'s holdSuspension). The compaction still
+// refuses the claim, since it has no agent to ask, with `CLAIM_NOT_RUNNING` naming
+// `fresh_session` as the operation that reaches it, or, for the project's own controller claim,
+// which the fresh session refuses and its keeper leaves alone while it is stored working, the
+// operator's `legion claims suspend` and then `legion claims resume`. `CLAIM_IN_A_TURN` now
+// means a process that is running: a claim whose process the read finds alive, and one whose
+// session is being compacted. A claim whose process the runtime would not answer for, and one
+// that records no process to read, is refused `CLAIM_UNSETTLED` instead, left exactly as the
+// request found it and told which read did not happen; so is a claim that moved under the
+// request: at the fresh session, one whose later view is no longer working or whose second read
+// finds the process gone once more, a moved claim being otherwise answered as that second read
+// finds it; at the compaction, one the machine refused as working whose later view is no longer
+// working, which before this change was read and could be answered `CLAIM_IN_A_TURN`. A claim
+// under a relaunch the wake pacing parks keeps `CLAIM_UNSETTLED`. The read records what it finds
+// as the sweep's report of the process would: a running verdict that clears the death charge
+// writes the claim as the machine holds it, as that report's write does, and a refusal stops,
+// suspends, forgets, takes back and starts nothing. One answer more changed: a fresh session that
+// stopped the claim and could not start it again — the forget of its session or its start refused
+// — answers 200 with that refusal, and the state it left the claim in, in `phaseNotRestarted`,
+// rather than reporting a failure about a claim it had already stopped, so that member now carries
+// either the workflow's refused phase restart or a step the machine refused after the claim was
+// stopped. No request or response shape the plugin parses changes: `api.ClaimRequest`,
+// `api.FreshSessionResponse` and `api.CompactResponse` keep their fields. What moved is which
+// claims each operation reaches and the code and the sentence each refusal gives, which
+// `packages/contracts/src/legion-claim-recovery.ts` mirrors and which a controller reads in the
+// `legion` tool's own description, so this number is what keeps a plugin stating the old
+// behaviour off a daemon that answers the new one. (This entry has taken six numbers: 70 when the
+// base carried 68, 76 at the forward merges of 2026-11-12 where main declared 73 and then 75, 86 at
+// the third, fbe970eef84d, where main declared 85, 90 at the fourth, a4c0ff994adc, which the pull
+// request's own conflict forced and where main declared 86, still 90 at the fifth, 12ba4e6afa71,
+// where main declared 87, and 103 at the sixth, 8d9d1ff2dd56, where main declared 94. It takes 104
+// at the seventh, b7a2f926d3a8, which the conflict forced again and where main declares 98, the
+// entry right above this one. The reading of `const DaemonAPIVersion` at refs/pull/<n>/head at
+// 2026-11-13T12:40Z, for every open pull request whose file list names this file or is longer than
+// the page that lists it, gives above the base's 98: 99 on #3575, 100 on #3573 and #3715, 101 on
+// #3712, 102 on #3730 and 103 on #3519, so 104 is the lowest free number above the base's and above
+// every other open head's, which is what the gate's refusal names. Read the base's own number and
+// every open pull request again at the next forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 111: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
 // about, and the completion route judges that head rather than which phase entry the turn began
 // under. Every file-backed handoff record now carries `head`, the commit the work it reports was
 // done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
@@ -1385,27 +1435,29 @@ package api
 // and never from the shared workspace (`packages/pi-shared/src/handoff-record.ts`,
 // findHandoffReport). The route takes a completion of an earlier entry of the same phase when the
 // phase ends with a handoff record this role writes, the completion names a commit and that
-// commit is the head the record holds for the issue's pull request (behindAtRecordedHead), and
-// refuses it with `HANDOFF_STALE_ENTRY` whatever head it names when the entry the phase stands on
-// was raised by a move back (`record.PhaseRow.EntryMovedBack`, written by the transition that
-// raises the entry, store migration `20261113090512_phase_entry_moved_back.up.sql`, which adds
-// `phases.entry_moved_back` with the false default and backfills nothing). The refusal's text
-// names what decided it: the commit given or that none was, the head the record holds, and the
-// move back where there was one. No field is added or removed on either side of the wire:
-// `commit` was already optional on `api.HandoffCompleteRequest` and `handoffCommit` on
-// `api.PhaseView`. What moves is what the two sides mean by them, so they move together: a plugin
-// below 109 sends the three roles' completions with no commit, which this daemon refuses behind
-// their entry as every daemon from 94 did, and a plugin at 109 against a daemon below it has a
-// commit recorded for those roles and named in the next role's task (`Handoff commit:`) that the
-// daemon never judges. (Taken at the merge that brought main in at 2a6ff6c03269, whose own number
-// is the 98 right above. It took 104 first, at the merge that brought main in at 8d9d1ff2, whose
-// number was 94, and #3830 and #3937 declared 104 since; it then took 106, the lowest number no
-// open head declared when that head was pushed, and #2731 and #3730 declared 106 since. So it takes a
-// number above every open head's, as the tree's architect asked, rather than the lowest free one,
-// which another head can take before this one lands. The reading behind 109, of
-// `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of
-// cybermonklabs/legion at 2026-11-13T16:44Z, made with the `declared_by_open_pull_requests` of
-// `.github/scripts/check-daemon-api-contract.sh`, gives above main's 98: 99 (#3575), 100 (#3573),
-// 103 (#3519), 104 (#3830, #3937), 105 (#3659), 106 (#2731, #3730), 107 (#3712) and 108 (#3715);
-// 109 is above them all.)
-const DaemonAPIVersion = 109
+// commit is the head the record holds for the issue's pull request, and refuses it with
+// `HANDOFF_STALE_ENTRY` whatever head it names when the entry the phase stands on was raised by a
+// move back (`record.PhaseRow.EntryMovedBack`, written by the transition that raises the entry,
+// store migration `20261113090512_phase_entry_moved_back.up.sql`, which adds
+// `phases.entry_moved_back` true on every row it finds, so each refuses a behind completion as
+// the daemon before it did until that role's next entry writes what its own move was). The
+// refusal's text names what decided it: the commit given or that none was, the head the record
+// holds, and the move back where there was one. A completion of another entry than its role's
+// phases row names, from a role that does not work the phase the issue stands in, is answered
+// `HANDOFF_NOT_CURRENT_PHASE` in the workflow's words and records nothing, where daemons from 94
+// refused it `HANDOFF_STALE_ENTRY` saying a task of the phase was owed to the claim. No field is
+// added or removed on either side of the wire: `commit` was already optional on
+// `api.HandoffCompleteRequest` and `handoffCommit` on `api.PhaseView`. What moves is what the two
+// sides mean by them, so they move together: a plugin below 111 sends the three roles'
+// completions with no commit, which this daemon refuses behind their entry as every daemon from
+// 94 did, and a plugin at 111 against a daemon below it has a commit recorded for those roles and
+// named in the next role's task (`Handoff commit:`) that the daemon never judges. (Taken at the
+// merge that brought main in at b601d25b3fa1, whose own number is the 104 right above. This entry
+// took 104 at the merge of 8d9d1ff2 (main at 94), 106 at that of 0fde2dcff6e4 (main at 98) and
+// 109 at that of 2a6ff6c03269 (main at 98), each taken by another open head before this one
+// landed. The reading behind 111, of `const DaemonAPIVersion` at refs/pull/<n>/head for every open
+// pull request of cybermonklabs/legion at 2026-11-13T18:05Z, made with the
+// `declared_by_open_pull_requests` of `.github/scripts/check-daemon-api-contract.sh`, gives above
+// main's 104: 105 (#3659), 106 (#2731, #3730), 107 (#3712), 108 (#3519) and 110 (#3715, #3937);
+// 111 is the lowest number above them all.)
+const DaemonAPIVersion = 111
