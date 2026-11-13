@@ -1558,15 +1558,6 @@ func refuseClosed(open bool, write closedWrite) error {
 	return nil
 }
 
-// A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a
-// document's creation is the one other artifact payload, and it states what the write moved
-// through the same helper, so both shapes spell the reference keys once.
-func artifactCreatedEventPayload(artifact model.Artifact, changes model.ReferenceChanges) map[string]any {
-	payload := map[string]any{"artifact": artifact}
-	model.NameReferenceChanges(payload, changes)
-	return payload
-}
-
 func (s *server) namedVersionDiff(ctx context.Context, tx pgx.Tx, artifactID string, version model.Version) (*string, error) {
 	if !version.Named || version.Number < 2 {
 		return nil, nil

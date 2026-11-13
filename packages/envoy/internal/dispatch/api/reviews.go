@@ -860,7 +860,7 @@ func approvalQuestion(documents []model.AskApprovalDocument, summary string) (st
 // artifactMetadata reads one document's row as WriteReview takes it, without its versions or its
 // derived approval: the reader of a second document an approval request names.
 func artifactMetadata(ctx context.Context, q queryer, id string) (model.Artifact, error) {
-	artifact, err := scanArtifact(q.QueryRow(ctx, `select `+artifactColumns+` from artifacts where id = $1`, id))
+	artifact, err := docs.ScanArtifact(q.QueryRow(ctx, `select `+docs.ArtifactColumns+` from artifacts where id = $1`, id))
 	if err != nil {
 		return model.Artifact{}, fmt.Errorf("read the document an approval request names: %w", err)
 	}

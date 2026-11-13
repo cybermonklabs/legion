@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
@@ -27,7 +28,7 @@ const agentOwnsFilesOnly = "an agent's conversation holds files and images; a do
 // so the partial index artifacts_session_id (0071) serves both lookups every upload makes under the
 // conversation's lock instead of a scan of every owner's artifacts.
 const (
-	agentArtifactByNameOrSlugSQL = `select ` + artifactColumns + ` from artifacts where session_id = $1 and $2 in (name, slug)
+	agentArtifactByNameOrSlugSQL = `select ` + docs.ArtifactColumns + ` from artifacts where session_id = $1 and $2 in (name, slug)
 		order by slug = $2 desc limit 1`
 	agentArtifactSlugTakenSQL = `select exists(select 1 from artifacts where session_id = $1 and slug = $2)`
 )
