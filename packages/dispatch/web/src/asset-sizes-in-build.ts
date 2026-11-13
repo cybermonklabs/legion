@@ -82,12 +82,17 @@ export interface EntryChunk {
  * `index.html` also carries an inline script (the chunk-failure reload beside the entry), which
  * has no `src` and is none of this reading; a build naming no module script, or more than one,
  * is refused rather than measured, since which of them a page would wait for is then unknown.
+ *
+ * HTML reads tag and attribute names in any case and a value in double, single or no quotes, so
+ * this reading does too: a `<SCRIPT TYPE=module SRC=…>` the matcher passed over would leave the
+ * budget measuring nothing it could refuse.
  */
 export function entryChunk(dist: string): EntryChunk {
   const html = readFileSync(join(dist, "index.html"), "utf8");
-  const sources = [...html.matchAll(/<script\b[^>]*>/g)]
-    .filter((tag) => /\btype="module"/.test(tag[0]))
-    .map((tag) => /\bsrc="([^"]+)"/.exec(tag[0])?.[1])
+  const sources = [...html.matchAll(/<script\b[^>]*>/gi)]
+    .filter((tag) => /\btype\s*=\s*["']?module\b/i.test(tag[0]))
+    .map((tag) => /\bsrc\s*=\s*(?:"([^"]+)"|'([^']+)'|([^\s"'>]+))/i.exec(tag[0]))
+    .map((match) => match?.[1] ?? match?.[2] ?? match?.[3])
     .filter((source) => source !== undefined);
   if (sources.length !== 1) {
     throw new Error(

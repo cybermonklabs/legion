@@ -134,3 +134,20 @@ test("a build naming no module script is refused rather than measured", () => {
   );
   expect(() => entryChunk(dir)).toThrow("names 0 module scripts");
 });
+
+test("a module script in upper case or with unquoted attributes is the entry, so the budget still reads it", () => {
+  // HTML reads `<SCRIPT TYPE=module SRC=…>` as the same tag; a reading that missed it would
+  // refuse the build as naming no module script at best, and measure the wrong file beside it at
+  // worst. The inline script in lower case beside it has no `src` and stays out of the reading.
+  const dir = mkdtempSync(join(tmpdir(), "dispatch-dist-"));
+  dirs.push(dir);
+  mkdirSync(join(dir, "assets"));
+  writeFileSync(join(dir, "assets", "index-UPPER.js"), new Uint8Array(MAX_ENTRY_BYTES + 1));
+  writeFileSync(
+    join(dir, "index.html"),
+    "<!doctype html><html><head><script>var a = 1;</script>" +
+      "<SCRIPT TYPE=module CROSSORIGIN SRC=/assets/index-UPPER.js></SCRIPT></head><body></body></html>"
+  );
+  expect(entryChunk(dir)).toEqual({ path: "assets/index-UPPER.js", bytes: MAX_ENTRY_BYTES + 1 });
+  expect(budgetReadings(dir).filter((reading) => reading.refused)).toHaveLength(1);
+});
