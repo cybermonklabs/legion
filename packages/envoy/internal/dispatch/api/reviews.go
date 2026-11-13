@@ -621,6 +621,15 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 		}
 		events = []model.Event{opened}
 	}
+	// The person this request reaches, named on the answer as the question create names it
+	// (createAskFor in api/asks.go): read under this transaction, once the insert or the
+	// hand-back above is in, through the rule every read of that person shares. The settled
+	// branch returned above answers no ask at all and so names nobody; every branch here has
+	// an open request, the one a hand-back puts back in front of the human.
+	if ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// The approval as this request leaves it: awaiting, waiting on whom the request now waits on.
 	if err := s.attachApproval(r.Context(), tx, &artifact); err != nil {
 		s.writeHandlerError(w, err)

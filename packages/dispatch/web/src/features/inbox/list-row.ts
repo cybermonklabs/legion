@@ -62,25 +62,35 @@ export function rowUrgency(row: InboxListRow): AskUrgency | null {
 }
 
 /** Which project the row belongs to, or null for a row that belongs to none: the thread's own
- *  project (an Agent row has none), and for an ask the project of its issue or of the document
- *  it was asked on. A project key holds no hyphen, so the part of an issue key before the first
- *  one is its project: `CORE-12` belongs to `CORE`. */
+ *  project (an Agent row has none), and for an ask its `askProject`. */
 export function rowProject(row: InboxListRow): string | null {
-  if (row.kind === "thread") {
-    const thread = inboxThreadRow(row.thread);
-    return thread.kind === "agent" ? null : (thread.project ?? null);
-  }
-  const issue = row.ask.issue?.key ?? row.ask.issue_key;
-  if (issue !== null && issue !== undefined) return issue.split("-")[0] ?? issue;
-  return row.ask.document?.project ?? null;
+  if (row.kind === "ask") return askProject(row.ask);
+  const thread = inboxThreadRow(row.thread);
+  return thread.kind === "agent" ? null : (thread.project ?? null);
+}
+
+/** The project an issue key belongs to. A project key holds no hyphen, so the part of an issue
+ *  key before the first one is its project: `CORE-12` belongs to `CORE`. */
+export function issueProject(key: string): string {
+  return key.split("-")[0] ?? key;
+}
+
+/** Which project an ask belongs to, or null for one that belongs to none: the project of its
+ *  issue (`issueProject`) or of the document it was asked on. */
+export function askProject(ask: InboxRow): string | null {
+  const issue = ask.issue?.key ?? ask.issue_key;
+  if (issue !== null && issue !== undefined) return issueProject(issue);
+  return ask.document?.project ?? null;
 }
 
 /**
  * The person an ask waits on, as the server resolved it (`waiting_on_person`, the one
- * expression `coalesce(a.asked_of, i.assignee)` every list reading an ask shares): whoever the
- * ask was handed to, and the assignee of its issue until somebody hands it on. Null where
- * nobody waits on it - an ask on a project document or on an issue nobody holds that nobody
- * was handed - which the server sends as an absent field rather than an empty one.
+ * expression `coalesce(a.asked_of, i.assignee, p.default_assignee)` every list reading an ask
+ * shares): whoever the ask was handed to, the assignee of its issue until somebody hands it on,
+ * and the default assignee of the ask's project - its issue's, or for an ask on a project
+ * document that document's - while the issue holds nobody. Every project names a default, so
+ * every question reaches somebody; null is what a server written before that rule sends, as an
+ * absent field rather than an empty one.
  *
  * The web app does not work this out again: handing an ask on moves it between people without
  * touching the issue, so a second rule here would put the row in the wrong person's list. It
@@ -94,10 +104,11 @@ export function askWaitingOnPerson(ask: Ask): string | null {
 
 /**
  * Who holds the row. An ask is held by the person it waits on (`askWaitingOnPerson`, the
- * server's own answer), and a document ask is held by nobody. A thread is the reader's own -
- * the route answers nobody else's - so it is held by whoever is reading, which is why the
- * viewer is an argument here rather than something this module could look up: the Inbox has it
- * already, and a helper that read it again would be a second answer to the same question.
+ * server's own answer), a document ask included, which waits on its project's default assignee
+ * until somebody hands it on. A thread is the reader's own - the route answers nobody else's -
+ * so it is held by whoever is reading, which is why the viewer is an argument here rather than
+ * something this module could look up: the Inbox has it already, and a helper that read it again
+ * would be a second answer to the same question.
  */
 export function rowAssignee(row: InboxListRow, viewer: string): string | null {
   return row.kind === "ask" ? askWaitingOnPerson(row.ask) : viewer;
