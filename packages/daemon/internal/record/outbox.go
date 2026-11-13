@@ -1372,7 +1372,7 @@ func validateOutboxPayload(payload OutboxPayload) error {
 			return fmt.Errorf("a phase-ended message carries the reason the architect's notice carries")
 		}
 		if value.TaskFollows && value.Role != claim.RoleImplementer {
-			return fmt.Errorf("only the implementer is told its task follows, since the phase the red opens is its own; the %s is not", value.Role)
+			return fmt.Errorf("only the implementer is told its task follows, since the phase a conflicting head opens is its own; the %s is not", value.Role)
 		}
 	case HookPrompt:
 		if value.Hook == "" {
