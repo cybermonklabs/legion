@@ -1,13 +1,13 @@
 # Decisions on a parked tree
 
-A parked tree is a root handed to Legion (the `legion` label) whose Dispatch status is `backlog`
-or `icebox` and whose `issues.<KEY>.phase` in `read_state` is `done`. Its architect is suspended
-or gone, so nobody inside the tree hears what a person says on it. The Go daemon sends you each
-such decision as `parked-decision on <KEY>`; the walk below finds one sent while no controller
-ran. When the park is your own hold, you decide whether the tree runs again; whoever made the
-park, you start the tree when a person asks you to. When it runs, its architect's start task, or
-the catch-up of a later launch, names each decision the daemon relayed, and both spec versions
-when the approved one is not the current one, so you need not tell it.
+A parked tree is a root handed to Legion (the `legion` label) whose Dispatch status is `backlog` or
+`icebox` and whose `issues.<KEY>.phase` in `read_state` is `done`. Its architect is suspended or
+gone, so nobody inside the tree hears what a person says on it. The Go daemon sends you each such
+decision as `parked-decision on <KEY>`; the walk below finds one sent while no controller ran. When
+the park is your own hold, you decide whether such a decision runs the tree again; whoever made the
+park, you start the tree when a person asks you to. When it runs, its architect's start task, or the
+catch-up of a later launch, names each decision the daemon relayed, and both spec versions when the
+approved one is not the current one, so you need not tell it.
 
 ## Backlog and icebox
 
@@ -161,13 +161,15 @@ document that is not the root's primary one.
        with this decision.` For a comment that is no reply on an ask, leave out the last sentence:
        the daemon relays no such comment. The sentence for the park:
        - A person's or another session's: `<parker> parked the tree, so it stays parked until a
-         person sets it to todo or asks Legion to start it.`, with the login for a person and
-         `session <id>` for a session.
+         person sets it to todo, approves its spec when it has no parent, or asks Legion to start
+         it.`, with the login for a person and `session <id>` for a session.
        - One by `session legion-daemon:<PROJECT>` with no mark: `The tree was parked through Legion
          (session legion-daemon:<PROJECT>) for no hold of its own, so it stays parked until a
-         person sets it to todo or asks Legion to start it.`
+         person sets it to todo, approves its spec when it has no parent, or asks Legion to start
+         it.`
        - One you cannot read: `Its last 10 events do not show who parked the tree, so it stays
-         parked until a person sets it to todo or asks Legion to start it.`
+         parked until a person sets it to todo, approves its spec when it has no parent, or asks
+         Legion to start it.`
    - It only questions the work: a question, a doubt about the premise, a request for changes that
      only asks why. Leave it parked and answer the question in one reply:
      - Answer from the record when it holds the answer: the issue and its spec (`dispatch read`,
