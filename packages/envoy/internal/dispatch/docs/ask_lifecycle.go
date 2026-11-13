@@ -246,7 +246,7 @@ func readIssueAskStateWrites(
 	for _, block := range blocks {
 		if row, indexed := rows[block.id]; indexed {
 			if ask, write := wanted(row); write && ask.State != "answered" {
-				found.writes.repairs = append(found.writes.repairs, askRepair{blockID: block.id, set: askServerAttributes(ask, "", false)})
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, askServerAttributes(ask, "", false)))
 			}
 			continue
 		}
@@ -256,20 +256,20 @@ func readIssueAskStateWrites(
 				if ask.State == "answered" {
 					set = answeredCopyAttributes(ask, source.document)
 				}
-				found.writes.repairs = append(found.writes.repairs, askRepair{blockID: block.id, set: set})
+				found.writes.repairs = append(found.writes.repairs, askRepair(block.id, set))
 			}
 			continue
 		}
 		if markUnindexed {
 			ref := BlockRef{ArtifactID: artifactID, BlockID: block.id}
-			found.writes.repairs = append(found.writes.repairs, askRepair{blockID: block.id, set: func(node *pmdoc.Node) bool {
+			found.writes.repairs = append(found.writes.repairs, askRepair(block.id, func(node *pmdoc.Node) bool {
 				if node.Attrs["state"] == "resolved" {
 					return false
 				}
 				node.Attrs["state"] = "resolved"
 				found.marked = append(found.marked, ref)
 				return true
-			}})
+			}))
 		}
 	}
 	return found, nil

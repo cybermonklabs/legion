@@ -353,9 +353,10 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 //
 //   - A tree that lacks block ids is stamped in the room, and the stamp committed alone
 //     (commitStamp).
-//   - A tree whose ask blocks need repairs and no plan for them is reconciled, rolled back, and
-//     its repairs planned - their answers weighed and the repaired tree rendered - outside the
-//     lock (planRepairs, repairPlan).
+//   - A tree whose ask blocks need repairs, or whose check blocks break one of the four rules a
+//     check proved by CI keeps (reconcileCICheckBlocks), and no plan for them is reconciled,
+//     rolled back, and its repairs planned - their answers weighed and the repaired tree
+//     rendered - outside the lock (planRepairs, repairPlan).
 //   - A tree whose repairs match the plan has them written into the room, appended and committed
 //     with the rows and events their reconciliation wrote, and no version (commitRepairs).
 //   - Otherwise the pass writes the version from the pre-rendered output (commitVersion): a tree
@@ -420,6 +421,11 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	}
 	pass.reconciliation, err = s.service.reconcileAskBlocks(ctx, tx, s.room, owner, pass.read, pass.credit)
 	if err != nil {
+		return settleDone, pass.abandon(err)
+	}
+	// The check blocks are held to the four rules in the same transaction, on the same tree: a
+	// ci_check that breaks one is a repair of its own, planned and written with the ask repairs.
+	if err := pass.reconciliation.reconcileCICheckBlocks(ctx, tx, s.room, owner, pass.read, pass.credit.actor); err != nil {
 		return settleDone, pass.abandon(err)
 	}
 	if s.service.afterSettleReconcile != nil {
