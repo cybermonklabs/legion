@@ -791,6 +791,15 @@ type Deps struct {
 	// than sent. It is asked only about a root architect's task of a run (asksRoot), once that
 	// root has an architect to hear it, and nil leaves every task as it was queued.
 	RootTask func(ctx context.Context, c Claim, d Delivery) (task string, kept []byte, err error)
+	// DesignNews is what a task that carries news of the approved design (Delivery.News) says now:
+	// its text, and what it still carries of that news, re-read from the record at the moment the
+	// task is about to be sent. The gate it names can have closed again, and an item it tells can
+	// have stopped standing while the task waited — a later approval replaced it, a changes request
+	// cleared it, or another delivery's confirmation told it — so the answer drops each such item
+	// from the text and from the news, and says the gate as it stands. An empty text is a task that
+	// queued for its news alone and has nothing left to say, which is retired rather than sent. It is
+	// asked only about a delivery that carries news, and nil leaves every task as it was queued.
+	DesignNews func(ctx context.Context, c Claim, d Delivery) (task string, news []byte, err error)
 	// TreeClosable answers whether the operator may close this claim's tree: false refuses the
 	// close, and an error is the read itself failing, which the caller sees as a failure rather
 	// than a refusal. It is asked for the operator's own close — the workflow's linger close is its
@@ -2940,11 +2949,11 @@ func (m *Machine) forgetSend() {
 // are the only calls that do. Store.AdmitClaim and Store.CheckLaunch keep today's behaviour and
 // take no deadline: what they wait on is an advisory lock another transaction holds, so a
 // deadline there would fail a launch that was only queued behind its predecessor. So do the reads
-// of the record — PhaseHolds, RootHears, RootTask, TreeClosable — which decide what the next
-// write will say rather than hold the row, and whose failure costs the decision and nothing
-// after it. The deadline is what keeps a database that has stopped answering from holding the
-// machine's lock for the length of the outage; a write it cuts short is owed and made again at
-// the claim's next decision (owes, repair).
+// of the record — PhaseHolds, RootHears, RootTask, DesignNews, TreeClosable — which decide what
+// the next write will say rather than hold the row, and whose failure costs the decision and
+// nothing after it. The deadline is what keeps a database that has stopped answering from holding
+// the machine's lock for the length of the outage; a write it cuts short is owed and made again
+// at the claim's next decision (owes, repair).
 func (m *Machine) write(ctx context.Context, call func(context.Context) error) error {
 	writing, cancel := context.WithTimeout(ctx, m.deps.claimWrite())
 	defer cancel()

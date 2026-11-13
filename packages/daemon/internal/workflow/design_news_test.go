@@ -155,17 +155,29 @@ func mergedRootSummaryNews() News {
 		}}
 }
 
+// closedSummaryNews is treeSummaryNews sent after the writer saved version 6 of the spec, which
+// closed the gate again: the members its news was owed to are told nothing yet.
+func closedSummaryNews() News {
+	return News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: closedGates(),
+		Items: []NewsChange{specChanges(3)},
+		Members: []NewsMember{
+			{Issue: newsTree, Phase: phase.AwaitingPerson, State: NewsAwaitingPerson},
+			{Issue: "LEGION-209", Phase: phase.Implementing, State: NewsGateClosed},
+		}}
+}
+
 // everyNewsForm is each news text the fixtures render, by name.
 func everyNewsForm() map[string]string {
 	return map[string]string{
-		"the root holder owed the opening":           RenderNews(rootHolderNews()),
-		"the holder sent news after the gate closed": RenderNews(closedHolderNews()),
-		"the holder of an unread pair":               RenderNews(unreadHolderNews()),
-		"the holder of the first approved version":   RenderNews(firstApprovalHolderNews()),
-		"the sub-architect of an accepting child":    RenderNews(acceptingHolderNews()),
-		"the holder of a decision-only version":      RenderNews(decisionOnlyHolderNews()),
-		"the root architect's tree summary":          RenderNews(treeSummaryNews()),
-		"the root architect of a merged root":        RenderNews(mergedRootSummaryNews()),
+		"the root holder owed the opening":                   RenderNews(rootHolderNews()),
+		"the holder sent news after the gate closed":         RenderNews(closedHolderNews()),
+		"the holder of an unread pair":                       RenderNews(unreadHolderNews()),
+		"the holder of the first approved version":           RenderNews(firstApprovalHolderNews()),
+		"the sub-architect of an accepting child":            RenderNews(acceptingHolderNews()),
+		"the holder of a decision-only version":              RenderNews(decisionOnlyHolderNews()),
+		"the root architect's tree summary":                  RenderNews(treeSummaryNews()),
+		"the root architect of a merged root":                RenderNews(mergedRootSummaryNews()),
+		"the root architect's summary after the gate closed": RenderNews(closedSummaryNews()),
 	}
 }
 
@@ -424,6 +436,23 @@ func TestTheSummaryNamesAnAcceptingMemberTheArchitectAnswersItself(t *testing.T)
 		"`request_backward_move`", "planning, implementing or testing"} {
 		if !strings.Contains(line, want) {
 			t.Errorf("the accepting member's line %q does not say %q", line, want)
+		}
+	}
+}
+
+// A summary sent after a later version closed the gate again tells the architect that a member
+// its news was owed to is told nothing yet, and why: no task carries that news and no start will
+// while the gate is closed, so no line says a task or a start carries it.
+func TestTheSummarySentAfterTheGateClosedAgainTellsAnOwedMemberNothingYet(t *testing.T) {
+	text := RenderNews(closedSummaryNews())
+	line := newsLine(t, text, "- LEGION-209, in implementing: ")
+	if want := "told nothing yet: the gate closed again before this was sent; what it is owed goes once a person approves " +
+		"the version now with its reviewer."; !strings.HasSuffix(line, want) {
+		t.Errorf("the member's line %q does not say %q", line, want)
+	}
+	for _, never := range []string{"the next start of", "a task tells"} {
+		if strings.Contains(text, never) {
+			t.Errorf("the summary sent after the gate closed says %q:\n%s", never, text)
 		}
 	}
 }

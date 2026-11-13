@@ -107,6 +107,11 @@ const (
 	// NewsMerged is a member told nothing because its pull request has merged, and merged work
 	// never moves back. The summary gives the architect the duty that follows.
 	NewsMerged NewsState = "merged"
+	// NewsGateClosed is a member told nothing yet because the standing gate closed again before
+	// the summary was sent: record.OwedNews owes nothing while it is closed, so no task carries
+	// the member's news and no start will until a person approves the version now with its
+	// reviewer. It is said in place of the states that name a task or a start.
+	NewsGateClosed NewsState = "gate-closed"
 )
 
 // RenderNews is the one place the text of news of an approved design is written, in the form its
@@ -323,6 +328,9 @@ func memberWords(member NewsMember) string {
 	case NewsMerged:
 		return "told nothing: its pull request has merged, and merged work never moves back. Give the new work to an issue of this tree " +
 			"whose pull request is still open, or `dispatch ask` the person."
+	case NewsGateClosed:
+		return "told nothing yet: the gate closed again before this was sent; what it is owed goes once a person approves the version " +
+			"now with its reviewer."
 	}
 	return "told nothing."
 }

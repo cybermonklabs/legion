@@ -142,6 +142,14 @@ type Delivery struct {
 	// owes them. It is rewritten, with the task text, by the send-time narrowing of what the task
 	// still names of this claim's tree (Deps.RootTask). Empty for a task that names none.
 	Kept []byte
+	// News is what the task carries of news of the approved design (record.DeliveryNews, encoded
+	// JSON): the start's own text, each item it tells and each opening it carries. It is opaque here
+	// as Kept is, and carried and persisted with the delivery for the same reason: the store's write
+	// that records ConfirmedAt raises what it names as taken, the write that takes that confirmation
+	// back puts it back, and the write that retires it unconfirmed tells nothing. It is rewritten,
+	// with the task text, at every send (Deps.DesignNews), so the text sent says what the record says
+	// at that send. Empty for a task that carries none, which no send asks about.
+	News []byte
 	// ProviderErrorRetries is how many times this task has been sent again after a turn of it
 	// ended in a provider error, from 0 (promptResulted's providerErrored). It is what the wait
 	// before the next send is a function of (promptRetryDelay), so a daemon restarted in the
@@ -392,7 +400,7 @@ func (m *Machine) queue(ctx context.Context, request RequestDeliver) error {
 		id = rand.Text()
 	}
 	d := Delivery{ID: id, Task: task, Phase: request.Phase, Generation: request.Generation, Kept: request.Kept,
-		Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now()}
+		News: request.News, Entry: request.Entry, CheckLook: request.CheckLook, QueuedAt: m.deps.Clock.Now()}
 	if request.Row > 0 || request.Entry > 0 {
 		// The claim records the row and the entry only once the store has them with the
 		// delivery: a write that failed leaves the row undelivered and the entry ungiven, so its
@@ -434,14 +442,15 @@ func (c Claim) openRoundHoldsTask() bool {
 
 // sendPending sends the pending delivery if everything a send needs is true now: the claim is
 // ready or idle, the delivery is neither confirmed nor already on its way, the issue is still in
-// the phase the task was queued for, the root of a root architect's task of a run has an architect
-// to hear it, the claim's connection is registered, and — for a task that adopts the working
-// copy the issue's roles share (adopts) — no other claim of the issue is in a turn or has a
-// prompt on its way to one. A missing connection is not a failure — the shim's next hello sends
-// it. A delivery an earlier daemon may have sent is sent again only after the agent says it is
-// not already in a turn; if it is, that turn is taken as the delivery's — except for a root
-// architect's task of a run, which no turn of the agent's own is ever taken for, since it may be
-// a task nobody has sent at all (asksRoot).
+// the phase the task was queued for, a task carrying news of the approved design still has some
+// to say (currentNews, which renders it again from the record), the root of a root architect's
+// task of a run has an architect to hear it, the claim's connection is registered, and — for a
+// task that adopts the working copy the issue's roles share (adopts) — no other claim of the
+// issue is in a turn or has a prompt on its way to one. A missing connection is not a failure —
+// the shim's next hello sends it. A delivery an earlier daemon may have sent is sent again only
+// after the agent says it is not already in a turn; if it is, that turn is taken as the
+// delivery's — except for a root architect's task of a run, which no turn of the agent's own is
+// ever taken for, since it may be a task nobody has sent at all (asksRoot).
 //
 // Four states hand the claim nothing and hold the task instead of dropping it: a claim holding a
 // suspension (holdSuspension), a claim that has answered its open update round
@@ -547,23 +556,36 @@ func (m *Machine) sendPending(ctx context.Context) error {
 	//
 	// holds is whether the delivery is still the claim's to send; the ask of a round the claim
 	// is not in now never is, and its issue's phase is not asked about, since the round's words
-	// are what it is.
+	// are what it is. says is whether a task that still holds has anything to say: a task queued
+	// for news of the approved design alone can have nothing left once the record is read again
+	// (currentNews), which is asked only of a task that holds, so a task its phase has left is
+	// dropped without a read of its news.
 	round, asks := updateRoundOf(p.ID)
 	stale := asks && (round != m.claim.UpdateRound || m.claim.LeftPodRound(round))
-	holds := !stale
+	holds, says := !stale, true
 	if holds {
 		var err error
 		if holds, err = m.phaseHolds(ctx, *p); err != nil {
 			return err
 		}
 	}
-	if !holds {
-		if stale {
+	if holds {
+		var err error
+		if says, err = m.currentNews(ctx); err != nil {
+			return err
+		}
+	}
+	if !holds || !says {
+		switch {
+		case stale:
 			m.log.Info("supervise: this task asks for a round the claim is not in now; it is dropped rather than sent",
 				"delivery", p.ID, "asked", round, "round", m.claim.UpdateRound, "left", m.claim.UpdateLeftRound)
-		} else {
+		case !holds:
 			m.log.Info("supervise: the issue has left the phase this task was queued for; it is dropped rather than sent",
 				"delivery", p.ID, "issue", m.claim.Issue, "queuedFor", p.Phase)
+		default:
+			m.log.Info("supervise: this task was queued for news of the approved design and none of it stands now; it is retired rather than sent",
+				"delivery", p.ID, "issue", m.claim.Issue)
 		}
 		if err := m.retirePending(ctx); err != nil {
 			return err
@@ -728,17 +750,60 @@ func (m *Machine) currentRootTask(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+// currentNews writes a task that carries news of the approved design back to what it says now
+// (Deps.DesignNews) and answers whether it still has anything to say. Such a task was composed
+// from the record when the start that queued it ran, and the record can move while it waits: the
+// gate it names can close again, a later approval can replace an item it tells, and another
+// delivery's confirmation can tell it first. So the text is rendered again here, where the machine
+// owns the pending delivery, at every send — a send refused busy is rendered again when it is sent
+// again — and what the answer no longer carries goes from the delivery as well as from the text,
+// so the confirmation raises as taken only what the prompt told.
+//
+// A task queued for its news alone that is left with nothing to say is not sent, and the answer
+// is false: sendPending retires it through the one exit every drop leaves by, which answers the
+// question a restart left for it (answerAskFirstAfterDrop). The id is kept across the rewrite, as
+// currentRootTask keeps it: it is this delivery, under the row that queued it, with less in it
+// than when it was queued. The rewritten task is persisted before it is sent, so a restart reads
+// the task this send carried and the confirmation raises what it named. A task that carries no
+// news is never asked about, and every task holds where nothing answers (Deps.DesignNews nil).
+func (m *Machine) currentNews(ctx context.Context) (bool, error) {
+	p := m.claim.Pending
+	if m.deps.DesignNews == nil || len(p.News) == 0 {
+		return true, nil
+	}
+	task, news, err := m.deps.DesignNews(ctx, m.claim, *p)
+	if err != nil {
+		return false, fmt.Errorf("read what the news task held for %s says now: %w", m.claim.Token, err)
+	}
+	if task == "" {
+		return false, nil
+	}
+	if task == p.Task && bytes.Equal(news, p.News) {
+		return true, nil
+	}
+	next := *p
+	next.Task, next.News = task, news
+	if err := m.saved(m.putDelivery(ctx, next)); err != nil {
+		return false, err
+	}
+	*p = next
+	m.log.Info("supervise: the news this task carries was read again from the record; the task is sent as it reads now",
+		"delivery", p.ID, "issue", m.claim.Issue)
+	return true, nil
+}
+
 // answerAskFirstAfterDrop answers the question a restart armed for a delivery that is now gone
 // (askFirst), and every drop of a delivery runs it in the same step as the drop: sendPending's
-// two — the task its issue's phase has left behind, and the ask of a round the claim is not in
-// now — the retirement's (machine.go's retire), and dropUpdateTask, which makes it of its own
-// for the three drops a round that is over makes through it (leaveRound, endPodUpdate,
-// openPodUpdate's round switch). The one drop that does not run it is
-// currentRootTask's retirement of a root architect's held task that names nothing any more:
-// sendPending's asksRoot branch clears askFirst before it, without asking, so no question is left
-// to answer. Left armed over nothing pending, the question would make the claim's next task the
-// running turn's — confirmed by a turn of another cause, never prompted, and retired unsent by
-// that turn's end — and the worker would never receive that task at all.
+// three — the task its issue's phase has left behind, the ask of a round the claim is not in now,
+// and the task queued for news of which nothing stands now (currentNews) — the retirement's
+// (machine.go's retire), and dropUpdateTask, which makes it of its own for the three drops a
+// round that is over makes through it (leaveRound, endPodUpdate, openPodUpdate's round switch).
+// The one drop that does not run it is currentRootTask's retirement of a root architect's held
+// task that names nothing any more: sendPending's asksRoot branch clears askFirst before it,
+// without asking, so no question is left to answer. Left armed over nothing pending, the question
+// would make the claim's next task the running turn's — confirmed by a turn of another cause,
+// never prompted, and retired unsent by that turn's end — and the worker would never receive
+// that task at all.
 //
 // It asks what a send would have asked, and confirms nothing: no delivery is left to confirm, so
 // an agent the ask finds in a turn only moves the claim to working, with the turn marked one this
@@ -799,9 +864,10 @@ func (m *Machine) phaseHolds(ctx context.Context, d Delivery) (bool, error) {
 
 // retirePending drops the pending delivery, and is the one place a delivery ends: settle calls
 // it for a delivery whose life is over, sendPending for a task the issue's phase has left
-// behind and for the ask of a round the claim is not in now, dropUpdateTask for the ask of a
-// round that is over, retire for the ask the claim ends with, and queue for the task a newer one
-// replaces. The claim keeps its state — the task is stale, not the agent.
+// behind, for the ask of a round the claim is not in now and for a task queued for news of which
+// nothing stands now, dropUpdateTask for the ask of a round that is over, retire for the ask the
+// claim ends with, and queue for the task a newer one replaces. The claim keeps its state — the
+// task is stale, not the agent.
 //
 // A confirmed task of a run leaves the run behind it, and its phase entry and its check look
 // with it: the worker goes on working it in whatever turn comes next — one an Envoy notice

@@ -51,7 +51,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	d.delivery_id, d.task, d.phase, d.generation, d.entry, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
-	d.kept_decisions, d.provider_error_retries, d.provider_error_note
+	d.kept_decisions, d.provider_error_retries, d.provider_error_note, d.design_news
 	from claims c left join pending_task_deliveries d on d.claim_token = c.token`
 
 // PutClaim persists an admitted claim's state: every write a claim's machine makes. A claim enters
@@ -526,6 +526,8 @@ func (s *Store) ClaimByBootTokenHash(ctx context.Context, hash []byte) (supervis
 // one. A token no claim carries is refused. It is one transaction, because the write carries what
 // the task names of the decisions a person made while nobody in its root's tree could hear them:
 // queued or taken back, the delivery holds those rows; confirmed, it tells them (kept_decisions.go).
+// The same holds for the news of the approved design the task carries: confirmed, it raises what
+// each audience took; taken back, it puts that back (design_news_told.go).
 func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.Delivery) error {
 	return s.Tx(ctx, func(tx pgx.Tx) error { return putDelivery(ctx, tx, token, d) })
 }
@@ -533,30 +535,35 @@ func (s *Store) PutDelivery(ctx context.Context, token claim.Token, d supervise.
 // putDelivery writes a delivery through the caller's transaction: the one PutDelivery opens, or
 // the one that carries the claim the delivery is confirmed against. It takes a transaction
 // because it reads the row it is about to replace and holds that reading until it has written
-// (kept_decisions.go's putBackARetakenConfirmation), which no autocommit statement can do. The
-// rows the task names go with it: a delivery still unconfirmed holds them, under this claim and
-// this delivery id, taking each from the start row that claimed it and from whatever id the
-// claim's previous delivery held it under; the write that records the confirmation tells them.
-// All of it is in the caller's transaction, so no row is ever held by a delivery the store does
-// not hold, and no confirmation commits without telling what it confirmed.
+// (kept_decisions.go's putBackARetakenConfirmation, design_news_told.go's settleDesignNews), which
+// no autocommit statement can do. The rows the task names go with it: a delivery still unconfirmed
+// holds them, under this claim and this delivery id, taking each from the start row that claimed
+// it and from whatever id the claim's previous delivery held it under; the write that records the
+// confirmation tells them. So does the news it carries: the write that records the confirmation
+// raises each version it told as taken, and the write that takes the confirmation back lowers it
+// again. All of it is in the caller's transaction, so no row is ever held by a delivery the store
+// does not hold, and no confirmation commits without telling what it confirmed.
 func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.Delivery) error {
 	if d.Generation > math.MaxInt64 {
 		return fmt.Errorf("put delivery %s on %s: generation %d does not fit a bigint", d.ID, token, d.Generation)
 	}
-	kept := keptDecisions(d.Kept)
+	kept, news := keptDecisions(d.Kept), designNews(d.News)
 	unconfirmed := d.ConfirmedAt.IsZero()
 	if unconfirmed {
 		if err := putBackARetakenConfirmation(ctx, tx, token, d.ID, kept); err != nil {
 			return err
 		}
 	}
+	if err := settleDesignNews(ctx, tx, token, d, news); err != nil {
+		return err
+	}
 	_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task,
 		phase, generation, entry, check_look, check_opened_at, queued_at, delivered_at, marked_by,
 		confirmed_at, interrupted, prompted, out_of_memory,
 		send_failures, last_send_failure_at, last_send_error, kept_decisions,
-		provider_error_retries, provider_error_note)
+		provider_error_retries, provider_error_note, design_news)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18,
-		coalesce($19::jsonb, '{}'::jsonb), $20, $21)
+		coalesce($19::jsonb, '{}'::jsonb), $20, $21, $22::jsonb)
 		on conflict (claim_token) do update set delivery_id = excluded.delivery_id,
 		task = excluded.task, phase = excluded.phase, generation = excluded.generation,
 		entry = excluded.entry, check_look = excluded.check_look,
@@ -567,12 +574,12 @@ func putDelivery(ctx context.Context, tx pgx.Tx, token claim.Token, d supervise.
 		last_send_failure_at = excluded.last_send_failure_at, last_send_error = excluded.last_send_error,
 		kept_decisions = excluded.kept_decisions,
 		provider_error_retries = excluded.provider_error_retries,
-		provider_error_note = excluded.provider_error_note`,
+		provider_error_note = excluded.provider_error_note, design_news = excluded.design_news`,
 		string(token), d.ID, d.Task, string(d.Phase), int64(d.Generation), d.Entry,
 		d.CheckLook.Look, instant(d.CheckLook.OpenedAt), d.QueuedAt, instant(d.DeliveredAt), d.MarkedBy,
 		instant(d.ConfirmedAt), d.Interrupted, d.Prompted, d.OutOfMemory,
 		d.SendFailures, instant(d.LastSendFailureAt), d.LastSendError, kept,
-		d.ProviderErrorRetries, d.ProviderErrorNote,
+		d.ProviderErrorRetries, d.ProviderErrorNote, news,
 	)
 	if err != nil {
 		return fmt.Errorf("put delivery %s on %s: %w", d.ID, token, err)
@@ -679,7 +686,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		abandoned                   []byte
 		updateOpened, updateTasked  *time.Time
 		updateSignalled, updateTold *time.Time
-		kept                        []byte
+		kept, news                  []byte
 		retries                     *int64
 		note                        *string
 		stepAt, turnStarted         *time.Time
@@ -704,7 +711,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryEntry, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
-		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note)
+		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &news)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return supervise.Claim{}, err
 	}
@@ -784,6 +791,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 			LastSendFailureAt:    orZero(lastSendFailure),
 			LastSendError:        *lastSendError,
 			Kept:                 keptDecisions(kept),
+			News:                 designNews(news),
 			ProviderErrorRetries: int(orZeroInt(retries)),
 			ProviderErrorNote:    *note,
 		}

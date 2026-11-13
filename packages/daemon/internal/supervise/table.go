@@ -547,6 +547,11 @@ type RequestDeliver struct {
 	// is what holds those rows until the delivery tells them (Delivery.Kept). Empty for a task
 	// that names none.
 	Kept []byte
+	// News is what the task carries of news of the approved design, as the start that queued it
+	// read it from the record (record.DeliveryNews, encoded JSON), carried onto the delivery and
+	// persisted with it, since the delivery's confirmation is what raises it as taken
+	// (Delivery.News). Empty for a task that carries none.
+	News []byte
 }
 
 // RequestExit is the agent reporting its own end.

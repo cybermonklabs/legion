@@ -367,7 +367,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		// from; Stage 2's supervision runs on claims alone, where every delivery holds and every
 		// tree closes.
 		plan.phaseHolds, plan.rootHears, plan.treeClosable = workflow.phaseHolds, workflow.rootHears, workflow.treeClosable
-		plan.rootTask = workflow.rootTask
+		plan.rootTask, plan.designNews = workflow.rootTask, workflow.designNews
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
 		plan.providerErrorRunReached = workflow.providerErrorRunReached
@@ -677,12 +677,13 @@ type plan struct {
 	// (appauth.GitHubCredential), and, under the Kubernetes runtime, the mapping a provisioning
 	// mint reads the rename rule from (sandboxRuntime, repositories.serving).
 	repositories *repositories
-	// phaseHolds, rootHears, rootTask and treeClosable are the workflow's answers to the
-	// supervisor's predicates; nil without a workflow, where every delivery is sent as it was
+	// phaseHolds, rootHears, rootTask, designNews and treeClosable are the workflow's answers to
+	// the supervisor's predicates; nil without a workflow, where every delivery is sent as it was
 	// queued and every tree closes.
 	phaseHolds   func(ctx context.Context, issue string, p phase.Phase, generation uint64) (bool, error)
 	rootHears    func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (bool, error)
 	rootTask     func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
+	designNews   func(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error)
 	treeClosable func(ctx context.Context, c supervise.Claim) (bool, error)
 	// taskConfirmed tells the workflow each agent that took its task; nil without a workflow.
 	taskConfirmed func(c supervise.Claim)
@@ -1433,6 +1434,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
 		RootTask:                p.rootTask,
+		DesignNews:              p.designNews,
 		TreeClosable:            p.treeClosable,
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
