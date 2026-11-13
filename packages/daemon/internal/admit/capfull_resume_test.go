@@ -44,29 +44,31 @@ func carriedRoot(t *testing.T, pool *pgxpool.Pool, key string, carries phase.Pha
 	seedMirror(t, pool, key, "todo")
 }
 
-// A handed-over root that carries accepting takes a row when its tree is opened, because a
-// started issue holds one until it is done or leaves the workflow, and accepting is neither
-// (record.KeepsSlot); like any started issue, it gives that row back while it waits on another
-// issue once its tree is opened (blockers.waitsOf).
-// So the cap does hold such a root back: its tree is opened on the pass that finds a row free,
-// and not before.
+// A handed-over root that carries a phase short of its review takes a row, because an issue
+// holds its row from the moment the daemon starts it until its work is past that review, and
+// implementing is short of it (record.KeepsSlot). So the cap does hold such a root back: its
+// tree is opened on the pass that finds a row free, and not before.
 //
 // The fixture: the cap's one row is held by a tree already at work, a released child of that
 // tree stands at admitted waiting for its own first phase, and the handed-over root ranks
 // behind that child. Both want a row and the cap has none.
-func TestAHandedOverRootCarryingAcceptingWaitsForAFreeRow(t *testing.T) {
+func TestAHandedOverRootCarryingAWorkerPhaseWaitsForAFreeRow(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)
 
-	// The live tree that holds the cap's one row, its design gate open and its own first phase
-	// behind it, with one released child whose first phase has still to start.
+	// The live tree that holds the cap's one row: its root at work of its own, its design gate
+	// open, with one released child whose first phase has still to start. The root works rather
+	// than stands in accepting, because an issue past its review holds no row and the cap would
+	// not be full.
 	seedSlotted(t, pool, "LEGION-100", "A")
 	seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", ArtifactID: "spec", LatestVersion: 1, ApprovedVersion: new(1)})
-	acceptingRoot(t, pool, "LEGION-100")
+	working := issue(t, pool, "LEGION-100")
+	working.Phase, working.Status, working.DispatchStatus = phase.Implementing, "in_progress", "in_progress"
+	putIssue(t, pool, working)
 	putIssue(t, pool, record.Issue{Key: "LEGION-101", Tree: "LEGION-100", Repo: "acme/widgets", DefaultBranch: "main",
 		GitHubRepo: "acme/widgets", Project: testProject, Title: "a released child", Phase: phase.Admitted,
 		Generation: 1, Status: "todo", Rank: "A1", HandedOver: true})
-	carriedRoot(t, pool, "LEGION-200", phase.Accepting, "B")
+	carriedRoot(t, pool, "LEGION-200", phase.Implementing, "B")
 
 	// Both candidates are in the line, the child first by its tree root's rank.
 	assertWaiting(t, pool, []string{"LEGION-101", "LEGION-200"})
@@ -77,7 +79,7 @@ func TestAHandedOverRootCarryingAcceptingWaitsForAFreeRow(t *testing.T) {
 		t.Fatalf("rows = %#v, want the cap's one row still held by LEGION-100: neither candidate can be given one", holders)
 	}
 	if treeOpen(t, pool, "LEGION-200") {
-		t.Fatalf("the tree of the handed-over root LEGION-200 is open while the cap is full: a root carrying accepting takes a row, so the cap holds it back")
+		t.Fatalf("the tree of the handed-over root LEGION-200 is open while the cap is full: a root carrying a phase short of its review takes a row, so the cap holds it back")
 	}
 	if carried := issue(t, pool, "LEGION-200"); carried.Status != "todo" {
 		t.Fatalf("the handed-over root's status = %q, want todo: nothing of it has been promoted", carried.Status)

@@ -275,12 +275,13 @@ projects:
   $project: {}
 gates:
   design: root-issues
-# Four: an issue keeps the slot the daemon gave it until it is done or leaves the workflow
-# (INFRA-1909), except while it waits on another issue, and a root that waits on a person keeps
-# it even then, so the four roots that wait on a person at trees-wait-on-a-person
-# — trees 1, 2, 4 and 5 — hold a row each at once, which is this lane's peak. It is the peak again
-# later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running again
-# (answer-readmits, approval-queues) and tree 3 taking one in walk-on-start.
+# Four: an issue holds one of the cap's slots as root AGENTS.md's "Admission" says. The four
+# roots that wait on a person at trees-wait-on-a-person — trees 1, 2, 4 and 5 — hold a row each
+# at once, since a root in awaiting_person keeps its slot, and that is this lane's peak. It is
+# the peak again later: tree 5, which waits on its gate throughout, beside trees 1 and 4 running
+# again (answer-readmits, approval-queues) and tree 3 taking one in walk-on-start. No root of
+# this lane reaches its own review, so no issue of it gives a row back where the rule before
+# dispatch://INFRA-2560 kept it.
 admission_cap: 4
 review_round_cap: 3
 # The wake pacing off (INFRA-976): this proof starts many roles and waits on bounded times, and at

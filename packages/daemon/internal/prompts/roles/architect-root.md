@@ -64,7 +64,7 @@ settlement, closed by anyone who is not a person, or handed back to your turn, o
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
 Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
-daemon gave it through every wait, so that resume takes no slot
+daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
 that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon

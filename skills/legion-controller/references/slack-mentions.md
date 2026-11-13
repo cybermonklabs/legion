@@ -115,10 +115,8 @@ architect for it, whatever it asks. For a person's mention, take the first of th
   Answer from `read_state` and Dispatch as they stand now, never from memory: each issue's
   `issues.<KEY>.phase` and `issues.<KEY>.tree`, its pull request, `admission.trees` for the trees
   that run, and `admission.active` and `admission.waiting` for the issues holding a slot and the
-  issues in the line: an issue holds its slot from the moment the daemon starts it
-  until it is done or leaves the workflow, except while it waits on another issue
-  ([the rule](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) names the roots that keep it), so
-  `admission.active` names a tree's waits on a person or a review as well as its work. Say what you
+  issues in the line: an issue holds a slot as [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)
+  says, so `admission.active` names some of a tree's waits as well as its work. Say what you
   read, citing for each fact the `read_state` field or the `dispatch read` line it came from.
 - **A request for work.** Someone wants a change made, a bug fixed, something investigated. Search
   first (`skill://dispatch-first`): when an open issue already tracks it, reply with that issue and

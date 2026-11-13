@@ -286,9 +286,8 @@ approval or changes request delivers your next task, and so does a newer spec ve
 Dispatch shows the request back on your turn. While the root waits on a question instead, the
 human's approval or changes request of the spec answers that wait too, and the task says how the
 spec stands. Your resume takes no slot, whether or not the gate opened, because the root holds
-one all along: an issue holds its admission slot from the first moment the daemon starts it
-until it is done or leaves the workflow, and a wait on a person is not
-one of the waits that give that slot back. The answered root stands in
+one all along: a root in `awaiting_person` keeps its admission slot
+([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)). The answered root stands in
 the admission line until the pass that resumes it, and nothing is sent to you about that wait:
 your record's `waitingLine` gives the live place in the line and the line's length, and beside
 them the line's own fields — `part` and `kind`, `partPlace` of `partLength` inside that part,

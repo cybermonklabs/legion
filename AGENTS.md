@@ -857,11 +857,14 @@ Triage ──┬──► Icebox ──► Backlog ──► Todo ──► In P
 **Phase roles:** architect → plan → implement → test → review → the architect's acceptance → retro → merge
 
 **Admission:** an admission slot is one issue the daemon has started, not one tree.
-Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase — and keeps it until it is done or leaves the workflow, except while it waits on another issue (see below).
-So the row goes in four cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; it belongs to a tree whose root closed or a tree the daemon no longer runs; or it waits on another issue and is not one of the three roots that keep their slot through such a wait.
-Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `retro`, `merging`, `accepting`, `held` and `awaiting_person` — so an issue waiting on a person or on its review keeps its place against the cap and wins none back from the line when the wait ends.
-A wait on a blocker or on its children is the exception: the issue gives its slot back, as the paragraph on started issues that wait below says.
-The admission pass that sees one of those four cases deletes the slot row.
+Any issue, a root or a child, takes a slot when the daemon starts it — a root at its admission, which starts its architect, a child at the start of its first phase.
+An issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while it waits on another issue before that point (see the paragraph on started issues that wait, below).
+So the row goes in five cases only: the issue's own phase is `done`; Dispatch shows it in `backlog`, `icebox`, `triage` or `done`; it belongs to a tree whose root closed or a tree the daemon no longer runs; it stands in `accepting`, `retro` or `merging`; or it waits on another issue before its review and is not one of the three roots that keep their slot through such a wait.
+Where it stands is its own phase, or, where that phase is `held` and the record names the phase the hold came from, that phase (`record.StandsAt`), so an issue held from its retro or its merge holds no row either.
+Every other phase keeps it — `admitted`, `planning`, `implementing`, `testing`, `reviewing`, `awaiting_person` and `held`, a hold the record names no phase past the review for — so an issue waiting on a person or on its review keeps its place against the cap and wins none back from the line when the wait ends.
+A wait on a blocker or on its children is the exception: the issue gives its slot back, as the paragraph on started issues that wait says.
+Past its review an issue holds no slot, so a wait there has none to give back.
+The admission pass that sees one of those five cases deletes the slot row.
 `admission_cap` keeps its name and counts these issues, four by default, so a cap of N issues holds fewer issues in progress than a cap of N trees did.
 An issue that holds a row starts its next phase whatever the cap says, and an issue that holds none — a child its architect has just released among them — waits in the line while the project stands at its cap.
 A slot change stops no process, claim, session or pod:
@@ -874,7 +877,7 @@ then the issues whose first phase can start, by the Dispatch rank of their tree'
 An issue holding a row stands in `admission.active` and `admission.waiting` at once until the pass that promotes it, and that promotion takes no second row.
 A tree is live while its lifecycle is open and it does not linger, or while its root waits in the line or on a person, whether or not any issue of it holds a slot.
 `legion state` counts the slot holders against the cap and prints the live trees;
-its JSON lists the slot holders under `admission.active`, which holds an issue waiting on a person, one in `accepting`, one `held` and one `merging` too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
+its JSON lists the slot holders under `admission.active`, which holds an issue at work, one `held` and one waiting on a person too, the line under `admission.waiting` and the roots of the live trees under `admission.trees`, and names each issue's tree under `tree`.
 
 **Children first:** an issue's first phase does not start while Dispatch shows an open child under it, which a child the architect has filed and not released yet is, and the tree's architect is told once per issue and run of its tree with a `children-first` notice naming the parent and each open child with its Dispatch status.
 So the architect files every child before it requests approval of the spec, and before it registers the gate under `gates.design: off`, since the gate's opening starts a parent that waits on no other issue, neither an open child nor an unfinished `blocked_by` link.
@@ -895,8 +898,8 @@ The architect's `catch-up` at each launch names, in its `reason`, every issue of
 
 **The merge closes the issue:** the daemon reads the merged pull request and writes `done`.
 A child's close tells its architect `child-closed`; where the project's `production_check` names the role that works the check it retires five of its six claims and hands that role the production check's first look in its live session, and where the setting is `off` it retires all six and releases the pod;
-a root's close frees the slot and lingers the tree.
-A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, and no slot freed by the merge itself (an unfinished `blocked_by` link still takes the root's row back while it waits), and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
+a root's close lingers the tree, and every slot a member of it still holds is freed.
+A root whose pull request merges while any other issue of its tree is still in the workflow records the merge and stays in `merging` — no suspension, no linger, and no slot, since `merging` stands past its review and holds none, so no blocker has a slot to take back — and its architect gets one `pr-merged` notice naming the pull request and every issue the close is waiting for
 — and closes that way once the last open member of the tree is done or parked.
 A person's own close of a root from the Dispatch dashboard lingers the tree at once, children and all.
 The architect does nothing after the merge.
@@ -995,7 +998,8 @@ A blocked root keeps its place in the waiting line and takes no slot, so it hide
 it stays the live tree of its children, which are no orphans.
 A child is the same: `release_children` accepts the whole request whatever the links say and answers which children it released, which it started and which it held, each held one with the issues it waits on.
 A held child is recorded at the `admitted` phase, the opening of the tree's design gate does not start it, and the daemon starts its first phase itself at its own slot once it sees the last blocker closed, whichever door the child came through (a release, a person's move to `todo`, an architect's `rerun_child`), and tells the tree's architect with the existing `child-status` notice, whose reason names the child, its root and the issues it waited on, now done.
-An issue the daemon has already started holds no admission slot while it waits on another issue: the daemon takes its slot back on the pass that reads the wait, and stands it in the waiting line, among the issues whose work came back, oldest first.
+An issue the daemon has already started holds no admission slot while it waits on another issue before its work is past its review: the daemon takes its slot back on the pass that reads the wait, and stands it in the waiting line, among the issues whose work came back, oldest first.
+An issue past its review holds no slot whatever it waits on, so the wait takes nothing from it and it never stands in the line for one.
 Once the daemon has seen the wait end, the issue takes the next free slot by itself, ahead of every issue that has not started; under a full cap it waits for a free slot.
 The daemon sees a same-project blocker close as a live event, and a close of a blocker in another project only at its periodic turn's re-read: the first turn comes about a minute after the daemon starts, then one every `controller_wake_interval_seconds`, an hour by default.
 Two waits count: Dispatch shows the issue blocked by an issue that is not `done`, and the issue's own first phase waits on an open child under it.

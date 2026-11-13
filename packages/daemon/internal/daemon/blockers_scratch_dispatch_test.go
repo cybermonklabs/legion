@@ -773,7 +773,7 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	// The hand-over is read off the record, as the tree the child stands in: it becomes a tree of
 	// its own. A place in `admission.waiting` or `admission.active` no longer marks it. The child
 	// re-entered its tree at admitted when a person set it back to todo, and the daemon had
-	// started it, so it would keep its admission slot until it is done or leaves the workflow
+	// started it, so it would keep its admission slot until its work is past its review
 	// (record.KeepsSlot); but it waits on `elsewhere`, and a started issue that waits on another
 	// issue holds no slot while it waits (admit's releaseSlotsForWaits) and stands in
 	// `admission.waiting` and `admission.blocked`. So it stands in `admission.waiting` from its

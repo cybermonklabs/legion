@@ -1870,6 +1870,42 @@ Nothing else of this release needs a rollback step.
 The state's own key, `admission.held`, is served by the new daemon alone: no row holds it, no pod reads it from a queue, and the route already strips it for a caller whose plugin is below the contract that added it (`api.stateFor`, `withoutHeld`).
 This change writes no column and runs no migration, so no dump and no `alter table` belong here.
 
+#### Rolling back the release that frees the slot past review
+
+This release adds two columns to `issues`: `moved_at` (`20261111010031_issue_moved_at`), when the daemon last saw that issue move, and `tree_stalled_told_at` (`20261111041503_tree_stalled_told_at`), the movement a tree's stalled notice was told at.
+A rollback needs no statement for either one.
+An earlier image names neither column anywhere — it neither selects it nor inserts it — so a column it never reads costs it nothing, and only a column a release drops needs a statement to put it back.
+`moved_at` keeps its `not null default now()` under that daemon's writes, since the default fills it for every insert that names it nowhere, and a marked row keeps its `tree_stalled_told_at` for the roll forward.
+A third migration, `20261110233602_past_review_starts_unmarked`, takes the admission-slot mark off every queued start of `accepting`, `retro` and `merging`, and a rollback needs no statement for that either: the earlier release reads a start with no mark as one claimable at once, which is what it does with every start that carries none.
+
+**A queued `tree-stalled` notice must go before the earlier image is pinned.**
+The payload carries only fields an earlier release's `record.ControllerNotice` already names, so the strict decode (`DisallowUnknownFields` in `record/outbox.go`) passes it.
+What refuses it is the kind check that `DecodeOutboxPayload` runs after that decode: `validateOutboxPayload` asks a controller notice's kind of `controllerOnlyNoticeKind` and `validNoticeKind`, and neither of them knows `tree-stalled` on the earlier release.
+Its `execute` returns that error, which is a permanent refusal for no row, so a row still queued fails and is retried on its backoff for ever and fails every state read that passes it (`WaitingNotices`, `pacedCatchUps`), which is `GET /legion/v1/state` for the whole project.
+Run this with the daemon stopped, before the earlier image is pinned:
+
+```sql
+delete from outbox where kind = 'controller_notice' and payload->>'kind' = 'tree-stalled';
+```
+
+The row's `kind` is `controller_notice`, not `notice`: a controller notice is an outbox kind of its own (`record.ControllerNotice.OutboxKind` answers `controller_notice`), where the statements of the two sections above name `notice` for rows that were architect notices.
+A statement naming `notice` here deletes nothing and leaves the row standing.
+
+**`stalled_tree_notice_hours` must come out of `legion.yaml` in the same change.**
+The loader refuses a key it does not know, naming it (`unknown key stalled_tree_notice_hours`), and the earlier release's loader knows nothing of this key, so that daemon refuses to start while the line stands in the file.
+Take the line out, and `legion start --check-config` on the earlier image reads the file clean.
+
+What the rollback brings back is the earlier release's slot rule: an issue holds one of the cap's slots through every phase up to its merge, so an issue in `accepting`, `retro` or `merging` counts against the cap again.
+That release's first admission pass gives each of them a row again out of its cap, and its `legion state` counts them among the slot holders.
+A cap sized for this release's issues at work holds fewer trees in progress once those three count again.
+
+**Every daemon sharing the database moves together.**
+Several projects' daemons can share one database ([Daemon-launched controller](#daemon-launched-controller), step 3), and `issues` is one table for all of them, so this release's backfill stamps every project's rows with the moment its migration ran, not only the rows of the daemon that ran it.
+A daemon left on the earlier image records no movement of an issue it already holds, because it names `moved_at` nowhere, so those rows keep that one time until that daemon rolls onto this release; a row it inserts takes the column's default, the time of its own write.
+Read against that time, its trees are quiet for the whole of the gap, and the first passes after it rolls can tell that project's controller a `tree-stalled` notice for each tree of it that is quiet past `stalled_tree_notice_hours`.
+The cost is one notice per tree, cleared by that tree's next movement, which stamps `moved_at` again and lets the measure start from a time the daemon watched.
+Upgrade, and roll back, every daemon of one database in the same change.
+
 ### Pinning a release that drops what a running pod still uses
 
 A pod is built whole from the image pinned when it was launched, and no launch replaces a live pod for an image change alone:
@@ -4346,8 +4382,8 @@ Measured on INFRA's pool on 2026-11-05, a pod's own processes on that platform r
 Concurrently running issue pods are bounded by what the pool's `limits.cpu` and `limits.memory` leave for pods of the per-pod sum of requests:
 at the defaults, two pods fit a floor node and `limits.cpu: 256` places about 80 three-CPU pods (less what the nodes' daemonsets hold), and `limits.memory` divided by 19 GiB bounds them too when that is the smaller (a `Burstable` issue pod's lower request places more)
 — where the tree-volume layout ran one tree per node, each pinned to a node of its own.
-`admission_cap` counts the issues the daemon has started, not the pods: an issue holds its admission slot from the first moment the daemon starts it until it is done or leaves the workflow, unless it waits on another issue, where it holds no admission slot and stands in the waiting line for one again (root `AGENTS.md`, "Admission" in the Issue Lifecycle section), and its pod can stand where it holds no slot — while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot; and, past the close, during each look of its production check.
-So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
+`admission_cap` counts the issues the daemon has started, not the pods: an issue holds no admission slot past its review, in `accepting`, `retro` or `merging`, and, save three roots that keep theirs, none while it waits on another issue before then (root `AGENTS.md`, "Admission" in the Issue Lifecycle section), and its pod can stand where it holds no slot — through its acceptance, its retro and its merge; while it waits on another issue, from the release of its slot for that wait until it takes a slot again; while it owes its worker a start and waits in the line for a slot, as after a merge sends it back to work; and, past the close, during each look of its production check.
+So the issue pods a deployment runs at once are at most `admission_cap`, plus the issues standing past their review, plus the issues that released their slot to wait on another issue, plus the issues owed a start that wait in the line for a slot, plus the production-check looks open at that moment.
 Fewer run than that bound, for two reasons.
 Under the default idle release a pod with no turn in progress and no turn due for ten minutes is released with its disk while its slot stands, and the daemon makes the pod again at that issue's next turn; `idle_minutes: 0` turns the release off, and a pod then stands from its issue's first role start to its close, and again for each look of a production check after it.
 And an open issue of a live tree is not a running pod by itself: a child the daemon has not started yet has no slot and no pod, and neither has any issue of a tree whose root still waits in the line.
@@ -4357,7 +4393,7 @@ once it has been for longer than `worker_boot_timeout_seconds` the boot watchdog
 Two pods beside the issue pods count against the same limits:
 the image probe pod, its own 250m / 1Gi, present at every boot and daemon restart for as long as the probe runs;
 and, under `controller: daemon`, the controller's pod, 1 CPU / 4Gi at the default, for as long as the daemon runs.
-Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue that released its slot to wait on another issue and by a production check.
+Size the pool's limits for that bound, per-pod sum, plus those two, since `admission_cap` counts the issues the daemon has started rather than the pods kept by an issue past its review, by an issue that released its slot to wait on another issue and by a production check.
 
 A pool with no room for the probe pod itself does not refuse the boot.
 The probe pod stays `Pending` with `PodScheduled=False Unschedulable`;

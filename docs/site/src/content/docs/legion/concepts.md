@@ -157,13 +157,18 @@ in the daemon's configuration, four by default; an issue that finds no free slot
 a labelled `todo` root takes its place in that line in the project board's order.
 
 An issue takes a slot when the daemon starts it — a root at its admission, which starts its
-architect, a child at the start of its first phase — and it keeps that slot
-until it is done or leaves the workflow.
-So it holds its slot through most waits as well: in `accepting`, on a person, and in merging while
-a closed design gate holds its merge request.
-A wait on another issue is the exception: a started
-issue that Dispatch shows blocked by an issue that is not `done`, or whose own first phase waits on
-an open child under it, holds no admission slot.
+architect, a child at the start of its first phase. An issue holds one of the cap's slots from the
+moment the daemon starts it until its work is past its review — `accepting`, `retro` and
+`merging` hold none — or until it is done or Dispatch takes it out of the workflow, except while
+it waits on another issue before that point.
+So it holds its slot through the other waits up to its review: on a person, and on the review
+itself. Past the review the issue writes no more of the change, so its acceptance, its retro and
+its merge run on no slot at all, and an issue there that waits on another issue has no slot to
+give back.
+
+A wait on another issue before the review is the exception: a started issue that Dispatch shows
+blocked by an issue that is not `done`, or whose own first phase waits on an open child under
+it, holds no admission slot.
 The daemon takes its slot back and stands it in the
 waiting line among the issues whose work came back, oldest first.
 Once the daemon has seen the wait end, the issue takes the next free slot by itself,
@@ -177,8 +182,8 @@ names them: a root in `awaiting_person`; a root at `admitted` whose design gate 
 opened, whose architect is writing the design; and a root that arrived from another tree
 carrying the row it held there, which the line starts whatever its links say.
 
-An issue holding a
-slot starts its next phase whatever the cap says, and an issue holding none, a child its architect
+An issue holding a slot starts its next phase whatever the cap says, and so does an issue past
+its review, which holds none. An issue that holds none and is owed a start, a child its architect
 has just released among them, waits in line while the project stands at the cap.
 A slot stops
 nothing either way: every worker of a waiting issue stays live in the issue's pod and answers

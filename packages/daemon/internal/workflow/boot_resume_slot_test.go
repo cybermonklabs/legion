@@ -28,27 +28,26 @@ func seedRuleSuspendedOwner(t *testing.T, pool *pgxpool.Pool, project string, is
 	}
 }
 
-// The boot's resume by rule holds its one row for the issue's admission slot, like every other
-// start of a phase worker (StartOrOwe), and that mark is what the slot the issue already holds
-// answers at once.
+// The boot's resume by rule marks its one row for the issue's admission slot where the phase it
+// resumes holds one, and writes it unmarked where that phase holds none (StartOrOwe, over
+// record.PhaseKeepsSlot).
 //
 // A start is one row since INFRA-1573, and that row carries the worker's task, so the mark now
-// decides when the worker comes back. An issue holds its slot from the moment the daemon starts
-// it until its work ends (record.KeepsSlot), merging included, except while it waits on another
-// issue, so the mark costs the resume of a slot holder nothing: the row is runnable the moment
-// the boot writes it, and the merger is reached. What the mark buys is the other issue: one
-// whose tree runs but which holds no slot —
-// a member of a re-admitted tree still waiting in the line while the cap is full — whose row
-// waits for the slot instead of putting a worker to work on an issue admission has not admitted,
-// and runs when the slot comes.
+// decides when the worker comes back. An issue holds a slot from the moment the daemon starts
+// it until its work is past its review (record.KeepsSlot), so the resume of a worker past that
+// review waits for nothing: the row is runnable the moment the boot writes it, and the merger
+// is reached. What the mark buys is the other issue: one at work whose tree runs but which
+// holds no slot — a member of a re-admitted tree still waiting in the line while the cap is
+// full — whose row waits for the slot instead of putting a worker to work on an issue admission
+// has not admitted, and runs when the slot comes.
 //
-// The slot holder read here is the merger of an issue standing in merging, which keeps the row
-// the daemon gave it when it started the issue, so the row the resume writes it is marked for a
-// slot and runnable at once.
+// The worker past its review read here is the merger of an issue standing in merging: its own
+// merge is what ends the phase, and it works it on no row of the cap's, since merging stands
+// past the issue's review.
 //
-// The two issues differ in their phase and in the slot: each is a root of its own running tree
-// whose phase owner the daemon's rule suspended.
-func TestTheBootsResumeReachesASlotHolderAndWaitsWhereTheIssueHoldsNone(t *testing.T) {
+// The two issues differ in their phase and in the mark their resume carries: each is a root of
+// its own running tree whose phase owner the daemon's rule suspended.
+func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing.T) {
 	pool := migratedPool(t)
 	project, err := claim.ProjectToken("LEGION")
 	if err != nil {
@@ -66,10 +65,9 @@ func TestTheBootsResumeReachesASlotHolderAndWaitsWhereTheIssueHoldsNone(t *testi
 	seedRuleSuspendedOwner(t, pool, project, merging, claim.RoleMerger)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	now := engine.now()
-	// The slot the issue holds where it stands: an issue in merging that waits on no other issue
-	// keeps the row the daemon gave it when it started the issue (record.KeepsSlot), which is
-	// what makes the mark free for this resume. seedSlot opens the tree's lifecycle with it.
-	seedSlot(t, pool, record.Slot{Issue: merging, Index: 0, AdmittedAt: now})
+	// The issue in merging holds no row: its work stands past its review (record.KeepsSlot), so
+	// the lifecycle of its tree is opened on its own rather than by a slot of the cap's.
+	seedTreeLifecycle(t, pool, merging)
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {
 		t.Fatalf("apply the boot: %v", err)
@@ -79,8 +77,8 @@ func TestTheBootsResumeReachesASlotHolderAndWaitsWhereTheIssueHoldsNone(t *testi
 	if len(slotted) != 1 || slotted[0].role != claim.RoleMerger || slotted[0].task == "" {
 		t.Fatalf("the start rows of %s = %+v, want one row for its merger carrying its resume task", merging, slotted)
 	}
-	if !slotted[0].needsSlot || !slotted[0].claimable {
-		t.Fatalf("the boot's resume of %s = %+v, want it marked for the issue's admission slot and runnable at once: the issue holds its slot in merging, so the mark it carries is already answered and the row reaches the merger",
+	if slotted[0].needsSlot || !slotted[0].claimable {
+		t.Fatalf("the boot's resume of %s = %+v, want it marked for no admission slot and runnable at once: the issue stands past its review, where it holds no row a marked start could wait on",
 			merging, slotted[0])
 	}
 

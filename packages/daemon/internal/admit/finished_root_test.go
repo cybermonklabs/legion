@@ -85,7 +85,7 @@ func TestAFinishedRootSettlesItsUnfinishedChildrenWhenItsLingerEnds(t *testing.T
 }
 
 // A merged root's close waits for the rest of its tree: the merge leaves the root standing in
-// merging, still holding its slot — merging is a worker's phase and keeps its row while the issue waits on no other issue — and no child
+// merging, holding no slot — merging stands past the root's review (record.KeepsSlot) — and no child
 // disturbed, and the close comes once the last of them leaves — here the architect parking
 // each. That close lingers the tree and opens the root's production check, whose first look its
 // implementer reports, since the tree's close waits for an open check (the workflow's check
@@ -109,10 +109,10 @@ func TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves(t *testing.T) 
 	if got := issue(t, pool, finishedRoot); got.Phase != phase.Merging || got.Lingers() {
 		t.Fatalf("the merged root = %#v, want it still awaiting its merge, not lingering", got)
 	}
-	// A root that waits for its merge stands in merging, whose role is the merger: the phase is a
-	// worker's on this release, so the root holds that phase's slot until the close. Its tree runs
-	// on, which the untouched children below say.
-	assertSlots(t, pool, []record.Slot{{Issue: finishedRoot, Index: 0, AdmittedAt: fixedNow}})
+	// A root that waits for its merge stands in merging, which is past its own review, so it
+	// holds none of the cap's rows while it waits. Its tree runs on, which the untouched
+	// children below say.
+	assertSlots(t, pool, nil)
 	for _, key := range []string{planning, heldTesting, inRetro, awaiting, inAccepting} {
 		if got := issue(t, pool, key); got.Generation != 1 || got.Tree != finishedRoot {
 			t.Fatalf("%s after its root's merge = %#v, want it untouched in %s's tree", key, got, finishedRoot)

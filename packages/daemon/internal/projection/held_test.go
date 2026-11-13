@@ -55,8 +55,8 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 // whose root waits on a person, a member under a shut design gate, a child an unfinished Dispatch
 // link holds, a parent whose own children are still open, an issue beneath an accepted ancestor,
 // and an issue none of the ten is true of — and the rows are read from the projected state, which
-// is where a reader meets them. No issue stands for at_work, which no issue reads
-// (record.HeldAtWork).
+// is where a reader meets them. No issue stands for at_work, which an issue past its review reads
+// where it is not held (record.HeldAtWork); this fixture builds none.
 //
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
@@ -223,8 +223,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 
 	// heldBy is absent where no issue holds the one that waits — a root whose label is off, an
 	// issue the pass names nowhere — which is a nil slice the wire form then omits, and not an
-	// empty array. The check names at_work beside them, though no issue reads it
-	// (record.HeldAtWork).
+	// empty array. The check names at_work beside them, though no issue of this fixture reads it
+	// (record.HeldAtWork says which issues do).
 	for _, row := range got.Admission.Held {
 		wire, err := json.Marshal(row)
 		if err != nil {

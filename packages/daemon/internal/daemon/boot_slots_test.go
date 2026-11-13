@@ -254,13 +254,13 @@ func preReleaseStore(t *testing.T) *store.Store {
 //
 // What it must not grant is as much of the rule as what it must: an issue of a tree that
 // lingers has left the workflow and is started by nothing but its re-admission. The root that
-// waits in accepting while its children work keeps the row it already held, since an issue
-// holds its row from when the daemon started it until it is done or leaves the workflow
-// (record.KeepsSlot), except while it waits on another issue, and a root waiting in accepting for
-// its own children is not such a wait (blockers.waitsOf); the two in merging keep theirs, since
-// a merger merges the pull request itself and its phase is work. The cap then does the
-// draining: the surplus is above it, so the root that never ran takes nothing while the count
-// stands at or above the cap, and takes a row at the first pass where the count is under it.
+// waits in accepting while its children work, and the two in merging, are each granted a row,
+// because that is the rule the migration was written for — a merger merges the pull request
+// itself, so its phase is work — and the boot's own first pass takes those three rows back: an
+// issue holds a row until its work is past its review, and accepting, retro and merging are
+// past it (record.KeepsSlot). The cap then does the draining: the surplus is above it, so the
+// root that never ran takes nothing while the count stands at or above the cap, and takes a
+// row at the first pass where the count is under it.
 func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 	ctx := context.Background()
 	st := preReleaseStore(t)
@@ -330,8 +330,8 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 		t.Fatalf("apply the first boot on the release: %v", err)
 	}
 	working := slotHolders(t, pool)
-	if want := []string{spec, running, building, testing, heldReady, merging}; !reflect.DeepEqual(working, want) {
-		t.Fatalf("the slots after the first boot = %v, want %v: the spec's root, the root waiting in accepting, the two children at work and the two in merging, above the cap of 2",
+	if want := []string{spec, building, testing}; !reflect.DeepEqual(working, want) {
+		t.Fatalf("the slots after the first boot = %v, want %v: the spec's root and the two children at work, above the cap of 2, with the root in accepting and the two in merging holding none",
 			working, want)
 	}
 	if len(working) <= 2 {
@@ -343,25 +343,19 @@ func TestTheFirstBootOnTheReleaseKeepsEveryWorkingIssueAtItsTurn(t *testing.T) {
 
 	// The count falls as each issue finishes, and nothing new starts while it stands at the cap:
 	// the loop admits while the holders are under the cap, never at it. The two in merging are
-	// finished first: their phase is the merger's on this release, so each holds a slot until
-	// its own merge closes it.
+	// finished first, and neither frees a row: their work stands past its review, so the first
+	// pass above took the rows the migration granted them back.
 	finish(t, pool, records, heldReady)
 	finish(t, pool, records, merging)
 	finish(t, pool, records, building)
-	tick(t, pool, handlers, "tick-above-the-cap")
-	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, running, testing}) {
-		t.Fatalf("the slots after the first finish = %v, want the three still started and nothing new", holders)
-	}
-
-	finish(t, pool, records, testing)
 	tick(t, pool, handlers, "tick-at-the-cap")
-	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, running}) {
-		t.Fatalf("the slots at the cap = %v, want the two still started and nothing new started", holders)
+	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, testing}) {
+		t.Fatalf("the slots at the cap = %v, want the two still at work and nothing new started", holders)
 	}
 
-	// The root that waited in accepting closes last, and its row is the one that puts the count
-	// under the cap: the root that never ran takes the row it freed.
-	finish(t, pool, records, running)
+	// The last child at work finishes, the count falls under the cap, and the root that never
+	// ran takes the row it freed.
+	finish(t, pool, records, testing)
 	tick(t, pool, handlers, "tick-under-the-cap")
 	if holders := slotHolders(t, pool); !reflect.DeepEqual(holders, []string{spec, queued}) {
 		t.Fatalf("the slots under the cap = %v, want the root that never ran admitted into the row the drain freed", holders)

@@ -384,7 +384,9 @@ func startedWaits(rows map[string]Row, issues []record.Issue, started map[string
 // answer, which C2 of dispatch://INFRA-3107 asks the pass for, so that a reader cannot take a
 // candidate it left behind for a placed one). The pass builds a row at each of its fourteen
 // drop sites on every judgement, whoever asked for the line: the state and the controller's
-// tick read them, and every other caller takes the value and ignores it. now is the caller's
+// tick read them, and so does the admission pass's stalled-tree measure (admit's
+// tellStalledTrees), which takes the words of this judgement rather than walking the project's
+// issues again; every other caller takes the value and ignores it. now is the caller's
 // own clock, and the one thing it decides is one of those words: the tree_closed word asks
 // whether a root's linger is still running at it (record.Lingering), so that a parked root's
 // member reads tree_parked once that root's linger has run out. It reaches the judgement as

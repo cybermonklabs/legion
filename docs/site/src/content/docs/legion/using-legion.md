@@ -35,13 +35,10 @@ questions, approve the spec, and review the pull request. Everything happens in
 
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
 every slot is taken, the issue waits in `todo` for a free slot, in the order the line gives it ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
-A slot is one issue the daemon has started, a root or a child, so a tree of four started issues
-holds four of them. An issue takes its slot when the daemon starts it and keeps it
-until it is done or leaves the workflow,
-so a wait on you or on a review keeps the slot, and its agents stay live beside it.
-A wait on another issue is the exception: a started issue that Dispatch shows blocked by an issue
-that is not `done`, or whose first phase waits on an open child under it, gives its slot back.
-It waits in line, nothing of its work stops, and it takes one again by itself
+A slot is one issue the daemon has started, a root or a child, so a tree of four issues at work
+holds four of them. An issue keeps its slot through a wait on you or on its review, and its
+agents stay live beside it. A started issue that waits on another issue before its review gives
+its slot back, and nothing of its work stops; past its review an issue holds no slot at all
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it or leave it for you, and parks it only when a person asked for that or
