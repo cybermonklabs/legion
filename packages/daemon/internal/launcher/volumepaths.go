@@ -1,5 +1,7 @@
 package launcher
 
+import "github.com/sjawhar/legion/daemon/internal/leakguard"
+
 // VolumeRoot is the issue pod's volume, the one filesystem the cache trimmer reads and the root
 // of every path below it: the pod's own generic ephemeral volume, mounted whole at this path in
 // the roles container (internal/runtime/sandbox's TreeRoot). The trimmer carries it as a constant
@@ -55,8 +57,9 @@ const (
 // its cache directory once and locks it, and the trimmer removing the inode under a waiting
 // `flock` would hand two roles the same lock — and nothing outside these four is touched at all:
 // the workspaces, the shared clone, the feed, the state and data homes, the module cache and
-// uv's cache and Pythons are a role's work or a role's own state, and are named in
-// ProtectedPaths so that a reader of either list can see the whole volume accounted for.
+// uv's cache and Pythons are a role's work or a role's own state, the shared public leak check
+// is software every role's push runs, and all of them are named in ProtectedPaths so that a
+// reader of either list can see the whole volume accounted for.
 var ReclaimableRoots = []ReclaimableRoot{
 	// $TMPDIR, of which only Go's own build trees are eligible. A role's clones, toolchains,
 	// scratch databases and half-written artefacts live here too, under names the role chose,
@@ -132,4 +135,12 @@ var ProtectedPaths = []string{
 	// without reading the exceptions of a reclaimable root.
 	VolumeRoot + "/scratch/cache/" + playwrightRegistryDir,
 	VolumeRoot + "/scratch/cache/" + claudeCodeCacheDir,
+	// The shared public leak check, which this launcher installs once for the pod before any
+	// role starts (leakguard.InstallServed) and which every role's `legion gh`, pushes and
+	// shim read through PUBLIC_LEAK_CHECK. It is installed software and not a cache: the
+	// launcher records the install in its own memory and is pushed the check no more, so
+	// nothing puts it back while that launcher runs, and every role's writes and agent starts
+	// refuse while it is gone. The path is the installer's own constant, so the path kept and
+	// the path installed are one string.
+	leakguard.InstallDir,
 }

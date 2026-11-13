@@ -379,8 +379,8 @@ func CheckRoleNamespaces(dir string, shim ...string) error {
 	// Every path of the probe's own layout a role's namespace replaces, which the image lays out
 	// for a role and dir holds for the probe, and the source of every required bind of that list
 	// under the roles directory, which the pod mounts for a role: a path or a bind added to that
-	// list is made here too. The sources under the role-homes directory role-init makes itself
-	// (inHomes), and the image's own paths, which lie outside dir, are the machine's.
+	// list is made here too. Role-init makes the sources under the role-homes directory itself
+	// (inHomes). The image's own paths, which lie outside dir, are the machine's.
 	dirs := cfg.requiredUnder(dir)
 	own, homes := filepath.Join(cfg.RolesDir, role), filepath.Join(cfg.RolesDir, RoleHomesDir, role)
 	for _, replaced := range cfg.replaced() {

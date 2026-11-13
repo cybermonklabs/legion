@@ -39,14 +39,14 @@ import (
 // then a reading of the code rather than of the lists.
 const (
 	// renderedIssueVolumePaths is the floor the issue's check names for the set this test walks:
-	// the nine values the renderer writes under the volume — roleEnvironment's eight less
+	// the ten values the start environment writes under the volume — roleEnvironment's eight less
 	// XDG_CONFIG_HOME, which is under the pod's in-memory home and off the volume, plus the issue
-	// pod's two uv paths, with LEGION_WORKSPACE dropped and the six gh variables pointing at
-	// /var/run/legion/gh — and the three mounts and constants beside them (issueVolumePaths). The
-	// set itself is derived from the renderer and never written out, so this number is only a
-	// floor: it exists because a derivation that broke and matched nothing would otherwise hold
-	// the two lists to an empty set and report agreement.
-	renderedIssueVolumePaths = 12
+	// pod's two uv paths and PUBLIC_LEAK_CHECK, with LEGION_WORKSPACE dropped and the six gh
+	// variables pointing at /var/run/legion/gh — and the three mounts and constants beside them
+	// (issueVolumePaths). The set itself is derived from the renderer and never written out, so
+	// this number is only a floor: it exists because a derivation that broke and matched nothing
+	// would otherwise hold the two lists to an empty set and report agreement.
+	renderedIssueVolumePaths = 13
 	// newToolCache, newMount and newAgentCache are the three additions the negative controls make
 	// to a copy of what the renderer gave. Each is a path no list names, and each stands for the
 	// edit a later change really makes: a cache under the cache home, a mount of the volume, and a
@@ -134,13 +134,13 @@ func TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists(t *te
 
 // issueVolumePaths is every path the pod renderer puts on the issue's volume, in two halves so
 // that each is visible as what it is. environment is the renderer's own values, as
-// issueVolumeDirectories (reclaim_doc_test.go) takes them from roleEnvironment and the issue pod's
-// agentEnv. mounts is what the volume carries beside them and no environment variable names: the
-// pod's feed, which workspace-fetch writes and every other container mounts read-only (FeedDir);
-// the shared clone every workspace is cut from (workspace.CloneRoot); and the workspaces root,
-// derived from workspace.Location — the issue's checkout is <root>/workspaces/<owner>/<repo>/<issue>,
-// so its directory three levels up is that root — rather than written out here, so the layout
-// stays the one source of it.
+// issueVolumeDirectories (reclaim_doc_test.go) takes them from the start environment
+// (mainEnvironment). mounts is what the volume carries beside them and no environment variable
+// names: the pod's feed, which workspace-fetch writes and every other container mounts read-only
+// (FeedDir); the shared clone every workspace is cut from (workspace.CloneRoot); and the
+// workspaces root, derived from workspace.Location — the issue's checkout is
+// <root>/workspaces/<owner>/<repo>/<issue>, so its directory three levels up is that root —
+// rather than written out here, so the layout stays the one source of it.
 func issueVolumePaths(t *testing.T, issue string, role claim.Role) (environment, mounts []string) {
 	t.Helper()
 	repository, err := ghrepo.Parse("workspace repository", "owner/repo")
@@ -152,7 +152,7 @@ func issueVolumePaths(t *testing.T, issue string, role claim.Role) (environment,
 		t.Fatal(err)
 	}
 	workspacesRoot := path.Dir(path.Dir(path.Dir(located.Dir)))
-	return issueVolumeDirectories(issue, role), []string{FeedDir, workspace.CloneRoot(TreeRoot), workspacesRoot}
+	return issueVolumeDirectories(t, issue, role), []string{FeedDir, workspace.CloneRoot(TreeRoot), workspacesRoot}
 }
 
 // trimmerListComplaints is the rule, as one complaint per path the two lists fail: it is a

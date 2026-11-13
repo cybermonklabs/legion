@@ -52,70 +52,97 @@ type fixtureProcess struct {
 	// regular file where the fd directory belongs.
 	fdRefused bool
 	fdIsFile  bool
+	// reader places the process at the test binary's own pid, os.Getpid(), and pid is then not
+	// read: it is the process readUsedPaths is told is its own and must leave out. Every other
+	// process is moved off that pid (writeFakeProcess).
+	reader bool
 }
 
-// writeProcFixture builds a /proc of the test's own and answers its path.
-func writeProcFixture(t *testing.T, processes ...fixtureProcess) string {
+// writeProcFixture builds a /proc of the test's own and answers its path and the pid each
+// process was given, in the order given, which a case reads back rather than the pid it asked
+// for (writeFakeProcess).
+func writeProcFixture(t *testing.T, processes ...fixtureProcess) (string, []int) {
 	t.Helper()
 	root := t.TempDir()
+	pids := make([]int, 0, len(processes))
 	for _, process := range processes {
-		dir := filepath.Join(root, strconv.Itoa(process.pid))
-		mkdirFixture(t, dir)
-		for name, target := range map[string]string{"cwd": process.cwd, "exe": process.exe, "root": process.root} {
-			if target == "" {
-				continue
-			}
-			// The target need not exist: /proc's entries are the kernel's answer about a path,
-			// and a fixture that made each one would be making the very directories it asks the
-			// guard about.
-			if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
-				t.Fatal(err)
-			}
+		pids = append(pids, writeFakeProcess(t, root, process))
+	}
+	return root, pids
+}
+
+// writeFakeProcess writes one process into the fixture /proc at root and answers the pid it
+// used. The used-path reader passes over its own process (readUsedPaths, pid == self), and self
+// is this test binary's real pid, so a fake process given that number would be read as the
+// reader itself and skipped. A pod that has run for a while hands the test binary pids in the
+// very ranges these cases stage, which made the two-hundred-process case count 199 about once a
+// run on 2026-11-13. So a process asking for os.Getpid() is moved to a pid no case stages, and a
+// case that means the reader's own process says so with reader.
+func writeFakeProcess(t *testing.T, root string, process fixtureProcess) int {
+	t.Helper()
+	pid := process.pid
+	switch {
+	case process.reader:
+		pid = os.Getpid()
+	case pid == os.Getpid():
+		pid += 100000
+	}
+	dir := filepath.Join(root, strconv.Itoa(pid))
+	mkdirFixture(t, dir)
+	for name, target := range map[string]string{"cwd": process.cwd, "exe": process.exe, "root": process.root} {
+		if target == "" {
+			continue
 		}
-		switch {
-		case process.fdIsFile:
-			if err := os.WriteFile(filepath.Join(dir, "fd"), nil, 0o644); err != nil {
-				t.Fatal(err)
-			}
-		case process.fdRefused:
-			fd := filepath.Join(dir, "fd")
-			mkdirFixture(t, fd)
-			if err := os.Chmod(fd, 0); err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = os.Chmod(fd, 0o700) })
-		case len(process.fds) > 0:
-			fd := filepath.Join(dir, "fd")
-			mkdirFixture(t, fd)
-			for at, target := range process.fds {
-				if err := os.Symlink(target, filepath.Join(fd, strconv.Itoa(3+at))); err != nil {
-					t.Fatal(err)
-				}
-			}
+		// The target need not exist: /proc's entries are the kernel's answer about a path, and a
+		// fixture that made each one would be making the very directories it asks the guard
+		// about.
+		if err := os.Symlink(target, filepath.Join(dir, name)); err != nil {
+			t.Fatal(err)
 		}
-		if len(process.maps) > 0 {
-			var body strings.Builder
-			for _, mapped := range process.maps {
-				// One mapping as /proc writes it: the address range, the permissions, the
-				// offset, the device and the inode, then the path.
-				fmt.Fprintf(&body, "7f0b2c000000-7f0b2c021000 r-xp 00000000 fd:01 131074 %s\n", mapped)
-			}
-			// The two kinds of line that name no file, which every real maps file carries.
-			body.WriteString("7f0b2c021000-7f0b2c022000 rw-p 00000000 00:00 0 \n")
-			body.WriteString("7ffd4c3f0000-7ffd4c411000 rw-p 00000000 00:00 0                          [stack]\n")
-			if err := os.WriteFile(filepath.Join(dir, "maps"), []byte(body.String()), 0o644); err != nil {
-				t.Fatal(err)
-			}
+	}
+	switch {
+	case process.fdIsFile:
+		if err := os.WriteFile(filepath.Join(dir, "fd"), nil, 0o644); err != nil {
+			t.Fatal(err)
 		}
-		for tid, cwd := range process.threads {
-			task := filepath.Join(dir, "task", strconv.Itoa(tid))
-			mkdirFixture(t, task)
-			if err := os.Symlink(cwd, filepath.Join(task, "cwd")); err != nil {
+	case process.fdRefused:
+		fd := filepath.Join(dir, "fd")
+		mkdirFixture(t, fd)
+		if err := os.Chmod(fd, 0); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(fd, 0o700) })
+	case len(process.fds) > 0:
+		fd := filepath.Join(dir, "fd")
+		mkdirFixture(t, fd)
+		for at, target := range process.fds {
+			if err := os.Symlink(target, filepath.Join(fd, strconv.Itoa(3+at))); err != nil {
 				t.Fatal(err)
 			}
 		}
 	}
-	return root
+	if len(process.maps) > 0 {
+		var body strings.Builder
+		for _, mapped := range process.maps {
+			// One mapping as /proc writes it: the address range, the permissions, the offset,
+			// the device and the inode, then the path.
+			fmt.Fprintf(&body, "7f0b2c000000-7f0b2c021000 r-xp 00000000 fd:01 131074 %s\n", mapped)
+		}
+		// The two kinds of line that name no file, which every real maps file carries.
+		body.WriteString("7f0b2c021000-7f0b2c022000 rw-p 00000000 00:00 0 \n")
+		body.WriteString("7ffd4c3f0000-7ffd4c411000 rw-p 00000000 00:00 0                          [stack]\n")
+		if err := os.WriteFile(filepath.Join(dir, "maps"), []byte(body.String()), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for tid, cwd := range process.threads {
+		task := filepath.Join(dir, "task", strconv.Itoa(tid))
+		mkdirFixture(t, task)
+		if err := os.Symlink(cwd, filepath.Join(task, "cwd")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return pid
 }
 
 func mkdirFixture(t *testing.T, dir string) {
@@ -157,7 +184,8 @@ func TestTheUsedPathSetReadsEveryProcEntry(t *testing.T) {
 		t.Run(source.name, func(t *testing.T) {
 			process := fixtureProcess{pid: 101}
 			source.place(&process, held)
-			used := readUsedPaths(writeProcFixture(t, process), os.Getpid())
+			proc, _ := writeProcFixture(t, process)
+			used := readUsedPaths(proc, os.Getpid())
 			if len(used.Refused) > 0 {
 				t.Fatalf("the fixture was refused: %v", used.Refused)
 			}
@@ -187,10 +215,11 @@ func TestTheUsedPathSetLeavesTheReadersOwnProcessOut(t *testing.T) {
 		own   = "/legion/go/build/ab/abcdefabcdefabcdefabcdefabcdefab-a"
 		other = "/legion/go/build/cd/cdefabcdefabcdefabcdefabcdefabcd-d"
 	)
-	used := readUsedPaths(writeProcFixture(t,
-		fixtureProcess{pid: os.Getpid(), fds: []string{own}, cwd: "/legion/go/build"},
+	proc, _ := writeProcFixture(t,
+		fixtureProcess{reader: true, fds: []string{own}, cwd: "/legion/go/build"},
 		fixtureProcess{pid: os.Getpid() + 1, fds: []string{other}},
-	), os.Getpid())
+	)
+	used := readUsedPaths(proc, os.Getpid())
 	if len(used.Refused) > 0 {
 		t.Fatalf("the fixture was refused: %v", used.Refused)
 	}
@@ -233,11 +262,12 @@ func TestTheUsedPathSetNamesEveryProcessWhoseProcWasRefused(t *testing.T) {
 		t.Run(staging.name, func(t *testing.T) {
 			// The third process has no entry at all, which is what the kernel shows of a process
 			// that exited while the pass read it.
-			used := readUsedPaths(writeProcFixture(t, staging.process, fixtureProcess{pid: 400, fds: []string{gone}}, fixtureProcess{pid: 500}), os.Getpid())
+			proc, pids := writeProcFixture(t, staging.process, fixtureProcess{pid: 400, fds: []string{gone}}, fixtureProcess{pid: 500})
+			used := readUsedPaths(proc, os.Getpid())
 			if len(used.Refused) != 1 {
 				t.Fatalf("Refused = %v, want exactly the one process this case made unreadable", used.Refused)
 			}
-			if pid := strconv.Itoa(staging.process.pid); !strings.Contains(used.Refused[0], pid) {
+			if pid := strconv.Itoa(pids[0]); !strings.Contains(used.Refused[0], pid) {
 				t.Errorf("Refused[0] = %q, want the refused process %s named in it", used.Refused[0], pid)
 			}
 			if !used.Covers(stillRead) {

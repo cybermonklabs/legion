@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // The reclaim paragraph of docs/kubernetes.md is an operator's whole remedy for an issue volume
@@ -47,7 +46,7 @@ const (
 	reclaimExemptHeading  = "Exempt, each for a reason"
 )
 
-// Every directory roleEnvironment and the pod's uv variables put on the issue's volume is on the
+// Every directory the start environment (mainEnvironment) puts on the issue's volume is on the
 // delete list or in an exemption of docs/kubernetes.md's reclaim paragraph. The rendered set comes
 // from the renderer, never from a list written beside it: a list would have to be edited by whoever
 // adds a cache, which is exactly the edit that gets forgotten.
@@ -56,7 +55,7 @@ func TestTheReclaimParagraphNamesEveryDirectoryTheRendererPutsOnTheIssueVolume(t
 	const role = claim.RoleImplementer
 
 	deleted, exempt := reclaimParagraphLists(t)
-	for _, dir := range issueVolumeDirectories(issue, role) {
+	for _, dir := range issueVolumeDirectories(t, issue, role) {
 		// A per-role or per-issue directory reaches the prose as a placeholder, since no document can
 		// name every role and every issue. Rewrite the rendered value's last segment to the form the
 		// paragraph uses rather than matching it loosely, so an unrelated path that happens to share a
@@ -107,19 +106,26 @@ func TestTheReclaimParagraphNeverDeletesWhatItExempts(t *testing.T) {
 	}
 }
 
-// issueVolumeDirectories is what a role and the pod are told to write under the issue's
-// volume, taken from the two renderers that tell them: roleEnvironment, which carries the role's
-// temporary directory, its XDG homes and the three tool caches, and the issue pod's agentEnv, which
-// carries uv's cache and Pythons. A value under TreeRoot is on that volume, since TreeRoot is where
-// the issue's claim is mounted (issueVolume); XDG_CONFIG_HOME, under the pod's in-memory home, is
-// outside it and drops out here without being listed.
-func issueVolumeDirectories(issue string, role claim.Role) []string {
-	l := launch{
-		spec:      runtime.SpawnSpec{Tree: "legion", Issue: issue},
-		workspace: TreeRoot + "/workspaces/owner/repo/" + issue,
+// issueVolumeDirectories is what a role and the pod are told to write under the issue's volume,
+// taken from the start environment the runtime renders for a launch of the issue's pod
+// (mainEnvironment): the issue pod's agentEnv, which carries uv's cache and Pythons;
+// roleEnvironment, which carries the role's temporary directory, its XDG homes and the three tool
+// caches; and PUBLIC_LEAK_CHECK, the check the pod's launcher installs under the scratch, whose
+// value is the check's file and is accounted for by its directory. A value under TreeRoot is on
+// that volume, since TreeRoot is where the issue's claim is mounted (issueVolume); XDG_CONFIG_HOME,
+// under the pod's in-memory home, is outside it and drops out here without being listed.
+func issueVolumeDirectories(t *testing.T, issue string, role claim.Role) []string {
+	t.Helper()
+	r, err := configure(goldenOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(testProject, issue, role)
+	if err != nil {
+		t.Fatal(err)
 	}
 	var dirs []string
-	for _, env := range append(roleEnvironment(role), issuePod{}.agentEnv(l)...) {
+	for _, env := range r.mainEnvironment(launchOf(t, r, testSpec(t, token, role, issue))) {
 		// LEGION_WORKSPACE is on the volume but is not a directory this layout creates to absorb what a
 		// tool writes: it is the issue's checkout, the work itself, and the remedy deletes nothing in
 		// it. Every other variable pointing under TreeRoot is scratch and belongs in the accounting.

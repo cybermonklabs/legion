@@ -2445,8 +2445,8 @@ What it may delete, and what one entry is in each:
 - `/legion/scratch/bun/install/cache` — one immediate child.
   The root itself is a live `flock` target, which is why no root of this list is ever unlinked.
 
-What it never writes to or deletes: `/legion/workspaces`, `/legion/repos`, `/legion/feed`, `/legion/scratch/state`, `/legion/scratch/data`, `/legion/go/mod`, `/legion/uv/cache`, `/legion/uv/python`, and the two children of the cache home above.
-`packages/daemon/internal/launcher/volumepaths.go` carries both lists written out, because the launcher's own process is told none of those paths, and a test holds every path the pod renderer puts on the volume to being named by one of the two (`TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists`).
+What it never writes to or deletes: `/legion/workspaces`, `/legion/repos`, `/legion/feed`, `/legion/scratch/state`, `/legion/scratch/data`, `/legion/go/mod`, `/legion/uv/cache`, `/legion/uv/python`, `/legion/scratch/leak-check`, and the two children of the cache home above.
+`packages/daemon/internal/launcher/volumepaths.go` carries both lists written out, because the launcher's own process is told none of those paths but the leak check's, whose directory it names from the installer's own constant, and a test holds every path the pod renderer puts on the volume, its start environment included, to being named by one of the two (`TestEveryPathTheRendererPutsOnTheIssueVolumeIsNamedByTheTrimmersLists`).
 
 The trimmer writes every line of its own behind the prefix `volume trim: ` in the `roles` container's log: one at its start naming the settings in force, one per interval reading naming what it decided, and one per sweep naming what it freed and why it stopped.
 A sweep that ends with the volume still above the low mark sends the daemon one report, and the daemon turns that into one `volume-near-full` notice to the issue's architect, naming the sizes of the directories two levels under `/legion` with the bytes of each untouched for more than an hour and for more than a day.
@@ -2477,6 +2477,9 @@ Exempt, each for a reason the list above does not hold:
 
 - `/legion/scratch/state/<role>` — per-role, and Oh My Pi's logs, Chromium's profiles and the installed plugin generation rather than a cache; small.
   Oh My Pi's state-class directories (`run/daemons`, `logs`, `browser-profiles`, `reports`, `terminal-sessions`) hang under `$XDG_STATE_HOME/omp`, so they are this path's and not the shared data home's.
+
+- `/legion/scratch/leak-check` — the shared public leak check the pod's launcher installs once before any role starts, and which every role's `legion gh`, pushes and shim read; installed software rather than a cache.
+  Nothing installs it again while the pod's launcher runs, so once it is gone every `legion gh` write, every push and every agent start of the issue's roles refuses.
 
 - `/legion/scratch/data` — the shared `XDG_DATA_HOME`, the data-class home of the tools that honour it.
   Nothing re-derives it: the caches above are rebuilt by the next build or install, where what a tool stores in its data home is gone when it is deleted.
