@@ -353,10 +353,10 @@ func TestAnAppendOnlyStartThatDeliversNothingRecordsOnlyTheEntryItsClaimHolds(t 
 }
 
 // A re-admission leaves the role's entry where it stood and takes the work of it away: the task
-// is the ended generation's and goes with that generation's handoffs (record.ClearGeneration,
-// which workflow's Adopt and enterChild run for each member), while the number stays, because it
-// counts the entries the role has been handed on this issue and nothing of a re-admission unhands
-// one (record.PhaseRow.Entry and EntryTask).
+// is the ended generation's and goes with that generation's handoffs
+// (workflow.Engine.ClearGeneration, which workflow's Adopt and ReenterChild run for each issue
+// they move), while the number stays, because it counts the entries the role has been handed on
+// this issue and nothing of a re-admission unhands one (record.PhaseRow.Entry and EntryTask).
 //
 // What writes the work again is the promotion of the re-admitted tree's member
 // (workflow.Engine.StartPromotedWorker): it raises the entry, writes that entry's task beside the
@@ -376,7 +376,7 @@ func TestAReadmissionLeavesTheEntryColumnsAndThePromotionWritesTheWorkAgain(t *t
 	}
 
 	if err := pgx.BeginFunc(ctx, rig.pool, func(tx pgx.Tx) error {
-		return record.NewStore().ClearGeneration(ctx, tx, rig.issue.Key, time.Now().UTC())
+		return rig.engine.ClearGeneration(ctx, tx, rig.issue, time.Now().UTC())
 	}); err != nil {
 		t.Fatalf("clear the generation the re-admission ends: %v", err)
 	}

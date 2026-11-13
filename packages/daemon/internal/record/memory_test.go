@@ -52,7 +52,7 @@ func putHandedOverRoot(t *testing.T, ctx context.Context, records Store, tx pgx.
 // opened it writes nothing at all, and a target that already carries a draw of its own keeps it.
 // PutIssue names none of the columns, so a copy of the issue read before the draw, written back
 // over it, keeps what the record holds: that is what makes a re-admission, a new generation and
-// ClearTreeGeneration keep the draw.
+// its clear (workflow's ClearTreeGeneration) keep the draw.
 func TestAMemoryGroupIsDrawnOnceAndCarriedVerbatim(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

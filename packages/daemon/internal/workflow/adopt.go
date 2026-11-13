@@ -216,11 +216,6 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 	if err != nil {
 		return err
 	}
-	// Each member's generation is cleared below, and its gates with it, so what those gates show a
-	// person approved past is forgotten first (ForgetSupersededKept).
-	if err := e.ForgetSupersededKept(ctx, tx, issue.Key); err != nil {
-		return err
-	}
 	for _, member := range members {
 		if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 			return err
@@ -269,7 +264,7 @@ func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root recor
 	if err := e.store.DeleteHandover(ctx, tx, member.Key); err != nil {
 		return err
 	}
-	if err := e.store.ClearGeneration(ctx, tx, member.Key, e.now()); err != nil {
+	if err := e.ClearGeneration(ctx, tx, member, e.now()); err != nil {
 		return err
 	}
 	if member.Status == "todo" {
@@ -331,11 +326,6 @@ func (e *Engine) catchUpOnWhatTheTreeIsOwed(ctx context.Context, tx pgx.Tx, root
 // notice (joinedTheTree), and with a catch-up where a person's decision on the member is kept
 // for it (catchUpOnWhatTheTreeIsOwed). Everything is written in the caller's transaction.
 func (e *Engine) AdoptMember(ctx context.Context, tx pgx.Tx, member record.Issue, root record.Issue, child intake.AdoptedChild) error {
-	// The member's generation is cleared below, and its gates with it, so what those gates show a
-	// person approved past is forgotten first (ForgetSupersededKept), as Adopt and ReenterChild do.
-	if err := e.ForgetSupersededKept(ctx, tx, member.Tree); err != nil {
-		return err
-	}
 	if err := e.moveIntoTree(ctx, tx, member, root, child); err != nil {
 		return err
 	}

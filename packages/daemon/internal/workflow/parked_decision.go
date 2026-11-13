@@ -153,7 +153,7 @@ func ReadKeptGates(ctx context.Context, tx pgx.Tx, store record.Store, tree stri
 // and it stays (Store.ForgetKeptDecisions). A superseded approval stays in its row as it always
 // has (Store.KeepReadmittedApproval replaces it at the next re-admission). The gates a decision is
 // asked of go when a generation is cleared, so each clear first forgets what they show was
-// superseded (Engine.ForgetSupersededKept).
+// superseded (Engine.ClearGeneration).
 func ForgetSuperseded(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, tree string,
 	owed record.KeptDecisions) (KeptGates, error) {
 	gates, err := ReadKeptGates(ctx, tx, store, tree, owed)
@@ -225,29 +225,6 @@ func KeptDecisionsTask(gates KeptGates, steps []record.DesignStep, tree string, 
 // row records none, and at the review's place in Dispatch's log.
 func keptDecision(mark record.DecisionMark) Decision {
 	return Decision{Kind: mark.Decision, Issue: mark.Issue, Ref: mark.Ref, Mark: record.EventMark{Seq: mark.Seq, At: mark.At}}
-}
-
-// ForgetSupersededKept deletes every decision kept for tree that a later approval superseded
-// (ForgetSuperseded), in tx. Call it before a clear of a generation deletes the gates
-// (record.Store.ClearGeneration, ClearTreeGeneration). Those gates are the only record of the
-// approval that superseded the decision. The start or catch-up that names the decision after the
-// clear asks a gate that is gone or new, and the decision would read as the person's word again:
-// a person who requested changes and then approved the latest version as their hand-over would
-// send the new architect to revise the spec they approved. Every row owed to tree is asked, and a
-// row a queued task holds is deleted too, since that task is asked again at its send (the
-// daemon's rootTask) and its gates are gone by then. A row that an outbox row claims stays
-// (Store.ForgetKeptDecisions): its text is already written, and that row settles it.
-func (e *Engine) ForgetSupersededKept(ctx context.Context, tx pgx.Tx, tree string) error {
-	decisions, err := e.store.ParkedDecisions(ctx, tx, tree)
-	if err != nil {
-		return err
-	}
-	var owed record.KeptDecisions
-	for _, d := range decisions {
-		owed.Decisions = append(owed.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq})
-	}
-	_, err = ForgetSuperseded(ctx, tx, e.store, e.cfg.Steps, tree, owed)
-	return err
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.

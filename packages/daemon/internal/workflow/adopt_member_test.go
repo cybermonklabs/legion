@@ -16,7 +16,7 @@ import (
 
 // A closed tree's member that a release adopts (AdoptMember, C4 of dispatch://INFRA-3107) has its
 // generation cleared, and its design gates with it, so what those gates show a person approved
-// past is judged before the clear (ForgetSupersededKept), as Adopt and ReenterChild judge it. A
+// past is judged before the clear (Engine.ClearGeneration), as on every route that clears one. A
 // changes request the gate's later approval answered is deleted with the gates still standing:
 // asked after the clear, it would read as the person's word again, and the catch-up the adoption
 // writes, or any later task of the tree that takes the member, would send its architect to

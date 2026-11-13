@@ -199,7 +199,8 @@ type Issue struct {
 	// draw: a tree first opened before the setting existed, or a root the draw never reached, which
 	// has no group and runs without memory. The draw is made once, when the tree's lifecycle row is
 	// first created, and only Store.DrawMemory and Store.CarryMemory write the three: PutIssue keeps
-	// the stored values, so a re-admission, a new generation and ClearTreeGeneration keep the draw.
+	// the stored values, so a re-admission, a new generation and its clear (workflow's
+	// ClearTreeGeneration) keep the draw.
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
@@ -318,9 +319,9 @@ const (
 // claiming row that reached no architect hands it over instead (workflow.HandOverKept): it goes
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
 // a release never leaves it kept with nobody to name it again. A design decision that a later
-// approval superseded is deleted unnamed, by the task that asks it or before the clear of a
-// generation that deletes the approval's gate (workflow.ForgetSuperseded,
-// workflow.Engine.ForgetSupersededKept): nothing of it is left to tell.
+// approval superseded is deleted unnamed, by the task that asks it or by the clear of a
+// generation, before it deletes the approval's gate (workflow.ForgetSuperseded,
+// workflow.Engine.ClearGeneration): nothing of it is left to tell.
 type ParkedDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
 	// was made on. It is the row's key with Ref, and what says whose debt the row is: the
@@ -497,8 +498,8 @@ type PhaseRow struct {
 	// pr-blocked notice for, 0 for a row that has posted none. It is what makes that telling go
 	// once for each value of the cap rather than on every round after the first that reaches it:
 	// the round that tells writes the cap it read here, and a later round compares the two.
-	// A new generation clears it (ClearGeneration), so a tree sent back to the start tells again
-	// from its own first crossing.
+	// A new generation clears it (workflow's ClearGeneration), so a tree sent back to the start
+	// tells again from its own first crossing.
 	CapTold int
 	Verdict string
 	// Summary is what the role reported with its completion, which the architect is told when the
@@ -518,9 +519,9 @@ type PhaseRow struct {
 	// CompletedAt is when the workflow applied the role's completion of its current phase, zero until
 	// then. The reviewer's orders the reviews its round receives against the completion (workflow's
 	// reviewersAnswer and answerSkew), and is read only for a completed round (Completed). It can
-	// be stale: a daemon older than migration 0026 writes a completion without it, and
-	// ClearGeneration resets the row without it. Behind a completion an old daemon wrote, a stale time
-	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
+	// be stale: a daemon older than migration 0026 writes a completion without it, and workflow's
+	// ClearGeneration resets the row without it. Behind a completion an old daemon wrote, a stale
+	// time at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
 	// phase the issue has moved into, and the promotion's start of a mid-phase worker a
@@ -532,16 +533,17 @@ type PhaseRow struct {
 	// the role no work it was not already on leaves it where it stands — the send of this entry's
 	// own work to a claim behind it, the held phase's retry, and every start of no entry
 	// (SuperviseRequest.Entry, which lists them) — and unlike HandoffCommit it is never reset:
-	// ClearGeneration leaves the entry and clears the task below. Zero on a row no entry has been
-	// raised on: a role the issue's phases have not reached, and every row of a daemon upgraded
-	// in place that the upgrade found with no work handed out, which the completion route reads
-	// as nothing to compare.
+	// workflow's ClearGeneration leaves the entry and clears the task below. Zero on a row no
+	// entry has been raised on: a role the issue's phases have not reached, and every row of a
+	// daemon upgraded in place that the upgrade found with no work handed out, which the
+	// completion route reads as nothing to compare.
 	Entry int64
 	// EntryTask is the work of that entry, the task text the role is told, written beside the
 	// number in the same transaction. It is what makes the work a durable fact of the record
 	// rather than of the one outbox row that carried it: a claim behind the entry is sent this
 	// task again, however that row ended. Empty on a row no entry has been raised on, and on one
-	// ClearGeneration reset, whose re-admitted tree's promotion writes the task again.
+	// a new generation reset (workflow's ClearGeneration), whose re-admitted tree's promotion
+	// writes the task again.
 	EntryTask string
 	// EntryRaisedAt is when the entry was raised, read from the transition's own clock. It is
 	// what tells how long a role has been owed the work its entry names, for a reader weighing a
@@ -551,7 +553,7 @@ type PhaseRow struct {
 
 // Completed says whether the role completed its current phase: its completion reported a commit
 // or named a handoff record, both of which clearing the handoff at the next phase's start
-// (workflow's clearHandoff) and a new generation (ClearGeneration) empty.
+// (workflow's clearHandoff) and a new generation (workflow's ClearGeneration) empty.
 func (p PhaseRow) Completed() bool {
 	return p.HandoffCommit != "" || p.HandoffRecord != ""
 }
@@ -1078,9 +1080,9 @@ type DesignGate struct {
 	// reads exactly like one that never opened. Under the children-first rule a root stays at
 	// admitted while its children run, which is the state the later rule must tell from a root
 	// still waiting for its first approval. It lives on the gate row rather than on the issue
-	// because ClearTreeGeneration deletes the gate when a root is re-admitted, and a re-admitted
-	// root's architect writes its spec again: the mark belongs to the generation whose approval it
-	// records.
+	// because a re-admission's clear deletes the gate (workflow's ClearTreeGeneration), and a
+	// re-admitted root's architect writes its spec again: the mark belongs to the generation whose
+	// approval it records.
 	EverOpened bool
 }
 
@@ -1498,15 +1500,6 @@ type Store interface {
 	// reviewer's own review from another review-App session's by the Legion footer each carries
 	// (PullRequestReview.LegionSession).
 	ClaimSession(ctx context.Context, tx pgx.Tx, token claim.Token) (string, error)
-	// ClearGeneration drops the facts one generation of an issue owns: a merged or closed pull
-	// request, the last generation's reading of a still-open one (the next generation runs on the
-	// same branch and pull request), its design gate, and each role's handoff, review rounds,
-	// verdict and summary. Each role keeps its claim and its last handoff, so a
-	// commit an earlier generation reported is never new again. An issue whose gate rows it
-	// deletes has the empty set of design-gate documents queued for it, due at now, since the set
-	// Dispatch holds for that issue is the one those rows recorded.
-	ClearGeneration(ctx context.Context, tx pgx.Tx, issue string, now time.Time) error
-	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, now time.Time) error
 	// GatesOf is every design gate issue holds, by step: one entry for each step the issue's
 	// architect has registered. An issue with no gate at all gives an empty map, and a step with
 	// no row has no entry.
