@@ -257,6 +257,24 @@ for form in '${A}${B} pyshacl' '$(printf uvx) pyshacl' 'env $RUNNER pyshacl'; do
     case_result "a command word the reader cannot resolve is refused: $form" install-pinned "$(fixture_run "$dir" --replay)"
 done
 
+# 20. A runner named by its path, or by a versioned name, is still that runner. The
+# header says a resolved command word "is held to every rule a literal is", yet the runner
+# rules match the bare words pip, pip3 and uvx alone, so at 69fecb2dc2 each of these passed
+# install-pinned: pip through an allow-listed venv path, pip through an absolute path, pip
+# by its versioned name, and uvx through an allow-listed path. `python3 -m pip install`
+# is refused there, so the gap is the path and the name, not pip.
+for form in '\\"$IOC_MASLAB_VENV\/bin\/pip\\" install rdflib' '\/usr\/bin\/pip install rdflib' \
+    'pip3.12 install rdflib' '\\"$IOC_MASLAB_VENV\/bin\/uvx\\" pyshacl'; do
+    dir="$(fresh "path-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || $form; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    grep -qF 'install rdflib' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" ||
+        grep -qF 'uvx\" pyshacl' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+        printf 'FAIL the form %s could not be planted\n' "$form"
+        exit 1
+    }
+    case_result "a runner named by its path or versioned name is held to its rule: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
