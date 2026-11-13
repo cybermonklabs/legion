@@ -14,6 +14,7 @@ import delta from "../../../contracts/fixtures/live/delta.json";
 import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
+import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
 import { RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
 import type {
   DeliveryLiveDelta,
@@ -22,7 +23,12 @@ import type {
   DeliveryTimelineWithMeasures,
   LiveClientFrame,
 } from "../../web/src/api/types";
-import type { ProbeCompareLine, ProbeHeld, ProbeLine } from "../delivery-live-probe";
+import type {
+  ProbeCloseLine,
+  ProbeCompareLine,
+  ProbeHeld,
+  ProbeLine,
+} from "../delivery-live-probe";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
 // The probe runs as an agent runs it, a process of its own, against a stand-in for Dispatch that
@@ -422,23 +428,18 @@ test(
 );
 
 // Dispatch's rotation (4001) is the one close the probe answers by opening again at once; its
-// restart (1012) and any other close wait at least a draw of the first attempt's spread, so a
-// second subscribe within 500 ms of the close is the at-once reopen only for the rotation.
+// restart (1012) and any other close wait a draw of the first attempt's spread or longer. The
+// close line names the delay the probe chose, so the row reads that choice from the probe's own
+// output, and the second subscribe is the fact that the reconnect happened.
 for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
   test(
     `after a ${what} close the probe reconnects at once and resumes with the change and revisions it holds`,
     async () => {
-      let closedAt = 0;
-      let reopenedAt = 0;
       const dispatch = probeDispatch({
         onSubscribe(socket, sub, count) {
-          if (count > 1) {
-            reopenedAt = performance.now();
-            return;
-          }
+          if (count > 1) return;
           socket.send(forSub(snapshot, sub));
           socket.send(forSub(delta, sub));
-          closedAt = performance.now();
           socket.close(code, reason);
         },
       });
@@ -447,7 +448,6 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
       run.kill("SIGINT");
       expect(await run.exited()).toBe(0);
 
-      expect(reopenedAt - closedAt).toBeLessThan(500);
       expect(dispatch.received).toEqual([
         { sub: "probe", type: "subscribe", view },
         { resume: { revs: next.revs, seq: change.seq }, sub: "probe", type: "subscribe", view },
@@ -455,10 +455,16 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
       expect(
         run.lines.map((line) => {
           if (line.type === "open") return `open ${line.resume}`;
-          if (line.type === "close") return `close ${line.code}`;
+          if (line.type === "close") return `close ${line.code} retry_ms ${line.retry_ms}`;
           return line.type;
         })
-      ).toEqual(["open null", "snapshot", "delta", `close ${code}`, `open ${change.seq}`]);
+      ).toEqual([
+        "open null",
+        "snapshot",
+        "delta",
+        `close ${code} retry_ms 0`,
+        `open ${change.seq}`,
+      ]);
     },
     {
       // This row drives the probe across a rotation close: it waits for the second subscribe
@@ -495,16 +501,16 @@ test(
         return line.type;
       })
     ).toEqual(["open null", "snapshot", "delta", "close 1012", `open ${change.seq}`]);
-    // The page's first attempt after a restart close waits up to `RECONNECT_SPREAD_MS`; the
-    // probe, a process of its own, draws its own wait, so this holds the bound rather than the
-    // draw. A second of slack covers the loopback handshake on a shared box.
-    const closedAt = Date.parse(run.lines[3]?.at ?? "");
-    const reopenedAt = Date.parse(run.lines[4]?.at ?? "");
-    expect(reopenedAt - closedAt).toBeLessThan(RECONNECT_SPREAD_MS + 1_000);
+    // The page's first attempt after a restart close waits a draw of up to
+    // `RECONNECT_SPREAD_MS`; the close line names the draw the probe made before it dialled.
+    const retry = run.lines.find((line): line is ProbeCloseLine => line.type === "close")?.retry_ms;
+    expect(retry).toBeNumber();
+    expect(retry).toBeGreaterThanOrEqual(0);
+    expect(retry).toBeLessThanOrEqual(RECONNECT_SPREAD_MS);
   },
   {
     // This row drives the probe across a restart close: it waits for the second subscribe,
-    // sends SIGINT, and reads the two open lines. A bound would stop a process it still uses.
+    // sends SIGINT, and reads the close line. A bound would stop a process it still uses.
     timeout: 30_000,
   }
 );
@@ -688,9 +694,10 @@ test(
   }
 );
 
-// `--read-within` bounds a read's silence, not its length: a body that arrives in 16 pieces,
-// 0.25 s apart, takes longer than a bound of 3 s and is read whole under it, and compared. Each
-// gap is 2.75 s inside the bound, so a pod that stalls a process for a second still passes.
+// A body that arrives in 16 pieces, 0.25 s apart, is read whole and compared. The read gets the
+// page's own deadline, `REQUEST_DEADLINE_MS`, so no stall of the pod between two pieces turns
+// the verdict. That the deadline starts over on the headers and on each piece, so a body longer
+// than the deadline is read whole, is `silence-read.test.ts`'s, on a clock it moves by hand.
 test(
   "a --compare read whose body keeps arriving is read whole, however long it takes",
   async () => {
@@ -699,34 +706,26 @@ test(
     const pieces = Array.from({ length: count }, (_, index) =>
       text.slice((index * text.length) / count, ((index + 1) * text.length) / count)
     );
-    let startedAt = 0;
-    let endedAt = 0;
     const dispatch = slowDispatch((url) => {
       if (url.pathname === "/api/v1/delivery/measures") return Response.json(heldBody.measures);
       let sent = 0;
       const encoder = new TextEncoder();
       const body = new ReadableStream<Uint8Array>({
         async pull(controller) {
-          // A real delay: the probe's silence timer runs in its own process, which no fake
-          // timer here reaches.
+          // A real gap between pieces, so the body reaches the probe, a process of its own, as
+          // pieces; no verdict here reads how long the gap took.
           if (sent > 0) await Bun.sleep(250);
-          else startedAt = performance.now();
           controller.enqueue(encoder.encode(pieces[sent] ?? ""));
           sent += 1;
-          if (sent === pieces.length) {
-            endedAt = performance.now();
-            controller.close();
-          }
+          if (sent === pieces.length) controller.close();
         },
       });
       return new Response(body, { headers: { "content-type": "application/json" } });
     });
-    const run = runProbe(compareArgs(dispatch.url, "3"));
+    const run = runProbe(compareArgs(dispatch.url, String(REQUEST_DEADLINE_MS / 1000)));
     await run.until(() => run.lines.some((line) => line.type === "snapshot"));
     run.kill("SIGINT");
-    expect(await run.exited()).toBe(0);
-    // The body took longer than the bound: the bound is on silence, not on the whole read.
-    expect(endedAt - startedAt).toBeGreaterThan(3_000);
+    expect(await run.exited(), run.stderr.join("\n")).toBe(0);
     expect(dispatch.reads).toEqual(["/api/v1/delivery/timeline", "/api/v1/delivery/measures"]);
     expect(comparisons(run.lines).map((line) => [line.route.split("?")[0], line.equal])).toEqual([
       ["/api/v1/delivery/timeline", true],
@@ -734,9 +733,9 @@ test(
     ]);
   },
   {
-    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the 4 s
-    // read runs after that. A bound at the child would kill a process this row still uses.
-    timeout: 30_000,
+    // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
+    // runs after that under its own deadline, which this limit outlasts twice over.
+    timeout: 2 * REQUEST_DEADLINE_MS,
   }
 );
 

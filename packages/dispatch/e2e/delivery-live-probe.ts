@@ -11,7 +11,8 @@
  *    reconnect's open does not count it again.
  *  - Between reconnects, the delay `reconnectDelayMs` draws: none after Dispatch's rotation
  *    (4001), up to 2 s after Dispatch's restart close (1012), and up to 30 s with backoff after
- *    any other close. `--minutes` ends the watch during that delay as well.
+ *    any other close. `--minutes` ends the watch during that delay as well. Each close line
+ *    carries the delay chosen as `retry_ms`: 0 for a dial at once, null when none follows.
  *  - A silent socket, after the first open: one that has carried no frame for more than 45 s, a
  *    reconnect's dial that never opens included, is replaced by a new dial at the next check,
  *    which runs each second, and `--minutes` still ends the watch.
@@ -59,6 +60,7 @@ import type {
   LiveSubscribe,
 } from "../web/src/api/types";
 import { applyDelta, applyRevs } from "../web/src/features/delivery/lib/applyDelta";
+import { readUntilSilent } from "./silence-read";
 
 /** The frames `GET /ws/live` sends: a delivery view's own, the freshness verdict, a refusal and
  * the heartbeat. */
@@ -105,12 +107,15 @@ export interface ProbeOpenLine {
   readonly resume: string | null;
 }
 
-/** A connection closing, by Dispatch or by the probe replacing a silent socket. */
+/** A connection closing, by Dispatch or by the probe replacing a silent socket, and the delay in
+ *  milliseconds the probe chose before its next dial: 0 for a dial at once, null when it dials no
+ *  more. */
 export interface ProbeCloseLine {
   readonly at: string;
   readonly type: "close";
   readonly code: number;
   readonly reason: string;
+  readonly retry_ms: number | null;
 }
 
 /** The ids a GET answer holds that the probe's body lacks (`missing`), and the reverse (`extra`). */
@@ -562,20 +567,25 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
 
   const lost = (code: number, reason: string) => {
     socket = null;
-    write({ at: now(), code, reason, type: "close" });
     if (!opened) {
+      write({ at: now(), code, reason, retry_ms: null, type: "close" });
       fail(`Dispatch refused the connection to ${liveUrl.href}: ${reason || `close ${code}`}`);
       return;
     }
-    if (code === LIVE_SOCKET_MAX_AGE_CLOSE) {
+    // As the page does: Dispatch's rotation is answered by a dial at once, and its restart close
+    // starts the backoff over, so the next attempt waits within the first attempt's spread.
+    let delay = 0;
+    if (code !== LIVE_SOCKET_MAX_AGE_CLOSE) {
+      if (code === SERVICE_RESTART) attempt = 0;
+      delay = reconnectDelayMs(attempt);
+      attempt += 1;
+    }
+    write({ at: now(), code, reason, retry_ms: delay, type: "close" });
+    if (delay === 0) {
       open();
       return;
     }
-    // As the page does: Dispatch's restart close starts the backoff over, so the next attempt
-    // waits within the first attempt's spread.
-    if (code === SERVICE_RESTART) attempt = 0;
-    const handle = setTimeout(open, reconnectDelayMs(attempt));
-    attempt += 1;
+    const handle = setTimeout(open, delay);
     cancelReconnect = () => clearTimeout(handle);
   };
 
@@ -586,7 +596,7 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
     const silent = socket;
     socket = null;
     const reason = `no frame for ${LIVE_SOCKET_SILENT_MS / 1000} s`;
-    write({ at: now(), code: REPLACED, reason, type: "close" });
+    write({ at: now(), code: REPLACED, reason, retry_ms: 0, type: "close" });
     silent.close(REPLACED, reason);
     open();
   }, 1_000);
@@ -738,45 +748,23 @@ function readsFor(view: DeliveryLiveView, body: DeliveryLiveBody): Read[] {
 }
 
 /** One route read and compared. Dispatch has `withinMs` to send something, as the page gives a
- *  GET: the time starts over as the headers arrive and as each piece of the body does, so a body
- *  that keeps coming is read however slowly, and one that stops fails the read. */
+ *  GET: `readUntilSilent` starts the time over as the headers arrive and as each piece of the body
+ *  does, so a body that keeps coming is read however slowly, and one that stops fails the read. */
 async function compareRead(
   base: URL,
   token: string,
   route: Read,
   withinMs: number
 ): Promise<ProbeCompareLine> {
-  const silence = new AbortController();
-  let timer = setTimeout(() => silence.abort(), withinMs);
-  const arrived = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => silence.abort(), withinMs);
-  };
-  let response: Response;
-  let text = "";
-  try {
-    response = await fetch(new URL(route.route, base), {
-      headers: { Authorization: `Bearer ${token}` },
-      signal: silence.signal,
-    });
-    arrived();
-    if (response.body !== null) {
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      for (let chunk = await reader.read(); !chunk.done; chunk = await reader.read()) {
-        arrived();
-        text += decoder.decode(chunk.value, { stream: true });
-      }
-      text += decoder.decode();
-    }
-  } catch (error) {
-    if (!silence.signal.aborted) throw error;
-    throw new Error(
-      `the read of ${route.route} received nothing for ${withinMs / 1000} s (--read-within)`
-    );
-  } finally {
-    clearTimeout(timer);
-  }
+  const { response, text } = await readUntilSilent(
+    route.route,
+    (signal) =>
+      fetch(new URL(route.route, base), {
+        headers: { Authorization: `Bearer ${token}` },
+        signal,
+      }),
+    withinMs
+  );
   const refused = (code: string, reason: string): ProbeCompareLine => ({
     at: now(),
     equal: false,

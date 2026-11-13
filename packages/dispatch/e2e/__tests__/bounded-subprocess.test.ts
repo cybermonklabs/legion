@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
-import { rowLimit, runBounded } from "./bounded-subprocess";
+import { bounds, rowLimit, runBounded } from "./bounded-subprocess";
 
 const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.meta.url));
 
@@ -41,13 +41,14 @@ function holding(word: string): [number, string][] {
   );
 }
 
-/** Calls `read` every 100 ms until it answers true or `ms` has passed, and answers its last
- *  answer. A process another process starts or ends raises no event this row can await, so the
- *  row reads the process table until the state it waits for is there. */
-async function within(ms: number, read: () => boolean): Promise<boolean> {
-  const deadline = performance.now() + ms;
+/** Calls `read` every 100 ms until it answers true, and answers true. Answers false when `ended`
+ *  answers true first, or once the short bound of `bounds` has passed. A process another process
+ *  starts or ends raises no event this row can await, so the row reads the process table until
+ *  the state it waits for is there; the bound only ends a wait for a state that never comes. */
+async function until(read: () => boolean, ended: () => boolean = () => false): Promise<boolean> {
+  const deadline = performance.now() + bounds.short;
   while (!read()) {
-    if (performance.now() > deadline) return false;
+    if (ended() || performance.now() > deadline) return false;
     await Bun.sleep(100);
   }
   return true;
@@ -68,8 +69,9 @@ test.skipIf(commandLines() === undefined)(
   "an interrupted `bun test --parallel` takes every bounded child its workers wait for with it",
   async () => {
     // A number of seconds no other process on the machine sleeps for, so every process whose
-    // command line holds it is one of this row's: each `bash` and each `sleep`.
-    const seconds = `29.${randomInt(10_000_000, 100_000_000)}`;
+    // command line holds it is one of this row's: each `bash` and each `sleep`. It is this row's
+    // own limit, so a sleep that survives is still listed at every read the row makes.
+    const seconds = `${rowLimit("short", "short", "short") / 1000}.${randomInt(10_000_000, 100_000_000)}`;
     const row =
       `import { test } from "bun:test";\n` +
       `import { rowLimit, runBounded } from ${JSON.stringify(boundedModule)};\n` +
@@ -93,21 +95,30 @@ test.skipIf(commandLines() === undefined)(
       const runnerLog = () => (existsSync(log) ? readFileSync(log, "utf8") : "");
       const sleeping = () =>
         holding(seconds).filter(([, line]) => line.startsWith("sleep ")).length === 2;
-      expect(await within(60_000, sleeping), `both sleeps never started:\n${runnerLog()}`).toBe(
-        true
-      );
+      const started = runner;
+      const exited = () => started.exitCode !== null || started.signalCode !== null;
+      expect(
+        await until(sleeping, exited),
+        exited()
+          ? `the runner exited before both sleeps started:\n${runnerLog()}`
+          : `both sleeps did not start inside the short bound of ${bounds.short} ms:\n${runnerLog()}`
+      ).toBe(true);
 
       kill(-runner.pid, "SIGINT");
-      const exited = await Promise.race([runner.exited.then(() => true), Bun.sleep(30_000)]);
-      expect(exited, `the runner did not exit within 30 s of SIGINT:\n${runnerLog()}`).toBe(true);
+      expect(
+        await until(exited),
+        `the runner did not exit inside the short bound of ${bounds.short} ms after SIGINT:\n${runnerLog()}`
+      ).toBe(true);
 
-      // A killed process can take a moment to leave the process table; a survivor stays.
-      await within(5_000, () => holding(seconds).length === 0);
+      // A killed process can take a moment to leave the process table; a survivor stays, since
+      // its sleep outlasts every wait of this row.
+      await until(() => holding(seconds).length === 0);
       const survivors = holding(seconds);
       for (const [pid] of survivors) kill(pid, "SIGKILL");
       expect(
         survivors.map(([pid, line]) => `${pid} ${line}`),
-        "processes a bounded child started outlived the interrupted runner"
+        "processes a bounded child started outlived the interrupted runner: still listed after " +
+          `the short bound of ${bounds.short} ms`
       ).toEqual([]);
     } finally {
       if (runner !== undefined && runner.exitCode === null && runner.signalCode === null) {
@@ -117,9 +128,10 @@ test.skipIf(commandLines() === undefined)(
       rmSync(directory, { force: true, recursive: true });
     }
   },
-  // This row drives a `bun test --parallel` runner rather than waiting for a bounded child: up to
-  // 60 s for both sleeps to start, 30 s for the runner to exit, 5 s for survivors to go, and room.
-  120_000
+  // This row drives a `bun test --parallel` runner rather than waiting for a bounded child. Its
+  // three waits run one after another and the short bound ends each: both sleeps starting, the
+  // runner exiting after SIGINT, and every process holding the argument leaving the table.
+  rowLimit("short", "short", "short")
 );
 
 // The token match reads each process's environment under `/proc`. Where `/proc` is missing,
@@ -129,8 +141,9 @@ test.skipIf(!existsSync("/proc/self/stat"))(
   "a bounded child that exits leaves no process it started behind",
   async () => {
     // A number of seconds no other process on the machine sleeps for, so every process whose
-    // command line holds it is the `sleep` this row's child started.
-    const seconds = `28.${randomInt(10_000_000, 100_000_000)}`;
+    // command line holds it is the `sleep` this row's child started. It is this row's own limit,
+    // so a sleep the sweep missed is still listed at every read the row makes.
+    const seconds = `${rowLimit("short", "short") / 1000}.${randomInt(10_000_000, 100_000_000)}`;
     // `setsid` takes the sleep out of this process's group and its output off the pipes, so the
     // child exits at once and only the token of its environment finds the sleep it left.
     await runBounded({
@@ -138,14 +151,18 @@ test.skipIf(!existsSync("/proc/self/stat"))(
       bound: "short",
       from: import.meta.url,
     });
-    // A killed process can take a moment to leave the process table; a survivor stays.
-    await within(5_000, () => holding(seconds).length === 0);
+    // A killed process can take a moment to leave the process table; a survivor stays, since
+    // its sleep outlasts every wait of this row.
+    await until(() => holding(seconds).length === 0);
     const survivors = holding(seconds);
     for (const [pid] of survivors) kill(pid, "SIGKILL");
     expect(
       survivors.map(([pid, line]) => `${pid} ${line}`),
-      "processes a bounded child started outlived its normal end"
+      "processes a bounded child started outlived its normal end: still listed after the short " +
+        `bound of ${bounds.short} ms`
     ).toEqual([]);
   },
-  rowLimit("short")
+  // The bounded child, then the wait for what it left to leave the table, which the short bound
+  // ends.
+  rowLimit("short", "short")
 );
