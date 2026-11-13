@@ -19,6 +19,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
+	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -137,8 +138,31 @@ func newIssueVolume(t *testing.T) *issueVolume {
 		"JJ_EMAIL":             "legion-test@example.invalid",
 		"XDG_CONFIG_HOME":      filepath.Join(dir, "config"),
 		"JJ_CONFIG":            filepath.Join(dir, "no-user-config.toml"),
+		// A stand-in shared public leak check, as the environment of a pod's own init container
+		// names one (sandbox.mainEnvironment). In an issue pod the git and jj first on PATH are
+		// Legion's wrappers (/opt/legion/bin), which run the leak guard on every push, and the
+		// guard refuses a push it can resolve no check for (leakguard's Resolve), while
+		// fixtureenv.Isolated — what every fixture command here and every run of the command
+		// under test starts from — drops PUBLIC_LEAK_CHECK with the rest of what reaches past
+		// the test. Without a check of the volume's own, the seed push that builds its remote
+		// stops with LEAK CHECK SETUP ERROR and the row fails before it tests anything. This one
+		// clears every write, as every other fixture that pushes writes one
+		// (internal/rescue/rescuetest's disk), so these rows prove the same thing in a pod as on
+		// a runner whose git is the real one.
+		"PUBLIC_LEAK_CHECK": leakguardtest.Write(t, dir, leakguardtest.Passes),
 	}
 	return v
+}
+
+// runner runs one of the volume's own fixture commands — a git or jj that builds its remote or
+// reads one of its repositories, never the command under test. Every such command wants the same
+// environment, which is this one: fixtureenv.Isolated of a home of its own, so it reaches no
+// workspace, repository, remote, credential or configuration of whoever runs the tests, and the
+// volume's stand-in leak check, which is what a push of this fixture's needs in an issue pod
+// (v.env's PUBLIC_LEAK_CHECK).
+func (v *issueVolume) runner(t *testing.T) fixturegit.Runner {
+	t.Helper()
+	return fixturegit.Isolated(t, t.TempDir()).With("PUBLIC_LEAK_CHECK=" + v.env["PUBLIC_LEAK_CHECK"])
 }
 
 // withRemote gives the volume's git a real repository to clone: a bare remote whose default branch,
@@ -156,7 +180,7 @@ func (v *issueVolume) withRemote(t *testing.T, defaultBranch string) *issueVolum
 		{v.realJJ, "git", "remote", "add", "origin", remote, "-R", seed},
 		{v.realJJ, "git", "push", "--remote", "origin", "--bookmark", defaultBranch, "-R", seed},
 	} {
-		fixturegit.Isolated(t, t.TempDir()).Run(dir, argv...)
+		v.runner(t).Run(dir, argv...)
 	}
 	v.env["WINIT_REMOTE"] = remote
 	v.defaultBranch = defaultBranch
@@ -239,7 +263,7 @@ func (v *issueVolume) jj(t *testing.T, args ...string) string {
 	// which holds them all: jj searches upward from the directory it runs in for the closest .jj,
 	// so a command with no Dir would open the workspace the test process stands in, which in a
 	// Legion issue pod is a real one.
-	return strings.TrimSpace(fixturegit.Isolated(t, t.TempDir()).Out(v.root, append([]string{v.realJJ}, args...)...))
+	return strings.TrimSpace(v.runner(t).Out(v.root, append([]string{v.realJJ}, args...)...))
 }
 
 func (v *issueVolume) git(t *testing.T, args ...string) string {
@@ -256,7 +280,9 @@ func (v *issueVolume) gitInput(t *testing.T, input string, args ...string) strin
 	// directory: the helper runs in the volume's root rather than wherever the test process
 	// stands.
 	command.Dir = v.root
-	command.Env = fixtureenv.Isolated(t.TempDir())
+	// The command carries its own standard input, which a fixturegit.Runner does not take, so it
+	// is built here and takes that runner's environment alone (v.runner).
+	command.Env = v.runner(t).Env
 	command.Stdin = strings.NewReader(input)
 	output, err := command.Output()
 	if err != nil {
@@ -752,7 +778,7 @@ func TestWorkspaceInitRefusesASymlinkedGitDirectory(t *testing.T) {
 			calls := len(v.jjCalls(t))
 
 			code, stdout, stderr := runWorkspaceInitHere(v.args("LEGION-42"))
-			if want := "refusing the git worktrees of " + v.clone() + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
+			if want := "refusing the git worktrees of " + filepath.Join(v.clone(), ".git") + ": " + path + " is a symlink"; code != 1 || !strings.Contains(stderr, want) {
 				t.Fatalf("exit %d, stdout %q, stderr %q, want exit 1 with %q", code, stdout, stderr, want)
 			}
 			if _, err := os.Lstat(victim); err != nil {

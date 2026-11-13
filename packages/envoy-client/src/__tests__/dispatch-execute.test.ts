@@ -8114,6 +8114,142 @@ describe("executeDispatchTool", () => {
     );
   });
 
+  // A check CI proves prints as one line: its derived result, or why it has none, in the sentence
+  // Dispatch wrote. Whether a pass of it stands follows, from the same pass_stands and in the same
+  // words as a recorded check, so the gate reads both kinds alike. The pull-request body line
+  // Dispatch wrote for it follows, since the implementer copies that line. A recorded result
+  // beside it prints exactly as it always has.
+  test("dispatch_results prints a check CI proves as one line, whether a pass stands and its pull request line", async () => {
+    const recorded = threeResults.checks[0];
+    const derived = {
+      ...recorded,
+      block_id: "k5",
+      ref: "dispatch://DSP-42/artifact/verification-md#b-k5",
+      text: "The contracts job passes at the head.",
+      run: "",
+      ci_check: "contracts",
+      pass_stands: { answer: "yes", roles: ["ci"] },
+      ci: {
+        run: "contracts",
+        state: "pass",
+        case: "success",
+        detail: `CI run contracts concluded success at ${headCommit}, the head of owner/repo#3530.`,
+        line: `- Check k5 (before_merge): pass at ${headCommit}, from CI run contracts. The contracts job passes at the head.`,
+      },
+      results: [
+        {
+          id: "ci-run:9001",
+          issue_key: "DSP-42",
+          check_issue_key: "DSP-42",
+          check_artifact_id: "artifact-9",
+          check_block_id: "k5",
+          check_version: 4,
+          check_sha256: "d4",
+          check_words_moved: false,
+          role: "ci",
+          verdict: "pass",
+          commit_sha: headCommit,
+          commit_stands: {
+            answer: "at_basis",
+            basis: { kind: "pull_request", commit: headCommit, pull_request: 3530 },
+          },
+          surface: "the test run",
+          run: "contracts",
+          observed:
+            "conclusion: success\nAll checks passed\nhttps://github.com/owner/repo/actions/runs/7/job/9001",
+          negative_control: "Break one case and see the run fail.",
+          failed: 0,
+          skipped: 0,
+          excluded: 0,
+          screenshots: [],
+          session: "",
+          actor: { kind: "github_app", id: "github-actions" },
+          created_at: "2026-11-10T09:30:00Z",
+        },
+      ],
+    };
+    const unconcluded = {
+      ...derived,
+      block_id: "k6",
+      ref: "dispatch://DSP-42/artifact/verification-md#b-k6",
+      text: "The e2e job passes at the head.",
+      ci_check: "e2e",
+      pass_stands: { answer: "no" },
+      ci: {
+        run: "e2e",
+        state: "no_result",
+        case: "not_completed",
+        detail: `CI run e2e is in_progress at ${headCommit}, the head of owner/repo#3530, and has not concluded.`,
+        line: "- Check k6 (before_merge): CI run e2e has no result (not_completed)",
+      },
+      results: [],
+    };
+    const unread = {
+      ...unconcluded,
+      block_id: "k7",
+      ref: "dispatch://DSP-42/artifact/verification-md#b-k7",
+      text: "The lint job passes at the head.",
+      ci_check: "lint",
+      pass_stands: { answer: "unknown" },
+      ci: {
+        run: "lint",
+        state: "unread",
+        case: "github_unreadable",
+        detail: `GitHub could not be read for the check runs of owner/repo at ${headCommit}: 500 Internal Server Error.`,
+        line: "- Check k7 (before_merge): CI run lint has no result (github_unreadable)",
+      },
+    };
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === "/api/v1/issues/DSP-42/results") {
+        return response({
+          issue: "DSP-42",
+          verification_artifact_id: "artifact-9",
+          checks: [{ ...recorded, results: [recorded.results[2]] }, derived, unconcluded, unread],
+        });
+      }
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const read = await executeDispatchTool({
+      tool: "dispatch_results",
+      args: { issue: "DSP-42" },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(read.text).toBe(
+      [
+        "Checks of DSP-42:",
+        "",
+        "- k1 (before_merge). Compared with the head of pull request #3530 at 1111111111111111111111111111111111111111 (Dispatch read it 2026-11-10T09:00:00Z). A pass stands: yes, from implementer.",
+        "  The check's words: Run bun test in packages/envoy-client and see every case pass.",
+        "  - pass by implementer at 1111111111111111111111111111111111111111. That commit is the head of pull request #3530. The check's words did not move after this result (result version 4, check version 4). Recorded 2026-11-10T10:00:00Z. Result res-1.",
+        "    Reading: bun test: 1598 pass, 0 fail.",
+        "",
+        "- k5 (before_merge): pass at 1111111111111111111111111111111111111111 by ci (CI run contracts, success), that commit is the head of pull request #3530. The contracts job passes at the head.",
+        "  A pass stands: yes, from ci.",
+        "  Pull request line: - Check k5 (before_merge): pass at 1111111111111111111111111111111111111111, from CI run contracts. The contracts job passes at the head.",
+        "  Reading: conclusion: success",
+        "All checks passed",
+        "https://github.com/owner/repo/actions/runs/7/job/9001",
+        "",
+        "- k6 (before_merge): no result: CI run e2e is in_progress at 1111111111111111111111111111111111111111, the head of owner/repo#3530, and has not concluded. The e2e job passes at the head.",
+        "  A pass stands: no.",
+        "  Pull request line: - Check k6 (before_merge): CI run e2e has no result (not_completed)",
+        "",
+        "- k7 (before_merge): no result: GitHub could not be read for the check runs of owner/repo at 1111111111111111111111111111111111111111: 500 Internal Server Error. The lint job passes at the head.",
+        "  A pass stands: not known.",
+        "  Pull request line: - Check k7 (before_merge): CI run lint has no result (github_unreadable)",
+      ].join("\n")
+    );
+    expect(read.details).toMatchObject({ issue: "DSP-42", checks: 4, results: 2 });
+  });
+
   test("dispatch_result --retract records the retraction and prints what it holds", async () => {
     const posts: Array<{ path: string; body: unknown }> = [];
     const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
