@@ -203,13 +203,16 @@ func TestAnEditBesideABrokenCICheckIsNotRefused(t *testing.T) {
 	}), http.StatusBadRequest, "INVALID_CI_CHECK", ciCheckRefusal("c1", ciCheckBreaks[0].rule))
 }
 
-// A check carrying neither ci_check nor a run, and one whose ci_check is blank, which names no
-// check run, store and take a result as every check did before ci_check.
+// A check carrying neither ci_check nor a run, one whose ci_check is blank, which names no
+// check run, and one whose run and negative control carry spaces around them store and take a
+// result as every check did before ci_check: the spaces the rules trim from what they read stay
+// in what the results read shows (spec R7).
 func TestACheckWithNeitherCICheckNorRunStoresAsToday(t *testing.T) {
 	handler, _, _ := newTestServer(t, testServerOptions{})
 	issue := createInteractionIssue(t, handler, "CIN", "Ordinary checks", "A spec\n")
 	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
-		":::check{#c1}\nThe server builds at the head.\n:::\n\n"+ciCheckBlock("c2", `run="go test ./..." ci_check=" "`))
+		":::check{#c1}\nThe server builds at the head.\n:::\n\n"+ciCheckBlock("c2", `run="go test ./..." ci_check=" "`)+"\n"+
+			ciCheckBlock("c3", `run="  go test ./...  " negative_control=" Break it. "`))
 	read := readResults(t, handler, issue.Key)
 	if check := checkOf(t, read, "c1"); check.CICheck != "" || check.Run != "" || check.NegativeControl != "" || check.When != "before_merge" {
 		t.Fatalf("the bare check reads %+v, want no ci_check, run or negative control, when before_merge", check)
@@ -217,7 +220,10 @@ func TestACheckWithNeitherCICheckNorRunStoresAsToday(t *testing.T) {
 	if check := checkOf(t, read, "c2"); strings.TrimSpace(check.CICheck) != "" || check.Run != "go test ./..." {
 		t.Fatalf("the check with a blank ci_check reads %+v, want its run and a blank ci_check", check)
 	}
-	for _, id := range []string{"c1", "c2"} {
+	if check := checkOf(t, read, "c3"); check.Run != "  go test ./...  " || check.NegativeControl != " Break it. " {
+		t.Fatalf("the check with spaced attributes reads %+v, want its run and negative control as written", check)
+	}
+	for _, id := range []string{"c1", "c2", "c3"} {
 		if recorded := recordResult(t, handler, issue.Key, resultBody(id, "pass", headCommit, nil)); recorded.Code != http.StatusCreated {
 			t.Fatalf("record a result against %s: status=%d body=%s, want 201", id, recorded.Code, recorded.Body.String())
 		}

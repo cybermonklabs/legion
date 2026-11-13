@@ -56,15 +56,15 @@ const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact
 	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq`
 
 // resolvedCheck is one `check` block a result names: where it lives, the version its words last
-// changed in and their digest as document_blocks holds them, and its attributes as the live
-// document holds them (its `when`, run, negative control and ci_check).
+// changed in and their digest as document_blocks holds them, and the attributes the write judges
+// as the live document holds them (its `when`, run, negative control and ci_check).
 type resolvedCheck struct {
 	IssueKey   string
 	ArtifactID string
 	BlockID    string
 	Version    int
 	SHA256     string
-	Block      model.CheckBlock
+	Attributes docs.CheckAttributes
 }
 
 // checkResultInput is the body POST /api/v1/issues/{key}/results takes.
@@ -223,9 +223,9 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// branch: such a check can only be proved once the issue has closed, so refusing it would make
 	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
 	// document version does; a comment and a message are the other writes a closed issue takes.
-	if (!recordingOpen || !checkOpen) && check.Block.When != checkWhenAfterMerge && check.Block.When != checkWhenDefaultBranch {
+	if (!recordingOpen || !checkOpen) && check.Attributes.When != checkWhenAfterMerge && check.Attributes.When != checkWhenDefaultBranch {
 		writeError(w, "ISSUE_CLOSED", http.StatusConflict,
-			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.Block.When))
+			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.Attributes.When))
 		return
 	}
 	if err := s.refuseResultScreenshots(r.Context(), tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
@@ -246,7 +246,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(check.IssueKey).event("result.recorded", actor, model.CheckResultEventPayload{
 		ResultID: result.ID, Issue: issueKey, CheckIssue: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID, CheckVersion: check.Version,
-		When: check.Block.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
+		When: check.Attributes.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
 	}))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -541,7 +541,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if check.Block, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
+	if check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
@@ -583,54 +583,53 @@ func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *res
 	if check.SHA256 == resolved {
 		return nil
 	}
-	check.Block, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID)
+	check.Attributes, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID)
 	return err
 }
 
-// checkBlockAttributes reads one check block out of the live document, with its attributes and
-// its words. The index holds a block's type and digest but not its attributes, so the document
-// itself is the one place they are written.
-func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID string) (model.CheckBlock, error) {
-	blocks, err := s.checkBlocksIn(ctx, artifactID)
-	if err != nil {
-		return model.CheckBlock{}, err
-	}
-	for _, block := range blocks {
-		if block.BlockID == blockID {
-			return block, nil
-		}
-	}
+// checkBlockAttributes reads the attributes of one check block out of the live document. The
+// index holds a block's type and digest but not its attributes, so the document itself is the one
+// place they are written.
+func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID string) (docs.CheckAttributes, error) {
 	// The index holds the block, so the live document has it too unless a write landed between
 	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
-	return model.CheckBlock{BlockID: blockID, ArtifactID: artifactID, When: docs.CheckWhenBeforeMerge}, nil
+	attributes := docs.CheckAttributes{When: docs.CheckWhenBeforeMerge}
+	err := s.typedBlocksIn(ctx, artifactID, "check", func(node *pmdoc.Node, id string) {
+		if id == blockID {
+			attributes = docs.CheckAttributesOf(node)
+		}
+	})
+	if err != nil {
+		return docs.CheckAttributes{}, err
+	}
+	return attributes, nil
 }
 
-// validCICheck reports whether check is one CI proves: it carries ci_check and keeps the four
-// rules of such a check (docs.CICheckRule), the last of them that no result is recorded against
-// it, which holdsRecordedResult answers. Only such a check is CI's to the results routes; any
-// other is an ordinary check, whatever its ci_check says.
+// validCICheck reports whether check, a block the results read loaded with its results, is one
+// CI proves: it carries ci_check and keeps the four rules of such a check, the three of
+// docs.CICheckRule and that no result is recorded against it, which holdsRecordedResult answers
+// from the rows the read loaded. Only such a check is CI's to the results routes; any other is
+// an ordinary check, whatever its ci_check says.
 func validCICheck(check model.CheckBlock, holdsRecordedResult bool) bool {
-	return docs.CarriesCICheck(check) && docs.CICheckRule(check, holdsRecordedResult) == ""
+	attributes := docs.CheckAttributesOfBlock(check)
+	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == "" && !holdsRecordedResult
 }
 
-// refuseCheckProvedByCI refuses a result against a check CI proves (validCICheck): 409
+// refuseCheckProvedByCI refuses a result against a check CI proves (docs.CICheckRuleIn): 409
 // CHECK_PROVED_BY_CI, naming the block and the check run that answers for it. Whether a result
 // is recorded against the block is read through q, the pool before the transaction opens and the
 // transaction itself under the locks, and only for a check that would otherwise be CI's.
 func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) error {
-	if !validCICheck(check.Block, false) {
+	if !docs.CarriesCICheck(check.Attributes) {
 		return nil
 	}
-	held, err := docs.HoldsRecordedResult(ctx, q, check.ArtifactID, check.BlockID)
-	if err != nil {
+	rule, err := docs.CICheckRuleIn(ctx, q, check.ArtifactID, check.BlockID, check.Attributes)
+	if err != nil || rule != "" {
 		return err
-	}
-	if held {
-		return nil
 	}
 	return errorf(http.StatusConflict, "CHECK_PROVED_BY_CI",
 		"check %s is proved by CI run %q: dispatch results reads its result from that run, and no role records one",
-		check.BlockID, check.Block.CICheck)
+		check.BlockID, check.Attributes.CICheck)
 }
 
 // typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
@@ -766,7 +765,7 @@ func blockWords(node *pmdoc.Node) string {
 // after the role would read as a reading nobody recorded.
 func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
-		check.BlockID, check.Block.When, result.Verdict, result.CommitSHA, result.Role)
+		check.BlockID, check.Attributes.When, result.Verdict, result.CommitSHA, result.Role)
 	reading := strings.Join(strings.Fields(result.Observed), " ")
 	if reading == "" {
 		return line + " The role recorded no reading."

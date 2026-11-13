@@ -410,7 +410,7 @@ test("a check CI proves with no derived result shows why its run proved nothing"
       {
         case: "skipped",
         detail,
-        line: "- Check c-skipped (before_merge): CI run contracts has not concluded (skipped)",
+        line: "- Check c-skipped (before_merge): CI run contracts has no result (skipped)",
         run: "contracts",
         state: "no_result",
       },

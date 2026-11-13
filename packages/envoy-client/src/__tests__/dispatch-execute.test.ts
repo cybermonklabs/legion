@@ -8026,7 +8026,7 @@ describe("executeDispatchTool", () => {
         state: "no_result",
         case: "not_completed",
         detail: `CI run e2e is in_progress at ${headCommit}, the head of owner/repo#3530, and has not concluded.`,
-        line: "- Check k6 (before_merge): CI run e2e has not concluded (not_completed)",
+        line: "- Check k6 (before_merge): CI run e2e has no result (not_completed)",
       },
       results: [],
     };
@@ -8042,7 +8042,7 @@ describe("executeDispatchTool", () => {
         state: "unread",
         case: "github_unreadable",
         detail: `GitHub could not be read for the check runs of owner/repo at ${headCommit}: 500 Internal Server Error.`,
-        line: "- Check k7 (before_merge): CI run lint has not concluded (github_unreadable)",
+        line: "- Check k7 (before_merge): CI run lint has no result (github_unreadable)",
       },
     };
     const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
@@ -8084,10 +8084,10 @@ describe("executeDispatchTool", () => {
         "https://github.com/owner/repo/actions/runs/7/job/9001",
         "",
         "- k6 (before_merge): no result: CI run e2e is in_progress at 1111111111111111111111111111111111111111, the head of owner/repo#3530, and has not concluded. The e2e job passes at the head.",
-        "  Pull request line: - Check k6 (before_merge): CI run e2e has not concluded (not_completed)",
+        "  Pull request line: - Check k6 (before_merge): CI run e2e has no result (not_completed)",
         "",
         "- k7 (before_merge): no result: GitHub could not be read for the check runs of owner/repo at 1111111111111111111111111111111111111111: 500 Internal Server Error. The lint job passes at the head.",
-        "  Pull request line: - Check k7 (before_merge): CI run lint has not concluded (github_unreadable)",
+        "  Pull request line: - Check k7 (before_merge): CI run lint has no result (github_unreadable)",
       ].join("\n")
     );
     expect(read.details).toMatchObject({ issue: "DSP-42", checks: 4, results: 2 });

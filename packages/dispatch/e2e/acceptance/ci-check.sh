@@ -407,8 +407,8 @@ derived() {
 # contracts, has no result for CASE, in DETAIL, and prints neither a pass nor a fail for it.
 unconcluded() {
   line "$1" "$2" "- $3 (before_merge): no result: $5 $6"
-  line "$1" "$3's pull-request body line says its run has not concluded ($4)" \
-    "  Pull request line: - Check $3 (before_merge): CI run contracts has not concluded ($4)"
+  line "$1" "$3's pull-request body line says its run has no result ($4)" \
+    "  Pull request line: - Check $3 (before_merge): CI run contracts has no result ($4)"
   no_line "$1" "$3 prints neither a pass nor a fail" "- $3 (before_merge): pass at"
   no_line "$1" "$3 prints no fail either" "- $3 (before_merge): fail at"
 }
@@ -721,8 +721,8 @@ unread() {
     fail "$1" "$2" "no line saying GitHub could not be read: $(<"$work/out")"
   [[ "$said" == *"$3"* ]] || fail "$1" "$2" "the line does not carry \"$3\": $said"
   pass "$1" "$2: $said"
-  line "$1" "c-ci's pull-request body line says its run has not concluded (github_unreadable)" \
-    "  Pull request line: - Check c-ci (before_merge): CI run contracts has not concluded (github_unreadable)"
+  line "$1" "c-ci's pull-request body line says its run has no result (github_unreadable)" \
+    "  Pull request line: - Check c-ci (before_merge): CI run contracts has no result (github_unreadable)"
   no_line "$1" "c-ci prints neither a pass nor a fail" " by ci (CI run "
 }
 

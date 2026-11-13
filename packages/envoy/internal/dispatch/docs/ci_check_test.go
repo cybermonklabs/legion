@@ -165,7 +165,7 @@ func TestACICheckRepairLandsOnlyOnTheCheckItJudged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse the settled document: %v", err)
 	}
-	judged := CheckBlockOf(checkBlockNodes(read)[0])
+	judged := CheckAttributesOf(checkBlockNodes(read)[0])
 	reconciled := settlementReconciliation{repairs: []blockRepair{{blockID: "c1", blockType: "check", set: deleteJudgedCICheck(judged)}}}
 
 	for _, test := range []struct {

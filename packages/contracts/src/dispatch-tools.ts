@@ -381,7 +381,7 @@ const SPEC_WRITING_POINTER = "Write a spec as skill://dispatch-writing-specs say
 
 /** The rules a check block naming the CI check run that proves it keeps, written once for the
  *  three tools that write a document. The server holds every document write to them
- *  (`docs.CICheckRule`), for each check block the write adds or whose ci_check, run, when or
+ *  (`docs.CICheckRuleIn`), for each check block the write adds or whose ci_check, run, when or
  *  negative_control it changes. */
 const CI_CHECK_RULE =
   "A check block whose ci_check names the CI check run that proves it carries no run, keeps when " +
@@ -1660,10 +1660,10 @@ export const dispatchToolSpecs = [
       "words>`, then `Pull request line:` and the line to write into the pull-request body " +
       "unchanged, then the reading: the conclusion, the run's output title and summary, and its " +
       "URL. A run that proves nothing prints `- <id> (before_merge): no result:`, the sentence " +
-      "that names why, and the check's words, then the same `Pull request line:`. That is a run " +
-      "that has not concluded, one that concluded neutral, skipped or cancelled, one absent at " +
-      "the head, an issue with no pull request head, or GitHub not read, with what GitHub " +
-      "answered. " +
+      "that names why, and the check's words, then `Pull request line:` and `- Check <id> " +
+      "(before_merge): CI run <name> has no result (<case>)`. That is a run that has not " +
+      "concluded, one that concluded neutral, skipped or cancelled, one absent at the head, an " +
+      "issue with no pull request head, or GitHub not read, with what GitHub answered. " +
       "A push that moves a pull request's head leaves a result at the commit before it, with " +
       "no write of anyone's: record the check again at the new head. A check CI proves is read " +
       "again at the new head by itself. " +

@@ -2,8 +2,10 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +47,17 @@ const ciResultIDPrefix = "ci-run:"
 // ciObservedOutputRunes is how much of the run's output title and summary, taken together, a
 // derived result's observed text carries.
 const ciObservedOutputRunes = 2000
+
+// ciUnreadDetailRunes is how long the detail of a check whose runs GitHub could not be read for
+// is, at most: the bound ciObservedOutputRunes puts on a run's output.
+const ciUnreadDetailRunes = 2000
+
+// githubAnswerAt finds the end of the status in the error of a read GitHub refused, where the
+// body GitHub answered begins: githubapp writes a refusal as `status <n>: <body>`
+// (githubapp.CheckResponse) and a rate limit as `(status <n>), next request in <wait>: <body>`
+// (githubapp.RateLimitError), each after the words naming the request. Neither carries the
+// status and body apart in a type that names both, so the error's words are read.
+var githubAnswerAt = regexp.MustCompile(`status \d{3}\)?(?:, next request in [^:]*)?: `)
 
 // The cases that name why a check CI proves holds no derived result, beside the conclusions GitHub
 // writes. A conclusion is its own case: success is a pass; neutral, skipped and cancelled prove
@@ -108,12 +121,14 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 		return nil
 	}
 	runs, err := s.readCIRuns(ctx, head, names)
-	for _, check := range proved {
-		if err != nil {
-			check.CI = ciUnconcluded(*check, model.CIStateUnread, ciCaseUnreadable,
-				fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %v.", head.Repo, head.HeadSHA, err))
-			continue
+	if err != nil {
+		detail := ciUnreadDetail(head, err)
+		for _, check := range proved {
+			check.CI = ciUnconcluded(*check, model.CIStateUnread, ciCaseUnreadable, detail)
 		}
+		return nil
+	}
+	for _, check := range proved {
 		var result *model.CheckResult
 		check.CI, result = ciAnswerOf(*check, head, runs[check.CICheck])
 		if result != nil {
@@ -125,10 +140,10 @@ func (s *server) deriveCIResults(ctx context.Context, issueKey string, checks []
 
 // readCIRuns reads every page of the check runs of head's commit, in head's own repository,
 // under one ciReadDeadline, and answers the run of the highest id of each name in names: GitHub
-// keeps every attempt of a run, and the newest decides (listenerSettlement in the daemon reads
-// one name the same way). A deployment holding no App key, a token GitHub would not mint, an
-// HTTP error, a rate limit and the deadline are each the error, worded as GitHub answered it.
-// The token never reaches it: it is sent in a header, and no answer names it.
+// keeps every attempt of a run, and the newest decides (classify.mergeAttemptSets in the daemon
+// keeps one name's run the same way). A deployment holding no App key, a token GitHub would not
+// mint, an HTTP error, a rate limit and the deadline are each the error, worded as GitHub
+// answered it. The token never reaches it: it is sent in a header, and no answer names it.
 func (s *server) readCIRuns(ctx context.Context, head delivery.NewestHead, names map[string]struct{}) (map[string]*ciRun, error) {
 	owner, repo, split := strings.Cut(head.Repo, "/")
 	if !split || owner == "" || repo == "" {
@@ -173,6 +188,32 @@ func (s *server) readCIRunPages(ctx context.Context, owner, repo, sha string, na
 		}
 	}
 	return nil, fmt.Errorf("the check runs did not end within %d pages", ciCheckRunPages)
+}
+
+// ciUnreadDetail is the detail of a check whose runs at head GitHub could not be read for, err
+// the read's error. Where GitHub refused the read, the error carries its whole body, up to the
+// 16 MiB a page of check runs may take: the body is replaced by the `message` GitHub writes in
+// the JSON it refuses a request with, and left out where it holds none, so the status stays. The
+// sentence is then cut to ciUnreadDetailRunes.
+func ciUnreadDetail(head delivery.NewestHead, err error) string {
+	reason := err.Error()
+	if at := githubAnswerAt.FindStringIndex(reason); at != nil {
+		reason = reason[:at[1]-len(": ")] + githubMessage(reason[at[1]:])
+	}
+	return text.HeadRunes(fmt.Sprintf("GitHub could not be read for the check runs of %s at %s: %s.",
+		head.Repo, head.HeadSHA, reason), ciUnreadDetailRunes)
+}
+
+// githubMessage is ": " and the `message` of body, the JSON GitHub refuses a request with, and ""
+// for a body that is not JSON or carries no message.
+func githubMessage(body string) string {
+	var answer struct {
+		Message string `json:"message"`
+	}
+	if json.Unmarshal([]byte(body), &answer) != nil || answer.Message == "" {
+		return ""
+	}
+	return ": " + answer.Message
 }
 
 // ciRunOf reads the check run id named name out of the object GitHub listed. A field GitHub
@@ -240,7 +281,7 @@ func ciAnswerOf(check model.CheckBlock, head delivery.NewestHead, run *ciRun) (*
 func ciUnconcluded(check model.CheckBlock, state, ciCase, detail string) *model.CheckCI {
 	return &model.CheckCI{
 		Run: check.CICheck, State: state, Case: ciCase, Detail: detail,
-		Line: fmt.Sprintf("- Check %s (%s): CI run %s has not concluded (%s)", check.BlockID, check.When, check.CICheck, ciCase),
+		Line: fmt.Sprintf("- Check %s (%s): CI run %s has no result (%s)", check.BlockID, check.When, check.CICheck, ciCase),
 	}
 }
 

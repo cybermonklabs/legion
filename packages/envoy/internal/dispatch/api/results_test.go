@@ -2727,14 +2727,15 @@ func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
 
 // checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
 // read of a check CI proves asks for it, and the count of the pages asked for each commit. A
-// test sets the runs of a commit, a status every read answers in place of the listing, or a hold
-// that keeps every read waiting until its caller gives up.
+// test sets the runs of a commit, a status and body every read answers in place of the listing,
+// or a hold that keeps every read waiting until its caller gives up.
 type checkRunsFake struct {
-	mu    sync.Mutex
-	runs  map[string][]map[string]any
-	fault int
-	hold  bool
-	asked map[string]int
+	mu        sync.Mutex
+	runs      map[string][]map[string]any
+	fault     int
+	faultBody string
+	hold      bool
+	asked     map[string]int
 }
 
 func newCheckRunsFake() *checkRunsFake {
@@ -2750,9 +2751,15 @@ func (f *checkRunsFake) set(sha string, runs ...map[string]any) {
 
 // failWith makes every read answer status with a message of GitHub's shape, and 0 ends it.
 func (f *checkRunsFake) failWith(status int) {
+	f.failWithBody(status, "")
+}
+
+// failWithBody makes every read answer status with body, or with a message of GitHub's shape
+// where body is "", and 0 ends it.
+func (f *checkRunsFake) failWithBody(status int, body string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.fault = status
+	f.fault, f.faultBody = status, body
 }
 
 // holdEveryRead makes every read wait until its caller gives up.
@@ -2790,7 +2797,7 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	f.mu.Lock()
 	f.asked[sha]++
-	fault, hold, runs := f.fault, f.hold, f.runs[sha]
+	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
 	f.mu.Unlock()
 	if hold {
 		select {
@@ -2801,6 +2808,10 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	if fault != 0 {
 		w.WriteHeader(fault)
+		if faultBody != "" {
+			fmt.Fprint(w, faultBody)
+			return
+		}
 		fmt.Fprintf(w, `{"message":"Server Error at the check runs of %s"}`, sha)
 		return
 	}
@@ -2878,7 +2889,7 @@ func ciVerdictLineOf(blockID, run, verdict, sha string) string {
 
 // ciUnconcludedLineOf is the pull-request body line of a check whose run did not decide it.
 func ciUnconcludedLineOf(blockID, run, ciCase string) string {
-	return fmt.Sprintf("- Check %s (before_merge): CI run %s has not concluded (%s)", blockID, run, ciCase)
+	return fmt.Sprintf("- Check %s (before_merge): CI run %s has no result (%s)", blockID, run, ciCase)
 }
 
 // assertCI asserts what the read says of a check CI proves: its run, state, case and line.
@@ -3035,6 +3046,58 @@ func TestCIResultIsUnreadWhenGitHubCannotBeRead(t *testing.T) {
 	uploadDocument(t, keyless, "/api/v1/issues/"+other.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
 	writeHead(t, keylessDatabase, "acme/widgets", 7, headCommit, "open", other.Key)
 	assertUnread(t, checkOf(t, readResults(t, keyless, other.Key), "c1"), "no private key")
+}
+
+// GitHub's refusal of a read carries its whole body in the error, up to the 16 MiB a page of
+// check runs may take, and none of it reaches the detail: the detail names the status and the
+// `message` of a JSON body, names the status alone for a body that is not JSON, and is cut to
+// 2,000 runes where the message itself is longer.
+func TestCIResultDetailNamesTheStatusAndMessageOfALargeRefusal(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issue := issueInRepository(t, handler, "RESCB", "acme/widgets", "Large refusal")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", issue.Key)
+	padding := strings.Repeat("x", 1<<20)
+	for _, test := range []struct {
+		name    string
+		status  int
+		body    string
+		words   []string
+		cut     bool
+		leftOut string
+	}{
+		{
+			name:   "a JSON body padded past a megabyte",
+			status: http.StatusBadGateway,
+			body:   `{"message":"Bad gateway at the check runs","documentation_url":"https://docs.github.com/rest","padding":"` + padding + `"}`,
+			words:  []string{"status 502: Bad gateway at the check runs."}, leftOut: "xxxxxxxx",
+		},
+		{
+			name:   "a megabyte that is not JSON",
+			status: http.StatusServiceUnavailable,
+			body:   "<html>" + padding + "</html>",
+			words:  []string{"status 503."}, leftOut: "<html>",
+		},
+		{
+			name:   "a message longer than the bound",
+			status: http.StatusInternalServerError,
+			body:   `{"message":"` + padding + `"}`,
+			words:  []string{"status 500: xxxxxxxx"}, cut: true,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake.failWithBody(test.status, test.body)
+			check := checkOf(t, readResults(t, handler, issue.Key), "c1")
+			assertUnread(t, check, test.words...)
+			runes := len([]rune(check.CI.Detail))
+			if runes > 2000 || (test.cut && runes != 2000) {
+				t.Fatalf("c1's detail is %d runes, want at most 2000 (exactly 2000 when cut)", runes)
+			}
+			if test.leftOut != "" && strings.Contains(check.CI.Detail, test.leftOut) {
+				t.Fatalf("c1's detail %q carries GitHub's body", check.CI.Detail)
+			}
+		})
+	}
 }
 
 // A head carries every attempt of a run, and the run of the highest id decides, in whichever
