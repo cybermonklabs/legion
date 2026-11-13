@@ -598,6 +598,27 @@ test("a derived result satisfies the passages that judge or record a check's evi
   expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
     "recorded for no later step, except a `ci_check` job"
   );
+  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
+    "A name no run answers once the head's checks have settled goes to the architect as a finding."
+  );
+  expect(
+    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
+  ).toContain(
+    "record the issue's checks again at the merge head, each check with no `ci_check` (a check carrying one is read again from its CI run)"
+  );
+});
+
+// The architect writes a check as `ci_check` where a CI job on an ordinary pull request already
+// makes its proof, so the mechanism is used rather than only available (R5).
+test("the architect writes a check CI already proves as ci_check", () => {
+  expect(
+    collapsed(path.join(staged, "legion-architect", "references", "design-gate.md"))
+  ).toContain(
+    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write that check as `ci_check` rather than as a command."
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "SKILL.md"))).toContain(
+    "Where a CI job that runs on an ordinary pull request already makes a check's proof, write `ci_check` rather than a command."
+  );
 });
 
 // A `ci_check` that no run of its name answers is a defect of the check's words, which the

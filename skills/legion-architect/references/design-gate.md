@@ -40,8 +40,9 @@ evidence of a controller's `Filed for Legion from <role> on <issue>:` line
 A check carrying `ci_check` is CI's: `ci_check` names the GitHub check run that proves the check
 at the head, and the check takes no `run`. Its `when` is `before_merge`, and it names its
 `negative_control`. No role runs it or records a result for it. `dispatch results` derives its
-one result from the named run (`skill://legion-worker/references/ci-checks.md`). Write such a
-check by three rules:
+one result from the named run (`skill://legion-worker/references/ci-checks.md`). Where a CI job
+that runs on an ordinary pull request already makes a check's proof, write that check as
+`ci_check` rather than as a command. Write such a check by three rules:
 
 1. Name the check run of the job that runs the proof, never a roll-up run that stands for other
    jobs. A roll-up run can pass at a head where the job of the check did not run.

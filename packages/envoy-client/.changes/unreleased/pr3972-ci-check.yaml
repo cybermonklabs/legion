@@ -1,4 +1,5 @@
 kind: Added
 body: |-
   `dispatch results` prints the derived result of a check carrying `ci_check`, or the reason it has
-  none, with the pull request body line Dispatch wrote for it.
+  none, then the same `A pass stands:` line a recorded check gets, then the pull request body line
+  Dispatch wrote for it.
