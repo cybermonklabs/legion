@@ -101,17 +101,9 @@ func renderedResume(t *testing.T, pool *pgxpool.Pool, key string, waiting record
 	t.Helper()
 	var task string
 	seedRecord(t, pool, func(tx pgx.Tx) error {
-		store := record.NewStore()
-		gates, err := store.GatesOf(context.Background(), tx, key)
-		if err != nil {
-			return err
-		}
-		asks, err := store.RootAsks(context.Background(), tx, []string{key})
-		if err != nil {
-			return err
-		}
-		task = ResumeTask(key, waiting, config.DesignGateRootIssues.Steps(), gates, asks[key])
-		return nil
+		var err error
+		task, err = ResumeTask(context.Background(), tx, record.NewStore(), key, waiting, config.DesignGateRootIssues.Steps())
+		return err
 	})
 	return task
 }

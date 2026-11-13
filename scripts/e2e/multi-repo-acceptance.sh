@@ -868,8 +868,7 @@ negative_no_repo() {
   latest_is_none=$(jq --arg actor "$daemon_actor" --arg none "$none_note" '
     [.[] | select(.type=="message.created" and .actor.kind=="session" and .actor.id==$actor
       and ((.payload.body | startswith("Legion did not admit this issue:"))
-        or (.payload.body | startswith("Legion serves no installation of "))
-        or (.payload.body | startswith("Dispatch resolves this issue to no repository, "))))]
+        or (.payload.body | startswith("Legion did not move this issue off "))))]
     | sort_by(.seq) | last
     | if . == null then false else (.payload.body | startswith($none + "\n\n<!-- legion-outbox:")) end
   ' "$events_file")
@@ -890,14 +889,16 @@ latest daemon repository note is the none-note: $latest_is_none
 # the edit really happened there — (3) an `issue.updated` event's `.seq` is above the baseline's
 # own last-seen `.seq` with `.payload.repo` equal to X (Dispatch's own sequence cursor, never a
 # wall-clock comparison, and never merely "any issue.updated", which the daemon's own routine
-# status writes also emit), and (4) the daemon's own exact message about the repository it keeps
-# (noteRepositoryChangeWaits, in internal/workflow/repository.go) appears among its messages, word
-# for word, with the baseline's own repository spelling and Dispatch's own resolved spelling of X
-# substituted in — never the operator's own LEGION_E2E_REPO_X spelling, which may differ only in
-# case from what Dispatch actually resolved and wrote — with the daemon's claimed actor id and
-# outbox marker. A rerun needs no second message: `noteOnce` posts that note once per resolution
-# (noteOnce, in the same file), so check (3) is this protocol's primary proof and (4) is the format
-# checked, not required fresh.
+# status writes also emit), and (4) the daemon's own message about the repository it keeps
+# (noteRepositoryChangeWaits, in internal/workflow/repository.go) appears among its messages,
+# with the daemon's claimed actor id and outbox marker. That message names why X is not served and
+# what a person can do, which differs with the refusal (X not mapped to the project, an App not
+# installed on X), so the check matches the two parts every variant shares, word for word: the
+# opening "Legion did not move this issue off <repo>: ", with the baseline's own repository
+# spelling, and the closing sentence "Legion moves the issue itself once it serves the repository
+# that Dispatch resolves the issue to." just before the outbox marker. A rerun needs no second
+# message: `noteOnce` posts that note once per resolution (noteOnce, in the same file), so check
+# (3) is this protocol's primary proof and (4) is the format checked, not required fresh.
 negative_repo_edit() {
   local phase=$1
   if [ "$phase" = before ]; then
@@ -942,25 +943,27 @@ negative_repo_edit() {
     '[.[] | select(.type=="issue.updated" and .seq > $since and ((.payload.repo // "") | ascii_downcase) == $x)] | length' "$events_file")
   { [ -n "${edit_after:-}" ] && [ "$edit_after" -gt 0 ]; } 2>/dev/null || ok=0
 
-  local project daemon_actor note has_note
+  local project daemon_actor opening closing has_note
   project=$(issue_project "$child")
   daemon_actor="legion-daemon:$project"
   # The daemon's own words for a change it cannot apply yet (noteRepositoryChangeWaits, in
-  # internal/workflow/repository.go). The note's own repository names are Dispatch's own spellings
-  # (the baseline's kept repository, $dispatch_repo_now for the one Legion serves no installation
-  # of), never the operator's LEGION_E2E_REPO_X, which the case-insensitive comparisons above
-  # tolerate differing from but a literal quote must not.
-  note="Legion serves no installation of $dispatch_repo_now, so this issue keeps $b_repo as its repository. Legion moves the issue to $dispatch_repo_now itself once it serves that repository, with nothing for anyone to do."
-  has_note=$(jq --arg actor "$daemon_actor" --arg note "$note" '
+  # internal/workflow/repository.go): the opening every variant shares, with the baseline's own
+  # spelling of the kept repository, and the closing sentence every variant ends with. What lies
+  # between names the refusal, which depends on why the deployment does not serve X.
+  opening="Legion did not move this issue off $b_repo: "
+  closing=" Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
+  has_note=$(jq --arg actor "$daemon_actor" --arg opening "$opening" --arg closing "$closing" '
     any(.[]; .type=="message.created" and .actor.kind=="session" and .actor.id==$actor
-      and (.payload.body | startswith($note + "\n\n<!-- legion-outbox:")))
+      and (.payload.body | startswith($opening))
+      and (.payload.body | contains("\n\n<!-- legion-outbox:"))
+      and (.payload.body | split("\n\n<!-- legion-outbox:")[0] | endswith($closing)))
   ' "$events_file")
   [ "$has_note" = "true" ] || ok=0
 
   summary "negative-repo-edit-$child" "baseline: repo=$b_repo last_seq=$b_last_seq
 now: daemon repo=$now_repo, Dispatch repo=$dispatch_repo_now
 issue.updated events with seq above baseline naming X: $edit_after
-daemon's exact kept-repository message present: $has_note
+daemon's kept-repository message present: $has_note
 " >/dev/null
   check "negative-repo-edit-$child" "$ok"
 }

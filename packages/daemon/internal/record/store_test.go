@@ -128,7 +128,7 @@ func TestPutIssueRefusesAMissingRepositoryAndMovesNoRecordedOne(t *testing.T) {
 			moved := recorded
 			tc.change(&moved)
 			if err := st.Tx(ctx, func(tx pgx.Tx) error { return records.PutIssue(ctx, tx, moved) }); err != nil {
-				t.Fatalf("PutIssue carrying %s = %v, want it recorded: no write of an issue is refused for its repository now", tc.name, err)
+				t.Fatalf("PutIssue carrying %s = %v, want it recorded: no write of an issue is refused for its repository", tc.name, err)
 			}
 		})
 	}
@@ -141,7 +141,7 @@ func TestPutIssueRefusesAMissingRepositoryAndMovesNoRecordedOne(t *testing.T) {
 	})
 }
 
-// Dispatch owns an issue's repository, so a correction of it reaches the record (INFRA-3136 R3):
+// Dispatch owns an issue's repository, so a correction of it reaches the record:
 // one statement writes the new repository, its default branch and GitHub's spelling of it, and
 // keeps the repository the record held with the moment the daemon applied it, which is what lets
 // the worker's next task name both and what says that work saved before that moment is of the
@@ -214,9 +214,8 @@ func TestCorrectIssueRepositoryWritesTheCorrectionAndKeepsTheRepositoryTheIssueL
 // A copy of the issue read before a correction is acted on after it — every observation the
 // daemon prepares is one — and the pass that records it must neither be refused nor undo the
 // correction. So the write goes through, everything it carries but the repository is recorded,
-// and the corrected repository stands with the marks of its correction. Before INFRA-3136 R3 this
-// write was refused outright, which is what kept a repository a person corrected in Dispatch from
-// ever reaching a running tree.
+// and the corrected repository stands with the marks of its correction. A refusal of this write
+// would keep a repository a person corrected in Dispatch from ever reaching a running tree.
 func TestPutIssueCarryingTheOldRepositoryLeavesTheCorrectedRepositoryStanding(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)

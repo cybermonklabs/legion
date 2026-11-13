@@ -10,8 +10,8 @@ import (
 const repositoryCorrectionVersion = 20261112012123
 
 // A record written before this migration was never corrected, because the daemon that wrote it
-// refused every correction of an issue's repository (record.(*Postgres).PutIssue's write-once
-// guard, which this release removes). The migration says exactly that of such a row: repo_before
+// refused every correction of an issue's repository (its record.(*Postgres).PutIssue held the
+// repository write-once). The migration says exactly that of such a row: repo_before
 // is empty and repo_corrected_at is null, the pair that reads as "never corrected", so the
 // correction the next pass applies is the row's first and has a real repository to record as the
 // one the record held before it.

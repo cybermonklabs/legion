@@ -679,9 +679,11 @@ func (a *Admission) applySummary(ctx context.Context, tx pgx.Tx, summary intake.
 		return nil
 	}
 	// The record's repository follows the one Dispatch resolves the issue to, as it does for a
-	// live event (the engine's ApplyRepositoryChange). The listing is what the boot and the
-	// recovery read, so a change the daemon could not apply when the event came — onto a
-	// repository Legion served no installation of then — is applied here, once Legion serves it.
+	// live event (the engine's ApplyRepositoryChange). A recorded issue reaches this from the boot
+	// listing alone: the recovery listing takes no recorded issue (the daemon's recoveredOn). A
+	// change that waits on the record, onto a repository Legion did not serve when its event came,
+	// is applied by the pass after the read of the mapping that first serves that repository (the
+	// daemon's followMapping), and here at a boot that pass has not reached.
 	if err := a.engine.ApplyRepositoryChange(ctx, tx, *stored, summary.ResolvedRepo); err != nil {
 		return err
 	}
@@ -816,7 +818,7 @@ func (a *Admission) consumeHandover(ctx context.Context, tx pgx.Tx, fact intake.
 		return err
 	}
 	// The record's repository follows the one Dispatch resolves the issue to here too, as it does
-	// for a live event (the engine's ApplyRepositoryChange) and for the boot and recovery listing
+	// for a live event (the engine's ApplyRepositoryChange) and for the boot listing
 	// (applySummary): the outbox read the issue from Dispatch before it applied this fact and
 	// carries that read's resolution (intake.Handover.ResolvedRepo), so a child handed over as a
 	// root of its own while its repository changed in Dispatch opens its new generation on the

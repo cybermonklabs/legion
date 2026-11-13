@@ -25,15 +25,7 @@ func startTaskNow(ctx context.Context, tx pgx.Tx, records record.Store, key stri
 	if start.Awaiting == nil {
 		return start.Task, nil
 	}
-	gates, err := records.GatesOf(ctx, tx, key)
-	if err != nil {
-		return "", err
-	}
-	asks, err := records.RootAsks(ctx, tx, []string{key})
-	if err != nil {
-		return "", err
-	}
-	return workflow.ResumeTask(key, *start.Awaiting, steps, gates, asks[key]), nil
+	return workflow.ResumeTask(ctx, tx, records, key, *start.Awaiting, steps)
 }
 
 // resumeDocument is the primary document of mainPathRoot these tests register its gate on.

@@ -659,25 +659,15 @@ func captureArchitectTasks(t *testing.T, pool *pgxpool.Pool) []string {
 		if err != nil {
 			return err
 		}
-		var starts []record.SuperviseRequest
-		for rows.Next() {
-			var payload []byte
-			if err := rows.Scan(&payload); err != nil {
-				rows.Close()
-				return err
-			}
-			var start record.SuperviseRequest
-			if err := json.Unmarshal(payload, &start); err != nil {
-				rows.Close()
-				return err
-			}
-			starts = append(starts, start)
-		}
-		rows.Close()
-		if err := rows.Err(); err != nil {
+		payloads, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+		if err != nil {
 			return err
 		}
-		for _, start := range starts {
+		for _, payload := range payloads {
+			var start record.SuperviseRequest
+			if err := json.Unmarshal(payload, &start); err != nil {
+				return err
+			}
 			task, err := startTaskNow(ctx, tx, records, "CAPTURE-100", config.DesignGateRootIssues.Steps(), start)
 			if err != nil {
 				return err

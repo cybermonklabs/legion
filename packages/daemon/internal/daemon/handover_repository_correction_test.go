@@ -120,24 +120,7 @@ func (r *handOverCorrectionRig) child() record.Issue {
 // messages is every Dispatch message the hand-over queued, in the order they were queued.
 func (r *handOverCorrectionRig) messages() []string {
 	r.t.Helper()
-	rows, err := r.pool.Query(context.Background(), "select payload->>'body' from outbox where kind = $1 order by id",
-		string(record.OutboxKindDispatchMessage))
-	if err != nil {
-		r.t.Fatalf("read the Dispatch messages: %v", err)
-	}
-	defer rows.Close()
-	var bodies []string
-	for rows.Next() {
-		var body string
-		if err := rows.Scan(&body); err != nil {
-			r.t.Fatalf("scan a Dispatch message: %v", err)
-		}
-		bodies = append(bodies, body)
-	}
-	if err := rows.Err(); err != nil {
-		r.t.Fatalf("read the Dispatch messages: %v", err)
-	}
-	return bodies
+	return dispatchMessages(r.t, r.pool)
 }
 
 // readmitted fails unless the child came back as a root of its own at its next generation, which

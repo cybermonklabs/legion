@@ -1,6 +1,6 @@
 package daemon
 
-// INFRA-3136 R3, the project's default repository: an issue that names no repository of its own,
+// The project's default repository: an issue that names no repository of its own,
 // and has no ancestor that does, resolves to its project's default, so a change of that default
 // in Dispatch moves every recorded issue that inherits it at once.
 //
@@ -15,7 +15,6 @@ package daemon
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -273,18 +272,7 @@ func (r *podUpdateRig) secondIssue(issue, pod string) claim.Token {
 // correctsIssue moves another issue's record onto repo at branch, as corrects moves the rig's own.
 func (r *podUpdateRig) correctsIssue(issue, repo, branch string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		corrected, err := r.records.CorrectIssueRepository(r.ctx, tx, issue, repo, branch, repo, r.clock.Now())
-		if err != nil {
-			return err
-		}
-		if !corrected {
-			return fmt.Errorf("the record of %s was already on %s", issue, repo)
-		}
-		return nil
-	}); err != nil {
-		r.t.Fatalf("correct the repository of %s onto %s: %v", issue, repo, err)
-	}
+	correctRecord(r.t, r.pool, r.records, issue, repo, branch, r.clock.Now())
 }
 
 // awaitRoundOf waits for the round the sweep opens to be recorded on one claim named by its

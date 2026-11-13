@@ -2,7 +2,6 @@ package supervise
 
 import (
 	"errors"
-	"slices"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
@@ -18,11 +17,8 @@ import (
 // charged, as is every value the set does not hold: a policy that waived what it cannot name would
 // make a crash-looping process immortal.
 //
-// FailureCause is a different question. It is the word a failed claim is recorded, served and
-// shown under (claims.failure_cause, the `failure.cause` and `pendingCause` of contract 91,
-// `legion claims list`), pinned to the contracts suite's enum: what ended a claim whose budget ran
-// out. An Outcome is one event and whether it charges, and it is never stored. The cause a failure
-// is written under is derived from the outcome in one place (failureCause).
+// An Outcome is never stored. What ended a failed claim is a FailureCause, a different type whose
+// doc says how the two differ; failureCause is the one place a cause is derived from an outcome.
 type Outcome string
 
 const (
@@ -83,10 +79,6 @@ func Outcomes() []Outcome {
 		OutcomeProviderError, OutcomeProcessDied, OutcomeLaunchFailed, OutcomeNeverRegistered, OutcomeStalePlugin}
 }
 
-// Valid is whether o is a member of the set. A value that is not is still answered by Charges,
-// which charges it.
-func (o Outcome) Valid() bool { return slices.Contains(Outcomes(), o) }
-
 // Charges is the one policy that decides whether an outcome charges the budget its site counts:
 // the prompt budget (chargePrompt), the death budget (chargeDeath) or the launch budget
 // (relaunchAfterFailure, chargeLaunch). It is one switch over the closed set, one row per member,
@@ -101,7 +93,7 @@ func (o Outcome) Valid() bool { return slices.Contains(Outcomes(), o) }
 // provider's, which a claim counts in a run of its own (Claim.ProviderErrorRun) rather than in a
 // budget that would fail every claim at once in an outage.
 //
-// The guards that are not outcome questions stay at their sites (decision 10): the lifecycle
+// The guards that are not outcome questions stay at their sites: the lifecycle
 // check before a relaunch and before a retirement (checkLaunch), an operator's suspension held
 // over a retirement (suspendHeld), the last retirement's fail, and the death budget's state guard
 // (chargeDeath).
@@ -139,7 +131,8 @@ func Charges(o Outcome) bool {
 }
 
 // failureCause is the word a claim fails under when the launch or the death budget runs out on
-// o, or when o ends the claim by itself (a provider error that cannot clear): the one place an
+// o, or when o ends the claim by itself (a provider error that cannot clear, and a run of turns
+// the provider refused that reached the launch failure limit, turnOutcome): the one place an
 // outcome becomes the cause that is stored, served and shown (FailureCause). The prompt budget
 // fails a claim under its own word whatever event spent it (CausePromptRetiresExhausted,
 // chargePrompt), since what ran out there is the retirements and not the event. An outcome with

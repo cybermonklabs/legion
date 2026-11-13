@@ -57,8 +57,7 @@ type Limits struct {
 // Claim.PendingCause), served as `failure.cause` and `pendingCause`, and pinned to the contracts
 // suite's enum. Many outcomes fail a claim under one cause — every prompt outcome under
 // prompt_retires_exhausted — and some charge nothing and fail none. A charge site names its
-// Outcome, and the cause the launch and death budgets fail under is derived from it in one place
-// (failureCause).
+// Outcome, and every cause but the prompt budget's is derived from it in one place (failureCause).
 type FailureCause string
 
 const (
@@ -159,7 +158,7 @@ func (m *Machine) chargeLaunch(o Outcome) bool {
 // chargeDeath counts a process that died after its agent was ready with work outstanding, and
 // reports whether those deaths have reached the limit. Whether the death charges is the policy's
 // (Charges, asked of o); whether there is anything to charge it against is this function's guard,
-// which is no outcome question (decision 10): a claim not yet ready owes nothing a death could
+// which is no outcome question: a claim not yet ready owes nothing a death could
 // cost, and neither does one with no work outstanding. Work is outstanding when the claim holds a
 // task, and also when a turn of the agent's was open at the death — the claim's last turn started
 // and has not ended — since a turn an Envoy message began does the issue's work with no task
@@ -204,7 +203,7 @@ func (m *Machine) turnOpen() bool {
 // prompt count left at the limit, under the prompt budget's own word: what ran out is the
 // retirements, whichever event spent the last of them (CausePromptRetiresExhausted).
 //
-// Three guards here are not outcome questions, and stay this function's (decision 10). A
+// Three guards here are not outcome questions, and stay this function's. A
 // relaunch the tree lifecycle refuses is checked before the suspension so the process is kept
 // (checkLaunch): it asks whether the tree may launch at all. A retirement while an operator's
 // suspension is held is that suspension's stop instead, charged nothing (suspendHeld): the

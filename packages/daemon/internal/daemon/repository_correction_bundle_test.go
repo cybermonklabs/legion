@@ -6,14 +6,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// INFRA-3136 R3: the work a release saved out of a pod is work of the repository the issue was
+// The work a release saved out of a pod is work of the repository the issue was
 // on then. A correction of that repository in Dispatch moves the issue to another clone, and the
 // store refuses the bundle to every pod of it (store.TakeWorkspaceBundleForRestore) and moves it
 // to workspace_bundles_refused. Nothing in the daemon puts that work back, so the daemon says so
@@ -47,12 +45,7 @@ func TestRepositoryCorrectionTellsTheIssueWhereItsSavedWorkIs(t *testing.T) {
 	}
 	// Dispatch moved the issue to another repository, and the record followed the correction
 	// (record.(*Postgres).CorrectIssueRepository).
-	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		_, err := records.CorrectIssueRepository(ctx, tx, issue.Key, "zeta/tools", "main", "zeta/tools", time.Now().UTC())
-		return err
-	}); err != nil {
-		t.Fatalf("correct the repository of %s: %v", issue.Key, err)
-	}
+	correctRecord(t, pool, records, issue.Key, "zeta/tools", "main", time.Now().UTC())
 
 	var told []string
 	take := tellBundleRepositoryRefused(st.TakeWorkspaceBundleForRestore,

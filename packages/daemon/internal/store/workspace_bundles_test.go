@@ -428,7 +428,7 @@ func refusedBundles(t *testing.T, s *Store, issue string) []refusedBundle {
 	return kept
 }
 
-// INFRA-3136 R3: a correction of the issue's repository in Dispatch moves the issue to another
+// A correction of the issue's repository in Dispatch moves the issue to another
 // clone, and the work a release saved before it is work of the repository the issue has left.
 // The pod asking is a clone of the repository the issue is on now, which holds none of the saved
 // commits' bases, so the bundle is refused however new that pod is. The refusal is the bundle's

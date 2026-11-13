@@ -139,23 +139,13 @@ func TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks(t *testing.T) {
 // leaves, so once its pull request is merged the merger owes nothing though the phase stands.
 func TestClaimOwedIsTheMergeUntilTheMergersPullRequestIsMerged(t *testing.T) {
 	h, _, _ := newAssignmentHarness(t)
-	ctx := context.Background()
 	seedIssueAt(t, h, "LEGION-208", phase.Merging)
-	putPullRequest := func(state record.PullRequestState) {
-		t.Helper()
-		if err := h.store.Tx(ctx, func(tx pgx.Tx) error {
-			return record.NewStore().PutPullRequest(ctx, tx, record.PullRequest{State: state, Issue: "LEGION-208", Repo: "acme/widgets",
-				Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", CheckedHead: "head", Failing: []string{}})
-		}); err != nil {
-			t.Fatalf("record the pull request %s: %v", state, err)
-		}
-	}
-	putPullRequest(record.PullRequestOpen)
+	recordPullRequest(t, h, record.PullRequestOpen)
 
 	merger := newLiveClaim(t, h, "LEGION-208", claim.RoleMerger)
 	merger.owes(t, "the merging phase of LEGION-208")
 
-	putPullRequest(record.PullRequestMerged)
+	recordPullRequest(t, h, record.PullRequestMerged)
 	assertIssuePhase(t, h, phase.Merging)
 	merger.owesNothing(t)
 }

@@ -45,7 +45,8 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 }
 
 // Every sender of a person's design decision asks the one rule whether that decision is still the
-// person's word (classify.ReviewSuperseded), so no sender decides it for itself (INFRA-3136 R2).
+// person's word (classify.ReviewSuperseded), so no sender decides it for itself
+// (dispatch://INFRA-3136/spec R2).
 // A sender is a function of internal/workflow or internal/daemon, outside its tests, whose body
 //
 //   - writes a record.Notice whose kind is in record.SpecDecision's set, which is read from
@@ -100,7 +101,7 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 		}
 	}
 	// The resume of an answered root is rendered at each send from the gate as it stands
-	// (workflow.ResumeTask, the daemon's rootTask), and R2 binds it: the walk has to see it.
+	// (workflow.ResumeTask, the daemon's rootTask), so it is a sender too: the walk has to see it.
 	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.qualified() == "workflow.resumeTask" }) {
 		t.Error("the walk found no resume sender (workflow.resumeTask) in internal/workflow")
 	}

@@ -95,7 +95,7 @@ func (s *server) claimOwed(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, errorBody("the daemon reads no issue record, so it cannot say what this claim owes"))
 		return
 	}
-	position, err := s.handoffPosition(r.Context(), c.Issue, c.Role)
+	position, err := s.handoffPosition(r.Context(), c.Issue, c.Role, phase.Merging)
 	if err != nil {
 		s.logRequestFailure(r, err, "api: the record of a claim's issue could not be read for what it owes", "claim", req.ClaimToken)
 		writeJSON(w, http.StatusInternalServerError, errorBody("read the issue record: "+err.Error()))

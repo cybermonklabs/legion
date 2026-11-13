@@ -23,7 +23,7 @@ import (
 
 // The repository an issue's record is corrected onto is Dispatch's own fact, and these tests read
 // what the daemon's two passes over a recorded issue's resolution do with it: the live Dispatch
-// event (the engine's dispatchIssue) and the boot and recovery listing (admission's reconcile).
+// event (the engine's dispatchIssue) and the boot listing (admission's reconcile).
 // Each runs over a real PostgreSQL, as every test of this package does, and reads the record and
 // the Dispatch messages the pass queued, never the statement that writes the record, which has its
 // own test (record's TestCorrectIssueRepository...).
@@ -165,22 +165,21 @@ func (r *correctionRig) issue() record.Issue {
 // messages is every Dispatch message the passes queued, in the order they were queued.
 func (r *correctionRig) messages() []string {
 	r.t.Helper()
-	rows, err := r.pool.Query(context.Background(), "select payload->>'body' from outbox where kind = $1 order by id",
+	return dispatchMessages(r.t, r.pool)
+}
+
+// dispatchMessages is the body of every Dispatch message queued in pool's outbox, in the order
+// they were queued.
+func dispatchMessages(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), "select payload->>'body' from outbox where kind = $1 order by id",
 		string(record.OutboxKindDispatchMessage))
 	if err != nil {
-		r.t.Fatalf("read the Dispatch messages: %v", err)
+		t.Fatalf("read the Dispatch messages: %v", err)
 	}
-	defer rows.Close()
-	var bodies []string
-	for rows.Next() {
-		var body string
-		if err := rows.Scan(&body); err != nil {
-			r.t.Fatalf("scan a Dispatch message: %v", err)
-		}
-		bodies = append(bodies, body)
-	}
-	if err := rows.Err(); err != nil {
-		r.t.Fatalf("read the Dispatch messages: %v", err)
+	bodies, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("read the Dispatch messages: %v", err)
 	}
 	return bodies
 }
@@ -222,6 +221,26 @@ func (r *correctionRig) corrected(issue record.Issue, repo, branch, github, befo
 	if issue.Generation != r.generation || issue.Phase != phase.Implementing {
 		r.t.Fatalf("the corrected issue is at generation %d in %s, want generation %d in %s: a correction takes no new generation and moves no phase",
 			issue.Generation, issue.Phase, r.generation, phase.Implementing)
+	}
+}
+
+// correctRecord moves key's record onto repo at branch, stamped at, as the workflow's own pass
+// does when Dispatch names another repository for the issue
+// (workflow.(*Engine).ApplyRepositoryChange), and fails t unless the record moved.
+func correctRecord(t *testing.T, pool *pgxpool.Pool, records record.Store, key, repo, branch string, at time.Time) {
+	t.Helper()
+	ctx := context.Background()
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		corrected, err := records.CorrectIssueRepository(ctx, tx, key, repo, branch, repo, at)
+		if err != nil {
+			return err
+		}
+		if !corrected {
+			return fmt.Errorf("the record of %s was already on %s", key, repo)
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("correct the repository of %s onto %s: %v", key, repo, err)
 	}
 }
 
@@ -325,7 +344,7 @@ func TestRepositoryCorrectionTellsAnIssueWhoseNewRepositoryLegionDoesNotServe(t 
 	if issue.RepoChangePending != "acme/gadgets" || issue.RepoChangeReason != "acme/gadgets is not mapped to project LEGION in Dispatch" {
 		t.Fatalf("the waiting change = %q because %q, want acme/gadgets and why it waits", issue.RepoChangePending, issue.RepoChangeReason)
 	}
-	want := "Legion serves no installation of acme/gadgets, so this issue keeps acme/widgets as its repository. Legion moves the issue to acme/gadgets itself once it serves that repository, with nothing for anyone to do."
+	want := "Legion did not move this issue off acme/widgets: acme/gadgets is not mapped to project LEGION in Dispatch. Map acme/gadgets to the project in Dispatch, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	if messages := r.messages(); len(messages) != 1 || messages[0] != want {
 		t.Fatalf("the issue was told %q, want it told once, saying %q", messages, want)
 	}
@@ -383,19 +402,7 @@ func TestRepositoryCorrectionWritesNothingWhenDispatchNamesTheRecordedRepository
 // branches over a GitHub stand-in, rather than the resolutions the tests above hold in memory.
 func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *testing.T) {
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	recordCorrectionRoot(t, pool, records)
-	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/tools": "acme/tools@release/v7.1"})
-	repos := newRepositories(correctionProject, ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}, {Repo: ghrepo.MustParse("acme/tools")}}, nil)
-	branches := newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)
-	w := &workflowRuntime{pool: pool, records: records, repositories: repos, defaultBranches: branches,
-		dispatchProject: correctionProject, log: quietLogger()}
-	engine := workflow.New(records, workflow.Config{Project: correctionProject, Repositories: w, Steps: config.DesignGateOff.Steps(),
-		Clock: func() time.Time { return correctionMoment }}, quietLogger())
-	admission := admit.New(records, engine, 1, correctionProject, quietLogger())
-	r := &correctionRig{t: t, pool: pool, records: records, engine: engine, admission: admission, generation: correctionGeneration}
+	r, w, branches := newRuntimeCorrectionRig(t)
 
 	// The daemon has read the default branch of the repository the issue is recorded on, as the
 	// admission that recorded it did, and of no other: acme/tools is served and unread.
@@ -411,7 +418,7 @@ func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *te
 	if err != nil {
 		t.Fatalf("prepare the event that moves %s to acme/tools: %v", correctionKey, err)
 	}
-	applyFact(t, pool, "dispatch", "repository-unread-branch", prepared, engine, admission)
+	applyFact(t, r.pool, "dispatch", "repository-unread-branch", prepared, r.engine, r.admission)
 
 	issue := r.issue()
 	r.corrected(issue, "acme/tools", "release/v7.1", "acme/tools", "acme/widgets")
@@ -420,7 +427,7 @@ func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *te
 	}
 }
 
-// The boot and recovery listing makes that read for a recorded issue of any status, not only for a
+// The boot listing makes that read for a recorded issue of any status, not only for a
 // listed todo: admission's reconcile has the engine follow Dispatch's resolution for every issue it
 // holds a record of (admit's applySummary), so a listing that moves a running root onto a served
 // repository whose default branch nobody read would otherwise fail that whole pass, every pass,
@@ -430,20 +437,9 @@ func TestRepositoryCorrectionReadsTheDefaultBranchOfTheRepositoryItMovesTo(t *te
 // that moved.
 func TestRepositoryCorrectionReadsTheDefaultBranchForARecordedIssueTheListingShowsOutOfTodo(t *testing.T) {
 	ctx := context.Background()
-	pool := isolatedOutboxPool(t)
-	records := record.NewStore()
-	recordCorrectionRoot(t, pool, records)
-	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/tools": "acme/tools@release/v7.1"})
-	repos := newRepositories(correctionProject, ghrepo.Renames{})
-	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}, {Repo: ghrepo.MustParse("acme/tools")}}, nil)
-	branches := newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)
-	w := &workflowRuntime{pool: pool, records: records, repositories: repos, defaultBranches: branches,
-		dispatchProject: correctionProject, consumers: correctionConsumers(t, pool), log: quietLogger()}
-	engine := workflow.New(records, workflow.Config{Project: correctionProject, Repositories: w, Steps: config.DesignGateOff.Steps(),
-		Clock: func() time.Time { return correctionMoment }}, quietLogger())
-	admission := admit.New(records, engine, 1, correctionProject, quietLogger())
-	w.engine, w.admission = engine, admission
-	r := &correctionRig{t: t, pool: pool, records: records, engine: engine, admission: admission, generation: correctionGeneration}
+	r, w, branches := newRuntimeCorrectionRig(t)
+	w.consumers = correctionConsumers(t, r.pool)
+	w.engine, w.admission = r.engine, r.admission
 
 	// The daemon has read the default branch of the repository the issue is recorded on, and of no
 	// other: acme/tools is served and unread.
@@ -464,6 +460,28 @@ func TestRepositoryCorrectionReadsTheDefaultBranchForARecordedIssueTheListingSho
 	if messages := r.messages(); len(messages) != 0 {
 		t.Fatalf("the issue was told %q, want nothing: its record followed Dispatch onto a repository Legion serves", messages)
 	}
+}
+
+// newRuntimeCorrectionRig is a correctionRig whose engine resolves repositories through the
+// runtime's own mapping and default branches (w) rather than through resolutions held in memory:
+// acme/widgets, the project's default, and acme/tools are mapped, and a GitHub stand-in answers
+// their default branches, main and release/v7.1. branches is w's, and has read neither yet.
+func newRuntimeCorrectionRig(t *testing.T) (*correctionRig, *workflowRuntime, *defaultBranches) {
+	t.Helper()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	recordCorrectionRoot(t, pool, records)
+	github := newNamedGitHub(t, map[string]string{"acme/widgets": "acme/widgets@main", "acme/tools": "acme/tools@release/v7.1"})
+	repos := newRepositories(correctionProject, ghrepo.Renames{})
+	repos.set([]mappedRepository{{Repo: ghrepo.MustParse("acme/widgets"), Default: true}, {Repo: ghrepo.MustParse("acme/tools")}}, nil)
+	branches := newDefaultBranches(roleTokens{}, repos, github.url, defaultBranchTTL, time.Now)
+	w := &workflowRuntime{pool: pool, records: records, repositories: repos, defaultBranches: branches,
+		dispatchProject: correctionProject, log: quietLogger()}
+	engine := workflow.New(records, workflow.Config{Project: correctionProject, Repositories: w, Steps: config.DesignGateOff.Steps(),
+		Clock: func() time.Time { return correctionMoment }}, quietLogger())
+	admission := admit.New(records, engine, 1, correctionProject, quietLogger())
+	r := &correctionRig{t: t, pool: pool, records: records, engine: engine, admission: admission, generation: correctionGeneration}
+	return r, w, branches
 }
 
 // correctionConsumers opens this test's own durable consumers, which the listing reconcile reads

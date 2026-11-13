@@ -153,7 +153,7 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 	}{
 		{name: "the pair configured", renames: renamedLegion},
 		{name: "no pair configured", renames: ghrepo.Renames{},
-			want: "Legion serves no installation of cybermonklabs/legion, so this issue keeps sjawhar/legion as its repository. Legion moves the issue to cybermonklabs/legion itself once it serves that repository, with nothing for anyone to do."},
+			want: "Legion did not move this issue off sjawhar/legion: cybermonklabs/legion is not mapped to project LEGION in Dispatch. Map cybermonklabs/legion to the project in Dispatch, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -172,7 +172,7 @@ func TestARecordedIssueSaysNothingWhenItsResolutionIsItsRenamePartner(t *testing
 			}
 			var kept []outboxEntry
 			for _, message := range outboxOf(t, pool, "dispatch_message") {
-				if strings.HasPrefix(message.payload["body"].(string), "Legion serves no installation") {
+				if strings.HasPrefix(message.payload["body"].(string), "Legion did not move this issue off ") {
 					kept = append(kept, message)
 				}
 			}
@@ -222,7 +222,7 @@ func TestARecordedIssueResolvedToNoRepositoryIsToldAndLeavesNoChangeWaiting(t *t
 	if child.RepoChangePending != "" || child.RepoChangeReason != "" {
 		t.Fatalf("the waiting change = %q because %q, want both empty: Dispatch has named no repository to change to", child.RepoChangePending, child.RepoChangeReason)
 	}
-	want := "Dispatch resolves this issue to no repository, so it keeps sjawhar/legion. Legion moves the issue itself once Dispatch resolves it to a repository Legion serves, with nothing for anyone to do."
+	want := "Legion did not move this issue off sjawhar/legion: its repository resolves to none. Set its repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	messages := outboxOf(t, pool, "dispatch_message")
 	if len(messages) != 2 || messages[1].issue != "LEGION-209" || messages[1].payload["body"] != want {
 		t.Fatalf("Dispatch messages = %#v, want a second one on LEGION-209 saying %q", messages, want)

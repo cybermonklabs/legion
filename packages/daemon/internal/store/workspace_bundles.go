@@ -34,9 +34,9 @@ import (
 // reads, because the caller is what can read the pod (the daemon's
 // outbox.bundleIssueWorkspace, over issuePodRepository): the record's own repository is not the
 // same answer while a correction is waiting for the pod it moved to be replaced, and the pod's
-// is the one the work is in. An empty repo — a runtime whose processes are in no pod, and an
-// issue the workflow does not record — is stored as it is given and refuses nothing, which is
-// what a row saved before this column reads as.
+// is the one the work is in. An empty repo is an issue the workflow does not record, since the
+// caller falls back to the record's repository where the runtime answers none; it is stored as
+// it is given and refuses nothing, which is what a row saved before this column reads as.
 func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release int64, repo string, b runtime.WorkspaceBundle) error {
 	if issue == "" {
 		return errors.New("a workspace bundle needs its issue")
@@ -98,26 +98,42 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 // Before either of those the row's own repository is read, since a pod's age decides nothing
 // about work of a repository the issue is no longer on. The row names the repository its work
 // is of (PutWorkspaceBundle) and the issues table names the one the issue is on now, which a
-// correction of Dispatch's fact moves (record.Store.CorrectIssueRepository): two names that are
-// both there and differ refuse the bundle (runtime.WorkspaceBundleRefusedRepository), and nothing
-// is sent. The pod's workspace is a clone of the issue's repository now and holds none of the
-// saved commits' bases, so the bundle could not be applied there at all, and the daemon writes on
-// the issue where the work is instead (internal/daemon's bundleRepositoryMessage). A row whose
-// repo is empty — one saved before the column — is refused nothing: nothing recorded what that
-// work was of, so it is read by the rule below as it always was. An issue the record does not
-// hold refuses nothing either, for the reason an unread pod drifts from nothing (the daemon's
-// repositoryDrift): an unknown is never a statement that the issue has left anything.
+// correction of Dispatch's fact moves (record.Store.CorrectIssueRepository). The statement
+// compares the two without regard to case, as GitHub compares names: a row that names a
+// repository, of an issue whose issues row names another, refuses the bundle
+// (runtime.WorkspaceBundleRefusedRepository), and nothing is sent. The pod's workspace is a
+// clone of the issue's repository now and holds none of the saved commits' bases, so the bundle
+// could not be applied there at all, and the daemon writes on the issue where the work is
+// instead (internal/daemon's bundleRepositoryMessage). A row whose repo is empty — one saved
+// before the column — is refused nothing: nothing recorded what that work was of, so it is read
+// by the rule below as it always was. An issue the record does not hold refuses nothing either,
+// for the reason an unread pod drifts from nothing (the daemon's repositoryDrift): an unknown is
+// never a statement that the issue has left anything.
 //
-// That refusal also moves the row out of workspace_bundles and into workspace_bundles_refused,
-// in the transaction that records it. workspace_bundles holds one row per issue, and the issue's
-// next release replaces that row with its own save, or deletes it when it saves nothing (the
-// daemon's outbox.bundleIssueWorkspace); the end of the issue's work deletes it as well
-// (dropReleasedWork). The issue is told that the daemon keeps this work, so the work cannot stay
-// where any of those reaches it. The table it goes to has a row per refusal, which nothing in the
-// daemon reads, changes or deletes again: an operator reads it by issue and release_id, which is
-// what the message names, and deletes the row once the work is carried out. The row also stops
-// holding the issue's pod by that move, since the idle rule reads workspace_bundles alone
-// (workspaceBundleUnrestored).
+// The statement decides two cases otherwise than the daemon's repositoryDrift does. An issues
+// row with an empty repository counts here as another name and refuses the bundle, where
+// repositoryDrift reads it as unknown; only a record the repository backfill has not filled
+// holds one, since the record store writes none. And the statement does not read a configured
+// rename's two names as one repository (ghrepo.Renames): the pairs are the daemon's
+// configuration, and the database holds none of them. A rename corrects no record
+// (workflow.Engine.ApplyRepositoryChange), and a pod clones the repository under the name its
+// issue's record held when the pod was made, so a row and its issue hold the same name unless a
+// correction moved the record between them. A record corrected off a repository and then back
+// onto it after a rename holds the new name, and a row saved before the first correction holds
+// the old name: the bundle is refused, although the clone holds its commits. Either refusal
+// loses no work: the row moves to workspace_bundles_refused and the issue is told where the work
+// is.
+//
+// A refusal for the repository moves the row out of workspace_bundles and into
+// workspace_bundles_refused, in the transaction that records it. workspace_bundles holds one
+// row per issue, and the issue's next release replaces that row with its own save, or deletes it
+// when it saves nothing (the daemon's outbox.bundleIssueWorkspace); the end of the issue's work
+// deletes it as well (dropReleasedWork). The issue is told that the daemon keeps this work, so
+// the work cannot stay where any of those reaches it. The table it goes to has a row per
+// refusal, which nothing in the daemon reads, changes or deletes again: an operator reads it by
+// issue and release_id, which is what the message names, and deletes the row once the work is
+// carried out. The row also stops holding the issue's pod by that move, since the idle rule
+// reads workspace_bundles alone (workspaceBundleUnrestored).
 //
 // The comparison rests on two instants from two clocks: podCreated is the pod's creationTimestamp
 // as the Kubernetes API server stamped it, and the row's `at` is when the shim took the bundle,
@@ -149,7 +165,7 @@ func (s *Store) TakeWorkspaceBundleForRestore(ctx context.Context, issue, podUID
 		if err := tx.QueryRow(ctx, `update workspace_bundles
 			set attempt_pod_uid = $2, attempt_at = now(),
 				attempt_outcome = case
-					when repo <> '' and repo <> coalesce((select i.repo from issues i where i.key = workspace_bundles.issue), repo) then 'refused_repository'
+					when repo <> '' and lower(repo) <> lower(coalesce((select i.repo from issues i where i.key = workspace_bundles.issue), repo)) then 'refused_repository'
 					when date_trunc('second', at) <= $3 then 'sent'
 					else 'refused_older' end
 			where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2

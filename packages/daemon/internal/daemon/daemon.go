@@ -646,9 +646,9 @@ type plan struct {
 	// repository is the repository an issue works and its default branch
 	// (workflowRuntime.issueRepository: its record's, or the project's default for an issue the
 	// workflow does not record); nil without a workflow. It is the narrow half of the read
-	// below, for the three consumers that want the repository and its branch alone: the runtime
-	// factory, a claim's adopted identity (adoptIdentity) and an operator's claim
-	// (claimRepository).
+	// below, for the two consumers that want the repository and its branch alone: the runtime
+	// factory, whose tmux runtime reads a pane's repository through it (claimRepository), and a
+	// claim's adopted identity (adoptIdentity).
 	repository func(ctx context.Context, issue string) (ghrepo.Repository, string, error)
 	// launchRepository is what one read of an issue's record tells a launch of its claims
 	// (workflowRuntime.issueLaunchRepository): the repository it works, its default branch and

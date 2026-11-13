@@ -1116,9 +1116,11 @@ GitHub for it.
 
 ## A repository change is not applied yet
 
-The issue says `Legion serves no installation of <other>, so this issue keeps <owner/name> as its
-repository. Legion moves the issue to <other> itself once it serves that repository, with nothing
-for anyone to do.`
+The issue says `Legion did not move this issue off <owner/name>: <why>. <what to do> Legion moves
+the issue itself once it serves the repository that Dispatch resolves the issue to.` `<why>` is
+`<other> is not mapped to project <PROJECT> in Dispatch`, with `Map <other> to the project in
+Dispatch, or set another repository (…).`, or a GitHub App not installed on `<other>`, with
+`Install it on <other>, or set another repository (…).`
 
 An issue's repository is the one Dispatch resolves for it: the issue's own, else its nearest
 ancestor's, else the project's default.
@@ -1145,8 +1147,9 @@ leaves out ([The daemon will not start](/legion/legion/troubleshooting/#the-daem
 The daemon moves the issue itself at the next event of the issue or at its next boot.
 Create no new issue for the work.
 
-Dispatch resolving the issue to no repository is said the same way, as `Dispatch resolves this
-issue to no repository, so it keeps <owner/name>.`, and leaves nothing waiting on the record:
+Dispatch resolving the issue to no repository is said the same way, as `Legion did not move this
+issue off <owner/name>: its repository resolves to none. Set its repository (…).` followed by the
+same closing sentence, and leaves nothing waiting on the record:
 there is no repository to move to until the issue, an ancestor or the project names one.
 
 Under `runtime: kubernetes`, once the daemon has moved the record it replaces the issue's pod,

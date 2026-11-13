@@ -45,10 +45,11 @@ type WorkspaceBundle struct {
 	// start, its workspace is the one the work came from, and it must leave the attempt for the
 	// pod that replaces it. The read fills it back in from the row.
 	PodUID string
-	// Repo is the repository (owner/name) the saved work is of, as the issue's record held it at
-	// the moment of the save, which the store fills on the read. The save takes it as an
-	// argument of its own (store.Store.PutWorkspaceBundle) for the reason Release is one: the
-	// bundle is the shim's, built in a pod that knows nothing of the daemon's record. It is
+	// Repo is the repository (owner/name) the saved work is of: the repository the released pod
+	// was built from, and the issue's record's repository only where the runtime answers none (a
+	// tmux pane, or a claim with no process). The store fills it on the read. The save takes it
+	// as an argument of its own (store.Store.PutWorkspaceBundle) for the reason Release is one:
+	// the bundle is the shim's, built in a pod that knows nothing of the daemon's record. It is
 	// empty for a row saved before the column, whose repository nothing recorded. The store
 	// refuses a bundle whose repository the issue has left
 	// (WorkspaceBundleRefusedRepository).

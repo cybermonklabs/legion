@@ -349,13 +349,7 @@ func resumedTask(t *testing.T, pool *pgxpool.Pool, admission *Admission) string 
 	apply(t, pool, admission, "run-finished", intake.DispatchIssue{
 		Key: "LEGION-RUN", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.closed", Status: "done", Title: "LEGION-RUN", Rank: "A", HandedOver: true,
 	}, admission.engine)
-	task := ""
-	for _, effect := range effects(t, pool) {
-		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
-			task = startText(t, pool, "LEGION-100", config.DesignGateRootIssues, start)
-		}
-	}
-	return task
+	return lastArchitectTask(t, pool, "LEGION-100")
 }
 
 // assertNoAwaitingEffects fails when key's architect was suspended or the controller was told the
@@ -471,7 +465,7 @@ func TestAnApprovedGateResumesItsRootAndStartsItsFirstPhaseOnItsOwnRow(t *testin
 		case record.StatusWrite:
 			statusWrites++
 		case record.SuperviseRequest:
-			if payload.Op == "start" && payload.Role == "architect" &&
+			if payload.Op == "start" && payload.Role == claim.RoleArchitect &&
 				strings.Contains(startText(t, pool, root.Key, config.DesignGateRootIssues, payload), "primary document version 3") {
 				architectStarts++
 			}
@@ -565,12 +559,7 @@ func TestAResumedRootThatRegistersANewClosedVersionKeepsItsRow(t *testing.T) {
 		t.Fatalf("root after changes requested = %#v, want it resumed at admitted", resumed)
 	}
 	assertSlots(t, pool, []record.Slot{{Issue: "LEGION-100", Index: 0, AdmittedAt: fixedNow}})
-	var told string
-	for _, effect := range effects(t, pool) {
-		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
-			told = startText(t, pool, "LEGION-100", config.DesignGateRootIssues, start)
-		}
-	}
+	told := lastArchitectTask(t, pool, "LEGION-100")
 	if !strings.Contains(told, "requested changes") || !strings.Contains(told, "register_gate") {
 		t.Fatalf("resumed architect's task = %q, want it told of the changes and to register the revised version", told)
 	}
@@ -1519,7 +1508,7 @@ func TestAnApprovalThatOpensTheGateAnswersAWaitWhateverItsTime(t *testing.T) {
 		}
 		starts := 0
 		for _, effect := range effects(t, pool) {
-			if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
+			if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == claim.RoleArchitect {
 				starts++
 			}
 		}
@@ -1647,12 +1636,7 @@ func TestTheResumeTaskOfAGateWaitNamesAReply(t *testing.T) {
 	apply(t, pool, admission, "run-finished", intake.DispatchIssue{
 		Key: "LEGION-RUN", ResolvedRepo: "acme/widgets", Seq: 1, Type: "issue.closed", Status: "done", Title: "LEGION-RUN", Rank: "A", HandedOver: true,
 	}, admission.engine)
-	var task string
-	for _, effect := range effects(t, pool) {
-		if start, ok := effect.payload.(record.SuperviseRequest); ok && effect.issue == "LEGION-100" && start.Op == "start" && start.Role == "architect" {
-			task = startText(t, pool, "LEGION-100", config.DesignGateRootIssues, start)
-		}
-	}
+	task := lastArchitectTask(t, pool, "LEGION-100")
 	if !strings.Contains(task, "replied") || !strings.Contains(task, "thread") {
 		t.Fatalf("resumed architect's task = %q, want it to name a person's reply and the thread", task)
 	}

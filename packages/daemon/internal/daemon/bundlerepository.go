@@ -16,8 +16,8 @@ import (
 // (store.Store.TakeWorkspaceBundleForRestore) with the one thing the daemon owes a person added
 // to it: the bundle the store refused because it is of a repository the issue has left is told
 // on the issue itself (bundleRepositoryMessage, written through write). Every other outcome
-// passes through untouched, and the refusal passes through as it was: the launcher still logs
-// what it was not sent, and the pod still starts on what its own fetch provisioned.
+// passes through untouched, and the refusal passes through as it was: the pod still starts on
+// what its own fetch provisioned.
 //
 // The issue is told once per bundle row, not once per pod that asks. The refusal is the bundle's
 // one restore attempt, and the store records it and moves the row to workspace_bundles_refused in

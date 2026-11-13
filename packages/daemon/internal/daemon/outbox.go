@@ -2131,24 +2131,20 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	// whose panes are in no pod, and a claim with no process. Neither can have left the
 	// repository the record holds, since neither has a pod built from one. An issue the workflow
 	// does not record saves under the empty repository, which the take reads as a bundle that
-	// refuses no pod: the save stores the work whatever the two reads answer, as it did before
-	// this column, and only a read that failed for a reason of its own cancels the release.
+	// refuses no pod: the save stores the work whatever the two reads answer, and only a read
+	// that failed for a reason of its own cancels the release.
 	repo, err := issuePodRepository(ctx, r.supervisor, row.Issue)
 	if err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
 			fmt.Sprintf("read the repository the pod of %s was built from: %v", row.Issue, err))
 	}
 	if repo == "" {
-		if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-			issue, err := r.records.Issue(ctx, tx, row.Issue)
-			if err != nil || issue == nil {
-				return err
-			}
+		issue, err := r.recordedIssue(ctx, row.Issue)
+		if err != nil {
+			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
+		}
+		if issue != nil {
 			repo = issue.Repo
-			return nil
-		}); err != nil {
-			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave,
-				fmt.Sprintf("read workflow issue %s: %v", row.Issue, err))
 		}
 	}
 	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, repo, bundle); err != nil {

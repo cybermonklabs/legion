@@ -103,16 +103,17 @@ func (e *Engine) RefuseRecording(ctx context.Context, tx pgx.Tx, key, resolved s
 // ApplyRepositoryChange makes a recorded issue's repository follow Dispatch's: resolved is what
 // Dispatch resolves the issue to now, and the repository is Dispatch's own fact, so the daemon
 // moves the record onto it rather than keeping what it has. Every pass that reads a recorded
-// issue's resolution calls it — a live Dispatch event (Engine.dispatchIssue), the boot and
-// recovery listing (admission's reconcile), and the listing the daemon reads after Dispatch's
-// settings.repo_project.updated, which names no issue (the daemon's followMapping) — one call per
-// issue, and the correction is one statement in the fact's own
+// issue's resolution calls it, once per issue, inside the transaction that pass applies in: a live
+// Dispatch event (Engine.dispatchIssue), the listing admission reconciles at boot (its
+// applySummary; the recovery listing takes no recorded issue), admission's outbox hand-over (its
+// consumeHandover), and the listing the daemon reads after a change of the repository mapping,
+// which names no issue (the daemon's followMapping). The correction is one statement in that
 // transaction: no park, no rerun and no new generation, so an issue keeps its phase, its
 // generation and whatever is running for it while its repository moves.
 //
-// The record follows Dispatch as far as Legion can take it. A repository Legion serves no
-// installation of is not written onto the record: the record keeps the repository it has, the
-// issue is told once (noteRepositoryChangeWaits), and the change waits on the record
+// The record follows Dispatch as far as Legion can take it. A repository Legion does not serve
+// is not written onto the record: the record keeps the repository it has, the issue is told once
+// why and what a person can do (noteRepositoryChangeWaits), and the change waits on the record
 // (record.Store.NoteIssueRepositoryChange) for the pass that finds the repository served, which
 // applies it. A resolution that names no repository at all is told the same way, and leaves no
 // change waiting: there is no repository to change to, so the record's waiting pair is cleared.
@@ -139,7 +140,7 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 		return nil
 	}
 	if resolution.Refusal != "" {
-		if err := e.noteRepositoryChangeWaits(ctx, tx, issue, resolved); err != nil {
+		if err := e.noteRepositoryChangeWaits(ctx, tx, issue, resolved, resolution); err != nil {
 			return err
 		}
 		// A change waits only where Dispatch has named a repository to change to. A resolution
@@ -169,18 +170,25 @@ func (e *Engine) ApplyRepositoryChange(ctx context.Context, tx pgx.Tx, issue rec
 }
 
 // noteRepositoryChangeWaits says on a recorded issue that the repository Dispatch now resolves it
-// to, resolved, is not written onto the record yet: Legion serves no installation of it, so the
-// record keeps the repository it has, and Legion moves the issue itself once it serves that
-// repository. ApplyRepositoryChange reaches it for a refused or left-out resolution alone, and it
-// says it once per resolution (noteOnce), so a repeated event or listing of the issue says
-// nothing again.
-func (e *Engine) noteRepositoryChangeWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, resolved string) error {
-	var note string
-	if resolved == "" {
-		note = fmt.Sprintf("Dispatch resolves this issue to no repository, so it keeps %s. Legion moves the issue itself once Dispatch resolves it to a repository Legion serves, with nothing for anyone to do.", issue.Repo)
-	} else {
-		note = fmt.Sprintf("Legion serves no installation of %s, so this issue keeps %s as its repository. Legion moves the issue to %s itself once it serves that repository, with nothing for anyone to do.", resolved, issue.Repo, resolved)
+// to, resolved, is not written onto the record: the record keeps the repository it has, for the
+// reason refused gives. It says what a person can do, as RefuseRecording does for an issue it does
+// not record: set another repository, map the repository to the project, or install the App
+// refused names on it (refused.LeftOut). Legion moves the issue itself once it serves the
+// repository Dispatch resolves the issue to. ApplyRepositoryChange reaches it for a refused or
+// left-out resolution alone, and it says it once per resolution (noteOnce), so a repeated event
+// or listing of the issue says nothing again.
+func (e *Engine) noteRepositoryChangeWaits(ctx context.Context, tx pgx.Tx, issue record.Issue, resolved string, refused Resolution) error {
+	var action string
+	switch {
+	case resolved == "":
+		action = "Set its repository (" + setRepositoryHint + ")."
+	case refused.LeftOut:
+		action = "Install it on " + resolved + ", or set another repository (" + setRepositoryHint + ")."
+	default:
+		action = "Map " + resolved + " to the project in Dispatch, or set another repository (" + setRepositoryHint + ")."
 	}
+	note := "Legion did not move this issue off " + issue.Repo + ": " + refused.Refusal + ". " + action +
+		" Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	_, err := e.noteOnce(ctx, tx, issue.Key, resolved, note)
 	return err
 }

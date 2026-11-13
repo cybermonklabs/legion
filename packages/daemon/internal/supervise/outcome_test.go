@@ -1,6 +1,7 @@
 package supervise
 
 import (
+	"slices"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -32,7 +33,7 @@ func outcomeRefusal(o Outcome) mintedRefusal {
 // unknownOutcome is a value of the type the set does not hold.
 const unknownOutcome Outcome = "a word no release of the daemon has minted"
 
-// The rows of decision 11: whether each member of the set charges the budget its site counts.
+// The rows of the charge policy: whether each member of the set charges the budget its site counts.
 // Every member listed by Outcomes must have a row here, so a member added without a decision
 // fails this test by name.
 func TestChargesDecidesEveryOutcome(t *testing.T) {
@@ -57,9 +58,6 @@ func TestChargesDecidesEveryOutcome(t *testing.T) {
 			t.Errorf("outcome %q has no row in this test: decide whether it charges", o)
 			continue
 		}
-		if !o.Valid() {
-			t.Errorf("outcome %q is listed by Outcomes and is not Valid", o)
-		}
 		if got := Charges(o); got != charges {
 			t.Errorf("Charges(%q) = %t, want %t", o, got, charges)
 		}
@@ -73,8 +71,8 @@ func TestChargesDecidesEveryOutcome(t *testing.T) {
 // would make a crash-looping process immortal. The zero value is one, and so is a word no member
 // holds.
 func TestAnOutcomeThePolicyDoesNotKnowIsCharged(t *testing.T) {
-	if unknownOutcome.Valid() {
-		t.Fatalf("%q is Valid, want a value outside the set", unknownOutcome)
+	if slices.Contains(Outcomes(), unknownOutcome) {
+		t.Fatalf("%q is a member of Outcomes, want a value outside the set", unknownOutcome)
 	}
 	for _, o := range []Outcome{"", unknownOutcome} {
 		if !Charges(o) {

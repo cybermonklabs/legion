@@ -148,7 +148,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			name: "the pod does not run the configured image", view: idleChild(), image: false, want: IdleHoldImage,
 		},
 		{
-			// INFRA-3136 R3: Dispatch moved the issue, the daemon's record followed it, and the
+			// Dispatch moved the issue, the daemon's record followed it, and the
 			// pod still running is a clone of the repository the issue has left. The pod is the
 			// update round's to replace: a release of it would save work no pod of this issue
 			// can ever restore.

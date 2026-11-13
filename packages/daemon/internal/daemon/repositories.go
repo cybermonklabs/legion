@@ -1262,11 +1262,15 @@ func (w *workflowRuntime) followReasons() []string {
 // defaultBranches, which the mapping's read has just filled for every served repository
 // (nameAccepted), so the pass reads GitHub at most once per repository whatever number of issues
 // move onto it. The corrections are one transaction under the lock every fact applies under, as
-// the boot's reconcile is, and each record is read again inside it: a record a live event has
-// carried past the listing's sequence is left to that event, as the boot's listing leaves it
-// (admit's applySummary). The pod an issue's correction leaves on the repository it left is
-// replaced by the ordinary per-issue update round, which reads the record. The records are read
-// first, so a project the workflow records no issue of asks Dispatch for no listing.
+// the boot's reconcile is, and the records are read again inside it, in one read before the
+// first correction: a record a live event has carried past the listing's sequence is left to
+// that event, as the boot's listing leaves it (admit's applySummary). One read serves every
+// issue because each correction writes its own issue's row alone, and what a correction reads
+// of a record (its repository, the change waiting on it, its last Dispatch sequence) is written
+// by facts, which apply under that same lock. The pod an issue's correction leaves on the
+// repository it left is replaced by the ordinary per-issue update round, which reads the record.
+// The records are read first, so a project the workflow records no issue of asks Dispatch for
+// no listing.
 func (w *workflowRuntime) followListing(ctx context.Context) error {
 	var issues []record.Issue
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
@@ -1283,10 +1287,7 @@ func (w *workflowRuntime) followListing(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("list Dispatch issues for the repository mapping's change: %w", err)
 	}
-	records := make(map[string]*record.Issue, len(issues))
-	for i := range issues {
-		records[issues[i].Key] = &issues[i]
-	}
+	records := recordsByKey(issues)
 	follow := make([]intake.DispatchIssue, 0, len(records))
 	for _, summary := range listed {
 		recorded := records[summary.Key]
@@ -1307,11 +1308,13 @@ func (w *workflowRuntime) followListing(ctx context.Context) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the repository mapping's change with every fact: %w", err)
 		}
+		current, err := w.records.Issues(scoped, tx)
+		if err != nil {
+			return fmt.Errorf("read the records for the repository mapping's change: %w", err)
+		}
+		held := recordsByKey(current)
 		for _, issue := range follow {
-			stored, err := w.records.Issue(scoped, tx, issue.Key)
-			if err != nil {
-				return fmt.Errorf("read the record of %s: %w", issue.Key, err)
-			}
+			stored := held[issue.Key]
 			if stored == nil || issue.Seq > 0 && issue.Seq < stored.LastDispatchSeq {
 				continue
 			}
@@ -1651,10 +1654,10 @@ func (w *workflowRuntime) issueLaunchRepository(ctx context.Context, key string)
 }
 
 // issueRepository is the repository issue's record names and its recorded default branch, the
-// narrow half of the read above: what a claim's adopted identity is read from (adoptIdentity),
-// what the runtime factory is handed and what an operator's claim resolves its repository
-// through (claimRepository). Each of the three wants the repository and its branch alone, so
-// each is handed this rather than the whole read (plan.repository).
+// narrow half of the read above: what a claim's adopted identity is read from (adoptIdentity)
+// and what the runtime factory is handed, whose tmux runtime reads the repository of a pane
+// adopted after a restart through it (claimRepository). Each wants the repository and its branch
+// alone, so each is handed this rather than the whole read (plan.repository).
 func (w *workflowRuntime) issueRepository(ctx context.Context, key string) (ghrepo.Repository, string, error) {
 	read, err := w.issueLaunchRepository(ctx, key)
 	if err != nil {
@@ -1930,15 +1933,21 @@ func (w *workflowRuntime) listingAncestry(ctx context.Context, listed []dispatch
 	}); err != nil {
 		return nil, nil, fmt.Errorf("read the records for the boot listing: %w", err)
 	}
-	records := make(map[string]*record.Issue, len(issues))
-	for i := range issues {
-		records[issues[i].Key] = &issues[i]
-	}
+	records := recordsByKey(issues)
 	walk := make(ancestry, len(listed))
 	for _, summary := range listed {
 		walk[summary.Key] = parentKey(summary.Parent)
 	}
 	return records, walk, nil
+}
+
+// recordsByKey is issues by key, each entry pointing into issues itself.
+func recordsByKey(issues []record.Issue) map[string]*record.Issue {
+	records := make(map[string]*record.Issue, len(issues))
+	for i := range issues {
+		records[issues[i].Key] = &issues[i]
+	}
+	return records
 }
 
 // withAncestry is an event's issue, recorded as recorded (nil when the workflow does not record

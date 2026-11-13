@@ -1,6 +1,6 @@
 package daemon
 
-// INFRA-3136 R3, the window between a correction and the pod it replaces: Dispatch moved the
+// The window between a correction and the pod it replaces: Dispatch moved the
 // issue to another repository and the daemon's record followed it
 // (record.Store.CorrectIssueRepository), while the pod still running is a clone of the
 // repository the issue has left. The update round that replaces that pod opens on a later sweep
@@ -18,8 +18,6 @@ import (
 	"context"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -49,19 +47,7 @@ func (r *idleRig) podBuiltFrom(repo string) {
 // repository the issue has left, until an update round replaces it.
 func (r *idleRig) corrects(t *testing.T, repo, branch string) {
 	t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		corrected, err := r.issues.CorrectIssueRepository(ctx, tx, r.issue.Key, repo, branch, repo, time.Now().UTC())
-		if err != nil {
-			return err
-		}
-		if !corrected {
-			t.Errorf("the record of %s was already on %s", r.issue.Key, repo)
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("correct the repository of %s onto %s: %v", r.issue.Key, repo, err)
-	}
+	correctRecord(t, r.pool, r.issues, r.issue.Key, repo, branch, time.Now().UTC())
 }
 
 // bundleRepository is the repository the saved bundle of the issue is labelled with, which is

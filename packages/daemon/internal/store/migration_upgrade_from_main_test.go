@@ -16,19 +16,19 @@ import (
 // 20261110225246, which added the hook prompt's — so each of the three names that kind, since a
 // database main migrated can carry a hook-prompt row the constraint would otherwise refuse — and
 // after both the head-arrival column and the drop that takes it away again (20261109130413),
-// which leaves the table as main has it, and the resume's own anchor (20261111181500), which is
-// this branch's newest. The six versions of main's above the claim-death
-// charge, the drop of the waiting-for-slot notice (20261109060737), the retirement's write mark
-// (20261109191929), the backward-move counts with the hook prompt (20261110225246), the kind of
-// the rule that wrote a release mark (20261111001612), the declined ask (20261111021610) and the
-// claim's failure cause (20261111212544), are
-// main's own and are applied as main's run applied them. main's newest stands above this branch's
-// own newest since the forward merge of 2026-11-12: this branch takes the free number at the
-// merge that lands it, and a migration's version is a timestamp rather than a place in a line.
+// which leaves the table as main has it, and the resume's own anchor (20261111181500). The six
+// versions of main's above the claim-death charge, the drop of the waiting-for-slot notice
+// (20261109060737), the retirement's write mark (20261109191929), the backward-move counts with
+// the hook prompt (20261110225246), the kind of the rule that wrote a release mark
+// (20261111001612), the declined ask (20261111021610) and the claim's failure cause
+// (20261111212544), are main's own and are applied as main's run applied them. A migration's
+// version is a timestamp rather than a place in a line, so this branch's versions and main's
+// interleave, and no one version divides the two sets.
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
-// deployment ever has, so the test below holds the list against the embedded set: every version
-// above main's newest is this branch's and has to be named here.
+// deployment ever has, so the test below holds the list against the embedded set by the one rule
+// that holds however the two interleave: every embedded version above main's newest is this
+// branch's and has to be named here.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -40,9 +40,9 @@ var thisBranchsMigrations = []int{
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
-// failure. Every embedded version above it is a branch's own and is named in thisBranchsMigrations:
-// today those are dispatch://INFRA-3136's two. main's newest came in above INFRA-714's at the
-// forward merge of 2026-11-12, which is why the loop below holds the list rather than counting it.
+// failure. Every embedded version above it is a branch's own and is named in thisBranchsMigrations,
+// which is what the loop below checks; versions of this branch below it are named there too, since
+// no version says by itself which side it is on.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

@@ -807,16 +807,9 @@ func (w *workflowRuntime) resumeTaskNow(ctx context.Context, c supervise.Claim, 
 	}
 	var task string
 	if err := pgx.BeginTxFunc(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		gates, err := w.records.GatesOf(ctx, tx, c.Tree)
-		if err != nil {
-			return err
-		}
-		asks, err := w.records.RootAsks(ctx, tx, []string{c.Tree})
-		if err != nil {
-			return err
-		}
-		task = workflow.ResumeTask(c.Tree, waiting, w.gatedSteps, gates, asks[c.Tree])
-		return nil
+		var err error
+		task, err = workflow.ResumeTask(ctx, tx, w.records, c.Tree, waiting, w.gatedSteps)
+		return err
 	}); err != nil {
 		return "", nil, fmt.Errorf("read how the gate of %s stands for its resume task: %w", c.Tree, err)
 	}
@@ -897,10 +890,12 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// Dispatch chain above a todo issue's parent, and who set the label of a labelled triage root
 	// the workflow does not record, are read now, up one walk over the whole listing
 	// (listingAncestry); each listed issue's fact carries that chain, or that setter, to admission.
+	// The records are what say which arm a summary takes, and what keep judges a summary against,
+	// so they are read with that walk once for the whole listing, before any summary is judged.
 	var records map[string]*record.Issue
 	var walk ancestry
 	var err error
-	if keep != nil {
+	if keep != nil || len(issues) > 0 {
 		if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
 			return err
 		}
@@ -913,15 +908,6 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		}
 		fact := intake.ListedIssue(summary)
 		labelledTriageRoot := fact.LabelledTriageRoot()
-		// The records are what say which arm a summary takes, so the walk they are read with is
-		// read here, once for the whole listing and for any listing that carries a summary this
-		// pass keeps. That is what the read costs now: before, only a listing holding a todo or a
-		// labelled triage root paid for the records.
-		if walk == nil {
-			if records, walk, err = w.listingAncestry(ctx, issues); err != nil {
-				return err
-			}
-		}
 		switch {
 		// Every recorded issue of the listing is prepared, whatever its status, and so is every
 		// todo: admission's reconcile has the engine follow Dispatch's resolution for each issue it
@@ -930,8 +916,8 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 		// I/O, so a served repository whose default branch nobody read is an error there that would
 		// fail the whole pass — prepareRecorded reads it here. An unrecorded todo is what admission
 		// records, from the repository this reads for it. Only a todo that queues under its parent
-		// takes an ancestry (queuesUnderParent), so an issue of any other status gains none: the
-		// repository read is all that is new for it.
+		// takes an ancestry (queuesUnderParent), so an issue of any other status gains none: it
+		// gains the repository read alone.
 		case records[summary.Key] != nil || fact.Status == "todo":
 			prepared, err := w.prepareListed(ctx, records, walk, fact)
 			if err != nil {

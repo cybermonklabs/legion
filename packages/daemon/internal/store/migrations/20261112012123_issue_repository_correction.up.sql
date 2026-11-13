@@ -1,5 +1,5 @@
 -- 20261112012123_issue_repository_correction.up.sql -- an issue's repository is Dispatch's fact,
--- and the record follows a correction of it instead of refusing one (INFRA-3136, R3).
+-- and the record follows a correction of it instead of refusing one (dispatch://INFRA-3136/spec R3).
 --
 -- Until now the record's repository, default branch and GitHub spelling were write-once: the
 -- upsert in record.(*Postgres).PutIssue carried a condition that matched no row whose repository
@@ -15,7 +15,7 @@
 -- saved bundle is of the repository the issue has left.
 --
 -- repo_corrected_at is the moment the daemon applied that correction, null when there has been
--- none, which is what R3 means by recording the correction with the moment it happened: every
+-- none, which is what the spec means by recording the correction with the moment it happened: every
 -- launch of the issue's claims from then on names it beside the repository the issue left
 -- (daemon's AddressingFragment), and `legion state --json` shows it on the issue as
 -- repoCorrectedAt. The pair is written together, so a null moment and an empty repo_before both
@@ -31,11 +31,11 @@
 --
 -- workspace_bundles.repo is the repository the saved work is of, empty for a row saved before
 -- this release, whose repository nothing recorded. A bundle of the old repository is not applied
--- into the new clone (R3), and this column is what the restore reads to tell the two apart. This
--- release ships both halves: the idle release writes it from the repository the released pod
--- itself was built from (daemon's bundleIssueWorkspace, store.PutWorkspaceBundle), and the
--- restore refuses a bundle whose repository the issue has left by it
--- (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository). A row written
+-- into the new clone (dispatch://INFRA-3136/spec R3), and this column is what the restore reads
+-- to tell the two apart. This release ships both halves: the idle release writes it from the
+-- repository the released pod itself was built from (daemon's bundleIssueWorkspace,
+-- store.PutWorkspaceBundle), and the restore refuses a bundle whose repository the issue has left
+-- by it (store.TakeWorkspaceBundleForRestore, runtime.WorkspaceBundleRefusedRepository). A row written
 -- before this release holds the default and refuses nothing.
 --
 -- workspace_bundles_refused keeps the bundles the restore refused for their repository, one row

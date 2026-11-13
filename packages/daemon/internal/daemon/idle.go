@@ -149,8 +149,11 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 // rows and its mark in one transaction with the view they rest on (store.ReleaseIdleIssue). The
 // pod's image and the repository it was built from are read before that transaction, from the
 // runtime's own store of pods, because they are the inputs the daemon's Postgres does not hold.
-// A deployment that wired no repository reader — a test that builds the runtime by hand — reads
-// no drift, as a pod whose repository cannot be read does.
+// The repository, and the record it is read against, are read only for a pod on the configured
+// image: the rule holds any other pod for its image, or for an earlier reason, before it reads
+// the repository (workflow.IdleRelease), so a read there would decide nothing. A deployment that
+// wired no repository reader — a test that builds the runtime by hand — reads no drift, as a pod
+// whose repository cannot be read does.
 //
 // A pod the rule kept that was quiet for the whole idle period is recorded as a hold
 // (recordIdleHold): that is a pod release would have taken and something else stopped, which is
@@ -160,7 +163,7 @@ func (w *workflowRuntime) releaseIdlePods(ctx context.Context) {
 func (w *workflowRuntime) releaseIdlePod(ctx context.Context, issue string) {
 	now := time.Now().UTC()
 	onConfiguredImage := w.idleRuntime.IssuePodRunsConfiguredImage(issue)
-	repositoryDrifted := w.idleRepositoryDrifted != nil && w.idleRepositoryDrifted(ctx, issue)
+	repositoryDrifted := onConfiguredImage && w.idleRepositoryDrifted != nil && w.idleRepositoryDrifted(ctx, issue)
 	var decision workflow.IdleDecision
 	var quiet, holding bool
 	marked, err := w.idleStore.ReleaseIdleIssue(ctx, w.projectID, issue, func(view pods.IdleView) (store.IdleReleaseMark, error) {

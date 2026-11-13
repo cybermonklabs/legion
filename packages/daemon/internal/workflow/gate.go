@@ -469,6 +469,16 @@ func changesDetail(version int, reason string) string {
 	return fmt.Sprintf("version %d: %q", version, reason)
 }
 
+// changesDetailVersion is the version a detail changesDetail wrote names, and false for any other
+// detail. It sits beside the formatter so the two cannot drift apart.
+func changesDetailVersion(detail string) (int, bool) {
+	var version int
+	if _, err := fmt.Sscanf(detail, "version %d:", &version); err != nil {
+		return 0, false
+	}
+	return version, true
+}
+
 // untellUnresumedChanges clears, on each gate root holds, the record that its architect was told
 // a changes request placed after the start of root's wait, when root leaves the workflow before
 // it resumed. The request was recorded as told because the resume task would name it

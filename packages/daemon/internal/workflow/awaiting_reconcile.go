@@ -394,14 +394,6 @@ func gateRequestOf(gate record.DesignGate, gated bool) string {
 	return gate.ArtifactID
 }
 
-// gateArtifactOf is the document gate is registered on, "" for no gate.
-func gateArtifactOf(gate *record.DesignGate) string {
-	if gate == nil {
-		return ""
-	}
-	return gate.ArtifactID
-}
-
 // gateDocuments is the document of each gate the root holds, in no order: the approval requests
 // of any of them are answered by a review of their own, not by a person's act on an ask
 // (RootAsk.PersonActSeq).
@@ -558,14 +550,22 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	})
 }
 
-// ResumeTask is the resume task of root key's architect for the wait waiting it answers, as the
-// record stands now: the step in question and its row (gateInQuestion) of gates, the rows the
-// root holds by step, under steps, the design-gate steps the deployment gates (none is the gate
-// off), and asks, the root's ask mirror rows. The daemon's rootTask renders it at each send of
-// the task ResumeAwaitedRoot queued, in the transaction that reads those rows.
-func ResumeTask(key string, waiting record.Awaiting, steps []record.DesignStep, gates map[record.DesignStep]record.DesignGate, asks []record.RootAsk) string {
+// ResumeTask is the resume task of root key's architect for the wait waiting it answers, as tx
+// reads the record now: the root's gates, from which the step in question and its row are taken
+// (gateInQuestion) under steps, the design-gate steps the deployment gates (none is the gate
+// off), and the root's ask mirror rows. The daemon's rootTask renders it at each send of the task
+// ResumeAwaitedRoot queued; the reads are here so that every caller reads the rows the same way.
+func ResumeTask(ctx context.Context, tx pgx.Tx, store record.Store, key string, waiting record.Awaiting, steps []record.DesignStep) (string, error) {
+	gates, err := store.GatesOf(ctx, tx, key)
+	if err != nil {
+		return "", err
+	}
+	asks, err := store.RootAsks(ctx, tx, []string{key})
+	if err != nil {
+		return "", err
+	}
 	step, gate := gateInQuestion(steps, gates)
-	return resumeTask(key, waiting, step, gate, asks, len(steps) > 0)
+	return resumeTask(key, waiting, step, gate, asks[key], len(steps) > 0), nil
 }
 
 // gateInQuestion is the step a resume speaks of and the row that step holds (resumeTask): the
@@ -719,7 +719,7 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 	for _, ask := range asks {
 		// A request the gate's approval answered, on whichever request it landed, asks nothing of
 		// anyone (requestStands), so it is neither the request's open thread nor one waiting on you.
-		isRequest := ask.GateRequestOf(gateArtifactOf(gate)) && requestStands(*gate, ask)
+		isRequest := gate != nil && ask.GateRequestOf(gate.ArtifactID) && requestStands(*gate, ask)
 		if isRequest && ask.Open {
 			requestOpen = true
 		}
@@ -762,11 +762,11 @@ func resumeTask(key string, waiting record.Awaiting, step record.DesignStep, gat
 // has no mark — one recorded before waits were placed — is asked at the gate's approval itself, for
 // the same reason. ok is false when the detail names no version, or no gate is in question.
 func answeredReview(waiting record.Awaiting, gate *record.DesignGate) (int, record.EventMark, bool) {
-	var version int
 	if gate == nil {
 		return 0, record.EventMark{}, false
 	}
-	if _, err := fmt.Sscanf(waiting.AnsweredDetail, "version %d:", &version); err != nil {
+	version, named := changesDetailVersion(waiting.AnsweredDetail)
+	if !named {
 		return 0, record.EventMark{}, false
 	}
 	if waiting.Since == (record.EventMark{}) {

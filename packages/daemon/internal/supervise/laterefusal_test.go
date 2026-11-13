@@ -511,8 +511,8 @@ func TestALateAcknowledgementOfARetiredTaskRecordsNothing(t *testing.T) {
 // wait. When that wait runs out, the prompt is charged as any acknowledged prompt that started no
 // turn is (OutcomeNoTurnStarted) — unless the replayed refusal was the agent's answer that it is
 // in a turn of its own, which is the one thing a wait that carries no words can learn of the
-// agent's turn (noTurn, answeredBusy): that wait ended on the agent's turn, and is charged nothing
-// (decision 11's one change).
+// agent's turn (noTurn, answeredBusy): that wait ended on the agent's turn, and is charged
+// nothing.
 func TestAReplayedRefusalOfAnUnconfirmedTaskKeepsItsWait(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

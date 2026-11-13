@@ -1,6 +1,6 @@
 package daemon
 
-// INFRA-3136 R3, the trigger: Dispatch's settings.repo_project.updated of the daemon's project
+// The trigger of a mapping change: Dispatch's settings.repo_project.updated of the daemon's project
 // names no issue, and a change of the project's default repository moves, in Dispatch, every
 // issue that names no repository of its own and has no ancestor that does, with no event of any of
 // them. On a running daemon the event has the refresher read the mapping again and then read
@@ -306,7 +306,7 @@ func TestRepositoryCorrectionWaitsOnTheRecordWhenAMappingChangeMovesTheDefaultTo
 			t.Fatalf("%s waits because %q, want the missing review App named", key, got.RepoChangeReason)
 		}
 		notes := repositoryNotes(t, r.w, key)
-		if len(notes) != 1 || !strings.Contains(notes[0], "Legion serves no installation of orbit/gadgets") {
+		if len(notes) != 1 || !strings.HasPrefix(notes[0], "Legion did not move this issue off acme/widgets: ") || !strings.Contains(notes[0], "Install it on orbit/gadgets") {
 			t.Fatalf("%s was told %q, want one note that the change waits on orbit/gadgets", key, notes)
 		}
 	}

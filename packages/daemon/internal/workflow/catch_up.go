@@ -65,7 +65,10 @@ func (e *Engine) claimReady(ctx context.Context, tx pgx.Tx, fact intake.ClaimRea
 // (TreeCatchUp) for launch, the launch it was written for, so a failed forward of an older one is
 // not queued again behind it (the outbox's rehold). The tree it states is the record at the
 // moment the row is queued; the outbox states it again when it delivers the row (the daemon's
-// deliverNotice), so the architect reads the record as it stands then.
+// deliverNotice), so the architect reads the record as it stands then. The row still carries the
+// whole of the tree as queued, not only what deliverNotice keeps of it, because an older daemon
+// put back after a rollback delivers a queued row's payload as it stands
+// (catch_up_delivery_test.go pins the queued payload for that reason).
 //
 // A catch-up an earlier launch never had delivered is dropped first (DropCatchUps, at the caller's
 // now, which is the clock a lane's lease is written from), so the agent is given one catch-up,

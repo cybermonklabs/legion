@@ -15,8 +15,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -52,7 +50,7 @@ func (s recordSpecs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	if recorded == nil {
 		return runtime.SpawnSpec{}, nil
 	}
-	repo, err := ghrepo.Parse("the record of "+c.Issue, recorded.Repo)
+	repo, err := recorded.Repository()
 	if err != nil {
 		return runtime.SpawnSpec{}, err
 	}
@@ -63,18 +61,7 @@ func (s recordSpecs) SpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 // Dispatch names another repository for the issue (workflow.(*Engine).ApplyRepositoryChange).
 func (r *podUpdateRig) corrects(repo, branch string) {
 	r.t.Helper()
-	if err := pgx.BeginFunc(r.ctx, r.pool, func(tx pgx.Tx) error {
-		corrected, err := r.records.CorrectIssueRepository(r.ctx, tx, podUpdateIssue, repo, branch, repo, r.clock.Now())
-		if err != nil {
-			return err
-		}
-		if !corrected {
-			return fmt.Errorf("the record was already on %s", repo)
-		}
-		return nil
-	}); err != nil {
-		r.t.Fatalf("correct the repository of %s onto %s: %v", podUpdateIssue, repo, err)
-	}
+	correctRecord(r.t, r.pool, r.records, podUpdateIssue, repo, branch, r.clock.Now())
 }
 
 // podRepository scripts what every claim's pod was built from, which is one repository for the
@@ -147,9 +134,6 @@ func TestRepositoryCorrectionReplacesThePodAndRelaunchesEveryRoleOnItsSession(t 
 		if call.Spec.Repository.String() != podUpdateCorrectedRepo || call.Spec.DefaultBranch != podUpdateCorrectedBranch {
 			t.Errorf("the relaunch of %s works %s at %s, want %s at %s: the launch after the replacement is built from the record",
 				call.Spec.Claim, call.Spec.Repository, call.Spec.DefaultBranch, podUpdateCorrectedRepo, podUpdateCorrectedBranch)
-		}
-		if owner := call.Spec.Repository.Owner(); owner != "zeta" {
-			t.Errorf("the relaunch of %s holds the gh directories of %q, want zeta's: the new pod's bundle and token are the new owner's", call.Spec.Claim, owner)
 		}
 		if call.Spec.ResumeSessionFile == "" || call.Previous == nil {
 			t.Errorf("the %s was started afresh (session file %q, previous %+v), want it resumed on its recorded session",

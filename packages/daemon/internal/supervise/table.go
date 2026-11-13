@@ -2137,7 +2137,7 @@ func bootInterval(m *Machine, ctx context.Context, _ Event) error {
 // the policy's (relaunchAfterFailure, Charges). A relaunch the tree lifecycle refuses is checked
 // before the retirement, so the process is kept and the deadline tried again at the probe
 // interval, as one whose stop fails is: that check asks whether the tree may launch at all, which
-// is no outcome question (decision 10). An operator suspension retained through a rule-resuming
+// is no outcome question. An operator suspension retained through a rule-resuming
 // launch instead completes here: no ready will arrive to run it, and relaunching would drop the
 // operator's hold.
 func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {

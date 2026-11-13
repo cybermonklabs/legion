@@ -192,17 +192,9 @@ func startText(t *testing.T, pool *pgxpool.Pool, key string, policy config.Desig
 	var task string
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
-		store := record.NewStore()
-		gates, err := store.GatesOf(ctx, tx, key)
-		if err != nil {
-			return err
-		}
-		asks, err := store.RootAsks(ctx, tx, []string{key})
-		if err != nil {
-			return err
-		}
-		task = workflow.ResumeTask(key, *request.Awaiting, policy.Steps(), gates, asks[key])
-		return nil
+		var err error
+		task, err = workflow.ResumeTask(ctx, tx, record.NewStore(), key, *request.Awaiting, policy.Steps())
+		return err
 	}); err != nil {
 		t.Fatalf("write the resume of %s from the record: %v", key, err)
 	}

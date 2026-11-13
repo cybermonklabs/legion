@@ -1265,12 +1265,16 @@ package api
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
 //
-// The daemon ships store migration `20261112012123_issue_repository_correction.up.sql` with it,
-// which adds the four `issues` columns the keys are read from, `workspace_bundles.repo`, the
-// third restore outcome `refused_repository`, and the table `workspace_bundles_refused` a bundle
-// of that outcome is moved to. An older daemon binary put back on this schema writes none of them
-// and reads none of them, and it carries the write-once guard this change removes, so it refuses
-// a corrected repository as it always did while a correction this release applied stands. (This
+// The daemon ships two store migrations with it. `20261112012123_issue_repository_correction.up.sql`
+// adds the four `issues` columns the keys are read from, `workspace_bundles.repo`, the third
+// restore outcome `refused_repository`, and the table `workspace_bundles_refused` a bundle of that
+// outcome is moved to. An older daemon binary put back on this schema writes none of them and
+// reads none of them, and it carries the write-once guard this change removes, so it refuses a
+// corrected repository as it always did while a correction this release applied stands.
+// `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
+// task that resumes an answered root carries, so the task's text is written at each send. An
+// older daemon neither reads nor writes that column: it sends the task text a row holds, which is
+// empty for a resume task this release queued and never sent. (This
 // entry takes 91. Read at the third forward merge of 2026-11-12, which
 // brought main in at c95e698a9a5f: main declares 86, the entry right above this one, and the
 // open heads above it declare 87 (#3939), 88 (#3730), 89 (#3519, #3659) and 90 (#3575, #3830,

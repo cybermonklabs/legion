@@ -249,9 +249,9 @@ func (s *supervision) reconcileIssuePodUpdate(ctx context.Context, issue string,
 // working is what keeps the promise that no worker is stopped mid-turn — a worker answers from
 // inside a turn, and that turn ends a moment later. candidate is the replacement this round
 // would make, which is the whole of what the round is: its issue, the round, the pod it was
-// opened over, the reasons it names and the sweep's own now (podReplacement). It reports
-// whether it decided the round, and with it the pod replacement that decision leaves the sweep
-// to make, which is candidate itself.
+// opened over, the reasons it names, the repository that pod was built from and the sweep's own
+// now (podReplacement). It reports whether it decided the round, and with it the pod
+// replacement that decision leaves the sweep to make, which is candidate itself.
 //
 // The replacement is handed back rather than made here because it waits its pod out, and the
 // sweep makes every one of this tick's replacements after its whole walk over the issues
@@ -462,11 +462,7 @@ type podReplacement struct {
 // with nothing lost — every claim the round asks had answered before this call was made — so
 // nothing is deleted earlier than it would have been.
 func (s *supervision) replacePodForRound(ctx context.Context, replace podReplacement) {
-	issue, round, pod, reasons, now := replace.issue, replace.round, replace.pod, replace.reasons, replace.now
-	// The repository the push check's branches are in: the check runs in the pod, against the
-	// remote the pod's own clone has, which after a repository correction is the repository the
-	// issue has left (rescueMessage).
-	repository := replace.repository
+	issue, round, pod, reasons, repository, now := replace.issue, replace.round, replace.pod, replace.reasons, replace.repository, replace.now
 	claims, err := s.supervisor.Claims(ctx)
 	if err != nil {
 		if ctx.Err() == nil {
@@ -810,8 +806,7 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 // clone has. After a repository correction that is the repository the issue has left, and the
 // repository the issue is recorded on now holds none of these branches, so the message names it
 // rather than send a reader to the new repository for branches that are not there. A message
-// built where the pod's repository is unknown ("") names no repository, as every message did
-// before the pod was asked for one.
+// built where the pod's repository is unknown ("") names no repository.
 func rescueMessage(round, repository string, checked pushCheck) string {
 	if checked.unchecked != "" {
 		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)

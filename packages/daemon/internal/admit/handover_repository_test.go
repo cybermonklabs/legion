@@ -162,7 +162,7 @@ func TestRepositoryCorrectionOfAHandOverOntoAnUnservedRepositoryWaitsOnTheRecord
 	if got.RepoChangePending != "acme/gadgets" || got.RepoChangeReason != "the review App is not installed on acme/gadgets" {
 		t.Fatalf("the waiting change = %q because %q, want acme/gadgets and why it waits", got.RepoChangePending, got.RepoChangeReason)
 	}
-	want := "Legion serves no installation of acme/gadgets, so this issue keeps acme/widgets as its repository. Legion moves the issue to acme/gadgets itself once it serves that repository, with nothing for anyone to do."
+	want := "Legion did not move this issue off acme/widgets: the review App is not installed on acme/gadgets. Install it on acme/gadgets, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to."
 	if messages := handOverMessages(t, pool); len(messages) != 1 || messages[0] != want {
 		t.Fatalf("the issue was told %q, want it told once, saying %q", messages, want)
 	}

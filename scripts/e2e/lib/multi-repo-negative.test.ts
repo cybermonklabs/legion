@@ -418,7 +418,11 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
   // The daemon's own words for a change it cannot apply (noteRepositoryChangeWaits, in
   // packages/daemon/internal/workflow/repository.go), with this control's repositories put in.
   const xTargetedNote =
-    "Legion serves no installation of other/outside, so this issue keeps acme/widgets as its repository. Legion moves the issue to other/outside itself once it serves that repository, with nothing for anyone to do.";
+    "Legion did not move this issue off acme/widgets: other/outside is not mapped to project ACME in Dispatch. Map other/outside to the project in Dispatch, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to.";
+  // The same note where X is mapped and a GitHub App is not installed on it: the opening and the
+  // closing sentence are the ones the check matches, and the refusal between them differs.
+  const xLeftOutNote =
+    "Legion did not move this issue off acme/widgets: the review App is not installed on other/outside. Install it on other/outside, or set another repository (the issue header's Repository picker, or dispatch issue-update --repo owner/name). Legion moves the issue itself once it serves the repository that Dispatch resolves the issue to.";
 
   // The repository and the message both already reflect the edit, but the
   // only post-baseline event is the daemon's own routine status write (also issue.updated) — this
@@ -462,44 +466,49 @@ describe("negative repo-edit: Dispatch's seq cursor and the exact kept-repositor
     expect(after.stderr).toContain("CHECK negative-repo-edit-ACME-2: FAIL");
   });
 
-  test("an issue.updated after the baseline naming X, with the exact kept-repository message from the daemon: PASS", async () => {
-    const daemonServer = daemonStub(stateBody);
-    const dispatchServer = dispatchStub({
-      "ACME-2": JSON.stringify({ key: "ACME-2", resolved_repo: "acme/widgets" }),
+  for (const [variant, note] of [
+    ["X not mapped", xTargetedNote],
+    ["an App not installed on X", xLeftOutNote],
+  ] as const) {
+    test(`an issue.updated after the baseline naming X, with the daemon's kept-repository message (${variant}): PASS`, async () => {
+      const daemonServer = daemonStub(stateBody);
+      const dispatchServer = dispatchStub({
+        "ACME-2": JSON.stringify({ key: "ACME-2", resolved_repo: "acme/widgets" }),
+      });
+      const env = fullInputs(
+        `http://127.0.0.1:${daemonServer.port}`,
+        `http://127.0.0.1:${dispatchServer.port}`
+      );
+      const { bin, evidence } = newFakeDir();
+      const path = isolatedPath(bin);
+      const before = await spawnScript(
+        ["negative", "repo-edit", "before", "ACME-2"],
+        path,
+        evidence,
+        env
+      );
+      expect(before.status).toBe(0);
+      const runId = baselineRunId(before.stdout);
+      const laterDispatchServer = dispatchStub(
+        { "ACME-2": JSON.stringify({ key: "ACME-2", repo: "other/outside" }) },
+        {
+          "ACME-2": JSON.stringify([
+            issueUpdatedEvent(20, "other/outside"),
+            daemonActorEvent("ACME", 19, `${note}\n\n<!-- legion-outbox:9 -->`),
+          ]),
+        }
+      );
+      const env2 = { ...env, DISPATCH_URL: `http://127.0.0.1:${laterDispatchServer.port}` };
+      const after = await spawnScript(
+        ["negative", "repo-edit", "after", runId, "ACME-2"],
+        path,
+        evidence,
+        env2
+      );
+      expect(after.status).toBe(0);
+      expect(after.stdout).toContain("CHECK negative-repo-edit-ACME-2: PASS");
     });
-    const env = fullInputs(
-      `http://127.0.0.1:${daemonServer.port}`,
-      `http://127.0.0.1:${dispatchServer.port}`
-    );
-    const { bin, evidence } = newFakeDir();
-    const path = isolatedPath(bin);
-    const before = await spawnScript(
-      ["negative", "repo-edit", "before", "ACME-2"],
-      path,
-      evidence,
-      env
-    );
-    expect(before.status).toBe(0);
-    const runId = baselineRunId(before.stdout);
-    const laterDispatchServer = dispatchStub(
-      { "ACME-2": JSON.stringify({ key: "ACME-2", repo: "other/outside" }) },
-      {
-        "ACME-2": JSON.stringify([
-          issueUpdatedEvent(20, "other/outside"),
-          daemonActorEvent("ACME", 19, `${xTargetedNote}\n\n<!-- legion-outbox:9 -->`),
-        ]),
-      }
-    );
-    const env2 = { ...env, DISPATCH_URL: `http://127.0.0.1:${laterDispatchServer.port}` };
-    const after = await spawnScript(
-      ["negative", "repo-edit", "after", runId, "ACME-2"],
-      path,
-      evidence,
-      env2
-    );
-    expect(after.status).toBe(0);
-    expect(after.stdout).toContain("CHECK negative-repo-edit-ACME-2: PASS");
-  });
+  }
 
   // The operator spells X differently than Dispatch resolved and wrote it
   // (LEGION_E2E_REPO_X=Other/Outside here; Dispatch's own .repo and the daemon's note both read

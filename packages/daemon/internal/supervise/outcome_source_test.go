@@ -17,14 +17,13 @@ import (
 // The policy that decides whether a claim's failure charges a budget (Charges) has a chokepoint:
 // the four charge functions — chargePrompt, chargeDeath, relaunchAfterFailure and chargeLaunch —
 // each ask it, so no site that reaches one can charge what the policy waives. But the Go type
-// system cannot require that a failing path call one of them at all, which is exactly what three
-// of the four busy paths did not do before #3625: each decided the busy answer itself, from the
-// agent's words, before any charge function was reached. So this test reads the package's own
-// source and holds the four things the compiler cannot: every member has a row in the policy, no
-// site outside outcome.go reads a refusal's words to decide, every charge names a member the
-// package declares, and no function but a charge function writes a budget counter except to
-// reset it to zero (budgetResets names each that may). Delete this test when a chokepoint for
-// that becomes possible.
+// system cannot require that a failing path call one of them at all, and a busy path that
+// decides the busy answer itself, from the agent's words, never reaches a charge function. So
+// this test reads the package's own source and holds the four things the compiler cannot: every
+// member has a row in the policy, no site outside outcome.go reads a refusal's words to decide,
+// every charge names a member the package declares, and no function but a charge function
+// writes a budget counter except to reset it to zero (budgetResets names each that may). Delete
+// this test when a chokepoint for that becomes possible.
 //
 // It type-checks the package's non-test source against the compiler's export data for its
 // dependencies (compiledDependencies, as TestProcessEndsListsEveryEndDeclared does), so it reads
@@ -430,8 +429,8 @@ func (s *superviseSource) assignments() map[types.Object][]ast.Expr {
 }
 
 // refusalTaint is every variable of the package a refusal's words reach, through assignments and
-// through the parameters of the package's own functions (agentBusy took the words as its
-// parameter before #3625's sites passed them in).
+// through the parameters of the package's own functions, since a helper can take the words as
+// its parameter.
 type refusalTaint struct {
 	src     *superviseSource
 	fields  map[types.Object]bool

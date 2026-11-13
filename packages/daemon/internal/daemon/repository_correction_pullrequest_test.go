@@ -1,6 +1,6 @@
 package daemon
 
-// INFRA-3136 R3, the pull request a correction leaves behind: Dispatch moved the issue to another
+// The pull request a correction leaves behind: Dispatch moved the issue to another
 // repository and the daemon's record followed it (record.Store.CorrectIssueRepository), while the
 // pull request the issue opened before the correction is still open on the repository the issue
 // has left. The correction moves the issue's row alone, so the pull request's row keeps the
@@ -90,21 +90,10 @@ func newLeftPullRequestRig(t *testing.T) *leftPullRequestRig {
 			return api.RepositoriesView{Mapped: []api.MappedRepositoryView{{Repo: leftRepo}, {Repo: workedRepo}}}
 		},
 	}
-	r.record(record.Issue{Key: leftPullRequestKey, Tree: leftPullRequestKey, Project: "LEGION", Title: "the issue that moved",
+	putOutboxIssue(t, r.pool, r.records, record.Issue{Key: leftPullRequestKey, Tree: leftPullRequestKey, Project: "LEGION", Title: "the issue that moved",
 		Phase: phase.Implementing, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress", Rank: "A", HandedOver: true,
 		LastDispatchSeq: 1, Repo: leftRepo, DefaultBranch: "main", GitHubRepo: leftRepo})
 	return r
-}
-
-// record writes the issue as the workflow records it.
-func (r *leftPullRequestRig) record(issue record.Issue) {
-	r.t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		return r.records.PutIssue(ctx, tx, issue)
-	}); err != nil {
-		r.t.Fatalf("record %s: %v", issue.Key, err)
-	}
 }
 
 // opens records a pull request of the issue on repo, in state, as a GitHub fact of that
@@ -124,19 +113,7 @@ func (r *leftPullRequestRig) opens(repo string, number int, state record.PullReq
 // as the workflow's own pass does (workflow.(*Engine).ApplyRepositoryChange).
 func (r *leftPullRequestRig) corrects(repo, branch string) {
 	r.t.Helper()
-	ctx := context.Background()
-	if err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
-		corrected, err := r.records.CorrectIssueRepository(ctx, tx, leftPullRequestKey, repo, branch, repo, leftPullRequestMoment)
-		if err != nil {
-			return err
-		}
-		if !corrected {
-			r.t.Fatalf("the record of %s was not corrected onto %s", leftPullRequestKey, repo)
-		}
-		return nil
-	}); err != nil {
-		r.t.Fatalf("correct %s onto %s: %v", leftPullRequestKey, repo, err)
-	}
+	correctRecord(r.t, r.pool, r.records, leftPullRequestKey, repo, branch, leftPullRequestMoment)
 }
 
 // task is the addressing sentence the next launch of the issue's implementer is told.

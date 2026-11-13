@@ -233,8 +233,8 @@ func TestAWorkersAddressingNamesItsRepositoryAndTheProjects(t *testing.T) {
 // UTC whatever zone the record's moment carries. The sentence says where the issue's branch, its
 // pull request and the old pod's rescue branch stayed, since those never move, and it is
 // rendered at every launch from then on rather than once: no claim turns it off. An issue no
-// correction has reached is told none of it, and a daemon with no reader (a deployment with no
-// workflow) is told no repository at all.
+// correction has reached is told none of it. A daemon with no reader, which is told no
+// repository at all, is the test above's last case.
 //
 // One read of the record answers the repository, its default branch and the correction
 // (workflowRuntime.issueLaunchRepository), so a read that cannot answer refuses the launch, as a
