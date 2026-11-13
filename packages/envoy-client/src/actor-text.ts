@@ -32,9 +32,10 @@ export function actorText(actor: Actor | WrittenActor): string {
  * body would, and never an empty one. The actor is unknown only on an older record that kept
  * the time alone, which reads as `its author`.
  *
- * One wording for every surface: the post reads a tool prints
- * (`dispatch-commands/render-item.ts`) and the answers list a session is handed
- * (`session-answers.ts`) both say this sentence.
+ * One wording for every surface: every read of a post a tool prints
+ * (`dispatch-commands/render-item.ts`), an event of one (`dispatch-commands/render-issue.ts`),
+ * a graph row naming one (`dispatch-commands/render-graph.ts`) and the answers list a session is
+ * handed (`session-answers.ts`) all say this sentence.
  */
 export function deletedMark(at: string, by: Actor | WrittenActor | null | undefined): string {
   return `Deleted by ${by == null ? "its author" : actorText(by)} at ${at}`;

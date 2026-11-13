@@ -97,13 +97,15 @@ export const MessageSchema = z.strictObject(messageFields).readonly();
  *  login, the one Inbox that conversation's Agent row sits in (`[]` when no person opened it). */
 export const messageEventPayloadFields = {
   ...messageFields,
+  /** The message's body. Every message row has one, but a deleted message's events carry none:
+   *  the read of the event takes `body` and `body_truncated` out of the payload
+   *  (`attachDeletedPostFields` in `api/events.go`), so it is optional here. */
+  body: messageFields.body.optional(),
   /** When the message's author last replaced its body, and when they deleted it with who they
    *  are. Events are retained verbatim and the three fields were added by the post corrections,
    *  so every message event written before them carries none; a read row (`Message`) always has
-   *  all three. A deleted message's events carry no body: the read of the event takes `body` and
-   *  `body_truncated` out of the payload and stamps the two marks in their place, so `body` is
-   *  optional here though every message row has one. */
-  body: messageFields.body.optional(),
+   *  all three. The read of a deleted message's event stamps the two delete marks where the body
+   *  was. */
   edited_at: messageFields.edited_at.optional(),
   deleted_at: messageFields.deleted_at.optional(),
   deleted_by: messageFields.deleted_by.optional(),

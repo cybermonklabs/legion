@@ -119,13 +119,15 @@ export const commentEventPayloadFields = {
   ...commentFields,
   mentions: z.array(WrittenCommentMentionSchema).optional(),
   deliveries: z.array(WrittenCommentDeliverySchema).optional(),
-  /** When the comment's author deleted it, and who they are; both absent on a comment nobody
-   *  deleted and on every event written before the post corrections. A deleted comment's events
-   *  carry no body: the read of the event takes `body`, `body_truncated` and `suggestion` out of
-   *  the payload and stamps these two in their place, so `body` and `suggestion` are optional
-   *  here though every comment row has them. */
+  /** The comment's body, and a suggestion's replacement text with it. Every comment row has
+   *  both, but a deleted comment's events carry neither: the read of the event takes `body`,
+   *  `body_truncated` and `suggestion` out of the payload (`attachDeletedPostFields` in
+   *  `api/events.go`), so both are optional here. */
   body: commentFields.body.optional(),
   suggestion: commentFields.suggestion.optional(),
+  /** When the comment's author deleted it, and who they are; both absent on a comment nobody
+   *  deleted and on every event written before the post corrections. The read of a deleted
+   *  comment's event stamps these two where the body was. */
   deleted_at: commentFields.deleted_at.optional(),
   deleted_by: commentFields.deleted_by.optional(),
   artifact_name: z.string(),
