@@ -244,8 +244,8 @@ func TestTheHeldSentenceTableServesTheWordsTheLadderSendsToEachArm(t *testing.T)
 //
 // The last phrase is a claim the rule forbids for another reason: "nothing of that tree runs" or
 // "starts" is false while a done member's production check is open, since a check look is the
-// one start a tree that holds its other issues still runs. What is true of such a tree is that
-// the daemon starts no issue of it, which is what the sentences say.
+// one start an issue out of the workflow still runs. What is true of such a tree is that the
+// daemon starts no issue of it, which is what the sentences say.
 func TestNoHeldSentencePromisesAStart(t *testing.T) {
 	for word, entry := range heldSentences {
 		sentence := entry.sentence("LEGION-1")

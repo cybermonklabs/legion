@@ -26,9 +26,9 @@ const liveTree, liveTreeChild, closedTree = "LEGION-168", "LEGION-169", "LEGION-
 // repository could not see that.
 const closedTreeRepo, closedTreeBranch = "acme/tools", "release/v7.1"
 
-// closedRoot is a tree root nothing runs again: finished (record.DoneStatus) at the generation it
-// closed on, with a linger deadline that has run out, which is the root whose members another
-// tree may take.
+// closedRoot is a tree root the daemon starts no issue of again: finished (record.DoneStatus) at
+// the generation it closed on, with a linger deadline that has run out, which is the root whose
+// members another tree may take.
 //
 // The deadline is set rather than left nil because that is the shape every closed root has: the
 // close arms it (workflow's beginLinger) and nothing but a re-admission clears it, so a root
@@ -194,7 +194,7 @@ func TestAClosedTreesMemberIsAdoptedByTheTreeThatTakesIt(t *testing.T) {
 				t.Fatalf("hand-over fences after %s = %d, want the one the closed tree's linger left", id, rows)
 			}
 			if writes := dispatchWrites(t, pool); writes != 0 {
-				t.Fatalf("Dispatch writes after %s = %d, want none: the daemon starts nothing of a closed tree", id, writes)
+				t.Fatalf("Dispatch writes after %s = %d, want none: the daemon starts no issue of a closed tree", id, writes)
 			}
 			assertHeld(t, pool, admission, record.HeldTreeClosed, members...)
 			assertWaiting(t, pool, nil)

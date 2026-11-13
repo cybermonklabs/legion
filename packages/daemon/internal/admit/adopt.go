@@ -32,11 +32,11 @@ type adoption struct {
 // joins with that child.
 //
 // A released child that is a member of a closed tree joins alone (workflow's Engine.AdoptMember),
-// which is C4 of dispatch://INFRA-3107: the tree it stood in runs nothing again, and the tree that
-// takes it takes the one issue the architect released, never the rest of that tree. A member that
-// holds an admission slot is work the daemon has already started, which C4 leaves where it stands:
-// the slot rows are read once for the wave, beside the root of fact.Tree, and such a member
-// refuses the wave by name (intake.ChildNotAdoptable).
+// which is C4 of dispatch://INFRA-3107: the daemon starts no issue of the tree it stood in, and
+// the tree that takes it takes the one issue the architect released, never the rest of that
+// tree. A member that holds an admission slot is work the daemon has already started, which C4
+// leaves where it stands: the slot rows are read once for the wave, beside the root of fact.Tree,
+// and such a member refuses the wave by name (intake.ChildNotAdoptable).
 //
 // The wave is one decision: when any child cannot join (workflow's AdoptionRefusal), or the tree
 // is not live when the first child that could join is asked about, that refusal is the answer and
