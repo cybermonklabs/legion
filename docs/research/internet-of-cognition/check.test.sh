@@ -190,6 +190,24 @@ else
     printf 'PASS %s\n' "a pinned uvx with an option before its package passes install-pinned"
 fi
 
+# 13. A runner inside a shell string is not read. unpinned_installs splits a command into
+# words, so `sh -c 'uvx pyshacl --version'` is the two words `sh -c` and one quoted word,
+# and the uvx inside it is never seen; it passed install-pinned at 828d080931, against the
+# header's own rule that what the reader cannot read it refuses.
+dir="$(fresh runner-in-shell-string)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || sh -c 'uvx pyshacl --version'; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "a runner inside sh -c is read, or refused as unread" install-pinned "$(fixture_run "$dir" --replay)"
+
+# 14. A range is no concrete version. The header says a version is a concrete one, and
+# `==0.*` (a Python wildcard), `@1` (an npm major range) and `@v0` (a Go module query for
+# the newest v0) each name the newest release inside a range; all three passed
+# install-pinned at 828d080931.
+for form in 'uvx pyshacl==0.* --version' 'npx cowsay@1' 'go run golang.org\/x\/tools\/cmd\/stringer@v0'; do
+    dir="$(fresh "range-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || $form; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    case_result "a range is refused as no version: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
