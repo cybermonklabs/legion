@@ -116,7 +116,7 @@ function renderPresses() {
       client.refetchQueries({ exact: true, queryKey: myRepliesCountQuery().queryKey })
     );
   };
-  return { dismissed, listMyReplies, read, readCount };
+  return { client, dismissed, listMyReplies, read, readCount };
 }
 
 function inboxCount(): string {
@@ -161,30 +161,64 @@ test("a Mark all read refused while a Dismiss is out gives back its own rows alo
   await waitFor(() => expect(listMyReplies).toHaveBeenCalled());
 });
 
-// A press made while an earlier one is out has left by the time the earlier one is refused, so
-// the count it goes back to still holds the made press's rows: the refusal reads the count again,
-// and Dispatch's answer, which counts the made press, is the count.
-test("a Dismiss refused after a later Mark all read was made reads the count again", async () => {
+/** Dismiss, then Mark all read, which Dispatch makes; then the Dismiss is refused. From Mark all
+ *  read's landing on Dispatch counts the two rows it marked and not the Dismiss's row - three -
+ *  and every read of the count after the refusal is answered with `countRead`. Resolves once
+ *  that read has gone out. */
+async function dismissRefusedAfterMarkAllMade(countRead: () => Promise<MyRepliesResponse>) {
   const user = userEvent.setup();
-  const { dismissed, listMyReplies, read } = renderPresses();
+  const { client, dismissed, listMyReplies, read } = renderPresses();
+  const countReadSince = (calls: number) =>
+    listMyReplies.mock.calls.slice(calls).some(([page]) => page?.limit === 1);
 
   await user.click(screen.getByRole("button", { name: "Dismiss" }));
   await waitFor(() => expect(inboxCount()).toBe("4"));
   await user.click(screen.getByRole("button", { name: "Mark all read" }));
   await waitFor(() => expect(inboxCount()).toBe("2"));
 
-  // From here Dispatch counts the two rows Mark all read marks and not the Dismiss's row: three.
   listMyReplies.mockImplementation(async (page) =>
-    page.limit === 1 ? { ...threadsRead([]), total: COUNT - 2 } : threadsRead(ROWS)
+    page?.limit === 1 ? { ...threadsRead([]), total: COUNT - 2 } : threadsRead(ROWS)
   );
+  const marked = listMyReplies.mock.calls.length;
   read.resolve({ marked: 2 });
-  await waitFor(() => expect(inboxCount()).toBe("3"));
+  // Dispatch's three lands under the Dismiss still out, which shows its row taken: two.
+  await waitFor(() => {
+    expect(countReadSince(marked)).toBe(true);
+    expect(client.isFetching()).toBe(0);
+  });
+  expect(inboxCount()).toBe("2");
 
-  const reads = listMyReplies.mock.calls.length;
+  listMyReplies.mockImplementation((page) =>
+    page?.limit === 1 ? countRead() : Promise.resolve(threadsRead(ROWS))
+  );
+  const refused = listMyReplies.mock.calls.length;
   dismissed.reject(refusal());
   await screen.findByText("Could not dismiss 1 thread: not found.");
-  await waitFor(() => expect(inboxCount()).toBe("3"));
-  expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads);
+  await waitFor(() => expect(countReadSince(refused)).toBe(true));
+  return client;
+}
+
+// A press made while an earlier one is out takes its rows out of the count before the earlier
+// one: a refusal of the earlier one puts back five less the two rows Dispatch marked - the count
+// Dispatch last confirmed - while it reads the count again, never the five no answer gives.
+test("a Dismiss refused after a later Mark all read was made reads three while the count is read again", async () => {
+  const counted = Promise.withResolvers<MyRepliesResponse>();
+  const client = await dismissRefusedAfterMarkAllMade(() => counted.promise);
+  expect(client.getQueryState(myRepliesCountQuery().queryKey)?.fetchStatus).toBe("fetching");
+  expect(inboxCount()).toBe("3");
+
+  await act(async () => counted.resolve({ ...threadsRead([]), total: COUNT - 2 }));
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(inboxCount()).toBe("3");
+});
+
+test("a Dismiss refused after a later Mark all read was made reads three when the count read fails", async () => {
+  const client = await dismissRefusedAfterMarkAllMade(() => Promise.reject(new Error("offline")));
+  await waitFor(() =>
+    expect(client.getQueryState(myRepliesCountQuery().queryKey)?.status).toBe("error")
+  );
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(inboxCount()).toBe("3");
 });
 
 // R7 under two presses: a read of the count that lands while both are out may count neither,

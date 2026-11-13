@@ -409,6 +409,80 @@ test("a second drop while the first is unanswered leaves both cards where they w
   }
 });
 
+// R10 of dispatch://INFRA-299 under two drops. A drop made while an earlier one is live is placed
+// ahead of its write on the board that earlier drop left (`Writes.placeAhead`), and the store
+// keeps the board as Dispatch last gave it - with the earlier drop in it once Dispatch made it -
+// as what a refusal puts back. With every read of the board failing from then on, the earlier
+// card stays where it was dropped and the refused card goes back where Dispatch has it.
+test("a drop refused behind an earlier drop, with the board unreadable, puts back only the refused card", async () => {
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  const queryKey = ["issues", "project", "CORE"] as const;
+  queryClient.setQueryData(queryKey, [
+    issue({ key: "CORE-1", rank: "a", status: "todo", title: "Alpha" }),
+    issue({ key: "CORE-2", rank: "b", status: "todo", title: "Bravo" }),
+    issue({ key: "CORE-3", rank: "c", status: "todo", title: "Charlie" }),
+    issue({ key: "CORE-4", rank: "d", status: "in_progress", title: "Delta" }),
+    issue({ key: "CORE-5", rank: "e", status: "in_progress", title: "Echo" }),
+  ]);
+  const keysIn = (status: string) =>
+    (queryClient.getQueryData(queryKey) as IssueSummary[])
+      .filter((item) => item.status === status)
+      .map((item) => item.key);
+  const listIssues = spyOn(api, "listIssues").mockRejectedValue(new Error("offline"));
+  const earlier = Promise.withResolvers<Issue>();
+  const refused = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches()
+    .mockImplementationOnce(() => earlier.promise)
+    .mockImplementationOnce(() => refused.promise);
+  // The board on screen reads the list, so the reads the moves ask for go out.
+  const hook = renderHook(
+    () => {
+      useQuery(projectIssuesQuery("CORE", []));
+      return useBoardMoves("CORE");
+    },
+    {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      ),
+    }
+  );
+  let first: Promise<void> = Promise.resolve();
+  let second: Promise<void> = Promise.resolve();
+  try {
+    act(() => {
+      first = hook.result.current.moveCard("CORE-4", "todo", 2);
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
+    act(() => {
+      second = hook.result.current.moveCard("CORE-5", "todo", 1);
+    });
+    expect(keysIn("todo")).toEqual(["CORE-1", "CORE-5", "CORE-2", "CORE-4", "CORE-3"]);
+
+    await act(async () => {
+      earlier.resolve({ ...patched, key: "CORE-4" });
+      await first;
+    });
+    await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(2));
+    const reads = listIssues.mock.calls.length;
+    await act(async () => {
+      refused.reject(new ApiError(403, { code: "FORBIDDEN", error: "not your project" }));
+      await second;
+    });
+    await waitFor(() => expect(listIssues.mock.calls.length).toBeGreaterThan(reads));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    expect(queryClient.getQueryState(queryKey)?.status).toBe("error");
+    expect(hook.result.current.error).toBe("not your project");
+    expect(keysIn("todo")).toEqual(["CORE-1", "CORE-2", "CORE-4", "CORE-3"]);
+    expect(keysIn("in_progress")).toEqual(["CORE-5"]);
+  } finally {
+    hook.unmount();
+    listIssues.mockRestore();
+    patchIssue.mockRestore();
+  }
+});
+
 // Todo: Alpha, Bravo, Charlie; In progress: Delta - the keyboard rows' seed.
 const keyboardIssues: IssueSummary[] = [
   issue({ key: "CORE-1", rank: "a", status: "todo", title: "Alpha" }),

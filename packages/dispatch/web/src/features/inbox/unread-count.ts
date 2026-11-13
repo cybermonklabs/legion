@@ -11,11 +11,15 @@
  * twice. A thread that arrives while a press is out is held under the bound until the press's own
  * read of the count, once its answer lands, sets it.
  *
- * The bound of each press is read when it is shown, from the presses live then. A refused press
- * leaves at once, takes its rows out of the bound of every later press still out, and puts the
- * count back to what it stood at before it. That count still holds the drop of a later press
- * already made, which has left and holds no bound, so a refusal also reads the count again from
- * Dispatch, whose answer counts every press it made and is shown under every press still out.
+ * The bound of each press is read when it is shown, from the presses live then. A press made
+ * leaves and takes its rows out of the count before every earlier press still out: Dispatch has
+ * taken them, whatever becomes of those. A refused press leaves at once, takes its rows out of
+ * the bound of every later press still out, and puts the count back to what it stood at before
+ * it, less the rows of every later press already made - the value Dispatch last confirmed for
+ * the rows the presses touched. A thread may have arrived or been read elsewhere meanwhile, so a
+ * refusal also reads the count again from Dispatch, whose answer counts every press it made and
+ * is shown under every press still out; while that read is out, or once it fails, the count put
+ * back is what the badge shows.
  */
 
 import type { QueryClient } from "@tanstack/react-query";
@@ -25,7 +29,7 @@ import { myRepliesCountQuery } from "../../api/queries";
 /** One press that drops the count, from its press until its write settles or is refused. */
 export interface UnreadDrop {
   /** The count before this press: the cache at the press, with the rows of every earlier press
-   *  refused since put back. */
+   *  refused since put back and those of every later press made since taken out. */
   before: number;
   /** The unread threads this press takes out of the count. */
   readonly taken: number;
@@ -73,9 +77,10 @@ export function shownUnreadCount(client: QueryClient): (count: number) => number
 
 /**
  * The press of `drop` was refused, or let go with nothing made: it leaves, every press after it
- * stops counting its rows, the count goes back to what it stood at before it, over which the store
- * shows every press still live, and the count is read again from Dispatch. It leaves here rather
- * than when its write settles, since its own bound would otherwise hold that count down.
+ * stops counting its rows, the count goes back to what it stood at before it less the rows of
+ * every later press already made (`settledUnreadDrop`), over which the store shows every press
+ * still live, and the count is read again from Dispatch. It leaves here rather than when its
+ * write settles, since its own bound would otherwise hold that count down.
  */
 export function refusedUnreadDrop(client: QueryClient, drop: UnreadDrop | undefined): void {
   if (drop === undefined) return;
@@ -90,9 +95,14 @@ export function refusedUnreadDrop(client: QueryClient, drop: UnreadDrop | undefi
 }
 
 /** The write of `drop`'s press settled, either way: it no longer holds the count. A refused one
- *  has left already (`refusedUnreadDrop`). */
+ *  has left already (`refusedUnreadDrop`), so one still live here was made: Dispatch took its
+ *  rows, and every earlier press still out stops counting them in the count before it, which its
+ *  refusal would put back. */
 export function settledUnreadDrop(client: QueryClient, drop: UnreadDrop | undefined): void {
+  if (drop === undefined) return;
   const live = liveDrops(client);
-  const at = drop === undefined ? -1 : live.indexOf(drop);
-  if (at !== -1) live.splice(at, 1);
+  const at = live.indexOf(drop);
+  if (at === -1) return;
+  live.splice(at, 1);
+  for (const earlier of live.slice(0, at)) earlier.before -= drop.taken;
 }

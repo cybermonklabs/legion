@@ -118,49 +118,80 @@ class CommentActionClearedError extends Error {
   }
 }
 
+/** An action the store stopped trying while it waited its turn, before anything of it went out:
+ *  held, let go, or stopped by the reader (Stop trying). Nothing was sent, so a Retry under its
+ *  key is the action's first request (`retriesUnderItsKey`). */
+class CommentActionStoppedError extends SendStoppedError {
+  constructor() {
+    super("Not sent: this action was stopped before it went out. Retry sends it.");
+    this.name = "CommentActionStoppedError";
+  }
+}
+
 /**
- * Holds one comment action until every action pressed before it has landed, and gives it up
+ * The comment actions pressed before one press, watched from that press until it settles
+ * (`stop`). It holds one action until every action pressed before it has landed, and gives it up
  * (`CommentActionClearedError`) once one of those is refused: an action on another comment waits
  * for the one in flight, and a failure clears the actions still waiting. All of it is read from
  * the store - the press order is the order the store joined them in, and what became of each is
  * the store's own outcome (`Writes.onOutcome`), told for every way a write leaves it - rather
- * than from a map the component holds, so neither dies with the card that pressed them. The wait
- * is this action's attempt, so it ends as the store stops trying the action (`signal`), with
- * `SendStoppedError`: a hold - its person's sign-out out here or in another tab, their session
- * lapsed - puts the action back in its line to wait again once the hold ends, and a write the
- * store let go - a sign-out, another login taking over - is never sent. Two actions on one
- * comment need none of this: the store's own line (`comment:<id>`) orders them.
+ * than from a map the component holds, so neither dies with the card that pressed them.
+ *
+ * The wait (`wait`) is one attempt of the action, so it ends as the store stops trying it
+ * (`signal`), with `CommentActionStoppedError`: a hold - its person's sign-out out here or in
+ * another tab, their session lapsed - puts the action back in its line to wait again once the
+ * hold ends, and a write the store let go - a sign-out, another login taking over - is never
+ * sent. What the press watches outlives its attempts: a refusal that came while the action stood
+ * held in its line, with no attempt waiting, is kept (`#refused`), so the attempt after the hold
+ * reads it and clears the action rather than sending it behind the refused one. Two actions on
+ * one comment need none of this: the store's own line (`comment:<id>`) orders them.
  */
-function afterEarlierActions(
-  writes: Writes,
-  key: string,
-  signal: AbortSignal | undefined
-): Promise<void> {
-  /** This action's own row, which the store joined before its turn came. */
-  const mine = writes.idOf(key);
-  if (mine === undefined) return Promise.reject(new CommentActionClearedError());
-  if (signal?.aborted === true) return Promise.reject(new SendStoppedError());
-  const earlier = (): boolean =>
-    writes.rows().some((row) => {
-      const action = ofKind(row, commentActionWrite);
-      return action !== undefined && action.id < mine && liveWrite(action);
+class EarlierActions {
+  readonly #writes: Writes;
+  readonly #key: string;
+  /** Whether an action pressed before this one was refused since this press. */
+  #refused = false;
+  /** Ends the attempt waiting now, if one is, once an action pressed before it leaves. */
+  #left: (() => void) | undefined;
+  readonly stop: () => void;
+
+  constructor(writes: Writes, key: string) {
+    this.#writes = writes;
+    this.#key = key;
+    this.stop = writes.onOutcome((outcome) => {
+      const action = ofKind(outcome.write, commentActionWrite);
+      const mine = writes.idOf(key);
+      if (action === undefined || mine === undefined || action.id >= mine) return;
+      if (outcome.kind === "refused") this.#refused = true;
+      this.#left?.();
     });
-  if (!earlier()) return Promise.resolve();
-  const waited = Promise.withResolvers<void>();
-  const stopped = (): void => waited.reject(new SendStoppedError());
-  signal?.addEventListener("abort", stopped, { once: true });
-  const stopOutcomes = writes.onOutcome((outcome) => {
-    const action = ofKind(outcome.write, commentActionWrite);
-    if (action !== undefined && outcome.kind === "refused" && action.id < mine) {
-      waited.reject(new CommentActionClearedError());
-    } else if (!earlier()) {
-      waited.resolve();
-    }
-  });
-  return waited.promise.finally(() => {
-    stopOutcomes();
-    signal?.removeEventListener("abort", stopped);
-  });
+  }
+
+  /** Waits for every action pressed before this one to land, and answers this action's own row
+   *  in the store, which joined before its turn came. */
+  wait(signal: AbortSignal | undefined): Promise<number> {
+    const writes = this.#writes;
+    if (signal?.aborted === true) return Promise.reject(new CommentActionStoppedError());
+    const mine = writes.idOf(this.#key);
+    if (mine === undefined || this.#refused) return Promise.reject(new CommentActionClearedError());
+    const earlier = (): boolean =>
+      writes.rows().some((row) => {
+        const action = ofKind(row, commentActionWrite);
+        return action !== undefined && action.id < mine && liveWrite(action);
+      });
+    if (!earlier()) return Promise.resolve(mine);
+    const waited = Promise.withResolvers<number>();
+    const stopped = (): void => waited.reject(new CommentActionStoppedError());
+    signal?.addEventListener("abort", stopped, { once: true });
+    this.#left = () => {
+      if (this.#refused) waited.reject(new CommentActionClearedError());
+      else if (!earlier()) waited.resolve(mine);
+    };
+    return waited.promise.finally(() => {
+      this.#left = undefined;
+      signal?.removeEventListener("abort", stopped);
+    });
+  }
 }
 
 /**
@@ -169,11 +200,12 @@ function afterEarlierActions(
  * reaches Dispatch whatever becomes of the card - another page, an unmount, a reload.
  *
  * Two behaviours of the comment list hold, read from the store's rows rather than from a map of
- * the component's (`afterEarlierActions`): an action on another comment waits for the one in
- * flight, and a failure clears the actions still waiting, which show nothing and are never
- * sent. A second press of an action already in line is refused rather than queued - the card
- * offered one press, and the store holds it - and the card that offered a refused action shows
- * its refusal with a Retry (`CommentActionFailure`).
+ * the component's (`EarlierActions`): an action on another comment waits for the one in flight,
+ * and a failure clears the actions still waiting - those held in their line by a sign-out or a
+ * lapse included - which show nothing and are never sent. A second press of an action already
+ * in line is refused rather than queued - the card offered one press, and the store holds it -
+ * and the card that offered a refused action shows its refusal with a Retry
+ * (`CommentActionFailure`).
  */
 export function useCommentActionQueue({ onMutate, onSuccess, shows }: CommentActionQueueOptions) {
   const writes = useWrites();
@@ -190,6 +222,9 @@ export function useCommentActionQueue({ onMutate, onSuccess, shows }: CommentAct
     const request = commentActionRequest(input);
     let begun = false;
     setRefused(undefined);
+    // Watched from the press, not from each attempt: a refusal ahead of this action that came
+    // while it was held is still read by the attempt after the hold.
+    const earlier = new EarlierActions(writes, key);
     void writes
       .run({
         detail: input,
@@ -201,20 +236,21 @@ export function useCommentActionQueue({ onMutate, onSuccess, shows }: CommentAct
         presentation: "indicator",
         target: `comment:${input.id}`,
         write: async (bounds) => {
+          // Once begun, the action has gone out and every action before it had landed: none can
+          // be refused ahead of it, and an attempt after a hold is the same request again.
           if (!begun) {
-            await afterEarlierActions(writes, key, bounds.signal);
+            const mine = await earlier.wait(bounds.signal);
             // What the card shows while the action is out is written as it goes out, so an
             // action cleared behind a failure never showed anything to put back. From there the
             // change is the store's: it shows it again over each answer that lands on a cache it
             // wrote until this action settles (R7 of dispatch://INFRA-299), and puts it back if
             // the action leaves without landing (R10). An action the store let go or held while
-            // `onMutate` ran is sent no more than one let go or held while it waited.
+            // `onMutate` ran - either aborts this attempt - is sent no more than one let go or
+            // held while it waited.
             await onMutate?.(input);
-            const id = writes.idOf(key);
-            if (id === undefined) throw new CommentActionClearedError();
-            if (bounds.signal?.aborted === true) throw new SendStoppedError();
+            if (bounds.signal?.aborted === true) throw new CommentActionStoppedError();
             const change = shows?.(input);
-            if (change !== undefined) writes.shows(id, change);
+            if (change !== undefined) writes.shows(mine, change);
             begun = true;
           }
           return api.send(request, bounds);
@@ -233,7 +269,8 @@ export function useCommentActionQueue({ onMutate, onSuccess, shows }: CommentAct
             key: retriesUnderItsKey(refusal) ? key : undefined,
           });
         }
-      );
+      )
+      .finally(earlier.stop);
   }
 
   return {

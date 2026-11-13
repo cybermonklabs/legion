@@ -459,7 +459,22 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
       }
       switch (kind) {
         case "refused":
-          break;
+          if (
+            send.status === "refused" &&
+            isAnchorMissing(send.refusal) &&
+            !remarked.current.has(markId)
+          ) {
+            void reanchor(send);
+            return;
+          }
+          // A refusal of a send the margin re-addressed itself: that recovery is over, whatever
+          // the refusal says, so the line it put up goes and the server's own words are the
+          // reader's to read. Running the recovery again would send the same words to the same
+          // refusal.
+          if (remarked.current.has(markId)) {
+            setAnchorRefusal((shown) => (shown?.markId === markId ? undefined : shown));
+          }
+          return;
         // A send the store let go may have reached Dispatch before it went, so its mark may be
         // the comment's: it stays, as a landed send's does. A discarded one is the reader's to
         // drop, mark and all.
@@ -470,20 +485,8 @@ export function MarginProvider({ children }: { children: ReactNode }): ReactNode
           setAnchorRefusal((shown) => (shown?.markId === markId ? undefined : shown));
           if (kind === "discarded") bridgeRef.current?.removeMark(markId);
           return;
-      }
-      if (
-        send.status === "refused" &&
-        isAnchorMissing(send.refusal) &&
-        !remarked.current.has(markId)
-      ) {
-        void reanchor(send);
-        return;
-      }
-      // A refusal of a send the margin re-addressed itself: that recovery is over, whatever the
-      // refusal says, so the line it put up goes and the server's own words are the reader's to
-      // read. Running the recovery again would send the same words to the same refusal.
-      if (remarked.current.has(markId)) {
-        setAnchorRefusal((shown) => (shown?.markId === markId ? undefined : shown));
+        default:
+          kind satisfies never;
       }
     });
     return () => {

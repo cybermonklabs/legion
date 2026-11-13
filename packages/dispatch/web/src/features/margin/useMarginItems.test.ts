@@ -677,11 +677,13 @@ test("a sign-out ends the wait of an action behind another, and nothing of it is
 });
 
 /** Accept A out, Accept B waiting behind it, under alice's sign-in; `hold` holds her writes and
- *  `release` ends the hold. While held, A's answer lands and B goes back in its line unsent; once
- *  the hold ends, B is sent. */
+ *  `release` ends the hold. While held, A's answer comes back and B goes back in its line unsent.
+ *  When A lands, B is sent once the hold ends; when A is refused (`refused`), B is cleared
+ *  behind it as it is with no hold, and never sent. */
 async function heldBehindAnother(
   hold: (writes: Writes) => void,
-  release: (writes: Writes) => void
+  release: (writes: Writes) => void,
+  refused = false
 ): Promise<void> {
   const user = userEvent.setup();
   const saves: PendingSave[] = [];
@@ -704,17 +706,32 @@ async function heldBehindAnother(
     // B waited inside its attempt, which the hold stops: it is back in its line, unsent.
     expect(statuses()).toEqual(["comment:A sending", "comment:B queued"]);
     await act(async () => {
-      saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
-      await saves[0]?.promise;
+      if (refused) {
+        saves[0]?.reject(
+          new ApiError(409, { code: "ANCHOR_MISSING", error: "the suggestion's text moved" })
+        );
+      } else {
+        saves[0]?.resolve({ ...comment("A", "m-a", "2026-09-09T00:00:00Z"), lost: false });
+      }
+      await saves[0]?.promise.catch(() => undefined);
     });
     await act(async () => {});
     expect(acceptComment).toHaveBeenCalledTimes(1);
     expect(statuses()).toEqual(["comment:B queued"]);
 
-    // The hold ends, and B waits for nothing: it goes.
     await act(async () => release(writes));
-    await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
-    expect(acceptComment).toHaveBeenLastCalledWith("B", {}, keyedAttempt);
+    if (refused) {
+      // The hold ends, and B's attempt reads that A was refused while B stood held: B leaves
+      // the store unsent, and the card shows A's refusal alone.
+      await waitFor(() => expect(actionState()).toEqual({ error: "A", pending: [] }));
+      await act(async () => {});
+      expect(acceptComment).toHaveBeenCalledTimes(1);
+      expect(statuses()).toEqual([]);
+    } else {
+      // The hold ends, and B waits for nothing: it goes.
+      await waitFor(() => expect(acceptComment).toHaveBeenCalledTimes(2));
+      expect(acceptComment).toHaveBeenLastCalledWith("B", {}, keyedAttempt);
+    }
   } finally {
     unmount();
     acceptComment.mockRestore();
@@ -739,6 +756,24 @@ test("a lapsed session holds an action behind another, unsent, until the person 
   await heldBehindAnother(
     (writes) => writes.signedIn(undefined),
     (writes) => writes.signedIn("alice")
+  );
+});
+
+// A refusal clears the actions still waiting, those a hold put back in their line included: the
+// hold ended the wait that listened for it, and the attempt after the hold still reads it.
+test("an action refused during another tab's sign-out clears the one held behind it, unsent", async () => {
+  await heldBehindAnother(
+    (writes) => writes.holdFor("alice"),
+    (writes) => writes.release("alice"),
+    true
+  );
+});
+
+test("an action refused while the session is lapsed clears the one held behind it, unsent", async () => {
+  await heldBehindAnother(
+    (writes) => writes.signedIn(undefined),
+    (writes) => writes.signedIn("alice"),
+    true
   );
 });
 
