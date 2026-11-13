@@ -2,7 +2,7 @@
 # Drives the people and the agents of the node and tuple store end to end against a running
 # server (dispatch://INFRA-1149's c-person-graph). It writes comments, a message and an ask
 # through the real HTTP API, has the server deliver them to sessions and to a role, adds one
-# comment that reaches nobody and one delivery attempt that fails, and then reads the store back
+# comment that no session receives and one delivery attempt that fails, and then reads the store back
 # and checks each tuple: what each person authored, what reached each session, and that a failed
 # or pending attempt earns no tuple. It checks the role, the session and the page, and it holds
 # every read against a table of identities a person wrote into this driver. A message earns no
