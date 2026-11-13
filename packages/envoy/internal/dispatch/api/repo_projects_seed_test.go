@@ -159,7 +159,7 @@ func TestSeedRepoProjectsAddsMissingRowsWithoutOverwritingSettings(t *testing.T)
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, project := range []string{"APP", "CORE"} {
-		if _, err := database.Pool.Exec(ctx, "insert into projects (key, name) values ($1, $1)", project); err != nil {
+		if _, err := database.Pool.Exec(ctx, "insert into projects (key, name, default_assignee) values ($1, $1, 'alice')", project); err != nil {
 			t.Fatalf("create project %q: %v", project, err)
 		}
 	}
