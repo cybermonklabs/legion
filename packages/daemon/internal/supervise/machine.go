@@ -2613,11 +2613,11 @@ func (m *Machine) endProcess(ctx context.Context) error {
 // so a round left recorded on it would be read against whatever pod the replacement makes — the
 // daemon's sweep would find a round nothing can answer, and tell the issue its work was lost at
 // every tick for the rest of the tree's life. The ask that round left owed goes with the round
-// (dropsUpdateTask): nothing of this claim will ever answer it, and an ask left pending is the
-// first thing the retry's session reads — a worker asked to push its work for a pod replacement
-// that has already happened. An ask a turn confirmed is left where it is, as it is at every
-// other end of a round: that turn is the worker's, and settle retires the delivery once the
-// claim is no longer working.
+// (dropsUpdateTask): nothing of this claim will ever answer it, and no send of this daemon
+// carries it (sendPending drops it), so an ask left pending would only stand in the stored row
+// of a retired claim until the retry's ready dropped it. An ask a turn confirmed is left where
+// it is, as it is at every other end of a round: that turn is the worker's, and settle retires
+// the delivery once the claim is no longer working.
 //
 // The stop is one write. The drop is decided before the round's fields go, so the write that
 // follows carries the claim exactly as it is ending — retired, in no round — together with the

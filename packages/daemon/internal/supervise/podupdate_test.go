@@ -76,19 +76,60 @@ func (h *harness) openUpdate(round, reasons string) {
 	h.must(PodUpdateOpen{Claim: h.token, Round: round, Reasons: reasons})
 }
 
-// leftAsk is an ask of round that an older daemon queued for this claim as a task, with the
-// clock of that send: a delivery under an id of the round's own (updateTaskID), handed to the
-// worker as that daemon handed it, and UpdateTaskedAt stamped as the sweep's mark stamps it
-// (PodUpdateAsked). This daemon queues no such task — the round's ask is a message on the role's
-// Envoy topic — but a claim restored from an older daemon's record can hold one, and what reads it
-// (dropUpdateTask, rotateTaskID, sendPending's drop) still runs over it. The claim
+// leftAsk is the claim as this daemon restores it from an older daemon's record when that daemon
+// asked round with a task and sent it: a delivery under an id of the round's own (updateTaskID),
+// UpdateTaskedAt stamped as the sweep's mark stamps it (PodUpdateAsked), and the prompt on the
+// claim's connection, which is that daemon's send. This daemon queues no such task and sends
+// none (sendPending drops it). The deploy then replaces the daemon (restart), so the claim comes
+// back holding the ask pending and unconfirmed, with the question a restart arms for it
+// (askFirst): a turn that starts next is the turn the older daemon's prompt started. The claim
 // is in round already, ready or idle.
-func (h *harness) leftAsk(round string) {
+func (h *harness) leftAsk(round string) Delivery {
 	h.t.Helper()
-	h.must(RequestDeliver{Claim: h.token, ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour), testRescue)})
+	return h.olderDaemonsAsk(round, true)
+}
+
+// unsentAsk is leftAsk for an ask the older daemon queued and did not send: the claim was in a
+// turn when that daemon queued the ask, so the end of that turn was where that daemon sent it.
+// The claim is in round already, in that turn.
+func (h *harness) unsentAsk(round string) Delivery {
+	h.t.Helper()
+	return h.olderDaemonsAsk(round, false)
+}
+
+// olderDaemonsAsk is leftAsk and unsentAsk, sent saying which. set, when it is given, changes the
+// ask as the older daemon stored it, for a case whose ask that daemon had moved on from its send:
+// a ladder step it took after a provider error.
+func (h *harness) olderDaemonsAsk(round string, sent bool, set ...func(*Delivery)) Delivery {
+	h.t.Helper()
 	if asked, err := h.m.PodUpdateAsked(h.ctx, round); err != nil || !asked {
 		h.t.Fatalf("mark the older daemon's ask of %s = %t, %v; want it marked", round, asked, err)
 	}
+	ask := Delivery{ID: updateTaskID(round), Task: UpdateTask(round, testReasons, epoch.Add(time.Hour), testRescue),
+		QueuedAt: h.clock.Now()}
+	if sent {
+		if err := h.conn.Prompt(h.ctx, ask.ID, ask.Task); err != nil {
+			h.t.Fatalf("the older daemon's send of its ask of %s: %v", round, err)
+		}
+		ask.DeliveredAt, ask.MarkedBy, ask.Prompted = h.clock.Now(), ask.ID, true
+	}
+	for _, change := range set {
+		change(&ask)
+	}
+	if err := h.store.PutDelivery(h.ctx, h.token, ask); err != nil {
+		h.t.Fatalf("store the older daemon's ask of %s: %v", round, err)
+	}
+	h.restart()
+	if p := h.claim().Pending; p == nil || p.ID != ask.ID {
+		h.t.Fatalf("the restored claim holds %+v, want the older daemon's ask %s", p, ask.ID)
+	}
+	return ask
+}
+
+// carriesAsk is whether a prompt carries an ask of an update round: its delivery id or its words.
+func carriesAsk(p fake.Prompt) bool {
+	_, asks := updateRoundOf(p.DeliveryID)
+	return asks || strings.Contains(p.Message, "The daemon must replace the pod")
 }
 
 // asksRound is whether a delivery id is an ask of round. Each ask of a round has an id of its own
@@ -319,40 +360,58 @@ func TestPodUpdateAskedMarksTheRoundsAskOnce(t *testing.T) {
 	})
 }
 
-// An ask an older daemon queued as a task can still reach a worker: a claim restored from that
-// daemon's record holds it, and the machine sends it as it sends any task. The end of its turn is
-// no answer, whatever contract the claim's plugin declared (dispatch://INFRA-2981 R9): only the
-// worker's ready_for_update call answers a round, and a round nobody answers ends at its bound.
-// The ask retires with its turn, as every confirmed delivery does, so the claim's next task is
-// not held behind it.
+// An ask an older daemon queued as a task for the round the claim is still in is dropped and
+// never sent (dispatch://INFRA-2981 R1: no update task is sent for a round). That daemon queued
+// it while the claim was in a turn, so the end of that turn was where that daemon sent it, and
+// this daemon restores the claim holding it. Its text can tell the worker that the end of the
+// turn answers the round, and the end of a turn is no answer, whatever contract the claim's
+// plugin declared (R9): only the worker's ready_for_update call answers a round, and the role
+// reads the round's Envoy ask alone. With no answer standing, the round holds nothing back, so
+// the next task goes at once.
+//
+// The negative control is sendPending's drop narrowed to the rule before this one, an ask of a
+// round the claim is not in now or has left (`asks && (round != m.claim.UpdateRound ||
+// m.claim.LeftPodRound(round))`): the end of the turn then sends the ask, and a prompt carries it.
 func TestPodUpdateTheEndOfTheTurnOfAnOlderDaemonsAskIsNoAnswer(t *testing.T) {
+	const next = "review the pull request"
 	for _, contract := range []int{PodUpdateContract - 1, PodUpdateContract} {
 		t.Run("at contract "+strconv.Itoa(contract), func(t *testing.T) {
 			h := updateHarness(t, contract)
 			h.reach(StateReady)
 			h.m.deps.PluginContract = PodUpdateContract
 			h.openUpdate(testRound, testReasons)
-			h.leftAsk(testRound)
-			h.wantPrompts(1)
-
+			// A turn of the agent's own runs when the older daemon queues its ask, and the deploy
+			// replaces that daemon before the turn ends.
 			h.must(StreamTurnStart{Claim: h.token})
+			ask := h.unsentAsk(testRound)
+			h.wantState(StateWorking)
+			h.wantPrompts(0)
+
 			h.must(StreamTurnEnd{Claim: h.token})
 
+			for _, p := range h.prompts() {
+				if p.DeliveryID == ask.ID || carriesAsk(p) {
+					t.Fatalf("prompt %+v carries the older daemon's ask %s, want it dropped and never sent", p, ask.ID)
+				}
+			}
 			c := h.wantRound(testRound)
+			if c.Pending != nil {
+				t.Fatalf("pending = %+v, want the older daemon's ask dropped at the end of the turn", c.Pending)
+			}
+			if d, held := h.store.delivery(h.token); held {
+				t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
+			}
 			if c.UpdateSignalledAt != nil {
-				t.Fatalf("UpdateSignalledAt = %v after the ask's turn ended with no call, want nil: the end of a turn is no answer", c.UpdateSignalledAt)
+				t.Fatalf("UpdateSignalledAt = %v after the turn ended with no call, want nil: the end of a turn is no answer", c.UpdateSignalledAt)
 			}
 			if stored := h.store.load(h.token); stored.UpdateSignalledAt != nil {
 				t.Errorf("stored claim = %+v, want no answer written for the end of a turn", stored)
 			}
-			if c.Pending != nil {
-				t.Fatalf("pending = %+v, want the ask retired by its own turn", c.Pending)
-			}
 
 			// No answer stands, so the round holds nothing back: the next task goes at once.
-			h.must(RequestDeliver{Claim: h.token, Task: "review the pull request"})
-			if sent := h.wantPrompts(2)[1]; sent.Message != "review the pull request" {
-				t.Errorf("the prompt after the ask's turn = %q, want the next task", sent.Message)
+			h.must(RequestDeliver{Claim: h.token, Task: next})
+			if sent := h.wantPrompts(1)[0]; sent.Message != next {
+				t.Errorf("the prompt after the turn = %q, want the next task", sent.Message)
 			}
 		})
 	}
@@ -778,9 +837,9 @@ func TestPodUpdateATurnTheDaemonDidNotPromptLeavesTheAnsweredClaimsNextTaskHeld(
 	}
 }
 
-// An ask an older daemon queued as a task goes when the round ends. A claim left holding it would
-// be prompted with "The daemon must replace the pod" for a round that is over, and until some
-// turn read it every task of the claim's next phase would wait behind it (ErrDeliveryPending).
+// An ask an older daemon queued as a task goes when the round ends, in the same step. A claim
+// left holding it would hold every task of the claim's next phase behind it (ErrDeliveryPending)
+// until some send dropped it.
 func TestPodUpdateAnEndedRoundLeavesNoTaskPending(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
 	h.reach(StateIdle)
@@ -1087,33 +1146,23 @@ func TestPodUpdateAnAnswerForTheClaimsOwnRoundIsRecorded(t *testing.T) {
 // worker has pushed for. The sweep then publishes the new round's own words, and the answer to
 // that round counts.
 //
-// The three turns are the three ways a turn can be in flight across a switch, each of which the
-// daemon once had to guess at: a turn that started late, after noTurn took the round's ask back
-// unconfirmed; a turn an earlier daemon saw start, whose claim this daemon restored with the
-// question still to ask (askFirst); and a turn the daemon sent nothing for, an Envoy notice or a
-// person's steer. With the id carried, the daemon has to know nothing about any of them.
+// The two turns are the two ways a turn can be in flight across a switch on a claim this daemon
+// restored holding an older daemon's ask: the turn that daemon's prompt started, which this
+// daemon reads through the question a restart leaves open (askFirst); and a turn the daemon sent
+// nothing for, an Envoy notice or a person's steer. With the id carried, the daemon has to know
+// nothing about either.
 func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 	first := PodRound(testOtherPod)
 	for name, turn := range map[string]func(*harness){
-		"a late turn of the old round's ask": func(h *harness) {
-			// The ask was acknowledged and started no turn within the bound, so it went back to
-			// waiting unconfirmed; the worker's turn on those same words starts after that.
-			h.advance(2 * testRPC)
-			if p := h.pending(); !p.ConfirmedAt.IsZero() || !asksRound(p.ID, first) {
-				h.t.Fatalf("pending after the wait ran out = %+v, want the round's own ask back in waiting, unconfirmed", p)
-			}
-			h.must(StreamTurnStart{Claim: h.token})
-		},
-		"a restart that has not heard from the agent": func(h *harness) {
-			h.restart()
+		"the turn the older daemon's prompt started": func(h *harness) {
 			if !h.m.askFirst {
 				h.t.Fatal("the restored claim has nothing to ask its agent; this test needs the question a restart leaves open")
 			}
 			h.must(StreamTurnStart{Claim: h.token})
 		},
 		"a turn the daemon sent nothing for": func(h *harness) {
-			// The round's ask had its turn, which ended without an answer, and a turn of the
-			// agent's own starts after it.
+			// The older daemon's ask had its turn, which ended without an answer, and a turn of
+			// the agent's own starts after it.
 			h.must(StreamTurnStart{Claim: h.token})
 			h.must(StreamTurnEnd{Claim: h.token})
 			h.must(StreamTurnStart{Claim: h.token})
@@ -1171,36 +1220,51 @@ func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 // An ask's delivery id is the one record of which round it is of. Three paths rotate a pending
 // id in the middle of a round — a late agent_start, Oh My Pi's "Agent is already processing"
 // refusal, and a death mid-turn — and the rotation keeps the round (rotateTaskID). An ask that
-// lost it would read as a phase task: the round's end would leave it pending, the worker would be
-// prompted with the words of a round whose pod is already replaced, and every task of its next
-// phase would wait behind it.
+// lost it would read as a phase task, and the relaunch's ready would send the older daemon's
+// words to the worker again. The death is the path a restored claim meets: the older daemon's
+// prompt started the turn, and the claim's process dies in it. The relaunch comes up in the
+// round's own pod, so the claim is still in the round, and its ready drops the ask rather than
+// send it.
 func TestPodUpdateAnAskKeepsItsRoundWhenItsIdRotates(t *testing.T) {
 	h := updateHarness(t, PodUpdateContract)
-	h.reach(StateReady)
+	h.inPod(testRoundPod)
 	h.openUpdate(testRound, testReasons)
-	h.leftAsk(testRound)
-	ask := h.wantPrompts(1)[0]
+	ask := h.leftAsk(testRound)
+	h.must(StreamTurnStart{Claim: h.token})
+	if p := h.pending(); p.ID != ask.ID || p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending = %+v, want the older daemon's ask confirmed by the turn its prompt started", p)
+	}
+	sent := len(h.prompts())
 
-	// The ask was acknowledged and started no turn: the wait for it runs out, and the task goes
-	// back to waiting under a new id the shim has no record of.
-	h.advance(2 * testRPC)
+	// The process dies in that turn: the ask goes back to waiting under a new id the shim of the
+	// relaunched process has no record of.
+	h.rt.ScriptResume(fake.SpawnResult{Locator: podProcess(testRoundPod, 1)})
+	h.observe(runtime.Gone)
 
 	rotated := h.pending()
-	if rotated.ID == ask.DeliveryID {
-		t.Fatalf("pending = %q, want an id of its own after the wait ran out", rotated.ID)
+	if rotated.ID == ask.ID {
+		t.Fatalf("pending = %q, want an id of its own after the death took the ask back", rotated.ID)
 	}
 	if !asksRound(rotated.ID, testRound) {
 		t.Fatalf("the rotated id = %q, want it still an ask of the round %q", rotated.ID, testRound)
 	}
 
-	h.must(PodUpdateEnded{Claim: h.token, Round: h.claim().UpdateRound})
+	h.relaunched()
 
-	h.wantRound("")
+	h.wantRound(testRound)
+	if c := h.claim(); c.UpdateLeftRound != "" {
+		t.Fatalf("the claim left %q, want it still in the round: its process came up in the round's own pod", c.UpdateLeftRound)
+	}
+	for _, p := range h.wantPrompts(sent) {
+		if p.DeliveryID == rotated.ID {
+			t.Fatalf("prompt %+v carries the rotated ask, want it dropped and never sent", p)
+		}
+	}
 	if p := h.claim().Pending; p != nil {
-		t.Fatalf("pending after the round ended = %+v, want the round's own ask taken back with it", p)
+		t.Fatalf("pending after the relaunch's ready = %+v, want the older daemon's ask dropped", p)
 	}
 	if d, held := h.store.delivery(h.token); held {
-		t.Errorf("the store still holds %+v, want the ended round's ask deleted", d)
+		t.Errorf("the store still holds %+v, want the older daemon's ask deleted", d)
 	}
 }
 

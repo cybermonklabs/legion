@@ -4583,12 +4583,12 @@ The earlier release wrote the ask mark when it queued its task, and this release
 A round open longer than `pod_update_grace_minutes` would also be past its bound at the first sweep, which would replace the pod before any role was asked.
 So each role of such a round that has not answered is asked once by this release, at the first sweep that finds it ready, and the round ends `pod_update_grace_minutes` after the deploy at the latest, an operator's suspension excepted.
 The reset keeps each answer (`update_signalled_at`), the answers that the earlier release took from the end of a turn included, and this release asks no role whose claim holds an answer (`unaskedClaims`).
-A role can read two asks for one round.
-The earlier release's `update:` task can still wait on the claim, and the daemon sends it when the role's turn ends (`sendPending` in `supervise/delivery.go`), because the task names the same round as the claim.
-This release's Envoy ask names that round too, so either answer counts.
-The cost is one more turn of that role.
 The notice mark goes too, because the earlier release set it for another notice under the old clock.
 If the mark stayed, it would stop the one `update-stalled` notice that this release gives past the new bound.
+The earlier release's `update:` task can still wait on the claim.
+This release drops that task and never sends it, whichever round the task names (`sendPending` in `supervise/delivery.go`).
+The text of that task can tell the role that the end of its turn is its answer, and this release reads no end of a turn as an answer.
+So the role reads only the Envoy ask of this release, and only a `ready_for_update` call answers the round.
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).

@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
 // providerErrorTaskText is the work the cases below give the claim, so a prompt's own sentence is
@@ -289,14 +290,22 @@ func TestANewerTaskQueuedWhileTheLadderWaitsReplacesTheTaskItKept(t *testing.T) 
 	}
 }
 
-// A question of a round another round has replaced is dropped rather than sent again. The ask —
-// one an older daemon queued as a task — carries the round it asked in its delivery id and keeps
-// it across the take-back (rotateTaskID), so the question whose turn ended in a provider error
-// comes back naming a round whose pod this daemon has already replaced: no session of this claim
-// can answer it, and the ladder's own send is where the claim reads that (sendPending). Sending
-// it would cost a model turn and leave every later task of the claim behind it; the drop frees
-// the slot, and the sweep publishes the ask of the round the claim is in now to the role's topic.
-func TestAQuestionOfARoundAnotherReplacedIsDroppedRatherThanSentAgain(t *testing.T) {
+// olderDaemonsLadderStep is the first step of the ladder an older daemon took over its own ask of
+// an update round, before the deploy replaced it: a turn of the ask ended in a provider error,
+// that daemon took the ask back unconfirmed, and its wait for the next send was that daemon's
+// timer, which went with it.
+func olderDaemonsLadderStep(d *Delivery) {
+	d.ProviderErrorRetries, d.ProviderErrorNote = 1, providerErrorTask(providerErrorCause(529))
+}
+
+// A question an older daemon queued as a task and kept on the provider-error ladder is dropped
+// rather than sent again, for the round the claim is still in as for any other. This daemon
+// restores the claim holding the ask, owed and unconfirmed, with no wait armed for it, and the
+// claim's next send is where it reads the ask (sendPending). Sending it would put the older
+// daemon's words in front of the worker again, words that can tell it that the end of its turn
+// answers the round; the drop frees the slot, and the round's ask is the sweep's, on the role's
+// topic.
+func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *testing.T) {
 	h := newBareHarness(t)
 	c := queuedClaim()
 	if err := h.store.PutClaim(h.ctx, c); err != nil {
@@ -305,33 +314,30 @@ func TestAQuestionOfARoundAnotherReplacedIsDroppedRatherThanSentAgain(t *testing
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
-	h.leftAsk(testRound)
-	h.must(StreamTurnStart{Claim: testToken})
-	later := PodRound(testOtherPod)
-	h.openUpdate(later, testReasons)
-
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
-
-	owed := h.pending()
-	if !asksRound(owed.ID, testRound) || !owed.ConfirmedAt.IsZero() {
-		t.Fatalf("pending %+v, want the question of the replaced round %s unconfirmed on the ladder", owed, testRound)
+	owed := h.olderDaemonsAsk(testRound, true, olderDaemonsLadderStep)
+	sent := len(h.prompts())
+	if _, armed := h.m.timers[TimerPromptRetry]; armed {
+		t.Fatal("the restored claim has a ladder wait armed; the wait was the older daemon's timer")
 	}
 
-	h.advance(30 * time.Second)
+	// The daemon's next observation of the live process is the claim's next send.
+	h.observe(runtime.Alive)
 
 	if p := h.claim().Pending; p != nil {
-		t.Fatalf("the ladder left %+v pending, want the replaced round's question dropped", *p)
+		t.Fatalf("the claim holds %+v, want the older daemon's question %s dropped", *p, owed.ID)
 	}
-	h.wantPrompts(1)
+	// The one prompt of the ask is the older daemon's own send.
+	h.wantPrompts(sent)
 	if d, ok := h.store.delivery(testToken); ok {
 		t.Errorf("the store holds %+v, want the dropped question's row gone", d)
 	}
+	h.wantRound(testRound)
 
-	h.openUpdate(later, testReasons)
+	h.openUpdate(testRound, testReasons)
 
-	h.wantPrompts(1)
+	h.wantPrompts(sent)
 	if p := h.claim().Pending; p != nil {
-		t.Errorf("pending after the sweep's next post = %+v, want nothing: the machine queues no ask of %s", *p, later)
+		t.Errorf("pending after the sweep's next post = %+v, want nothing: the machine queues no ask of %s", *p, testRound)
 	}
 }
 
@@ -559,10 +565,10 @@ func TestAnArchitectsStopKeepsTheTaskTheLadderKeptAndTheRetrySendsIt(t *testing.
 
 // What the claim keeps is its own work, not the round's question. A round's ask an older daemon
 // queued as a task, whose turn ended in a provider error, is a question the claim owes, waiting
-// on the ladder; the stop retires the claim and the round goes with it (clearUpdate), so nothing
-// of this claim will ever answer that question, and the retry's session would be handed it first
-// — a worker asked to push its work for a pod replacement that has already happened. It is
-// retired with the round (dropsUpdateTask).
+// on the ladder, and this daemon restores the claim holding it; the stop retires the claim and
+// the round goes with it (clearUpdate), so nothing of this claim will ever answer that question,
+// and no send of this daemon would carry it (sendPending drops it). It is retired with the round
+// (dropsUpdateTask).
 //
 // The stop is one write of the retired claim, carrying the delete of that question: the round
 // goes before the write rather than after it, so no store ever holds a retired claim that
@@ -576,14 +582,9 @@ func TestAStopRetiresTheRoundsQuestionTheLadderKept(t *testing.T) {
 	h.start(c)
 	h.reach(StateReady)
 	h.openUpdate(testRound, testReasons)
-	h.leftAsk(testRound)
-	h.must(StreamTurnStart{Claim: testToken})
-
-	h.errorTurn(StreamPromptResult{Error: "overloaded_error", HTTPStatus: 529})
-
-	owed := h.pending()
-	if !asksRound(owed.ID, testRound) || !owed.ConfirmedAt.IsZero() {
-		t.Fatalf("pending %+v, want the round's question unconfirmed and waiting on the ladder", owed)
+	owed := h.olderDaemonsAsk(testRound, true, olderDaemonsLadderStep)
+	if p := h.pending(); !asksRound(p.ID, testRound) || !p.ConfirmedAt.IsZero() || p.ProviderErrorRetries != 1 {
+		t.Fatalf("pending %+v, want the round's question unconfirmed and waiting on the ladder", p)
 	}
 
 	h.must(RequestStop{Claim: testToken})

@@ -2481,10 +2481,9 @@ func updateRoundOf(id string) (string, bool) {
 // The round must survive the rotation. A delivery id is the only record of which round an ask is
 // of, and three paths rotate one in the middle of a round — a late agent_start (noTurn), Oh My
 // Pi's "Agent is already processing" refusal (lateRefused), and a death mid-turn (interrupted).
-// An ask that lost its round would be read as a phase task by every reader of it: updatesRound
-// and dropUpdateTask. The round's end would then leave that task pending, the worker would be
-// prompted with the words of a round whose pod is already replaced, and every task of its next
-// phase would wait behind it (ErrDeliveryPending).
+// An ask that lost its round would be read as a phase task by every reader of it: updatesRound,
+// dropUpdateTask and sendPending's drop. sendPending would then send the older daemon's words to
+// the worker, and that text can tell the worker that the end of its turn is its answer.
 func rotateTaskID(id string) string {
 	if round, ok := updateRoundOf(id); ok {
 		return updateTaskID(round)
@@ -2504,12 +2503,12 @@ func (m *Machine) dropsUpdateTask() bool {
 }
 
 // dropUpdateTask retires an ask of this claim's round that an older daemon queued as a task and
-// that no turn has confirmed. This daemon queues no such task, but a claim it restored from the
-// store can hold one, and a round leaving the claim takes it back: the words name a round that is
-// over — a pod this daemon has already replaced — and until some turn reads them, every task of
-// the claim's next phase is refused behind this one (ErrDeliveryPending). An ask the claim owes is
-// one of those: a turn of it that ended in a provider error left it unconfirmed and waiting on
-// the ladder, and no session of this claim will ever answer the round it names. A task a turn
+// that no turn has confirmed. This daemon queues no such task and sends none (sendPending drops
+// it), but a claim it restored from the store can hold one, and a round leaving the claim takes
+// it back in the same step: the words name a round that is over — a pod this daemon has already
+// replaced — and while the claim holds them, every task of the claim's next phase is refused
+// behind this one (ErrDeliveryPending). An ask the claim owes is one of those: a turn of it that
+// ended in a provider error left it unconfirmed and waiting on the ladder. A task a turn
 // confirmed is left where it is: that turn is the worker's, and its end retires the delivery
 // (settle). Every end of a round for this claim runs it — the sweep's (endPodUpdate,
 // leaveRound), the round a new one replaces (openPodUpdate), and the registration's
