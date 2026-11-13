@@ -20,10 +20,12 @@ import (
 // and holds the whole of the tree's work (dispatch://INFRA-980, "Which issue needs a slot",
 // line 65).
 //
-// A root whose gate has opened waits for its children instead, and it keeps its row through
-// that wait as through every other (record.KeepsSlot), so the row alone cannot tell the two
-// apart: rule 0 reads the row to say the daemon has started this root at all, and AtWork is
-// what says its architect still has work of its own to hand over. Sending such a root into
+// A root whose gate has opened waits for its children instead. While it holds its row, the row
+// alone cannot tell the two apart: rule 0 reads the row to say the daemon has started this root
+// at all, and AtWork is what says its architect still has work of its own to hand over. (Such a
+// root gives its row back while an open child holds its first phase, as any started issue that
+// waits on another issue does, blockers.waitsOf; this test reads the decision with the row held.)
+// Sending such a root into
 // awaiting_person takes every first-phase member of its tree out of the waiting line
 // (record.Waiting drops the members of a root waiting on a person), so the children it is
 // waiting for can never start; the controller is told of a wait the root has no work for; and

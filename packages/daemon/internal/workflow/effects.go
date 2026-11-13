@@ -369,8 +369,9 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
-// the cap counts is its root's and the root holds it from its promotion until its work ends
-// (record.KeepsSlot), the production check's look (check.go), the pod wake (wake.go), the resume
+// the cap counts is its root's and the root holds it from its promotion until its work ends,
+// except while it waits on another issue (record.KeepsSlot, blockers.waitsOf), the production
+// check's look (check.go), the pod wake (wake.go), the resume
 // of a cancelled idle release (the daemon's outbox) and the roles admission brings back beside a
 // member's phase worker (admit's startMidPhaseMembers) are enqueued directly and stay claimable
 // at once. None of them puts a worker to work on a phase, so none of them is the cap's to hold,

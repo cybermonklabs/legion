@@ -440,7 +440,8 @@ func TestANewerEventThatCreatesNoRecordRefreshesTheHeldSummary(t *testing.T) {
 // yet know enough to decide that root, not that the root has lost its turn. Letting the next root
 // through would hand the cap's only slot to the lower-ranked one and leave the held root waiting
 // behind it for a slot that is no longer free, inverting the order Dispatch's own ranking sets —
-// and nothing later puts it back, since the root that took the slot keeps it until its tree ends.
+// and nothing later puts it back, since the root that took the slot keeps it until its tree ends,
+// short of a wait on another issue, which gives it back.
 // Each hold a boot can place is exercised on its own — the one Reconcile places for the Dispatch
 // consumer to reach the stream position it measured, and the one the boot's catch-up places before
 // the pass — and then the two together, where release's own promote bypasses the consumer hold but
