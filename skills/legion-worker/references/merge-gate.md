@@ -19,26 +19,24 @@ as the fingerprint decides (*The reviewer*, below, and
 
 - The reviewer reads CI on GitHub and verifies the `Threads` facts and the issue's results there
   and with `dispatch results --issue <issue>` — never from a handoff — then, when the diff
-  touches runtime code, runs
-  `task(agent="thermonuclear-deep-review")` and
-  `task(agent="thermonuclear-code-quality")` once at that head — the head the round reviews —
+  touches runtime code, runs `task(agent="thermonuclear-deep-review")` and
+  `task(agent="thermonuclear-code-quality")` once at the head the round reviews,
   waits for each one's result with `wait`, since each runs as a job of its own, and records the
   verdict from what those results say. A result that carries no report, or that names another
   place for it, is a failed run, not a verdict: run that agent again, or read its transcript, and
   record nothing from it until you have the findings text in front of you. Reading the agent's
   diff yourself and recording that in its place is the same as answering the rubric from a bare
-  verdict — it is your own reading standing in for a review that did not happen, not the review
+  verdict — your own reading standing in for a review that did not happen, not the review
   of your own that the round always asks for. When you can do neither — the agent will not run
   again and its transcript holds no findings — that half of the round has no review: tell the
   architect, do not approve, and wait with a `WAITING` line naming what you wait on until it
-  answers. The CI it reads is the head's own checks: no handoff is a
-  commit, so every push to the branch is work whose head gets GitHub's workflow runs of its own.
-  With `<o>/<r>`, `<n>`, `<base>` and `<headRefOid>` from
-  `gh pr view <n> --json baseRefName,headRefOid`, two reads. The required set is the
-  base branch's rulesets' required checks and its branch protection's, when it has any. Both
-  branch endpoints take the base as a URL path, each segment escaped and each `/` kept (a raw `#`
-  or `%` reads another branch), built in the same command from the name GitHub returns, never
-  pasted or carried over from an earlier command:
+  answers. The CI it reads is the head's own checks: no handoff is a commit, so every push to
+  the branch gets GitHub's workflow runs of its own. With `<o>/<r>`, `<n>`, `<base>` and
+  `<headRefOid>` from `gh pr view <n> --json baseRefName,headRefOid`, two reads. The required
+  set is the base branch's rulesets' required checks and its branch protection's, when it has
+  any. Both branch endpoints take the base as a URL path, each segment escaped and each `/`
+  kept (a raw `#` or `%` reads another branch), built in the same command from the name GitHub
+  returns, never pasted from an earlier command:
 
   ```bash
   base=$(gh pr view <n> -R <o>/<r> --json baseRefName -q .baseRefName) && \
@@ -68,21 +66,20 @@ as the fingerprint decides (*The reviewer*, below, and
   cancelled results again and stays red. GitHub refuses a re-run while an attempt of that run is
   still in progress: wait for it. When no
   run at the head holds the job, or nothing will run it (a check only a commit status reports, a
-  workflow another repository defines), tell the architect and do not approve.
+  workflow another repository defines), tell the architect; withholding approval is `REQUEST_CHANGES`.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
-  A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head, and a child never records the result that proves a root's check. A child that carries part of a root's requirement proves it with a check on the child's own Verification document whose `serves` names that requirement, at the child's own head. A root's own checks are proven at the root's own head, or, for an `after_merge` check, on the branch the root's pull request merged into or on the repository's default branch, in the root's last round.
+  A result proves the head it was recorded at. A result a child recorded against a root's check proves nothing for the root, since it was recorded at the child's head; which head proves which check is *An issue is proved by its own checks* in `skill://legion-worker/references/pr-body.md`.
   On a docs-only PR the `Thermo` line still records the simplify pass and the defects it
   reported, and its pair half reads `thermonuclear pair: not run (docs-only)`.
-  Submit **one review per round** —
-  `REQUEST_CHANGES` when any correctness finding stands, otherwise `APPROVE` of the head you
-  reviewed — always named by SHA — carrying every inline comment in that single
-  call: `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
-  with `commit_id`, `event` (`REQUEST_CHANGES` or `APPROVE`), `body` (with the
-  Legion footer, which names the head the review read:
-  `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
-  and a `comments[]` array of `{path, line, side, body}`, one entry per
-  finding — never one `pr review` call per finding (each submission fires a `pr-review` wake).
+  Submit **one review per round** — `REQUEST_CHANGES` when any correctness finding stands,
+  otherwise `APPROVE` of the head you reviewed — always named by SHA — carrying every inline
+  comment in that single call:
+  `gh api --method POST repos/{owner}/{repo}/pulls/{number}/reviews --input body.json`
+  with `commit_id`, `event`, `body` (with the Legion footer, which names the head the review
+  read: `<!-- legion: {"session":"<session-id>","phase":"review","head":"<the head you reviewed>"} -->`),
+  and a `comments[]` array of `{path, line, side, body}`, one entry per finding — never one
+  `pr review` call per finding (each submission fires a `pr-review` wake).
   That `head` is the full 40-character SHA of the head whose diff and checks you read, which is
   the `commit_id` you submit with, and never the head GitHub shows at the moment you submit:
   read `gh pr view <n> --repo <owner>/<repo> --json headRefOid --jq .headRefOid` before you
@@ -94,15 +91,14 @@ as the fingerprint decides (*The reviewer*, below, and
   A review whose footer names another head, or no head, decides no round:
   it is set aside, the round stays open and the
   architect is told the reason when the review's own webhook arrived, so the reviewer submits again at the head it read.
-  A `COMMENT` decides nothing. After a
-  forward merge, compute the fingerprint (*The unchanged-diff check* in
-  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the
-  `commit_id` of your last submitted review and at the new head. Equal and that review was
-  `APPROVE`: submit one more `APPROVE` naming the new head by SHA, its body naming both SHAs
-  and the fingerprint — a confirmation, not a round; no thermo pass, no thread pass. Equal and
-  that review was `COMMENT` or `REQUEST_CHANGES`: continue that round against the new head;
-  nothing restarts. Different, or either run printed no fingerprint: a new round — thermo again,
-  one review.
+  A `COMMENT` decides nothing. After a forward
+  merge, compute the fingerprint (*The unchanged-diff check* in
+  `skill://legion-worker/references/conflicts-and-rewrites.md`) at the `commit_id` of your last
+  submitted review and at the new head. Equal and that review was `APPROVE`: submit one more
+  `APPROVE` naming the new head by SHA, its body naming both SHAs and the fingerprint — a
+  confirmation, not a round; no thermo pass, no thread pass. Equal and that review was `COMMENT`
+  or `REQUEST_CHANGES`: continue that round against the new head; nothing restarts. Different,
+  or either run printed no fingerprint: a new round — thermo again, one review.
 - Answer every thread you opened, and every thread a bot opened that is none of Legion's role
   Apps, as `skill://legion-worker/references/review-threads.md` says; the same reference says
   when every thread is settled enough to approve, and resolving one never gates your approval.
@@ -114,33 +110,32 @@ as the fingerprint decides (*The reviewer*, below, and
   is told (`ApprovalStands` in `packages/daemon/internal/classify/decisions.go`,
   `stuckApprovedOtherCode` in `packages/daemon/internal/workflow/review.go`, and the cases "the
   approval, then a push" and "a push, then the approval of the head before it" in
-  `packages/daemon/internal/workflow/review_test.go`). GitHub runs the branch's workflows on that
-  push, as on every push. Wait for that head's required checks to be green, and approve only
-  then: nothing but your own read catches a check your prose broke, since the daemon moves the
-  issue for no check at all. A red you approve over reaches nobody who will act on it: the tree
-  runs on to the merge, where GitHub holds the pull request under the base branch's required
-  checks until someone reads them. A red there is a
-  `REQUEST_CHANGES` when the code is at fault, and your own commit to fix when your prose broke
-  it. The architect reads your prose commits at its acceptance (*The architect's acceptance*,
-  below), and that read is no new round.
+  `packages/daemon/internal/workflow/review_test.go`). GitHub runs the branch's workflows on
+  that push, as on every push, so approve only once that head's required checks are green:
+  nothing but your own read catches a check your prose broke, since the daemon moves the issue
+  for no check at all. A red you approve over reaches nobody who will act on it: the tree runs
+  on to the merge, where GitHub holds the pull request under the base branch's required checks
+  until someone reads them. A red there is a `REQUEST_CHANGES` when the code is at fault, and
+  your own commit to fix when your prose broke it. The architect reads your prose commits at its
+  acceptance (*The architect's acceptance*, below), and that read is no new round.
 
-A reviewer's phase ends with its completion, not with its review. Every round records a handoff
-and takes this order: read CI as above; write the handoff and record it with
-`dispatch handoff-write`; submit the review of the head, by its SHA; then complete. A red at the
-code is a `REQUEST_CHANGES` naming the check, never an approval. A request for changes does not
-wait, since it stands whatever CI says and the issue leaves reviewing with it. The approval waits
-on nothing either: it ends the round whatever CI says at the head it names, since the round reads
-no CI verdict, and a settlement the daemon reads later — at that head or any above it — moves the
-issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub gave it,
-in one message to the tree's architect, the worker of the issue's current phase and the
-implementer, and judges none of them: a red is the implementer's to fix or re-run, the
+A reviewer's phase ends with its review, and the reviewer completes all the same. Every round records a handoff and
+takes this order: read CI as above; write the handoff and record it with `dispatch handoff-write`;
+submit the review of the head, by its SHA; then complete. A red at the code is a `REQUEST_CHANGES`
+naming the check, never an approval; so is an unmet goal or requirement, named: only an approved
+spec version takes one out. A requirement an open child carries is pending until the parent's last
+round. Neither decision waits on CI: a request for changes stands whatever CI says and the issue
+leaves reviewing with it, and the approval ends the round at the head it names, since the round
+reads no CI verdict, and a settlement the daemon reads later — at that head or any above it —
+moves the issue nowhere. The daemon names each check GitHub reported, with the conclusion GitHub
+gave it, in one message each to the tree's architect, the worker of the issue's current phase
+and the implementer, and judges none: a red is the implementer's to fix or re-run, the
 architect's to decide on, and GitHub's to hold the merge for. So the reviewer's own read before
 it approves is the only read that decides anything. A review that names an older head reviews
-code the pull request no longer has. The daemon moves the issue once all three are in — the
-decision GitHub reports, your completion, in either order, and GitHub's own answer that the
-approved head is one the issue may advance on — so a review posted without a completion leaves
-the issue in reviewing until you finish, and an approved head GitHub answers `blocked` for leaves
-it there until that answer comes clean.
+code the pull request no longer has. The daemon moves the issue on the decision GitHub reports,
+your completion or not: an approval once GitHub answers that the approved head is one the issue
+may advance on, so an approved head GitHub answers `blocked` for leaves the issue in reviewing
+until that answer comes clean.
 
 ## The architect's acceptance
 
