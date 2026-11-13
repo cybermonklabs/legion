@@ -340,7 +340,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
-	d := newLaunchers(st.TakeWorkspaceCopyForRestore, st.DeleteRestoredWorkspaceCopy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(nil, st.TakeWorkspaceCopyForRestore, st.DeleteRestoredWorkspaceCopy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)

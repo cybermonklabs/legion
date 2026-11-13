@@ -2295,6 +2295,7 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 	return m.revive(ctx, exemptWake(ev), func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
+		m.claim.LeakCheckCause = ""
 	})
 }
 

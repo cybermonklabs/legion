@@ -28,9 +28,11 @@ import (
 //
 // A branch migration this list forgets would be applied as one of main's, which is a database no
 // deployment ever has, so the test below holds the list against the embedded set: every version
-// above main's newest is this branch's and has to be named here.
+// above main's newest is this branch's and has to be named here. dispatch://INFRA-3219's claim
+// leak-check cause (20261112180548), which came after, is above main's newest too, so a database
+// main migrated takes it in the same upgrade and it is named here with the rest.
 //
-// The last three are INFRA-1117's, which a database main migrated has not recorded either: the
+// Three more are INFRA-1117's, which a database main migrated has not recorded either: the
 // running copy's table (20261112105448), the newest push of each issue's branch (20261113005308)
 // and the claim's run of pod ends from outside the pod (20261113020122). They add two tables and a
 // defaulted column; the first also holds issue_releases.id below 2^62, which no release id main
@@ -41,12 +43,14 @@ var thisBranchsMigrations = []int{
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
 	20261029121100, 20261029121200, 20261102003600, 20261105081500, 20261105183200,
 	20261107095842, 20261108152000, 20261108190000, 20261109130413, 20261111181500,
-	20261112105448, 20261113005308, 20261113020122,
+	20261112105448, 20261112180548, 20261113005308, 20261113020122,
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
-// failure. Every embedded version above it is a branch's own — today INFRA-1117's three — and the
-// loop below holds the list rather than counting it.
+// failure. Every embedded version above it is named in thisBranchsMigrations: main's newest came in
+// above dispatch://INFRA-714's own at the forward merge of 2026-11-12, and dispatch://INFRA-3219's
+// one migration and INFRA-1117's three are above it, which is why the loop below holds the list
+// rather than counting it.
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

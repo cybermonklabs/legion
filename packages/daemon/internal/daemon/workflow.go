@@ -441,6 +441,10 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// The project's `memory` block decides what each tree admission opens is drawn: a project the
 	// file names no entry for is the zero block, which is off.
 	w.admission.UseMemory(cfg.Projects[cfg.Project].Memory)
+	// The bounds `worker_silence_minutes` and `worker_background_hours` set are what the tick's
+	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
+	// config.Config.WorkerBackground).
+	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
 	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
 	// whether to start a child and admission whether to admit a root inside this same
 	// transaction, from the mirror's rows, so the row an event carries must already be written
@@ -989,6 +993,63 @@ func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, paylo
 	return nil
 }
 
+// sweptFact is one fact a sweep of supervision read and the id it is applied under. It is held
+// here, beside the two that use it, because the sweep that mints them and applySweepFacts are
+// both this package's (silence.go's tellSilentPhaseWorkers).
+type sweptFact struct {
+	ID   string
+	Fact intake.Fact
+}
+
+// applySweepFacts applies each fact of one sweep of supervision that this daemon has not
+// applied already, and is the whole of what supervision is given of the workflow for that
+// (supervision.applySweepFacts), as enqueueOutbox above is the whole of what it is given of the
+// outbox. Every such fact is read off the supervisor's claims, so all of them are applied under
+// the source a claim's own terminal facts take (terminalSource); their ids share none of its
+// ids, and processed_events is keyed on the pair. Each fact is applied on its own, as every
+// fact applies, and the first error is returned once every other fact of the batch has had its
+// turn: one silence the store refused is no reason to leave the rest of the sweep unapplied.
+//
+// Which ids are applied already is read first, in one query outside the fact lock
+// (intake.Applied), and that read is the point of taking the batch rather than one fact at a
+// time. A sweep runs every minute over every claim, and a claim that is silent and stays silent
+// mints the same id at every sweep for ever, since the id is the claim token and a last step
+// that does not move. The reading this work was filed for found hundreds of claims with a last
+// step more than an hour old (dispatch://INFRA-3163), and without this read the pass would open
+// a transaction for each of them every minute on the one advisory lock every fact of the daemon
+// takes (intake.ApplyFact), each one only to be told the fact was applied already.
+//
+// A failure of that read takes the whole sweep down with it, no fact of it applied, so it is
+// logged here in the register the failure of one apply below is logged in: its caller discards
+// the error (tellSilentPhaseWorkers) on the strength of every failure being logged where it
+// failed, and a sweep that vanished without a line would make that false.
+func (w *workflowRuntime) applySweepFacts(ctx context.Context, facts []sweptFact) error {
+	ids := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		ids = append(ids, fact.ID)
+	}
+	applied, err := intake.Applied(ctx, w.pool, terminalSource, ids)
+	if err != nil {
+		w.log.Warn("the workflow could not read which facts of a sweep of supervision are applied already; none of the sweep is applied and it is read again at the next sweep",
+			"facts", len(facts), "error", err)
+		return err
+	}
+	var first error
+	for _, fact := range facts {
+		if applied[fact.ID] {
+			continue
+		}
+		if _, err := intake.ApplyFact(ctx, w.pool, terminalSource, fact.ID, fact.Fact, w.handlers...); err != nil {
+			w.log.Warn("the workflow could not apply a fact a sweep of supervision read; it is read again at the next sweep",
+				"id", fact.ID, "error", err)
+			if first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
 // attach gives the workflow what only supervision has: the outbox, built on its supervisor and
 // its runtime, the daemon's store and the runtime's bundler of an issue workspace for the
 // cadence, and the deployment's budget limits, which a failed claim's fact carries to the
@@ -1023,6 +1084,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	}
 	supervision.supervisor.OnDurableState(w.claimDurableState)
 	supervision.enqueue = w.enqueueOutbox
+	supervision.applySweepFacts = w.applySweepFacts
 	w.attachIdleRelease(supervision)
 }
 
