@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 )
 
 // gitWorktreeLockReason is the reason each workspace's git worktree is locked with: `git worktree
@@ -82,15 +84,15 @@ func gitDirWorktreeEntries(gitDir, dir string) ([]string, error) {
 			continue
 		}
 		entryDir := filepath.Join(admin, entry.Name())
-		gitdir, err := os.ReadFile(filepath.Join(entryDir, "gitdir"))
-		if errors.Is(err, fs.ErrNotExist) {
-			// No worktree git could name: nobody's to claim.
-			continue
-		}
+		gitdir, names, err := readGitdir(filepath.Join(entryDir, "gitdir"))
 		if err != nil {
 			return nil, fmt.Errorf("read git worktree %s: %w", entryDir, err)
 		}
-		target := strings.TrimSuffix(string(gitdir), "\n")
+		if !names {
+			// No worktree git could name: nobody's to claim (readGitdir).
+			continue
+		}
+		target := strings.TrimSuffix(gitdir, "\n")
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(entryDir, target)
 		}
@@ -99,6 +101,56 @@ func gitDirWorktreeEntries(gitDir, dir string) ([]string, error) {
 		}
 	}
 	return own, nil
+}
+
+// gitdirLimit bounds how much of a worktree entry's gitdir file readGitdir reads: one path git
+// wrote and its newline fit in PATH_MAX (4096), so a file that fills one byte more is no gitdir
+// any git wrote.
+const gitdirLimit = 4096 + 1
+
+// readGitdir is the content of the gitdir file at path, and whether it names a worktree at all.
+// The file is under <clone>/.git/worktrees on the issue's volume, which every role of the pod
+// writes as the pod's uid, and both of the pod's sweeps read every entry's — the launcher's in
+// PID 1 of the roles container, where a read that never ends stalls every pass behind the sweep's
+// lock and a read that runs away ends the process. So it is opened without following a link,
+// blocking on a special file or taking a terminal for PID 1's own, held to a regular file by the
+// descriptor it opened, and read only up to gitdirLimit, as Created reads the workspace's creation
+// record.
+//
+// Anything git does not write there — a symlink (which O_NOFOLLOW answers with ELOOP, a link to
+// /dev/zero among them), a fifo, a socket (which open answers with ENXIO), a device, a directory,
+// a file that fills the bound — names no worktree, exactly as a missing file does, and the entry
+// is skipped rather than the walk refused. That keeps the sweep inside the clone: a skip only
+// ever narrows the walk, so a pass removes less and never more; another workspace's entry skipped
+// is one that was not this workspace's to sweep anyway; and this workspace's own entry skipped
+// leaves its locks unswept for that pass, while the derivation (WorkspaceOf), which requires an
+// entry naming the workspace, refuses it at the next derivation, which is the safe direction. A
+// skip writes no line, so a planted fifo is not a line in PID 1's log a minute for the pod's
+// life. Any other failure to read the file is answered as the error it is.
+func readGitdir(path string) (string, bool, error) {
+	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK|syscall.O_NOCTTY|syscall.O_CLOEXEC, 0)
+	switch {
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, syscall.ELOOP), errors.Is(err, syscall.ENXIO):
+		return "", false, nil
+	case err != nil:
+		return "", false, err
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", false, err
+	}
+	if !info.Mode().IsRegular() {
+		return "", false, nil
+	}
+	body, err := io.ReadAll(io.LimitReader(file, gitdirLimit))
+	if err != nil {
+		return "", false, err
+	}
+	if len(body) == gitdirLimit {
+		return "", false, nil
+	}
+	return string(body), true, nil
 }
 
 // WorkspaceOf is the jj workspace at dir and the shared clone it is a workspace of, derived from

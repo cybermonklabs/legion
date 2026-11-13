@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testbin"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
+	"golang.org/x/sys/unix"
 )
 
 // Every row here works a real clone on disk — a git directory, the issue workspace's own worktree
@@ -624,67 +625,56 @@ func TestTheFirstPassRunsBeforeTheBundleRestore(t *testing.T) {
 		requireRoleNamespaces(t)
 		c := newLockClone(t)
 		lock := c.lock("index.lock", "stale", time.Second)
-		// The pass is held where it reads the clone's git worktree entries: the entry's gitdir
-		// is a fifo, whose read blocks until this row opens it for writing. The launcher learns
-		// the workspace from the start below, so nothing reads the fifo before that start
-		// arrives.
-		//
-		// The pass reads that entry twice, once where the launcher derives the clone and checks
-		// its git directory (workspace.WorkspaceOf) and once in the walk that lists the
-		// clone's locks (workspace.GitLocksOf), and only the first is held: the writer renames
-		// the real gitdir over the fifo's name before it closes, so the read it is holding ends
-		// with the entry's own content and the read after it opens the file. Serving the fifo a
-		// second time instead would race the first read's end — a reader sees no end of file
-		// while any writer holds the fifo open, and the two writes would arrive as one read.
-		gitdir := filepath.Join(c.worktree, "gitdir")
-		content := filepath.Join(c.dir, ".git") + "\n"
-		ready := gitdir + ".ready"
-		c.write(ready, content)
-		if err := os.Remove(gitdir); err != nil {
-			t.Fatal(err)
-		}
-		if err := syscall.Mkfifo(gitdir, 0o600); err != nil {
-			t.Fatal(err)
-		}
-		served := make(chan error, 1)
-		serve := func() {
-			file, err := os.OpenFile(gitdir, os.O_WRONLY, 0)
-			if err != nil {
-				served <- err
-				return
+		// The pass is held where it removes the lock: the launcher builds its sweep with the
+		// removal gitLockRemove answers (newGitLockSweep), and the one this row sets there waits
+		// for the row before it removes anything. No read of the clone can hold a pass — a
+		// gitdir that is a fifo is an entry the walk skips without waiting for a writer
+		// (internal/workspace's readGitdir) — so the removal, which the pass reaches only once
+		// it has derived the clone (workspace.WorkspaceOf), listed its locks
+		// (workspace.GitLocksOf) and read /proc, is where it is held. The launcher learns the
+		// workspace from the start below, so nothing removes before that start arrives.
+		reached := make(chan string, 1)
+		release := make(chan struct{})
+		previous := gitLockRemove
+		gitLockRemove = func(path string) error {
+			select {
+			case reached <- path:
+			default:
 			}
-			if _, err := file.WriteString(content); err != nil {
-				file.Close()
-				served <- err
-				return
-			}
-			// The name carries the entry's own file again before the holding read can end, so
-			// the walk that follows reads it and nothing of this row is left in the clone.
-			if err := os.Rename(ready, gitdir); err != nil {
-				file.Close()
-				served <- err
-				return
-			}
-			served <- file.Close()
+			<-release
+			return os.Remove(path)
 		}
+		// Restored after the launcher's own cleanup, which waits for Run to return, since this
+		// is registered before newFleet registers that one.
+		t.Cleanup(func() { gitLockRemove = previous })
+		// A row that fails while the pass is held lets it go before the launcher's cleanup
+		// waits for Run: a deferred call runs before any cleanup of the row.
+		released := false
+		free := func() {
+			if !released {
+				released = true
+				close(release)
+			}
+		}
+		defer free()
 		t.Chdir(t.TempDir())
 		f := newFleet(t, 5*time.Second, "tester")
 		conn := f.role("tester")
 		conn.send(roleStart(1, c.dir, nil))
-		answersNothingFor(t, conn, 300*time.Millisecond)
-		if swept(lock) {
-			t.Fatal("the pass removed the lock while it was still held at the clone's git worktree entries")
-		}
-
-		go serve()
 		select {
-		case err := <-served:
-			if err != nil {
-				t.Fatal(err)
+		case path := <-reached:
+			if path != lock {
+				t.Fatalf("the pass held at the removal of %s, not of %s; the launcher's log:\n%s", path, lock, f.stderr.String())
 			}
 		case <-time.After(testwait.Bounded(t, 30*time.Second, time.Second)):
-			t.Fatalf("the launcher never read the clone's git worktree entries; its log:\n%s", f.stderr.String())
+			t.Fatalf("the launcher's pass never reached the removal of %s; its log:\n%s", lock, f.stderr.String())
 		}
+		answersNothingFor(t, conn, 300*time.Millisecond)
+		if swept(lock) {
+			t.Fatal("the pass removed the lock while it was still held at its removal")
+		}
+
+		free()
 		if got, ok := conn.reply().(shimwire.LauncherStartResult); !ok || !got.OK {
 			t.Fatalf("the start answered %#v once the pass returned; the launcher's log:\n%s", got, f.stderr.String())
 		}
@@ -1346,6 +1336,156 @@ func TestTheSweepLeavesAnotherWorkspacesWorktreeEntryAndTheFeedAlone(t *testing.
 			requireRemoved(t, log, mine)
 		})
 	})
+}
+
+// A worktree entry's gitdir is a file every role of the pod can write, and both the derivation
+// (workspace.WorkspaceOf) and every pass's walk (workspace.GitLocksOf) read the gitdir of every
+// entry under the clone's worktrees, not only this workspace's. A role that makes another entry's
+// gitdir a link to /dev/zero, or a fifo, must neither end PID 1 nor stall it: a read of /dev/zero
+// to its end runs the launcher out of memory, and a read of a fifo waits for a writer for ever
+// with the sweep's lock held, so a role start that learns waits behind it. Such an entry names
+// no workspace and is skipped (internal/workspace's readGitdir): the pass returns, removes this
+// workspace's own stale locks as ever, leaves the entry's and writes nothing of it.
+//
+// The sweep is built where the launcher builds it, from its own working directory, after the
+// entry is planted: that is a roles container restarting on a volume a role planted one on,
+// whose derivation reads every entry before the launcher serves anything. A clock pass follows,
+// which is what a running pod reads every minute.
+//
+// The row bounds itself, so a read that runs away or waits fails the row and not the run: the
+// derivation and the pass run in a goroutine the row waits for under a deadline, a read of
+// /dev/zero is ended by endDevZeroReads, which the row fails on, and a reader the fifo holds is
+// let go once the row has failed, so nothing of the row is left running.
+func TestTheSweepSkipsAWorktreeEntryWhoseGitdirIsNoFileGitWrote(t *testing.T) {
+	for _, row := range []struct {
+		name string
+		// plant makes gitdir what the row is about; unstick lets go a read of it that is
+		// waiting, for a row that has already failed.
+		plant   func(t *testing.T, gitdir string)
+		unstick func(gitdir string)
+	}{
+		{
+			name: "a gitdir that links to /dev/zero",
+			plant: func(t *testing.T, gitdir string) {
+				if err := os.Symlink("/dev/zero", gitdir); err != nil {
+					t.Fatal(err)
+				}
+			},
+			unstick: func(string) {},
+		},
+		{
+			name: "a gitdir that is a fifo",
+			plant: func(t *testing.T, gitdir string) {
+				if err := syscall.Mkfifo(gitdir, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			},
+			// A writer opened without blocking is refused while no reader waits and lets a
+			// waiting reader's open return, whose read then ends at once with no content.
+			unstick: func(gitdir string) {
+				if file, err := os.OpenFile(gitdir, os.O_WRONLY|syscall.O_NONBLOCK, 0); err == nil {
+					_ = file.Close()
+				}
+			},
+		},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			c := newLockClone(t)
+			ours := c.lock("index.lock", "ours", time.Hour)
+			entry := c.worktreeLock("HEAD.lock", "ours", time.Hour)
+			sibling := filepath.Join(c.gitDir, "worktrees", "infra-2")
+			theirs := c.plant(filepath.Join(sibling, "index.lock"), "nobody's", time.Hour)
+			gitdir := filepath.Join(sibling, "gitdir")
+			row.plant(t, gitdir)
+			t.Chdir(c.dir)
+			log := &lockedBuffer{}
+			proc := procRoot(t, os.Getpid())
+			stop := make(chan struct{})
+			ranAway := endDevZeroReads(t, stop)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				s := newGitLockSweep((&roleLog{stdout: log, stderr: log}).linef)
+				s.proc, s.recheck = proc, time.Millisecond
+				s.pass(context.Background(), false)
+			}()
+			bound := testwait.Bounded(t, 10*time.Second, time.Second)
+			select {
+			case <-done:
+			case <-time.After(bound):
+				// A read the fifo holds is let go as often as it is held — the derivation's,
+				// then the pass's — so the goroutine returns with the row.
+			unstuck:
+				for range 1000 {
+					row.unstick(gitdir)
+					select {
+					case <-done:
+						break unstuck
+					case <-time.After(10 * time.Millisecond):
+					}
+				}
+				close(stop)
+				t.Fatalf("the derivation and a clock pass did not return within %s; the sweep's log:\n%s", bound, log.String())
+			}
+			close(stop)
+			if ended := <-ranAway; ended > 0 {
+				t.Fatalf("the sweep read /dev/zero through %s and %d such read(s) had to be ended at end of file; the sweep's log:\n%s", gitdir, ended, log.String())
+			}
+			requireRemoved(t, log, ours)
+			requireRemoved(t, log, entry)
+			if swept(theirs) {
+				t.Fatalf("the sweep removed %s, which is no lock of its workspace; its log:\n%s", theirs, log.String())
+			}
+			if strings.Contains(log.String(), sibling) {
+				t.Fatalf("the sweep wrote a line naming the entry it skips:\n%s", log.String())
+			}
+		})
+	}
+}
+
+// endDevZeroReads ends every read of /dev/zero this process makes until stop closes, and then
+// answers how many it ended. A descriptor of the process that has /dev/zero open is replaced, in
+// place, with one of /dev/null, so the read that is running on it reaches end of file at its next
+// call rather than filling memory until the runtime ends the process: what a row that would
+// otherwise run away costs is the memory it read in a millisecond, and its failure.
+func endDevZeroReads(t *testing.T, stop <-chan struct{}) <-chan int {
+	t.Helper()
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ended := make(chan int, 1)
+	go func() {
+		defer null.Close()
+		count := 0
+		ticker := time.NewTicker(time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				ended <- count
+				return
+			case <-ticker.C:
+			}
+			fds, err := os.ReadDir("/proc/self/fd")
+			if err != nil {
+				continue
+			}
+			for _, fd := range fds {
+				if target, err := os.Readlink(filepath.Join("/proc/self/fd", fd.Name())); err != nil || target != "/dev/zero" {
+					continue
+				}
+				number, err := strconv.Atoi(fd.Name())
+				if err != nil {
+					continue
+				}
+				if unix.Dup2(int(null.Fd()), number) == nil {
+					count++
+				}
+			}
+		}
+	}()
+	return ended
 }
 
 // A clone whose git directory is a symbolic link is refused before anything is answered, and the
