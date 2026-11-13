@@ -515,9 +515,10 @@ packages/envoy/scripts/build-dispatch-build.sh --commit <sha|tag> --out <dir>
 `--previous-release` builds the newest `legion-envoy-v*` tag that is an ancestor of
 `git merge-base HEAD origin/main`, so it needs `origin/main` and the tags fetched. `--commit HEAD`
 builds the current branch the same way. The script refuses a commit that is not an ancestor of
-`HEAD`, and a commit older than the release `legion-envoy-v20.1.0`, the oldest build either test
+`HEAD`, and a commit older than the release `legion-envoy-v30.11.0`, the oldest build either test
 can run as the earlier side: that release carries migration 0117, from which two builds share one
-database (`cmd/dispatch/README.md`, "Database migrations"), serves on a socket handed to it, which
+database, and migration 20261111210103, after which every project it creates must name a default
+assignee (`cmd/dispatch/README.md`, "Database migrations"), serves on a socket handed to it, which
 the browser harness holds for it, and knows the one dev sign-in cookie key that run gives both of
 its servers. `<dir>` must be absent or empty, or already
 hold a complete build of the same commit, which the script leaves as it is. It then holds

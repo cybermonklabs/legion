@@ -287,8 +287,9 @@ DISPATCH_E2E_BINARY_B=<dir>/envoy-dispatch DISPATCH_E2E_WEB_DIST_B=<dir>/web \
 ```
 
 B then runs that envoy-dispatch and serves that web dist (both paths absolute or from
-`packages/envoy`). That build must be `legion-envoy-v20.1.0` or later, which
-`build-dispatch-build.sh` refuses to go below: it serves on the port the harness holds for it, as
+`packages/envoy`). That build must be `legion-envoy-v30.11.0` or later, which
+`build-dispatch-build.sh` refuses to go below: it writes the default assignee every project needs
+since migration `20261111210103`, it serves on the port the harness holds for it, as
 A does, and signs cookies with the run's shared key, so no run names a port for B and the run's
 global setup checks it like any other B. `e2e/cross-build.multiprocess.e2e.ts` splits each browser
 context, its page from one build and its API, sockets and `/auth` from the other.

@@ -43,7 +43,7 @@ const envoyDirectory = fileURLToPath(new URL("../../envoy", import.meta.url));
 /** The envoy-dispatch Dispatch B runs in place of the one e2e/run-server.sh builds from this tree,
  *  when `DISPATCH_E2E_BINARY_B` names one (a path from packages/envoy): a previous release's build
  *  (packages/envoy/scripts/build-dispatch-build.sh), so a run drives two builds of the server. Such
- *  a build must be legion-envoy-v20.1.0 or later: it serves on the socket the harness holds for it
+ *  a build must be legion-envoy-v30.11.0 or later: it serves on the socket the harness holds for it
  *  and signs cookies with the run's shared key, as a build from this tree does.
  *
  *  It is made absolute here, against packages/envoy, because run-server.sh takes the path it is

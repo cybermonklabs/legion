@@ -225,7 +225,7 @@ fi
 # a previous release's build (packages/envoy/scripts/build-dispatch-build.sh), so a browser drives
 # two builds at once. That build gets the same environment: a release ignores a setting it does
 # not know and refuses only the ones it removed, none of which is set here. A build the harness
-# gives must be legion-envoy-v20.1.0 or later (build-dispatch-build.sh refuses an older one):
+# gives must be legion-envoy-v30.11.0 or later (build-dispatch-build.sh refuses an older one):
 # that release adopts the held socket (DISPATCH_LISTEN_FD) and knows
 # DISPATCH_DEV_SIGNIN_SHARED_KEY, so it starts on the port the caller holds for it and signs
 # cookies with the run's shared key, exactly as a build from this tree does. Unset, the build

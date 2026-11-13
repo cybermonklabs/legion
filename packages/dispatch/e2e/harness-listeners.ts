@@ -64,7 +64,7 @@ const dispatchServer = {
 // envoy-dispatch DISPATCH_E2E_BINARY_B names when it is set (a path from packages/envoy too,
 // handed to run-server.sh as its DISPATCH_E2E_SERVER_BIN), in place of the one run-server.sh
 // builds from this tree: a previous release's build, so a browser drives two builds of the
-// server at once (e2e/cross-build.multiprocess.e2e.ts). That build must be legion-envoy-v20.1.0
+// server at once (e2e/cross-build.multiprocess.e2e.ts). That build must be legion-envoy-v30.11.0
 // or later (packages/envoy/scripts/build-dispatch-build.sh refuses an older one): it serves on
 // the socket held for it, as this tree's build does, and knows the shared key below, so B starts
 // exactly as A does and no run names a port.

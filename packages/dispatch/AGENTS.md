@@ -2597,8 +2597,9 @@ it is set (`binaryB` in `e2e/harness-processes.ts`, handed to B's `run-server.sh
 `DISPATCH_E2E_SERVER_BIN`): a previous release's build, so a run puts two builds of the server
 against one database the way `DISPATCH_E2E_WEB_DIST_B` puts two builds of the dashboard there.
 That build gets the same environment, since a release ignores a setting it does not know. Such a
-B must be `legion-envoy-v20.1.0` or later (`packages/envoy/scripts/build-dispatch-build.sh`
-refuses an older commit): that release serves on the socket the harness holds for it and knows
+B must be `legion-envoy-v30.11.0` or later (`packages/envoy/scripts/build-dispatch-build.sh`
+refuses an older commit): that release writes the default assignee every project needs since
+migration `20261111210103`, serves on the socket the harness holds for it and knows
 the shared key, so it starts exactly as A does, no run names a port for it, and
 `e2e/global-setup.ts` checks it for the one cookie key as it checks any other B.
 `scripts/e2e/dispatch-two-builds.sh` gives `DISPATCH_E2E_SERVER_BIN` itself, outside the harness.
