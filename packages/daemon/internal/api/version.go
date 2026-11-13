@@ -1377,7 +1377,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 106: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
+// 109: INFRA-3146 (cybermonklabs/legion) -- a phase completion names the head its evidence is
 // about, and the completion route judges that head rather than which phase entry the turn began
 // under. Every file-backed handoff record now carries `head`, the commit the work it reports was
 // done against, and the plugin's `handoff_complete` sends that head as the completion's `commit`
@@ -1394,15 +1394,18 @@ package api
 // move back where there was one. No field is added or removed on either side of the wire:
 // `commit` was already optional on `api.HandoffCompleteRequest` and `handoffCommit` on
 // `api.PhaseView`. What moves is what the two sides mean by them, so they move together: a plugin
-// below 106 sends the three roles' completions with no commit, which this daemon refuses behind
-// their entry as every daemon from 94 did, and a plugin at 106 against a daemon below it has a
+// below 109 sends the three roles' completions with no commit, which this daemon refuses behind
+// their entry as every daemon from 94 did, and a plugin at 109 against a daemon below it has a
 // commit recorded for those roles and named in the next role's task (`Handoff commit:`) that the
-// daemon never judges. (Taken at the merge that brought main in at 0fde2dcff6e4, whose own number
+// daemon never judges. (Taken at the merge that brought main in at 2a6ff6c03269, whose own number
 // is the 98 right above. It took 104 first, at the merge that brought main in at 8d9d1ff2, whose
-// number was 94, and #3830 and #3937 have declared 104 since. The reading behind 106, of
+// number was 94, and #3830 and #3937 declared 104 since; it then took 106, the lowest number no
+// open head declared when that head was pushed, and #2731 and #3730 declared 106 since. So it takes a
+// number above every open head's, as the tree's architect asked, rather than the lowest free one,
+// which another head can take before this one lands. The reading behind 109, of
 // `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of
-// cybermonklabs/legion on 2026-11-13, made with the `declared_by_open_pull_requests`
-// of `.github/scripts/check-daemon-api-contract.sh`, gives above main's 98: 99 (#3575), 100 (#3573,
-// #3715), 101 (#3712), 102 (#3730), 103 (#3519), 104 (#3830, #3937) and 105 (#3659); 106 is the
-// lowest number no head declares.)
-const DaemonAPIVersion = 106
+// cybermonklabs/legion at 2026-11-13T16:44Z, made with the `declared_by_open_pull_requests` of
+// `.github/scripts/check-daemon-api-contract.sh`, gives above main's 98: 99 (#3575), 100 (#3573),
+// 103 (#3519), 104 (#3830, #3937), 105 (#3659), 106 (#2731, #3730), 107 (#3712) and 108 (#3715);
+// 109 is above them all.)
+const DaemonAPIVersion = 109
