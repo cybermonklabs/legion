@@ -161,12 +161,13 @@ Each page is read once it is drawn.
   // own page lists it; the freshness-folds issue stands in `backlog`, so it is a row of the
   // second fault list. Every other issue of the corpus that is in flight advances none, which
   // is what fills the first fault list. Both relations are written last, so the activity of
-  // each issue keeps the order the rows above it were seeded in.
+  // each issue keeps the order the rows above it were seeded in, and one after the other: the
+  // priority's margin lists its history newest first by the order the store wrote it, so two
+  // writes made at once land in either order and the page differs between two runs of one tree
+  // (the 68 pixels the visual review read on `priority` in two rounds).
   const priority = await createReviewPriority();
-  await Promise.all([
-    patchIssue(issue, { advances: [priority.id] }),
-    patchIssue(workspace.issues.folds, { advances: [priority.id] }),
-  ]);
+  await patchIssue(issue, { advances: [priority.id] });
+  await patchIssue(workspace.issues.folds, { advances: [priority.id] });
 
   // The slug of the `Runbook` document `seedWorkspace` creates: read back rather than assumed,
   // so a rename there fails this seed instead of the page it opens.
