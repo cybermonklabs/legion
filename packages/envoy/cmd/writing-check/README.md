@@ -531,8 +531,10 @@ Each line of `outputs.jsonl` is one write: `write` (`<event id>/<source id>[/<co
 `sentences`, `candidates` (`id`, the labels' `sentence_id`, `field`, `text`, `reason`), the reader's
 `outcome` (`read`, `candidate_cap`, `reader_timeout`, `reader_error`, `reader_malformed`,
 `reader_budget`, `model_mismatch`, or `not_called` with no candidate), its `verdicts` (`id`,
-`vacuous`, `rewrite`, `reason`), the scanner `verdict`, `model_called`, `latency_ms`, the served
-`model`, `tokens_estimated` and `error`.
+`vacuous`, `rewrite`; one for each candidate sent: the model's reply, `{vacuous: [{id, rewrite}]}`,
+names only the vacuous ones, and each candidate it does not name is `vacuous: false`), the
+scanner `verdict`, `model_called`, `latency_ms`, the served `model`, `tokens_estimated` and
+`error`.
 
 The scanner's verdict on a write:
 

@@ -50,9 +50,7 @@ func newStubModel(t *testing.T, vacuous, fail func(text string) bool) *stubModel
 				_ = json.Unmarshal([]byte(stubContent(m.Content)), &sent)
 			}
 		}
-		var reply struct {
-			Verdicts []reader.Verdict `json:"verdicts"`
-		}
+		reply := reader.Reply{Vacuous: []reader.Named{}}
 		for _, c := range sent.Candidates {
 			if fail != nil && fail(c.Text) {
 				w.Header().Set("Content-Type", "application/json")
@@ -60,11 +58,9 @@ func newStubModel(t *testing.T, vacuous, fail func(text string) bool) *stubModel
 				_, _ = io.WriteString(w, `{"error":{"message":"the stub refuses","type":"invalid_request_error"}}`)
 				return
 			}
-			v := reader.Verdict{ID: c.ID, Vacuous: vacuous(c.Text), Reason: "The sentence states a fact."}
-			if v.Vacuous {
-				v.Rewrite, v.Reason = "Say the fact.", "The verb phrase states no fact."
+			if vacuous(c.Text) {
+				reply.Vacuous = append(reply.Vacuous, reader.Named{ID: c.ID, Rewrite: "Say the fact."})
 			}
-			reply.Verdicts = append(reply.Verdicts, v)
 		}
 		text, _ := json.Marshal(reply)
 		w.Header().Set("Content-Type", "text/event-stream")

@@ -24,6 +24,6 @@ Rulings:
 - "It pays off." "It pays for itself." "Each retry pays the start time." Vacuous. "Each retry pays $3." Not vacuous: an amount.
 - Other verbs get the same test. "The draft surfaces the risk." "The cache holds rows that a purge removed." Vacuous. "The list holds three users: ana, bo and cy." Not vacuous.
 
-Most candidates are not vacuous. A false "vacuous" stops a correct write. The input has no code blocks, quotations or later text, and the fact can be there. When you are not sure, answer false.
+Most candidates are not vacuous. A false "vacuous" stops a correct write. The input has no code blocks, quotations or later text, and the fact can be there. When you are not sure, do not list the candidate.
 
-Give one verdict for each candidate `id`. `rewrite`: if vacuous, one plain sentence that states the literal thing, from facts in the input. If the fact is missing, say which, in square brackets: "The ticket gives the module [the module name is not in the text]." Else "". `reason`: one short sentence.
+List under `vacuous` only the candidates whose verb phrase is vacuous, each by its `id`. Each candidate that you do not list states a fact. `rewrite`: one plain sentence that states the literal thing, from facts in the input. If the fact is missing, say which, in square brackets: "The ticket gives the module [the module name is not in the text]."

@@ -124,17 +124,14 @@ func (s *stub) requests() []recorded {
 	return append([]recorded(nil), s.got...)
 }
 
-// verdictsFor answers every sent candidate with vacuous, as the model's reply text.
+// verdictsFor names every sent candidate as vacuous when vacuous is set, and none otherwise, as
+// the model's reply text.
 func verdictsFor(sent sentInput, vacuous bool) string {
-	var reply struct {
-		Verdicts []Verdict `json:"verdicts"`
-	}
-	for _, c := range sent.Candidates {
-		v := Verdict{ID: c.ID, Vacuous: vacuous, Reason: "The sentence states a fact."}
-		if vacuous {
-			v.Rewrite, v.Reason = "Say what the problem is.", "The verb phrase states no fact."
+	reply := Reply{Vacuous: []Named{}}
+	if vacuous {
+		for _, c := range sent.Candidates {
+			reply.Vacuous = append(reply.Vacuous, Named{ID: c.ID, Rewrite: "Say what the problem is."})
 		}
-		reply.Verdicts = append(reply.Verdicts, v)
 	}
 	b, _ := json.Marshal(reply)
 	return string(b)
@@ -174,8 +171,8 @@ func TestAGoodAnswerIsOneVerdictPerCandidate(t *testing.T) {
 		t.Fatalf("outcome %q, want a read", outcome)
 	}
 	want := []Verdict{
-		{ID: "c1", Vacuous: true, Rewrite: "Say what the problem is.", Reason: "The verb phrase states no fact."},
-		{ID: "c2", Vacuous: true, Rewrite: "Say what the problem is.", Reason: "The verb phrase states no fact."},
+		{ID: "c1", Vacuous: true, Rewrite: "Say what the problem is."},
+		{ID: "c2", Vacuous: true, Rewrite: "Say what the problem is."},
 	}
 	if !reflect.DeepEqual(verdicts, want) {
 		t.Errorf("verdicts %+v, want %+v", verdicts, want)
@@ -209,6 +206,33 @@ func TestAGoodAnswerIsOneVerdictPerCandidate(t *testing.T) {
 	}
 }
 
+// The model names only the vacuous candidates: each candidate it was sent and does not name
+// states a fact, and an empty list calls none vacuous.
+func TestACandidateTheReplyDoesNotNameStatesAFact(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		reply string
+		want  []Verdict
+	}{
+		{"one named", `{"vacuous": [{"id": "c2", "rewrite": "Say what the gap is."}]}`, []Verdict{
+			{ID: "c1"}, {ID: "c2", Vacuous: true, Rewrite: "Say what the gap is."},
+		}},
+		{"none named", `{"vacuous": []}`, []Verdict{{ID: "c1"}, {ID: "c2"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s := newStub(t, func(sentInput) (int, string, string, time.Duration) {
+				return http.StatusOK, bundleModel, tc.reply, 0
+			})
+			verdicts, outcome := newReader(s, Config{}).Read(context.Background(), cands(t, twoVacuous))
+			if outcome != OutcomeRead || !reflect.DeepEqual(verdicts, tc.want) {
+				t.Errorf("verdicts %+v, outcome %q, want %+v and a read", verdicts, outcome, tc.want)
+			}
+		})
+	}
+}
+
 func TestEachFaultLetsTheWriteThroughWithItsOutcome(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -220,10 +244,16 @@ func TestEachFaultLetsTheWriteThroughWithItsOutcome(t *testing.T) {
 			return http.StatusOK, bundleModel, verdictsFor(s, true), 2 * time.Second
 		}, OutcomeTimeout},
 		{"malformed", func(sentInput) (int, string, string, time.Duration) {
-			return http.StatusOK, bundleModel, `{"verdicts": [{"id": "c1", "vacuous": "maybe"`, 0
+			return http.StatusOK, bundleModel, `{"vacuous": [{"id": "c1", "rewrite": 3`, 0
+		}, OutcomeMalformed},
+		{"no list", func(sentInput) (int, string, string, time.Duration) {
+			return http.StatusOK, bundleModel, `{"verdicts": [{"id": "c1", "vacuous": true, "rewrite": "", "reason": ""}]}`, 0
 		}, OutcomeMalformed},
 		{"unknown id", func(sentInput) (int, string, string, time.Duration) {
-			return http.StatusOK, bundleModel, `{"verdicts": [{"id": "c9", "vacuous": true, "rewrite": "", "reason": ""}]}`, 0
+			return http.StatusOK, bundleModel, `{"vacuous": [{"id": "c9", "rewrite": "Say the fact."}]}`, 0
+		}, OutcomeMalformed},
+		{"repeated id", func(sentInput) (int, string, string, time.Duration) {
+			return http.StatusOK, bundleModel, `{"vacuous": [{"id": "c1", "rewrite": "Say the fact."}, {"id": "c1", "rewrite": "Say the fact."}]}`, 0
 		}, OutcomeMalformed},
 		{"error", func(sentInput) (int, string, string, time.Duration) {
 			return http.StatusBadRequest, bundleModel, "", 0

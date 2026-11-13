@@ -32,7 +32,7 @@ func (s *stubReader) Read(_ context.Context, cands []candidates.Candidate) ([]re
 	}
 	verdicts := make([]reader.Verdict, len(cands))
 	for i, c := range cands {
-		verdicts[i] = reader.Verdict{ID: c.ID, Vacuous: s.vacuous, Reason: "stub"}
+		verdicts[i] = reader.Verdict{ID: c.ID, Vacuous: s.vacuous}
 		if s.vacuous {
 			verdicts[i].Rewrite = "Say what the problem is."
 		}

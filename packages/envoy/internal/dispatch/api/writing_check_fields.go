@@ -217,6 +217,8 @@ var proseRegistry = map[reflect.Type]map[string]proseMark{
 // artifactUploadFormValues marks the form values a multipart artifact upload reads
 // (multipartArtifactUpload) as the registry marks a JSON upload's members: the summary is prose on
 // a file upload too, and a Markdown file is read as an inline document's content is.
+// TestEveryFormValueTheUploadReadsIsMarked holds it to the form values the upload routes' source
+// reads by name, so a value read there and not marked here fails.
 var artifactUploadFormValues = map[string]proseMark{
 	"content":                markProse,
 	"summary":                markProse,

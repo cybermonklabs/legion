@@ -129,8 +129,9 @@ func scoreWrite(ctx context.Context, o *observedReader, w refWrite) caseOutput {
 }
 
 // estimateTokens is one reader call's tokens at four bytes a token, as the reader's own budget
-// counts a prompt: the system prompt, the candidates as the reader sends them, and the verdicts
-// as the reply carries them. Observe gives no token counts, so the ceiling reads this estimate.
+// counts a prompt: the system prompt, the candidates as the reader sends them, and the reply as
+// the model gives it, naming the vacuous candidates alone. Observe gives no token counts, so
+// the ceiling reads this estimate.
 func estimateTokens(cands []candidates.Candidate, verdicts []reader.Verdict) int {
 	type input struct {
 		ID     string   `json:"id"`
@@ -149,9 +150,13 @@ func estimateTokens(cands []candidates.Candidate, verdicts []reader.Verdict) int
 	}{sent})
 	tokens := (len(reader.Prompt) + len(user) + 3) / 4
 	if len(verdicts) > 0 {
-		reply, _ := json.Marshal(struct {
-			Verdicts []reader.Verdict `json:"verdicts"`
-		}{verdicts})
+		named := reader.Reply{Vacuous: []reader.Named{}}
+		for _, v := range verdicts {
+			if v.Vacuous {
+				named.Vacuous = append(named.Vacuous, reader.Named{ID: v.ID, Rewrite: v.Rewrite})
+			}
+		}
+		reply, _ := json.Marshal(named)
 		tokens += (len(reply) + 3) / 4
 	}
 	return tokens

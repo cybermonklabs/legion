@@ -1,5 +1,6 @@
 // Package reader is the model reader of the writing check's detector: one model call per body
-// reads the code stage's candidates and answers, for each, whether its verb phrase is vacuous.
+// reads the code stage's candidates and names those whose verb phrase is vacuous; every
+// candidate it does not name states a fact.
 //
 // Every fault lets the write through: Read then answers no verdicts and an outcome naming the
 // fault, and the caller reports that outcome rather than a finding.
@@ -41,7 +42,8 @@ const (
 	OutcomeTimeout = "reader_timeout"
 	// OutcomeError is a call the provider failed or refused, or one that could not be made.
 	OutcomeError = "reader_error"
-	// OutcomeMalformed is a reply that is not one verdict for each candidate sent.
+	// OutcomeMalformed is a reply that is not the schema's shape, or that names a candidate it
+	// was not sent or names one twice.
 	OutcomeMalformed = "reader_malformed"
 	// OutcomeModelMismatch is a reply served by a model other than Config.BundleModelID. The
 	// reader then turns itself off for the life of the process.
@@ -89,13 +91,24 @@ type Config struct {
 	Observe func(Call)
 }
 
-// Verdict is the model's answer for one candidate: whether its verb phrase is vacuous, the
-// fix when it is, and why.
+// Verdict is the reader's answer for one candidate it sent: whether its verb phrase is vacuous,
+// and the fix when it is. The model names only the vacuous candidates, so a candidate it does
+// not name has Vacuous false and no Rewrite.
 type Verdict struct {
 	ID      string `json:"id"`
 	Vacuous bool   `json:"vacuous"`
 	Rewrite string `json:"rewrite"`
-	Reason  string `json:"reason"`
+}
+
+// Named is one candidate the model calls vacuous, as its reply carries it.
+type Named struct {
+	ID      string `json:"id"`
+	Rewrite string `json:"rewrite"`
+}
+
+// Reply is the model's reply: the candidates it calls vacuous, and no others.
+type Reply struct {
+	Vacuous []Named `json:"vacuous"`
 }
 
 // Call is what one model call answered, as Config.Observe is given it: the model id the
@@ -168,32 +181,30 @@ type input struct {
 	After  []string `json:"after"`
 }
 
-// finalSchema is the JSON schema of the reply.
+// finalSchema is the JSON schema of the reply, Reply.
 var finalSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"verdicts": {
+		"vacuous": {
 			"type": "array",
 			"items": {
 				"type": "object",
 				"properties": {
 					"id": {"type": "string"},
-					"vacuous": {"type": "boolean"},
-					"rewrite": {"type": "string"},
-					"reason": {"type": "string"}
+					"rewrite": {"type": "string"}
 				},
-				"required": ["id", "vacuous", "rewrite", "reason"],
+				"required": ["id", "rewrite"],
 				"additionalProperties": false
 			}
 		}
 	},
-	"required": ["verdicts"],
+	"required": ["vacuous"],
 	"additionalProperties": false
 }`)
 
-// Read reads up to CandidateCap candidates in one model call and answers a verdict for each,
-// with OutcomeRead, or OutcomeCandidateCap where more were given. On a fault it answers no
-// verdicts and the fault's outcome. No candidates make no call.
+// Read reads up to CandidateCap candidates in one model call and answers a verdict for each
+// candidate sent, in their order, with OutcomeRead, or OutcomeCandidateCap where more were
+// given. On a fault it answers no verdicts and the fault's outcome. No candidates make no call.
 func (r *Reader) Read(ctx context.Context, cands []candidates.Candidate) ([]Verdict, string) {
 	if r.mismatch.Load() {
 		return nil, OutcomeModelMismatch
@@ -269,32 +280,29 @@ func (r *Reader) estimate(userBytes int) int {
 	return (len(Prompt)+userBytes+3)/4 + r.cfg.MaxOutputTokens
 }
 
-// verdictsOf is the reply's verdicts, in the candidates' order, when it holds exactly one for
-// each candidate sent.
+// verdictsOf is a verdict for each candidate sent, in their order, from the reply (which
+// agentloop has read against finalSchema): vacuous for each candidate it names, not vacuous for
+// each other. A reply that names a candidate not sent, or one twice, is an error.
 func verdictsOf(value json.RawMessage, cands []candidates.Candidate) ([]Verdict, error) {
-	var reply struct {
-		Verdicts []Verdict `json:"verdicts"`
-	}
+	var reply Reply
 	if err := json.Unmarshal(value, &reply); err != nil {
 		return nil, err
 	}
-	byID := make(map[string]Verdict, len(reply.Verdicts))
-	for _, v := range reply.Verdicts {
-		if _, twice := byID[v.ID]; twice {
-			return nil, fmt.Errorf("two verdicts for %s", v.ID)
-		}
-		byID[v.ID] = v
-	}
-	if len(byID) != len(cands) {
-		return nil, fmt.Errorf("%d verdicts for %d candidates", len(byID), len(cands))
-	}
+	index := make(map[string]int, len(cands))
 	verdicts := make([]Verdict, len(cands))
 	for i, c := range cands {
-		v, ok := byID[c.ID]
+		index[c.ID] = i
+		verdicts[i] = Verdict{ID: c.ID}
+	}
+	for _, n := range reply.Vacuous {
+		i, ok := index[n.ID]
 		if !ok {
-			return nil, fmt.Errorf("no verdict for %s", c.ID)
+			return nil, fmt.Errorf("%s was not sent", n.ID)
 		}
-		verdicts[i] = v
+		if verdicts[i].Vacuous {
+			return nil, fmt.Errorf("%s is named twice", n.ID)
+		}
+		verdicts[i].Vacuous, verdicts[i].Rewrite = true, n.Rewrite
 	}
 	return verdicts, nil
 }
