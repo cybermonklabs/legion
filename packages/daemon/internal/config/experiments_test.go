@@ -262,12 +262,13 @@ func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.
 	}
 }
 
-// ExperimentsDeclared is the one list every reader below the loader asks: the memory experiment,
-// which comes first because it is one key rather than a member of the ordered mapping, then the
-// `experiments` key's own in the file's order. Every project declares the memory experiment —
-// one that writes no block declares it at mode off, the mode its trees have been drawn and
-// recorded under all along — and the only project it is not added to is the one declaring
-// `experiments.memory` itself, the other spelling of that one experiment. Each arm carries the
+// ExperimentsDeclared is the one list every reader below the loader asks: the `memory` block's
+// experiment, which comes first because the block is one key rather than a member of the ordered
+// mapping, then the `experiments` key's own in the file's order. Every project declares the memory
+// experiment — one that writes neither the block nor `experiments.memory` declares it at mode off,
+// the mode its trees have been drawn and recorded under all along — and the one project whose list
+// holds no block's experiment is the one declaring `experiments.memory` itself, the other spelling
+// of that one experiment, which then stands at its own place in the key's order. Each arm carries the
 // key the operator wrote its overlays under, whichever spelling declared it: the block's arm the
 // block's own `config_files`, an arm of the `experiments` key its own. The block's arms, and
 // only theirs, are marked as the block's (Variant.MemoryBlock).

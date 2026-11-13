@@ -1238,11 +1238,13 @@ Closing the terminal leaves the project without one, and the daemon logs
   mode `off` draws, and `N no variant`, with no mode, counts the units a hand-over settled at no
   arm because the tree each left held no row for the experiment, which no draw made. The counts
   of one line are in the order of the name they print and then of the mode; the lines are in the
-  order the daemon declares the
-  experiments, which is the `memory` experiment first and then the order
-  `projects.<KEY>.experiments` names the rest in. An experiment no issue holds yet is `none` after
-  its name. Every project declares the `memory` experiment, a project that writes no `memory`
-  block declaring it at mode `off`, under which every new tree is drawn at no arm, so such a
+  order the daemon declares the experiments, which is the `memory` block's experiment first and
+  then the order `projects.<KEY>.experiments` names the rest in. A project that declares
+  `experiments.memory` writes no `memory` block, so its `memory` line stands at that experiment's
+  own place in the `experiments` order. An experiment no issue holds yet is `none` after
+  its name. Every project declares the `memory` experiment, a project that writes neither the
+  `memory` block nor `experiments.memory` declaring it at mode `off`, under which every new tree
+  is drawn at no arm, so such a
   deployment reads a `memory` line too — `memory: none` until a tree is drawn, and counts of
   `none (off)` after, which is the line such a deployment read before any experiment was
   declared.
@@ -1252,7 +1254,8 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   **The same answers in `legion state --json`.** Each issue carries `assignments`, one
   `{experiment, variant, mode, drawnAt}` per answer that applies to it, in that same declared
-  order; the declaration each answer was drawn from is in the settings, under
+  order and then any experiment the file no longer names, in the order of their names; the
+  declaration each answer of a declared experiment was drawn from is in the settings, under
   `settings.projects.<KEY>.memory` for the block's experiment and
   `settings.projects.<KEY>.experiments` for the rest. An issue carries its tree's answer for a
   tree experiment and its own for an issue experiment, `drawnAt` is absent where no draw was

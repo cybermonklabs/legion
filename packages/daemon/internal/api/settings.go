@@ -273,8 +273,11 @@ type ProjectSettings struct {
 }
 
 // DeclaredExperiments is every experiment this project declares, as the daemon's own loader
-// builds the list: the memory experiment first, then the `experiments` key's own in the file's
-// order (config.Project.ExperimentsDeclared, which this reverses the two keys back through). key
+// builds the list: the `memory` block's experiment first, then the `experiments` key's own in the
+// file's order (config.Project.ExperimentsDeclared, which this reverses the two keys back
+// through). A project that declares `experiments.memory` writes no block, since the loader refuses
+// the two together, so its `memory` experiment is one of the key's own and stands at its place in
+// the file's order (config.Project.MemoryIsBlock). key
 // is the project's own Dispatch key, which is the map key the settings carry this project under
 // and which each arm's overlay key path begins with.
 //

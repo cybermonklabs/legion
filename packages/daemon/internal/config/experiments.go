@@ -140,9 +140,9 @@ const (
 var MemoryVariantNames = []string{MemoryVariantMemory, MemoryVariantNone}
 
 // ExperimentsDeclared is every experiment the project declares, the `memory` block included: the
-// experiment named memory, then the `experiments` key's own in the file's order. Every reader of
-// experiments below the loader asks this one list, so the block and the key behave alike there
-// and a reader needs no second path for the block. key is the project's own path,
+// block's experiment, named memory, then the `experiments` key's own in the file's order. Every
+// reader of experiments below the loader asks this one list, so the block and the key behave
+// alike there and a reader needs no second path for the block. key is the project's own path,
 // `projects.<KEY>`, which each arm's ConfigFilesField begins with; Config.ExperimentsDeclared
 // names that key for the project a daemon serves, so no reader of a loaded file spells it out.
 //
@@ -154,9 +154,10 @@ var MemoryVariantNames = []string{MemoryVariantMemory, MemoryVariantNone}
 // (Variant.ConfigFilesField), which is then the one the operator wrote rather than one each
 // reader works out again.
 //
-// The memory experiment comes first. It is one key rather than a member of the ordered mapping,
-// so it has no file order against the mapping's members; first is chosen and fixed here so that
-// the order is a contract a reader may rely on rather than an accident of how the file was read.
+// The block's experiment comes first. The block is one key rather than a member of the ordered
+// mapping, so it has no file order against the mapping's members; first is chosen and fixed here
+// so that the order is a contract a reader may rely on rather than an accident of how the file was
+// read.
 // It is mode the block's own word (Memory.Word, so a block that names no mode and a project that
 // writes no block alike are off), unit tree, on_variant memory, and the two variants memory
 // (weight 1, carrying the block's config_files and instructions) and none (weight 1, carrying
@@ -175,7 +176,8 @@ var MemoryVariantNames = []string{MemoryVariantMemory, MemoryVariantNone}
 // The one project it is not added to is the one declaring `experiments.memory` itself, which is
 // the same experiment spelled the other way: the loader refuses that key beside the block
 // (checkExperimentMemory), so the two spellings never both appear, and the key's own block is the
-// whole declaration.
+// whole declaration. That experiment is one of the key's own, so it stands at its own place in the
+// file's order, wherever the operator wrote it in the mapping.
 //
 // Each arm is copied rather than shared: the key path is put on the copy, so Project.Experiments
 // stays the file as it was read.

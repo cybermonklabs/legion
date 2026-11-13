@@ -122,11 +122,17 @@ where memory_drawn_at is not null or memory_carried;
 -- carried wherever that tree holds a lifecycle row. A tree this release drew holds one and holds
 -- empty columns, so a child handed over out of it while the roll back holds is copied no group, no
 -- mode and no instant, and marked carried: it is settled at no group, and that release never
--- draws it, since its DrawMemory passes over a carried root. Rolling forward does not undo that.
--- The back-fill above does not run again, so the child holds no assignment row, and once that
--- release has opened the child's own tree its lifecycle row stands, so this release never draws
--- it either: it comes back at no variant, whatever arm the tree it left was drawn into. The copy
--- by hand below gives it only the settled row, which is no variant too.
+-- draws it, since its DrawMemory passes over a carried root. Rolling forward does not undo that
+-- for a child whose own tree that release opened during the window, and does for one whose own
+-- tree no release has opened yet. The back-fill above does not run again, so neither child holds
+-- an assignment row. The child whose tree that release opened has a lifecycle row that stands, so
+-- this release never draws it either: it comes back in no arm, whatever arm the tree it left was
+-- drawn into, and the copy by hand below gives it only the settled row, which is no variant too.
+-- The child whose tree no release has opened is drawn by this release at its first open after the
+-- roll forward (the `if lifecycle.Created` branch of (*Admission).promoteHolds), as any new tree
+-- is, unless the copy by hand below reaches it first: that copy takes the child's carried mark too
+-- and writes it the settled row, at no variant, and the draw at its first open then writes nothing
+-- over that row.
 --
 -- Rolling forward again costs the window. A tree the rolled-back release drew while it ran has
 -- its answer in issues.memory_* alone, and the back-fill above runs once, at the first deploy of

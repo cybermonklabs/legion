@@ -1295,10 +1295,10 @@ package api
 // none of the three, as the empty `issues.memory_group` of such a tree filled none of them
 // before: a tree that answered nothing answers nothing still, and the measurement job's count
 // of the trees each group reached is the count it was. `assignments` carries that settled row
-// all the same, with its empty variant. `settings.projects.<KEY>.experiments`
-// loses its `omitempty`, so a project that declares no experiment carries `[]` rather than no
-// key, as `slack_channels` and `memory` do; every plugin reads the settings loosely, so no
-// strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
+// all the same, with its empty variant. `settings.projects.<KEY>.experiments` is a key new at
+// 99, and every project carries it, `[]` for a project whose file declares no experiment under
+// that key, as `slack_channels` and `memory` are always carried; every plugin reads the settings
+// loosely, so no strictly parsed shape changes with it. `packages/contracts/src/legion-api.ts` mirrors
 // `assignments` on `legionIssue`, which is a `z.object`: every answer-side schema of
 // `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788, which
 // that package's own test holds it to, and 99 is later than that change, so a reader before 99

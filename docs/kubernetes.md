@@ -2132,9 +2132,9 @@ that row — no arm, no mode, no instant — is a hand-over settling a child at 
 The key is absent from an issue no experiment holds an answer for, so the wire carries no empty list, and absent from every issue of the body a caller in a pod whose claims record a contract below 99 is served.
 The three memory fields of contract 49 answer exactly as they did and no reader of them changes:
 they are now read off the answer of the experiment named `memory`, whichever spelling declared it, and only where that row records a draw.
-`settings.projects.<KEY>.experiments` loses its `omitempty`, so a project that declares no experiment carries `[]` rather than no key.
+`settings.projects.<KEY>.experiments` is a key new in this release, and every project carries it: `[]` for a project whose file declares no experiment under that key.
 Store migration 20261111045636_experiment_assignments adds the table those answers are rows of, `experiment_assignments`, keyed by the issue key and the experiment name, written once and never updated, and back-fills it from the four `issues.memory_*` columns:
-every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its group, its mode, its instant and its mark verbatim.
+every root holding a draw (`memory_drawn_at` is not null) or a hand-over's mark (`memory_carried`) takes one row, experiment `memory`, unit `tree`, with its mode, its instant and its mark verbatim and its group as the variant, but for one normalisation: a group drawn under mode `off`, which that column holds as the word `none`, becomes the empty variant.
 The four columns stay in the schema exactly as they stand, this release writes none of them, and a later release drops them.
 
 To roll this release back to contract 87, put `legion.yaml` back without `projects.<KEY>.experiments`, which the earlier release refuses as a key it does not know, and re-pin it.
@@ -2151,9 +2151,12 @@ The earlier release writes `issues.memory_*` in a second place, the hand-over, a
 Its `(*Admission).readmit`, in the same file, calls `record.Store.CarryMemory` (`internal/record/store.go` at `legion-v19.57.3`) for every child that leaves another tree, and `CarryMemory` copies the old tree's root's `issues.memory_*` onto the child and marks it carried wherever that tree holds a lifecycle row.
 A tree this release drew holds one and holds empty columns, so a child handed over out of it while the rollback holds is copied no group, no mode and no instant, and marked carried:
 it is settled at no group, and the earlier release never draws it, since its `DrawMemory` passes over a carried root.
-Rolling forward does not undo that.
-The back-fill does not run again, so the child holds no assignment row, and once the earlier release has opened the child's own tree its lifecycle row stands, so this release never draws it either:
-it comes back at no variant, whatever arm the tree it left was drawn into, and the copy by hand below gives it only the settled row, which is no variant too.
+Rolling forward does not undo that for a child whose own tree the earlier release opened during the window, and does for one whose own tree no release has opened yet.
+The back-fill does not run again, so neither child holds an assignment row.
+The child whose tree the earlier release opened has a lifecycle row that stands, so this release never draws it either:
+it comes back in no arm, whatever arm the tree it left was drawn into, and the copy by hand below gives it only the settled row, which is no variant too.
+The child whose tree no release has opened is drawn by this release at its first open after the roll forward (the `if lifecycle.Created` branch of `(*Admission).promoteHolds`), as any new tree is, unless the copy by hand below reaches it first:
+that copy takes the child's carried mark too and writes it the settled row, at no variant, and the draw at its first open then writes nothing over that row.
 Rolling forward again costs the window the earlier release ran for.
 A tree it drew in that window has its answer in `issues.memory_*` alone, and the back-fill runs once, at the first deploy of the migration, and not a second time:
 this release finds no row for that tree, runs it in no arm — so it too changes arm mid-life — and settles the children it hands over at no variant.
@@ -5452,7 +5455,7 @@ each issue's pod (every role of it alike) and the image probe's.
   An issue experiment is drawn when the daemon first records the issue, root or child, and is recorded against that issue's own key.
   Each answer is one row of `experiment_assignments` carrying the arm, the mode in force at the draw and the instant, written once and never updated.
   A re-admission, a new generation and the next epoch after a cleanup keep it, and a child its finished root hands over as a tree of its own is settled at the hand-over with the answers of the tree it leaves:
-  that tree's row verbatim for each experiment it held one for, and no arm at all for each experiment it held none for, which is an answer and is never drawn for later.
+  for each experiment of unit `tree` that tree held a row for, that row's arm, mode and instant verbatim, marked carried, and no arm at all for each experiment that tree held no tree row for and the child holds no row of its own for, which is an answer and is never drawn for later.
   A unit opened before an experiment was declared holds no row for it and runs in no arm of it.
   An operator's spawn whose tree has no issue record records no answer and runs in no arm; nothing is refused and no record is invented.
   The launch follows the record, not the mode:
