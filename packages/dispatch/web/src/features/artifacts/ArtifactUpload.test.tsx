@@ -416,7 +416,6 @@ test("an upload Dispatch required a version of is told it named none, not that t
       "The page could not say which text this upload replaces, and Dispatch requires it. " +
         "Open the document to see what it says now, then upload again."
     );
-    expect(alert.textContent).not.toContain("dispatch doc-read");
   } finally {
     view.unmount();
     uploadArtifact.mockRestore();

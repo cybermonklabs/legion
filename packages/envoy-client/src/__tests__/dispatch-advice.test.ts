@@ -1109,11 +1109,10 @@ describe("dispatch_ask's standing review", () => {
     expect(lines[2]).toBe(
       "alice approved this issue's spec at version 4 on 2026-09-12T13:20:00Z, and gave no reason."
     );
-    expect(lines[2]).not.toContain('""');
   });
 
   test("the reason is printed as the server cut it, with no second cut here", async () => {
-    // The server cuts the reason by characters (firstCharacters in write_advice.go), which is
+    // The server cuts the reason by characters (firstCharacters in standing_review_advice.go), which is
     // where the 500 is decided and proven. Cutting again here would count UTF-16 code units and
     // could split a character the server kept whole, so the line prints what it was sent.
     const reason = "é".repeat(500);
