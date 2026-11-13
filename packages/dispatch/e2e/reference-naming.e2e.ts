@@ -97,3 +97,52 @@ test("a bare address reads as the target's name, a worded link as its author's w
     await alice.close();
   }
 });
+
+// SLOW(>=2s): two page loads - the Conversation and the document - each waiting for the
+// references it draws to settle before it counts links.
+test("an address whose target does not exist reads as its writer's words with no link, in a comment as in a document", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const host = await createIssue({ project: "CORE", title: "Reference host" });
+  const target = await createIssue({ project: "CORE", title: "Warm the cache" });
+  // An issue, its spec, an item of it and a project that do not exist, beside one that does,
+  // so the row reads the class and knows the page drew its references before it counts.
+  const missing = [
+    "dispatch://CORE-99",
+    "dispatch://CORE-99/spec",
+    "dispatch://CORE-99/comment/00000000-0000-4000-8000-000000000000",
+    "dispatch://NOPE-1",
+  ];
+  const body = `${missing.map((address, index) => `Line ${index + 1} names ${address} here.`).join("\n\n")}\n\nAnd dispatch://${target.key} is real.\n`;
+  await editArtifact(
+    host.primary_artifact_id,
+    { ops: [{ after: "end", markdown: body, op: "insert" }] },
+    referenceAgent
+  );
+  const comment = await createComment(host.key, { body }, referenceAgent);
+  const named = `${target.key} ${target.title}`;
+  const alice = await asUser(browser, "alice");
+
+  try {
+    const page = await alice.newPage();
+
+    // R8: a reference whose target Dispatch cannot resolve reads as the words the writer wrote,
+    // with no link - in a document and in a comment alike (`c-naming-rule`'s negative control).
+    const expectWordsWithNoLink = async (scope: Locator) => {
+      await expect(scope.getByRole("link", { exact: true, name: named })).toHaveCount(1);
+      for (const address of missing) {
+        await expect(scope).toContainText(address);
+        await expect(scope.getByRole("link", { exact: true, name: address })).toHaveCount(0);
+      }
+    };
+
+    await page.goto(`/issues/${host.key}/conversation`);
+    await expectWordsWithNoLink(await expandedComment(page, comment.id));
+
+    await page.goto(`/issues/${host.key}/spec`);
+    await expectWordsWithNoLink(documentEditor(page));
+  } finally {
+    await alice.close();
+  }
+});
