@@ -3122,9 +3122,9 @@ jobs:
             # reaches testdata and goldens across the module.
             # Of packages/daemon the job reads the .go files its own file_copy_test.go walks,
             # the .go files the supervise pins type-check from source - internal/supervise and
-            # every package of this module it imports - the prompt below and the four committed
-            # copies the waiting line's checks are held to, so the module's other files - its
-            # .sql, .json and .md - are no input of this job and no pattern here matches them.
+            # every package of this module it imports - the prompt below and the six committed
+            # copies its text checks hold to the texts they copy, so the module's other files -
+            # its .sql, .json and .md - are no input of this job and no pattern here matches them.
             text_checks:
               - *ci_router
               - '.github/workflows/ci-job-text-checks.yaml'
@@ -3135,15 +3135,18 @@ jobs:
               # committed extract reclaim_doc_test.go:43 holds the guide's paragraph to.
               - 'packages/daemon/internal/prompts/roles/architect-root.md'
               - 'packages/daemon/internal/runtime/sandbox/reclaim_doc_extract.txt'
-              # The four copies of the shipped texts waiting_line_texts_test.go:380 holds to
-              # the texts themselves, each committed beside the package whose own check reads
-              # it. They are .txt files, which the module's `**/*.go` above does not match.
+              # The five copies of shipped texts that readExtract (waiting_line_texts_test.go:380)
+              # reads to hold them to the texts themselves: the waiting line's four and the way
+              # back's (way_back_doc_test.go:45), each committed beside the package whose own check
+              # reads it. They are .txt files, which the module's `**/*.go` above does not match.
               - 'packages/daemon/cmd/legion/awaiting_summary_extract.txt'
               - 'packages/daemon/cmd/legion/waiting_line_block_extract.txt'
               - 'packages/daemon/internal/api/waiting_line_contract_extract.txt'
+              - 'packages/daemon/internal/daemon/upgrade_way_back_extract.txt'
               - 'packages/daemon/internal/workflow/waiting_line_words_extract.txt'
-              # The shipped texts those copies are held to, and the ban over them, every one
-              # read by waiting_line_texts_test.go:390.
+              # The shipped texts the waiting line's four copies are held to, and the ban over
+              # them, every one read by waiting_line_texts_test.go:390. The way back's guide is
+              # docs/kubernetes.md, below.
               - 'AGENTS.md'
               - 'docs/site/src/content/docs/legion/concepts.md'
               - 'docs/site/src/content/docs/legion/running-legion.md'
@@ -3156,9 +3159,10 @@ jobs:
               - 'skills/legion-architect/references/acceptance.md'
               - 'skills/legion-controller/references/admission.md'
               - 'skills/legion-controller/references/wakes.md'
-              # The guide packages/envoy/internal/broker/oauth and
-              # packages/daemon/internal/runtime/sandbox hold their committed extracts to
-              # (internal/textcheck/claims_doc_test.go:36,43 and reclaim_doc_test.go:44,167).
+              # The guide packages/envoy/internal/broker/oauth, packages/daemon/internal/runtime/sandbox
+              # and packages/daemon/internal/daemon hold their committed extracts to
+              # (internal/textcheck/claims_doc_test.go:36,43, reclaim_doc_test.go:44,167 and
+              # way_back_doc_test.go:68).
               - 'docs/kubernetes.md'
               # The three files packages/daemon/internal/textcheck/design_approved_wake_test.go
               # holds the architect's prompt to (:19-26).

@@ -423,6 +423,15 @@ RULES = {
         ("docs/kubernetes.md", "internal/textcheck/reclaim_doc_test.go:44,167 reads it under ../../../.."),
         (f"{DAEMON}/internal/runtime/sandbox/reclaim_doc_extract.txt",
          "internal/textcheck/reclaim_doc_test.go:123 reads the committed copy it holds the guide's paragraph to (reclaimExtractLists)")),
+    # internal/daemon/upgrade_phase_entry_way_back_test.go reads no text outside its own package
+    # any more and has no row: upgrade_way_back_extract.txt stands in its own directory, and this
+    # row is what holds that copy to the guide, in the text-check job (dispatch://INFRA-1413).
+    f"{DAEMON}/internal/textcheck/way_back_doc_test.go": reads(
+        ("docs/kubernetes.md", "internal/textcheck/waiting_line_texts_test.go:390 reads it under ../../../.. "
+                               "for way_back_doc_test.go:68 (shippedText)"),
+        (f"{DAEMON}/internal/daemon/upgrade_way_back_extract.txt",
+         "internal/textcheck/waiting_line_texts_test.go:380 reads it as ../daemon/upgrade_way_back_extract.txt for "
+         "way_back_doc_test.go:45, the committed copy it holds the guide's block to (quotedBody)")),
     f"{DAEMON}/internal/textcheck/waiting_line_texts_test.go": reads(
         # The four copies of the shipped texts, each committed beside the package whose own
         # test is held to it and read here through readExtract.
@@ -1837,7 +1846,9 @@ GATES = [
         # rather than the superset ./...: the race step's Run below claims the three packages
         # this step leaves out, which are this job's own, while the text checks are the
         # text-check job's, and a Run saying ./... would keep what only their tests read -
-        # docs/kubernetes.md - on this job's filter.
+        # docs/kubernetes.md - on this job's filter. Only they read it: the way back's check in
+        # internal/daemon, which the race step runs, reads upgrade_way_back_extract.txt beside it
+        # instead, and internal/textcheck's way_back_doc_test.go holds that copy to the guide.
         pinned_step("daemon-go", DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
             (DAEMON, packages_kept(DAEMON, DAEMON_PLAIN_PATTERN),
              "go list ./... piped into go test, counted as go test over the packages its grep -Ev keeps, the "
