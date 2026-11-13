@@ -585,3 +585,53 @@ func TestGoingWriteUploadWhoseOwnerCannotBeNamedIsNeverAutomatic(t *testing.T) {
 		t.Error("an upload whose words write its name is refused, want it run at once")
 	}
 }
+
+// TestGoingWriteResumedOntoOtherArgumentsCountsNoStaleLandingAsItsOwn (review round 6, finding 1;
+// check c21): a reasoned close of issue A posts A's reason and its close is refused 503 before it
+// commits; the next press replaces the invocation's arguments to close issue B instead, so it
+// resumes nothing, and B's reason is refused 403 before it commits. The landing the claim kept
+// from A's attempt is no landing of B's request: the write is refused, B is not closed, and the
+// record does not say B's reason landed.
+func TestGoingWriteResumedOntoOtherArgumentsCountsNoStaleLandingAsItsOwn(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		t.Run(row.action, func(t *testing.T) {
+			a, b := rig.issue(t, "Closed first"), rig.issue(t, "Closed instead")
+			argumentsA, _, ownA := row.on(t, rig, a)
+			argumentsB, firstB, ownB := row.on(t, rig, b)
+			run := rig.proposed(t, "alice", false, row.action, argumentsA)
+			sent := map[string]int{}
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				request := r.Method + " " + r.URL.Path
+				sent[request]++
+				switch request {
+				case ownA:
+					writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "A's close was refused")
+					return
+				case firstB:
+					writeError(w, codeScopeRequired, http.StatusForbidden, "B's reason was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			if half := rig.write(t, "alice", run, press); half.Code != http.StatusServiceUnavailable {
+				t.Fatalf("the press on %s answered %d %s, want its close's 503", a, half.Code, half.Body.String())
+			}
+			press["arguments"] = argumentsB
+			refused := rig.write(t, "alice", run, press)
+			if refused.Code != http.StatusForbidden || sent[ownB] != 0 || rig.issueRead(t, b).Status == "done" {
+				t.Fatalf("the press on %s answered %d %s with %s sent %d times and %s %s, want its reason's 403 and %s left open",
+					b, refused.Code, refused.Body.String(), ownB, sent[ownB], b, rig.issueRead(t, b).Status, b)
+			}
+			recorded := rig.requestsRecorded(t, run)
+			latest := recorded[len(recorded)-1]
+			if latest.Outcome.OK || len(latest.Requests) == 0 || latest.Requests[0].Method+" "+latest.Requests[0].Path != firstB || latest.Requests[0].Outcome.OK {
+				t.Fatalf("the press on %s is recorded %+v, want it refused with %s recorded not landed", b, latest, firstB)
+			}
+		})
+	}
+}

@@ -437,7 +437,7 @@ func (u goingUndoer) send(ctx context.Context, index int, route string, values m
 	answer, _ := io.ReadAll(response.Body)
 	landed := response.StatusCode < http.StatusMultipleChoices
 	if !landed && u.landings != nil {
-		if landed, err = u.landings.landed(ctx, index); err != nil {
+		if landed, err = u.landings.landed(ctx, index, method, path); err != nil {
 			slog.Error("dispatch: read whether a going undo's request landed", "error", err)
 			return goingWriteOutcome{Status: http.StatusInternalServerError, Code: codeGoingLandingUnread, Message: "internal server error"}
 		}
@@ -943,15 +943,17 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 }
 
 // closeCreated closes an issue the turn created: the undo's reason posted on it as a message,
-// then its status set done, while it is still open, answering how each request went. The close
-// expects the status the undo read (updateIssueInput.Expect), decided under the issue's lock, so
-// a status another writer set after that read is never closed over: that refusal, 409
-// ISSUE_CHANGED, is the issue changed, and settles. Where an earlier undo of the write posted the
-// reason (landed) and its close was refused, the reason is not posted again: the undo resumes at
-// the close. A close refused after the reason landed is answered naming the reason that stands
-// (goingRefusal.after), as a write's refused line names what of it landed. It is the one undo that
-// sends more than one request; every other kind sends one, so a retry of it has nothing landed to
-// skip.
+// then its status set done, while it still holds the status the turn left it in, answering how
+// each request went. That status is the one the write recorded in its value after (the created
+// issue's key and status, observe); an issue someone moved since is refused, 409
+// GOING_UNDO_CHANGED, before anything is posted, and the close expects that status too
+// (updateIssueInput.Expect), decided under the issue's lock, so a move made after the undo's read
+// is never closed over either: that refusal, 409 ISSUE_CHANGED, is the issue changed, and settles.
+// Where an earlier undo of the write posted the reason (landed) and its close was refused, the
+// reason is not posted again: the undo resumes at the close. A close refused after the reason
+// landed is answered naming the reason that stands (goingRefusal.after), as a write's refused line
+// names what of it landed. It is the one undo that sends more than one request; every other kind
+// sends one, so a retry of it has nothing landed to skip.
 func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, landed []goingWriteRequest) (any, goingWriteOutcome, []goingWriteRequest) {
 	var issue struct {
 		Status   string  `json:"status"`
@@ -962,6 +964,19 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 	}
 	if issue.ClosedAt != nil {
 		return issue.Status, goingChanged([]string{"the issue is closed already, at " + *issue.ClosedAt}, nil), nil
+	}
+	var made struct {
+		Status string `json:"status"`
+	}
+	_ = json.Unmarshal(write.After, &made)
+	left := made.Status
+	if left == "" {
+		// A record whose value after names no status - one written before the write recorded
+		// it - is held to the status the undo reads, as before.
+		left = issue.Status
+	}
+	if issue.Status != left {
+		return issue.Status, goingChanged([]string{fmt.Sprintf("the issue is %s now, moved since this write left it %s", issue.Status, left)}, nil), nil
 	}
 	values := map[string]string{"key": write.Target}
 	reason := goingUndoRequest(goingIssueMessageRoute, values)
@@ -976,7 +991,7 @@ func (u goingUndoer) closeCreated(ctx context.Context, write goingRunWrite, land
 	}
 	closing := goingUndoRequest(goingIssuePatchRoute, values)
 	closing.Outcome = u.send(ctx, 1, goingIssuePatchRoute, values, map[string]any{
-		"status": "done", "expect": map[string]any{"status": issue.Status},
+		"status": "done", "expect": map[string]any{"status": left},
 	})
 	requests = append(requests, closing)
 	if closing.Outcome.OK {

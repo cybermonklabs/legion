@@ -362,6 +362,30 @@ func TestGoingUndoOfACreatedIssueWhoseResumedCloseCommittedIsRecordedDone(t *tes
 	}
 }
 
+// TestGoingUndoOfACreatedIssueSomeoneMovedSinceClosesNothing (review round 6, finding 2): the turn
+// creates an issue, and before the undo bob moves it to in_progress. The undo expects the status
+// the turn left, not the one it reads, so it closes nothing and posts no reason: the issue stays
+// in_progress and the line is refused, naming the change.
+func TestGoingUndoOfACreatedIssueSomeoneMovedSinceClosesNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "An older issue", "The spec.\n")
+	run, made := rig.runOne(t, "dispatch_issue", map[string]any{"project": "DEMO", "title": "Made, then started by bob", "force": true}, nil)
+	rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+made.Item, map[string]any{"status": "in_progress"})
+	const reason = "Undone after bob started it."
+	line := oneLine(t, rig.undo(t, "alice", run, map[string]any{"reason": reason}), false)
+	if status := rig.issueRead(t, made.Item).Status; status != "in_progress" {
+		t.Fatalf("the created issue is %s after the undo answered %+v, want bob's in_progress kept", status, line.Outcome)
+	}
+	if line.Outcome.Code != codeGoingUndoChanged || !strings.Contains(line.Outcome.Message, "in_progress") {
+		t.Fatalf("the undo answered %+v, want it refused %s naming in_progress", line.Outcome, codeGoingUndoChanged)
+	}
+	var posted int
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select count(*) from messages where issue_key = $1 and body = $2`, made.Item, reason).Scan(&posted); err != nil || posted != 0 {
+		t.Fatalf("the created issue holds %d messages saying %q (%v), want no reason posted", posted, reason, err)
+	}
+}
+
 // TestGoingUndoOfAReleaseOfASessionsClaimClaimsNothingForTheSession (review round 4, finding 2):
 // the person releases the claim a session holds; the turn's undo, made by the person, cannot take
 // the claim back for that session and must not take it for the person, who never held it. The

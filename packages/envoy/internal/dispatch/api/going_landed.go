@@ -80,26 +80,54 @@ func (l goingLandings) element() (column, condition string) {
 }
 
 // goingLandedRead reads whether the pending claim of the run $1 of author $2 - the write of id $3,
-// or where $4 is the moment an undo was claimed, that undo of write $3 - records its request $5
-// landed.
+// or where $4 is the moment an undo was claimed, that undo of write $3 - records its request $5,
+// of method $6 and path $7, landed. A landing at that index for another request - one an earlier
+// attempt of the write sent before its arguments changed - is no landing of this one.
 const goingLandedRead = `
 	select exists (
 	  select 1 from going_runs r, jsonb_array_elements(case when $4::text = '' then r.writes else r.undos end) e
 	  where r.id = $1::uuid and r.author_login = $2 and coalesce((e->>'pending')::boolean, false)
 	    and case when $4::text = '' then e->>'id' = $3 else e->>'write_id' = $3 and e->>'at' = $4::text end
+	    and e->'requests'->$5::int->>'method' = $6 and e->'requests'->$5::int->>'path' = $7
 	    and coalesce((e->'requests'->$5::int->'outcome'->>'ok')::boolean, false))`
 
-// landed reports whether the request at index landed: whether the claim's record names it landed,
-// as its own transaction wrote it (goingLanding.step). It reads on its own bounded context, so a
-// request whose time ran out as it landed is still read as landed.
-func (l *goingLandings) landed(ctx context.Context, index int) (bool, error) {
+// landed reports whether the request at index, of method and path, landed: whether the claim's
+// record names that request landed at its index, as its own transaction wrote it
+// (goingLanding.step). It reads on its own bounded context, so a request whose time ran out as it
+// landed is still read as landed.
+func (l *goingLandings) landed(ctx context.Context, index int, method, path string) (bool, error) {
 	bookkeeping, cancel := goingBookkeeping(ctx)
 	defer cancel()
 	var landed bool
-	if err := l.s.deps.Store.Pool.QueryRow(bookkeeping, goingLandedRead, l.run, l.login, l.write, l.undo, index).Scan(&landed); err != nil {
+	if err := l.s.deps.Store.Pool.QueryRow(bookkeeping, goingLandedRead, l.run, l.login, l.write, l.undo, index, method, path).Scan(&landed); err != nil {
 		return false, goingLandingUnread{err}
 	}
 	return landed, nil
+}
+
+// goingLandingsFrom drops the requests of the pending claim of the run $1 of author $2 - the
+// write of id $3, or the undo of write $3 claimed at $4 - from index $5 on.
+const goingLandingsFrom = `
+	update going_runs r set %[1]s = (
+	  select jsonb_agg(case when %[2]s then jsonb_set(e, '{requests}', coalesce((
+	    select jsonb_agg(q order by m) from jsonb_array_elements(coalesce(e->'requests', '[]'::jsonb)) with ordinality y(q, m)
+	    where m <= $5::int), '[]'::jsonb)) else e end order by n)
+	  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n))
+	where r.id = $1::uuid and r.author_login = $2
+	  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s
+	              and jsonb_array_length(coalesce(e->'requests', '[]'::jsonb)) > $5::int)`
+
+// from drops the claim's record of every request from index on, before the request at index is
+// sent: a call that stops resuming there sends other requests from there than the earlier attempt
+// the claim took its landings from, so none of that attempt's landings from index on is theirs.
+// It is bookkeeping outside every commit step (store.WithoutBeforeCommit); a claim holding none
+// from index on is left as it is.
+func (l *goingLandings) from(ctx context.Context, index int) error {
+	column, condition := l.element()
+	bookkeeping, cancel := goingBookkeeping(ctx)
+	defer cancel()
+	return goingReleased(l.s.appendToGoingRun(store.WithoutBeforeCommit(bookkeeping), fmt.Sprintf(goingLandingsFrom, column, condition),
+		l.run, l.login, l.write, l.undo, index))
 }
 
 // goingPaddedRequests is the requests of the claim's element e padded with nulls up to index $7,
@@ -157,18 +185,20 @@ func (landing goingLanding) step(running *atomic.Bool) store.BeforeCommit {
 	}
 }
 
-// answered adds to the landing of the request at index, where the claim's record holds one, the
-// status its answer carried and the item it made (record), so a write taken over after its
-// process ended (adoptGoingRunWrite) names them as the request's own answer did. It is the
-// writes route's bookkeeping, outside every commit step (store.WithoutBeforeCommit), and best
-// effort: a landing it cannot amend still stands, without them.
+// answered adds to the landing of the request at index, where the claim's record holds that very
+// request (record's method and path) landed there, the status its answer carried and the item it
+// made (record), so a write taken over after its process ended (adoptGoingRunWrite) names them as
+// the request's own answer did. It is the writes route's bookkeeping, outside every commit step
+// (store.WithoutBeforeCommit), and best effort: a landing it cannot amend still stands, without
+// them.
 func (l *goingLandings) answered(ctx context.Context, index int, record goingWriteRequest) {
 	encoded, err := json.Marshal(record)
 	if err != nil {
 		return
 	}
 	column, condition := l.element()
-	landed := `coalesce((e->'requests'->$7::int->'outcome'->>'ok')::boolean, false)`
+	landed := `(coalesce((e->'requests'->$7::int->'outcome'->>'ok')::boolean, false)
+		and e->'requests'->$7::int->>'method' = $8 and e->'requests'->$7::int->>'path' = $9)`
 	bookkeeping, cancel := goingBookkeeping(ctx)
 	defer cancel()
 	if err := goingReleased(l.s.appendToGoingRun(store.WithoutBeforeCommit(bookkeeping), fmt.Sprintf(`
@@ -177,7 +207,7 @@ func (l *goingLandings) answered(ctx context.Context, index int, record goingWri
 		  from jsonb_array_elements(r.%[1]s) with ordinality x(e, n))
 		where r.id = $1::uuid and r.author_login = $2
 		  and exists (select 1 from jsonb_array_elements(r.%[1]s) e where %[2]s and %[3]s)`, column, condition, landed),
-		l.run, l.login, l.write, l.undo, strconv.Itoa(index), string(encoded), index)); err != nil {
+		l.run, l.login, l.write, l.undo, strconv.Itoa(index), string(encoded), index, record.Method, record.Path)); err != nil {
 		slog.Warn("dispatch: add a going request's answer to its landing", "error", err)
 	}
 }

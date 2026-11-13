@@ -758,11 +758,20 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 	sent := make([]goingWriteRequest, 0, len(requests))
 	resuming := true
 	for index, spec := range requests {
-		resuming = resuming && index < len(landed) && landed[index].Method == spec.method && landed[index].Path == spec.path
-		if resuming {
+		stillResuming := resuming && index < len(landed) && landed[index].Method == spec.method && landed[index].Path == spec.path
+		if stillResuming {
 			sent = append(sent, landed[index])
 			continue
 		}
+		if resuming && index < len(landed) && c.landings != nil {
+			// The call stops resuming here, sending another request than the earlier attempt
+			// sent at this index (its arguments changed): none of that attempt's landings from
+			// here on is this call's, so the claim drops them before anything is sent.
+			if err := c.landings.from(ctx, index); err != nil {
+				return nil, sent, fmt.Errorf("drop the landings of an earlier attempt of %s: %w", prepared.action, err)
+			}
+		}
+		resuming = false
 		request, err := spec.build(c.landings.on(ctx, index, spec.method, spec.path), c.BaseURL)
 		if err != nil {
 			return nil, sent, err
@@ -774,7 +783,7 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 		record := goingWriteRequest{Method: spec.method, Path: spec.path,
 			Outcome: goingWriteOutcome{OK: response.StatusCode < http.StatusMultipleChoices, Status: response.StatusCode}}
 		if !record.Outcome.OK && c.landings != nil {
-			if record.Outcome.OK, err = c.landings.landed(ctx, index); err != nil {
+			if record.Outcome.OK, err = c.landings.landed(ctx, index, spec.method, spec.path); err != nil {
 				_ = response.Body.Close()
 				return nil, append(sent, record), err
 			}
