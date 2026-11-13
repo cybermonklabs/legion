@@ -23,7 +23,7 @@
 -- this column its refusal recorded nothing, so the bundle stayed open and the next pod of the
 -- issue — an eviction's, an update round's, a park and unpark's — took it and ran
 -- `jj bookmark set --allow-backwards` and `jj edit` over the branch that newer work was pushed to.
--- The bytes stay for a person to recover (store.WorkspaceBundleFacts, the operator's procedure in
+-- The bytes stay for a person to recover (store.WorkspaceBundleSize, the operator's procedure in
 -- docs/kubernetes.md) and the row goes on holding the issue's pod
 -- (workflow.IdleHoldBundleUnrestored) until the issue's work is over.
 --

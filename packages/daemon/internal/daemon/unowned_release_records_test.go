@@ -127,11 +127,11 @@ func (r *idleRig) earlierReleasesBundle(t *testing.T) int {
 // which is how the bytes the record carries are told from the bytes the database holds.
 func (r *idleRig) savedBundleBytes(t *testing.T) (int, bool) {
 	t.Helper()
-	facts, err := r.st.WorkspaceBundleFacts(context.Background(), r.issue.Key)
+	size, held, err := r.st.WorkspaceBundleSize(context.Background(), r.issue.Key)
 	if err != nil {
 		t.Fatalf("read the saved bundle of %s: %v", r.issue.Key, err)
 	}
-	return facts.Size, facts.Held
+	return size, held
 }
 
 // suspendedByOperator leaves the rig's one live claim as an operator's own suspension leaves it:

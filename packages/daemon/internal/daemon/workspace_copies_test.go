@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -92,7 +94,12 @@ func newCopyRig(t *testing.T) *copyRig {
 	bundle.At = time.Now().UTC()
 	bundler := &copyBundler{bundle: bundle}
 	rig.w.log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	rig.w.copyBundler = bundler
+	rig.w.copyBundler, rig.w.copyStore = bundler, rig.st
+	// The copies run under the daemon's run, as attach and run wire them; the test's own end is
+	// that run's.
+	run, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	rig.w.copies.runUnder(run)
 	conn := fake.NewConn()
 	conns, ok := rig.sup.deps.Conns.(*fake.Conns)
 	if !ok {
@@ -143,21 +150,57 @@ func (r *copyRig) setClaimState(t *testing.T, state string) {
 	}
 }
 
-// facts is what the issue's running copy says of itself, and whether it holds one at all.
-func (r *copyRig) facts(t *testing.T) (runtime.WorkspaceCopyFacts, bool) {
+// heldCopy is what an issue's running copy says of itself without its bytes, read off its row:
+// the store serves no such read, since nothing in the daemon decides on it but the restore's own
+// transaction (store.TakeWorkspaceCopyForRestore), and a test asks what the cadence stored.
+type heldCopy struct {
+	Held bool
+	At   time.Time
+	Size int
+}
+
+// runningCopyOf is issue's running copy as st holds it, and whether it holds one at all.
+func runningCopyOf(t *testing.T, st *store.Store, issue string) (heldCopy, bool) {
 	t.Helper()
-	facts, err := r.st.RunningWorkspaceCopy(context.Background(), r.issue.Key)
-	if err != nil {
-		t.Fatalf("read the issue's running copy: %v", err)
+	held := heldCopy{Held: true}
+	err := st.Pool().QueryRow(context.Background(), `select at, size_bytes from workspace_running_copies where issue = $1`, issue).
+		Scan(&held.At, &held.Size)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return heldCopy{}, false
 	}
-	return facts, facts.Held
+	if err != nil {
+		t.Fatalf("read the running copy of %s: %v", issue, err)
+	}
+	return held, true
+}
+
+// takeCopyOf is what one pod's ask did to issue's copy of kind, through the one take the daemon
+// hands the runtime (store.TakeWorkspaceCopyForRestore): the entry it answered for that copy, or
+// nothing to send when it answered none.
+func takeCopyOf(ctx context.Context, st *store.Store, kind runtime.WorkspaceCopyKind, issue, pod string, created time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, pod, created)
+	if err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
+	}
+	for _, taken := range restore.Copies {
+		if taken.Kind == kind {
+			return taken.Bundle, taken.Take, nil
+		}
+	}
+	return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
+}
+
+// facts is what the issue's running copy says of itself, and whether it holds one at all.
+func (r *copyRig) facts(t *testing.T) (heldCopy, bool) {
+	t.Helper()
+	return runningCopyOf(t, r.st, r.issue.Key)
 }
 
 // awaitCopy waits for the issue to hold a copy of size bytes, which is how a test reads the end
 // of a copy the cadence took on a goroutine of its own.
-func (r *copyRig) awaitCopy(t *testing.T, size int) runtime.WorkspaceCopyFacts {
+func (r *copyRig) awaitCopy(t *testing.T, size int) heldCopy {
 	t.Helper()
-	var facts runtime.WorkspaceCopyFacts
+	var facts heldCopy
 	if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
 		found, held := r.facts(t)
 		facts = found
@@ -645,7 +688,7 @@ func TestTheWorkspaceCopyTickDoesNothingWithoutABundlerOrAStore(t *testing.T) {
 		name string
 		w    *workflowRuntime
 	}{
-		{name: "the runtime bundles no workspace", w: &workflowRuntime{idleStore: &store.Store{}}},
+		{name: "the runtime bundles no workspace", w: &workflowRuntime{copyStore: &store.Store{}}},
 		{name: "no store", w: &workflowRuntime{copyBundler: &copyBundler{}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

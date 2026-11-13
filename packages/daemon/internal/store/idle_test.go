@@ -165,11 +165,11 @@ func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 
 	// The pod that replaced the one the copy came off was sent it and its restore failed: the
 	// attempt is spent and the row stays, which is the state a hold would be read from.
-	if _, take, err := st.TakeRunningWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-replaced-it", now.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleSend {
+	if _, take, err := takeOf(ctx, st, runtime.WorkspaceCopyRunning, rootIssue, "pod-that-replaced-it", now.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", take, err)
 	}
-	if facts, err := st.RunningWorkspaceCopy(ctx, rootIssue); err != nil || !facts.Held {
-		t.Fatalf("the failed restore left the running copy = %t (%v), want it kept", facts.Held, err)
+	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held {
+		t.Fatal("the failed restore took the running copy, want it kept")
 	}
 	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
 		t.Fatalf("view = %+v, want no hold: the idle rule reads the release bundles alone", view)

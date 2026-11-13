@@ -112,30 +112,31 @@ type workflowRuntime struct {
 	controllerFirstWake time.Duration
 	// idlePeriod is how long an issue pod must have had no turn in progress and no turn due
 	// before the daemon releases it (runtime.kubernetes.idle_release.idle_minutes); zero turns
-	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleRuntime is the
-	// runtime the pass asks about the pod itself — its image, its Sandbox (issuePods) — nil when
-	// release is off. idleTick is the tick's period, zero being idleTickInterval; a test shortens
-	// it.
-	//
-	// idleStore is the daemon's own store, which holds the idle view, the release's mark, the
-	// listener's liveness report and the running copies. It is the store of every tick and not
-	// release's alone, so attach sets it whatever the deployment releases, and what says release
-	// is off is idlePeriod and idleRuntime. It is nil only for a daemon built with no store at
-	// all, which is every hand-built workflowRuntime in a test.
+	// release off, as `idle_minutes: 0` and every runtime but Kubernetes do. idleStore is the
+	// daemon's store, which holds the idle view and the release's mark, and idleRuntime the
+	// runtime the pass asks about the pod itself — its image, its Sandbox (issuePods); both nil
+	// when release is off. idleTick is the tick's period, zero being idleTickInterval; a test
+	// shortens it.
 	idlePeriod  time.Duration
 	idleStore   *store.Store
 	idleRuntime issuePods
 	idleTick    time.Duration
-	// copyBundler is the runtime's bundler of an issue workspace's unpushed work, which the
-	// cadence that keeps a copy of each workspace while its pod runs asks (tickWorkspaceCopies,
-	// copyWorkspaceAtTurnEnd). It is nil where the runtime implements no runtime.WorkspaceBundler
-	// — `runtime: tmux`, whose processes share the daemon's own disk — and the cadence then does
-	// nothing. copies is what that cadence holds in memory, one entry per issue it has copied.
+	// copyBundler is the runtime's bundler of an issue workspace's unpushed work, and copyStore
+	// the daemon's store the copies it answers are kept in, which the cadence that keeps a copy of
+	// each workspace while its pod runs uses (tickWorkspaceCopies, copyWorkspaceAtTurnEnd,
+	// copyWorkspaceAtPush). They are set whatever the deployment releases, because the cadence is
+	// no part of release: a deployment with `idle_minutes: 0` still has pods the cluster can end
+	// under it. copyBundler is nil where the runtime implements no runtime.WorkspaceBundler —
+	// `runtime: tmux`, whose processes share the daemon's own disk — and copyStore for a daemon
+	// built with no store, which is every hand-built workflowRuntime in a test; either leaves the
+	// cadence doing nothing. copies is what that cadence holds in memory, one entry per issue it
+	// has copied, and the run's context its copies run under.
 	//
 	// copyPeriod and copyBudget are the period between two copies of one issue and the budget one
 	// copy is given; zero means the production constants (runningCopyPeriod, runningCopyBudget).
 	// A test shortens both, as it shortens the ticks.
 	copyBundler runtime.WorkspaceBundler
+	copyStore   *store.Store
 	copies      runningCopies
 	copyPeriod  time.Duration
 	copyBudget  time.Duration
@@ -416,6 +417,11 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// limiter run built for both lanes. A deployment that paces nothing passes no reserve at all,
 	// which is the pacing off: the engine then writes that catch-up due at once, as it always did.
 	engineCfg.Reserve = reserve
+	// Every push of an issue's branch is recorded in its fact's transaction, and once it commits
+	// the issue's workspace is copied (copyWorkspaceAtPush): the restore of a new pod refuses any
+	// copy older than that push (store.TakeWorkspaceCopyForRestore), and this copy is the one that
+	// takes its place. The cadence's store and bundler are attach's, read when the push arrives.
+	engineCfg.Pushes, engineCfg.PushRecorded = st, w.copyWorkspaceAtPush
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)
 	// The project's `memory` block decides what each tree admission opens is drawn: a project the
@@ -971,28 +977,32 @@ func (w *workflowRuntime) enqueueOutbox(ctx context.Context, issue string, paylo
 }
 
 // attach gives the workflow what only supervision has: the outbox, built on its supervisor and
-// its runtime, the daemon's store, the runtime's bundler of an issue workspace, and the
-// deployment's budget limits, which a failed claim's fact carries to the workflow engine
-// (applyTerminal). The pace a paced catch-up's wake line names is the supervisor's own
-// (supervise.WakePace, the rate and the burst the machines are held to), which the outbox reads
-// through that supervisor where it writes the line (wakeRan); the limiter both lanes reserve
-// from was built before either of them (run).
+// its runtime, the daemon's store and the runtime's bundler of an issue workspace for the
+// cadence, and the deployment's budget limits, which a failed claim's fact carries to the
+// workflow engine (applyTerminal). The pace a paced catch-up's wake line names is the
+// supervisor's own (supervise.WakePace, the rate and the burst the machines are held to), which
+// the outbox reads through that supervisor where it writes the line (wakeRan); the limiter both
+// lanes reserve from was built before either of them (run).
 //
-// The store and the bundler are wired here and not in attachIdleRelease, which returns early
-// where the deployment releases no pod: the cadence that keeps a copy of each issue workspace
-// while its pod runs is no part of release (tickWorkspaceCopies). A deployment with
+// The cadence's store and bundler are wired here and not in attachIdleRelease, which returns
+// early where the deployment releases no pod: the cadence that keeps a copy of each issue
+// workspace while its pod runs is no part of release (tickWorkspaceCopies). A deployment with
 // `idle_minutes: 0` releases nothing and still has pods the cluster can end under it, so it
 // takes the copies; what leaves the cadence with nothing to do is a runtime that bundles no
-// workspace, which is `runtime: tmux`.
+// workspace, which is `runtime: tmux`. The outbox is handed the cadence's memory too, so that a
+// release's save takes the same per-issue mark a copy takes (outbox.bundleIssueWorkspace): both
+// run the shim's bundler in the issue's workspace, and two of them there at once would share the
+// ref prefix `refs/legion-bundle/`.
 func (w *workflowRuntime) attach(supervision *supervision) {
 	w.log.Info("legion workflow boot stage", "stage", "outbox")
 	w.outbox = newOutbox(w.pool, w.records, w.dispatch, notify.New(supervision.cfg.EnvoyURL, supervision.plan.secrets["ENVOY_TOKEN"]), supervision.supervisor,
 		supervision.supervisor.store, w.tokens, w.handlers, supervision.cfg.Gates.Steps(),
 		w.projectID, w.dispatchProject, w.stateDir, w.githubAPI,
 		w.repositories, supervision.plan.tools, w.log)
+	w.outbox.copies = &w.copies
 	w.outboxWake.Store(w.outbox)
-	w.idleStore = supervision.supervisor.store
 	w.limits = supervision.supervisor.deps.Limits
+	w.copyStore = supervision.supervisor.store
 	if bundler, ok := supervision.supervisor.deps.Runtime.(runtime.WorkspaceBundler); ok {
 		w.copyBundler = bundler
 	} else {
@@ -1006,8 +1016,7 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 // attachIdleRelease wires the idle tick, and leaves it off unless the deployment releases pods:
 // `runtime: kubernetes` with a non-zero idle_minutes, over a runtime that can say whether an
 // issue's pod runs the image the configuration names and whether it still holds the issue's
-// Sandbox (issuePods). The store every tick reads is attach's (idleStore); what this decides is
-// release itself.
+// Sandbox (issuePods).
 func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 	k := supervision.cfg.Runtime.Kubernetes
 	if supervision.cfg.Runtime.Name != "kubernetes" || k == nil || !k.IdleRelease.Releases() {
@@ -1018,7 +1027,7 @@ func (w *workflowRuntime) attachIdleRelease(supervision *supervision) {
 		w.log.Warn("idle release: the runtime reads no issue pod, so no pod is released")
 		return
 	}
-	w.idlePeriod, w.idleRuntime = k.IdleRelease.Idle(), podRuntime
+	w.idlePeriod, w.idleStore, w.idleRuntime = k.IdleRelease.Idle(), supervision.supervisor.store, podRuntime
 	w.outbox.backstop = k.IdleRelease.Backstop()
 }
 
@@ -1190,6 +1199,10 @@ func terminalEventID(c supervise.Claim, state supervise.ClaimState) string {
 // reads no events or has lost a held or worker-died fact looks healthy and does nothing.
 func (w *workflowRuntime) run(ctx context.Context) error {
 	group, running := errgroup.WithContext(ctx)
+	// Every copy of an issue workspace runs under the run, whichever path started it, so the
+	// daemon's stop ends the copies in flight rather than leaving them to run to their budget
+	// against a store that is closing (runningCopies).
+	w.copies.runUnder(running)
 	group.Go(func() error {
 		if err := w.consumers.Run(running, w.handlers...); err != nil {
 			// A terminal close's cause is the connection's alone (natsauth.WithLastError).

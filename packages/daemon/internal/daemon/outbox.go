@@ -137,11 +137,17 @@ type outbox struct {
 	laneCtx context.Context
 	lanes   map[record.LaneKey]*outboxLane
 	wg      sync.WaitGroup
+	// copies is the workspace cadence's memory of which issue has a copy in flight
+	// (workflowRuntime.copies), whose per-issue mark a release's save takes before it runs the
+	// shim's bundler (bundleIssueWorkspace): the two share one workspace and its ref prefix. Nil in
+	// a test that builds the outbox by hand without the workflow, where no copy is ever in flight.
+	copies *runningCopies
 }
 
 // outboxTrees is the store's tree barrier (store.Store) as the outbox runs it: an issue close's
-// suspension, an idle release's own two decisions and the two copies of a workspace it saves and
-// drops, a stop's wait for a stored claim's machine, and a workflow tree close's cleanup.
+// suspension, an idle release's own two decisions and the bundle it saves or drops, each with
+// the issue's running copy in its own transaction, a stop's wait for a stored claim's machine,
+// and a workflow tree close's cleanup.
 type outboxTrees interface {
 	IssueSuspension(ctx context.Context, project string, closing store.IssueClose, outOfWorkflow func(status string) bool) (bool, error)
 	IssueRelease(ctx context.Context, project string, release store.IssueReleased, outOfWorkflow func(status string) bool) (store.ReleaseDecision, error)
@@ -151,9 +157,8 @@ type outboxTrees interface {
 	CancelIssueRelease(ctx context.Context, project, issue string, resume store.ReleaseResumeRow, outOfWorkflow func(status string) bool) ([]claim.Role, bool, error)
 	ClearIssueRelease(ctx context.Context, project, issue string) error
 	PutWorkspaceBundle(ctx context.Context, issue string, release int64, bundle runtime.WorkspaceBundle) error
-	WorkspaceBundleFacts(ctx context.Context, issue string) (runtime.WorkspaceCopyFacts, error)
+	WorkspaceBundleSize(ctx context.Context, issue string) (int, bool, error)
 	DeleteWorkspaceBundle(ctx context.Context, issue string) error
-	DeleteRunningWorkspaceCopy(ctx context.Context, issue string) error
 	StoredClaimMayRun(ctx context.Context, token claim.Token, row int64) (bool, error)
 	ReserveWorkflowTreeCleanup(ctx context.Context, project, tree string, rootGeneration uint64) (treelifecycle.Lifecycle, bool, error)
 	CleanupReservedTree(ctx context.Context, project, tree string, epoch uint64, releaser store.TreeReleaser) error
@@ -1742,15 +1747,19 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // the cost of a pod. A workspace with nothing unpushed bundles to nothing, and the row the
 // previous release stored goes with it, so the next pod never restores stale work.
 //
-// The copy the cadence took while this pod ran goes whichever way the save falls
-// (store.DeleteRunningWorkspaceCopy). This bundle is the newer copy of the same workspace — it is
-// taken after the roles stopped, from the disk that copy came off — so from this moment the
-// running copy is stale, and leaving it would mean a pod after the next one being sent work older
-// than the bundle the next one restored. A save that found nothing unpushed says the same thing
-// more strongly: there is no unpushed work to put back at all, so a copy of a few minutes ago is
-// work that has since been pushed, and restoring it would move the issue's bookmarks back over
-// it. Either delete failing cancels the release, as the save's own does, and the cancel drops
-// both copies in its own transaction (store.CancelIssueRelease).
+// The copy the cadence took while this pod ran goes whichever way the save falls, in the save's
+// own transaction (store.PutWorkspaceBundle, store.DeleteWorkspaceBundle). This bundle is the
+// newer copy of the same workspace — it is taken after the roles stopped, from the disk that copy
+// came off — so from this moment the running copy is stale. A save that found nothing unpushed
+// says the same thing more strongly: there is no unpushed work to put back at all. A write that
+// fails cancels the release, as the save's own does, and the cancel drops both copies in its own
+// transaction (store.CancelIssueRelease).
+//
+// The save takes the issue's place in the workspace cadence's single flight before it asks the
+// shim (runningCopies.hold), waiting out a copy already in flight, and no copy starts while it
+// holds it: the save and a copy both run the shim's bundler in the one workspace, under the one
+// ref prefix `refs/legion-bundle/`, and one run's delete would land inside the other's `git
+// bundle create`. A wait the row's context ends is the row's error, which its lane runs again.
 //
 // A save of a release that is over stores nothing: the bundle of the issue belongs to whichever
 // release the store's mark names, never to a row of one that was cancelled and is still on the
@@ -1776,6 +1785,13 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	if !ok {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
 	}
+	if r.copies != nil {
+		release, err := r.copies.hold(ctx, row.Issue)
+		if err != nil {
+			return fmt.Errorf("release save of %s: waiting for the running copy in flight: %w", row.Issue, err)
+		}
+		defer release()
+	}
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
 	if err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
@@ -1788,18 +1804,12 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 		if err := r.trees.DeleteWorkspaceBundle(ctx, row.Issue); err != nil {
 			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 		}
-		if err := r.trees.DeleteRunningWorkspaceCopy(ctx, row.Issue); err != nil {
-			return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
-		}
 		return nil
 	}
 	// The bundle is stored under the release that took it, so the restore of the pod that
 	// replaces this one names the release whose work it put back (store.PutWorkspaceBundle), and
 	// the running copy this bundle supersedes goes with the save.
 	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
-		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
-	}
-	if err := r.trees.DeleteRunningWorkspaceCopy(ctx, row.Issue); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
 	return nil
@@ -1872,7 +1882,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	// A release that suspends no role saved no bundle of its own, and the issue's bundle row,
 	// where there is one, belongs to an earlier release that nothing deletes here: a cancel
 	// deletes only the bundle of the release it cancels (workspace_bundles by issue and
-	// release_id), and this release's id owns no row. WorkspaceBundleFacts reads per issue, so
+	// release_id), and this release's id owns no row. WorkspaceBundleSize reads per issue, so
 	// reading it here would report another release's bytes as this release's own. Such a
 	// release reads instead the two facts its own line carries — the Sandbox the teardown is
 	// about to delete, and the state of every claim of the issue — and reads both before the
@@ -1885,12 +1895,8 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		if claims, err = r.trees.ClaimStatesIn(ctx, r.project, row.Issue); err != nil {
 			return err
 		}
-	} else {
-		saved, err := r.trees.WorkspaceBundleFacts(ctx, row.Issue)
-		if err != nil {
-			return err
-		}
-		savedBytes = saved.Size
+	} else if savedBytes, _, err = r.trees.WorkspaceBundleSize(ctx, row.Issue); err != nil {
+		return err
 	}
 	if err := suspender.SuspendIssue(ctx, row.Issue, payload.Tree, authorize); err != nil {
 		return err

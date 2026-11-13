@@ -507,14 +507,14 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		opts.Conns, opts.StreamURL, opts.Store, opts.Mapped = listener, address, st, mapped
 		// The restore of a new pod and the two copies of an issue workspace it chooses between:
 		// an idle release puts the issue's unpushed work in one (outbox's release) and the
-		// cadence of a running pod in the other, and the runtime reads the facts of both, hands
-		// the newer to the launcher of the pod that replaces the one the work came off before any
-		// role of that pod starts, and closes the older unsent. Each take is that copy's one
-		// restore attempt: the first pod that is not the one the work came off takes it, whether
-		// the copy is sent or that pod is refused as no newer, and nothing is answered for that
-		// copy again.
-		opts.SavedWorkspaceCopies = st.SavedWorkspaceCopies
-		opts.SavedWorkspaceBundle, opts.SavedRunningWorkspaceCopy = st.TakeWorkspaceBundleForRestore, st.TakeRunningWorkspaceCopyForRestore
+		// cadence of a running pod in the other. The take reads both and the newest push of the
+		// issue's branch the daemon recorded, refuses any copy older than that push, offers the
+		// newer of the rest to the launcher of the pod that replaces the one the work came off
+		// before any role of that pod starts, and closes the older unsent, all in one
+		// transaction. Each copy's attempt is spent once: the first pod that is not the one the
+		// work came off spends it, whether the copy is sent or refused, and nothing is answered
+		// for that copy again.
+		opts.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
 		// Which of the two tables a launcher's restore report names is read off its id, and that
 		// rule belongs to the store that owns both (store.DeleteRestoredWorkspaceCopy).
 		opts.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceCopy

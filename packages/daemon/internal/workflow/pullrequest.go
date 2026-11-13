@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -193,7 +194,20 @@ func (e *Engine) decideReplayed(ctx context.Context, tx pgx.Tx, prior record.Pul
 	return e.decideChecks(ctx, tx, pr, false)
 }
 
+// Pushes is the daemon's record of the newest push of each issue's branch, written in the push
+// fact's own transaction (Config.Pushes, store.Store.RecordIssuePush).
+type Pushes interface {
+	RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, head string, at time.Time) error
+}
+
+// push applies a push of a branch. It records the push of an issue's branch first and on its
+// own (recordPush), and only then reads the pull request the push moves, from which everything
+// else here follows: with no pull request recorded on the branch the push is recorded and the
+// rest is nothing.
 func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.Result, error) {
+	if err := e.recordPush(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
 	pr, err := e.pullRequestByBranch(ctx, tx, fact.Repo, fact.Branch)
 	if err != nil || pr == nil {
 		return intake.Result{}, err
@@ -258,6 +272,36 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 		return intake.Result{}, nil
 	}
 	return intake.Result{}, e.reaskRound(ctx, tx, *issue, pr, prior)
+}
+
+// recordPush records a push of `legion/<KEY>` on the repository KEY is recorded on as the newest
+// push of that issue's branch (Config.Pushes), at the daemon's own clock, and asks for a copy of
+// the issue's workspace once the fact commits (Config.PushRecorded). The branch alone names the
+// issue (issueForBranch), so the record is made whether or not the issue has a pull request: a
+// branch is pushed before its pull request opens, and an issue with no pull-request record is
+// the one a record kept beside the pull request would have missed — the one a stale copy of its
+// workspace would then have been sent for, moving its branch back behind what GitHub holds. Every
+// push is recorded, whoever pushed: a copy older than any of them would roll that push back.
+//
+// The copy is asked for on commit and not here, as every effect of a fact is: a fact that rolls
+// back has recorded no push, and a copy is a `git bundle create` in a workspace a role is working
+// in, which the daemon takes for a push it holds and for none it might not.
+func (e *Engine) recordPush(ctx context.Context, tx pgx.Tx, fact intake.Push) error {
+	if e.cfg.Pushes == nil {
+		return nil
+	}
+	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)
+	if err != nil || issue == nil {
+		return err
+	}
+	if err := e.cfg.Pushes.RecordIssuePush(ctx, tx, issue.Key, fact.After, e.now()); err != nil {
+		return err
+	}
+	if recorded := e.cfg.PushRecorded; recorded != nil {
+		key := issue.Key
+		intake.OnCommit(ctx, func() { recorded(key) })
+	}
+	return nil
 }
 
 // reaskRound re-asks issue's review round (settleRound) after a push, or after the head it left

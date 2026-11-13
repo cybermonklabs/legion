@@ -3,6 +3,7 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"maps"
@@ -10,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
@@ -20,18 +23,48 @@ import (
 // deletes the bundle of the release a launcher's restore report names, so a stored bundle has one.
 const testRelease int64 = 11
 
-// withSavedWorkspace gives the rig's runtime the four halves of a restore over st: the facts of
-// the two copies an issue may hold, the take of each, and the delete the launcher's report runs,
-// routed on the restore id alone by the store that owns both tables
-// (store.DeleteRestoredWorkspaceCopy), which is the same method the daemon wires onto this
-// option in production (daemon's sandboxRuntime).
+// withSavedWorkspace gives the rig's runtime both halves of a restore over st: the one take that
+// chooses between the issue's two copies and spends their attempts, and the delete the launcher's
+// report runs, routed on the restore id alone by the store that owns both tables
+// (store.DeleteRestoredWorkspaceCopy) — the same two methods the daemon wires onto these options
+// in production (daemon's sandboxRuntime).
 func withSavedWorkspace(st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
-		o.SavedWorkspaceCopies = st.SavedWorkspaceCopies
-		o.SavedWorkspaceBundle = st.TakeWorkspaceBundleForRestore
-		o.SavedRunningWorkspaceCopy = st.TakeRunningWorkspaceCopyForRestore
+		o.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
 		o.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceCopy
 	})
+}
+
+// runningCopySize is the size of issue's running copy and whether the issue holds one, read off
+// the row itself: the store serves no such read, since nothing in the daemon decides on it but the
+// restore's own transaction, and a test asks what that transaction left.
+func runningCopySize(t *testing.T, st *store.Store, issue string) (int, bool) {
+	t.Helper()
+	var size int
+	err := st.Pool().QueryRow(context.Background(), `select size_bytes from workspace_running_copies where issue = $1`, issue).Scan(&size)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false
+	}
+	if err != nil {
+		t.Fatalf("read the running copy of %s: %v", issue, err)
+	}
+	return size, true
+}
+
+// takeCopyOf is what one pod's ask did to issue's copy of kind, through the one take the runtime
+// is handed (store.TakeWorkspaceCopyForRestore): the entry it answered for that copy, or nothing
+// to send when it answered none.
+func takeCopyOf(ctx context.Context, st *store.Store, kind runtime.WorkspaceCopyKind, issue, pod string, created time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, pod, created)
+	if err != nil {
+		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
+	}
+	for _, taken := range restore.Copies {
+		if taken.Kind == kind {
+			return taken.Bundle, taken.Take, nil
+		}
+	}
+	return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
 }
 
 // runningWorkspaceCopy is the copy of a live pod's workspace as the daemon's cadence takes it:
@@ -54,7 +87,7 @@ func runningWorkspaceCopy(at time.Time, pod string) runtime.WorkspaceBundle {
 // slices and not one frame, with the head, the tips and the bookmark a restore needs beside it.
 // It was taken before the rig's clock starts, so every pod the rig makes is one created after
 // the save — the only kind a bundle is sent to
-// (store.TakeWorkspaceBundleForRestore). Its source pod, the pod the work came off, is a pod of
+// (store.TakeWorkspaceCopyForRestore). Its source pod, the pod the work came off, is a pod of
 // an earlier life of the issue that the rig never makes, so no pod of the rig is refused by uid;
 // a test of the pod the work came off names that pod itself.
 func savedWorkspaceBundle() runtime.WorkspaceBundle {
@@ -134,8 +167,8 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 		t.Fatalf("the bundle crossed as taken at %s, want %s", read.At, saved.At)
 	}
 	// The launcher restored it and said so, so the daemon's copy has done its work.
-	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || facts.Held {
-		t.Fatalf("after the launcher reported its restore the store holds the bundle = %t (%v), want it deleted", facts.Held, err)
+	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
+		t.Fatalf("after the launcher reported its restore the store holds the bundle = %t (%v), want it deleted", held, err)
 	}
 }
 
@@ -168,13 +201,13 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 	if start := slices.IndexFunc(sent, func(f shimwire.Frame) bool { _, ok := f.(shimwire.LauncherStart); return ok }); start < 1 {
 		t.Fatalf("the launcher was sent %v, want the bundle's slices and then the role's start", frameTypes(sent))
 	}
-	facts, err := st.WorkspaceBundleFacts(g.ctx, testTree)
+	size, held, err := st.WorkspaceBundleSize(g.ctx, testTree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !facts.Held || facts.Size != len(saved.Bundle) {
+	if !held || size != len(saved.Bundle) {
 		t.Fatalf("after a restore the launcher could not run the store holds %d bytes (held=%t), want the %d saved kept",
-			facts.Size, facts.Held, len(saved.Bundle))
+			size, held, len(saved.Bundle))
 	}
 
 	// The roles container restarts in the same pod, and the start of the next role is what
@@ -188,8 +221,8 @@ func TestAFailedRestoreKeepsTheSavedWorkAndSendsItToNoPodAgain(t *testing.T) {
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
-	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
-		t.Fatalf("after the restart the store holds %d bytes (held=%t, %v), want the %d saved kept", facts.Size, facts.Held, err, len(saved.Bundle))
+	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
+		t.Fatalf("after the restart the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
 }
 
@@ -282,8 +315,8 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 				slice.Index, slice.Count, slice.Release)
 		}
 	}
-	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
-		t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept until a launcher reports the restore", facts.Size, facts.Held, err, len(saved.Bundle))
+	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
+		t.Fatalf("the store holds %d bytes (held=%t, %v), want the %d saved kept until a launcher reports the restore", size, held, err, len(saved.Bundle))
 	}
 }
 
@@ -307,8 +340,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatalf("save the second release's bundle: %v", err)
 	}
 
-	d := newLaunchers(st.SavedWorkspaceCopies, st.TakeWorkspaceBundleForRestore,
-		st.TakeRunningWorkspaceCopyForRestore, st.DeleteRestoredWorkspaceCopy, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	d := newLaunchers(st.TakeWorkspaceCopyForRestore, st.DeleteRestoredWorkspaceCopy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
 	frames, err := bundleFrames(testTree, first)
@@ -317,7 +349,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	}
 	d.restoreReported(session, shimwire.LauncherRestored{ID: frames[0].ID, Release: first.Release, OK: true})
 
-	kept, take, err := st.TakeWorkspaceBundleForRestore(ctx, testTree, "pod-uid", rigNow)
+	kept, take, err := takeCopyOf(ctx, st, runtime.WorkspaceCopyReleaseBundle, testTree, "pod-uid", rigNow)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -331,8 +363,8 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 		t.Fatal(err)
 	}
 	d.restoreReported(session, shimwire.LauncherRestored{ID: later[0].ID, Release: second.Release, OK: true})
-	if facts, err := st.WorkspaceBundleFacts(ctx, testTree); err != nil || facts.Held {
-		t.Fatalf("after the second release's report the store holds the bundle = %t (%v), want it deleted", facts.Held, err)
+	if _, held, err := st.WorkspaceBundleSize(ctx, testTree); err != nil || held {
+		t.Fatalf("after the second release's report the store holds the bundle = %t (%v), want it deleted", held, err)
 	}
 }
 
@@ -374,12 +406,12 @@ func TestARefusedBundleSliceStillStartsTheRoleAndKeepsTheSavedWork(t *testing.T)
 	if bundleSlices != 1 {
 		t.Fatalf("the launcher was sent %v, want one slice and no more after its refusal", frameTypes(frames))
 	}
-	facts, err := st.WorkspaceBundleFacts(g.ctx, testTree)
+	size, held, err := st.WorkspaceBundleSize(g.ctx, testTree)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !facts.Held || facts.Size != len(saved.Bundle) {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t), want the %d saved kept", facts.Size, facts.Held, len(saved.Bundle))
+	if !held || size != len(saved.Bundle) {
+		t.Fatalf("after the refusal the store holds %d bytes (held=%t), want the %d saved kept", size, held, len(saved.Bundle))
 	}
 }
 
@@ -446,8 +478,8 @@ func TestAReplacementPodRefusedByClockSkewLeavesNothingForThePodAfterIt(t *testi
 	}
 	// The work is kept whole, for a person to carry out of the database, and it holds the
 	// issue's pod until the issue's work is over (workflow.IdleHoldBundleUnrestored).
-	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
-		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", facts.Size, facts.Held, err, len(saved.Bundle))
+	if size, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || !held || size != len(saved.Bundle) {
+		t.Fatalf("after the refusal the store holds %d bytes (held=%t, %v), want the %d saved kept", size, held, err, len(saved.Bundle))
 	}
 }
 
@@ -529,11 +561,11 @@ func TestAPodWhoseIssueHoldsOnlyARunningWorkspaceCopyRestoresIt(t *testing.T) {
 	}
 	// The launcher reported the restore, and the report's id named the running copy: that row is
 	// gone and the issue holds nothing of either kind.
-	if facts, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || facts.Held {
-		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", facts.Held, err)
+	if _, held := runningCopySize(t, st, testTree); held {
+		t.Fatal("after the launcher reported its restore the store holds the running copy, want it dropped")
 	}
-	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || facts.Held {
-		t.Fatalf("the store holds a release bundle = %t (%v), want none: the issue was never released", facts.Held, err)
+	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
+		t.Fatalf("the store holds a release bundle = %t (%v), want none: the issue was never released", held, err)
 	}
 	if slices < 2 {
 		t.Fatalf("the running copy crossed in %d slices, want the sequence a copy of its size takes", slices)
@@ -580,20 +612,20 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 		}
 	}
 	// The older copy's bytes are where they were, and no pod of this issue is ever sent them.
-	facts, err := st.WorkspaceBundleFacts(g.ctx, testTree)
-	if err != nil || !facts.Held || facts.Size != len(saved.Bundle) {
+	size, held, err := st.WorkspaceBundleSize(g.ctx, testTree)
+	if err != nil || !held || size != len(saved.Bundle) {
 		t.Fatalf("the store holds %d bytes of the release bundle (held=%t, %v), want its %d kept for an operator",
-			facts.Size, facts.Held, err, len(saved.Bundle))
+			size, held, err, len(saved.Bundle))
 	}
-	later, take, err := st.TakeWorkspaceBundleForRestore(g.ctx, testTree, "pod-after-this-one", rigNow.Add(time.Hour))
+	later, take, err := takeCopyOf(g.ctx, st, runtime.WorkspaceCopyReleaseBundle, testTree, "pod-after-this-one", rigNow.Add(time.Hour))
 	if err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after this one was answered %d bytes of the release bundle (%v, %v), want nothing: this restore spent its attempt",
 			len(later.Bundle), take, err)
 	}
 	// The newer copy went back and its report dropped it, so the issue is left holding the one
 	// copy nothing restored.
-	if facts, err := st.RunningWorkspaceCopy(g.ctx, testTree); err != nil || facts.Held {
-		t.Fatalf("after the launcher reported its restore the store holds the running copy = %t (%v), want it dropped", facts.Held, err)
+	if _, held := runningCopySize(t, st, testTree); held {
+		t.Fatal("after the launcher reported its restore the store holds the running copy, want it dropped")
 	}
 }
 
@@ -625,19 +657,74 @@ func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T)
 			t.Fatalf("the failed restore logged %s, want it to carry %s", line, want)
 		}
 	}
-	facts, err := st.RunningWorkspaceCopy(g.ctx, testTree)
-	if err != nil || !facts.Held || facts.Size != len(taken.Bundle) {
-		t.Fatalf("after the failed restore the store holds %d bytes of the running copy (held=%t, %v), want its %d kept",
-			facts.Size, facts.Held, err, len(taken.Bundle))
+	if size, held := runningCopySize(t, st, testTree); !held || size != len(taken.Bundle) {
+		t.Fatalf("after the failed restore the store holds %d bytes of the running copy (held=%t), want its %d kept",
+			size, held, len(taken.Bundle))
 	}
 	// That send was the copy's one attempt: the pod after this one is sent nothing of it.
-	after, take, err := st.TakeRunningWorkspaceCopyForRestore(g.ctx, testTree, "pod-after-the-failure", rigNow.Add(time.Hour))
+	after, take, err := takeCopyOf(g.ctx, st, runtime.WorkspaceCopyRunning, testTree, "pod-after-the-failure", rigNow.Add(time.Hour))
 	if err != nil || take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the pod after the failed restore was answered %d bytes (%v, %v), want nothing", len(after.Bundle), take, err)
 	}
 	// Nothing of this issue holds its pod: there is no release bundle, which is the only row the
 	// idle rule reads.
-	if facts, err := st.WorkspaceBundleFacts(g.ctx, testTree); err != nil || facts.Held {
-		t.Fatalf("the store holds a release bundle = %t (%v), want none: a failed restore of a running copy saves no bundle", facts.Held, err)
+	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
+		t.Fatalf("the store holds a release bundle = %t (%v), want none: a failed restore of a running copy saves no bundle", held, err)
+	}
+}
+
+// A pod whose issue holds only copies older than the newest push of its branch the daemon
+// recorded is sent neither, and the daemon says so in a line an operator can act on: the issue,
+// which copy, when it was taken, and the push it would have rolled back. Restoring either would
+// `jj edit` back to its head and move each bookmark `--allow-backwards` behind the pushed
+// commits, and the role's next push would remove them from GitHub. A release bundle left from an
+// earlier release is refused by the same rule as a running copy taken before the push. The pod
+// starts on what was pushed, and the bytes stay in the database for an operator.
+func TestARestoreSendsNoCopyOlderThanTheIssuesNewestPushAndLogsThePushItWouldRollBack(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	logs := &logBuffer{}
+	earlier := savedWorkspaceBundle()
+	earlier.At = rigNow.Add(-3 * time.Minute)
+	if err := st.PutWorkspaceBundle(ctx, testTree, earlier.Release, earlier); err != nil {
+		t.Fatalf("save an earlier release's bundle: %v", err)
+	}
+	taken := runningWorkspaceCopy(rigNow.Add(-2*time.Minute), "pod-the-cadence-copied")
+	if err := st.PutRunningWorkspaceCopy(ctx, testTree, taken); err != nil {
+		t.Fatalf("take the running copy of the workspace: %v", err)
+	}
+	pushed := rigNow.Add(-time.Minute)
+	const pushedHead = "c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2c2"
+	if err := st.Tx(ctx, func(tx pgx.Tx) error { return st.RecordIssuePush(ctx, tx, testTree, pushedHead, pushed) }); err != nil {
+		t.Fatalf("record the push of the issue's branch: %v", err)
+	}
+	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
+	spec := workerSpec(t)
+	g.spawn(spec)
+
+	for _, frame := range g.sent(spec.Claim) {
+		if slice, ok := frame.(shimwire.LauncherBundle); ok {
+			t.Fatalf("the pod was sent slice %d of %d of copy %d, want nothing: every copy is older than the push",
+				slice.Index, slice.Count, slice.Release)
+		}
+	}
+	for kind, at := range map[string]time.Time{`copy="release bundle"`: earlier.At, `copy="running copy"`: taken.At} {
+		var line string
+		for _, candidate := range strings.Split(logs.String(), "\n") {
+			if strings.Contains(candidate, "taken before the newest push of the issue's branch") && strings.Contains(candidate, kind) {
+				line = candidate
+			}
+		}
+		for _, want := range []string{"issue=" + testTree, "taken=" + loggedAs(at), "pushed=" + loggedAs(pushed), "pushedHead=" + pushedHead} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("the refusal of the %s logged %q, want it to carry %s; the log holds:\n%s", kind, line, want, logs.String())
+			}
+		}
+	}
+	if size, held, err := st.WorkspaceBundleSize(ctx, testTree); err != nil || !held || size != len(earlier.Bundle) {
+		t.Fatalf("the store holds %d bytes of the release bundle (held=%t, %v), want its %d kept for an operator", size, held, err, len(earlier.Bundle))
+	}
+	if size, held := runningCopySize(t, st, testTree); !held || size != len(taken.Bundle) {
+		t.Fatalf("the store holds %d bytes of the running copy (held=%t), want its %d kept for an operator", size, held, len(taken.Bundle))
 	}
 }

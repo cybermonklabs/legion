@@ -155,14 +155,8 @@ func (w *workflowRuntime) stuckResumeStep(ctx context.Context, resume store.PodR
 //
 // It is a supervisor terminal callback, so it runs on the machine's own goroutine and must not
 // block it; a failed stamp is logged and the resume keeps its zero time.
-//
-// It stamps nothing where the deployment releases no pod (idlePeriod): no pod of it was ever
-// released, so no resume of one is open, and the read that would find none is a read per
-// transition of every claim. The store alone no longer says that — it is the store of every tick
-// now, release's and the running copies' (workflowRuntime.attach) — so the period is what this
-// asks.
 func (w *workflowRuntime) podResume(c supervise.Claim, state supervise.ClaimState) {
-	if w.idlePeriod <= 0 || w.idleStore == nil || c.Issue == "" || c.Role == claim.RoleController {
+	if w.idleStore == nil || c.Issue == "" || c.Role == claim.RoleController {
 		return
 	}
 	mark, what := w.idleStore.MarkPodResumeReady, "ready"
@@ -310,20 +304,18 @@ func (r *outbox) takeOverRelease(ctx context.Context, issue string) {
 }
 
 // dropReleasedWork takes a released pod's issue over and deletes both saved copies of its
-// workspace, the bundle its release saved and the copy taken while its pod ran: the issue is
-// done, or its tree is closing, so nothing will restore either and nothing should. A linger and a
-// park keep theirs, because their issue comes back. Each delete is on its own, since a copy left
-// behind by the other's failure is the one a later pod of some reopened issue would be sent; the
-// lane's retry runs both again. A runner with no tree store does nothing, as takeOverRelease says.
+// workspace, the bundle its release saved and the copy taken while its pod ran, in one
+// transaction (store.DeleteWorkspaceBundle): the issue is done, or its tree is closing, so
+// nothing will restore either and nothing should. A linger and a park keep theirs, because their
+// issue comes back. The two go together so that no failure can leave one behind, since a running
+// copy of a closed issue left in the table is the copy a later generation's pod would be sent. A
+// runner with no tree store does nothing, as takeOverRelease says.
 func (r *outbox) dropReleasedWork(ctx context.Context, issue string) {
 	r.takeOverRelease(ctx, issue)
 	if r.trees == nil {
 		return
 	}
 	if err := r.trees.DeleteWorkspaceBundle(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the workspace bundle of a finished issue", "issue", issue, "error", err)
-	}
-	if err := r.trees.DeleteRunningWorkspaceCopy(ctx, issue); err != nil {
-		r.log.Warn("wake: could not delete the running workspace copy of a finished issue", "issue", issue, "error", err)
+		r.log.Warn("wake: could not delete the saved workspace copies of a finished issue", "issue", issue, "error", err)
 	}
 }

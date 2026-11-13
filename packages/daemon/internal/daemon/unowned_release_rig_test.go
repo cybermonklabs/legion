@@ -54,7 +54,7 @@ const idleRigEarlierRelease = 1
 // idleRigEarlierPodUID is the pod that earlier release took the work off (source_pod_uid). It is
 // a pod of an earlier life of the issue that this rig never made, so no pod of the rig is
 // refused by uid and the bundle's one restore attempt is still there for the pod the start
-// makes (store.TakeWorkspaceBundleForRestore).
+// makes (store.TakeWorkspaceCopyForRestore).
 const idleRigEarlierPodUID = "uid-pod-of-an-earlier-life"
 
 // idleRigEarlierBundle is the workspace bundle an earlier release of the issue's pod saved, as
@@ -152,7 +152,7 @@ func TestAStartAfterTheReleaseOfAnIssueWithNoLiveClaimMakesThePodAgain(t *testin
 		}
 		// The bundle's one attempt, spent on the pod the start made: the daemon records which
 		// pod it is sending the work to before a byte of it leaves (store's
-		// TakeWorkspaceBundleForRestore), which is the pod being offered the bundle. Whether the
+		// TakeWorkspaceCopyForRestore), which is the pod being offered the bundle. Whether the
 		// launcher could apply it to the workspace is that launcher's own report and no part of
 		// this: a restore that fails leaves the row where it is.
 		row, held = rig.bundleRow(issue)

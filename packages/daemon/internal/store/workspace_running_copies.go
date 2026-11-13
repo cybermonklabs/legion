@@ -36,7 +36,7 @@ const MinRunningWorkspaceCopyRestoreID int64 = 1 << 62
 //
 // Each copy the save stores takes a restore id of its own and clears the restore attempt the row
 // carried with the rest of it: it is other work than the copy it replaces, so it is offered to a
-// pod of its own (TakeRunningWorkspaceCopyForRestore), and a report naming the id it replaced
+// pod of its own (TakeWorkspaceCopyForRestore), and a report naming the id it replaced
 // deletes nothing.
 //
 // A save whose content equals the stored row's moves the time alone and leaves the bytes, the size
@@ -99,116 +99,206 @@ func (s *Store) PutRunningWorkspaceCopy(ctx context.Context, issue string, b run
 	return nil
 }
 
-// TakeRunningWorkspaceCopyForRestore answers the running copy of issue for the pod of podUID,
-// created at podCreated, whose launcher it is about to be sent to, and records in the same
-// statement what that ask did to the copy. The bundle it answers carries the row's restore id as
-// its Release (runtime.WorkspaceBundle.Release), which the restore sends to the launcher and reads
-// back out of its report: the id is above every id a release holds
+// The two tables a saved copy of an issue's workspace is kept in, and the column each keeps the
+// copy's restore id in. The restore's statements are written once for both tables and formatted
+// with these constants and nothing else, so the one-attempt rule and the clock rule are one text
+// whichever table a copy is in.
+const (
+	workspaceBundlesTable   = "workspace_bundles"
+	workspaceBundlesID      = "release_id"
+	runningCopiesTable      = "workspace_running_copies"
+	runningCopiesRestoreID  = "restore_id"
+	refusedPushedOutcome    = "refused_pushed"
+	supersededCopyOutcome   = "superseded"
+	sentCopyOutcome         = "sent"
+	refusedOlderCopyOutcome = "refused_older"
+)
+
+// copyTable is one of the two tables as the restore's statements name it.
+type copyTable struct {
+	kind  runtime.WorkspaceCopyKind
+	table string
+	id    string
+}
+
+var (
+	releaseBundleCopies = copyTable{kind: runtime.WorkspaceCopyReleaseBundle, table: workspaceBundlesTable, id: workspaceBundlesID}
+	runningCopyCopies   = copyTable{kind: runtime.WorkspaceCopyRunning, table: runningCopiesTable, id: runningCopiesRestoreID}
+)
+
+// TakeWorkspaceCopyForRestore answers what issue holds of its workspace for the pod of podUID,
+// created at podCreated, whose launcher it is about to be sent to, and records what that ask did
+// to each copy, all in one transaction: it reads the issue's release bundle, its running copy and
+// the newest push of its branch the daemon recorded, decides between them
+// (runtime.DecideWorkspaceRestore), and spends the attempt of every copy the decision touched. It
+// is one transaction because the choice is one decision: made as separate statements it could
+// close the older copy and then fail to take the newer, leaving the store half-changed and the pod
+// given neither. A failure anywhere in it leaves every row as it was.
+//
+// Both rows are read `for update`, so a save of either copy that lands while the decision is being
+// made waits for it, and the copy the decision read is the copy whose attempt is spent. A copy is
+// read by its `at` alone until it is taken; a copy runs to tens of megabytes, and only the one
+// being sent is read with its body.
+//
+// The copy each answer carries names its restore id as its Release (runtime.WorkspaceBundle.Release),
+// which the restore sends to the launcher and reads back out of its report: a release bundle's is
+// the release that saved it, a running copy's an id above every release's
 // (MinRunningWorkspaceCopyRestoreID), so a report that reaches the daemon after a restart still
-// says which of the issue's two copies it confirms.
+// says which of the issue's two copies it confirms (DeleteRestoredWorkspaceCopy).
 //
-// It answers runtime.WorkspaceBundleNone, having recorded nothing, when the issue has no running
-// copy — one never taken, one whose restore a launcher confirmed, one an invalidating path dropped
-// — when the row already carries its attempt, and when the pod asking is the pod the work was
-// taken off (source_pod_uid). That last is the ordinary case rather than a corner: a copy is taken
-// while the pod runs, so the pod it came off is still there and still starting roles, and every
-// start of every role asks for a copy to restore (sandbox's launchers.start). Its workspace is the
-// work, it needs nothing put back, and a copy applied to it would `jj edit` back to the copy's head
-// and move each bookmark `--allow-backwards` over the work done since the copy was taken. The row
-// is left as it was, so the attempt is still there for the pod that replaces it.
+// What the decision does not settle, the statement that spends the attempt does (takeCopy):
 //
-// One attempt per copy is the rule, and this statement is where it is kept, for the reason the
-// release bundle keeps it (TakeWorkspaceBundleForRestore): the launcher's own record of the
-// restore it ran dies with the process that ran it, so a roles container that restarts on the
-// pod's own disk comes back with the record gone and the workspace hours of work past the copy.
-// The attempt is written before any slice leaves the daemon, so a send that fails halfway, a
-// restore that fails and a restore whose report never arrived all leave the same row: one no pod is
-// sent again.
+//   - One attempt per copy. The launcher's own record of the restore it ran lives in the process
+//     that ran it: a roles container that restarts on the pod's own disk comes back with that
+//     record gone and the workspace as the roles left it, hours of work past the copy, and a copy
+//     sent again there would `jj edit` back to its head and move each bookmark `--allow-backwards`
+//     over all of it. The attempt is written before any slice leaves the daemon, so a send that
+//     fails halfway, a restore that fails and a restore whose report never arrived all leave the
+//     same row: one no pod is sent again.
+//   - None spent by the pod the work came off (source_pod_uid). Every start of every role takes
+//     for its pod (sandbox's launchers.start), and that pod goes on starting roles — a release
+//     stops them and a role relaunched before the teardown starts again, and a cadence copies a pod
+//     that is working. Its workspace is the work, so it is answered nothing and the row is left as
+//     it was, with the attempt still there for the pod that replaces it.
+//   - A pod not created after the copy is refused (runtime.WorkspaceBundleRefusedOlder), and the
+//     refusal spends the attempt: such a pod has been working off its own fetch since before the
+//     copy was taken, and a copy left open for the pod after it would be applied over work pushed
+//     since. The two instants come from two clocks — podCreated is the creationTimestamp the
+//     Kubernetes API server stamped, the row's `at` the node's clock when the shim took the copy —
+//     and a creationTimestamp has one-second resolution, so the copy is read to its own second and
+//     a pod created inside that second is taken as the newer. A node running ahead of the API
+//     server stamps the copy in the replacement pod's future and that pod is refused, which costs
+//     the restore and loses no work: the direction to fail in.
 //
-// What the first pod that is not the source is answered is podCreated's rule. A pod created after
-// the copy was taken is a pod that replaced the one it came off, and it is sent the work
-// (runtime.WorkspaceBundleSend). A pod that is not is refused (runtime.WorkspaceBundleRefusedOlder)
-// and the refusal spends the attempt: such a pod has been working off its own fetch since before
-// the copy was taken, and a copy left open for the pod after it would be applied over work pushed
-// since. The two instants come from two clocks — podCreated is the creationTimestamp the
-// Kubernetes API server stamped, the row's `at` is the node's clock when the shim took the copy —
-// so the copy is read to its own second, a pod created inside that second is taken as the newer,
-// and a node running ahead of the API server costs a restore rather than moving an issue's
-// bookmarks backwards.
-//
-// Unlike a release bundle, a running copy nothing restored holds no pod. The work it holds is on
-// the disk it was taken off, so an idle release of that pod saves it again as a release bundle,
-// and the idle rule reads workspace_bundles alone (workspaceBundleUnrestored).
-func (s *Store) TakeRunningWorkspaceCopyForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
+// A refused or superseded copy keeps its bytes for an operator. A release bundle nothing restored
+// holds the issue's pod (workflow.IdleHoldBundleUnrestored) and keeps the work in the database
+// until the issue's own work is over (outbox's dropReleasedWork), which is what the launcher's
+// notice tells the roles. A running copy nothing restored holds no pod: the work it holds is on the
+// disk it was taken off, so an idle release of that pod saves it again as a release bundle, and
+// the idle rule reads workspace_bundles alone (workspaceBundleUnrestored).
+func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID string, podCreated time.Time) (runtime.WorkspaceRestore, error) {
 	if podUID == "" {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the running workspace copy of %s needs the pod it is sent to", issue)
+		return runtime.WorkspaceRestore{}, fmt.Errorf("the restore attempt of the saved workspace copies of %s needs the pod it is sent to", issue)
 	}
 	if podCreated.IsZero() {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("the restore attempt of the running workspace copy of %s needs when the pod %s it is sent to was created", issue, podUID)
+		return runtime.WorkspaceRestore{}, fmt.Errorf("the restore attempt of the saved workspace copies of %s needs when the pod %s it is sent to was created", issue, podUID)
 	}
-	var b runtime.WorkspaceBundle
+	var restore runtime.WorkspaceRestore
+	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		restore = runtime.WorkspaceRestore{}
+		bundle, err := heldCopy(ctx, tx, releaseBundleCopies, issue)
+		if err != nil {
+			return err
+		}
+		running, err := heldCopy(ctx, tx, runningCopyCopies, issue)
+		if err != nil {
+			return err
+		}
+		// Nothing was released and no copy was taken, or every copy has been restored and
+		// dropped: the pod starts on what its fetch provisioned, having spent nothing.
+		if !bundle.Held && !running.Held {
+			return nil
+		}
+		if restore.Push, err = issuePush(ctx, tx, issue); err != nil {
+			return err
+		}
+		bundleAct, runningAct := runtime.DecideWorkspaceRestore(bundle, running, restore.Push)
+		for _, decided := range []struct {
+			copies copyTable
+			act    runtime.WorkspaceCopyAct
+		}{{releaseBundleCopies, bundleAct}, {runningCopyCopies, runningAct}} {
+			if decided.act == runtime.WorkspaceCopyNotHeld {
+				continue
+			}
+			taken, err := takeCopy(ctx, tx, decided.copies, issue, podUID, podCreated, decided.act)
+			if err != nil {
+				return err
+			}
+			if taken.Take != runtime.WorkspaceBundleNone {
+				restore.Copies = append(restore.Copies, taken)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return runtime.WorkspaceRestore{}, fmt.Errorf("take the saved workspace copies of %s for the pod %s to restore: %w", issue, podUID, err)
+	}
+	return restore, nil
+}
+
+// heldCopy is whether issue holds a copy in copies' table and when the shim took it, the row
+// locked for the rest of the restore's transaction.
+func heldCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue string) (runtime.WorkspaceCopyHeld, error) {
+	var at time.Time
+	err := tx.QueryRow(ctx, fmt.Sprintf(`select at from %s where issue = $1 for update`, copies.table), issue).Scan(&at)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return runtime.WorkspaceCopyHeld{}, nil
+	}
+	if err != nil {
+		return runtime.WorkspaceCopyHeld{}, fmt.Errorf("read the %s: %w", copies.kind, err)
+	}
+	return runtime.WorkspaceCopyHeld{Held: true, At: at}, nil
+}
+
+// takeCopy spends the one attempt of issue's copy in copies' table on the pod of podUID, as act
+// decided, and answers what it recorded: runtime.WorkspaceBundleNone, having recorded nothing,
+// when the row already carries its attempt or the pod asking is the pod the work came off. An
+// offered copy is sent or refused by the clock rule; a copy the decision refused or superseded
+// records that and is sent to nobody. The body is read back only when it is being sent.
+func takeCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue, podUID string, podCreated time.Time, act runtime.WorkspaceCopyAct) (runtime.WorkspaceCopyTaken, error) {
+	// The outcome the decision settled, or NULL for the offered copy, whose outcome is the clock
+	// rule's below.
+	var decided any
+	switch act {
+	case runtime.WorkspaceCopyRefusedPushed:
+		decided = refusedPushedOutcome
+	case runtime.WorkspaceCopySuperseded:
+		decided = supersededCopyOutcome
+	}
+	taken := runtime.WorkspaceCopyTaken{Kind: copies.kind}
+	b := &taken.Bundle
 	var outcome string
 	var tips, bookmarks []byte
-	// The body is read back only when it is being sent: a refusal records the attempt and
-	// answers the row's facts alone, which is what the warning it writes names.
-	err := s.pool.QueryRow(ctx, `update workspace_running_copies
+	err := tx.QueryRow(ctx, fmt.Sprintf(`update %[1]s
 		set attempt_pod_uid = $2, attempt_at = now(),
-			attempt_outcome = case when date_trunc('second', at) <= $3 then 'sent' else 'refused_older' end
+			attempt_outcome = coalesce($4::text,
+				case when date_trunc('second', at) <= $3 then '%[3]s' else '%[4]s' end)
 		where issue = $1 and attempt_pod_uid is null and source_pod_uid <> $2
-		returning attempt_outcome, case when attempt_outcome = 'sent' then bundle end,
-			at, head, tips, bookmarks, restore_id, source_pod_uid`,
-		issue, podUID, podCreated).Scan(&outcome, &b.Bundle, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
+		returning attempt_outcome, case when attempt_outcome = '%[3]s' then bundle end, size_bytes,
+			at, head, tips, bookmarks, %[2]s, source_pod_uid`, copies.table, copies.id, sentCopyOutcome, refusedOlderCopyOutcome),
+		issue, podUID, podCreated, decided).
+		Scan(&outcome, &b.Bundle, &taken.Size, &b.At, &b.Head, &tips, &bookmarks, &b.Release, &b.PodUID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
+		return runtime.WorkspaceCopyTaken{Kind: copies.kind}, nil
 	}
 	if err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("take the running workspace copy of %s for the pod %s to restore: %w", issue, podUID, err)
+		return runtime.WorkspaceCopyTaken{}, fmt.Errorf("take the %s: %w", copies.kind, err)
 	}
 	if err := json.Unmarshal(tips, &b.Tips); err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the running workspace copy of %s: its tips: %w", issue, err)
+		return runtime.WorkspaceCopyTaken{}, fmt.Errorf("read the %s: its tips: %w", copies.kind, err)
 	}
 	if err := json.Unmarshal(bookmarks, &b.Bookmarks); err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, fmt.Errorf("read the running workspace copy of %s: its bookmarks: %w", issue, err)
+		return runtime.WorkspaceCopyTaken{}, fmt.Errorf("read the %s: its bookmarks: %w", copies.kind, err)
 	}
-	// The outcome the statement wrote is the answer: `sent` for the body above, `refused_older`
-	// for the pod it refused, whose attempt is spent all the same.
-	if outcome != "sent" {
-		return b, runtime.WorkspaceBundleRefusedOlder, nil
+	switch outcome {
+	case sentCopyOutcome:
+		taken.Take = runtime.WorkspaceBundleSend
+	case refusedOlderCopyOutcome:
+		taken.Take = runtime.WorkspaceBundleRefusedOlder
+	case refusedPushedOutcome:
+		taken.Take = runtime.WorkspaceBundleRefusedPushed
+	default:
+		taken.Take = runtime.WorkspaceBundleSuperseded
 	}
-	return b, runtime.WorkspaceBundleSend, nil
+	return taken, nil
 }
 
-// RunningWorkspaceCopy is the facts of issue's running copy without its bytes, Held false when
-// the issue holds none. The restore of a new pod compares those facts with the issue's release
-// bundle to decide which of the two to take, and the cadence reads the size it stored to log it;
-// a copy runs to tens of megabytes, so reading at and size_bytes rather than the row keeps those
-// bytes out of the pool and out of the daemon's memory.
-//
-// It answers the runtime's own shape (runtime.WorkspaceCopyFacts), as the release bundle's
-// reader does (WorkspaceBundleFacts): the two are compared against each other and handed to the
-// runtime as one pair (SavedWorkspaceCopies), which has no business knowing which table either
-// came off, and a struct of this package holding the same two facts would exist only to be
-// copied into that one.
-func (s *Store) RunningWorkspaceCopy(ctx context.Context, issue string) (runtime.WorkspaceCopyFacts, error) {
-	var facts runtime.WorkspaceCopyFacts
-	err := s.pool.QueryRow(ctx, `select at, size_bytes from workspace_running_copies where issue = $1`, issue).
-		Scan(&facts.At, &facts.Size)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return runtime.WorkspaceCopyFacts{}, nil
-	}
-	if err != nil {
-		return runtime.WorkspaceCopyFacts{}, fmt.Errorf("read the running workspace copy of %s: %w", issue, err)
-	}
-	facts.Held = true
-	return facts, nil
-}
-
-// DeleteRunningWorkspaceCopy drops issue's running copy whatever minute took it. It is the delete
-// of every path that invalidates what the issue holds — a release that found nothing unpushed, a
-// cancelled release, an issue or tree whose work is over — each of which exists to stop the
-// issue's next pod restoring work that is no longer the issue's, and a copy taken minutes before
-// would be the newest such work. Deleting one the table does not hold is success, so a retried
-// delete finishes.
+// DeleteRunningWorkspaceCopy drops issue's running copy whatever minute took it. It is the
+// cadence's own delete, of a workspace that bundled to nothing: a copy taken minutes before holds
+// work that has since been pushed, and the next pod must never restore it. Every other path that
+// invalidates what the issue holds drops the copy inside its own transaction, with the release
+// bundle it saves or drops (PutWorkspaceBundle, DeleteWorkspaceBundle, CancelIssueRelease).
+// Deleting one the table does not hold is success, so a retried delete finishes.
 func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, issue string) error {
 	if _, err := s.pool.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue); err != nil {
 		return fmt.Errorf("delete the running workspace copy of %s: %w", issue, err)
@@ -260,28 +350,40 @@ func (s *Store) DeleteRestoredWorkspaceCopy(ctx context.Context, issue string, r
 	return s.DeleteRestoredWorkspaceBundle(ctx, issue, restoreID)
 }
 
-// SavedWorkspaceCopies is what both copies of issue's workspace say of themselves, neither
-// carrying its bytes: the bundle its last idle release saved (WorkspaceBundleFacts) and the copy
-// its cadence took while the pod ran (RunningWorkspaceCopy). It is the read the restore of a new
-// pod decides on (runtime.SavedWorkspaceCopies, sandbox's launchers.restoreWorkspace), and it is
-// one call because that decision is one question: which of the two holds the newer work.
-//
-// It reads rather than takes because a take is spent. Each copy is offered to one pod only, and
-// the ask that reaches that pod closes it whether a byte was sent or not
-// (TakeWorkspaceBundleForRestore, TakeRunningWorkspaceCopyForRestore), so a restore that decided
-// by taking would spend the loser's one attempt on a copy it never sent, and the work of that
-// copy would be closed to the pod that could still have used it.
-//
-// The two reads are two statements and not one join: they are two tables keyed by the issue, the
-// rows are independent of each other, and an issue that holds one holds it whatever the other
-// table says. The restore runs once per pod, before its first role, so two indexed reads there
-// cost nothing worth a join's shape.
-func (s *Store) SavedWorkspaceCopies(ctx context.Context, issue string) (bundle, running runtime.WorkspaceCopyFacts, err error) {
-	if bundle, err = s.WorkspaceBundleFacts(ctx, issue); err != nil {
-		return runtime.WorkspaceCopyFacts{}, runtime.WorkspaceCopyFacts{}, err
+// RecordIssuePush records that the branch of issue was pushed to head, as the daemon applied the
+// push at at, in the push fact's own transaction tx (workflow's push handler). It is the record
+// the restore of a new pod reads to refuse every saved copy of the issue's workspace older than
+// that push (TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore), and the migration that
+// made the table says which record it is (20261113005308_issue_pushes). One row per issue holds
+// the newest push: a push applied after a newer one, a redelivery that slipped past the fact's
+// own dedupe or a fact replayed late, moves neither its time nor its head, since the copies a
+// guard of that older time would let through are the very copies the newer push makes stale.
+func (s *Store) RecordIssuePush(ctx context.Context, tx pgx.Tx, issue, head string, at time.Time) error {
+	if issue == "" {
+		return errors.New("a push record needs its issue")
 	}
-	if running, err = s.RunningWorkspaceCopy(ctx, issue); err != nil {
-		return runtime.WorkspaceCopyFacts{}, runtime.WorkspaceCopyFacts{}, err
+	if at.IsZero() {
+		return fmt.Errorf("the push record of %s needs when the daemon applied the push", issue)
 	}
-	return bundle, running, nil
+	if _, err := tx.Exec(ctx, `insert into issue_pushes (issue, pushed_at, head) values ($1, $2, $3)
+		on conflict (issue) do update set pushed_at = excluded.pushed_at, head = excluded.head
+			where issue_pushes.pushed_at <= excluded.pushed_at`, issue, at, head); err != nil {
+		return fmt.Errorf("record the push of %s: %w", issue, err)
+	}
+	return nil
+}
+
+// issuePush is the newest push of issue's branch the daemon recorded (RecordIssuePush), and the
+// zero value for an issue with none recorded, which the restore's decision reads as nothing newer
+// known to be on GitHub.
+func issuePush(ctx context.Context, tx pgx.Tx, issue string) (runtime.WorkspacePush, error) {
+	var push runtime.WorkspacePush
+	err := tx.QueryRow(ctx, `select pushed_at, head from issue_pushes where issue = $1`, issue).Scan(&push.At, &push.Head)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return runtime.WorkspacePush{}, nil
+	}
+	if err != nil {
+		return runtime.WorkspacePush{}, fmt.Errorf("read the newest push of %s: %w", issue, err)
+	}
+	return push, nil
 }

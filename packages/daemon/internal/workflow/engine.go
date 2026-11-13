@@ -111,6 +111,19 @@ type Config struct {
 	// none. Every hook's words arrive resolved, so the engine never reads a file and never sees
 	// a path.
 	Hooks []Hook
+	// Pushes is the daemon's record of the newest push of each issue's branch
+	// (store.Store.RecordIssuePush), which the push handler writes inside the push fact's own
+	// transaction for every push of `legion/<KEY>` on the issue's repository, whether or not the
+	// issue has a pull request. The restore of a new pod reads it to refuse any saved copy of the
+	// issue's workspace older than that push (runtime.DecideWorkspaceRestore), since such a copy
+	// would move the branch back behind the pushed commits. Nil records none, as in every engine
+	// built without the daemon's store.
+	Pushes Pushes
+	// PushRecorded is told, once the push fact's transaction has committed, of each issue whose
+	// push it recorded: the daemon takes a copy of that issue's workspace then
+	// (workflowRuntime.copyWorkspaceAtPush), so the copy a new pod is sent is normally one taken
+	// after the push and holding it. Nil tells nobody.
+	PushRecorded func(issue string)
 }
 
 // Engine interprets Table and writes only records and outbox rows through the supplied Store.

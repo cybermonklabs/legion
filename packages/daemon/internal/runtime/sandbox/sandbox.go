@@ -393,8 +393,7 @@ func configureProber(opts Options) (*Runtime, error) {
 	// The launchers carry the newer of one pod's two saved workspace copies to it before any of
 	// its roles start, and log what they could not carry, so they are built once the runtime's
 	// log is settled.
-	r.launchers = newLaunchers(opts.SavedWorkspaceCopies, opts.SavedWorkspaceBundle,
-		opts.SavedRunningWorkspaceCopy, opts.WorkspaceBundleRestored, r.log)
+	r.launchers = newLaunchers(opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
 	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}
@@ -1099,7 +1098,7 @@ func (r *Runtime) BundleWorkspace(ctx context.Context, issue string, role claim.
 	// The shim knows nothing of the pod it runs in, and the row the save writes has to: the pod
 	// this work came off is the one pod the restore refuses by name, so that a role relaunched
 	// in it before the teardown is answered nothing and leaves the bundle's one attempt for the
-	// pod that replaces it (store.TakeWorkspaceBundleForRestore). It is the pod checked above,
+	// pod that replaces it (store.TakeWorkspaceCopyForRestore). It is the pod checked above,
 	// the running pod the claim's locator records.
 	bundle.PodUID = loc.Sandbox.PodUID
 	return bundle, nil
