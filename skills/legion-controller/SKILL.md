@@ -76,7 +76,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
-| `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
+| `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
 | `worker-stalled on <KEY>` (`role: "architect"`) | Nothing, unless the notice says the claim failed: its turn was ended, its task is still owed, and the notice says what became of its process |
 | `update-stalled on <KEY>` | `skill://legion-controller/references/escalation.md#an-update-round-that-is-not-finishing-update-stalled` |
 | `provider-errors on <KEY>` | Name the run and its model in the day's report; send it to the issue's architect; for one claim that stays stuck, `compact` first, and `fresh_session` only when it is still refused after that |
@@ -137,13 +137,12 @@ which branch to open the pull request against; nothing else carries that.
 
 A free slot is no reason to take an issue: a labelled root in `todo` takes the next slot through
 `admission.waiting` without you, and a parked issue (status `backlog` or `icebox`) means "do not
-run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that names
-it, only as the list of moves to `todo` below allows, and cite that request. That rule does not
-apply to your own hold, a park whose mark
-`Parked by Legion while it waits on:` passes the test of
-`skill://legion-controller/references/parked-decisions.md#deciding`, step 2. That tree returns to
-`todo` as the list below says. When you return it on a check of its cause or its event, post a
-comment on the root that cites that mark and says what you checked.
+run now". Move an issue out of `backlog` or `icebox` only on a request or a plan directive that
+names it, only as the list of moves to `todo` below allows, and cite that request. That rule does
+not apply to your own hold, a park whose mark `Parked by Legion while it waits on:` passes the
+test of `skill://legion-controller/references/parked-decisions.md#deciding`, step 2. That tree
+returns to `todo` as the list below says. When you return it on a check of its cause or its event,
+post a comment on the root that cites that mark and says what you checked.
 A free slot is no reason to park an issue, and a full cap is no reason either.
 When a tree holds a slot while it waits on an event outside Legion, that wait is no reason to park
 it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
@@ -180,8 +179,7 @@ Every move to `todo` you make is one of these:
 - a root you labelled at a person's request or filed for a clear defect no tree owns, at triage (a
   root a person labelled is queued by the daemon);
 - an issue a person asks you to start, a parked one included, because that request is the
-  person's own (`skill://legion-controller/references/triage.md#label-an-issue-for-a-person`,
-  `skill://legion-controller/references/parked-decisions.md#backlog-and-icebox`);
+  person's own (`skill://legion-controller/references/triage.md#label-an-issue-for-a-person`);
 - a root still in the workflow (its `phase` is not `done`) whose architect failed or which is held,
   once you checked its cause is gone, or because a person asks;
 - a tree you parked for a hold, for a failed architect, or while it waits on an event outside

@@ -453,12 +453,13 @@ answers it or says that `todo` on the root brings the architect back to answer. 
 controller judged. The tree stays parked when the park is not the controller's own hold, the park
 with its `Parked by Legion while it waits on:` comment beside it: a person's park, another agent's
 session's, or an operator's `legion status` (the comment names who, and the tree runs when they set
-it to `todo`). It stays parked too when the decision is older than the park, when the root is
-`done` or `triage`, or when the decision only questions the work. When the controller was down,
-its next start walks the parked roots. That walk reads only the last 10 events of each issue. The
-walk, at each start and on each `tick`, also sets the root of the controller's own hold back to
-`todo` when its mark, the `Parked by Legion while it waits on:` comment, names a cause that is gone
-or an event that has happened, with a comment that cites the mark.
+it to `todo` or when a person asks the controller to start it). It stays parked too when the
+decision is older than the park, when the root is `done` or `triage`, or when the decision only
+questions the work. When the controller was down, its next start walks the parked roots. That walk
+reads only the last 10 events of each issue. The walk, at each start and on each `tick`, also sets
+the root of the controller's own hold back to `todo` when its mark, the
+`Parked by Legion while it waits on:` comment, names a cause that is gone or an event that has
+happened, with a comment that cites the mark.
 
 ## An issue is held
 

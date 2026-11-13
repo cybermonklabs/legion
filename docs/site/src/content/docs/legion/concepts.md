@@ -237,11 +237,11 @@ the architect starts by reading that decision. Every other park, a root you park
 another agent's session parked, or one an operator parked with `legion status`, stays parked until
 whoever parked it sets the root to `todo`, or a person asks the controller to start it. The
 controller says so in a comment, and the architect then starts with the decision. When the
-approved version is no longer the spec's current
-one, the architect asks for approval of the current one. A question alone leaves the root parked:
-the controller answers it on its ask from the issue's record, or says that setting the root to
-`todo` brings the architect back to answer. A reply an agent session writes on such an ask is no
-decision: it stays on the ask for the person who asked, and nothing wakes.
+approved version is no longer the spec's current one, the architect asks for approval of the
+current one. A question alone leaves the root parked: the controller answers it on its ask from
+the issue's record, or says that setting the root to `todo` brings the architect back to answer. A
+reply an agent session writes on such an ask is no decision: it stays on the ask for the person
+who asked, and nothing wakes.
 
 A held root is not a parked one. Its work stopped because a worker's budget ran out
 ([Supervision](#supervision)), and it is still in the workflow. Setting it to `todo` releases the

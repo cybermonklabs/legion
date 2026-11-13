@@ -69,14 +69,14 @@ an approval of a document that is not the root's primary one.
 1. **Where the tree stands.** Read `issues.<root>` with `read_state`.
    - Its `phase` is not `done`: the tree runs. When `architect.state` is `failed` or `retired`,
      nobody in the tree heard the decision: skip step 2 and judge it in steps 3 and 4. A decision
-     that gives the work a next step re-admits the tree as the `worker-died` section of
+     that gives the work a next step re-admits the tree (`set_status` of the root to `backlog`,
+     then to `todo`, not to `todo` alone) as the `worker-died` section of
      [the wakes reference](skill://legion-controller/references/wakes.md) says, once that section
-     finds no cause or finds it gone (`set_status` of the root to `backlog`, then to `todo`), not
-     to `todo` alone; while the cause stays, the tree stays admitted under that section's park
-     ask. That pair is a restart and not a park. On a root at `phase: held`, `todo` alone releases
-     that hold and
-     starts the held phase's worker, which leaves the failed architect where it is, so the
-     `backlog` write before it is what gives the tree an architect again.
+     finds no cause or finds it gone; while the cause stays, the tree stays admitted under that
+     section's park ask. That pair is a restart and not a park. On a root at `phase: held`, `todo`
+     alone releases that hold and starts the held phase's worker, which leaves the failed
+     architect where it is, so the `backlog` write before it is what gives the tree an architect
+     again.
      You move an issue to `backlog` or `icebox` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed.
      Answer a question as step 4 says, and leave the tree as it is. In that reply and in the
      root's copy, write `<root>'s architect has stopped, so it` for `<root> is parked, so its
@@ -145,19 +145,21 @@ an approval of a document that is not the root's primary one.
        `todo` releases no hold. Post one comment on the issue where the decision was made
        (`dispatch comment --issue <KEY> --body-file -`): `Parked decision read: <ref> by <login>
        gives this tree its next step (<one sentence>). Legion runs it again.`
-     - Any other park, or you cannot read who parked the tree: set nothing, since you move only a
-       hold of your own ([Free slots](skill://legion-controller/SKILL.md#free-slots)).
+     - Any other park, or you cannot read who parked the tree: set nothing, since a decision on the
+       tree is no request to start it: you move a park that is not your own hold only when a
+       person asks you to start it ([Free slots](skill://legion-controller/SKILL.md#free-slots)).
        Post one comment there: `Parked decision read: <ref> by <login> gives this tree its next
        step (<one sentence>).`, then the sentence for that park, then `Its architect then starts
        with this decision.` For a comment that is no reply on an ask, leave out the last sentence:
        the daemon relays no such comment. The sentence for the park:
        - A person's or another session's: `<parker> parked the tree, so it stays parked until they
-         set it to todo.`, with the login for a person and `session <id>` for a session.
+         set it to todo or a person asks Legion to start it.`, with the login for a person and
+         `session <id>` for a session.
        - One by `session legion-daemon:<PROJECT>` with no mark: `The tree was parked through Legion
          (session legion-daemon:<PROJECT>) for no hold of its own, so it stays parked until a
-         person sets it to todo.`
+         person sets it to todo or asks Legion to start it.`
        - One you cannot read: `Its last 10 events do not show who parked the tree, so it stays
-         parked until whoever parked it sets it to todo.`
+         parked until whoever parked it sets it to todo or a person asks Legion to start it.`
    - It only questions the work: a question, a doubt about the premise, a request for changes that
      only asks why. Leave it parked and answer the question in one reply:
      - Answer from the record when it holds the answer: the issue and its spec (`dispatch read`,

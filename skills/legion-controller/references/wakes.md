@@ -151,13 +151,13 @@ A person's `Park it` answer to that ask is such a request. Only a park on that a
 mark. Cite the ask's answer in the comment you post with the park, and make that comment's first
 line `Parked by Legion while it waits on: <the hold's cause>`, because that mark is what makes the
 park Legion's own hold (`skill://legion-controller/references/parked-decisions.md#deciding`,
-step 2). A park for any other reason that this rule allows gets no mark, as that step says. Set
-the root of a park with that mark back to `todo` only when you checked that the hold's cause is
-gone, a person asks, or a person's decision after the park gives its work a next step (that
-reference's step 4), because the park took the tree out of the workflow: the `todo` after it
-starts a new generation of the tree, from its architect, and releases no hold. For a `todo` after
-your check, post one comment on the root (`dispatch comment --issue <root> --body-file -`) that
-cites the park's `Parked by Legion while it waits on:` mark and says what you checked.
+step 2). Set the root of a park with that mark back to `todo` only when you checked that the
+hold's cause is gone, a person asks, or a person's decision after the park gives its work a next
+step (that reference's step 4), because the park took the tree out of the workflow: the `todo`
+after it starts a new generation of the tree, from its architect, and releases no hold. For a
+`todo` after your check, post one comment on the root
+(`dispatch comment --issue <root> --body-file -`) that cites the park's
+`Parked by Legion while it waits on:` mark and says what you checked.
 
 ## Ask whether to park a tree
 
@@ -246,8 +246,7 @@ Park the tree only when a person asked for that move, or when the work is done, 
 A person's `Park it` answer to that ask is such a request. Only a park on that answer carries the
 mark: cite the ask's answer in the park's comment, whose first line is
 `Parked by Legion while it waits on: <the event>`, the mark that makes the park Legion's own hold
-(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). A park for any
-other reason that this rule allows gets no mark, as that step says.
+(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2).
 Set the root of a park with that mark back to `todo` once you checked that the event has
 happened, a person asks, or a person's decision after the park gives its work a next step, as the
 escalated hold above says.
@@ -277,12 +276,11 @@ Park the tree only when a person asked for that move, or when the work is done, 
 A person's `Park it` answer to that ask is such a request. Only a park on that answer carries the
 mark. Cite the ask's answer in the park's comment, whose first line is
 `Parked by Legion while it waits on: <the cause>`, the mark that makes the park Legion's own hold
-(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). A park for any
-other reason that this rule allows gets no mark, as that step says. Set the root of a park with
-that mark back to `todo` once you checked that the architect's cause is gone, a person asks, or a
-person's decision after the park gives its work a next step, as the escalated hold above says. For
-a `todo` after your check, post a comment on the root that cites the park's mark and says what
-you checked.
+(`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the root of a
+park with that mark back to `todo` once you checked that the architect's cause is gone, a person
+asks, or a person's decision after the park gives its work a next step, as the escalated hold
+above says. For a `todo` after your check, post a comment on the root that cites the park's mark
+and says what you checked.
 
 This re-admission is not the hold release of the `held` wake above. The `backlog` takes the tree
 out of the workflow, so the `todo` after it starts a new generation whatever phase the root stood

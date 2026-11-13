@@ -1088,7 +1088,7 @@ A decision on a lingering root someone moved back to a status of the workflow (`
 A decision no person made (a deployment that gates no step) is not relayed.
 A session's reply on such an ask is not relayed either: the daemon logs `workflow: a session's reply on a parked tree is not relayed`, the reply stays on the Dispatch ask for the person who asked, and the controller's walk skips it.
 The controller sets the root `todo` when the park is its own hold and a decision gives its work a next step.
-Its own hold is a park by `session legion-daemon:<PROJECT>` with the controller's comment `Parked by Legion while it waits on: …` beside it, which the controller posts when it parks a tree for a hold.
+Its own hold is a park by `session legion-daemon:<PROJECT>` with the controller's comment `Parked by Legion while it waits on: …` beside it, which the controller posts when it parks a tree on a person's `Park it` answer to its ask about a hold, a failed architect or an event outside Legion.
 Every other park — a person's, another session's, and an operator's `legion status`, which the daemon writes under the same session with no mark — stays parked until whoever made it sets the root to `todo`, or a person asks the controller to start it.
 The controller says so in a comment, and the start task names the decision then.
 The controller answers a question on the question's own ask, from the record when the record holds the answer, and otherwise says that `todo` on the root brings its architect back to answer.
