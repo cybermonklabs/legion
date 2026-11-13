@@ -441,15 +441,21 @@ func (s *server) markInboxRead(w http.ResponseWriter, r *http.Request) {
 // reaches. A dismiss that took the caller's rows first and the root second would be the opposite
 // order, and the two would meet each holding what the other waits for.
 //
-// PUT /api/v1/me/threads/{id}/read takes that same order over its one thread, and the two need
-// the same one: both take the owner in shared mode, two share locks do not conflict, so the owner
-// orders nothing between them, and one of them holding the project while the other holds the
-// row and waits for the project is a cycle Postgres breaks with a 40P01 that the caller reads
-// as a 500. Rows before project rather than project before rows, because that is where the
-// one-thread route's project lock already falls: its Append takes it (events.Broker.Append),
-// after the row and only when the mark moved. The other order would have every revisit that
-// moves nothing queue on the project row - the busiest row the Inbox touches - behind every
-// write in that project, for an event it was never going to append.
+// PUT /api/v1/me/threads/{id}/read is ordered against this transaction by the owner alone, as an
+// ordinary writer is (below), and not by this list: it takes its one thread's owner lock
+// exclusively and then, before its own update, the project its event names (putThreadRead,
+// api/replies.go), which is steps 3 and 6 in the opposite order. The two never cross on it,
+// because this transaction holds a caller's row only while it holds that row's owner in shared
+// mode, and that exclusive lock conflicts with the shared one: whichever of the two reaches the
+// owner second waits there holding neither the row nor the project. A shared lock there would
+// cross, two share locks conflicting with nothing: this press would hold the row while it waited
+// for the project and that route would hold the project while it waited for the row, a cycle
+// Postgres breaks with a 40P01 that the caller reads as a 500.
+//
+// Rows before project here rather than project before rows, because the projects this
+// transaction locks are the projects of the rows its update moved, which it learns from that
+// update (inboxReadMarkThreads answers them) and not before it; a press that moved nothing locks
+// none and appends none.
 //
 // Two presses of this button by one person - two tabs, two devices, a narrowed press against an
 // unfiltered one - are ordered by step 3 and nothing else: they can name the same threads and

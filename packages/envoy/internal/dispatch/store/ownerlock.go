@@ -205,9 +205,9 @@ func lockKeys(owners []Owner) []string {
 // LockOwnerShared takes owner's lock in shared mode. It conflicts with LockOwner's exclusive lock
 // exactly as `for share` conflicted with the writers' `for no key update` on the owner row, and with
 // no other shared holder: a transaction that writes only rows every owner writer orders itself
-// against, and must not interleave with one (putThreadRead in internal/dispatch/api), waits for the
-// writer that holds the owner and holds off the next one. The read it guards is a separate
-// statement after it, as LockOwner's is.
+// against, and must not interleave with one (the Inbox's Mark all read and its dismissal, which
+// take their owners through LockOwnersShared below), waits for the writer that holds the owner and
+// holds off the next one. The read it guards is a separate statement after it, as LockOwner's is.
 func LockOwnerShared(ctx context.Context, q OwnerLocker, owner Owner) error {
 	if _, err := q.Exec(ctx, ownerLockShared, OwnerLockNamespace, owner.LockKey()); err != nil {
 		return fmt.Errorf("lock %s %s for share: %w", owner.Kind, owner.Key, err)

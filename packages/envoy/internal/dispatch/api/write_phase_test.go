@@ -93,9 +93,9 @@ func TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused(t *testing.T) {
 }
 
 // A person marking a thread read while a session's reply to it is in its read phase waits for that
-// reply: the mark takes the owner's lock in shared mode, which the reply holds exclusively from
-// before its first read to its commit. Both succeed, neither is refused as a deadlock, and the
-// mark, made after the reply was written, leaves the thread read.
+// reply: the mark takes the thread owner's lock, which the reply holds from before its first read
+// to its commit. Both succeed, neither is refused as a deadlock, and the mark, made after the
+// reply was written, leaves the thread read.
 func TestAThreadReadWaitsForAWritersReadPhase(t *testing.T) {
 	gate := &gatedProjectMark{entered: make(chan struct{}), release: make(chan struct{})}
 	handler, _, database := pooledDocumentHandlerWith(t, 8, time.Hour, func(service *docs.Service) docs.API {

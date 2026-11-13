@@ -382,14 +382,17 @@ func TestInboxReadRacingASessionReply(t *testing.T) {
 
 // A mark-all and one thread's own PUT /api/v1/me/threads/{id}/read, for the same person and a
 // thread the mark-all marks, at once. Both move that user_threads row and both append under its
-// project, and the thread's owner orders neither of them: each takes its lock in shared mode,
-// and two shared holders do not conflict. Only taking the row and the project in one order does
-// (markInboxReadThreads), so a round where one held the row while the other held the project
-// would die of a deadlock (40P01) its caller answers 500.
+// project, and the two take those in opposite orders: the mark-all its rows and then their
+// projects, the one-thread mark the project and then its row, so that it waits for the project
+// holding no transaction id (putThreadRead, api/replies.go). What orders them is the thread's
+// owner, which the mark-all takes in shared mode and the one-thread mark exclusively
+// (markInboxReadThreads), so one of the two waits there holding neither the row nor the
+// project. Without that, a round where one held the row while the other held the project would
+// die of a deadlock (40P01) its caller answers 500.
 //
 // A second unread thread in the same project keeps the mark-all on its write path whichever of
 // the two reaches the shared row first: it marks that thread every round, so it takes the
-// project lock every round, which is the lock the pair can cross on.
+// project lock every round, which is the lock the pair would cross on.
 func TestInboxReadRacingOneThreadsOwnMark(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Mark race", "A spec")

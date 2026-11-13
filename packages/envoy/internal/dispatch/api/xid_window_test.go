@@ -725,6 +725,35 @@ func TestXidWindowUserIssueState(t *testing.T) {
 	})
 }
 
+// A person marks one Inbox thread read, which records `user_thread_state.updated` on the
+// thread's project. The route writes its row inline, so its window holds three statements: the
+// row's update, the batch appending the event (the project owner's lock, which this transaction
+// already holds, the project's row and the insert), and the COMMIT ending them. Everything the
+// mark is decided on comes before the first of them - the caller's row, read plainly because it
+// names both owners; the thread's owner lock, taken exclusively and assigning no transaction id
+// (store.LockOwner), which is what lets the project be taken before the row at all
+// (putThreadRead); whether the mark moves the row, read under that lock by the update's own
+// predicate; and the project's owner lock, which the append would otherwise be the first to
+// take.
+func TestXidWindowUserThreadRead(t *testing.T) {
+	f := newXidFixture(t, testServerOptions{}, "")
+	// Alice's own comment gives her the thread's user_threads row - the trigger writes one for a
+	// person's write (migration 0095) - and a session's reply to it leaves that row unread, so
+	// the measured mark moves it. A mark that moved nothing would write nothing and hold no
+	// transaction id, which is no window to measure.
+	root := createThreadComment(t, f.handler, f.issueKey, map[string]any{
+		"body": "Does the migration section still hold?",
+	}, "alice")
+	reply := sessionComment(t, f.handler, "/api/v1/issues/"+f.issueKey+"/comments", map[string]any{
+		"body": "It does, and the next release carries it.", "reply_to": root.ID,
+	})
+	f.measure(t, http.StatusNoContent, storetest.XidWindowOf(3,
+		"the thread row's update, the batch appending user_thread_state.updated and the COMMIT ending them"),
+		func(h http.Handler) *httptest.ResponseRecorder {
+			return markThreadRead(t, h, "alice", root.ID, reply.CreatedAt)
+		})
+}
+
 // xidDeliverySessions is the fake listener's one live session, s1, the recipient every delivery
 // window test is measured on.
 const xidDeliverySessions = `[{"session_id":"s1","title":"planner","dir":"/w/legion","machine_id":"m1","roles":[],"capabilities":["aside","btw","steer"],"last_seen":42}]`

@@ -1328,7 +1328,7 @@ With the order broken, a project-document upload that takes the room lock before
 `store.LockOwner` (`store/ownerlock.go`) is `pg_advisory_xact_lock(0x4F574E52, hashtext('<kind>:<key>'))`, kind `issue`, `artifact` (a project document) or `project`:
 a two-key namespace of its own (`OWNR`), apart from the copy locks' (`COPY`), duty's leases' (`LOOP`) and every single-key lock.
 `LockOwners` takes several in one statement, sorted and deduplicated by lock key rather than by owner name, so two owners whose names hash alike never lock in opposite orders;
-`TryLockOwners` is the advisory form of `skip locked` a background pass takes; `LockOwnerShared` is `putThreadRead`'s.
+`TryLockOwners` is the advisory form of `skip locked` a background pass takes; `LockOwnersShared` is the Inbox's Mark all read's and its dismissal's.
 The lock and the read it guards are always two statements (`store.LockOwnerAndRead` and `LockOwnersAndRead` send them in one round trip, as one batch):
 under READ COMMITTED a statement's snapshot is taken before it waits, so `select pg_advisory_xact_lock(...), closed_at from issues ...` would read the row as it stood before the wait and let a write land on an issue closed meanwhile (`TestACloseCommittedWhileAWriterWaitsOnTheOwnerLockIsRefused`).
 No lock taken before the write phase is a row lock, so a write transaction holds no transaction id until its first write:
@@ -3089,9 +3089,10 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
 
 - `PUT /api/v1/me/threads/{id}/read` `{read_through}` (needs the `person` scope, `api/replies.go`) stores `least(value, now())`, Postgres casting the caller's text so an answer's nanosecond time rounds as the trigger rounded it, and only moves forward, with `agentStateCutoffSkew`'s minute of allowance (`400 INVALID_STATE` past it);
   a non-uuid id is `400 THREAD_ID_INPUT`, a thread the caller has no row for writes nothing, and both answer `204`.
-  It takes the thread owner's lock in shared mode (`store.LockOwnerShared`) before it touches the caller's row, since every writer that moves a `user_threads` row holds that owner's lock exclusively from its read phase on, before its trigger fires:
-  the mark waits for a writer in its read phase to commit (`TestAThreadReadWaitsForAWritersReadPhase`), as the owner row's `for share` once waited for a writer's `for no key update`, rather than take the row first and wait on a writer that waits on it;
-  two marks never wait on each other.
+  It takes the thread owner's lock (`store.LockOwner`) before it touches the caller's row, since every writer that moves a `user_threads` row holds that owner's lock from its read phase on, before its trigger fires:
+  the mark waits for a writer in its read phase to commit (`TestAThreadReadWaitsForAWritersReadPhase`), as the owner row's `for share` once waited for a writer's `for no key update`, rather than take the row first and wait on a writer that waits on it.
+  It takes that lock exclusively, where it once took it in shared mode, so that it can take the project of the event it appends before its own update rather than after it, and so hold no transaction id while it waits for that project (INFRA-636):
+  the Inbox's Mark all read holds a caller's row while it waits for the project, and only an exclusive hold of the owner keeps the two apart (`markInboxReadThreads`).
   It appends `user_thread_state.updated` (`{login, thread_id}`, owned by the row's project, never notifying) only when the mark moved, so a revisit announces nothing.
   That is the Inbox's read-mark lock order over one thread, written once on `markInboxReadThreads` (`api/inbox_read.go`).
   A person's own reply or answer needs no call: the trigger moves their mark in the write's own transaction.
