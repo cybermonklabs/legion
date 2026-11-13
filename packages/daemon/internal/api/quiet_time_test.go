@@ -2,6 +2,13 @@ package api
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"regexp"
+	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -128,14 +135,21 @@ func TestQuietTimeContractIsTheContractThatAddedTheFields(t *testing.T) {
 // that names no such pair is passed over, so a later text in another file is covered the moment
 // it names the two together.
 //
-// What it does not catch: a number more than 220 bytes from either field's name. A passage that
-// states the boundary a paragraph away from the words `treeMovedAt` and `quietHours` is outside
-// every window this reads, and it is read by nothing else here. No count of bytes is right for
-// every layout a later text may take.
+// What the window does not catch: a number more than 220 bytes from either field's name. A
+// passage that states the boundary a paragraph away from the words `treeMovedAt` and
+// `quietHours` is outside every window this reads, and no count of bytes is right for every
+// layout a later text may take. The two comments that document the fields where they are
+// declared are such passages: Issue's in state.go names the fields `TreeMovedAt` and
+// `QuietHours`, which no window looks for, and the schema's in legion-api.ts states its boundary
+// first more than 220 bytes above its `treeMovedAt` key. So each of those comments is also read
+// whole (quietTimeDeclarations): every contract number it names must be this one, and it must
+// name one. The cases after the scan hold that reading to each number those comments name, put
+// back in memory as another contract's, and each must be refused.
 //
 // What to do when it fires on a sentence that is true — a passage that names another contract
 // beside these fields: correct that sentence, or widen the exclusions until they take in the
-// word that marks the other contract, which is what makes this pass such a passage over.
+// word that marks the other contract, which is what makes this pass such a passage over; a
+// field's own comment names no other contract, so one that does is the sentence to correct.
 // Changing the number is never the answer: the number is the daemon's own, and the test above is
 // what holds it.
 func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
@@ -158,4 +172,115 @@ func TestTheShippedTextsNameTheQuietTimesOwnContract(t *testing.T) {
 		t.Fatalf("no shipped text names a contract beside %s or %s; this test proves nothing",
 			TreeMovedAtField, QuietHoursField)
 	}
+
+	// stale is the number a renumber that missed a comment would leave in it: 109 today, and
+	// never this contract.
+	const stale = quietTimeContract - 2
+	for _, place := range quietTimeDeclarations {
+		body, err := os.ReadFile(filepath.Join("..", "..", "..", "..", place.file))
+		if err != nil {
+			t.Fatalf("read %s: %v", place.file, err)
+		}
+		text := string(body)
+		named, wrong, err := quietTimeCommentWrong(text, place.declares)
+		if err != nil {
+			t.Fatalf("%s: %v", place.file, err)
+		}
+		if named == 0 {
+			t.Errorf("the comment above %s's %q names no contract: it is where the tree quiet time's own contract is stated",
+				place.file, place.declares)
+		}
+		for _, said := range wrong {
+			t.Errorf("%s's comment on the tree quiet time says `%s`, want the number %d, the contract that added it",
+				place.file, said, quietTimeContract)
+		}
+
+		start, end, err := quietTimeComment(text, place.declares)
+		if err != nil {
+			t.Fatalf("%s: %v", place.file, err)
+		}
+		for _, at := range contractNamed.FindAllStringSubmatchIndex(text[start:end], -1) {
+			said := text[start+at[0]:start+at[2]] + strconv.Itoa(stale)
+			renumbered := text[:start+at[2]] + strconv.Itoa(stale) + text[start+at[3]:]
+			line := strings.Count(text[:start+at[0]], "\n") + 1
+			t.Run(fmt.Sprintf("%s saying %s on line %d", filepath.Base(place.file), said, line), func(t *testing.T) {
+				_, wrong, err := quietTimeCommentWrong(renumbered, place.declares)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if !slices.Contains(wrong, said) {
+					t.Errorf("%s with `%s` in its comment on the tree quiet time has %v refused, want that phrase among them",
+						place.file, said, wrong)
+				}
+			})
+		}
+	}
+}
+
+// quietTimeDeclarations are the two places the tree quiet time is declared under a comment of
+// its own that states the contract it shipped at: Issue's two fields in state.go and the
+// contract schema's two keys in legion-api.ts. Each is found by the line declaring the first of
+// the pair there, the one line of the file that, indent aside, begins with declares.
+var quietTimeDeclarations = []struct{ file, declares string }{
+	{"packages/daemon/internal/api/state.go", "TreeMovedAt "},
+	{"packages/contracts/src/legion-api.ts", TreeMovedAtField + ":"},
+}
+
+// contractNamed is a contract number in the two forms the scan reads one in: `contract <N>`,
+// and the bare `below <N>` a sentence writes once the passage has already said "contract".
+var contractNamed = regexp.MustCompile(`(?:contract|below) (\d+)`)
+
+// quietTimeComment is the comment that documents the tree quiet time where text declares it, as
+// the byte span [start, end) of text: the run of comment lines — a `//` line, or a `/**`, `*` or
+// `*/` line of a block — right above the one line that, indent aside, begins with declares. A
+// text declaring the pair on no line or on two, or under no comment, is an error rather than
+// nothing to read: the comment is what the test holds to the number, and one it cannot find is
+// one it would pass.
+func quietTimeComment(text, declares string) (start, end int, err error) {
+	lines := strings.SplitAfter(text, "\n")
+	offsets := make([]int, len(lines)+1)
+	declaration := -1
+	for i, line := range lines {
+		offsets[i+1] = offsets[i] + len(line)
+		if !strings.HasPrefix(strings.TrimSpace(line), declares) {
+			continue
+		}
+		if declaration >= 0 {
+			return 0, 0, fmt.Errorf("lines %d and %d both begin with %q: this reads the comment above the one line that declares the tree quiet time",
+				declaration+1, i+1, declares)
+		}
+		declaration = i
+	}
+	if declaration < 0 {
+		return 0, 0, fmt.Errorf("no line begins with %q: this reads the comment above the line that declares the tree quiet time", declares)
+	}
+	first := declaration
+	for first > 0 {
+		above := strings.TrimSpace(lines[first-1])
+		if !strings.HasPrefix(above, "//") && !strings.HasPrefix(above, "/*") && !strings.HasPrefix(above, "*") {
+			break
+		}
+		first--
+	}
+	if first == declaration {
+		return 0, 0, fmt.Errorf("line %d, which begins with %q, stands under no comment: that comment is where the tree quiet time's contract is stated",
+			declaration+1, declares)
+	}
+	return offsets[first], offsets[declaration], nil
+}
+
+// quietTimeCommentWrong reads the comment quietTimeComment finds in text, and answers how many
+// contract numbers it names and each phrase among them naming one other than quietTimeContract.
+func quietTimeCommentWrong(text, declares string) (named int, wrong []string, err error) {
+	start, end, err := quietTimeComment(text, declares)
+	if err != nil {
+		return 0, nil, err
+	}
+	for _, at := range contractNamed.FindAllStringSubmatch(text[start:end], -1) {
+		named++
+		if at[1] != strconv.Itoa(quietTimeContract) {
+			wrong = append(wrong, at[0])
+		}
+	}
+	return named, wrong, nil
 }
