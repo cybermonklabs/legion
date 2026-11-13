@@ -1594,8 +1594,13 @@ func (c *Client) UsesCoreTransport(topic string) bool {
 	if subjectsCapture(roleLaneSubjects, topic) {
 		return true
 	}
-	if subjects := c.deployedSubjects.Load(); subjects != nil {
-		return !subjectsCapture(*subjects, topic)
+	// A nil client has read no deployed stream - a caller that holds none, and the deps a test
+	// builds without one - so it answers on the subjects this build compiles, which is what a
+	// client answers before its first read too.
+	if c != nil {
+		if subjects := c.deployedSubjects.Load(); subjects != nil {
+			return !subjectsCapture(*subjects, topic)
+		}
 	}
 	return !StreamCaptures(topic)
 }
