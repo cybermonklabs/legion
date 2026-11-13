@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 87,
-    "caller": 87
+    "daemon": 98,
+    "caller": 98
   },
   "admission": {
     "cap": 3,
@@ -40,6 +40,20 @@
         "blockedBy": [
           "LEGION-210"
         ]
+      }
+    ],
+    "held": [
+      {
+        "issue": "LEGION-209",
+        "reason": "dispatch_blocker",
+        "heldBy": [
+          "LEGION-210",
+          "LEGION-213"
+        ]
+      },
+      {
+        "issue": "LEGION-214",
+        "reason": "label_off"
       }
     ]
   },
@@ -243,7 +257,9 @@
       },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
-      "memoryDrawnAt": "2026-09-20T11:04:05Z"
+      "memoryDrawnAt": "2026-09-20T11:04:05Z",
+      "phaseEntry": 4,
+      "givenEntry": 4
     },
     "LEGION-209": {
       "key": "LEGION-209",
@@ -361,7 +377,9 @@
       "why": {
         "state": "claim_stopped",
         "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
-      }
+      },
+      "phaseEntry": 2,
+      "givenEntry": 1
     },
     "LEGION-212": {
       "key": "LEGION-212",
@@ -408,6 +426,16 @@
         "answeredAt": "2026-09-22T09:21:00Z",
         "answeredBy": "ask"
       }
+    },
+    "LEGION-214": {
+      "key": "LEGION-214",
+      "generation": 1,
+      "phase": "admitted",
+      "status": "todo",
+      "tree": "LEGION-214",
+      "repo": "zeta/tools",
+      "defaultBranch": "release/v7.1",
+      "workers": {}
     }
   },
   "pendingStatusWrites": [],

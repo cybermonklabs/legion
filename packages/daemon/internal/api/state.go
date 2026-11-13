@@ -306,7 +306,8 @@ type AgentSecretsLoginView struct {
 // or slice is `null`, which the plugin's reader refuses. The exceptions are the two keys a
 // contract band hides from a caller below it, `wakesWaiting` and `claimsToRefresh`: such a body
 // carries no key of that name at all, and is marshaled through a value whose own field of that
-// name shadows the embedded one, which is how Admission.MarshalJSON leaves off `trees`.
+// name shadows the embedded one. Admission.MarshalJSON hides `trees` and `held`, the two keys of
+// its own block a downgrade hides, with `omitzero` on those fields instead.
 //
 // One shadow type carries both keys, and both its fields are pointers. `omitempty` leaves out a
 // nil pointer, and a pointer at a value writes that value whatever it holds: `[]` for the empty
@@ -420,17 +421,32 @@ type Admission struct {
 	// so a live tree can hold no slot at all — a root still waiting in the line for its tree to
 	// be opened holds none, and neither does a child of it — and `active` alone no longer tells
 	// a reader such as the controller which trees run. Never null; empty when no tree is live.
-	Trees []string `json:"trees"`
+	Trees []string `json:"trees,omitzero"`
 	// Blocked is every issue Legion is waiting to start that waits on a Dispatch issue nobody has
 	// finished (INFRA-225), by issue key: a waiting root admission skips and a child the workflow
 	// holds at `admitted`, together in one list, each with what it still waits on. A blocked issue
 	// the line carries is in Waiting too. Never null; empty when nothing waits on a link.
 	Blocked []BlockedIssue `json:"blocked"`
+	// Held is every issue the daemon's record holds in the workflow that stands in neither
+	// `active` nor `waiting`: the work the daemon runs nothing of and queues nowhere, each row
+	// carrying the one word for why (record.HeldReason) and the issues that hold it, sorted by
+	// issue key. It is the other half of the three lists above — a reader that has `active`,
+	// `waiting` and this one has every issue of the workflow and what each is doing — so the
+	// list names no issue `active` or `waiting` names. `heldBy` is absent where no issue holds
+	// the one that waits: a root whose Legion label is off, or an issue none of the other words
+	// is true of; `at_work` names no issue today (record.HeldAtWork). Never null; empty when
+	// every issue of the workflow runs or waits in the line.
+	Held []HeldIssue `json:"held,omitzero"`
 	// treesHidden is set on the copy the state route serves a caller whose plugin is older than
 	// the contract that added Trees (api's withoutTrees, below server.go's treeContract): that
 	// reader knows no `trees` and refuses the key as surely when it is empty as when it names a
 	// tree, so MarshalJSON leaves the key off that one body rather than writing it empty.
 	treesHidden bool
+	// heldHidden is the same for Held: it is set on the copy served a caller whose plugin is
+	// older than the contract that added the list (api's withoutHeld, below server.go's
+	// heldContract), whose reader refuses `held` emptied as surely as filled, so MarshalJSON
+	// leaves that key off too.
+	heldHidden bool
 }
 
 // BlockedIssue is one issue of Blocked and the issues it waits on that are not done. It is
@@ -438,11 +454,24 @@ type Admission struct {
 // read two ways, and the row is declared once, under both.
 type BlockedIssue = record.BlockedIssue
 
-// MarshalJSON keeps `active`, `waiting`, `trees` and `blocked` arrays on the wire, empty rather
-// than `null` — except on an admission whose trees are hidden, which carries no `trees` key at
-// all. That body is marshaled through a value whose own nil `trees` field, being `omitempty`,
-// shadows the embedded one and so is written by nothing; every other key of the block, including
-// one a later contract adds above, is still written from the one place that writes it.
+// HeldIssue is one issue of Held: the issue, the one word for why nothing of it runs, and the
+// issues that hold it where there are any. It is record.HeldIssue, as BlockedIssue is
+// record.BlockedIssue: the state's `admission.held` and the controller tick's notice are the
+// same list read two ways, and the row is declared once, under both.
+type HeldIssue = record.HeldIssue
+
+// MarshalJSON keeps `active`, `waiting`, `trees`, `blocked` and `held` arrays on the wire, empty
+// rather than `null` — except on an admission whose trees are hidden, which carries no `trees`
+// key at all, and one whose held list is hidden, which carries no `held`. Those two keys are
+// tagged `omitzero`, so a nil slice writes no key and an empty one writes `[]`: a hidden list
+// is left nil here and every other list is filled, which is the whole of the rule. The keys
+// keep their place in the object, because they are written from the fields they are declared
+// on and from nowhere else.
+//
+// A caller below treeContract is below heldContract too and is served both strips at once; a
+// caller served the held strip alone is the reader of a contract between the two. Every golden
+// body of this repository is compared byte for byte, so a key written anywhere but on its own
+// field would rewrite them all.
 func (a Admission) MarshalJSON() ([]byte, error) {
 	type wire Admission
 	out := wire(a)
@@ -457,13 +486,13 @@ func (a Admission) MarshalJSON() ([]byte, error) {
 	}
 	if a.treesHidden {
 		out.Trees = nil
-		return json.Marshal(struct {
-			wire
-			Trees []string `json:"trees,omitempty"`
-		}{wire: out})
-	}
-	if out.Trees == nil {
+	} else if out.Trees == nil {
 		out.Trees = []string{}
+	}
+	if a.heldHidden {
+		out.Held = nil
+	} else if out.Held == nil {
+		out.Held = []HeldIssue{}
 	}
 	return json.Marshal(out)
 }
@@ -558,6 +587,25 @@ type Issue struct {
 	MemoryGroup    string     `json:"memoryGroup,omitempty"`
 	MemoryDrawMode string     `json:"memoryDrawMode,omitempty"`
 	MemoryDrawnAt  *time.Time `json:"memoryDrawnAt,omitempty"`
+	// PhaseEntry is the number of the phase entry the role of the issue's current phase stands on
+	// (record.PhaseRow.Entry, the role phase.RoleFor names for that phase), and GivenEntry the
+	// entry of the last task that role's claim was queued (supervise.Claim.GivenEntry). The daemon
+	// sends the entry's own work to a role whose given number is below the entry its row names, on
+	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
+	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
+	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	//
+	// Both are absent together for an issue whose current phase names no phase worker role: a root
+	// at admitted whose design gate has never opened is at work (record.AtWork) and phase.RoleFor
+	// names no role for that phase, so the sweep passes it over and nothing would ever close a
+	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
+	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
+	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
+	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
+	// value no reader parses empty.
+	PhaseEntry int64 `json:"phaseEntry,omitempty"`
+	GivenEntry int64 `json:"givenEntry,omitempty"`
 }
 
 // WaitingOnView is what a root in awaiting_person waits on from a person (record.Awaiting). Kind

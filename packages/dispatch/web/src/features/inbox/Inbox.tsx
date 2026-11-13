@@ -1701,8 +1701,10 @@ export function Inbox({
           );
         })}
         {/* Who the list is listed for (`?assignee=`): the trigger says the selection in the
-            reader's own words, and the popover picks any number of people, with Unassigned -
-            every document ask and every issue nobody holds - first. */}
+            reader's own words, and the popover picks any number of people, with Unassigned
+            first. Unassigned lists what the server resolved no person for, and every project
+            naming a default assignee leaves nothing: it reads 0 and lists nothing, which is
+            what the filter saying so is for. */}
         <MultiSelect
           emptyMessage={people.isPending ? "Loading people…" : "No matching person."}
           error={people.isError ? "Could not load the people list." : null}

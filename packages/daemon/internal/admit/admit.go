@@ -79,6 +79,15 @@ type Admission struct {
 	// it (ReportCapabilities), when a tick names none.
 	openCapabilities func() []string
 
+	// unclassifiedLogged is the generation at which the tick last logged each issue whose held
+	// row read unclassified (logUnclassified, C2 of dispatch://INFRA-3107). It is this daemon
+	// run's own memory and nothing durable, written and read inside the fact lock alone, so it
+	// takes none of the mutex above. A re-admission raises the generation and clears the phase,
+	// which is a state of that issue the log has not reported, so it is logged again; the
+	// generation is the value rather than half of the key because it never goes back for one
+	// record, which bounds the map at one entry per issue for the life of the run.
+	unclassifiedLogged map[string]uint64
+
 	// workerSilence is how long a phase worker's last recorded step may be in the past before
 	// the tick notice names its issue silent (config.Config.WorkerSilence,
 	// `worker_silence_minutes`), the one bound the sweep, the silence handler and this list are
@@ -128,7 +137,8 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 		log = slog.Default()
 	}
 	return &Admission{store: store, engine: engine, cap: cap, project: project, log: log, now: time.Now,
-		coin: memorygroup.CryptoCoin, pending: make(map[string]intake.DispatchIssue)}
+		coin: memorygroup.CryptoCoin, pending: make(map[string]intake.DispatchIssue),
+		unclassifiedLogged: make(map[string]uint64)}
 }
 
 // Apply records root and orphan todo observations of issues handed to Legion and every newer
@@ -140,7 +150,9 @@ func New(store record.Store, engine *workflow.Engine, cap int, project string, l
 // handler runs first: it records every live-tree child, leaving admission to record only a
 // still-unrecorded root or orphan. A release's adoption of children it cannot adopt
 // (adoptChildren) is the one fact admission refuses. A Dispatch issue fact's Reread is written
-// first (applyReread), before anything of the fact itself is recorded or promoted.
+// first (applyReread), before anything of the fact itself is recorded or promoted. The entry
+// sweep (intake.EntrySweep) is the one fact that promotes nothing: it converges the phase
+// entries and does no more (convergeEntries).
 func (a *Admission) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	released, refusal, err := a.applyFact(ctx, tx, fact)
 	if err != nil {
@@ -159,15 +171,31 @@ func (a *Admission) applyFact(ctx context.Context, tx pgx.Tx, fact intake.Fact) 
 		released, err := a.release(ctx, tx, position)
 		return released, nil, err
 	}
+	if _, ok := fact.(intake.EntrySweep); ok {
+		// The sweep converges the entries and does no more: it promotes nothing, since a pass
+		// that promotes runs on every fact and on the tick, and it releases no slot, so it
+		// reports none.
+		return nil, nil, a.convergeEntries(ctx, tx)
+	}
 	if _, ok := fact.(intake.ControllerTick); ok {
 		_, returned, err := a.promote(ctx, tx)
+		if err != nil {
+			return nil, nil, err
+		}
+		// What the project waits on, what nothing starts and whose phase worker nothing will
+		// prompt are read here, after the promotion this tick made, from one read of the
+		// project (tickRows): the first two are two assemblies of one judgement of the line, and they are built whether or not a controller is
+		// registered to be told. The wake carries them as it carries the open capabilities, and
+		// judges nothing a second time.
+		held, blocked, silent, err := a.tickRows(ctx, tx)
 		if err != nil {
 			return nil, nil, err
 		}
 		// The tick wakes the controller whatever the slots: with every slot taken, it is the only
 		// wake a tree waiting on a refused root claim gets, since only the controller's recheck of
 		// that claim moves it, and it is the turn that posts the day's report.
-		return returned, nil, a.wakeController(ctx, tx, record.ControllerNotice{Kind: record.TickNotice}, a.project, a.now())
+		return returned, nil, a.wakeController(ctx, tx,
+			record.ControllerNotice{Kind: record.TickNotice, Held: held, Blocked: blocked, Silent: silent}, a.project, a.now())
 	}
 	if handover, ok := fact.(intake.Handover); ok {
 		if err := a.consumeHandover(ctx, tx, handover); err != nil {
@@ -373,7 +401,7 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 		return false, err
 	}
 	own := ownSlots(issues, slots)
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
 	if err != nil {
 		return false, err
 	}
@@ -390,17 +418,13 @@ func (a *Admission) slotFree(ctx context.Context, tx pgx.Tx) (bool, error) {
 // notice of the same kind still waits in the outbox, so a burst of events or ticks queues one
 // wake. The wake needs no record: the controller reads Dispatch and the daemon's state
 // (skill://legion-controller). A tick alone carries the daemon's open capabilities
-// (ReportCapabilities), every issue Legion is waiting to start behind an unfinished Dispatch
-// issue (blockedFrom) and every issue whose phase worker nothing will prompt (silentWorkers), the
-// turn that posts the day's report. Every other kind is queued as the
-// caller built it, so a kind that says something of its own — the role and the reason of
-// TellController's — carries it here.
-//
-// The two lists a tick carries are derived from one read of the project's live issues and one
-// read of the line facts those issues are judged from, made here and handed to both: the tree
-// gates the silent list reads are the gates the blocked list is judged from (blockedFrom,
-// record.LineFacts.Gates), and a second read of them inside this one transaction would answer
-// the same thing at twice the cost.
+// (ReportCapabilities), which this adds, and the three lists the tick's own fact built from one
+// read of the project and put on the notice before it reached here (applyFact, tickRows): every
+// issue Legion is waiting to start behind an unfinished Dispatch issue, every issue nothing
+// starts at all, and every issue whose phase worker nothing will prompt (silentWorkers). So a
+// tick that wakes nobody has judged them all the same, and nothing here judges anything a second
+// time. Every other kind is queued as the caller built it, so a kind that says something of its
+// own — the role and the reason of TellController's — carries it here.
 //
 // Which notices count as the same one is the kind's own rule (record.NoticePerClaim): a kind
 // that speaks for the project is one wake per project, which is what the slot wakes and the tick
@@ -422,20 +446,8 @@ func (a *Admission) wakeController(ctx context.Context, tx pgx.Tx, notice record
 	if err != nil || pending {
 		return err
 	}
-	if notice.Kind == record.TickNotice {
-		if a.openCapabilities != nil {
-			notice.OpenCapabilities = a.openCapabilities()
-		}
-		issues, facts, err := a.lineFacts(ctx, tx)
-		if err != nil {
-			return err
-		}
-		if notice.Blocked, err = a.blockedFrom(ctx, tx, issues, facts); err != nil {
-			return err
-		}
-		if notice.Silent, err = a.silentWorkers(ctx, tx, issues, facts); err != nil {
-			return err
-		}
+	if notice.Kind == record.TickNotice && a.openCapabilities != nil {
+		notice.OpenCapabilities = a.openCapabilities()
 	}
 	return a.enqueue(ctx, tx, issue, notice, dueAt)
 }
@@ -479,39 +491,91 @@ func (a *Admission) queuePersonHandover(ctx context.Context, tx pgx.Tx, key, obs
 	return nil
 }
 
-// lineFacts is the project's live issues and the facts the waiting line judges them from, read
-// once for a caller that needs both (wakeController, which hands them to blockedFrom and to
-// silentWorkers). Every reader of these two reads them in one transaction, so one read is one
-// snapshot and two reads would be the same snapshot read twice.
-func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx) ([]record.Issue, record.LineFacts, error) {
-	issues, err := a.store.LiveIssues(ctx, tx, a.project)
+// tickRows is what the tick controller notice carries beside the open capabilities: every issue
+// Legion is waiting to start that waits on something else (`blocked`), every issue the daemon's
+// own record holds in the workflow that stands in neither the active set nor the waiting line,
+// with the one word for why (`held`, C3 of dispatch://INFRA-3107), and every issue whose phase
+// worker nothing will prompt (`silent`, silentWorkers).
+//
+// The two are two assemblies of one judgement of the line, so they are built together here:
+// `blocked` is blockers.Blocked over the mirror rows and the line, `held` is record.HeldList
+// over the same line and the rows the pass left behind, and both read the judgement promotion
+// itself reads (blockers.JudgeLine). Built apart they cost the tick two judgements of the whole
+// project — the same four reads, and the mirror read twice in one transaction — and a reader of
+// either list could not say the two were made over one record.
+//
+// Each is built by the function the state builds the same list with, over this transaction's
+// own reads, so what the controller is told and what `legion state` shows for one issue agree:
+// one word in both, and one set of blocked rows in both. The rows are built whether or not a
+// controller is registered to be told, because the unclassified line is written from them
+// (logUnclassified), and that line is the daemon's own record of what the words miss.
+//
+// It makes no read of the line of its own: the three reads are the pass's (reread), and the
+// candidates are the live issues the daemon holds in the workflow, which record.HeldList takes
+// out of them itself (record.InWorkflow). The silent list is read from those same issues and
+// line facts, before the judgement adds to them, so its tree gates are the gates the blocked
+// list is judged from and nothing is read twice in this one transaction.
+func (a *Admission) tickRows(ctx context.Context, tx pgx.Tx) ([]record.HeldIssue, []record.BlockedIssue, []record.SilentIssue, error) {
+	issues, slots, facts, err := a.reread(ctx, tx)
 	if err != nil {
-		return nil, record.LineFacts{}, fmt.Errorf("list admission issues: %w", err)
+		return nil, nil, nil, err
 	}
-	facts, err := record.ReadLineFacts(ctx, tx, a.store, a.project, issues, a.engine.GatedSteps())
+	silent, err := a.silentWorkers(ctx, tx, issues, facts)
 	if err != nil {
-		return nil, record.LineFacts{}, err
+		return nil, nil, nil, err
 	}
-	return issues, facts, nil
+	own := ownSlots(issues, slots)
+	rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, own, facts, nil, a.now())
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	held := record.HeldList(issues, own, line, dropped, facts)
+	a.logUnclassified(held, issues)
+	return held, blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), silent, nil
 }
 
-// blockedFrom is every issue Legion is waiting to start that waits on something else, as the
-// tick notice carries it: the candidates promotion passes over, the children the workflow holds
-// behind an unfinished Dispatch issue, and the parents whose own children are still open
-// (workflow.ChildWaitRows), judged from issues and facts the caller has already read and from
-// this transaction's own reads by the function the state's `blocked` is built with
-// (blockers.Blocked), so the controller is told exactly what `legion state` shows. The slots are
-// read here, because they are the one fact of the judgement no other reader of this pass wants.
-func (a *Admission) blockedFrom(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]record.BlockedIssue, error) {
-	slots, err := a.store.Slots(ctx, tx)
-	if err != nil {
-		return nil, fmt.Errorf("list admission slots: %w", err)
+// logUnclassified writes one line for each row the ladder could put no word to (C2), naming the
+// issue, the phase and the status a reader needs to see what the words miss, and writes it once
+// for that issue and this daemon run: a state nobody has closed would otherwise print a line at
+// every tick, for as long as the record stands. The line is the daemon's own record of a state
+// the state body already names in `admission.held`, so it earns no table and no migration —
+// unlike the children-first notice, which is durable because it reaches a person and must not be
+// told twice across restarts.
+//
+// The run is the daemon's own: the mark lives in memory and a restart logs each such issue once
+// more, which is what a reader of a fresh run's log wants. It is keyed by the issue's own
+// generation beside its key, so that a re-admission, which raises the generation and clears the
+// phase, is a new state of that issue and earns a line of its own.
+//
+// Every write of unclassifiedLogged happens here, inside the one fact lock each intake fact
+// holds (intake.ApplyFact), and nothing outside a fact reads it: it needs none of the mutex
+// above, which guards pending because the daemon's own poller reads that one outside any
+// transaction. The mark is written beside the line rather than after the commit because the line
+// is already written: a fact rolled back has still logged what it logged, and a second line for
+// the same issue would say nothing more.
+func (a *Admission) logUnclassified(rows []record.HeldIssue, issues []record.Issue) {
+	// The map is built on the first row that needs it: a project where every held issue reads a
+	// word of its own — which is every healthy project — builds none at all, and the tick runs
+	// this on each of its passes.
+	var byKey map[string]record.Issue
+	for _, row := range rows {
+		if row.Reason != record.HeldUnclassified {
+			continue
+		}
+		if byKey == nil {
+			byKey = make(map[string]record.Issue, len(issues))
+			for _, issue := range issues {
+				byKey[issue.Key] = issue
+			}
+		}
+		issue := byKey[row.Issue]
+		if logged, seen := a.unclassifiedLogged[row.Issue]; seen && logged == issue.Generation {
+			continue
+		}
+		a.unclassifiedLogged[row.Issue] = issue.Generation
+		a.log.Info("admission: the record holds an issue no held word is true of", "issue", row.Issue,
+			"phase", issue.Phase, "status", issue.Status, "reason", record.HeldUnclassified)
 	}
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
-	if err != nil {
-		return nil, err
-	}
-	return blockers.Blocked(rows, issues, line, record.ChildWaitRows(facts.ChildWaits)), nil
 }
 
 // phaseWorker is one candidate of a repair over phase workers: the issue, the root of its tree
@@ -530,18 +594,24 @@ type phaseWorker struct {
 // roots are read from and which the slot repair walks its slots through.
 //
 // Its two callers are the repairs over phase workers: the tick's silent list (silentWorkers)
-// and the repair of a slot whose worker has no task (resumeSlottedWorkers). They select one
-// candidate the same way because they may never act on one claim, and each judges what it
-// selected in a loop of its own, which is where the two differ.
+// and the selection of the roles behind the entry their phases row names (owedEntryRoles, which
+// resumeSlottedWorkers sends). They select one candidate the same way so that the two read one
+// claim alike, and each judges what it selected in a loop of its own, which is where the two
+// differ. A silent claim behind its entry is the one both can name: admission sends it that
+// entry's work (workflow.SendOwedEntry) and so does the silence handler (workflow's
+// repairSilence), and whichever writes first leaves a queued start carrying that entry, which
+// the other's rule reads and passes over (workflow.OwedEntry, and the queued start
+// unpromptedPhaseWorker refuses).
 //
 // A candidate with no work where it stands is passed over, because both repairs are about a
-// worker that is owed a turn, and the rule each asks refuses such an issue again. No live case
-// is left on this release: merging is a worker's phase, since its merger makes the merge
-// itself, so every phase the rule keeps a row for and that a worker does not work has no worker
-// role of its own either. The test stands as the backstop that keeps record.AtWork the one
-// statement of what work is, rather than a second list of phases here. So the gate decides
-// nothing either: record.AtWork reads it in the phase.Admitted arm alone, and an issue at
-// admitted has no worker role at all.
+// worker that is owed a turn, and that holder has none to start. The gate is unreachable on
+// this release: the role skip above it passes over every phase phase.RoleFor names no worker
+// role for — the architect's accepting, and the empty role of held, awaiting_person, admitted
+// and done — and merging, the one holder record.AtWork used to answer false for, is a worker's
+// phase now, since its merger makes the merge itself. It is kept so that a phase added later
+// with a worker role of its own, in a state record.AtWork answers false for, is sent nothing by
+// either repair, and so record.AtWork stays the one statement of what work is rather than a
+// second list of phases here.
 //
 // The runs are one batched record.RoleRuns call and never a call per candidate: a tick runs
 // over the whole project, and a pass of the slot repair over at most the cap's worth of slots.
@@ -1440,7 +1510,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			return 0, released, err
 		}
 	}
-	rows, facts, line, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil)
+	rows, facts, line, _, err := blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, nil, a.now())
 	if err != nil {
 		return 0, released, err
 	}
@@ -1452,7 +1522,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return 0, released, err
 		}
-		if rows, facts, line, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
+		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return 0, released, err
 		}
 	}
@@ -1684,7 +1754,7 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 		if issues, slots, facts, err = a.reread(ctx, tx); err != nil {
 			return admitted, released, err
 		}
-		if rows, facts, line, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows); err != nil {
+		if rows, facts, line, _, err = blockers.JudgeLine(ctx, tx, a.store, a.project, issues, ownSlots(issues, slots), facts, rows, a.now()); err != nil {
 			return admitted, released, err
 		}
 	}
@@ -2156,7 +2226,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		}
 		// Accepting's role is the tree's architect, which promotion already started: nothing of
 		// that phase is resumed here.
-		owner := workflow.RoleFor(member.Phase)
+		owner := phase.RoleFor(member.Phase)
 		if owner == claim.RoleArchitect {
 			owner = ""
 		}
@@ -2233,9 +2303,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 			if !workflow.StartFor(run, root, member.Generation, member.Phase) {
 				continue
 			}
-			if err := workflow.StartOrOwe(ctx, tx, a.store, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree,
-				Role: held.role, Generation: member.Generation, Phase: member.Phase, Task: workflow.ResumePhaseTask(member),
-				ResumeTask: true}, now); err != nil {
+			if err := a.engine.StartPromotedWorker(ctx, tx, member, held.role); err != nil {
 				return err
 			}
 		}
@@ -2243,34 +2311,65 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 	return nil
 }
 
-// resumeSlottedWorkers is the repair of a slot whose worker has no task: an issue holding a slot
-// in a worker phase for which no start is queued and no delivery the claim is still working
-// (workflow.StartFor, the pending delivery's StillWorked). That can happen where a start row was
-// finished without acting while the slot stayed — a row the outbox fenced out, a row
-// finishFencedStarts finished earlier in this pass — and nothing else would ever start that
-// worker again, so the issue would hold its slot for ever doing nothing. Each one gets the start
-// a retry of a held phase gives (workflow's restart): the assignment its phases row already
-// names, so no completion in flight is refused for an assignment the worker was never given, and
-// the phase's resume task.
+// owedEntryRole is one role the entry work is owed to: the issue whose current phase it is the
+// role of, the phases row the work and the entry are read from, and the entry that role's claim
+// was last given, which only the log line of the send reads. It stays unexported: the shape of
+// this selection is this package's, and the one question another package asks of it is
+// OwesEntryWork's yes or no.
+type owedEntryRole struct {
+	Issue record.Issue
+	Role  claim.Role
+	Row   record.PhaseRow
+	Given int64
+}
+
+// OwesEntryWork is whether any role of the project is owed the work of the entry its phases row
+// names, read as every admission pass reads the project (reread) and answered by the one
+// selection the pass itself sends (owedEntryRoles). It reads and writes nothing else, so the
+// entry sweep's gate (internal/daemon's applyEntrySweep) asks it in a read-only transaction of
+// its own, before any fact, to learn whether the sweep's own pass would send anything. The
+// answer is a yes or a no rather than the selection, so no caller outside this package depends
+// on the shape of a row the pass reads.
+func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) {
+	issues, slots, facts, err := a.reread(ctx, tx)
+	if err != nil {
+		return false, err
+	}
+	owed, err := a.owedEntryRoles(ctx, tx, issues, slots, facts)
+	if err != nil {
+		return false, err
+	}
+	return len(owed) > 0, nil
+}
+
+// owedEntryRoles is every role of an issue at work that is behind the entry its phases row names
+// (workflow.OwedEntry), in the order the slots are read. It is the selection half of the repair
+// resumeSlottedWorkers sends, and the only statement of which roles are owed that work: a reader
+// asking whether anything is owed asks this rather than restating it, so no second statement can
+// disagree with the pass.
 //
-// It runs after the cap loop on every pass admission makes, over at most the cap's worth of
-// slotted issues, through one batched RoleRuns read rather than a read per slot. Running after
-// the fence repair rather than before it is what repairs a slot whose start row the fences
-// rejected on the pass that rejected it, instead of a pass later.
+// Only the role of each slotted issue's current phase is read (workflow.OpenPhaseRole, in the
+// shared selection phaseWorkers), so a role the issue's phase has left is no part of the answer:
+// its phases row keeps the entry it was last handed work on, and nothing here would ever send
+// that work again.
+//
+// It reads over at most the cap's worth of slotted issues, through one batched record.RoleRuns
+// read rather than a read per slot, and one read of the phase rows of each holder the three
+// skips that read the claim alone leave standing.
 //
 // A slot no longer says a worker of its issue has work: an issue keeps its row through phases
 // no worker of it works (record.KeepsSlot), so a holder record.AtWork answers false for is
-// passed over, at the skip the shared selection states (phaseWorkers). The pass hands that
-// selection its own facts, so the gate AtWork is asked with is the issue's real one and the
-// call stays honest against its contract, at one map lookup a holder.
+// passed over, at the skip the shared selection states (phaseWorkers). The caller hands that
+// selection the facts of its own pass, so the gate AtWork is asked with is the issue's real one
+// and the call stays honest against its contract, at one map lookup a holder.
 //
 // The slots are walked here, in the order the store answered, and the issues they hold are
 // what the selection is given: it is the tick's silent list that walks the project's live
 // issues (silentWorkers). What the loop below asks beyond that selection is this repair's own
 // judgement, and the skips are in the order a reader of the two repairs must see them.
-func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
+func (a *Admission) owedEntryRoles(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
 	facts record.LineFacts,
-) error {
+) ([]owedEntryRole, error) {
 	byKey := make(map[string]record.Issue, len(issues))
 	for _, issue := range issues {
 		byKey[issue.Key] = issue
@@ -2283,22 +2382,28 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 	}
 	holders, runs, err := a.phaseWorkers(ctx, tx, slotted, byKey, facts)
 	if err != nil {
-		return err
+		return nil, err
 	}
+	var owed []owedEntryRole
 	for _, held := range holders {
 		run := runs[held.token]
-		if !workflow.StartFor(run, held.root, held.issue.Generation, held.issue.Phase) {
-			continue
-		}
 		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
 			continue
 		}
-		// A claim whose pod the idle rule released holds no task because its turn ended and its
-		// process was stopped, which is the release working rather than a slot with no worker:
-		// the wake brings the pod back and gives the role the one task that says so (workflow's
-		// wakeRow), so starting its phase again here would hand the woken role a second task for
-		// work it already holds.
-		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByReleased {
+		// A claim whose pod the idle rule released has no skip of its own, and the entry rule
+		// below is why: while the entry it was given is the entry its row names, the rule
+		// answers false and the release stands — its turn ended and its process was stopped,
+		// which is the release working rather than a worker that lost its task, and the wake
+		// brings the pod back with the one task that says so (workflow's wakeRow). One below
+		// that entry is behind like any other claim: no wake is armed for work it was never
+		// given, and sending that entry's task is what brings its pod back.
+
+		// A claim an operator suspended is passed over whatever entry it stands on: `legion
+		// claims stop` stopped that worker and only the operator's own resume starts it again
+		// (supervise's RuleHolds, which no start the daemon queues gets past). A claim the
+		// daemon itself suspended is repaired, which is what the idle rule's release and the
+		// daemon's own suspend both leave behind.
+		if c := run.Claim; c != nil && c.State == supervise.StateSuspended && c.SuspendedBy == supervise.SuspendedByOperator {
 			continue
 		}
 		// A retired claim was stopped, and two stops reach this repair: an operator's `legion
@@ -2317,15 +2422,76 @@ func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues 
 		if c := run.Claim; c != nil && c.State == supervise.StateRetired {
 			continue
 		}
-		if err := a.engine.ResumeSlottedWorker(ctx, tx, held.issue, held.role); err != nil {
-			return fmt.Errorf("start the worker of slotted issue %s again: %w", held.issue.Key, err)
+		// The role's phases row is read here, below the three skips above, so a holder one of
+		// them passes over costs no query: each of those reads run.Claim alone. The whole row is
+		// read rather than its entry, and it is carried out of here, so the row the rule is
+		// weighed against is the row whose work is sent, read once per owed role. The record
+		// holding no row of that role is a role no transition has ever handed work on, which
+		// record.PhaseRowOf answers with the zero row: it stands on entry 0 and is owed nothing.
+		rows, err := a.store.Phases(ctx, tx, held.issue.Key)
+		if err != nil {
+			return nil, fmt.Errorf("read the phase rows of %s: %w", held.issue.Key, err)
+		}
+		row := record.PhaseRowOf(rows, held.role)
+		if !workflow.OwedEntry(run, held.root, row.Entry) {
+			continue
+		}
+		var given int64
+		if c := run.Claim; c != nil {
+			given = c.GivenEntry
+		}
+		owed = append(owed, owedEntryRole{Issue: held.issue, Role: held.role, Row: row, Given: given})
+	}
+	return owed, nil
+}
+
+// resumeSlottedWorkers sends every role owedEntryRoles names the work of the entry its phases
+// row names (workflow's SendOwedEntry): the task that entry was raised with, at that entry, so
+// no completion in flight is refused for an entry the worker was never given, and the phase's
+// resume task where the record holds no task of that entry.
+//
+// The difference it closes is the one the record carries on its own: the transition raises the
+// entry and writes its work in its own transaction, the outbox records the entry as given when
+// it queues the task, and between the two nothing else reads the two numbers. So this repairs
+// the slot whose worker has no task it was written for — a start row finished without acting
+// while the slot stayed, one the outbox fenced out, one finishFencedStarts ended earlier in this
+// pass — and, by the same rule and without asking why, every other role whose claim never got
+// the work its entry names, whatever state that claim is in.
+//
+// It runs after the cap loop on every pass admission makes, and on the entry sweep's own fact
+// (convergeEntries). Running after the fence repair rather than before it is what repairs a slot
+// whose start row the fences rejected on the pass that rejected it, instead of a pass later.
+func (a *Admission) resumeSlottedWorkers(ctx context.Context, tx pgx.Tx, issues []record.Issue, slots []record.Slot,
+	facts record.LineFacts,
+) error {
+	owed, err := a.owedEntryRoles(ctx, tx, issues, slots, facts)
+	if err != nil {
+		return err
+	}
+	for _, role := range owed {
+		if err := a.engine.SendOwedEntry(ctx, tx, role.Issue, role.Role, role.Row); err != nil {
+			return fmt.Errorf("start the worker of slotted issue %s again: %w", role.Issue.Key, err)
 		}
 		intake.OnCommit(ctx, func() {
-			a.log.Warn("admission: a slot held an issue whose worker had no task, so its phase is started again",
-				"issue", held.issue.Key, "role", held.role, "phase", held.issue.Phase)
+			a.log.Warn("admission: a role was behind the entry its phases row names, so that entry's work is sent again",
+				"issue", role.Issue.Key, "role", role.Role, "phase", role.Issue.Phase, "entry", role.Row.Entry, "given", role.Given)
 		})
 	}
 	return nil
+}
+
+// convergeEntries is the entry sweep's whole work (intake.EntrySweep, the fact the daemon's own
+// ticker applies): it reads the project's issues, its slots and its line facts as every pass
+// reads them (reread) and sends each role behind the entry its phases row names that entry's
+// work (resumeSlottedWorkers). It promotes nothing and wakes nobody — a tick already does both,
+// on a period of its own — so what the sweep adds is the one convergence, run when no fact of
+// the project arrives to run it.
+func (a *Admission) convergeEntries(ctx context.Context, tx pgx.Tx) error {
+	issues, slots, facts, err := a.reread(ctx, tx)
+	if err != nil {
+		return err
+	}
+	return a.resumeSlottedWorkers(ctx, tx, issues, slots, facts)
 }
 
 // finishFencedStarts is the repair of a held start row that has outlived the fences the outbox
@@ -2437,10 +2603,11 @@ func (a *Admission) finishFencedStarts(ctx context.Context, tx pgx.Tx, issues []
 // That second term compares write marks and not row ids, and both sides take their numbers from
 // one sequence (store's putClaim, whose doc holds what that sequence orders and what it does
 // not): a row's write mark is the write that last set its payload, and the claim's is the write
-// that recorded its retirement. An id cannot stand in for it, because record.Store.ReplaceOwedStart
-// rewrites the start an issue already owes in place and keeps its id — so a start written after a
-// stop can carry an id from before it, which is exactly what `legion claims stop` and then
-// `legion claims retry`, with no admission pass between them, writes.
+// that recorded its retirement. A creation time cannot stand in for it, because
+// record.Store.EnqueueStart writes the start an issue already owes as a row of its own carrying
+// the earlier row's creation time — so a start written after a stop can carry a creation time
+// from before it, which is exactly what `legion claims stop` and then `legion claims retry`,
+// with no admission pass between them, writes.
 func stopOutlivedStart(held *record.RoleClaim, owed record.OwedStart) bool {
 	// The retired state says the worker was ended.
 	if held == nil || held.State != supervise.StateRetired {

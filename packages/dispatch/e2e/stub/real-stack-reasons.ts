@@ -155,7 +155,6 @@ export const realStackReasons: Record<string, string> = {
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
-  "inbox-search.e2e.ts": "a write in flight",
   "inbox-stability.e2e.ts":
     "rows move because writes land elsewhere and arrive live under the reader's hand",
   "inbox-thread-pane.e2e.ts":
@@ -229,6 +228,8 @@ export const realStackReasons: Record<string, string> = {
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
+  "project-default-assignee.e2e.ts":
+    "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",
