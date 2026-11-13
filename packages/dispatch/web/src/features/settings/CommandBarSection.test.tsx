@@ -5,7 +5,7 @@ import userEvent from "@testing-library/user-event";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { answerRoute } from "../../__tests__/send-answers";
-import { api, type WriteBounds } from "../../api/client";
+import { ApiError, api, type WriteBounds } from "../../api/client";
 import type { GoingSettings } from "../../api/types";
 import { CommandBarSection } from "./CommandBarSection";
 
@@ -49,6 +49,36 @@ test("a setting Dispatch holds on is read back on", async () => {
   try {
     renderSection();
     expect(await screen.findByRole("checkbox", { name: "Ask before every write" })).toBeChecked();
+  } finally {
+    cleanup();
+    read.mockRestore();
+  }
+});
+
+test("a click shows the choice at once, and a save Dispatch refuses puts the setting back and says why", async () => {
+  const user = userEvent.setup();
+  const read = spyOn(api, "myGoingSettings").mockResolvedValue({ confirm_writes: false });
+  const answer = Promise.withResolvers<GoingSettings>();
+  const put = answerRoute<(input: GoingSettings, bounds: WriteBounds) => Promise<GoingSettings>>(
+    "PUT",
+    "/api/v1/me/going/settings"
+  );
+  put.mockReturnValue(answer.promise);
+  try {
+    renderSection();
+    const toggle = await screen.findByRole("checkbox", { name: "Ask before every write" });
+
+    await user.click(toggle);
+
+    // Dispatch has not answered, and the box already shows what the person chose.
+    expect(toggle).toBeChecked();
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    answer.reject(
+      new ApiError(400, { code: "INVALID_STATE", error: "confirm_writes is required" })
+    );
+
+    await waitFor(() => expect(toggle).not.toBeChecked());
+    expect(await screen.findByText("confirm_writes is required")).toBeInTheDocument();
   } finally {
     cleanup();
     read.mockRestore();

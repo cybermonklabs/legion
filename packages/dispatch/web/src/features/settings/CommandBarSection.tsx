@@ -21,27 +21,34 @@ export function CommandBarSection(): ReactNode {
   // A save Dispatch refused: what it said, and the value it refused, which Retry sends again.
   const [refusal, setRefusal] = useState<{ readonly message: string; readonly on: boolean }>();
   const key = goingSettingsQuery().queryKey;
-  const save = useKeyedWrite<GoingSettings, boolean, { previous: GoingSettings | undefined }>({
+  // One press: the value chosen, and the setting as the page drew it before, which a refusal
+  // puts back.
+  type Press = { readonly on: boolean; readonly previous: GoingSettings | undefined };
+  const save = useKeyedWrite<GoingSettings, Press>({
     inline: true,
-    label: (on) => (on ? "Ask before every command-bar write" : "Command-bar writes run at once"),
-    onError: (error, on, context) => {
-      queryClient.setQueryData(key, context?.previous);
+    label: ({ on }) =>
+      on ? "Ask before every command-bar write" : "Command-bar writes run at once",
+    onError: (error, { on, previous }) => {
+      queryClient.setQueryData(key, previous);
       setRefusal({ message: apiErrorMessage(error, "The setting did not reach Dispatch."), on });
-    },
-    onMutate: async (on) => {
-      await queryClient.cancelQueries({ queryKey: key });
-      const previous = queryClient.getQueryData<GoingSettings>(key);
-      queryClient.setQueryData<GoingSettings>(key, { confirm_writes: on });
-      setRefusal(undefined);
-      return { previous };
     },
     onSuccess: (saved) => {
       if (saved === null) void queryClient.invalidateQueries({ queryKey: key });
       else queryClient.setQueryData(key, saved);
     },
-    request: (on) => goingSettingsRequest({ confirm_writes: on }),
+    request: ({ on }) => goingSettingsRequest({ confirm_writes: on }),
     target: () => "going-settings",
   });
+  // The checkbox is drawn from the query, so the choice goes into it in the press itself, before
+  // the write starts: a box that waited for Dispatch's answer would show no change when clicked.
+  // A read still out is cancelled first, so its answer cannot draw the old value over the choice.
+  const choose = (on: boolean) => {
+    void queryClient.cancelQueries({ queryKey: key });
+    const previous = queryClient.getQueryData<GoingSettings>(key);
+    queryClient.setQueryData<GoingSettings>(key, { confirm_writes: on });
+    setRefusal(undefined);
+    save.mutate({ on, previous });
+  };
 
   return (
     <section aria-labelledby="command-bar-heading">
@@ -69,7 +76,7 @@ export function CommandBarSection(): ReactNode {
           <input
             checked={settings.data.confirm_writes}
             className="size-4 cursor-pointer"
-            onChange={(event) => save.mutate(event.target.checked)}
+            onChange={(event) => choose(event.target.checked)}
             type="checkbox"
           />
           Ask before every write
@@ -79,7 +86,7 @@ export function CommandBarSection(): ReactNode {
         <div className="mt-4">
           <QueryError
             message={refusal.message}
-            onRetry={() => save.mutate(refusal.on)}
+            onRetry={() => choose(refusal.on)}
             retrying={save.isPending}
           />
         </div>
