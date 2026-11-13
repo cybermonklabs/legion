@@ -406,13 +406,13 @@ its own `artifactId`, `currentVersion`, `approvedVersion` and `status` (`unregis
 ## A parked tree did not come back after a decision
 
 A root in `backlog` or `icebox` runs again when a person sets it to `todo`, when a person asks the
-controller to start it, when a person approves its spec and it has no parent (the daemon then
-sets it to `todo` itself; an approval Dispatch carries from an earlier one does not count), or,
-when the controller parked it for a hold of its own, once the controller judges that a person's
-decision gives its work a next step or its walk finds the hold's cause gone or its event happened.
-The controller marks such a park with a comment on the root that begins
-`Parked by Legion while it waits on:`. First find whether the daemon relayed the decision. Its
-JSON log names the issue and the root on each of these lines:
+controller to start it, when a person approves its spec and it keeps its `legion` label and has no
+parent (the daemon then sets it to `todo` itself; an approval Dispatch carries from an earlier one
+does not count), or, when the controller parked it for a hold of its own, once the controller judges
+that a person's decision gives its work a next step or its walk finds the hold's cause gone or its
+event happened. The controller marks such a park with a comment on the root that begins
+`Parked by Legion while it waits on:`. First find whether the daemon relayed the decision. Its JSON
+log names the issue and the root on each of these lines:
 
 - `outbox parked decision sent to the controller` or `workflow: a person's decision on a parked
   tree goes to the controller`: the controller received the decision.
@@ -450,19 +450,18 @@ JSON log names the issue and the root on each of these lines:
   resolution on a parked tree is not relayed`, or `workflow: a session's decision on a tree waiting
   for its slot is not kept`: an agent wrote it. It stays on the ask for the person who asked.
 
-Then read the controller's comment that begins `Parked decision read:`, on the root and on the
-issue where the decision was made. For a question, it is a reply on the question's own ask, which
-answers it or says that `todo` on the root brings the architect back to answer. It says what the
-controller judged. The tree stays parked when the park is not the controller's own hold, the park
-with its `Parked by Legion while it waits on:` comment beside it: a person's park, another agent's
-session's, or an operator's `legion status` (the comment names who, and the tree runs when they set
-it to `todo` or when a person asks the controller to start it). It stays parked too when the
-decision is older than the park, when the root is `done` or `triage`, or when the decision only
-questions the work. When the controller was down, its next start walks the parked roots. That walk
-reads only the last 10 events of each issue. The walk, at each start and on each `tick`, also sets
-the root of the controller's own hold back to `todo` when its mark, the
-`Parked by Legion while it waits on:` comment, names a cause that is gone or an event that has
-happened, with a comment that cites the mark.
+Then read the controller's comment that begins `Parked decision read:`, on the root and on the issue
+where the decision was made. For a question, it is a reply on the question's own ask, which answers
+it or says that `todo` on the root brings the architect back to answer. It says what the controller
+judged. The tree stays parked when the park is not the controller's own hold, the park with its
+`Parked by Legion while it waits on:` comment beside it: a person's park, another agent's session's,
+or an operator's `legion status` (the comment names who, and the tree runs when a person sets it to
+`todo` or asks the controller to start it). It stays parked too when the decision is older than the
+park, when the root is `done` or `triage`, or when the decision only questions the work. When the
+controller was down, its next start walks the parked roots. That walk reads only the last 10 events
+of each issue. The walk, at each start and on each `tick`, also sets the root of the controller's
+own hold back to `todo` when its mark, the `Parked by Legion while it waits on:` comment, names a
+cause that is gone or an event that has happened, with a comment that cites the mark.
 
 ## An issue is held
 

@@ -23,9 +23,9 @@ you set it to `todo` with a comment on the root that cites the park's mark and s
 checked.
 [The walk](#the-walk) makes that check at every start and on each `tick`.
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
-until whoever parked it sets it to `todo`, or a person asks you to start it: that request is a
-person's move, as the list of moves to `todo` in
-[Free slots](skill://legion-controller/SKILL.md#free-slots) says.
+until a person sets it to `todo`, the daemon queues a person's approval of its spec (the paragraph
+under **The notice**), or a person asks you to start it: that request is a person's move, as the
+list of moves to `todo` in [Free slots](skill://legion-controller/SKILL.md#free-slots) says.
 
 A held root is not a parked one. It stands at `phase: held` and is still in the workflow, and a
 `todo` on it releases the hold instead of starting a new run: the issue returns to the phase its
@@ -160,14 +160,14 @@ document that is not the root's primary one.
        then `Its architect then starts
        with this decision.` For a comment that is no reply on an ask, leave out the last sentence:
        the daemon relays no such comment. The sentence for the park:
-       - A person's or another session's: `<parker> parked the tree, so it stays parked until they
-         set it to todo or a person asks Legion to start it.`, with the login for a person and
+       - A person's or another session's: `<parker> parked the tree, so it stays parked until a
+         person sets it to todo or asks Legion to start it.`, with the login for a person and
          `session <id>` for a session.
        - One by `session legion-daemon:<PROJECT>` with no mark: `The tree was parked through Legion
          (session legion-daemon:<PROJECT>) for no hold of its own, so it stays parked until a
          person sets it to todo or asks Legion to start it.`
        - One you cannot read: `Its last 10 events do not show who parked the tree, so it stays
-         parked until whoever parked it sets it to todo or a person asks Legion to start it.`
+         parked until a person sets it to todo or asks Legion to start it.`
    - It only questions the work: a question, a doubt about the premise, a request for changes that
      only asks why. Leave it parked and answer the question in one reply:
      - Answer from the record when it holds the answer: the issue and its spec (`dispatch read`,
