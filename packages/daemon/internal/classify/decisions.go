@@ -1221,16 +1221,18 @@ func RecordChangesTold(gate record.DesignGate, version int, reason string, mark 
 // Every sender of a task or a notice about a person's review asks it, from the gate as the record
 // holds it at that moment: the changes notice (workflow's applyArtifact, tellChanges and
 // gateRegistered), the resume task of a root that waited on a person (workflow's resumeTask), the
-// kept-approval sentence of an architect's start (the daemon's rootTask, workflow's
-// ParkedDecisionTask) and the controller's relay of an undelivered spec decision (the outbox's
-// parkDecision).
+// kept decisions and the kept approval of an architect's start or catch-up (workflow's
+// KeptDecisionsTask, which the daemon's rootTask also renders through at each send) and the
+// controller's relay of an undelivered spec decision (the outbox's parkDecision).
 //
 // An approval request the ask mirror holds is asked the same way (workflow's withHuman): the
 // mirror records no version for a request, and Dispatch moves an open request to each new version
 // of its document at that version's own place in the log (ask.edited), so a request whose newest
 // event the approval does not follow asked for no version above the approved one, and is asked at
 // the approved version and that event's mark. So when two requests are made for one version and
-// the approval lands on the second, the first, still open on the mirror, is answered by it.
+// the approval lands on the second, the first, still open on the mirror, is answered by it. A kept
+// decision records no version either, and is asked the same way, at the approved version and its
+// own place in Dispatch's log, which the daemon keeps from its notice (workflow's keptReviewStands).
 func ReviewSuperseded(gate record.DesignGate, version int, mark record.EventMark) bool {
 	if gate.ApprovedVersion == nil {
 		return false

@@ -17,14 +17,22 @@ import (
 // senderModule is the import path every package the walk reads lives under.
 const senderModule = "github.com/sjawhar/legion/daemon/internal/"
 
-// senderPackages are the two packages that hold senders of a person's design decision: the
-// workflow, which writes the notices and renders the resume and the kept-decisions tasks, and the
+// senderPackages are the three packages that hold senders of a person's design decision: the
+// workflow, which writes the notices and renders the resume and the kept-decisions tasks, the
 // daemon, which sends a held task at each send (rootTask) and relays a decision nobody in its tree
-// hears (parkDecision).
+// hears (parkDecision), and admission, which composes a re-admitted root's start from what was
+// kept for it.
 var senderPackages = []struct{ name, dir string }{
 	{"workflow", filepath.Join("..", "workflow")},
 	{"daemon", "."},
+	{"admit", filepath.Join("..", "admit")},
 }
+
+// keptDecisionTypes are the record types that hold one kept decision: the row the daemon keeps
+// (record.ParkedDecision) and the mark a task names it by (record.DecisionMark). A slice of
+// either is a list of kept decisions, and so are a record function's result of that type and a
+// record field of it (record.KeptDecisions.Decisions), which the walk reads from record's source.
+var keptDecisionTypes = []string{"ParkedDecision", "DecisionMark"}
 
 // decisionReviewSentences is every fixed phrase a task says about a person's review of a design
 // document, each with the function that renders it. A function whose string constants hold one
@@ -47,7 +55,8 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 // Every sender of a person's design decision asks the one rule whether that decision is still the
 // person's word (classify.ReviewSuperseded), so no sender decides it for itself
 // (dispatch://INFRA-3136/spec R2).
-// A sender is a function of internal/workflow or internal/daemon, outside its tests, whose body
+// A sender is a function of internal/workflow, internal/daemon or internal/admit, outside its
+// tests, whose body
 //
 //   - writes a record.Notice whose kind is in record.SpecDecision's set, which is read from
 //     SpecDecision's own switch and checked against the function, so a kind added there is
@@ -56,18 +65,26 @@ var decisionReviewSentences = []struct{ phrase, renderer string }{
 //     parkDecision relays it to the controller);
 //   - holds a review sentence (decisionReviewSentences) in a string constant, which is rendering
 //     the task that says it; or
-//   - calls such a renderer that does not ask the rule itself: the renderer is then a template
-//     (KeptDecisionsTask, the one wording a start and a held task share), its callers are its
-//     senders, and a template nothing calls is a sender itself.
+//   - calls such a renderer that does not ask the rule itself: the renderer is then a template,
+//     its callers are its senders, and a template nothing calls is a sender itself.
 //
-// A sender passes when it calls classify.ReviewSuperseded, or directly calls a function of the two
-// packages that does: the one renderer or predicate that holds the rule for it. Calls are read as
-// go/parser sees them, by name: x.f(...) reaches every method f the two packages declare, and
-// pkg.f(...) the function f of a package read here.
+// A sender passes when it calls classify.ReviewSuperseded, or directly calls a function of the
+// three packages that does: the one renderer or predicate that holds the rule for it. Calls are
+// read as go/parser sees them, by name: x.f(...) reaches every method f the three packages
+// declare, and pkg.f(...) the function f of a package read here.
+//
+// A list of kept decisions is held to more: every loop that ranges over one (keptDecisionTypes)
+// and writes a decision's kind into text (a fmt print, a WriteString, a string conversion) is a
+// renderer of kept decisions. Its body, the part that runs once per decision, has to call the
+// rule or a function that does. A function that asks the rule about one decision, or about the
+// kept approval, and renders the rest of the list unasked is what this test fails on: a task
+// named a changes request that the person's approval had superseded that way.
 //
 // This test reads its sites from the source because no chokepoint can hold the rule: the notice
 // kinds are a list a test can range over, but the review sentences are built in several functions
-// and no single constructor can hold the rule, so this test stands until one can; delete it then.
+// and no single constructor can hold the rule, and a list of kept decisions is a plain slice that
+// any function can range over and write into text, which no type can make ask first. So this
+// test stands until one can; delete it then.
 func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 	walk := readDecisionWalk(t)
 	kinds := walk.specDecisionKinds(t)
@@ -76,7 +93,7 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 			t.Errorf("record.SpecDecision's switch names %q, but SpecDecision(%q) is no decision: the walk read the set wrongly", kind, kind)
 		}
 		if !slices.ContainsFunc(walk.funcs, func(f *decisionFunc) bool { return slices.Contains(f.kinds, kind) }) {
-			t.Errorf("no function of internal/workflow or internal/daemon writes a record.Notice of kind %q: the walk no longer sees where that "+
+			t.Errorf("no function of internal/workflow, internal/daemon or internal/admit writes a record.Notice of kind %q: the walk no longer sees where that "+
 				"decision is sent, so it proves nothing of its sender", kind)
 		}
 	}
@@ -100,6 +117,20 @@ func TestDecisionSendersAskWhetherTheReviewIsStillThePersonsWord(t *testing.T) {
 				"constants, so the walk can tell whether it sends a person's decision", f.qualified(), at)
 		}
 	}
+	for _, f := range walk.funcs {
+		for _, loop := range f.keptLoops {
+			if !loop.asks && !slices.ContainsFunc(walk.calledFuncs(loop.calls), func(g *decisionFunc) bool { return g.asksRule }) {
+				t.Errorf("%s (%s) ranges over kept decisions at %s and writes each one into text, but asks the rule "+
+					"(classify.ReviewSuperseded, directly or through a function that calls it) about none of them: it names a decision "+
+					"without knowing whether a later approval superseded it", f.qualified(), f.at, loop.at)
+			}
+		}
+	}
+	// The one wording of kept decisions (workflow.KeptDecisionsTask) renders them in a loop: the
+	// walk has to see it, or it proves nothing of any renderer.
+	if f := walk.named("workflow.KeptDecisionsTask"); f == nil || len(f.keptLoops) == 0 {
+		t.Error("the walk found no loop over kept decisions that writes them into text in workflow.KeptDecisionsTask")
+	}
 	// The resume of an answered root is rendered at each send from the gate as it stands
 	// (workflow.ResumeTask, the daemon's rootTask), so it is a sender too: the walk has to see it.
 	if !slices.ContainsFunc(senders, func(s decisionSender) bool { return s.fn.qualified() == "workflow.resumeTask" }) {
@@ -121,6 +152,15 @@ type decisionFunc struct {
 	unread    []string // positions of record.Notice literals whose kind the walk cannot read
 	phrases   []string
 	calls     []decisionCall
+	keptLoops []keptLoop
+}
+
+// keptLoop is a loop of a function over a list of kept decisions that writes a decision's kind
+// into text: where it is, and what its body calls once per decision.
+type keptLoop struct {
+	at    string
+	asks  bool // the body calls classify.ReviewSuperseded
+	calls []decisionCall
 }
 
 func (f *decisionFunc) qualified() string { return f.pkg + "." + f.name }
@@ -142,6 +182,14 @@ type decisionWalk struct {
 	methods map[string][]*decisionFunc // method name → every method of that name
 	consts  map[string]map[string]string
 	record  []*ast.File
+	kept    keptShapes
+}
+
+// keptShapes is how a list of kept decisions is spelled, read from record's source: the names of
+// the record functions and methods whose first result is one, and of the record fields that hold
+// one.
+type keptShapes struct {
+	results, fields map[string]bool
 }
 
 func (w *decisionWalk) named(qualified string) *decisionFunc {
@@ -154,8 +202,13 @@ func (w *decisionWalk) named(qualified string) *decisionFunc {
 }
 
 func (w *decisionWalk) callees(f *decisionFunc) []*decisionFunc {
+	return w.calledFuncs(f.calls)
+}
+
+// calledFuncs is every function of the walk that calls can reach.
+func (w *decisionWalk) calledFuncs(calls []decisionCall) []*decisionFunc {
 	var out []*decisionFunc
-	for _, c := range f.calls {
+	for _, c := range calls {
 		if c.method {
 			out = append(out, w.methods[c.name]...)
 		} else if g := w.plain[c.pkg+"."+c.name]; g != nil {
@@ -246,8 +299,8 @@ func (w *decisionWalk) specDecisionKinds(t *testing.T) []string {
 	return kinds
 }
 
-// readDecisionWalk parses every non-test file of internal/workflow and internal/daemon, and of
-// internal/record for its constants and SpecDecision's switch.
+// readDecisionWalk parses every non-test file of the sender packages, and of internal/record for
+// its constants, SpecDecision's switch and how a list of kept decisions is spelled (keptShapes).
 func readDecisionWalk(t *testing.T) *decisionWalk {
 	t.Helper()
 	files := token.NewFileSet()
@@ -275,6 +328,7 @@ func readDecisionWalk(t *testing.T) *decisionWalk {
 	w := &decisionWalk{plain: map[string]*decisionFunc{}, methods: map[string][]*decisionFunc{}, consts: map[string]map[string]string{}}
 	w.record = parse(filepath.Join("..", "record"))
 	w.consts[senderModule+"record"] = fileConsts(w.record)
+	w.kept = readKeptShapes(t, w.record)
 	parsed := map[string][]*ast.File{}
 	for _, pkg := range senderPackages {
 		parsed[pkg.name] = parse(pkg.dir)
@@ -288,7 +342,7 @@ func readDecisionWalk(t *testing.T) *decisionWalk {
 				if !ok || fn.Body == nil {
 					continue
 				}
-				f := readDecisionFunc(files, pkg.name, fn, decisionReader{consts: w.consts, pkg: senderModule + pkg.name, imports: imports})
+				f := readDecisionFunc(files, pkg.name, fn, decisionReader{consts: w.consts, pkg: senderModule + pkg.name, imports: imports}, w.kept)
 				w.funcs = append(w.funcs, f)
 				if fn.Recv == nil {
 					w.plain[f.qualified()] = f
@@ -301,9 +355,9 @@ func readDecisionWalk(t *testing.T) *decisionWalk {
 	return w
 }
 
-// readDecisionFunc reads what fn calls, the record.Notice literals it writes and the review
-// sentences its string constants hold.
-func readDecisionFunc(files *token.FileSet, pkg string, fn *ast.FuncDecl, reader decisionReader) *decisionFunc {
+// readDecisionFunc reads what fn calls, the record.Notice literals it writes, the review
+// sentences its string constants hold and its loops over kept decisions that write them as text.
+func readDecisionFunc(files *token.FileSet, pkg string, fn *ast.FuncDecl, reader decisionReader, kept keptShapes) *decisionFunc {
 	f := &decisionFunc{pkg: pkg, name: fn.Name.Name, at: files.Position(fn.Pos()).String()}
 	if fn.Recv != nil {
 		f.name = receiverName(fn.Recv.List[0].Type) + "." + f.name
@@ -348,6 +402,107 @@ func readDecisionFunc(files *token.FileSet, pkg string, fn *ast.FuncDecl, reader
 			}
 		}
 	}
+	// callOf names a call as the walk reads it: asks for a call of classify.ReviewSuperseded,
+	// picks for one of record.SpecDecision, and named for a call of a function of a package the
+	// walk reads, or of a method by its name.
+	callOf := func(node *ast.CallExpr) (call decisionCall, asks, picks, named bool) {
+		switch fun := node.Fun.(type) {
+		case *ast.Ident:
+			return decisionCall{pkg: pkg, name: fun.Name}, false, false, true
+		case *ast.SelectorExpr:
+			x, ok := fun.X.(*ast.Ident)
+			path, imported := "", false
+			if ok {
+				path, imported = reader.imports[x.Name]
+			}
+			switch {
+			case !imported:
+				return decisionCall{name: fun.Sel.Name, method: true}, false, false, true
+			case x.Name == classify && fun.Sel.Name == "ReviewSuperseded":
+				return decisionCall{}, true, false, false
+			case x.Name == recordPkg && fun.Sel.Name == "SpecDecision":
+				return decisionCall{}, false, true, false
+			case strings.HasPrefix(path, senderModule):
+				return decisionCall{pkg: strings.TrimPrefix(path, senderModule), name: fun.Sel.Name}, false, false, true
+			}
+		}
+		return decisionCall{}, false, false, false
+	}
+	lists := keptLocals(fn, recordPkg, kept)
+	var keptList func(expr ast.Expr) bool
+	keptList = func(expr ast.Expr) bool {
+		switch e := expr.(type) {
+		case *ast.ParenExpr:
+			return keptList(e.X)
+		case *ast.Ident:
+			return lists[e.Name]
+		case *ast.SelectorExpr:
+			return kept.fields[e.Sel.Name]
+		case *ast.CompositeLit:
+			return isKeptList(e.Type, recordPkg)
+		}
+		return false
+	}
+	fmtPkg := reader.importName("fmt")
+	// writesText is whether call writes its arguments into text: a print of fmt (an error's text,
+	// fmt.Errorf, reaches no person), a WriteString, or a conversion to string.
+	writesText := func(call *ast.CallExpr) bool {
+		switch fun := call.Fun.(type) {
+		case *ast.Ident:
+			return fun.Name == "string"
+		case *ast.SelectorExpr:
+			if fun.Sel.Name == "WriteString" {
+				return true
+			}
+			x, ok := fun.X.(*ast.Ident)
+			if !ok || fmtPkg == "" || x.Name != fmtPkg {
+				return false
+			}
+			return slices.ContainsFunc([]string{"Sprint", "Fprint", "Append"}, func(prefix string) bool { return strings.HasPrefix(fun.Sel.Name, prefix) })
+		}
+		return false
+	}
+	// keptLoopOf reads loop when it ranges over a list of kept decisions and writes a decision's
+	// kind (the field Decision of the element, by the loop's value or by its index) into text.
+	keptLoopOf := func(loop *ast.RangeStmt) (keptLoop, bool) {
+		if !keptList(loop.X) {
+			return keptLoop{}, false
+		}
+		value, index := identName(loop.Value), identName(loop.Key)
+		names := func(expr ast.Expr) bool {
+			found := false
+			ast.Inspect(expr, func(n ast.Node) bool {
+				if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Decision" {
+					switch x := sel.X.(type) {
+					case *ast.Ident:
+						found = found || value != "" && x.Name == value
+					case *ast.IndexExpr:
+						found = found || index != "" && identName(x.Index) == index
+					}
+				}
+				return !found
+			})
+			return found
+		}
+		read := keptLoop{at: files.Position(loop.Pos()).String()}
+		writes := false
+		ast.Inspect(loop.Body, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			if writesText(call) && slices.ContainsFunc(call.Args, names) {
+				writes = true
+			}
+			if named, asks, _, ok := callOf(call); asks {
+				read.asks = true
+			} else if ok {
+				read.calls = append(read.calls, named)
+			}
+			return true
+		})
+		return read, writes
+	}
 	ast.Inspect(fn.Body, func(n ast.Node) bool {
 		switch node := n.(type) {
 		case *ast.BinaryExpr, *ast.BasicLit:
@@ -383,26 +538,19 @@ func readDecisionFunc(files *token.FileSet, pkg string, fn *ast.FuncDecl, reader
 					}
 				}
 			}
+		case *ast.RangeStmt:
+			if loop, ok := keptLoopOf(node); ok {
+				f.keptLoops = append(f.keptLoops, loop)
+			}
 		case *ast.CallExpr:
-			switch fun := node.Fun.(type) {
-			case *ast.Ident:
-				f.calls = append(f.calls, decisionCall{pkg: pkg, name: fun.Name})
-			case *ast.SelectorExpr:
-				x, ok := fun.X.(*ast.Ident)
-				path, imported := "", false
-				if ok {
-					path, imported = reader.imports[x.Name]
-				}
-				switch {
-				case !imported:
-					f.calls = append(f.calls, decisionCall{name: fun.Sel.Name, method: true})
-				case x.Name == classify && fun.Sel.Name == "ReviewSuperseded":
-					f.asksRule = true
-				case x.Name == recordPkg && fun.Sel.Name == "SpecDecision":
-					f.picks = true
-				case strings.HasPrefix(path, senderModule):
-					f.calls = append(f.calls, decisionCall{pkg: strings.TrimPrefix(path, senderModule), name: fun.Sel.Name})
-				}
+			call, asks, picks, named := callOf(node)
+			switch {
+			case asks:
+				f.asksRule = true
+			case picks:
+				f.picks = true
+			case named:
+				f.calls = append(f.calls, call)
 			}
 		}
 		return true
@@ -591,4 +739,149 @@ func receiverName(expr ast.Expr) string {
 		return e.Name
 	}
 	return "?"
+}
+
+// identName is the name expr spells when it is an identifier other than the blank one, else "".
+func identName(expr ast.Expr) string {
+	if ident, ok := expr.(*ast.Ident); ok && ident.Name != "_" {
+		return ident.Name
+	}
+	return ""
+}
+
+// isKeptList is whether typ spells a slice of a kept decision type (keptDecisionTypes): qualified
+// by recordPkg, the name a file gives the record package, or bare where recordPkg is "" (record's
+// own source).
+func isKeptList(typ ast.Expr, recordPkg string) bool {
+	slice, ok := typ.(*ast.ArrayType)
+	if !ok || slice.Len != nil {
+		return false
+	}
+	switch elt := slice.Elt.(type) {
+	case *ast.Ident:
+		return recordPkg == "" && slices.Contains(keptDecisionTypes, elt.Name)
+	case *ast.SelectorExpr:
+		x, ok := elt.X.(*ast.Ident)
+		return ok && recordPkg != "" && x.Name == recordPkg && slices.Contains(keptDecisionTypes, elt.Sel.Name)
+	}
+	return false
+}
+
+// firstResultIsKeptList is whether a function type's first result is a list of kept decisions.
+func firstResultIsKeptList(fn *ast.FuncType, recordPkg string) bool {
+	return fn.Results != nil && len(fn.Results.List) > 0 && isKeptList(fn.Results.List[0].Type, recordPkg)
+}
+
+// readKeptShapes reads from record's source the functions and interface methods whose first
+// result is a list of kept decisions and the struct fields that hold one, and checks that each
+// kept decision type is still a struct with a Decision field, which is the kind a task writes.
+func readKeptShapes(t *testing.T, files []*ast.File) keptShapes {
+	t.Helper()
+	shapes := keptShapes{results: map[string]bool{}, fields: map[string]bool{}}
+	decided := map[string]bool{}
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch node := n.(type) {
+			case *ast.FuncDecl:
+				if firstResultIsKeptList(node.Type, "") {
+					shapes.results[node.Name.Name] = true
+				}
+			case *ast.TypeSpec:
+				switch typ := node.Type.(type) {
+				case *ast.StructType:
+					for _, field := range typ.Fields.List {
+						for _, name := range field.Names {
+							if isKeptList(field.Type, "") {
+								shapes.fields[name.Name] = true
+							}
+							if kind, ok := field.Type.(*ast.Ident); ok && name.Name == "Decision" && kind.Name == "DecisionKind" {
+								decided[node.Name.Name] = true
+							}
+						}
+					}
+				case *ast.InterfaceType:
+					for _, method := range typ.Methods.List {
+						if fn, ok := method.Type.(*ast.FuncType); ok && firstResultIsKeptList(fn, "") {
+							for _, name := range method.Names {
+								shapes.results[name.Name] = true
+							}
+						}
+					}
+				}
+			}
+			return true
+		})
+	}
+	for _, typ := range keptDecisionTypes {
+		if !decided[typ] {
+			t.Fatalf("record.%s is no longer a struct with a Decision field of DecisionKind: name the kept decision types in keptDecisionTypes", typ)
+		}
+	}
+	if len(shapes.results) == 0 || len(shapes.fields) == 0 {
+		t.Fatalf("read from record no function that returns a list of kept decisions (%v) or no field that holds one (%v)", shapes.results, shapes.fields)
+	}
+	return shapes
+}
+
+// keptLocals is every name fn, its function literals included, gives a list of kept decisions: a
+// parameter or result of that type, a variable declared with it, and a name assigned a literal or
+// a make of it, or the first result of a record function that returns one (keptShapes.results).
+func keptLocals(fn *ast.FuncDecl, recordPkg string, kept keptShapes) map[string]bool {
+	lists := map[string]bool{}
+	fields := func(list *ast.FieldList) {
+		if list == nil {
+			return
+		}
+		for _, field := range list.List {
+			if isKeptList(field.Type, recordPkg) {
+				for _, name := range field.Names {
+					lists[name.Name] = true
+				}
+			}
+		}
+	}
+	fields(fn.Type.Params)
+	fields(fn.Type.Results)
+	returnsList := func(expr ast.Expr) bool {
+		switch e := expr.(type) {
+		case *ast.CompositeLit:
+			return isKeptList(e.Type, recordPkg)
+		case *ast.CallExpr:
+			switch fun := e.Fun.(type) {
+			case *ast.Ident:
+				return fun.Name == "make" && len(e.Args) > 0 && isKeptList(e.Args[0], recordPkg)
+			case *ast.SelectorExpr:
+				return kept.results[fun.Sel.Name]
+			}
+		}
+		return false
+	}
+	ast.Inspect(fn.Body, func(n ast.Node) bool {
+		switch node := n.(type) {
+		case *ast.FuncLit:
+			fields(node.Type.Params)
+			fields(node.Type.Results)
+		case *ast.ValueSpec:
+			if node.Type != nil && isKeptList(node.Type, recordPkg) {
+				for _, name := range node.Names {
+					lists[name.Name] = true
+				}
+			}
+		case *ast.AssignStmt:
+			switch {
+			case len(node.Lhs) == len(node.Rhs):
+				for i, lhs := range node.Lhs {
+					if name := identName(lhs); name != "" && returnsList(node.Rhs[i]) {
+						lists[name] = true
+					}
+				}
+			case len(node.Rhs) == 1:
+				if name := identName(node.Lhs[0]); name != "" && returnsList(node.Rhs[0]) {
+					lists[name] = true
+				}
+			}
+		}
+		return true
+	})
+	return lists
 }

@@ -837,11 +837,11 @@ var (
 )
 
 func (s *Postgres) AddParkedDecision(ctx context.Context, tx pgx.Tx, decision ParkedDecision) error {
-	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at) values ($1, $2, $3, $4, $5)
+	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, seq) values ($1, $2, $3, $4, $5, nullif($6::bigint, 0))
 		on conflict (issue, ref) do update set decision = excluded.decision, actor = excluded.actor,
-		at = excluded.at, claimed_by = null, held_by_claim = null, held_by_delivery = null
+		at = excluded.at, seq = excluded.seq, claimed_by = null, held_by_claim = null, held_by_delivery = null
 		where parked_decisions.at <= excluded.at`,
-		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At); err != nil {
+		decision.Issue, decision.Ref, string(decision.Decision), decision.Actor, decision.At, decision.Seq); err != nil {
 		return fmt.Errorf("keep the decision %s on %s: %w", decision.Ref, decision.Issue, err)
 	}
 	return nil
@@ -883,7 +883,7 @@ func (s *Postgres) UnclaimedKept(ctx context.Context, tx pgx.Tx, tree string) ([
 // parkedDecisions is every decision owed to tree — every row whose issue stands in tree now — or
 // only those a start or catch-up of tree may name (keptCounts), newest first, ties by ref.
 func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool) ([]ParkedDecision, error) {
-	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.claimed_by, 0),
+	rows, err := tx.Query(ctx, `select kept.issue, kept.ref, kept.decision, kept.actor, kept.at, coalesce(kept.seq, 0), coalesce(kept.claimed_by, 0),
 		coalesce(kept.held_by_claim, ''), coalesce(kept.held_by_delivery, '')
 		from parked_decisions kept join issues owner on owner.key = kept.issue
 		where owner.tree = $1 and (not $2 or (`+keptNameable+`)) order by kept.at desc, kept.ref`, tree, nameable)
@@ -894,7 +894,7 @@ func parkedDecisions(ctx context.Context, tx pgx.Tx, tree string, nameable bool)
 	var decisions []ParkedDecision
 	for rows.Next() {
 		var decision ParkedDecision
-		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At,
+		if err := rows.Scan(&decision.Issue, &decision.Ref, &decision.Decision, &decision.Actor, &decision.At, &decision.Seq,
 			&decision.ClaimedBy, &decision.HeldBy.Claim, &decision.HeldBy.Delivery); err != nil {
 			return nil, fmt.Errorf("scan a decision owed to %s: %w", tree, err)
 		}

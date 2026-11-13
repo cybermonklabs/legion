@@ -696,11 +696,11 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // leaves each KEPT for its own tree to name, and the architect of each tree they are now owed to
 // is written a fresh catch-up naming them at once, exactly as a hand-over writes one
 // (workflow.CatchUpTheTreesOwed). The decisions whose issue the record still shows in this tree
-// stay, in the order the task named them, and the text is written again from them
-// (workflow.KeptDecisionsTask), which is the wording the start that queued the task used. An issue
-// the record does not hold is kept rather than dropped: a person's decision is never lost, and
-// this answer drops one only where the record says another tree is owed it. A task left naming
-// nothing is retired rather than sent, and its delivery's write releases whatever it still held.
+// stay, in the order the task named them, and the text is written again from them by the wording
+// the start that queued the task used (workflow.KeptDecisionsTask). An issue the record does not
+// hold is kept rather than dropped: a person's decision is never lost, and this answer drops one
+// only where the record says another tree is owed it. A task left naming nothing is retired rather
+// than sent, and its delivery's write releases whatever it still held.
 //
 // It is the machine that asks, because the machine owns the pending delivery: the hand-over that
 // moved the issue commits in a transaction of its own, with no lock on this claim, and a task
@@ -714,9 +714,11 @@ func (w *workflowRuntime) rootHears(ctx context.Context, c supervise.Claim, _ su
 // says how the document stands at this send (resumeTaskNow). A held task a daemon of an earlier
 // release queued carries no such mark, and is sent as the text it holds.
 //
-// A task that names a kept approval has it asked again against the gate as the record holds it at
-// this send (workflow.KeptApprovalStands): a person who approved a later version since has
-// answered what that sentence would ask them, so the sentence is dropped.
+// Every kept decision and kept approval the task still names is asked again at this send, against
+// the gates as the record holds them now (workflow.KeptDecisionsTask, which asks
+// classify.ReviewSuperseded of each): a person who approved since has answered what the sentence
+// would tell or ask them, so the sentence is dropped, and the row of a decision it superseded is
+// deleted in the same write.
 func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d supervise.Delivery) (string, []byte, error) {
 	if len(d.Resume) > 0 {
 		return w.resumeTaskNow(ctx, c, d)
@@ -728,8 +730,8 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	if err := json.Unmarshal(d.Kept, &named); err != nil {
 		return "", nil, fmt.Errorf("decode what the task held for %s names: %w", c.Token, err)
 	}
-	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
-	approvalStands := true
+	var stays record.KeptDecisions
+	var task string
 	var left []record.DecisionMark
 	scoped, committed := intake.WithCommitHooks(ctx)
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
@@ -740,14 +742,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		if err != nil {
 			return err
 		}
-		if named.Approved > 0 {
-			gates, err := w.records.GatesOf(scoped, tx, c.Tree)
-			if err != nil {
-				return err
-			}
-			approvalStands = workflow.KeptApprovalStands(gates, named.KeptApproval)
-		}
-		stays.Decisions, left = nil, nil
+		stays, left = record.KeptDecisions{KeptApproval: named.KeptApproval}, nil
 		for _, mark := range named.Decisions {
 			if !slices.Contains(holds, mark.Ref) {
 				// The row this mark named is not this delivery's any more, and only these take a
@@ -772,6 +767,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
+		if task, stays, err = workflow.KeptDecisionsTask(scoped, tx, w.records, w.gatedSteps, c.Tree, stays); err != nil {
+			return err
+		}
 		if len(left) == 0 {
 			return nil
 		}
@@ -784,13 +782,9 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		return "", nil, fmt.Errorf("read what the task held for %s still names of %s's tree: %w", c.Token, c.Tree, err)
 	}
 	committed()
-	if !approvalStands {
-		stays.KeptApproval = record.KeptApproval{}
-	}
-	if len(stays.Decisions) == len(named.Decisions) && approvalStands {
+	if len(stays.Decisions) == len(named.Decisions) && stays.KeptApproval == named.KeptApproval {
 		return d.Task, d.Kept, nil
 	}
-	task := workflow.KeptDecisionsTask(c.Tree, stays)
 	if task == "" {
 		return "", nil, nil
 	}

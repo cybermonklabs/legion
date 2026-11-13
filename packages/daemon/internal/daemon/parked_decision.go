@@ -76,8 +76,17 @@ func (r *outbox) parkDecision(ctx context.Context, issue, root string, notice re
 		if superseded, err = r.decisionSuperseded(scoped, tx, issue, notice, decision); err != nil || superseded {
 			return err
 		}
+		// The decision is kept at Dispatch's mark of the review it reports (record.Notice.Review),
+		// so a later approval is weighed against it by Dispatch's order and not by this clock;
+		// this clock places it only where the notice carries no time of the review (one an
+		// earlier release queued, or a Dispatch event that gave none).
+		at := notice.Review.At
+		if at.IsZero() {
+			at = now
+		}
 		outcome, err = record.RelayParkedDecision(scoped, tx, r.records, issue, *stored, true,
-			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: now}, notice.Version, notice.Reason, r.gatedSteps)
+			record.ParkedDecision{Ref: notice.Ref, Decision: decision, Actor: notice.Actor, At: at, Seq: notice.Review.Seq},
+			notice.Version, notice.Reason, r.gatedSteps)
 		return err
 	}); err != nil {
 		return fmt.Errorf("send the controller the decision %s carried on %s: %w", key, issue, err)

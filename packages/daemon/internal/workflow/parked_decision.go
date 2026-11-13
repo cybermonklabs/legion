@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -71,8 +72,8 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 // retry`) adds what was kept since to its catch-up. When the re-admission found the root's spec
 // approved at a version below its latest (the admission's readmit, Store.KeepReadmittedApproval: a
 // person approved a version the spec has since moved past), it also names both versions, so the
-// architect requests approval of the latest; never under gates.design off, which asks no person,
-// and never once the gate records a later approval in its place (KeptApprovalStands).
+// architect requests approval of the latest. What it names, and what it drops because the person
+// decided again since, is KeptDecisionsTask's to decide, which asks the one rule of each decision.
 //
 // What it may name is what root's tree is owed now: every row whose issue stands in that tree and
 // that no counting claim or hold holds (Store.UnclaimedKept). A claim or a hold an issue left
@@ -82,66 +83,129 @@ func (e *Engine) treeRoot(ctx context.Context, tx pgx.Tx, key string) (*record.I
 //
 // The text names no generation: a start's task waits on its claim and is prompted whenever that
 // claim is next ready, which can be generations later, and the one architect session of the root
-// reads it then as what a person decided on its tree. It deletes nothing: the caller enqueues the
-// task with the record of what it named (record.KeptDecisions) and claims those rows for it in the
-// same transaction (EnqueueNaming). A catch-up that published tells what it named
-// (Store.ForgetKeptDecisions) and a start's task tells it at the confirmation of the delivery the
-// claim queued it as; one that reached no architect hands it over (HandOverKept). Both results are
-// zero when there was nothing.
+// reads it then as what a person decided on its tree. It deletes only the rows a later approval
+// superseded (KeptDecisionsTask): the caller enqueues the task with the record of what it named
+// (record.KeptDecisions) and claims those rows for it in the same transaction (EnqueueNaming). A
+// catch-up that published tells what it named (Store.ForgetKeptDecisions) and a start's task tells
+// it at the confirmation of the delivery the claim queued it as; one that reached no architect
+// hands it over (HandOverKept). Both results are zero when there is nothing to name.
 func ParkedDecisionTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, root record.Issue) (string, *record.KeptDecisions, error) {
 	decisions, approval, err := store.UnclaimedKept(ctx, tx, root.Key)
 	if err != nil {
 		return "", nil, err
 	}
-	var kept record.KeptDecisions
+	owed := record.KeptDecisions{KeptApproval: approval}
 	for _, d := range decisions {
-		kept.Decisions = append(kept.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue,
-			Decision: d.Decision, Actor: d.Actor})
+		owed.Decisions = append(owed.Decisions, record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue,
+			Decision: d.Decision, Actor: d.Actor, Seq: d.Seq})
 	}
-	if approval.Approved > 0 && len(steps) > 0 {
-		gates, err := store.GatesOf(ctx, tx, root.Key)
-		if err != nil {
-			return "", nil, err
-		}
-		if KeptApprovalStands(gates, approval) {
-			kept.KeptApproval = approval
-		}
-	}
-	task := KeptDecisionsTask(root.Key, kept)
-	if task == "" {
-		return "", nil, nil
+	task, kept, err := KeptDecisionsTask(ctx, tx, store, steps, root.Key, owed)
+	if err != nil || task == "" {
+		return "", nil, err
 	}
 	return task, &kept, nil
 }
 
-// KeptDecisionsTask is the text that names kept to the architect of tree, the one wording a start
-// task and a catch-up both use (ParkedDecisionTask) and the one a held task is written back to
-// when an issue it names leaves that tree while the task waits to be sent (supervise's
-// Deps.RootTask, the daemon's rootTask): a task whose decisions have all left is written back to
-// "", which is a task that names nothing and is retired rather than sent. The approval is the
-// root's own, so it is named whenever kept carries one — each sender has asked the gate as the
-// record holds it whether a later approval took its place (KeptApprovalStands), and drops it from
-// kept when one did — and it is named on the document of its own step (record.DesignStep.Document),
-// which is the document the person reviewed and the one whose approval the architect requests again.
-func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
-	var parts []string
-	if len(kept.Decisions) > 0 {
-		named := make([]string, 0, len(kept.Decisions))
-		for _, d := range kept.Decisions {
-			named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
+// KeptDecisionsTask is the text that names owed to the architect of tree, and the part of owed it
+// names (kept). It is the one wording a start task and a catch-up both use (ParkedDecisionTask)
+// and the one a held task is written back to when the task waits to be sent (supervise's
+// Deps.RootTask, the daemon's rootTask): a task that names nothing is "", which is retired rather
+// than sent.
+//
+// It is also the one place where a kept decision is asked whether it is still the person's word,
+// in the loop that writes it, from the gates as the record holds them now: each decision through
+// keptReviewStands and the approval through keptApprovalStands, both of which ask
+// classify.ReviewSuperseded. So no task can name a kept decision that nobody asked about. The
+// approval is the root's own, and it is named only while steps gates a step
+// (gates.design off asks no person), on the document of its own step
+// (record.DesignStep.Document), which is the document the person reviewed and the one whose
+// approval the architect requests again.
+//
+// A decision a later approval superseded is dropped from the task and its row is deleted in tx
+// (Store.ForgetKeptDecisions): the approval is the person's word, the gate records it, and nothing
+// of the decision is left to tell. If the row stays KEPT, every later start, catch-up and
+// hand-over asks it again. Also, a later changes request that clears the gate's approval on a tree
+// that runs, which keeps nothing, would make the old decision read as the person's word again. A
+// row another tree's claim still holds is not this tree's to delete, and it stays. A dropped
+// approval stays in its row as it always has (Store.KeepReadmittedApproval replaces it at the next
+// re-admission). The gates a decision is asked of go when a generation is cleared, so each clear
+// first forgets what they show was superseded (Engine.ForgetSupersededKept).
+func KeptDecisionsTask(ctx context.Context, tx pgx.Tx, store record.Store, steps []record.DesignStep, tree string,
+	owed record.KeptDecisions) (string, record.KeptDecisions, error) {
+	gates := issueGates{store: store, read: map[string]map[record.DesignStep]record.DesignGate{}}
+	var kept record.KeptDecisions
+	var spent []record.DecisionMark
+	named := make([]string, 0, len(owed.Decisions))
+	for _, d := range owed.Decisions {
+		read, err := gates.of(ctx, tx, d.Issue)
+		if err != nil {
+			return "", record.KeptDecisions{}, err
 		}
+		if !keptReviewStands(read, steps, d) {
+			spent = append(spent, d)
+			continue
+		}
+		kept.Decisions = append(kept.Decisions, d)
+		named = append(named, fmt.Sprintf("%s (%s by %s)", d.Ref, d.Decision, d.Actor))
+	}
+	if len(spent) > 0 {
+		if err := store.ForgetKeptDecisions(ctx, tx, tree, record.KeptDecisions{Decisions: spent}, 0); err != nil {
+			return "", record.KeptDecisions{}, err
+		}
+	}
+	if owed.Approved > 0 && len(steps) > 0 {
+		read, err := gates.of(ctx, tx, tree)
+		if err != nil {
+			return "", record.KeptDecisions{}, err
+		}
+		if keptApprovalStands(read, owed.KeptApproval) {
+			kept.KeptApproval = owed.KeptApproval
+		}
+	}
+	var parts []string
+	if len(named) > 0 {
 		parts = append(parts, fmt.Sprintf("While nobody in %s's tree could hear it, a person decided on the tree: %s. Read each before you continue.",
-			root, strings.Join(named, "; ")))
+			tree, strings.Join(named, "; ")))
 	}
 	if kept.Approved > 0 {
 		parts = append(parts, fmt.Sprintf("The %s is approved at version %d and is now at version %d: request approval of version %d, "+
 			"as skill://legion-architect/references/design-gate.md (\"The armed gate\") says.",
 			kept.Step.Document(), kept.Approved, kept.Latest, kept.Latest))
 	}
-	return strings.Join(parts, " ")
+	return strings.Join(parts, " "), kept, nil
 }
 
-// KeptApprovalStands says whether the record still supports the sentence a kept approval puts in
+// keptReviewStands says whether a kept decision (mark) is still the person's word, so a task can
+// name it (KeptDecisionsTask). A changes request or an approval of a design document is asked of
+// the gate of that document as the record holds it now (GateOfRef over gates, the gates of
+// mark.Issue) through the one rule (classify.ReviewSuperseded). An approval the gate records after
+// the decision is the person's word in its place. The row keeps no version, so it is asked at the
+// version the gate holds approved and at the decision's own place in Dispatch's log
+// (record.DecisionMark.Seq and At, which the outbox's parkDecision keeps from the notice's
+// Review). The ask mirror asks an approval request the same way (withHuman), so only the marks
+// decide: the decision stands only when it comes after that approval. Both marks are Dispatch's,
+// so the two are ordered by Dispatch's sequences when both carry one and otherwise by Dispatch's
+// times (record.EventMark.After), never by the daemon's clock against Dispatch's. A kept approval
+// that the gate's approval is (record.EventMark.Same) is no later word, so it stands. An answer on
+// an ask, a carried gate's opening, a document that no gate of the issue holds, a step the
+// deployment does not gate (its approval is its registration's and no person's), and a gate with
+// no approval hold nothing against the decision.
+func keptReviewStands(gates map[record.DesignStep]record.DesignGate, steps []record.DesignStep, mark record.DecisionMark) bool {
+	if mark.Decision != record.DecisionDesignChangesRequested && mark.Decision != record.DecisionDesignApproved {
+		return true
+	}
+	gate, ok := GateOfRef(gates, mark.Issue, mark.Ref)
+	if !ok || !slices.Contains(steps, gate.Step) || gate.ApprovedVersion == nil {
+		return true
+	}
+	review := record.EventMark{Seq: mark.Seq, At: mark.At}
+	if mark.Decision == record.DecisionDesignApproved && review.Same(gate.ApprovedMark) {
+		return true
+	}
+	return !classify.ReviewSuperseded(gate, *gate.ApprovedVersion, review)
+}
+
+// keptApprovalStands says whether the record still supports the sentence a kept approval puts in
 // an architect's start (KeptDecisionsTask): the person approved kept.Approved of kept.Step's
 // document, which has reached kept.Latest since, so the architect requests approval of that. The
 // gate of that step as the record holds it now is asked whether an approval followed the kept one
@@ -149,15 +213,65 @@ func KeptDecisionsTask(root string, kept record.KeptDecisions) string {
 // approval, and the sentence would ask them again for what they already decided. The gate's
 // approval of kept.Approved itself is the kept approval as the new generation's registration read
 // it again, not a later word, so it is not asked; neither is a step with no row yet, or no
-// approval, which hold nothing against the sentence. Every sender of the sentence asks it where
-// the task is composed (ParkedDecisionTask) and where a held task is sent (the daemon's
-// rootTask).
-func KeptApprovalStands(gates map[record.DesignStep]record.DesignGate, kept record.KeptApproval) bool {
+// approval, which hold nothing against the sentence.
+func keptApprovalStands(gates map[record.DesignStep]record.DesignGate, kept record.KeptApproval) bool {
 	gate, ok := gates[kept.Step.OrSpec()]
 	if kept.Approved == 0 || !ok || gate.ApprovedVersion == nil || *gate.ApprovedVersion == kept.Approved {
 		return true
 	}
 	return !classify.ReviewSuperseded(gate, kept.Approved, record.EventMark{})
+}
+
+// issueGates reads the gates of each issue a kept decision was made on once, for the decisions
+// of one task or one clear.
+type issueGates struct {
+	store record.Store
+	read  map[string]map[record.DesignStep]record.DesignGate
+}
+
+func (g issueGates) of(ctx context.Context, tx pgx.Tx, issue string) (map[record.DesignStep]record.DesignGate, error) {
+	if read, ok := g.read[issue]; ok {
+		return read, nil
+	}
+	read, err := g.store.GatesOf(ctx, tx, issue)
+	if err != nil {
+		return nil, err
+	}
+	g.read[issue] = read
+	return read, nil
+}
+
+// ForgetSupersededKept deletes every decision kept for tree that a later approval superseded
+// (keptReviewStands), in tx. Call it before a clear of a generation deletes the gates
+// (record.Store.ClearGeneration, ClearTreeGeneration). Those gates are the only record of the
+// approval that superseded the decision. The start or catch-up that names the decision after the
+// clear asks a gate that is gone or new, and the decision would read as the person's word again:
+// a person who requested changes and then approved the latest version as their hand-over would
+// send the new architect to revise the spec they approved. Every row owed to tree is asked, and a
+// row a queued task holds is deleted too, since that task is asked again at its send (the
+// daemon's rootTask) and its gates are gone by then. A row that an outbox row claims stays
+// (Store.ForgetKeptDecisions): its text is already written, and that row settles it.
+func (e *Engine) ForgetSupersededKept(ctx context.Context, tx pgx.Tx, tree string) error {
+	decisions, err := e.store.ParkedDecisions(ctx, tx, tree)
+	if err != nil {
+		return err
+	}
+	gates := issueGates{store: e.store, read: map[string]map[record.DesignStep]record.DesignGate{}}
+	var spent record.KeptDecisions
+	for _, d := range decisions {
+		read, err := gates.of(ctx, tx, d.Issue)
+		if err != nil {
+			return err
+		}
+		mark := record.DecisionMark{Ref: d.Ref, At: d.At, Issue: d.Issue, Decision: d.Decision, Actor: d.Actor, Seq: d.Seq}
+		if !keptReviewStands(read, e.cfg.Steps, mark) {
+			spent.Decisions = append(spent.Decisions, mark)
+		}
+	}
+	if len(spent.Decisions) == 0 {
+		return nil
+	}
+	return e.store.ForgetKeptDecisions(ctx, tx, tree, spent, 0)
 }
 
 // ParkedDecisionTask is ParkedDecisionTask over the engine's store and gated steps.

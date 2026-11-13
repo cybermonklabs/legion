@@ -1370,7 +1370,10 @@ package api
 // `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
 // task that resumes an answered root carries, so the task's text is written at each send. An
 // older daemon neither reads nor writes that column: it sends the task text a row holds, which is
-// empty for a resume task this release queued and never sent. (This entry takes 101. It took 95
+// empty for a resume task this release queued and never sent. It also adds `parked_decisions.seq`,
+// Dispatch's sequence of a kept spec decision's review, which an older daemon neither reads nor
+// writes: a row it keeps carries no sequence and its own clock, as before this release.
+// (This entry takes 101. It took 95
 // at the fifth forward merge of 2026-11-13, when main declared 87, and held 95 through the sixth,
 // which brought main in at 045ee0762538, #3677, declaring 94, the entry right above this one. The
 // reading of 2026-11-13T09:11:43Z, with main at bc52296a74c2 declaring 94, found #3519 declaring

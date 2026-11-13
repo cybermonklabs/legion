@@ -21,5 +21,14 @@
 -- and its write of the claim's next delivery keeps the column's value, which is why the value
 -- names its own delivery id — a value read under another delivery's id marks nothing.
 --
+-- parked_decisions.seq is Dispatch's sequence of a kept spec decision's review, beside at, which
+-- for such a decision is now Dispatch's time of the review (record.ParkedDecision.At and Seq,
+-- from the notice's Review). A held task is narrowed at each send by asking the gate whether a
+-- later approval superseded each decision it names (workflow's keptReviewStands), and the
+-- question is answered by Dispatch's order on both sides: the sequences when both carry one,
+-- else Dispatch's times. It is null where Dispatch gave no sequence, for an answer on an ask, and
+-- for every row kept before this migration; a daemon of an earlier release writes none.
+--
 -- There is no down file: migrations here are forward-only.
 alter table pending_task_deliveries add column resume jsonb;
+alter table parked_decisions add column seq bigint;

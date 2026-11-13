@@ -1296,6 +1296,12 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	if err := a.keepStaleApproval(ctx, tx, stored.Key); err != nil {
 		return err
 	}
+	// What a person decided and then approved past is judged here, while the gates that record
+	// the approval still stand (workflow.Engine.ForgetSupersededKept): the clear below deletes
+	// them, and the start this admission queues reads the gates the new generation has, not these.
+	if err := a.engine.ForgetSupersededKept(ctx, tx, stored.Tree); err != nil {
+		return fmt.Errorf("forget what was decided on re-admitted %s before a later approval: %w", stored.Key, err)
+	}
 	// A root set back to todo is a new generation of the whole tree, so the old generation's pull
 	// request, gate and handoffs go for every issue of it, not only the root's.
 	return a.store.ClearTreeGeneration(ctx, tx, stored.Tree, a.now())

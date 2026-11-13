@@ -167,6 +167,11 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 	if err != nil {
 		return err
 	}
+	// Each member's generation is cleared below, and its gates with it, so what those gates show a
+	// person approved past is forgotten first (ForgetSupersededKept).
+	if err := e.ForgetSupersededKept(ctx, tx, issue.Key); err != nil {
+		return err
+	}
 	for _, member := range members {
 		if member.Generation == ^uint64(0) {
 			return fmt.Errorf("adopt %s into %s: generation overflows", member.Key, root.Tree)

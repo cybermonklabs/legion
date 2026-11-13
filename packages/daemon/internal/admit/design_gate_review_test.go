@@ -642,14 +642,16 @@ func TestAStaleChangesRequestIsToldWithoutChangingTheGate(t *testing.T) {
 			gate:   record.DesignGate{Issue: "LEGION-100", ArtifactID: "artifact-root", LatestVersion: 4},
 			before: []intake.Fact{intake.DispatchArtifact{Key: "LEGION-100", ArtifactID: "artifact-root", Kind: intake.DispatchArtifactVersion, Version: 5, Mark: record.EventMark{Seq: 21}}},
 			late:   changesOf(4, "name the rollback path", record.EventMark{Seq: 20}),
-			told:   []record.Notice{{Kind: "design-changes-requested", Version: 4, Reason: "name the rollback path", Ref: "dispatch://LEGION-100/spec"}},
+			told: []record.Notice{{Kind: "design-changes-requested", Version: 4, Reason: "name the rollback path", Ref: "dispatch://LEGION-100/spec",
+				Review: record.EventMark{Seq: 20}}},
 		},
 		{
 			name: "a request a newer request at that version superseded",
 			gate: record.DesignGate{Issue: "LEGION-100", ArtifactID: "artifact-root", LatestVersion: 4,
 				ToldChangesVersion: new(4), ToldChangesReason: "and name who runs the restore", ToldChangesMark: record.EventMark{Seq: 12}},
 			late: changesOf(4, "name the rollback path", record.EventMark{Seq: 11}),
-			told: []record.Notice{{Kind: "design-changes-requested", Version: 4, Reason: "name the rollback path", Ref: "dispatch://LEGION-100/spec"}},
+			told: []record.Notice{{Kind: "design-changes-requested", Version: 4, Reason: "name the rollback path", Ref: "dispatch://LEGION-100/spec",
+				Review: record.EventMark{Seq: 11}}},
 		},
 		{
 			name: "an older version's request an approval followed",
@@ -721,5 +723,31 @@ func TestARegistrationUnderTheGateOffApprovesWhateverTheGateHeld(t *testing.T) {
 				t.Fatalf("gate after a registration with the design gate off = %#v, want it open", gate)
 			}
 		})
+	}
+}
+
+// A design decision's notice carries where Dispatch recorded the review it reports (the live
+// event's mark), so when nobody in the tree hears it and the outbox keeps it for the root's next
+// start, the kept decision is weighed against the gate's approval by Dispatch's own order and not
+// by the daemon's clock (dispatch://INFRA-3136 R2).
+func TestADesignDecisionsNoticeCarriesDispatchsMarkOfTheReview(t *testing.T) {
+	pool := migratedPool(t)
+	admission := newAdmission(t, 1, nil)
+	seedSlotted(t, pool, "LEGION-100", "A")
+	seedArchitectSession(t, pool, "LEGION-100", architect.ID)
+	seedGate(t, pool, record.DesignGate{Issue: "LEGION-100", ArtifactID: "artifact-root", LatestVersion: 4})
+	changes := record.EventMark{Seq: 5, At: fixedNow.Add(-time.Minute)}
+	applyFact(t, pool, admission, "changes-v4", intake.DispatchArtifact{Key: "LEGION-100", ArtifactID: "artifact-root",
+		Kind: intake.DispatchArtifactChangesRequested, Version: 4, Reason: "name the rollback path", Mark: changes, Actor: alice})
+	if told := gateNotices(t, pool, "LEGION-100", "design-changes-requested"); len(told) != 1 || told[0].Review.Seq != changes.Seq ||
+		!told[0].Review.At.Equal(changes.At) {
+		t.Fatalf("design-changes-requested notices = %#v, want one carrying the review's mark %#v", told, changes)
+	}
+	approved := record.EventMark{Seq: 6, At: fixedNow}
+	applyFact(t, pool, admission, "approved-v4", intake.DispatchArtifact{Key: "LEGION-100", ArtifactID: "artifact-root",
+		Kind: intake.DispatchArtifactApproved, Version: 4, Mark: approved, Actor: alice})
+	if opened := gateNotices(t, pool, "LEGION-100", "design-approved"); len(opened) != 1 || opened[0].Review.Seq != approved.Seq ||
+		!opened[0].Review.At.Equal(approved.At) {
+		t.Fatalf("design-approved notices = %#v, want one carrying the approval's mark %#v", opened, approved)
 	}
 }

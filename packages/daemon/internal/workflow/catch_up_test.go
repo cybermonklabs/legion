@@ -166,6 +166,80 @@ func TestARelaunchedArchitectsCatchUpNamesTheDecisionsKeptForIt(t *testing.T) {
 	}
 }
 
+// INFRA-3136 R2 at the moment a catch-up is composed: a decision kept for a running tree is named
+// only while it is still the person's word (classify.ReviewSuperseded), asked of the gate as it
+// stands. Nothing clears this tree's gate, so the catch-up itself is what asks. A changes request
+// the person's approval came after is dropped, and its row deleted. A changes request made after
+// that approval is named. Dispatch's order decides: the sequences when both marks carry one, even
+// where the two times say the other thing, and a kept approval that is the gate's own approval
+// stands.
+func TestACatchUpNamesAKeptDecisionOnlyWhileNoLaterApprovalSupersededIt(t *testing.T) {
+	approvedAt := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	approved := record.EventMark{Seq: 10, At: approvedAt}
+	for _, tc := range []struct {
+		name     string
+		decision record.DecisionKind
+		mark     record.EventMark
+		named    bool
+	}{
+		{"a changes request the approval came after", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 8, At: approvedAt.Add(-time.Hour)}, false},
+		{"a changes request made after the approval", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 12, At: approvedAt.Add(time.Hour)}, true},
+		{"a changes request Dispatch's sequence puts before the approval its time is after", record.DecisionDesignChangesRequested,
+			record.EventMark{Seq: 8, At: approvedAt.Add(time.Hour)}, false},
+		{"the kept approval the gate holds", record.DecisionDesignApproved, approved, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			pool := migratedPool(t)
+			seedAdmittedTree(t, pool, 1)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			records := record.NewStore()
+			version := 3
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				if err := records.PutGate(ctx, tx, record.DesignGate{Issue: "LEGION-1", Step: record.DesignStepSpec, ArtifactID: "artifact-1",
+					LatestVersion: version, ApprovedVersion: &version, ApprovedMark: approved, EverOpened: true}); err != nil {
+					return err
+				}
+				return records.AddParkedDecision(ctx, tx, record.ParkedDecision{Issue: "LEGION-1", Ref: "dispatch://LEGION-1/spec",
+					Decision: tc.decision, Actor: "user:alice", At: tc.mark.At, Seq: tc.mark.Seq})
+			}); err != nil {
+				t.Fatalf("keep the person's decision beside the gate's approval: %v", err)
+			}
+			claimReady(t, pool, engine, "LEGION-1", claim.RoleArchitect, 1)
+			got := lastCatchUp(t, pool)
+			var kept []record.ParkedDecision
+			if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+				var err error
+				kept, err = records.ParkedDecisions(ctx, tx, "LEGION-1")
+				return err
+			}); err != nil {
+				t.Fatalf("read what is kept: %v", err)
+			}
+			if !tc.named {
+				if got.Decided != "" || got.Kept != nil {
+					t.Fatalf("the catch-up names %q (kept %#v): the person's approval at %#v came after the decision at %#v", got.Decided, got.Kept, approved, tc.mark)
+				}
+				if len(kept) != 0 {
+					t.Fatalf("kept %#v after the catch-up dropped it: a decision a later approval superseded is deleted, not asked again", kept)
+				}
+				return
+			}
+			want := fmt.Sprintf("While nobody in LEGION-1's tree could hear it, a person decided on the tree: dispatch://LEGION-1/spec (%s by user:alice). Read each before you continue.", tc.decision)
+			if got.Decided != want {
+				t.Fatalf("the catch-up names %q, want %q", got.Decided, want)
+			}
+			if got.Kept == nil || len(got.Kept.Decisions) != 1 || got.Kept.Decisions[0].Seq != tc.mark.Seq {
+				t.Fatalf("the catch-up's kept record %#v, want the decision with Dispatch's sequence %d", got.Kept, tc.mark.Seq)
+			}
+			if len(kept) != 1 || kept[0].Seq != tc.mark.Seq || !kept[0].At.Equal(tc.mark.At) {
+				t.Fatalf("kept %#v, want the decision at Dispatch's mark %#v, claimed by the catch-up", kept, tc.mark)
+			}
+		})
+	}
+}
+
 func lastCatchUp(t *testing.T, pool *pgxpool.Pool) record.CatchUp {
 	t.Helper()
 	var got *record.CatchUp

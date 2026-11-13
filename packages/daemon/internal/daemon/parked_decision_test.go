@@ -47,9 +47,12 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 		{"the tree lingers before its architect's suspend ran", supervise.StateWorking, true, true},
 		{"the architect's claim failed on a running tree", supervise.StateFailed, false, true},
 	} {
+		// The review's place in Dispatch's log travels with a design decision's notice and is
+		// kept with the decision, so a later approval is weighed against it by Dispatch's order.
+		review := record.EventMark{Seq: 7, At: time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)}
 		for _, decision := range []record.Notice{
-			{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
-			{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path", Actor: "user:alice", Ref: "dispatch://LEGION-1/spec"},
+			{Kind: "design-approved", Version: 3, Actor: "user:alice", Ref: "dispatch://LEGION-1/spec", Review: review},
+			{Kind: "design-changes-requested", Version: 3, Reason: "name the rollback path", Actor: "user:alice", Ref: "dispatch://LEGION-1/spec", Review: review},
 			{Kind: "carried-gate-opened", Version: 3, Reason: carried, Actor: "user:alice", Ref: "dispatch://LEGION-9/spec"},
 		} {
 			t.Run(tc.name+"/"+string(decision.Kind), func(t *testing.T) {
@@ -79,8 +82,12 @@ func TestASpecDecisionNobodyInItsTreeHearsGoesToTheController(t *testing.T) {
 				if got := parkedDecisions(t, pool); len(got) != 1 || !reflect.DeepEqual(got[0], want) {
 					t.Fatalf("parked decisions %#v, want one %#v", got, want)
 				}
-				if kept := keptDecisions(t, pool, records, "LEGION-1"); len(kept) != 1 || kept[0].Ref != decision.Ref || kept[0].Decision != kind || kept[0].Actor != "user:alice" {
+				kept := keptDecisions(t, pool, records, "LEGION-1")
+				if len(kept) != 1 || kept[0].Ref != decision.Ref || kept[0].Decision != kind || kept[0].Actor != "user:alice" {
 					t.Fatalf("kept %#v, want the decision kept for LEGION-1's next admission", kept)
+				}
+				if decision.Review.Seq != 0 && (kept[0].Seq != review.Seq || !kept[0].At.Equal(review.At)) {
+					t.Fatalf("kept at %s, sequence %d; want Dispatch's mark of the review %#v, not the daemon's clock", kept[0].At, kept[0].Seq, review)
 				}
 			})
 		}

@@ -149,6 +149,9 @@ type DecisionMark struct {
 	Issue    string       `json:"issue,omitempty"`
 	Decision DecisionKind `json:"decision,omitempty"`
 	Actor    string       `json:"actor,omitempty"`
+	// Seq is Dispatch's sequence of the spec decision's review (ParkedDecision.Seq), which a send
+	// asks the gate with (workflow's keptReviewStands); it is no part of the row's identity.
+	Seq int64 `json:"seq,omitempty"`
 }
 
 // KeptApproval is the approval a root's re-admission kept for its next architect start

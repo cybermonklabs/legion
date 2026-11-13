@@ -332,6 +332,13 @@ type Notice struct {
 	// `dispatch://<KEY>/ask/<id>` for an answer or a resolution, `dispatch://<KEY>/comment/<id>`
 	// for a reply.
 	Ref string `json:"ref,omitempty"`
+	// Review is where Dispatch recorded the review a design-approved or design-changes-requested
+	// notice reports: its event's sequence and Dispatch's time of it, each zero when the event or
+	// the read gave none. The outbox keeps it with the decision when nobody in the tree hears the
+	// notice (the daemon's parkDecision, ParkedDecision.At and Seq), so the kept decision is later
+	// judged against the gate's approval by Dispatch's order, never by the daemon's clock. Every
+	// other kind carries none.
+	Review EventMark `json:"review,omitzero"`
 	// Decision is what a parked-decision notice relays, and Root the root of the tree it was made
 	// on. Every other kind carries neither.
 	Decision DecisionKind `json:"decision,omitempty"`
@@ -1289,6 +1296,9 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		}
 		if _, spec := SpecDecision(value.Kind); !spec && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does", value.Kind)
+		}
+		if (value.Review.Seq != 0 || !value.Review.At.IsZero()) && value.Kind != "design-approved" && value.Kind != "design-changes-requested" {
+			return fmt.Errorf("a %s notice carries a review's mark; only a design-approved or design-changes-requested notice does", value.Kind)
 		}
 		if value.Decision != "" || value.Root != "" {
 			return fmt.Errorf("a %s notice carries a decision or a root; only a parked-decision controller notice does", value.Kind)

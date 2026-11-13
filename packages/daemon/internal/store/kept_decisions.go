@@ -65,10 +65,10 @@ func putBackARetakenConfirmation(ctx context.Context, tx pgx.Tx, token claim.Tok
 	if !confirmed {
 		return nil
 	}
-	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
-		select named.issue, named.ref, named.decision, named.actor, named.at, $1, $2
+	if _, err := tx.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, seq, held_by_claim, held_by_delivery)
+		select named.issue, named.ref, named.decision, named.actor, named.at, nullif(named.seq, 0), $1, $2
 		from jsonb_to_recordset(coalesce($3::jsonb -> 'decisions', '[]'::jsonb))
-			as named (ref text, at timestamptz, issue text, decision text, actor text)
+			as named (ref text, at timestamptz, issue text, decision text, actor text, seq bigint)
 		join issues owner on owner.key = named.issue
 		join claims holder on holder.token = $1 and holder.tree = owner.tree
 		where named.decision is not null and named.actor is not null

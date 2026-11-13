@@ -585,6 +585,11 @@ func (e *Engine) ReenterChild(ctx context.Context, tx pgx.Tx, child record.Issue
 			return err
 		}
 	}
+	// The clear deletes the child's gates, so what they show a person approved past is forgotten
+	// first (ForgetSupersededKept).
+	if err := e.ForgetSupersededKept(ctx, tx, child.Tree); err != nil {
+		return err
+	}
 	if err := e.store.ClearGeneration(ctx, tx, child.Key, e.now()); err != nil {
 		return err
 	}

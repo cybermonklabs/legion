@@ -308,7 +308,10 @@ const (
 // (Store.ForgetKeptDecisions) or by the confirmation of the delivery that holds it (HeldBy). A
 // claiming row that reached no architect hands it over instead (workflow.HandOverKept): it goes
 // back to KEPT, and a fresh catch-up names it at once while its tree has an architect to tell, so
-// a release never leaves it kept with nobody to name it again.
+// a release never leaves it kept with nobody to name it again. A design decision that a later
+// approval superseded is deleted unnamed, by the task that asks it or before the clear of a
+// generation that deletes the approval's gate (workflow.KeptDecisionsTask,
+// workflow.Engine.ForgetSupersededKept): nothing of it is left to tell.
 type ParkedDecision struct {
 	// Issue is where in Dispatch the decision was made: the issue of the ask, comment or spec it
 	// was made on. It is the row's key with Ref, and what says whose debt the row is: the
@@ -319,7 +322,15 @@ type ParkedDecision struct {
 	Ref      string
 	Decision DecisionKind
 	Actor    string
-	At       time.Time
+	// At and Seq place the decision: for a spec decision, where Dispatch recorded the person's
+	// review (the notice's Review: Dispatch's time of it and its event's sequence, Seq 0 when
+	// Dispatch gave none), so it is judged against the gate's approval mark by Dispatch's own order
+	// (workflow's keptReviewStands); the daemon's clock at keep time only where the notice carried
+	// no time of the review. For an answer, resolution or reply on an ask, the daemon's clock at
+	// keep time and no sequence: those are never judged against a gate. At is also the row's
+	// identity with Ref (DecisionMark).
+	At  time.Time
+	Seq int64
 	// ClaimedBy is the outbox row claiming it, 0 when no row does; HeldBy is the claim and the
 	// delivery id of the queued start task holding it, the zero value when none does.
 	ClaimedBy int64
