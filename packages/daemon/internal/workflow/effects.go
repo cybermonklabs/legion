@@ -20,8 +20,8 @@ import (
 // RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
 // record the `legion` tool's `handoff_complete` reads for a phase with a handoff (phase.Handoff,
 // whose writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role
-// works — awaiting_person, awaiting_merge, done, held —
-// has none. Accepting is the tree architect's, a claim per tree that no row starts: every site
+// works — awaiting_person, done, held — has none. Accepting is the tree architect's, a claim per
+// tree that no row starts: every site
 // that starts, resumes or reports a phase's worker skips it (start, admit's startMidPhaseMembers,
 // booted, Stranded).
 //
@@ -46,27 +46,27 @@ func RoleFor(p phase.Phase) claim.Role {
 	}
 }
 
-// ResumePhase is the phase a re-admitted tree resumes its mid-phase child in: the child's own,
-// except that a child left awaiting its merge resumes in merging. The tree's linger disarmed its
-// pull request (beginLinger), and re-admission clears its merger's READY with the rest of the old
-// generation's handoffs (record.Store.ClearTreeGeneration), so nothing is armed and no READY is left
-// to arm it again: only a new READY from its merger moves it.
-func ResumePhase(child record.Issue) phase.Phase {
-	if child.Phase == phase.AwaitingMerge {
-		return phase.Merging
+// PhaseFinished says whether issue's phase is over by its own terminating fact rather than by its
+// worker's completion, so no worker of it is started or resumed for it. Merging's fact is the pull
+// request being merged: the merger merges, the daemon merges nothing, and a merged root then
+// stands in merging until the rest of its tree leaves the workflow (closeMerged), which can be
+// days. Accepting's is the architect's sign-off, which moves the issue on in the transaction that
+// records it, so an issue standing in accepting is always still waiting for it; every other
+// phase ends with its worker's completion, which moves the issue too. A recorded completion
+// answers nothing here: the merger's is recorded and moves no issue.
+func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
+	if issue.Phase != phase.Merging {
+		return false, nil
 	}
-	return child.Phase
+	pr, err := store.PullRequest(ctx, tx, issue.Key)
+	if err != nil || pr == nil {
+		return false, err
+	}
+	return pr.State == record.PullRequestMerged, nil
 }
 
-// workingPhase is the phase issue's worker works: its phase, or, while it is held, the phase its
-// hold left, the one whose worker's claim failed. RoleFor(workingPhase(issue)) is the role whose
-// failure holds the issue (claimFailed), and the one whose claim Stranded names when nothing will
-// wake it.
-func workingPhase(issue record.Issue) phase.Phase {
-	if issue.Hold != nil {
-		return issue.Hold.From
-	}
-	return issue.Phase
+func (e *Engine) phaseFinished(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
+	return PhaseFinished(ctx, e.store, tx, issue)
 }
 
 // StopActs is whether a queued stop, row id, still acts on its claim when the outbox runs it, with
@@ -114,11 +114,27 @@ func StopActs(id int64, stop record.SuperviseRequest, lastStart int64, root *rec
 // suspension that holds for the operator (supervise's RuleHolds) is woken by no start, queued or
 // not, since each waits for the operator's resume, so Stranded lists it without asking. The
 // architect's start names no phase, so its current is "".
+//
+// Its reading of run.Queued is queuedStartActs, which SilentPhaseWorker shares.
 func StartFor(run record.RoleRun, root record.Issue, generation uint64, current phase.Phase) bool {
+	stop := actingStop(run, root)
+	if queuedStartActs(run, stop, current) {
+		return false
+	}
 	held := run.Claim
+	if stop != 0 || held == nil || held.Tree != root.Key {
+		return true
+	}
+	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)
+	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
+}
+
+// actingStop is the id of the newest queued stop of run that will still act (StopActs), 0 where
+// none will: a stop that acts undoes any older start. root is read for a tree close alone.
+func actingStop(run record.RoleRun, root record.Issue) int64 {
 	var lastStart int64
-	if held != nil {
-		lastStart = held.LastStartRow
+	if run.Claim != nil {
+		lastStart = run.Claim.LastStartRow
 	}
 	var stop int64
 	for _, queued := range run.Queued {
@@ -126,16 +142,121 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 			stop = max(stop, queued.ID)
 		}
 	}
+	return stop
+}
+
+// queuedStartActs is whether a queued start for current with an id above stop, the newest stop
+// that still acts (actingStop), will reach the claim. StartFor and SilentPhaseWorker both read
+// it, so they answer that term alike.
+func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
 		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
-			return false
+			return true
 		}
 	}
-	if stop != 0 || held == nil || held.Tree != root.Key {
-		return true
+	return false
+}
+
+// PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a
+// bound of zero or less is one no deployment can set (config's readMinutes and readHours refuse
+// it), so both answer false.
+func PastBound(at time.Time, bound time.Duration, now time.Time) bool {
+	if at.IsZero() || bound <= 0 {
+		return false
 	}
-	holds := held.Pending != nil && held.Pending.StillWorked(generation, current, held.State)
-	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
+	return at.Add(bound).Before(now)
+}
+
+// ReportExplainsQuiet is whether a claim's own session's report explains why it takes no turn:
+// it found background work of its own running, or its phase reminder is due later than now. The
+// launch that replaces a process clears its report (store's putClaim), and a report is written
+// only onto the launch whose secret authenticated it (store's PutClaimActivity), so the report
+// read is the running process's. A reminder already due explains nothing: it is the timer a
+// silence repair backs up.
+func ReportExplainsQuiet(background bool, nextReminder time.Time, now time.Time) bool {
+	return background || nextReminder.After(now)
+}
+
+// SilentPhaseWorker is whether role's claim in run is a phase worker nothing will prompt: a claim
+// unpromptedPhaseWorker holds, whose session's report does not explain its quiet
+// (ReportExplainsQuiet), and whose agent's last recorded step is past bound (PastBound). A live
+// claim holding no task is owed nothing by the daemon, and the timer that carries a worker
+// through its phase runs in its own process (packages/pi-shared/src/phase-reminder.ts), so it
+// dies with that process.
+//
+// Terms the code does not show:
+//   - a suspension held for the agent's turn is not a term: no record carries it
+//     (supervise.Claim.SuspensionHeld), and the outbox refuses the start while it holds.
+//   - a finished phase or an accepted completion is not a term: this reads no store, so its
+//     callers ask PhaseWorkerOwedTurn as well.
+func SilentPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun,
+	bound time.Duration, now time.Time,
+) bool {
+	if !unpromptedPhaseWorker(issue, root, gate, role, run) {
+		return false
+	}
+	c := run.Claim
+	if ReportExplainsQuiet(c.ActivityBackground, c.ActivityNextReminderAt, now) {
+		return false
+	}
+	return PastBound(c.Step.LastStep(), bound, now)
+}
+
+// unpromptedPhaseWorker is the half of SilentPhaseWorker that is not about a moment: a live claim
+// of the role that works issue's phase (OpenPhaseRole), on an issue at work in a tree that does
+// not linger, up and between turns, in no update round, holding no task it still works, with no
+// acting stop and no queued start and recorded in root's tree. Ready and idle are both a process
+// waiting to be prompted; the role, not the state, tells a fault from health. The last three
+// terms are StartFor's, read the other way, so admission's slot repair and the silence repair
+// never act on one claim. BackgroundStalledWorker stands on it too, so the two rules agree on
+// which claim they are about.
+func unpromptedPhaseWorker(issue, root record.Issue, gate record.TreeGate, role claim.Role, run record.RoleRun) bool {
+	if run.Claim == nil {
+		return false
+	}
+	if working := OpenPhaseRole(issue.Phase); working == "" || working != role {
+		return false
+	}
+	if !record.AtWork(issue, gate) || root.Lingers() {
+		return false
+	}
+	c := run.Claim
+	if c.State != supervise.StateReady && c.State != supervise.StateIdle {
+		return false
+	}
+	if c.UpdateRound != "" {
+		return false
+	}
+	if c.Pending != nil && c.Pending.StillWorked(issue.Generation, issue.Phase, c.State) {
+		return false
+	}
+	stop := actingStop(run, root)
+	return stop == 0 && c.Tree == root.Key && !queuedStartActs(run, stop, issue.Phase)
+}
+
+// PhaseWorkerOwedTurn is whether role's worker of issue's phase is still owed a turn, the half of
+// a silence only the store can answer: false for a phase its terminating fact has met
+// (PhaseFinished) and for a role whose completion of this phase entry the workflow accepted (the
+// phase row's CompletedAt, which the next phase's start clears in clearHandoff). It answers the
+// role's phase row too, an empty row naming the issue and role where the record holds none, so
+// the silence repair reads it once.
+func PhaseWorkerOwedTurn(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (record.PhaseRow, bool, error) {
+	finished, err := PhaseFinished(ctx, store, tx, issue)
+	if err != nil || finished {
+		return record.PhaseRow{}, false, err
+	}
+	rows, err := store.Phases(ctx, tx, issue.Key)
+	if err != nil {
+		return record.PhaseRow{}, false, err
+	}
+	row := record.PhaseRow{Issue: issue.Key, Role: role}
+	for _, r := range rows {
+		if r.Role == role {
+			row = r
+			break
+		}
+	}
+	return row, row.CompletedAt.IsZero(), nil
 }
 
 func (e *Engine) enqueue(ctx context.Context, tx pgx.Tx, issue string, payload record.OutboxPayload) error {
@@ -152,11 +273,19 @@ func (e *Engine) enqueueAt(ctx context.Context, tx pgx.Tx, issue string, payload
 	return e.store.Enqueue(ctx, tx, row)
 }
 
+// status queues the Dispatch write for a status the workflow has just given issue. A status that
+// reads as out of the workflow is the daemon's own close — the done a merge writes — and it goes
+// as a close row, fenced on the run it ends (record.CloseStatusWrite): the ordinary rule drops a
+// row whose issue has left the workflow, which is every close, so a close judged by it would be
+// lost on its first ISSUE_CHANGED and leave the issue open in Dispatch for good.
 func (e *Engine) status(ctx context.Context, tx pgx.Tx, issue record.Issue, status string) error {
 	if status == "" || issue.Status == status {
 		return nil
 	}
-	return e.enqueue(ctx, tx, issue.Key, record.StatusWrite{Status: status, ObservedStatus: issue.Status})
+	if record.OutOfWorkflow(status) {
+		return e.enqueue(ctx, tx, issue.Key, record.CloseStatusWrite(status, issue.Status, "", issue.Generation))
+	}
+	return e.enqueue(ctx, tx, issue.Key, record.OrdinaryStatusWrite(status, issue.Status, ""))
 }
 
 // notice tells the architect that owns the issue; a notice of no kind (noticeFor's, for a move
@@ -204,14 +333,13 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 }
 
 // clearHandoff empties the handoff a role reported for its previous phase — its commit, the
-// Dispatch handoff record it named, its verdict, summary and by-hand note, and the review round's
-// decision, which ends with the round — keeping its claim, the record it last named (LastHandoff)
-// and the review rounds, when a transition starts it on a new phase. A role's recorded handoff is
-// then always its current phase's: the implementer's round-1 commit cannot advance round 2, a
-// reviewer starting round 2 or a tester starting a new round reads as not completed until it
-// completes again (record.PhaseRow.Completed), a merger sent back to verify again has no READY
-// packet until its next one, and no round inherits an earlier decision. The architect reports no
-// handoff and has no row to clear.
+// Dispatch handoff record it named, its verdict and summary, and the review round's decision,
+// which ends with the round — keeping its claim, the record it last named (LastHandoff) and the
+// review rounds, when a transition starts it on a new phase. A role's recorded handoff is then
+// always its current phase's: the implementer's round-1 commit cannot advance round 2, a reviewer
+// starting round 2 or a tester starting a new round reads as not completed until it completes
+// again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
+// round inherits an earlier decision. The architect reports no handoff and has no row to clear.
 func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -243,14 +371,13 @@ type phaseHandoff struct {
 	summary        string
 	decision       *record.ReviewDecision
 	completedAt    time.Time
-	mergeNote      string
 }
 
 // handoffOf is the handoff row carries.
 func handoffOf(row record.PhaseRow) phaseHandoff {
 	return phaseHandoff{commit: row.HandoffCommit, dispatchRecord: row.HandoffRecord, version: row.HandoffVersion,
 		verdict: row.Verdict, summary: row.Summary, decision: row.Decision, completedAt: row.CompletedAt,
-		mergeNote: row.MergeNote}
+	}
 }
 
 // onto is row carrying h, with every other field of the row — its claim, the record it last
@@ -258,7 +385,7 @@ func handoffOf(row record.PhaseRow) phaseHandoff {
 func (h phaseHandoff) onto(row record.PhaseRow) record.PhaseRow {
 	row.HandoffCommit, row.HandoffRecord, row.HandoffVersion = h.commit, h.dispatchRecord, h.version
 	row.Verdict, row.Summary, row.Decision = h.verdict, h.summary, h.decision
-	row.CompletedAt, row.MergeNote = h.completedAt, h.mergeNote
+	row.CompletedAt = h.completedAt
 	return row
 }
 
@@ -267,21 +394,18 @@ func (e *Engine) suspend(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	return e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "suspend", Tree: issue.Tree, Role: role, Generation: issue.Generation, Reason: reason})
 }
 
-// approvedHeadLabel labels the head a merger's task carries. The merger's prompt reads its task by
-// this label (prompts/roles/merger.md, step 2), which a test ties to it.
-const approvedHeadLabel = "Approved head"
-
 // testerVerdictLabel labels the tester's verdict a started worker's task carries. The reviewer's
 // prompt names it as the tester's result rather than its own (prompts/go/reviewer.md), which a test
 // ties to it.
 const testerVerdictLabel = "Tester's verdict"
 
 // start starts the phase worker of the issue's current phase, a start stamped with that phase and
-// with the assignment it mints for that role (assign). A merger is told the head the review round
-// approved (withApprovedHead), the one head its READY may name, so it never chooses among the pull
-// request's reviews itself. A phase with no worker, and accepting, whose architect admission
-// started with the tree, start nobody.
-func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string) error {
+// with the assignment it mints for that role (assign).
+// A start that must not resume the claim's recorded session says so, freshSession, and only
+// the operator's `legion claims retry --fresh-session` does (record.SuperviseRequest's
+// FreshSession). A phase with no worker, and accepting, whose architect admission started with
+// the tree, start nobody.
+func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
@@ -289,7 +413,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, assignment)
+	return e.started(ctx, tx, issue, role, task, assignment, freshSession)
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -300,8 +424,9 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // a completion of it would otherwise be refused HANDOFF_STALE_ASSIGNMENT against a row naming an
 // assignment nothing ever delivered, for good. Carrying the row's own value rather than nothing
 // keeps the fence live for a worker the retry does start afresh: its task names the entry, so a
-// later entry of the same phase still refuses this one's completion.
-func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string) error {
+// later entry of the same phase still refuses this one's completion. A retry told not to resume
+// the claim's recorded session passes that on, freshSession, as a start does.
+func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, freshSession bool) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
@@ -309,32 +434,29 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, row.Assignment)
+	return e.started(ctx, tx, issue, role, task, row.Assignment, freshSession)
 }
 
 // ResumeSlottedWorker starts again the worker of the phase issue stands in, with restart's
 // semantics: the assignment the role's phases row already names, so a completion still in flight
 // is never refused for an assignment nothing ever delivered, and the phase's resume task, which
-// says to carry the work on rather than beginning it. It is exported for admission's repair of a
-// slot whose worker has no task (admit's resumeSlottedWorkers), which is the one caller: every
-// other way back into a phase is a transition with a task of its own. The task is
-// ResumePhaseTask rather than ResumeTask: restart appends the merger's approved head itself
-// (withApprovedHead), so taking ResumeTask's copy of it would name the head twice.
+// says to carry the work on rather than beginning it. It is exported for admission's repair of
+// a slot whose worker has no task (admit's resumeSlottedWorkers) and read by this package's own
+// repair of a phase worker nothing will prompt (silence.go's repairSilence), which are its two
+// callers: every other way back into a phase is a transition with a task of its own. The task
+// names no head: the merger reads the head it merges on GitHub, so no task of the daemon's names
+// one.
 func (e *Engine) ResumeSlottedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
-	return e.restart(ctx, tx, issue, role, ResumePhaseTask(issue))
+	return e.restart(ctx, tx, issue, role, ResumePhaseTask(issue), false)
 }
 
 // started enqueues the start both make, for a role start and restart have already held to one
 // that works a phase. It goes through StartOrOwe, so the worker comes back on the one row that
 // carries its new task, and that row waits for the issue's admission slot: a transition's start
 // puts a worker to work, which is exactly what the cap counts.
-func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task, assignment string) error {
-	task, err := withApprovedHead(ctx, e.store, tx, issue.Key, role, task)
-	if err != nil {
-		return err
-	}
+func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task, assignment string, freshSession bool) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Assignment: assignment}, e.now())
+		Generation: issue.Generation, Phase: issue.Phase, Assignment: assignment, FreshSession: freshSession}, e.now())
 }
 
 // StartOrOwe writes the start of a phase worker as one outbox row in the caller's own
@@ -420,29 +542,6 @@ func (e *Engine) assign(ctx context.Context, tx pgx.Tx, issue string, role claim
 	return row.Assignment, nil
 }
 
-// withApprovedHead is a merger's task with the head the issue's review round approved appended
-// under approvedHeadLabel, and any other role's task as it is. That head is the reviewer row's
-// recorded decision (record.ApprovedHead; the review that ended the round, review.go); the task
-// gets no line when the round recorded no approval, and READY refuses that round too
-// (READY_NOT_APPROVED). The reviewer's row keeps that decision until the reviewer starts
-// again (clearHandoff), until a re-admission of the tree clears the generation's handoffs with it
-// (record.ClearTreeGeneration), so a merger resumed into a re-admitted tree is told no head and
-// refuses, and the round is reviewed again rather than merged on the last generation's approval.
-// A hand-over keeps the row, so a carried merger is told the head the carried round approved.
-func withApprovedHead(ctx context.Context, store record.Store, tx pgx.Tx, issue string, role claim.Role, task string) (string, error) {
-	if role != claim.RoleMerger {
-		return task, nil
-	}
-	head, err := record.ApprovedHead(ctx, store, tx, issue)
-	if err != nil {
-		return "", err
-	}
-	if head == "" {
-		return task, nil
-	}
-	return task + " " + approvedHeadLabel + ": " + head + ".", nil
-}
-
 // task is what a started worker is told. It names the phase the worker starts, which the issue
 // record already holds: one role runs several phases (the implementer runs implementing and
 // retro), and a resumed session cannot otherwise tell a new phase from its last.
@@ -495,15 +594,6 @@ func handoffWord(role claim.Role) string {
 // the work on, which is what a resumed session needs to tell this phase from its last.
 func ResumePhaseTask(issue record.Issue) string {
 	return continueLine(issue) + " Resume the existing phase work."
-}
-
-// ResumeTask is the task admission gives role when it resumes issue's phase at promotion:
-// ResumePhaseTask, with a merger also told its approved head (withApprovedHead). The mid-phase
-// children of a tree it re-admits had the round's decision cleared with the generation, so their
-// merger is told none and sends the round back for review; a carried root kept its round, so its
-// merger is told the head that round approved.
-func ResumeTask(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue, role claim.Role) (string, error) {
-	return withApprovedHead(ctx, store, tx, issue.Key, role, ResumePhaseTask(issue))
 }
 
 // HeldNotice is the notice of issue's hold as its architect answers one, with a retry or an

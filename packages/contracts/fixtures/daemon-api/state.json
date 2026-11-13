@@ -7,18 +7,19 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 75,
-    "caller": 75
+    "daemon": 87,
+    "caller": 87
   },
   "admission": {
-    "cap": 2,
+    "cap": 3,
     "active": [
       "LEGION-208",
-      "LEGION-210"
+      "LEGION-210",
+      "LEGION-212"
     ],
     "waiting": [
-      "LEGION-211",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-211"
     ],
     "trees": [
       "LEGION-208",
@@ -60,6 +61,7 @@
             "pluginContract": 0
           },
           "handoffCommit": "7d1e4f2a9c3b5e8d0a6f2c4b8e1d3a5f7c9b2e40",
+          "pass": 1,
           "rounds": 1
         }
       },
@@ -178,6 +180,7 @@
               "startedAt": "2026-09-22T09:17:12Z"
             }
           },
+          "pass": 3,
           "rounds": 2,
           "backwardMoves": {
             "reviewing-implementing": 1,
@@ -209,6 +212,7 @@
             "id": "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b",
             "version": 1
           },
+          "pass": 0,
           "rounds": 0
         }
       },
@@ -217,7 +221,6 @@
         "number": 1247,
         "head": "5b3d9e2c8f1a47d06b2e5c9f3a8d1e4b7c0f6a29",
         "state": "open",
-        "checksVerdict": "pending",
         "reviewDecision": "changes_requested"
       },
       "designGate": {
@@ -250,6 +253,10 @@
       "repo": "acme/widgets",
       "defaultBranch": "main",
       "workers": {},
+      "why": {
+        "state": "blocked",
+        "reason": "It waits on LEGION-210 and LEGION-213, which are not done."
+      },
       "memoryGroup": "memory",
       "memoryDrawMode": "random",
       "memoryDrawnAt": "2026-09-20T11:04:05Z"
@@ -281,8 +288,10 @@
                 "promptRetires": 0
               }
             },
-            "pendingCause": "died"
+            "pendingCause": "died",
+            "leakCheckCause": "the shared public leak check could not be installed: GitHub answered the read of theorem-labs/agent-infra at leak-check-v3 with HTTP 404: Not Found"
           },
+          "pass": 1,
           "rounds": 1
         }
       },
@@ -292,7 +301,11 @@
           "approvedVersion": null,
           "status": "unregistered"
         }
-      ]
+      ],
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
+      }
     },
     "LEGION-211": {
       "key": "LEGION-211",
@@ -319,6 +332,7 @@
               "lastSendError": "post the prompt: dial tcp 10.42.0.17:13371: connect: connection refused"
             }
           },
+          "pass": 0,
           "rounds": 1
         }
       },
@@ -332,8 +346,21 @@
         }
       ],
       "waitingLine": {
-        "place": 1,
-        "length": 2
+        "place": 2,
+        "length": 2,
+        "part": "starting",
+        "kind": "queued_root",
+        "partPlace": 1,
+        "partLength": 1,
+        "holdsSlot": false,
+        "rootRank": "00011",
+        "ownRank": "00011",
+        "rootKey": "LEGION-211",
+        "reason": "It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them."
+      },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is implementing and the implementer's claim is stranded at suspended, so nothing will wake it."
       }
     },
     "LEGION-212": {
@@ -355,9 +382,24 @@
           "changesReason": "name the rollback path for the schema change"
         }
       ],
+      "slot": {
+        "index": 2,
+        "admittedAt": "2026-09-22T08:01:30Z"
+      },
       "waitingLine": {
-        "place": 2,
-        "length": 2
+        "place": 1,
+        "length": 2,
+        "part": "returned",
+        "kind": "answered",
+        "partPlace": 1,
+        "partLength": 1,
+        "holdsSlot": true,
+        "since": "2026-09-22T09:21:00Z",
+        "reason": "A person answered it, and its work came back at 2026-09-22T09:21:00Z. It is 1st of 1 issue whose work came back. It already holds its admission slot, so it resumes at the next pass whatever the cap says."
+      },
+      "why": {
+        "state": "claim_stopped",
+        "reason": "Its phase is awaiting_person and the tester's claim is stranded at retired, so nothing will wake it."
       },
       "waitingOn": {
         "kind": "ask",
@@ -583,7 +625,7 @@
     "withoutWebhookApp": [
       {
         "repo": "zeta/tools",
-        "reason": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events and nothing redelivers them; the pass heals its pull requests every 2 minutes"
+        "reason": "Dispatch's GitHub App is not installed on zeta/tools: GitHub sends Legion none of its events, nothing redelivers them, and no periodic pass makes up for them, so its issues stand still until the App is installed"
       }
     ],
     "caches": [
@@ -712,9 +754,6 @@
     "dispatch_url": "https://dispatch.internal.example",
     "projects": {
       "LEGION": {
-        "merge": {
-          "by_hand": []
-        },
         "slack_channels": [
           "C0123ABCD",
           "C0123ABCE"
@@ -726,13 +765,6 @@
         "deploys": []
       },
       "WIDGETS": {
-        "merge_queue_role": "merge-queue",
-        "merge": {
-          "by_hand": [
-            "^deploy/",
-            "\\.sql$"
-          ]
-        },
         "slack_channels": [],
         "memory": {
           "config_files": []
@@ -765,6 +797,8 @@
     "production_check_hours": 240,
     "pod_update_retask_hours": 1,
     "pod_update_notice_hours": 4,
+    "worker_silence_minutes": 45,
+    "worker_background_hours": 6,
     "pod_update_max_open_rounds": 6,
     "pod_update_rounds_per_minute": 2,
     "review_round_cap": 4,

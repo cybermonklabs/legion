@@ -2,6 +2,7 @@ package supervise
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"errors"
@@ -40,6 +41,14 @@ type StreamTurnStart struct {
 
 // StreamTurnEnd is the agent's turn ending.
 type StreamTurnEnd struct{ Claim claim.Token }
+
+// IssueTurnEnded is a turn ending on another claim of this claim's issue, posted by the daemon to
+// every other claim of the issue once that turn's own machine has recorded its end. The roles of
+// an issue work one jj workspace, so a phase task this claim is holding rather than adopt that
+// working copy under an open turn (sendPending) may go now. It carries no fact of its own — the
+// send asks again which claims are in a turn — so one posted for a turn another role began
+// meanwhile simply holds again.
+type IssueTurnEnded struct{ Claim claim.Token }
 
 // StreamToolStep is one tool call of the agent's turn beginning or ending, as the stream read
 // the frame (stream.ToolStep): the only fact on the wire that says an agent mid-turn is still
@@ -435,10 +444,11 @@ type RequestStop struct{ Claim claim.Token }
 type RequestTreeClose struct{ Claim claim.Token }
 
 // RequestIssueClose is the workflow closing a child issue as done (workflow's leave): the claim
-// ends as a tree close ends it, retaining its session id as volume-reap evidence while clearing its
-// resume path. It is not a lost workspace: nothing is recovered, and the issue's next run, should
-// a person set it todo again, starts fresh on a pod and a disk of its own. Like the tree's close it
-// is the workflow's own decision and is not put to TreeClosable.
+// ends as a tree close ends it, keeping its whole session - the id, which the volume reaping reads
+// as its evidence, and the resume path. It is not a lost workspace: nothing is recovered, and the
+// issue's next run, should a person set it todo again, resumes that session on a pod and a disk of
+// its own (a session the store lost starts fresh and is reported). Like the tree's close it is the
+// workflow's own decision and is not put to TreeClosable.
 type RequestIssueClose struct{ Claim claim.Token }
 
 // RequestOperatorClose is the operator closing a tree through the API, through its root claim; the
@@ -450,12 +460,22 @@ type RequestOperatorClose struct{ Claim claim.Token }
 // RequestRetry relaunches a failed or retired claim's session with fresh budgets: the workflow's
 // decision that the role runs again — the tree's architect retrying a held phase, or a closed tree
 // re-admitted after its linger stopped every claim.
-type RequestRetry struct{ Claim claim.Token }
+//
+// FreshSession asks for a new session in place of the recorded one. It is a field rather than an
+// event of its own, as the closes are, because both answers are the same decision made by the same
+// caller — the claim runs again — and neither skips a check the other makes: it says only which
+// session the retry starts. A retry that asks for none still starts one when the provider refused
+// the recorded session out of its budget (freshSession).
+type RequestRetry struct {
+	Claim        claim.Token
+	FreshSession bool
+}
 
 // RequestOperatorRetry is the operator relaunching a claim through the API: the retry RequestRetry
 // makes, fresh budgets and the same session, for an architect and for a phase worker
 // (operatorRetry). It is its own event, as the closes are, so the table answers each caller's
-// retry its own way.
+// retry its own way. FreshSession is `legion claims retry --fresh-session`, as RequestRetry takes
+// it.
 //
 // It reaches a retired claim as well as a failed one. `legion claims stop` retires a claim, and
 // while the operator's retry refused that state an operator who stopped a worker could start it
@@ -463,18 +483,23 @@ type RequestRetry struct{ Claim claim.Token }
 // dispatch://INFRA-956 R3 asked to be made of `legion` commands alone. The claim's tree lifecycle
 // still decides whether the relaunch runs at all: a tree whose cleanup is reserved refuses the
 // launch (revive, Store.AdmitClaim), as it refuses the workflow's own retry of a retired claim.
-//
-// A caller that wants the claim to start in a new session forgets the recorded one first
-// (RequestForgetSession), as `legion claims retry --fresh-session` and the controller's
-// fresh_session both do through the api's one fresh-session effect: this retry starts whatever
-// session the claim records when it arrives, and a claim that records none is spawned fresh.
 type RequestOperatorRetry struct {
-	Claim claim.Token
+	Claim        claim.Token
+	FreshSession bool
 }
 
-// RequestForgetSession drops the named recorded session of a suspended, failed, or retired claim.
-// Its next resume, retry, or workflow start provisions a fresh session rather than resuming one
-// the operator determined must not be used.
+// RequestForgetSession drops the named recorded session of a claim that runs nothing — queued,
+// suspended, failed, or retired — so that whatever launches it next spawns a fresh agent instead
+// of resuming those turns: the operator's own `legion claims forget-session`, and `legion claims
+// retry --fresh-session` of a phase worker that failed or that an operator stopped, whose session
+// is the operator's to leave behind (api's forgetSession and retryClaim). Session is the session
+// the operator means, and a claim recording another is refused, so a decision that changed the
+// claim since it was read cannot clear a session nobody asked about.
+//
+// It launches nothing, which is what makes it its own event rather than another retry: a phase
+// worker is relaunched by the workflow's start of its phase, so the two halves of that retry have
+// different owners — which session the claim starts on is the operator's to say, and when it
+// starts is the workflow's.
 type RequestForgetSession struct {
 	Claim   claim.Token
 	Session string
@@ -524,6 +549,23 @@ type RequestExit struct {
 	Reason     string
 }
 
+// RequestTurnOutcome is the outcome of one turn, reported by the producer that ended it: the
+// pi-legion agent_end hook for an Oh My Pi session, the Claude bridge for a Claude Code one, each
+// over the claim's own HTTP route. Sequence is that producer's own count of the turns it has
+// ended at Generation, from 1, and the pair is the key the claim keeps the report under
+// (recordTurnOutcome).
+//
+// Neither is fenced. A report naming a generation the claim has left is not stale: it is a turn of
+// that generation, which belongs in its own place in the order the run is derived in, and the
+// secret the route authenticates is the current registration's either way.
+type RequestTurnOutcome struct {
+	Claim      claim.Token
+	Generation uint64
+	Sequence   uint64
+	Refused    bool
+	Message    string
+}
+
 // RequestCompact takes the claim for a compaction of its Oh My Pi session, which is what a claim
 // whose provider keeps refusing its session needs before anything is started again
 // (Machine.Compact). It carries no instructions: the ask itself is the caller's, made with no
@@ -547,6 +589,7 @@ func (RuntimeObservation) isEvent()   {}
 func (StreamHello) isEvent()          {}
 func (StreamTurnStart) isEvent()      {}
 func (StreamTurnEnd) isEvent()        {}
+func (IssueTurnEnded) isEvent()       {}
 func (StreamToolStep) isEvent()       {}
 func (StreamPromptResult) isEvent()   {}
 func (StreamClosed) isEvent()         {}
@@ -575,6 +618,7 @@ func (RequestOperatorRetry) isEvent() {}
 func (RequestForgetSession) isEvent() {}
 func (RequestDeliver) isEvent()       {}
 func (RequestExit) isEvent()          {}
+func (RequestTurnOutcome) isEvent()   {}
 func (RequestCompact) isEvent()       {}
 func (CompactEnded) isEvent()         {}
 
@@ -587,6 +631,7 @@ const (
 	onHello         eventKind = "stream_hello"
 	onTurnStart     eventKind = "stream_turn_start"
 	onTurnEnd       eventKind = "stream_turn_end"
+	onIssueTurnEnd  eventKind = "issue_turn_ended"
 	onToolStep      eventKind = "stream_tool_step"
 	onPromptResult  eventKind = "stream_prompt_result"
 	onClosed        eventKind = "stream_closed"
@@ -618,6 +663,7 @@ const (
 	onForgetSession eventKind = "request_forget_session"
 	onDeliver       eventKind = "request_deliver"
 	onExit          eventKind = "request_exit"
+	onTurnOutcome   eventKind = "request_turn_outcome"
 	onCompact       eventKind = "request_compact"
 
 	onCompactEnded eventKind = "compact_ended"
@@ -643,6 +689,8 @@ func kindOf(ev Event) eventKind {
 		return onTurnStart
 	case StreamTurnEnd:
 		return onTurnEnd
+	case IssueTurnEnded:
+		return onIssueTurnEnd
 	case StreamToolStep:
 		return onToolStep
 	case StreamPromptResult:
@@ -699,6 +747,8 @@ func kindOf(ev Event) eventKind {
 		return onDeliver
 	case RequestExit:
 		return onExit
+	case RequestTurnOutcome:
+		return onTurnOutcome
 	case RequestCompact:
 		return onCompact
 	case CompactEnded:
@@ -732,6 +782,8 @@ func requestName(ev Event) (string, bool) {
 		return "deliver", true
 	case RequestExit:
 		return "exit", true
+	case RequestTurnOutcome:
+		return "turn outcome", true
 	case RequestCompact:
 		return "compact", true
 	case PodUpdateSignalled:
@@ -854,9 +906,22 @@ func fillTable(t *builder) {
 	// A turn whose end runs a stale-plugin relaunch held for it (refreshPlugin) ends launching, or
 	// failed when that launch spends the claim's budget, as the stale-plugin row itself does.
 	t.row(onTurnEnd, "the turn ended", turnEnded, []ClaimState{StateIdle, StateWorking, StateLaunching, StateFailed}, StateWorking)
-	t.ignore(onTurnEnd, "no turn is in flight", prompted...)
+	// A turn the daemon never saw begin ends here: a claim registered while the agent's own turn
+	// was already running is ready rather than working, and the end is the only stream event of
+	// that turn it will ever get. The task it holds unread is sent now, which is what left three
+	// workers idle holding a task for 35 to 75 minutes (dispatch://INFRA-1691, INFRA-1545,
+	// INFRA-722, A9) — a send reached only through a turn the daemon watched begin waits on an
+	// event that has already happened.
+	t.row(onTurnEnd, "a turn the daemon never saw begin ended: send the task it holds", blindTurnEnded,
+		[]ClaimState{StateReady, StateIdle, StateWorking}, prompted...)
 	t.ignore(onTurnEnd, "the agent is not ready, so no turn of a delivery is in flight", unready...)
 	t.ignore(onTurnEnd, noProcess, gone...)
+
+	t.row(onIssueTurnEnd, "a turn ended elsewhere on the issue: send the task that was waiting for the working copy they share",
+		issueTurnEnded, []ClaimState{StateWorking}, prompted...)
+	t.ignore(onIssueTurnEnd, "the claim is in a turn of its own; what it holds goes when that turn ends", StateWorking)
+	t.ignore(onIssueTurnEnd, noSend, unready...)
+	t.ignore(onIssueTurnEnd, noSend, gone...)
 
 	// The calls of a turn, which are the one thing that says an agent mid-turn is still moving.
 	// The row writes the claim's step columns through the store's own narrow call and leaves the
@@ -998,8 +1063,8 @@ func fillTable(t *builder) {
 		StateRegistered, StateReady, StateIdle)
 	t.row(onSuspend, "hold the suspension for the turn's end: stopping the agent now would cut its turn off", holdSuspension,
 		nil, StateWorking)
-	t.row(onSuspend, "a suspension of a rule-resuming launch is held until the agent is ready, unless its paced wake waits over no process: that one is suspended here",
-		holdSuspendUntilReady, []ClaimState{StateSuspended}, StateLaunching, StateShimConnected)
+	t.row(onSuspend, "a suspension of a launch stops the start, and is otherwise held until the agent is ready, unless its paced wake waits over no process: that one is suspended here", holdSuspendUntilReady,
+		[]ClaimState{StateSuspended}, StateLaunching, StateShimConnected)
 	t.row(onSuspend, "already suspended: an operator's suspend takes the suspension over", suspendedAgain, nil, StateSuspended)
 	t.ignore(onSuspend, notRegistered,
 		StateQueued, StateLaunchUncertain)
@@ -1029,9 +1094,9 @@ func fillTable(t *builder) {
 	t.row(onTreeClose, "the workflow's close of the tree: release the claim and retire it", treeClose, []ClaimState{StateRetired}, stoppable...)
 	t.row(onTreeClose, "already retired", nothingToDo, nil, StateRetired)
 
-	t.row(onIssueClose, "the workflow's close of the issue as done: release the claim, retain its session id as volume-reap evidence, clear its resume path, and retire it", issueClose,
+	t.row(onIssueClose, "the workflow's close of the issue as done: release the claim and retire it, its session kept for a reopen", issueClose,
 		[]ClaimState{StateRetired}, stoppable...)
-	t.row(onIssueClose, "already retired: retain the session id and clear its resume path", issueCloseRetired, nil, StateRetired)
+	t.row(onIssueClose, "already retired, with its session kept for a reopen", nothingToDo, nil, StateRetired)
 
 	t.row(onOperatorClose, "the operator's close of the tree, if no workflow issue backs it", operatorClose, []ClaimState{StateRetired}, stoppable...)
 	// A close of a tree already retired is the outcome the operator asked for, so it answers as
@@ -1074,6 +1139,18 @@ func fillTable(t *builder) {
 		[]ClaimState{StateRetired, StateSuspended}, StateRegistered, StateReady, StateWorking, StateIdle)
 	t.row(onExit, "the exit of a process the daemon already ended", nothingToDo, nil, gone...)
 	t.ignore(onExit, notRegistered, StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected)
+
+	// The outcome of a turn, from the producer that ended it. Every live state takes one: the
+	// report is the producer's HTTP call, which races the turn's end on the worker stream and the
+	// relaunch of a process that is coming up, and a report is about the provider rather than
+	// about where the claim stands.
+	t.row(onTurnOutcome, "record the turn's outcome; the claim fails once the provider's refusals reach the launch failure limit",
+		turnOutcome, []ClaimState{StateFailed}, live...)
+	t.ignore(onTurnOutcome, "no launch has minted a boot token", StateQueued)
+	t.ignore(onTurnOutcome, "the previous launch's pane is still uncertain", StateLaunchUncertain)
+	t.ignore(onTurnOutcome, "the claim is suspended and its process stopped", StateSuspended)
+	t.ignore(onTurnOutcome, failedClaim, StateFailed)
+	t.ignore(onTurnOutcome, retiredClaim, StateRetired)
 
 	// The compaction of the claim's Oh My Pi session, which reaches an agent that is running and
 	// in no turn: the claim is working for as long as it runs, and the end gives it back
@@ -1237,12 +1314,22 @@ func reprobe(m *Machine, ctx context.Context, _ Event) error {
 // acked is the prompt taken: the task is marked read, the wait for its turn is armed, and the
 // prompt is outstanding until Oh My Pi reports how its work ended (awaitingResult), which is
 // what says which of the turns that follow was this prompt's.
+// It is also where the abandoned session's sentence becomes told, since this is the first word
+// the daemon has that a prompt carrying it reached the agent at all (AbandonedSession.Told): a
+// prompt the agent refused, or one the transport lost, goes back in the queue and must carry the
+// sentence again. The claim then goes in the delivery's own write, so a restart between the two
+// cannot read a claim that has told the sentence beside a task no prompt of which was ever
+// acknowledged, or the other way about.
 func acked(m *Machine, ctx context.Context, _ Event) error {
 	m.helloDuringSend = false
 	m.awaitingResult = m.claim.Pending.ID
 	p := m.claim.Pending
 	m.markRead(p)
 	m.arm(TimerTurn, m.deps.Timeouts.RPC, p.ID)
+	if m.claim.Abandoned.Tells() {
+		m.claim.Abandoned.Told = true
+		return m.saved(m.deps.Store.PutClaimAndDelivery(ctx, m.stored(), *p))
+	}
 	return m.putPending(ctx)
 }
 
@@ -1471,7 +1558,9 @@ func agentBusy(reason string) bool {
 // turnStarted is a turn starting in a ready or idle claim. It confirms the pending delivery when
 // it is that delivery's turn: a replay naming it, or — B1 — Oh My Pi's own agent_start while the
 // delivery is in flight (sent and not yet answered, acknowledged and waiting, or possibly sent by
-// an earlier daemon). Any other turn is a foreign one, and confirms nothing.
+// an earlier daemon). Any other turn is a foreign one, and confirms nothing. Either way the claim
+// records when this turn began (Claim.LastTurnStart), which is persisted with it: the time is a
+// reader's only handle on how long the agent has been in the turn it is in.
 //
 // The persisted working state is reported to the daemon (Machine.OnDurableState), because a turn is
 // the one observation that a woken pod's role came back and took work, whether or not the wake
@@ -1487,6 +1576,7 @@ func agentBusy(reason string) bool {
 func turnStarted(m *Machine, ctx context.Context, ev Event) error {
 	start := ev.(StreamTurnStart)
 	m.claim.State = StateWorking
+	m.claim.LastTurnStart = m.deps.Clock.Now()
 	p := m.claim.Pending
 	_, awaiting := m.timers[TimerTurn]
 	inFlight := m.send != nil || awaiting || (m.askFirst && (p == nil || !m.asksRoot(*p)))
@@ -1670,7 +1760,13 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // turnEnded is the turn over: the delivery whose turn it was retires (settle), and one queued
 // meanwhile goes — unless a suspension is held for this turn (holdSuspension), which runs
 // instead; a stop the runtime refuses leaves the claim idle, still holding it. The agent just
-// said where it is, so nothing is left to ask it after a restart.
+// said where it is, so nothing is left to ask it after a restart. The claim records when the turn
+// ended (Claim.LastTurnEnd) before any of that: every path out of here persists the claim, and
+// the time is what tells an idle worker that finished a moment ago from one idle since yesterday.
+//
+// A turn that ends is also the end of the work the deaths were charged against (chargeDeath), so
+// the count goes with it: an agent killed twice in its turns and through the third is making
+// progress, and only deaths that keep a turn from ending should ever fail its claim.
 //
 // Whose turn it was is a question background work made real, and settle is where it is answered:
 // a turn that ends while the task's prompt is still outstanding retires nothing, because Oh My
@@ -1730,6 +1826,8 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // against ends finds the pair.
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
+	m.claim.LastTurnEnd = m.deps.Clock.Now()
+	m.claim.Budgets.Deaths = 0
 	if m.compacting != nil {
 		m.log.Info("supervise: a turn ended while this claim's session is being compacted; the claim stays working until the compaction ends")
 		m.compacting.inTurn, m.compacting.back = false, StateIdle
@@ -1802,6 +1900,32 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 	}
 	return m.sendPending(ctx)
 }
+
+// blindTurnEnded is a turn ending on a claim the daemon never saw start one: it is ready or idle,
+// so no delivery of its own was in flight, and what the end tells it is that the agent's own turn
+// is over. A task it holds that no agent has read goes now (sendPending, which holds it back from
+// a turn in flight on this claim or another of its issue, so R6's fence stands); a task already
+// read, or no task at all, leaves nothing to do, as this event did before.
+//
+// The busy refusal is how such a claim comes to hold an unread task: Oh My Pi acknowledges the
+// prompt and then refuses it because a turn of its own is running (takeBackPending puts the task
+// back under a new id). Every other path to this state ends with the task sent or none held.
+func blindTurnEnded(m *Machine, ctx context.Context, _ Event) error {
+	p := m.claim.Pending
+	if p == nil || !p.ConfirmedAt.IsZero() || !p.DeliveredAt.IsZero() {
+		return nil
+	}
+	m.log.Info("supervise: a turn this daemon never saw begin has ended; the task it holds unread is sent now",
+		"delivery", p.ID, "phase", string(p.Phase), "generation", p.Generation)
+	return m.sendPending(ctx)
+}
+
+// issueTurnEnded is a turn ending on another claim of this claim's issue. It carries nothing the
+// claim records: the send it may unblock asks for itself which claims of the issue are in a turn
+// (sendPending), so a wake that arrives while another role has started one holds the task again,
+// and a wake that never arrives — a turn whose process died instead of ending it — costs nothing,
+// because the sweep's next observation asks the same question.
+func issueTurnEnded(m *Machine, ctx context.Context, _ Event) error { return m.sendPending(ctx) }
 
 // answerByTurnEnd records the answer a worker gives by ending the turn the round's own task
 // started: it read that task, and the task told it to push its work and to end its turn. The
@@ -2055,8 +2179,12 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 	return m.staleRegistration(ctx, r.PluginContract)
 }
 
+// ready is the agent saying it can be prompted. The time is kept on the claim (Claim.LastReady),
+// since it is what dates the two causes beside it — a death and a failed start are both older
+// than the agent that is running now (machine.go's Claim).
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
+	m.claim.LastReady = m.deps.Clock.Now()
 	// The pending cause goes with the launch failures it names: the episode they measure ended
 	// when this agent came up (Claim.PendingCause).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
@@ -2112,6 +2240,11 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // the claim kept goes once the agent is ready. Its event is the workflow's retry or the
 // operator's own (operatorRetry), and the pacing reads each its own way (exemptWake).
 //
+// A retry that asks for a new session, and one of a claim whose provider refused the recorded
+// session out of its budget, forgets that session instead, so the launch spawns a fresh agent
+// (freshSession): relaunching a session every turn of which was refused would be refused again,
+// and the claim would fail its way through another budget having done nothing.
+//
 // The failure record goes with the counts it names, and both go once the claim is admitted. A
 // reader is served that record built from the counts the claim holds now (api.FailureViewOf),
 // so zeroing the counts alone would serve the cause and the sentence of the failure being
@@ -2129,9 +2262,19 @@ func resumeByRule(m *Machine, ctx context.Context, ev Event) error {
 // own, or a parked wake's recheck when its turn comes — finds the record already cleared on the
 // live machine, while the store still holds it as AdmitClaim wrote it, until the next persist.
 func retry(m *Machine, ctx context.Context, ev Event) error {
+	if fresh, why := freshSession(ev, m.claim, m.deps.Limits.LaunchFailures); fresh {
+		m.log.Info("supervise: retrying in a new session", "why", why, "session", m.claim.Session,
+			"refusedRun", m.claim.RefusedRun())
+		// The failure the claim carries is the fuller answer where it has one — it names how many
+		// turns the provider refused and what it said about the newest of them — and the retry's
+		// own reason answers for a claim that failed nothing, an operator's retry of a worker it
+		// stopped.
+		m.forgetSession(cmp.Or(m.claim.Failure, why))
+	}
 	return m.revive(ctx, exemptWake(ev), func() {
 		m.claim.Budgets, m.claim.PendingCause = Budgets{}, ""
 		m.claim.Failure, m.claim.FailureCause, m.claim.FailedAt = "", "", time.Time{}
+		m.claim.LeakCheckCause = ""
 	})
 }
 
@@ -2142,9 +2285,10 @@ func retry(m *Machine, ctx context.Context, ev Event) error {
 // daemon's controller has a retry of its own, its keeper, so it alone is refused. A claim's role
 // never changes, so the refusal cannot race the decision it guards.
 //
-// It relaunches the session the claim records. A start that must not use that session has
-// dropped it before this runs (RequestForgetSession), so the launch spawns a fresh agent:
-// resuming a session whose turns the provider refused would be refused again.
+// It relaunches the session the claim records, unless the retry asks for a new one
+// (RequestOperatorRetry.FreshSession) or the provider refused that session out of the claim's
+// launch budget: retry forgets the session in either case, so the launch spawns a fresh agent,
+// because resuming a session whose turns the provider refused would be refused again.
 func operatorRetry(m *Machine, ctx context.Context, ev Event) error {
 	if m.claim.Role == claim.RoleController {
 		return &RefusedError{State: m.claim.State, Request: "retry",
@@ -2181,31 +2325,36 @@ func treeClose(m *Machine, ctx context.Context, _ Event) error { return m.end(ct
 // claim's and nothing else (Runtime.Release, releaseControllerSandbox) — so an issue's pod and the
 // disk it owns go with the separately fenced IssueSuspend, or with the tree cleanup once every
 // claim of the tree has retired. That is why a merged close leaves the implementer's pod standing:
-// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). The claim
-// keeps its session id as the reaping guard's evidence but clears its resume path because the
-// volume is gone. Nothing of the workspace is recovered, and a later start of the issue, re-entered
-// by a person's todo, is a fresh spawn on a pod and a disk of its own. A release that fails changes
-// nothing, so the close can be asked again.
+// its five siblings take this close and no IssueSuspend is queued (workflow/linger.go). A release
+// that fails changes nothing, so the close can be asked again.
+//
+// The claim keeps the session it recorded, both halves of it. A done issue is reopened — a person
+// moves it back, a production check fails — and its roles are started again on the same issue,
+// where a session forgotten here would start each as a fresh agent that has read none of the work
+// it is continuing (dispatch://INFRA-714 A10). The session id is what the Sandbox volume reaping
+// reads as its evidence, and the resume path is the only handle either runtime resumes by, so
+// dropping the path would be dropping the resume whatever the id said.
+//
+// A store that has since lost the session is not this decision's to guess at. Keeping the path
+// costs one resume when the session is gone: the runtime answers runtime.ErrSessionFileMissing,
+// the same try forgets the session and spawns a fresh agent, the claim is charged nothing, and
+// the loss is reported to the issue, its architect and the controller, with the fresh agent told
+// in its own prompt (Machine.start, startFresh, Deps.SessionLost; dispatch://INFRA-714 R8).
+// Clearing the path here instead would reach that same fresh agent silently, which is the one
+// outcome R8 forbids. Nothing of the workspace is recovered either way: a later start of the
+// issue runs on a pod and a disk of its own, resuming the agent's session on it.
 func issueClose(m *Machine, ctx context.Context, _ Event) error {
 	if err := m.release(ctx); err != nil {
 		return err
 	}
-	m.clearIssueResumePath()
 	return m.retire(ctx)
 }
 
-// issueCloseRetired is the issue's close reaching a claim already retired (a tree's close retired it
-// with its session kept): the issue is finished, so its resume path goes with the volume while the
-// session id remains as reaping evidence. Once its resume path is gone, it is left as it is.
-func issueCloseRetired(m *Machine, ctx context.Context, _ Event) error {
-	if m.claim.SessionFile == "" {
-		return nil
-	}
-	m.clearIssueResumePath()
-	return m.persist(ctx)
-}
-
-// forgetSession drops the named session record from a processless claim. The comparison runs under
+// forgetSession drops the named session record from a processless claim: the operator's
+// `legion claims forget-session`, and the half of `legion claims retry --fresh-session` that is
+// the claim's rather than the workflow's (api's retryClaim). It launches nothing — whatever starts
+// the claim next, for a phase worker the workflow's own start of its phase, spawns a fresh agent
+// rather than resuming the turns the operator asked to leave behind. The comparison runs under
 // the machine lock, so a decision that changed the claim since an operator saw it cannot clear a
 // later session.
 func forgetSession(m *Machine, ctx context.Context, ev Event) error {
@@ -2215,14 +2364,10 @@ func forgetSession(m *Machine, ctx context.Context, ev Event) error {
 			"%s records session %s; pass --session %s to start fresh", m.claim.Token, m.claim.Session, m.claim.Session,
 		)}
 	}
-	m.forgetSession()
+	m.log.Info("supervise: forgetting the recorded session at the operator's ask", "session", m.claim.Session,
+		"sessionFile", m.claim.SessionFile, "state", string(m.claim.State))
+	m.forgetSession("an operator cleared it with `legion claims forget-session`, so this claim starts fresh")
 	return m.persist(ctx)
-}
-
-// clearIssueResumePath leaves the session id as the reaping guard's durable evidence but clears its
-// resume path, so a later admission starts fresh once the volume is gone.
-func (m *Machine) clearIssueResumePath() {
-	m.claim.SessionFile = ""
 }
 
 // operatorClose is the operator's own close, asked of a claim through the API. TreeClosable is
@@ -2517,11 +2662,10 @@ func (m *Machine) dropsUpdateTask() bool {
 // instead (machine.go's retire).
 //
 // The mark a restart armed for that ask goes in the same step, here rather than in each caller
-// (answerAskFirstAfterDrop): a drop that left it armed would make the claim's next task the
-// running turn's, confirmed and retired unsent, and a caller that forgot the second call was
-// exactly that bug. It is answered whether or not this drop took a task back, as it was at every
-// caller before: the question is the pending delivery's, and a claim that still holds one is
-// answered nothing there.
+// (answerAskFirstAfterDrop): left armed, it would make the claim's next task the running turn's,
+// confirmed and retired unsent, and one caller forgetting the second call is enough for that. It
+// is answered whether or not this drop took a task back: the question is the pending delivery's,
+// and a claim that still holds one is answered nothing there.
 func (m *Machine) dropUpdateTask(ctx context.Context) error {
 	if m.dropsUpdateTask() {
 		m.log.Info("supervise: the update round is over for this claim; the task it sent and nothing read is taken back",
