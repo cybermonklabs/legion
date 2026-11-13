@@ -364,22 +364,23 @@ evaluate() {
 # A predicate is a bound, a set membership or an exit status. Anything else, and anything
 # whose value reads as a sentence, fails: that is what the Verification document asks for.
 predicate_is_a_sentence() {
+    # True when any key of the predicate is none of the seven, or carries a value of the
+    # wrong shape: a bound that is no number, an exit status that is no whole number.
     local spec="$1" key value
-    key="$(printf '%s' "$spec" | jq -r 'keys[0] // empty')"
-    case "$key" in
-    equals | contains | matches | exit | at_most | at_least | one_of) ;;
-    *) return 0 ;;
-    esac
-    case "$key" in
-    at_most | at_least)
-        value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
-        printf '%s' "$value" | grep -qE '^-?[0-9]+(\.[0-9]+)?$' || return 0
-        ;;
-    exit)
-        value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
-        printf '%s' "$value" | grep -qE '^[0-9]+$' || return 0
-        ;;
-    esac
+    while IFS= read -r key; do
+        case "$key" in
+        equals | contains | matches | one_of) ;;
+        at_most | at_least)
+            value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
+            printf '%s' "$value" | grep -qE '^-?[0-9]+(\.[0-9]+)?$' || return 0
+            ;;
+        exit)
+            value="$(printf '%s' "$spec" | jq -r --arg k "$key" '.[$k] | tostring')"
+            printf '%s' "$value" | grep -qE '^[0-9]+$' || return 0
+            ;;
+        *) return 0 ;;
+        esac
+    done < <(printf '%s' "$spec" | jq -r 'keys[]')
     return 1
 }
 
@@ -429,51 +430,65 @@ prepare_env() {
     }
 }
 
-# What the evaluator refuses, a closed list. A row's command is run once, and the row
-# fails, naming what it read, on each of these and on nothing else:
+# What the evaluator admits, a closed list. It fails closed: the classifier of reader_py
+# reads each row's command once, and admits it only when every part of it is one of these
+# forms, each of which the rows of claims.jsonl use; any other form is refused by name, and
+# the row fails without being read. The counts are of the 569 rows with a command.
 #
-#   - a non-zero status of any program the command runs, wherever it stands: in any stage
-#     of a pipeline, in any element of an && or || list, in a group, a subshell, a loop
-#     or a substitution. Each program named in command position by a bare word is wrapped
-#     in a function of that name, and each of the five program variables points at a
-#     shim, and both record the program's own status with its own arguments;
-#   - a non-zero status of any stage but the last of the command's final pipeline, read
-#     from PIPESTATUS and matched to the stage's words by the quote-aware reader, which
-#     catches a group or subshell whose status a builtin set; text in single quotes is
-#     literal, so a backtick or $( in a quoted pattern runs nothing and is not read;
-#   - a search, grep, egrep, fgrep, rg, ag or git grep, that exits above 1. A search that
-#     exits exactly 1 found nothing, which is no failure, and that rule is applied to each
-#     program and each stage on its own;
+#   - a simple command (569 rows), with assignments before it (28) or alone (7), and with
+#     output redirections (14);
+#   - a pipeline (363), and a list joined by ;, && or || or an unquoted newline (88);
+#   - a group { list; } (28), a subshell ( list ) (2), and a for loop (12);
+#   - a command substitution $(...) in a word (11), whose code is admitted by the same
+#     list;
+#   - as a command word: a program named by a bare word, which is wrapped in a function of
+#     that name that records its status; one of the five program variables (38), whose
+#     shim records it; xargs running a program named by a bare word (4), whose own status
+#     carries the program's; sh running a script file (1); and true (6), whose status is
+#     no read.
+#
+# Refused by name, among every other form: a word in command position that holds a / or is
+# a variable other than the five, the output of a substitution as a command word, command,
+# builtin, exec, eval, source, time, function definitions and the keywords if, while,
+# until, case and select, a shell given a string with -c, env, timeout, nice, nohup, sudo
+# or stdbuf running a program, find -exec, an input redirection, a here-document, a
+# background &, and IOC_EXPECT_STATUS written as a statement of its own. A row that needs
+# a new form adds it here and to the classifier, with a case of check.test.sh, in the
+# same commit.
+#
+# What the evaluator refuses in an admitted row, read after it runs:
+#
+#   - a non-zero status of any program the row runs, wherever it stands, as its function
+#     or its shim records it with its arguments;
+#   - a non-zero status of any stage of the final pipeline, the last included, read from
+#     PIPESTATUS and matched to the command whose status that stage carries (a group or a
+#     loop carries its last command's);
+#   - in both, the one search-miss rule holds: a search, grep, egrep, fgrep, rg, ag or git
+#     grep, that exits exactly 1 found nothing, and one that exits above 1 failed;
 #   - a bound, at_least or at_most, whose output is not exactly one number; a row that
 #     counts lines says so in its command, with wc -l;
-#   - a program the evaluator cannot record, which the reader refuses by name: a word in
-#     command position that holds a / and is none of the five program variables, and a
-#     word after command, builtin or exec, each of which runs a program past the function
-#     that records it. A row that needs such a program names it by a program variable;
-#   - a predicate written as a sentence, a row with two predicates over its output, and
-#     a row with a command and no predicate.
+#   - a predicate any key of which is none of the seven or carries a value of the wrong
+#     shape, a row with two predicates over its output, and a row with a command and no
+#     predicate.
 #
-# Two forms declare a failure the row claims, and each is read rather than passed: an
-# exit status beside the row's one predicate over its output, which both must hold and
-# which exempts that row from the first three rules, and IOC_EXPECT_STATUS=<n> written
-# before one command, which exempts that command's status n and nothing else.
+# A row claims a failure in one way: IOC_EXPECT_STATUS=<n> written before the one command
+# that fails, which exempts that command's status n and nothing else, and an exit status
+# beside the row's one predicate over its output, which the row's final status must meet.
+# A row with an exit status is held to every rule above like any other.
 #
 # What the evaluator cannot see. It reads exit statuses and the output a row prints. A
 # command that exits 0 after failing, or that writes its failure only to a file the row
-# does not read, is outside what it sees; so is a builtin's status anywhere but the
-# final pipeline, and a program a script the row runs starts, whose status reaches the
-# row only through that script's own. A person reading every row at review covers that,
-# as for install-pinned.
+# does not read, is outside what it sees; so is true's status anywhere but the final
+# pipeline, an output redirection that fails before ;, && or || and so stops its command
+# before the function runs, and what a script a row runs does inside it, whose status reaches the row only
+# through that script's own. A person reading every row at review covers that, as for
+# install-pinned.
 
 # The programs a row may name through a variable, each of which env.sh sets to one
 # executable; during a run each is pointed at a shim that runs that executable and records
 # its status, as the functions below record a program named by a bare word. It is the
 # reader's allow-list of command-word variables, and the two are one list.
 PROGRAM_VARIABLES="IOC_PY IOC_MASLAB_PY IOC_MASLAB_CTL IOC_MASLAB_WHEEL_CTL IOC_TC_PY"
-
-# Shell builtins that change the shell's own state or test a condition, and so are no
-# read whose status could be a failure; every other program name is wrapped.
-UNWRAPPED=" [ test true false read exit return export local declare typeset set unset shift eval source . exec trap command builtin wait break continue : let readonly alias unalias shopt getopts hash type ulimit umask times "
 
 program_shims() {
     # Writes one shim per program variable env.sh set, once per run, and prints the
@@ -482,14 +497,17 @@ program_shims() {
     mkdir -p "$dir"
     for v in $PROGRAM_VARIABLES; do
         real="${!v:-}"
-        [ -n "$real" ] && [ -x "$real" ] || continue
+        # A shim is written whenever env.sh set the variable, whether or not the program
+        # exists yet, since a row may install it first; a program that is not there when
+        # the shim runs it exits 127, which the shim records like any other failure.
+        [ -n "$real" ] || continue
         if [ ! -x "$dir/$v" ]; then
             {
                 printf '#!/usr/bin/env bash\n'
                 printf '%q "$@"\n' "$real"
                 printf '__ioc_s=$?\n'
-                printf 'if [ "$__ioc_s" -ne 0 ] && [ "$__ioc_s" != "${IOC_EXPECT_STATUS:-}" ] && [ -n "${__IOC_FAILED:-}" ]; then\n'
-                printf '    printf "%%s\\t%%s\\n" "$__ioc_s" "$(printf "%%s " %q "$@" | tr "\\n\\t" "  ")" >>"$__IOC_FAILED"\n' "\$$v"
+                printf 'if [ "$__ioc_s" -ne 0 ] && [ -n "${__IOC_FAILED:-}" ]; then\n'
+                printf '    printf "%%s\\t%%s\\t%%s\\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%%s " %q "$@" | tr "\\n\\t" "  ")" >>"$__IOC_FAILED"\n' "\$$v"
                 printf 'fi\n'
                 printf 'exit "$__ioc_s"\n'
             } >"$dir/$v"
@@ -522,10 +540,14 @@ run_recorded() {
     printf '%s\n' "$names" | sed -n 's/^UNREAD\t//p' >"$out.unread"
     {
         printf '__ioc_failed=%q\n' "$out.failed"
-        printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; [ "$__ioc_s" = "${IOC_EXPECT_STATUS:-}" ] && return 0; printf "%s\t%s\n" "$__ioc_s" "$(printf "%s " "$@" | tr "\n\t" "  ")" >>"$__ioc_failed"; }'
+        printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; printf "%s\t%s\t%s\n" "$__ioc_s" "${IOC_EXPECT_STATUS:--}" "$(printf "%s " "$@" | tr "\n\t" "  ")" >>"$__ioc_failed"; }'
         while IFS= read -r name; do
-            [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_.+-]*$ ]] || continue
-            case "$UNWRAPPED" in *" $name "*) continue ;; esac
+            # The classifier admits only names of this pattern, so one that does not
+            # match is refused here rather than dropped, which would pass it unread.
+            if ! [[ "$name" =~ ^[A-Za-z0-9_][A-Za-z0-9_.+-]*$ ]]; then
+                printf '%s, a program name the runner cannot wrap\n' "$name" >>"$out.unread"
+                continue
+            fi
             printf '%s() { command %s "$@"; local __ioc_s=$?; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" %s "$@"; return "$__ioc_s"; }\n' "$name" "$name" "$name"
         done < <(printf '%s\n' "$names" | grep -v '^UNREAD')
         program_shims
@@ -579,34 +601,42 @@ search_missed() {
 # is no search that missed, which is a read that failed wherever it stood in the row, and
 # the one search-miss rule is applied to each program's own status. It names that program,
 # its arguments and its status in IOC_FAILED_READ.
+declared_status_holds() {
+    # declared_status_holds <status> <declared status>; true when the row declared, by
+    # IOC_EXPECT_STATUS=<n> written before the one command, exactly the status it exited
+    # with; - stands for no declared status, since a record's fields are tab-separated and
+    # an empty one would collapse. This is the one place that exemption is read.
+    [ -n "$2" ] && [ "$2" != - ] && [ "$1" = "$2" ]
+}
+
 failed_read() {
-    local out="$1" failed_status failed_command
+    local out="$1" failed_status failed_declared failed_command
     IOC_FAILED_READ=""
     if [ -s "$out.failed" ]; then
-        while IFS=$'\t' read -r failed_status failed_command; do
+        while IFS=$'\t' read -r failed_status failed_declared failed_command; do
+            declared_status_holds "$failed_status" "$failed_declared" && continue
             search_missed "$failed_command" "$failed_status" && continue
             IOC_FAILED_READ="'$failed_command' exited $failed_status"
             return 0
         done <"$out.failed"
     fi
-    # Every stage but the last of the final pipeline, by its own status and the words it
-    # starts with, as the quote-aware reader splits it; the last stage's status is the
-    # row's, which its predicate reads.
-    local stages i texts=()
+    # Every stage of the final pipeline, the last one included, by its own status and the
+    # command whose status it carries, as the classifier splits it: that reads a condition
+    # or a group whose status a builtin set, which no function records.
+    local stages i texts=() declared
     [ -s "$out.pipe" ] || return 1
     read -r -a stages <"$out.pipe" || return 1
-    [ "${#stages[@]}" -gt 1 ] || return 1
     mapfile -t texts < <(python3 -c "$(reader_py)" stages <"$out.command")
     if [ "${texts[0]:-}" = UNSPLIT ] || [ "${#texts[@]}" -ne "${#stages[@]}" ]; then
-        IOC_FAILED_READ="the final pipeline of the row, whose ${#stages[@]} stages the reader does not split into as many"
-        for ((i = 0; i < ${#stages[@]} - 1; i++)); do [ "${stages[$i]}" = 0 ] || return 0; done
+        IOC_FAILED_READ="the final pipeline of the row, whose ${#stages[@]} stages the classifier does not split into as many"
+        for ((i = 0; i < ${#stages[@]}; i++)); do [ "${stages[$i]}" = 0 ] || return 0; done
         return 1
     fi
-    for ((i = 0; i < ${#stages[@]} - 1; i++)); do
+    for ((i = 0; i < ${#stages[@]}; i++)); do
         [ "${stages[$i]}" = 0 ] && continue
-        if [[ "${texts[$i]}" =~ (^|\ )IOC_EXPECT_STATUS=([0-9]+)(\ |$) ]] && [ "${BASH_REMATCH[2]}" = "${stages[$i]}" ]; then
-            continue
-        fi
+        declared=""
+        [[ "${texts[$i]}" =~ (^|\ )IOC_EXPECT_STATUS=([0-9]+)(\ |$) ]] && declared="${BASH_REMATCH[2]}"
+        declared_status_holds "${stages[$i]}" "$declared" && continue
         search_missed "${texts[$i]}" "${stages[$i]}" && continue
         IOC_FAILED_READ="the stage '${texts[$i]}' of the final pipeline exited ${stages[$i]}"
         return 0
@@ -673,7 +703,7 @@ github_budget() {
 #
 # A runner is known by the program a word names, not by how the word is spelled: the
 # resolved word, its last path element, with a version after the name taken off, so
-# /usr/bin/pip, "$IOC_MASLAB_VENV/bin/pip", pip3.12 and python3.12 -m pip are each pip and
+# /usr/bin/pip, pip3.12 and python3.12 -m pip are each pip and
 # held to the rule for pip, and every runner above is matched that one way.
 #
 # What this reader cannot see. It compares text, and it guards against an install someone
@@ -711,38 +741,59 @@ def npm_ok(arg):
 def go_ok(arg):
     return local(arg) or GO_PIN.match(arg) is not None
 
-OPERATORS = {";", "&", "&&", "|", "||", "(", ")", ";;", "|&", "&>", ">", "<", ">>", "<<", ">&", "<&", "2>", "<<<"}
+OPS = ["&&", "||", ">>", ">&", "&>", "<<<", "<<", ";;", "|&", ";", "&", "|", "(", ")", "<", ">", "\n"]
+NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.+-]*$")
 
-def commands(text):
-    # The commands of a line, split at the shell operators that end one, with quotes
-    # respected, so an operator inside a quoted string splits nothing. None when the
-    # text does not split, which the caller refuses.
-    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>")
+class Refused(Exception):
+    pass
+
+def tokenize(text):
+    # Words and operators, quotes respected; an unquoted newline is a separator like ;.
+    lexer = shlex.shlex(text, posix=True, punctuation_chars=";&|()<>\n")
+    lexer.whitespace = " \t\r"
     lexer.whitespace_split = True
     lexer.commenters = ""
     try:
-        tokens = list(lexer)
+        raw = list(lexer)
     except ValueError:
         return None
+    out = []
+    for token in raw:
+        if token and set(token) <= set(";&|()<>\n"):
+            i = 0
+            while i < len(token):
+                for op in OPS:
+                    if token.startswith(op, i):
+                        out.append(("op", ";" if op == "\n" else op))
+                        i += len(op)
+                        break
+        else:
+            out.append(("word", token))
+    return out
+
+def commands(text):
+    # The words of each command of text, split at every operator of the one tokenizer;
+    # None when the text does not split. The install reader reads its runners from these.
+    tokens = tokenize(text)
+    if tokens is None:
+        return None
     out, current, target = [], [], False
-    for token in tokens:
+    for kind, value in tokens:
         if target:
-            # The word after a redirection is its target, a file and no command.
             target = False
-            continue
-        if (token in OPERATORS or set(token) <= set(";&|()<>")) and set(token) & set("<>"):
-            # A redirection belongs to the command it stands in; a file descriptor
-            # written before it, as in 2>, is part of it too.
+            if kind == "word":
+                continue
+        if kind == "op" and value in (">", ">>", "<", ">&", "&>", "<<", "<<<"):
             if current and current[-1].isdigit():
                 current.pop()
             target = True
             continue
-        if token in OPERATORS or set(token) <= set(";&|()<>"):
+        if kind == "op":
             if current:
                 out.append(current)
             current = []
         else:
-            current.append(token)
+            current.append(value)
     if current:
         out.append(current)
     return out
@@ -846,7 +897,7 @@ def resolve(word):
 def runner_name(word):
     # The program a word names, as every runner rule below matches it: the resolved
     # word, its last path element, with a version written after the name taken off, so
-    # /usr/bin/pip, "$IOC_MASLAB_VENV/bin/pip", pip3 and pip3.12 are all pip. A word
+    # /usr/bin/pip, pip3 and pip3.12 are all pip. A word
     # this reader cannot resolve names no runner, and is refused in command position.
     base = resolve(word)
     if base is None:
@@ -1038,118 +1089,256 @@ def read_command(command, depth=0):
     return found
 
 
-BYPASSES = {"command", "builtin", "exec"}
+class Parser:
+    # A recursive descent over the admitted shapes: a list of pipelines joined by ;, &&
+    # and ||; a pipeline of elements joined by |; an element is a simple command, a group
+    # { list; }, a subshell ( list ) or a for loop. Anything else is refused by name.
+    def __init__(self, tokens):
+        self.t, self.i = tokens, 0
+        self.commands = []  # every simple command: (words, flags)
 
-def names_of(command, depth=0):
-    # The program names to wrap, and, as ("UNREAD", word), each program in command
-    # position the evaluator cannot record: a word that holds a / and is no program
-    # variable, which no function can be named for, and a word after command, builtin or
-    # exec, each of which runs the program without its function.
-    out = []
-    if depth > 4:
-        return out
-    for _, _, code in substitutions(command):
-        out += names_of(code, depth + 1)
-    parts = commands(without_substitutions(command)) or []
-    for w in parts:
-        for i in command_words(w):
-            word = w[i]
-            if word in BYPASSES:
-                out.append(("UNREAD", " ".join(w[i:i + 2]) + " (which runs a program past the function that records it)"))
-            elif "/" in word and "$" not in word:
-                out.append(("UNREAD", word + " (a program named by a path, which no function can be named for)"))
-            elif resolve(word) is not None and "$" not in word:
-                out.append(word)
-        for i, word in enumerate(w):
-            if runner_name(word) in SHELLS and i + 2 < len(w) and w[i + 1].startswith("-") and "c" in w[i + 1]:
-                out += names_of(w[i + 2], depth + 1)
-            elif word == "eval":
-                out += names_of(" ".join(w[i + 1:]), depth + 1)
-    return out
+    def peek(self):
+        return self.t[self.i] if self.i < len(self.t) else ("end", "")
 
-def last_pipeline_stages(command):
-    # The stages of the command's last pipeline at the top level, each as the words it
-    # starts with; a group or a loop is one stage, written as its opening word. Braces,
-    # parentheses, and the do/done, then/fi and case/esac pairs open and close a level.
-    lexer = shlex.shlex(command.replace("\n", " ; "), posix=True, punctuation_chars=";&|()<>")
-    lexer.whitespace_split = True
-    lexer.commenters = ""
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return None
-    depth, last, current = 0, [], []
-    pipeline = []
-    for token in tokens:
-        if token and set(token) <= set(";&|()<>"):
-            # An operator token may join a parenthesis to a separator, as ); does; the
-            # parentheses move the level and what is left is read as one operator.
-            for c in token:
-                if c == "(":
-                    depth += 1
-                elif c == ")":
-                    depth -= 1
-            token = token.replace("(", "").replace(")", "")
-            if not token:
+    def take(self):
+        tok = self.peek()
+        self.i += 1
+        return tok
+
+    def at_word(self, *words):
+        kind, value = self.peek()
+        return kind == "word" and value in words
+
+    def parse_list(self, closers=()):
+        pipelines = []
+        while True:
+            while self.peek() == ("op", ";"):
+                self.take()
+            kind, value = self.peek()
+            if kind == "end" or (kind == "word" and value in closers) or (kind == "op" and value in closers):
+                return pipelines
+            pipelines.append(self.parse_pipeline(closers))
+            kind, value = self.peek()
+            if kind == "op" and value in (";", "&&", "||"):
+                self.take()
                 continue
-        elif token in ("{", "do", "case", "if"):
-            depth += 1
-        elif token in ("}", "done", "esac", "fi"):
-            depth -= 1
-        if depth == 0 and token in (";", "&&", "||", "&", ";;"):
-            if current:
-                pipeline.append(current)
-            if pipeline:
-                last = pipeline
-            pipeline, current = [], []
-            continue
-        if depth == 0 and token == "|":
-            pipeline.append(current)
-            current = []
-            continue
-        current.append(token)
-    if current:
-        pipeline.append(current)
-    if pipeline:
-        last = pipeline
-    out = []
-    structural = {"{", "}", "(", ")", "do", "done", "then", "fi", "else", "esac"}
-    for stage in last:
-        # A group, a subshell or a loop exits with the status of the last command it ran,
-        # so its stage is read as that command: the last segment after its separators,
-        # with the words that open and close it taken off. A separator inside a stage of
-        # a pipeline can stand only in one of those.
-        if any(t in (";", "&&", "||", "&") or (t and set(t) <= set(";&|()") and set(t) & set(";&")) for t in stage) or (stage and stage[0] in structural):
-            segment = []
-            for token in stage:
-                if token in (";", "&&", "||", "&") or (token and set(token) <= set(";&|()") and set(token) & set(";&")):
-                    if [t for t in segment if t not in structural and set(t) - set("()")]:
-                        last_segment = segment
-                    segment = []
-                    continue
-                segment.append(token)
-            if [t for t in segment if t not in structural and set(t) - set("()")]:
-                last_segment = segment
-            stage = [t for t in last_segment if t not in structural and set(t) - set("()")]
-        # An assignment sets the stage's environment and is no word of its command, but a
-        # declared expected status is kept, so the stage is read against it.
-        words = [t for t in stage if not ASSIGNMENT.match(t) or t.startswith("IOC_EXPECT_STATUS=")]
-        out.append(" ".join(words[:6]) if words else "")
-    return out
+            if kind == "op" and value in ("&", ";;", "|&"):
+                raise Refused("the operator " + value)
+            if kind == "end" or (kind == "word" and value in closers) or (kind == "op" and value in closers):
+                return pipelines
+            raise Refused("the word " + value + " after a command")
+
+    def parse_pipeline(self, closers):
+        elements = [self.parse_element(closers)]
+        while self.peek() == ("op", "|"):
+            self.take()
+            elements.append(self.parse_element(closers))
+        return elements
+
+    def parse_element(self, closers):
+        kind, value = self.peek()
+        if kind == "word" and value == "{":
+            self.take()
+            body = self.parse_list(closers=("}",))
+            if not self.at_word("}"):
+                raise Refused("a group with no closing brace")
+            self.take()
+            self.redirections()
+            return ("group", body)
+        if kind == "op" and value == "(":
+            self.take()
+            body = self.parse_list(closers=(")",))
+            if self.peek() != ("op", ")"):
+                raise Refused("a subshell with no closing parenthesis")
+            self.take()
+            self.redirections()
+            return ("group", body)
+        if kind == "word" and value == "for":
+            self.take()
+            kind, var = self.take()
+            if kind != "word" or not re.match(r"^[A-Za-z_][A-Za-z0-9_]*$", var):
+                raise Refused("a for loop with no variable")
+            if self.at_word("in"):
+                self.take()
+                while self.peek()[0] == "word":
+                    self.take()
+            while self.peek() == ("op", ";"):
+                self.take()
+            if not self.at_word("do"):
+                raise Refused("a for loop with no do")
+            self.take()
+            body = self.parse_list(closers=("done",))
+            if not self.at_word("done"):
+                raise Refused("a for loop with no done")
+            self.take()
+            self.redirections()
+            return ("group", body)
+        return self.parse_simple()
+
+    def redirections(self):
+        flags = set()
+        while True:
+            kind, value = self.peek()
+            if kind == "op" and value in (">", ">>", "<", ">&", "&>"):
+                self.take()
+                if self.peek()[0] != "word":
+                    raise Refused("a redirection with no target")
+                self.take()
+                if value == "<":
+                    flags.add("input")
+                continue
+            if kind == "op" and value in ("<<", "<<<"):
+                raise Refused("a here-document or here-string")
+            return flags
+
+    def parse_simple(self):
+        words, flags = [], set()
+        while True:
+            kind, value = self.peek()
+            if kind == "word":
+                self.take()
+                if self.peek()[0] == "op" and self.peek()[1] in (">", ">>", "<", ">&") and value.isdigit():
+                    continue  # a file descriptor before a redirection
+                words.append(value)
+                continue
+            if kind == "op" and value in (">", ">>", "<", ">&", "&>", "<<", "<<<"):
+                flags |= self.redirections()
+                continue
+            break
+        if not words:
+            raise Refused("an empty command")
+        command = ("simple", words, flags)
+        self.commands.append(command)
+        return command
+
+# The command words a row may use that are no program to wrap: conditions, whose status
+# is a test's answer rather than a read. Every word not named here or below is a program.
+CONDITIONS = {"true"}
+# Command words refused by name: each runs code past the function that records it, ends
+# the shell, or is a form no row uses.
+REFUSED_WORDS = {"eval", "exec", "command", "builtin", "source", ".", "time", "function", "coproc",
+                 "alias", "trap", "exit", "return", "if", "then", "elif", "else", "fi", "while",
+                 "until", "case", "esac", "select", "!", "[[", "((", "do", "done", "in",
+                 "timeout", "nice", "nohup", "sudo", "stdbuf", "test", "[", "false", "read"}
+
+def classify_word(words):
+    # The class of a simple command's command word: ("program", name), ("variable",
+    # name), ("condition", word), or ("none",) for a command of assignments alone. Every
+    # other word is refused.
+    i = 0
+    while i < len(words) and ASSIGNMENT.match(words[i]):
+        i += 1
+    if i == len(words):
+        return ("none",), i
+    word = words[i]
+    if SUBST_WORD in word or "`" in word:
+        raise Refused("the output of a substitution as a command word")
+    if word.startswith("$"):
+        m = re.match(r"^\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?$", word)
+        if m and m.group(1) in RESOLVABLE:
+            return ("variable", m.group(1)), i
+        raise Refused(word + ", a variable that names no program the evaluator records")
+    if "/" in word:
+        raise Refused(word + ", a program named by a path, which no function can be named for")
+    if word in REFUSED_WORDS:
+        raise Refused(word + ", a form the evaluator does not admit")
+    if not NAME.match(word):
+        raise Refused(word + ", a command word the evaluator cannot name")
+    if word in CONDITIONS:
+        return ("condition", word), i
+    return ("program", word), i
+
+
+def check_simple(words):
+    # The programs a simple command runs, each by its class; refuses the forms whose
+    # program the evaluator would not see.
+    cls, i = classify_word(words)
+    if cls[0] == "none" and any(w.startswith("IOC_EXPECT_STATUS=") for w in words):
+        raise Refused("IOC_EXPECT_STATUS written as a statement of its own, which would exempt every later program")
+    if cls[0] != "program":
+        return [cls]
+    name, args = cls[1], words[i + 1:]
+    if name in SHELLS:
+        if any(a.startswith("-") and "c" in a.lstrip("-") for a in args):
+            raise Refused(name + " -c, a command given to a shell as a string")
+        return [cls]
+    if name == "env" and any(not a.startswith("-") and not ASSIGNMENT.match(a) for a in args):
+        raise Refused("env running a program, which runs it past the function that records it")
+    if name == "find" and any(a in ("-exec", "-execdir", "-ok", "-okdir") for a in args):
+        raise Refused("find -exec, whose status is not the program's it runs")
+    if name == "xargs":
+        # xargs exits non-zero when the program it runs does, so its own record reads the
+        # program; the program is named by a bare word like any other.
+        j = 0
+        value = {"-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a"}
+        while j < len(args) and args[j].startswith("-"):
+            j += 2 if args[j] in value else 1
+        if j < len(args):
+            inner, _ = classify_word(args[j:])
+            if inner[0] != "program":
+                raise Refused("xargs " + args[j] + ", a program xargs runs that is no plain program")
+        return [cls]
+    return [cls]
+
+
+def final_stage(element):
+    # The simple command whose status an element exits with.
+    if element[0] == "simple":
+        return element
+    body = element[1]
+    if not body:
+        return ("simple", ["true"], set())
+    return final_stage(body[-1][-1])
+
+
+def classify(command, depth=0):
+    # ("admitted", programs, stages) or ("refused", reason) for one command.
+    if depth > 3:
+        return ("refused", "a command nested too deep")
+    inner_programs = []
+    for _, _, code in substitutions(command):
+        inner = classify(code, depth + 1)
+        if inner[0] == "refused":
+            return inner
+        # A substitution's programs run like any other, so each is wrapped and recorded.
+        inner_programs += inner[1]
+    tokens = tokenize(without_substitutions(command))
+    if tokens is None:
+        return ("refused", "a command the evaluator cannot split into words")
+    parser = Parser(tokens)
+    try:
+        pipelines = parser.parse_list()
+        if parser.peek()[0] != "end":
+            raise Refused("the word " + parser.peek()[1] + " the evaluator does not admit there")
+        programs = list(inner_programs)
+        for _, words, flags in parser.commands:
+            if "input" in flags:
+                raise Refused("an input redirection, which fails before the program it feeds runs")
+            programs += check_simple(words)
+    except Refused as why:
+        return ("refused", str(why))
+    stages = []
+    if pipelines:
+        for element in pipelines[-1]:
+            _, words, _ = final_stage(element)
+            stages.append(" ".join(words))
+    return ("admitted", programs, stages, pipelines, parser.commands)
+
 
 if sys.argv[-1] == "stages":
-    stages = last_pipeline_stages(sys.stdin.read())
-    if stages is None:
+    result = classify(sys.stdin.read())
+    if result[0] == "refused":
         print("UNSPLIT")
     else:
-        for stage in stages:
+        for stage in result[2]:
             print(stage)
 elif sys.argv[-1] == "names":
-    found = names_of(sys.stdin.read())
-    for name in sorted({n for n in found if isinstance(n, str)}):
-        print(name)
-    for _, what in sorted({n for n in found if not isinstance(n, str)}):
-        print("UNREAD\t" + what)
+    result = classify(sys.stdin.read())
+    if result[0] == "refused":
+        print("UNREAD\t" + result[1])
+    else:
+        for kind in sorted({k for k in result[1] if k[0] == "program"}):
+            print(kind[1])
 else:
     for line in sys.stdin:
         row = json.loads(line)
@@ -1224,8 +1413,13 @@ mode_replay() {
         # A program the evaluator cannot record fails the row whatever its kind and its
         # predicate, since no status of it would be read.
         if [ -s "$work/$id.out.unread" ]; then
-            if [ "$kind" = absence ]; then absence_failures="$absence_failures $id"; else command_failures="$command_failures $id"; fi
-            fail replay-command "$id runs $(head -1 "$work/$id.out.unread"), so its status is no reading the evaluator can make"
+            if [ "$kind" = absence ]; then
+                absence_failures="$absence_failures $id"
+                fail absence-still-empty "$id runs $(head -1 "$work/$id.out.unread"), so its search is no reading the evaluator can make"
+            else
+                command_failures="$command_failures $id"
+                fail replay-command "$id runs $(head -1 "$work/$id.out.unread"), so its status is no reading the evaluator can make"
+            fi
             continue
         fi
         if [ "$kind" = absence ]; then
@@ -1247,7 +1441,7 @@ mode_replay() {
         # A read that failed anywhere in the row leaves its output no reading of what the
         # row claims, whatever that output still meets: a traceback has enough lines for a
         # bound. A row whose predicate is an exit status claims the failure itself.
-        if [ "$(printf '%s' "$expect" | jq 'has("exit")')" != true ] && failed_read "$work/$id.out"; then
+        if failed_read "$work/$id.out"; then
             command_failures="$command_failures $id"
             fail replay-command "$id ran its command and a read inside it failed: $IOC_FAILED_READ, so its output is no reading of what the row claims"
             continue

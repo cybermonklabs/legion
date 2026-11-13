@@ -404,13 +404,15 @@ honest_result "the declared status passes" replay-command "$(fixture_run "$dir" 
 # 28. An exit status beside one predicate over the output: both hold or the row fails.
 # At 25c02ddfcf an expect held exactly one key, so a row could not claim a failure and the
 # message it prints together. The honest row passes; the same status with another
-# message fails under replay-command.
+# message fails under replay-command. The failing command declares its status, the one
+# form in which a row claims a failure (exit, which these cases first planted, ends the
+# shell and is a form the evaluator does not admit).
 dir="$(fresh exit-and-message)"
-plant_behaviour "$dir" "printf 'ran once\\n'; exit 1" '{"exit":1,"contains":"ran once"}'
+plant_behaviour "$dir" "printf 'ran once\\n'; IOC_EXPECT_STATUS=2 ls /nonexistent-ioc 2>/dev/null" '{"exit":2,"contains":"ran once"}'
 out="$(fixture_run "$dir" --replay)"
 honest_result "an exit status beside a message that both hold passes" 'replay-command|predicate-form' "$out"
 dir="$(fresh exit-other-message)"
-plant_behaviour "$dir" "printf 'other\\n'; exit 1" '{"exit":1,"contains":"ran once"}'
+plant_behaviour "$dir" "printf 'other\\n'; IOC_EXPECT_STATUS=2 ls /nonexistent-ioc 2>/dev/null" '{"exit":2,"contains":"ran once"}'
 case_result "an exit status beside a message the output does not carry fails the row" replay-command "$(fixture_run "$dir" --replay)"
 
 # 29. A group in a stage of the final pipeline exits with its last command's status, so
@@ -436,7 +438,7 @@ for form in '/bin/cat /nonexistent-ioc' '/usr/bin/python3 -c "import sys; sys.ex
     'command cat /nonexistent-ioc' './no-such-ioc-script.sh'; do
     dir="$(fresh "named-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
     plant_behaviour "$dir" "$form 2>/dev/null || printf 'ran once\\n'" '{"contains":"ran once"}'
-    case_result "a program named by its path or after command records its failed read: $form" replay-command "$(fixture_run "$dir" --replay)"
+    case_result "a program named by its path or after command is refused as unread: $form" replay-command "$(fixture_run "$dir" --replay)"
 done
 
 # 31. A program the evaluator cannot record is a program the reader refuses, whatever
@@ -452,6 +454,83 @@ case_result "a program run by builtin command is refused as unread" replay-comma
 dir="$(fresh bare-search-misses)"
 plant_behaviour "$dir" "grep -q zzz /dev/null || true; printf 'ran once\\n'" '{"contains":"ran once"}'
 honest_result "a search named by its bare word that finds nothing passes" replay-command "$(fixture_run "$dir" --replay)"
+
+# 32. The evaluator admits only the forms the rows use, and for each admitted form a read
+# that fails in it fails the row while the honest form beside it, a search that finds
+# nothing in the same place, passes. One pair per form of the header's admitted list.
+pair() {
+    # pair <name> <failing command> <honest command> [<expect>]
+    local name="$1" bad="$2" good="$3" expect="${4:-}"
+    [ -n "$expect" ] || expect='{"contains":"ran once"}'
+    dir="$(fresh "pair-bad-$(printf '%s' "$name" | tr -c 'a-z0-9' '-')")"
+    plant_behaviour "$dir" "$bad" "$expect"
+    case_result "$name: a failed read fails the row" replay-command "$(fixture_run "$dir" --replay)"
+    dir="$(fresh "pair-good-$(printf '%s' "$name" | tr -c 'a-z0-9' '-')")"
+    plant_behaviour "$dir" "$good" "$expect"
+    honest_result "$name: the honest form passes" replay-command "$(fixture_run "$dir" --replay)"
+}
+pair "a simple command before ;" \
+    "ls /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" \
+    "grep -q zzz /dev/null; printf 'ran once\\n'"
+pair "an element before ||" \
+    "ls /nonexistent-ioc 2>/dev/null || printf 'ran once\\n'" \
+    "grep -q zzz /dev/null || printf 'ran once\\n'"
+pair "a command on the line before" \
+    "true
+ls /nonexistent-ioc 2>/dev/null || printf 'ran once\\n'" \
+    "true
+grep -q zzz /dev/null || printf 'ran once\\n'"
+pair "a subshell" \
+    "(ls /nonexistent-ioc 2>/dev/null); printf 'ran once\\n'" \
+    "(grep -q zzz /dev/null); printf 'ran once\\n'"
+pair "a for loop" \
+    "for f in a; do ls /nonexistent-ioc 2>/dev/null; done; printf 'ran once\\n'" \
+    "for f in a; do grep -q zzz /dev/null; done; printf 'ran once\\n'"
+pair "a command substitution" \
+    "x=\"\$(ls /nonexistent-ioc 2>/dev/null)\"; printf 'ran once\\n'" \
+    "x=\"\$(grep zzz /dev/null)\"; printf 'ran once\\n'"
+pair "xargs running a program" \
+    "printf '/nonexistent-ioc\\n' | xargs cat 2>/dev/null; printf 'ran once\\n'" \
+    "printf 'ran once\\n' | xargs echo"
+pair "the last stage of the final pipeline" \
+    "printf 'ran once\\n'; printf 'x\\n' > /nonexistent-ioc-dir/f" \
+    "printf 'ran once\\n'; printf 'x\\n' | grep -c zzz"
+pair "a row with an exit status" \
+    "cat /nonexistent-ioc 2>/dev/null | printf 'ran once\\n'" \
+    "IOC_EXPECT_STATUS=1 cat /nonexistent-ioc 2>/dev/null | printf 'ran once\\n'" \
+    '{"exit":0,"contains":"ran once"}'
+pair "a program whose name starts with a digit" \
+    "7z x /nonexistent-ioc 2>/dev/null || printf 'ran once\\n'" \
+    "grep -q zzz /dev/null || printf 'ran once\\n'"
+pair "a search whose options hide its subcommand" \
+    "{ printf 'ran once\\n'; git -C . -c core.abc=1 -c core.abd=2 show no-such-ioc-ref 2>/dev/null; } | cat" \
+    "{ printf 'ran once\\n'; git -C . -c core.abc=1 -c core.abd=2 grep zzz; } | cat"
+
+# 33. A program variable whose program is not there when the shim runs it, as a row that
+# installs the program itself finds on a cold cache, is a failed read the shim records.
+dir="$(fresh program-variable-missing)"
+plant_behaviour "$dir" "\"\$IOC_MASLAB_WHEEL_CTL\" validate x 2>/dev/null || true; printf 'ran once\\n'" '{"contains":"ran once"}'
+case_result "a program variable whose program is missing records its failed read" replay-command "$(IOC_MASLAB_WHEEL_CTL=/nonexistent-ioc/bin/mas-ctl fixture_run "$dir" --replay)"
+
+# 34. One refusal per class the classifier does not admit: each is refused by name, so a
+# program it runs is never passed unread.
+for form in "f() { cat /nonexistent-ioc; }; f" "function f { cat /nonexistent-ioc; }; f" \
+    "time -p cat /nonexistent-ioc" "find / -maxdepth 0 -exec cat /nonexistent-ioc \\\\;" \
+    "bash -c 'cat /nonexistent-ioc; true'" "env A=1 cat /nonexistent-ioc" \
+    "{ls,-d,/nonexistent-ioc}" "cat < /nonexistent-ioc" "if true; then cat /nonexistent-ioc; fi" \
+    "while false; do true; done" "IOC_EXPECT_STATUS=2; ls /nonexistent-ioc" "eval 'cat /nonexistent-ioc'"; do
+    dir="$(fresh "refused-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-28)")"
+    plant_behaviour "$dir" "$form 2>/dev/null || true; printf 'ran once\\n'" '{"contains":"ran once"}'
+    case_result "a form the evaluator does not admit is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
+done
+
+# 35. Every key of a predicate is read: an unknown key beside an exit status, and an exit
+# status that is no number, are each no predicate.
+for expect in '{"exit":1,"zz":"ran once"}' '{"contains":"ran once","exit":"one"}'; do
+    dir="$(fresh "keys-$(printf '%s' "$expect" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    plant_behaviour "$dir" "printf 'ran once\\n'" "$expect"
+    case_result "a predicate with a key of the wrong kind is refused: $expect" predicate-form "$(fixture_run "$dir" --replay)"
+done
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
