@@ -1261,11 +1261,11 @@ package api
 // mark, one below 73 without `claimsToRefresh`, one below 62 the workers without their counts of
 // the moves back and one below 51 the admission block without its trees; the thirteen strips
 // compose, and every reader from 94 on takes the key as optional for exactly those stripped
-// bodies. No other key of the wire moves: no list above it changes, though `why.reason` of an
-// issue in `admission.blocked` whose held word the ladder reads before `dispatch_blocker` is now
-// that word's sentence for every caller at 85 or above, which moves no contract, since the reason
-// is free text. The rows are read from
-// the judgement the state already made (`blockers.JudgeLine`, which now answers the rows the pass
+// bodies. No other key of the wire moves: no list above it changes, though `why.reason` now
+// follows the held word for some issues in `admission.blocked` and `unlisted` alike, for every
+// caller at 85 or above (the sentence table of `internal/projection/why.go` is the one statement
+// of which), which moves no contract, since the reason is free text. The rows are read from the
+// judgement the state already made (`blockers.JudgeLine`, which now answers the rows the pass
 // left behind beside the line it built), so the body costs no further read of the store.
 // (The base declares 86, the two entries right above this one, landed by cybermonklabs/legion#2539
 // (dispatch://INFRA-714). Read from `const DaemonAPIVersion` at refs/pull/<n>/head over the GitHub

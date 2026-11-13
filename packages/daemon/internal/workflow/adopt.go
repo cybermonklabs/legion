@@ -60,9 +60,9 @@ func (e *Engine) AdoptionRefusal(ctx context.Context, tx pgx.Tx, issue record.Is
 // says is held for a closed tree and never for one it says anything else of. The two lists are
 // not the same list: the word covers a root whose linger is still running as well, where no
 // release is accepted yet, and a member past admitted, which no release takes. A member that
-// holds a slot reads no word at all, since it stands in admission.active, and adoption refuses
-// it (admit's adoptChildren, which reads the slot). So the members a release may take are the
-// members reading tree_closed that stand at admitted and whose root's linger has ended.
+// holds a slot reads no word at all, since it stands in admission.active. So the members a
+// release may take are the members reading tree_closed that stand at admitted, whose root's
+// linger has ended and that hold no slot, which the caller reads (below).
 //
 // The linger is the one still running, never Issue.Lingers, which answers whether a deadline was
 // ever armed: every close arms one (beginLinger) and nothing but a re-admission clears it, so
@@ -248,9 +248,8 @@ func (e *Engine) Adopt(ctx context.Context, tx pgx.Tx, issue, root record.Issue,
 // child is the release's own read of the issue it names (intake.AdoptedChild). The member it
 // names takes that Dispatch parent, and enterChild holds it on the blockers that read found as
 // well as on the mirror's row. Every other member keeps the parent its own record carries and
-// the mirror's row alone. Everything is
-// written in the caller's transaction; the notice, the catch-up and the log line are each
-// route's own.
+// the mirror's row alone. Everything is written in the caller's transaction; the notice, the
+// catch-up and the log line are each route's own.
 func (e *Engine) moveIntoTree(ctx context.Context, tx pgx.Tx, member, root record.Issue, child intake.AdoptedChild) error {
 	if member.Generation == ^uint64(0) {
 		return fmt.Errorf("adopt %s into %s: generation overflows", member.Key, root.Tree)
