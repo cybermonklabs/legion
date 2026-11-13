@@ -8,8 +8,10 @@ cites is in cybermonklabs/legion.
 
 A `check` block can carry `ci_check`: the name of the GitHub check run that proves the check at
 the head. Such a check has no `run`, its `when` is `before_merge`, and it names its
-`negative_control`. Dispatch refuses a document write that breaks one of these rules, and it
-refuses `ci_check` on a check that already holds a recorded result.
+`negative_control`. Through the documents API, Dispatch refuses a write that breaks one of these
+rules, or that gives `ci_check` to a check that already holds a recorded result. A write in the
+live editor lands, and the next settlement removes that `ci_check` and names the rule in the
+issue's Activity.
 
 ## No role runs it
 
@@ -17,10 +19,12 @@ A check carrying `ci_check` is CI's. No role runs its work in its own pod, and n
 result for it: Dispatch refuses such a result with `409 CHECK_PROVED_BY_CI`. The CI job stays a
 job like any other, and the rules for a red CI job apply to it. `dispatch results --issue <issue>`
 reads the named check run at the head of the issue's pull request. It prints the one result it
-derives from that run, and the line for the pull request body:
+derives from that run, the same `A pass stands:` line a recorded check gets, and the line for the
+pull request body:
 
 ```
 - <id> (before_merge): <verdict> at <sha> by ci (CI run <name>, <conclusion>), <currency>. <text>
+  A pass stands: <yes, from ci | no | not known>.
   Pull request line: - Check <id> (before_merge): <verdict> at <sha>, from CI run <name>. <words>
 ```
 
@@ -28,6 +32,7 @@ When the run gives no result, the command prints the case in place of a verdict:
 
 ```
 - <id> (before_merge): no result: <detail> <text>
+  A pass stands: <no | not known>.
   Pull request line: - Check <id> (before_merge): CI run <name> has no result (<case>)
 ```
 

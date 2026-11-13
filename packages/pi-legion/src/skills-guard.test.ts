@@ -577,6 +577,22 @@ test("each text that orders a check run or recorded leaves out a check CI proves
   ]);
 });
 
+// The same rule where a text orders a check's evidence judged or recorded: retro's trigger is met by
+// a derived result, so a CI check whose derived result is a fail or no result still sends the issue
+// back; the architect's last round records only the checks with no `ci_check`; and the tester reads
+// a `ci_check` job as that check's evidence, which its prompt's core part says too.
+test("a derived result satisfies the passages that judge or record a check's evidence", () => {
+  expect(collapsed(path.join(staged, "legion-retro", "SKILL.md"))).toContain(
+    "A `ci_check` check with a derived fail, or no result, at that head has no pass standing."
+  );
+  expect(collapsed(path.join(staged, "legion-architect", "references", "acceptance.md"))).toContain(
+    "run each check with no `ci_check` on the default branch and record each result"
+  );
+  expect(collapsed(path.join(staged, "legion-worker", "references", "pr-body.md"))).toContain(
+    "recorded for no later step, except a `ci_check` job"
+  );
+});
+
 // dispatch://INFRA-924's rule, beside dispatch://INFRA-332's eight above: a retro learning cites
 // a file and a symbol, or text quoted from it, read at the head the pull request commits, never a
 // line number the next edit above it moves.

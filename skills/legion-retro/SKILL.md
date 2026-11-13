@@ -49,10 +49,11 @@ for a finished retro only.
    (`skill://legion-worker/references/ci-checks.md`). In
    cybermonklabs/legion a surface may also be the daemon's real-process tests, a live proof under
    `scripts/e2e/`, or a live check at the operator's next daemon restart recorded on the pull
-   request. When a check with no `ci_check` has no pass standing at that head, or its only
-   evidence is a unit suite, call the `legion` tool's `request_backward_move` with
-   `to: implementing` for the implementer's
-   result or `to: testing` for the tester's, its `reason` naming the check by its block id. When
+   request. A `ci_check` check with a derived fail, or no result, at that head has no pass
+   standing. When a check has no pass standing at that head, or a check with no `ci_check` has a
+   unit suite as its only evidence, call the `legion` tool's `request_backward_move` with
+   `to: implementing` for the implementer's result or a `ci_check` check, or `to: testing` for the
+   tester's result, its `reason` naming the check by its block id. When
    retro runs again, that gap is your first learning.
 2. **Get a second reading**, because a reader without your context sees what you stopped seeing.
    First list, in your session, the constraints the issue did not state, choices between two

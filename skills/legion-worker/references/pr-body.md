@@ -167,7 +167,7 @@ and decides there, the only gate on such an issue.
   second and the concurrent run, the party it must refuse — judge whether the implementer's tests
   would catch the ways it breaks, writing the red test for one that none would, and
   read CI on GitHub at the head you are judging for everything static: lint, types and the unit
-  and integration suites are CI's, read there and recorded for no later step, and no CI lane is
+  and integration suites are CI's, read there and recorded for no later step, except a `ci_check` job, and no CI lane is
   rerun as evidence. A lane GitHub shows `queued` or `in progress` is read as such: the tester
   never waits for it, since a required red that settles sends the work back from `testing` and
   the reviewer reads the head's checks before it approves.

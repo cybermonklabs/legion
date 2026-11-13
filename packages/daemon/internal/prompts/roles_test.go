@@ -578,6 +578,9 @@ func TestEveryRolePartCarriesItsGuidanceRule(t *testing.T) {
 		{"implementer.md", "`skill://legion-worker/references/ci-checks.md`"},
 		{"architect.md", "takes no `run`"},
 		{"architect-root.md", "takes no `run`"},
+		// The reviewer's gate waits for a named run still going rather than sending the work back
+		// to an implementer who cannot cure it (R5).
+		{"reviewer.md", "A `ci_check` run that has not concluded is waited for, never a reason to send the work back."},
 	} {
 		if !strings.Contains(rolePart(t, pin.file), pin.rule) {
 			t.Errorf("%s does not contain %q", pin.file, pin.rule)
