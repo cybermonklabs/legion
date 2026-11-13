@@ -86,7 +86,7 @@ type leaseFields struct {
 // formerBoot is one entry of a lease record's former_boots: a boot that held the lease, the
 // server time it stopped, and whether the record it stopped on was released rather than taken
 // over expired. A released holder is alive: its role lane is finishing the forward it had in
-// flight and recording, giving up or reporting its ledger attempt (roleReceiptTimeout), so the
+// flight and recording, giving up or reporting its ledger attempt (roleForwardTimeout), so the
 // ledger defers those attempts for ledgerFormerSettle rather than taking them over at once,
 // while a holder that was killed or lost its node writes nothing more and is taken over at once.
 type formerBoot struct {
@@ -159,26 +159,26 @@ const relayFormerSettle = relaySettleGrace + 250*time.Millisecond
 // dedupe.KVConfig.GoneBoot).
 //
 // The one attempt a released pod can still be holding is a role-lane forward: it published the
-// forward and waits roleReceiptTimeout for the holder's receipt before it records, clears or
-// reports it (finishRoleForward). The role lane follows no lease, so that wait runs on past the
-// release, and taking the attempt over before its answer would forward a message the holder may
-// already have. Every other writer settles inside the call that took the attempt - the fan-out's
-// refusal and its record of the copy a self-subscribed session read, the agent path's record and
+// forward and waits roleForwardTimeout for the stream's acknowledgement that it stored it before
+// it records, clears or reports it (finishRoleForward). The role lane follows no lease, so that
+// wait runs on past the release, and taking the attempt over before its answer would forward a
+// message the holder may already have. Every other writer settles inside the call that took the
+// attempt - the fan-out's refusal, the agent path's record and
 // its unplaceable give-up, and the publish route's confirmation - and the kept lane's drain
-// forwards under the same roleReceiptTimeout, so none of them outlives a release by longer than
+// forwards under the same roleForwardTimeout, so none of them outlives a release by longer than
 // this.
 //
 // Taking either settle over early is a repeat only a hard take-over may make
 // (cmd/listener/README.md). A holder killed or cut off from the bucket releases nothing and is
 // taken over at once, so the 15 s hard take-over bound is untouched.
-const ledgerFormerSettle = roleReceiptTimeout + 250*time.Millisecond
+const ledgerFormerSettle = roleForwardTimeout + 250*time.Millisecond
 
 // FormerHolder reports whether boot is one of the boots that held the lease before the holder of
 // the record as this process last wrote or read it (former_boots), and how long that process may
 // still be settling a delivery it had in hand. A boot taken over by force - killed, its node
 // lost, its record left to expire - writes nothing more, so it is reported with no time at all
 // and the ledger takes its unresolved attempt over at once. One that released the record is
-// alive and its role lane has roleReceiptTimeout to finish the forward it had in flight and
+// alive and its role lane has roleForwardTimeout to finish the forward it had in flight and
 // record it, give its attempt up, or report it failed, so what is left of ledgerFormerSettle
 // since this term's acquisition is reported and the ledger defers that attempt until then. A pod
 // holding no term reports no time: it delivers nothing, so nothing of its own waits on the

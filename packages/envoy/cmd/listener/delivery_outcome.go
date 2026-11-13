@@ -98,23 +98,22 @@ func deliveryExceptionEnvelope(item contracts.Envelope, reason, recipientSession
 	return exception, nil
 }
 
-// publishDeliveryException publishes item's delivery exception for reason. origin, when not empty,
-// identifies the stored message the exception is about (exceptionOrigin): an exception the stream
-// stores then carries Nats-Msg-Id exception.<reason>.<origin>, so the stream keeps one copy
-// however many listeners raise it for that message, each from its own durable.
+// publishDeliveryException publishes item's delivery exception for reason, on the transport its
+// own lane takes (bus.Client.Publish, bus.UsesCoreTransport): the stream stores the lane of an
+// agent subject and of a team topic, and a role lane's exception keeps core NATS, since no stream
+// subject captures it. Every fanout refusal took core NATS until team topics were stored, which
+// keeps nothing: the report of a team message reached only a reader subscribed at that moment,
+// where the stream's copy reaches a session's consumer whenever that session comes back. origin,
+// when not empty, identifies the stored message the exception is about (exceptionOrigin): an
+// exception the stream stores then carries Nats-Msg-Id exception.<reason>.<origin>, so the stream
+// keeps one copy however many listeners raise it for that message, each from its own durable.
 //
 // It runs inside a delivery handler, which has no request deadline of its own, so it keeps the
 // publish's own bound and carries the original payload whatever its size.
-func publishDeliveryException(client *bus.Client, item contracts.Envelope, reason, recipientSession string, fanoutRefusal bool, origin string) error {
+func publishDeliveryException(client *bus.Client, item contracts.Envelope, reason, recipientSession, origin string) error {
 	exception, err := deliveryExceptionEnvelope(item, reason, recipientSession, 0)
 	if err != nil {
 		return err
-	}
-	if fanoutRefusal {
-		if err := client.PublishCore(exception); err != nil {
-			return fmt.Errorf("publish fanout delivery exception: %w", err)
-		}
-		return nil
 	}
 	if origin != "" && bus.StreamCaptures(exception.Topic) {
 		// One stored copy however many listeners raise it, each reading the same message from its
@@ -209,8 +208,8 @@ type deliveryOutcome struct {
 	log func(logger *logging.Logger)
 
 	// exceptionReason, when non-empty, publishes a delivery exception via
-	// publishDeliveryException for control topics. fanoutRefusal also emits a
-	// core-NATS exception for this terminal fanout outcome.
+	// publishDeliveryException for control topics. fanoutRefusal publishes one for this terminal
+	// fanout outcome on any topic, each on the transport its own lane takes.
 	exceptionReason string
 	fanoutRefusal   bool
 	// origin identifies the durable message an exception is about (exceptionOrigin), "" for none.
@@ -243,7 +242,7 @@ func applyDeliveryOutcome(cfg listenerDeliveryHandlerConfig, item contracts.Enve
 	}
 	settle := outcome.settle
 	if outcome.exceptionReason != "" && !isExceptionsTopic(item.Topic) && (isControlTopic(item.Topic) || outcome.fanoutRefusal) {
-		if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.fanoutRefusal, outcome.origin); err != nil {
+		if err := publishDeliveryException(cfg.client, item, outcome.exceptionReason, outcome.sessionID, outcome.origin); err != nil {
 			cfg.logger.Error(exceptionPublishFailedLine, slog.String("error", err.Error()), slog.String("topic", item.Topic))
 			if outcome.exceptionFailureClearsAttempt {
 				settle = settleClear

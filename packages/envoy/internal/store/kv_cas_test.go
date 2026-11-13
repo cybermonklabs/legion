@@ -124,8 +124,10 @@ func (kv *conflictingInterestKV) Update(key string, value []byte, last uint64) (
 	return kv.KeyValue.Update(key, value, last)
 }
 
-// An interest write that finds the stored revision moved under it every time gives up after five
-// attempts with ErrWriteConflict, which the listener answers as a 503 to retry.
+// An interest write that finds the stored revision moved under it every time gives up after
+// interestWriteAttempts tries with ErrInterestTopicsNotMerged, which the listener answers as a 503
+// with Retry-After (writeNATSError, cmd/listener/api.go). The count is read from the constant
+// rather than written here, so a change to the writer's bound moves this row with it.
 func TestAnInterestWriteThatLosesEveryRaceIsAConflict(t *testing.T) {
 	a, _ := podRegistries(t)
 	const sessionID = "ses_raced"
@@ -135,11 +137,11 @@ func TestAnInterestWriteThatLosesEveryRaceIsAConflict(t *testing.T) {
 	racing := &conflictingInterestKV{KeyValue: a.interests().Legacy()}
 	useKV(t, a, racing)
 	_, err := a.Upsert(Interest{SessionID: sessionID, MachineID: "box-a"}, []string{"notifications.team.more"})
-	if !errors.Is(err, ErrWriteConflict) {
-		t.Fatalf("Upsert while every write races = %v, want ErrWriteConflict", err)
+	if !errors.Is(err, ErrInterestTopicsNotMerged) {
+		t.Fatalf("Upsert while every write races = %v, want ErrInterestTopicsNotMerged", err)
 	}
-	if racing.writes != 5 {
-		t.Fatalf("Upsert made %d write attempts, want 5", racing.writes)
+	if racing.writes != interestWriteAttempts {
+		t.Fatalf("Upsert made %d write attempts, want %d", racing.writes, interestWriteAttempts)
 	}
 }
 

@@ -52,7 +52,9 @@ func tbTargets() []mpTarget {
 			continue
 		}
 		topic := prefix + "mp-twobuild"
-		if bus.ReachesPrivateStreamSubject(sessionID, topic) {
+		// The target holds no role, so a controller notice lane is private to it as every other
+		// private subject is (bus.ReachesPrivateStreamSubject's roles).
+		if bus.ReachesPrivateStreamSubject(sessionID, topic, nil) {
 			continue
 		}
 		targets = append(targets, mpTarget{topic: topic, session: sessionID})

@@ -140,6 +140,7 @@ on:
       - 'packages/envoy/going/*'
       - 'packages/envoy/going/goingtest/*'
       - 'packages/envoy/internal/bus/*'
+      - 'packages/envoy/internal/bus/testdata/*'
       - 'packages/envoy/internal/cistore/*'
       - 'packages/envoy/internal/contracts/*'
       - 'packages/envoy/internal/dedupe/*'

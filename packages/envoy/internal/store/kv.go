@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -16,14 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
-
-// writeAttempts bounds the compare-and-set attempts of one interest write (Registry.writeInterest).
-const writeAttempts = 5
-
-// ErrWriteConflict is an interest write whose compare-and-set lost to another writer on each of its
-// writeAttempts: every time it wrote, the stored revision had moved since it read. Nothing was
-// written; the caller may retry, and the listener answers it as a 503 with Retry-After.
-var ErrWriteConflict = errors.New("the interest changed under every write attempt")
 
 // JSONKeys are the object keys encoding/json writes for t's exported fields. A record type that
 // keeps the keys of a newer build passes them to DecodeKeeping as the keys it knows.
@@ -100,7 +91,7 @@ type Registry struct {
 	// (kvwatch.Copy, newInterestCopy), which every write site reaches through.
 	cache kvwatch.Copy[Interest]
 	// index indexes the cached interests' topic patterns by subject token (subjectIndex), which is
-	// what Match and MatchAll walk rather than every cached interest. The copy's own hooks keep it
+	// what Match walks rather than every cached interest. The copy's own hooks keep it
 	// in step (indexInterestLocked, unindexInterestLocked), so a recreated bucket's read takes its
 	// departed sessions out of it at the sweep that removes their rows.
 	index *subjectIndex

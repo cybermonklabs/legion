@@ -52,8 +52,9 @@ type listenerDeps struct {
 	// handlers without it.
 	roleLane *bus.Client
 	// consumers manages the session consumers registrations ask for (sessionDelivery); nil in a
-	// test that builds the handlers without it, which answers every such registration with core.
-	// delivery, below, is the delivery handlers' own configuration, which the routes share.
+	// test that builds the handlers without it, which refuses every registration with
+	// consumer_error. delivery, below, is the delivery handlers' own configuration, which the
+	// routes share.
 	consumers *sessionDelivery
 	// caches lists the stores above that are open, for the sites that treat every cache alike.
 	caches []listenerCache
@@ -72,13 +73,13 @@ type listenerDeps struct {
 	// count through its logger and messagesDelivered, reading as the role lane's do, beside the
 	// route's own request record (request_record.go). The route never reads that ledger for its
 	// own dedupe answer: the ledger records what this machine delivered, a forward this pod
-	// published, and not the recipient's word that it has the message.
+	// published, which is not this route's own forward to the holder.
 	delivery *listenerDeliveryHandlerConfig
-	// confirmed is the publish route's own record of each (dedupe key, session) whose receipt arrived
-	// through the route, which only the route writes, and which this pod alone holds (README,
-	// "State the pods share"). A send skips a holder or recipient recorded
-	// there, so envoy-client's retry of a send does not forward again to one the first attempt
-	// confirmed, and no one is counted as confirming a message without having sent its receipt.
+	// confirmed is the publish route's own record of each (dedupe key, session) the route stored a
+	// forward for, which only the route writes, and which this pod alone holds (README, "State the
+	// pods share"). A send skips a holder or recipient recorded there, so envoy-client's retry of
+	// a send does not forward again to one the first attempt already had the stream store the
+	// message for.
 	confirmed *dedupe.Cache
 	// sendsToUnresponsive counts the sends POST /v1/messages/send took for a recipient past the
 	// live window and stored for it (sendHandler). It is how a box's operator sees that a growing
@@ -1654,9 +1655,11 @@ func main() {
 	go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
 	lane := roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
 
-	// The session consumers a registration asks for are managed on a connection of their own
-	// (bus.ConnectSessionConsumers). One that fails to connect leaves every session on core
-	// delivery, which a listener of an earlier release serves too, rather than ending the start.
+	// Every session takes its messages from a session consumer this listener manages on a
+	// connection of its own (bus.ConnectSessionConsumers), and its relay needs a reply inbox to
+	// answer frames on. There is nothing left to fall back to, so either failure ends the start:
+	// a listener that refuses every registration would stop at each session rather than at the
+	// rollout, where an operator learns of it at once.
 	//
 	// The threshold the server removes an idle session consumer after is derived from this
 	// deployment's own windows first and given to that connection, so every consumer the
@@ -1666,25 +1669,27 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
-	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
-	// this task serves its machine's receive term (below). Without its reply inbox no frame could
-	// be answered, so a relay that cannot subscribe one leaves every session on core delivery too.
-	var relays *sessionRelays
-	if delivery.consumers != nil {
-		relays, err = startSessionRelays(delivery, deliveryConfig)
-		if err != nil {
-			logger.Error("session relay reply subscription failed; every session stays on core delivery", slog.String("error", err.Error()))
-			delivery.close()
-			delivery = &sessionDelivery{logger: logger, now: time.Now}
-		}
-		if relays != nil && deliveryLease != nil {
-			// A relay of this pod restarts a session's consumer at its ack floor only once a
-			// former holder that released the lease has had its settle bound
-			// (lease.FormerSettleWait): until then that pod may still be acking a frame the
-			// session answered, which this one would otherwise publish again.
-			relays.formerSettle = deliveryLease.FormerSettleWait
-		}
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
+	if err != nil {
+		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
+		client.Conn.Close()
+		os.Exit(1)
+	}
+	// The relay hears registrations from the moment /v1 opens, and relays once this task serves
+	// its machine's receive term (below).
+	relays, err := startSessionRelays(delivery, deliveryConfig)
+	if err != nil {
+		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
+		delivery.close()
+		client.Conn.Close()
+		os.Exit(1)
+	}
+	if deliveryLease != nil {
+		// A relay of this pod restarts a session's consumer at its ack floor only once a
+		// former holder that released the lease has had its settle bound
+		// (lease.FormerSettleWait): until then that pod may still be acking a frame the
+		// session answered, which this one would otherwise publish again.
+		relays.formerSettle = deliveryLease.FormerSettleWait
 	}
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
@@ -1721,6 +1726,10 @@ func main() {
 	// its term's wait (holderLoopsStopWait), so each term's loop starts only after it.
 	summaryDone := make(chan struct{})
 	close(summaryDone)
+	// ready is the deps the routes and the holder-only loops below read. It is built further
+	// down, once every store and the receiver exist, and assigned before the receiver starts, so
+	// a term's loops - which begin with that receiver - never read it unset.
+	var ready *listenerDeps
 	holderLoops := func(ctx context.Context) []<-chan struct{} {
 		// Relay ownership is no loop of this term's: the receive term itself sets and clears it
 		// (durableReceiver.begin and durableReceiver.end, sessionRelays.setOwned), so among the
@@ -1765,6 +1774,20 @@ func main() {
 				Client:              client,
 				Reaped:              sessionsReaped,
 				StoredAfterLastSeen: sessionStoredAfterLastSeen,
+				// The pass runs in a loop of its own, and the delete confirms the session is
+				// gone against the leader of the session bucket's stream before it removes
+				// anything, so a session that registered between the pass's decision and its
+				// delete keeps the consumer that registration was answered with; one that
+				// registered on another listener between that read and the delete is given its
+				// consumer back, at the floor the delete recorded, from the record and the
+				// interest row the bucket then holds (sessionDelivery.deleteConsumer,
+				// repairRegistered). That body logs whatever became of the consumer and answers
+				// no error, which is why the field carries none: the pass deletes the records
+				// behind this one either way, and the reaper's own log line would say no more
+				// than the delete's.
+				DeleteConsumer: func(ctx context.Context, sessionID string) {
+					delivery.deleteConsumer(ctx, ready, sessionID, nil)
+				},
 			}),
 			// The collector removes the interest bucket's delete markers, which the reaper leaves
 			// one of per dead session on a key that is never reused and which nothing else removes,
@@ -1804,6 +1827,7 @@ func main() {
 			startSessionConsumerSweep(ctx, &sessionConsumerSweep{
 				delivery: delivery,
 				sessions: sessions,
+				deps:     ready,
 				relays:   relays,
 				logger:   logger,
 			}, sessionConsumerSweepInterval),
@@ -1857,7 +1881,7 @@ func main() {
 		deliveryLease.SetReceiveSignal(receiver.receiveUp)
 	}
 
-	ready := &listenerDeps{
+	ready = &listenerDeps{
 		client:       client,
 		roleLane:     roleLaneClient,
 		consumers:    delivery,
@@ -2008,9 +2032,11 @@ const (
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
-	// stopLaneGrace is the role lane's whole stop: stopLaneDrain for its client, then
-	// roleReceiptTimeout, which roleLane.drain waits the handed-over forwards out for after it.
-	stopLaneGrace = stopLaneDrain + roleReceiptTimeout
+	// stopLaneGrace is the role lane's whole stop, and the invariant is the two waits the drain
+	// makes in order: stopLaneDrain for the lane's own client, then the wait roleLane.drain gives
+	// the handed-over forwards, which is roleForwardTimeout (role_lane.go). Every pod's grace is
+	// rendered from stopBudget, so a change to either wait moves the rendered grace with it.
+	stopLaneGrace = stopLaneDrain + roleForwardTimeout
 	// stopClientDrain bounds the main client's drain: 10 s for the deliveries in their handlers,
 	// as before the drain hooks, and the hooks' 3 s on top (bus's drainHookReserve).
 	stopClientDrain = 13 * time.Second

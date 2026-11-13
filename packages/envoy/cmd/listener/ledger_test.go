@@ -98,7 +98,11 @@ func TestAPodTakingOverDoesNotForwardARoleMessageTheOldPodDelivered(t *testing.T
 	forwardOn := func(cfg listenerDeliveryHandlerConfig, forwards *int) listenerDeliveryHandlerConfig {
 		cfg.forwardRole = inlineForward(func(subject string, item contracts.Envelope, msgID string, timeout time.Duration) error {
 			*forwards++
-			return harness.client.RequestCoreTo(subject, item, msgID, timeout)
+			forward, err := harness.client.StartRequestStoredTo(subject, item, msgID, timeout)
+			if err != nil {
+				return err
+			}
+			return forward.Wait()
 		})
 		return wireTestRoleForwarder(t, cfg)
 	}
