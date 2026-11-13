@@ -725,7 +725,8 @@ func later(a, b time.Time) time.Time {
 
 // AtWork says whether a worker of issue has work to do in the phase the issue stands in. It is
 // not the admission rule: an issue keeps one of the cap's slots through phases no worker of it
-// works (KeepsSlot), so this answers a narrower question than the cap asks. gate is the design
+// works (KeepsSlot), unless it waits on another issue (blockers.waitsOf), so this answers a
+// narrower question than the cap asks. gate is the design
 // gate of the issue's tree root, the zero value for a root with no step of it registered.
 //
 // Three readers are left. Two ask about a worker rather than about the cap: CanWaitOnPerson,
@@ -871,9 +872,11 @@ const WaitingLineBand = "among the issues whose work came back, oldest first"
 //     (Store.EnqueueStart);
 //   - a root a person answered while it waited in awaiting_person takes its Awaiting.AnsweredAt;
 //   - a tree's own root standing at admitted under an open gate, whose first phase can start,
-//     takes the moment that gate opened (gateReturn). It holds its row throughout — an issue
-//     the daemon has started keeps one (KeepsSlot) — so its first phase is work coming back
-//     rather than work that never started, and its promotion takes no further slot.
+//     takes the moment that gate opened (gateReturn). It holds the row it was started with —
+//     an issue the daemon has started keeps one (KeepsSlot) — since a root that waits on
+//     another issue, an open child of its own or an unfinished blocked_by link, has given its
+//     row back and stands in the line by the next kind instead. So its first phase is work
+//     coming back rather than work that never started, and its promotion takes no further slot.
 //   - an issue the daemon started that waits on another issue takes the moment its row was
 //     taken away for that wait (Issue.ReleasedForWaitAt, LineWaitingOnIssue), or, where it owes
 //     a start and carries no mark, that owed row's own creation time and id. It holds no row
@@ -1153,9 +1156,14 @@ func Waiting(issues []Issue, slots []Slot, facts LineFacts) ([]LineEntry, []Held
 		}
 		_, holds := slotted[issue.Key]
 		entry := LineEntry{Issue: issue, Kind: LineFirstPhase, Holds: holds}
-		// A tree's own root has held a slot since its architect began the design and keeps it
-		// while its children do the work (KeepsSlot): its first phase is work coming back, so
-		// it stands in the first part at the moment the gate opened (TreeGate.OpenedAt), and
+		// A tree's own root has held a slot since its architect began the design (KeepsSlot).
+		// Under an open gate it gives that row back while it waits on another issue: an open
+		// child of its own is its children-first wait, and an unfinished blocked_by link is the
+		// other (blockers.waitsOf, admit's releaseSlotsForWaits). A root released so stands in
+		// the line by the first loop and is passed over at the top of this one, and the skips
+		// above hold one whose wait the release has still to read. A root that reaches here
+		// waits on neither and holds the row of its run: its first phase is work coming back,
+		// so it stands in the first part at the moment the gate opened (TreeGate.OpenedAt), and
 		// its promotion takes no second slot. A child of the tree holds none until the daemon
 		// starts it, so its first phase is new work and waits in the second part by its tree
 		// root's rank; a child the daemon started and a person set back to todo stands here

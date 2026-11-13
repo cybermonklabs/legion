@@ -2464,8 +2464,9 @@ func (a *Admission) OwesEntryWork(ctx context.Context, tx pgx.Tx) (bool, error) 
 // skips that read the claim alone leave standing.
 //
 // A slot no longer says a worker of its issue has work: an issue keeps its row through phases
-// no worker of it works (record.KeepsSlot), so a holder record.AtWork answers false for is
-// passed over, at the skip the shared selection states (phaseWorkers). The caller hands that
+// no worker of it works (record.KeepsSlot), unless it waits on another issue
+// (releaseSlotsForWaits), so a holder record.AtWork answers false for is passed over, at the
+// skip the shared selection states (phaseWorkers). The caller hands that
 // selection the facts of its own pass, so the gate AtWork is asked with is the issue's real one
 // and the call stays honest against its contract, at one map lookup a holder.
 //

@@ -327,9 +327,9 @@ func capFiller(t *testing.T, pool *pgxpool.Pool, root, key string) {
 // pass before the repair ever reads it: no slot of a member of a lingering tree survives the
 // pass's own release of the slots an issue no longer needs (record.NeedsSlot). That row's guard
 // stands behind the release, so what it locks is the pass's answer rather than the guard. The
-// architect's row is the repair's own skip and nothing else: an issue in accepting keeps its
-// row now (record.KeepsSlot), so the release leaves it standing and only the role test answers
-// it.
+// architect's row is the repair's own skip and nothing else: an issue in accepting that waits on
+// no other issue keeps its row now (record.KeepsSlot), so the release leaves it standing and only
+// the role test answers it.
 //
 // The repair of a start that can no longer act (finishFencedStarts) ends an owed start row
 // written before its worker was stopped, because the row's only effect when a slot came would be
@@ -368,7 +368,7 @@ func TestASlotWhoseWorkerHasNoTaskIsStartedAgain(t *testing.T) {
 			{name: "an architect's role", root: "LEGION-560", key: "LEGION-561", stands: phase.Accepting,
 				generation: 1, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true,
-				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The member keeps its row in accepting (record.KeepsSlot), so the release leaves the row standing and the repair's own skip of the role is the whole answer"},
+				why: "this row changes the phase alone, to the one an architect works: the repair starts phase workers, and an architect is started by its tree's own admission. The member keeps its row in accepting, as it waits on no other issue (record.KeepsSlot), so the release leaves the row standing and the repair's own skip of the role is the whole answer"},
 			{name: "a slot whose root lingers", root: "LEGION-570", key: "LEGION-571", stands: phase.Testing,
 				generation: 1, lingers: true, state: supervise.StateSuspended, suspendedBy: supervise.SuspendedByDaemon,
 				taskGeneration: 1, confirmed: true, slotGivenBack: true,

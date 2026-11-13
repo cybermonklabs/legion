@@ -825,7 +825,9 @@ func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 // again, so under the children-first rule the root is waiting for its children rather than
 // working, ReconcileAwaiting can start no wait on a person for it (workflow's decideAwait, rule
 // 0), and no pass can start it while a step of its design is unapproved; it keeps the row it
-// took at its admission throughout (record.KeepsSlot). CAPTURE-200 waits in line for its first row, so its
+// took at its admission throughout (record.KeepsSlot), since it waits on no other issue: no
+// blocked_by link holds it, and its children are no children-first wait while its gate is closed
+// (blockers.waitsOf). CAPTURE-200 waits in line for its first row, so its
 // architect has never run and has handed nothing back. Reading either one's event log would hold
 // it out of admission for a window that can decide nothing, and replay, for the root that never
 // ran, history older than the handout its own admission will be.

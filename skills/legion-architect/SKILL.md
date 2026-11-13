@@ -24,7 +24,7 @@ An answered root stands in the admission line until the pass that resumes it, an
 
 ## 1. Decompose or adopt
 
-- Read a child's handoff, create children, split across repositories or attach architecture components as `skill://legion-architect/references/decomposition.md` says.
+- Read a child's handoff, create children, split across repositories, attach architecture components or record that an issue waits on work outside this tree as `skill://legion-architect/references/decomposition.md` says; the wait has its own section, "Recording a wait on other work" (`skill://legion-architect/references/decomposition.md#recording-a-wait-on-other-work`).
 - Adopt children a human created and release them at once. Never replace or re-decompose them.
 - Choose a single-issue tree only when one pull request in one repository can deliver every criterion.
 - A child issue needs a repository or a deploy order of its own: its code is in a repository no open pull request of this tree is in, or it must be applied on its own before other work of the tree can build on it. A repeated change — the same edit per program, directory or instance — is one child, never one per instance. Never use a child to track a to-do, a fix found in review, a proof of the root's acceptance, or a part of your own work: do it in this tree. Each child costs a workspace, an admission wait and a review loop. Before any `dispatch issue` that creates a child, and before `release_children`, run the red-team check in `skill://legion-architect/references/decomposition.md`.

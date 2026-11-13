@@ -47,8 +47,8 @@ func TestWaitingLinePartAndKeyReachTheProjectedView(t *testing.T) {
 				ApprovedVersion: &approved, ApprovedMark: record.EventMark{Seq: 7, At: opened}, EverOpened: true}},
 		},
 		owed: []record.OwedStart{{Issue: "LEGION-12", ID: 42, CreatedAt: owedAt}},
-		// The root whose gate opened and the answered root each kept the row they hold through
-		// the wait (record.KeepsSlot); the other three members hold none.
+		// The root whose gate opened and the answered root each kept the row they hold, as
+		// neither waits on another issue (record.KeepsSlot); the other three members hold none.
 		slots: []record.Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: opened},
 			{Issue: "LEGION-40", Index: 1, AdmittedAt: answeredAt}},
 	}

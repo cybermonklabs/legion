@@ -66,9 +66,9 @@ func TestTheBootsResumeReachesASlotHolderAndWaitsWhereTheIssueHoldsNone(t *testi
 	seedRuleSuspendedOwner(t, pool, project, merging, claim.RoleMerger)
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	now := engine.now()
-	// The slot the issue holds where it stands: an issue in merging keeps the row the daemon
-	// gave it when it started the issue (record.KeepsSlot), which is what makes the mark free
-	// for this resume. seedSlot opens the tree's lifecycle with it.
+	// The slot the issue holds where it stands: an issue in merging that waits on no other issue
+	// keeps the row the daemon gave it when it started the issue (record.KeepsSlot), which is
+	// what makes the mark free for this resume. seedSlot opens the tree's lifecycle with it.
 	seedSlot(t, pool, record.Slot{Issue: merging, Index: 0, AdmittedAt: now})
 
 	if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {

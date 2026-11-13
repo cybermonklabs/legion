@@ -54,8 +54,8 @@ func TestWaitingLinePartAndKeyOnEveryEntry(t *testing.T) {
 			ApprovedMark: EventMark{Seq: 7, At: opened}, EverOpened: true}}}},
 		Owed: map[string]OwedStart{"LEGION-12": {Issue: "LEGION-12", ID: 42, CreatedAt: owedAt}},
 	}
-	// The root whose gate opened and the answered root each kept the row they hold through the
-	// wait (KeepsSlot); the other three hold none.
+	// The root whose gate opened and the answered root each kept the row they hold, as neither
+	// waits on another issue (KeepsSlot); the other three hold none.
 	slots := []Slot{{Issue: "LEGION-10", Index: 0, AdmittedAt: opened}, {Issue: "LEGION-40", Index: 1, AdmittedAt: answeredAt}}
 
 	want := []LineEntry{

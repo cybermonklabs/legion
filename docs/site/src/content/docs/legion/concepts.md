@@ -458,9 +458,12 @@ it.
 
 The merge closes the issue: the daemon reads the merged pull request, writes `done`, and nothing is
 left of the issue to develop. A root whose tree still runs is the one issue the merge does not
-close at once: the daemon records the merge, the root stays in `merging` with its workers
-and its admission slot while its children reach their own merges, its architect is told once which
-issues the close waits for, and the close comes when the last of them is done or parked. What is
+close at once: the daemon records the merge, and the root stays in `merging` with its workers
+while its children reach their own merges.
+It keeps its admission slot there, unless an unfinished `blocked_by` link holds it:
+then it gives the slot back, as any started issue that waits on another issue does.
+Its architect is told once which issues the close waits for,
+and the close comes when the last of them is done or parked. What is
 left after the close is to see the change work in production, and that is
 work after the close, where your project asks for it: `projects.<KEY>.production_check` in
 `legion.yaml` takes `off` or `tester` and is `tester` by default, so the tester is handed a

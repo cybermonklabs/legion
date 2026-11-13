@@ -229,10 +229,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 //
 // The notice is work the daemon hands the running architect, so it is a handout whatever slot the
 // root holds: the cap counts the issues the daemon has started, and a root whose gate has opened
-// once keeps the row it was started with while its architect revises the spec
-// (record.KeepsSlot). What that architect handed back at or before the review is part of the
-// spec it is now asked to revise, and only a hand-back after the review starts the next wait
-// (record.Store.TakeInThrough). A hand-back newer than the review, applied first, still stands.
+// once keeps the row it was started with while its architect revises the spec (record.KeepsSlot),
+// except while it waits on another issue — an unfinished blocked_by link, or under an open gate an
+// open child of its own — when it has given that row back (blockers.waitsOf, admit's
+// releaseSlotsForWaits) and is told the request all the same. What that architect handed back at
+// or before the review is part of the spec it is now asked to revise, and only a hand-back after
+// the review starts the next wait (record.Store.TakeInThrough). A hand-back newer than the
+// review, applied first, still stands.
 // A review with no sequence cannot be placed, so it takes in everything the record holds
 // (record.Store.StartHandout), as the notice did before hand-backs were placed.
 //

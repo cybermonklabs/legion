@@ -278,7 +278,8 @@ func TestSlotPerPhase(t *testing.T) {
 	// A child of the same tree the daemon did start, which a person's todo re-entered: a
 	// re-entry writes the phase back to admitted, bumps the generation and leaves the Dispatch
 	// status at todo (workflow.ReenterChild), and none of the three deletions reads any of that,
-	// so the row its first run took stands (record.KeepsSlot). The unstarted child above is
+	// so the row its first run took stands (record.KeepsSlot), as it waits on no other issue
+	// (blockers.waitsOf). The unstarted child above is
 	// read beside it in the same assertion, still holding none: the two stand in the same
 	// phase, in the same status, under the same root's wait, so what tells them apart is that
 	// the daemon started one of them and never started the other — which is the distinction a

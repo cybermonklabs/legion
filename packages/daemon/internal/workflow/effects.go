@@ -624,8 +624,9 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 //
 // Every start it writes is marked for the issue's admission slot, which the outbox holds
 // unclaimable while the issue holds none (store.go's outboxInOrder). The cap counts the issues
-// the daemon has started, each holding its row from its start until its work ends
-// (record.KeepsSlot), so a start claimable at once would put a worker to work on an issue
+// the daemon has started, each holding its row from its start until its work ends, except
+// while it waits on another issue (record.KeepsSlot, blockers.waitsOf), so a start claimable at
+// once would put a worker to work on an issue
 // holding no slot — where the cap is full that is what it would do — and a worker put to work
 // on an issue the cap has not admitted is what a start of a phase worker may never be. A
 // transition's start, admission's start of a mid-phase member, the boot's resume by rule and the
