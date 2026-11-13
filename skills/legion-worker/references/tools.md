@@ -234,7 +234,8 @@ pod's shared configuration home, the home every role's own is built over, and th
 own temporary directories, lock directories, shared memory, terminals, message queues and
 `/proc`. The deletions are made in a mount namespace built from the one list a role's own
 namespace is built from, where every path a role is given something of its own at is an empty
-filesystem instead.
+filesystem instead, and `/proc` is a procfs of the deleting process's own, which shows nothing
+of any other process.
 
 That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
 pod does and counts against the volume for every role. Delete the paths you made, each by its

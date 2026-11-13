@@ -30,14 +30,14 @@ import (
 // them deleted a file of another role's private directory
 // (TestASubdirectorySwappedForALinkWhileARemovalRecursesReachesNoOtherRolesFiles).
 //
-// So the deletions are made in a mount namespace of their own, built by the same code that
-// builds a role's: every path a role's own namespace replaces with something of the role's is
-// an empty filesystem of this child's instead, from the one list both are walked from
-// (RoleCover.replaced, roleinit.go), with a procfs of the child's own PID namespace where a
-// role is given one and the child's working directory at the root of its own namespace
-// (containDeletions). /legion is left as the container mounted it, since that is where the
-// deletions are made. A link the recursion follows then reaches only what the role that left it
-// could delete itself, as the same uid.
+// So the deletions are made in a mount namespace of their own, walked from the same list and by
+// the same walk that build a role's (RoleCover.replaced and eachReplaced, roleinit.go), each with
+// a callback of its own: every path a role's own namespace replaces with something of the
+// role's is an empty filesystem of this child's instead, with a procfs of the child's own PID
+// namespace where a role is given one and the child's working directory at the root of its own
+// namespace (containDeletions). /legion is left as the container mounted it, since that is where
+// the deletions are made. A link the recursion follows then reaches only what the role that left
+// it could delete itself, as the same uid.
 //
 // What that bounds, exactly. All six roles of an issue pod run as one uid — the worker image's
 // unprivileged user, roleUID — so a role can already delete anything of /legion it can reach by
