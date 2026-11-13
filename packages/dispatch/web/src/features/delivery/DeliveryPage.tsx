@@ -504,6 +504,7 @@ function DeliveryControls({
           value={filters.search}
         />
       }
+      size="compact"
       trigger={
         <PanelTrigger
           count={chosen.length}
