@@ -227,6 +227,8 @@ such a row loses is feedback on the pull request itself.
 | `e2e/composer-body-cap.e2e.ts` | the server's refusal or acceptance of a body length is the assertion |
 | `e2e/conversation.e2e.ts` | names resolve from the live registry; an edit after load arrives live; the prefilled mention is sent and checked |
 | `e2e/coverage.e2e.ts` | coverage flags are the server's computation, cleared by a write |
+| `e2e/create-document-refusals.e2e.ts` | every row reads a refusal: the taken title the control checks against the owner's own list, the role slug and the duplicate the server refuses in its own words, and the closed issue's one sentence; each then reads the issue's documents again to prove nothing was written |
+| `e2e/create-document.e2e.ts` | makes a document and then reads its own write - the versions it holds, the list it is listed in and the line typed into its live editor after a reload; the double press is answered by the server's idempotency key |
 | `e2e/create-issue-decision-claim.e2e.ts` | the server's search answers the typed title, and the answered ask it lists is its ranking |
 | `e2e/create-issue-related.e2e.ts` | the server's similar-issue search answers the typed title |
 | `e2e/decision-records.e2e.ts` | Keep and Change are writes, and "out of date" is the server's judgement |
@@ -237,6 +239,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/doc-reload-line.e2e.ts` | the read-only admission is decided at socket open |
 | `e2e/doc.e2e.ts` | every row lives in the live document room, its connections and versions |
 | `e2e/document-and-comment-read-alike.e2e.ts` | each row asserts inside the live spec editor |
+| `e2e/document-way-back.e2e.ts` | a correction and two removals written and then re-read on the open page, the issue's list and its Activity; the refused removal is the server's judgement that the document holds writing, which only a settled version makes true |
 | `e2e/document.e2e.ts` | collaboration, uploads, marks, and the live connection dot |
 | `e2e/editor-paste.e2e.ts` | pastes into the live editor, read back after a reload |
 | `e2e/email-links.e2e.ts` | asserts in the live editor before the past version |

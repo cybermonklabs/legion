@@ -51,8 +51,9 @@ type listenerDeps struct {
 	// handlers without it.
 	roleLane *bus.Client
 	// consumers manages the session consumers registrations ask for (sessionDelivery); nil in a
-	// test that builds the handlers without it, which answers every such registration with core.
-	// delivery, below, is the delivery handlers' own configuration, which the routes share.
+	// test that builds the handlers without it, which refuses every registration with
+	// consumer_error. delivery, below, is the delivery handlers' own configuration, which the
+	// routes share.
 	consumers *sessionDelivery
 	// caches lists the stores above that are open, for the sites that treat every cache alike.
 	caches []listenerCache
@@ -69,13 +70,13 @@ type listenerDeps struct {
 	// session it confirms in its dedupeCache (so the handlers do not deliver that key to it again),
 	// and writes each send's delivery line and delivery_status count through its logger and
 	// messagesDelivered, reading as the role lane's do, beside the route's own request record
-	// (request_record.go). The route never reads that dedupeCache, since the handlers also
-	// record a self-subscribed session whose delivery they skipped without hearing from it.
+	// (request_record.go). The route never reads that dedupeCache, since the handlers write it
+	// for deliveries of their own, which are not the route's forwards.
 	delivery *listenerDeliveryHandlerConfig
-	// confirmed is the publish route's own record of each (dedupe key, session) whose receipt arrived
-	// through the route, which only the route writes. A send skips a holder or recipient recorded
-	// there, so envoy-client's retry of a send does not forward again to one the first attempt
-	// confirmed, and no one is counted as confirming a message without having sent its receipt.
+	// confirmed is the publish route's own record of each (dedupe key, session) the route stored a
+	// forward for, which only the route writes. A send skips a holder or recipient recorded there,
+	// so envoy-client's retry of a send does not forward again to one the first attempt already
+	// had the stream store the message for.
 	confirmed *dedupe.Cache
 	// sendsToUnresponsive counts the sends POST /v1/messages/send took for a recipient past the
 	// live window and stored for it (sendHandler). It is how a box's operator sees that a growing
@@ -1274,9 +1275,11 @@ func main() {
 	go watchRoleLaneSlowConsumers(roleLaneWatchCtx, roleLaneClient, logger, roleLaneSlowConsumerInterval)
 	lane := roleLane{client: roleLaneClient, forwards: roleForwards, stopWatch: roleLaneWatchCancel}
 
-	// The session consumers a registration asks for are managed on a connection of their own
-	// (bus.ConnectSessionConsumers). One that fails to connect leaves every session on core
-	// delivery, which a listener of an earlier release serves too, rather than ending the start.
+	// Every session takes its messages from a session consumer this listener manages on a
+	// connection of its own (bus.ConnectSessionConsumers), and its relay needs a reply inbox to
+	// answer frames on. There is nothing left to fall back to, so either failure ends the start:
+	// a listener that refuses every registration would stop at each session rather than at the
+	// rollout, where an operator learns of it at once.
 	//
 	// The threshold the server removes an idle session consumer after is derived from this
 	// deployment's own windows first and given to that connection, so every consumer the
@@ -1286,18 +1289,20 @@ func main() {
 	// consumer the listener's own delete had not reached, and with it the only record of where
 	// that session's delivery stopped (inactiveThresholdFor, bus.ConnectSessionConsumers).
 	inactiveThreshold := inactiveThresholdFor(sessions, sessionReapInterval, sessionConsumerSweepInterval)
-	delivery := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
-	// The relay of those consumers hears registrations from the moment /v1 opens, and relays once
-	// this task holds its machine's durable binding (below). Without its reply inbox no frame could
-	// be answered, so a relay that cannot subscribe one leaves every session on core delivery too.
-	var relays *sessionRelays
-	if delivery.consumers != nil {
-		relays, err = startSessionRelays(delivery, deliveryConfig)
-		if err != nil {
-			logger.Error("session relay reply subscription failed; every session stays on core delivery", slog.String("error", err.Error()))
-			delivery.close()
-			delivery = &sessionDelivery{logger: logger, now: time.Now}
-		}
+	delivery, err := connectSessionDelivery(cfg.NATSURLs, inactiveThreshold, logger)
+	if err != nil {
+		logger.Error("session consumer connection failed: every session is delivered through a consumer of its own", slog.String("error", err.Error()))
+		client.Conn.Close()
+		os.Exit(1)
+	}
+	// The relay hears registrations from the moment /v1 opens, and relays once this task holds its
+	// machine's durable binding (below).
+	relays, err := startSessionRelays(delivery, deliveryConfig)
+	if err != nil {
+		logger.Error("session relay reply subscription failed: no relayed frame could be answered", slog.String("error", err.Error()))
+		delivery.close()
+		client.Conn.Close()
+		os.Exit(1)
 	}
 	// The parts a shutdown ends, gathered once: every end of a start that serves /v1 passes them
 	// to shutdownListener.
@@ -1410,11 +1415,27 @@ func main() {
 		registry.StartReaper(kvLoopsCtx, func(sessionID string) (bool, error) { return sessionMayBeLive(sessions, sessionID) }, 5*time.Minute, store.InterestReapGrace),
 		registry.StartRoleClaimReaper(kvLoopsCtx, func(sessionID string) bool { return roleHolderMayBeLive(logger, sessions, sessionID) }, roleClaimReapInterval, sessionLive, sessionLive),
 		// The session reaper is the one loop that deletes a session's record, and the one place
-		// the bucket's maximum age is settled while the listener runs (session.ReapSessions).
+		// the bucket's maximum age is settled while the listener runs (session.ReapSessions). It
+		// deletes the session consumer of each record it deletes, so the stream holds a consumer
+		// for each session this deployment has rather than for each that reached the gone horizon
+		// inside the consumers' inactive threshold (bus.SessionConsumerInactiveThreshold).
 		sessions.StartSessionReaper(kvLoopsCtx, sessionReapInterval, session.SessionReaper{
 			Client:              client,
 			Reaped:              sessionsReaped,
 			StoredAfterLastSeen: sessionStoredAfterLastSeen,
+			// The pass runs in a loop of its own, and the delete confirms the session is gone
+			// against the leader of the session bucket's stream before it removes anything,
+			// so a session that registered between the pass's decision and its delete keeps
+			// the consumer that registration was answered with; one that registered on
+			// another listener between that read and the delete is given its consumer back,
+			// at the floor the delete recorded, from the record and the interest row the
+			// bucket then holds (sessionDelivery.deleteConsumer, repairRegistered). That
+			// body logs whatever became of the consumer and answers no error, which is why
+			// the field carries none: the pass deletes the records behind this one either
+			// way, and the reaper's own log line would say no more than the delete's.
+			DeleteConsumer: func(ctx context.Context, sessionID string) {
+				delivery.deleteConsumer(ctx, ready, sessionID, nil)
+			},
 		}),
 	}
 
@@ -1441,6 +1462,7 @@ func main() {
 	kvLoopsDone = append(kvLoopsDone, startSessionConsumerSweep(kvLoopsCtx, &sessionConsumerSweep{
 		delivery: delivery,
 		sessions: sessions,
+		deps:     ready,
 		relays:   relays,
 		logger:   logger,
 	}, sessionConsumerSweepInterval))
@@ -1601,9 +1623,11 @@ const (
 	stopHTTPGrace = 10 * time.Second
 	// stopLaneDrain is what roleLane.drain is given for the role lane's own client.
 	stopLaneDrain = 3 * time.Second
-	// stopLaneGrace is the role lane's whole stop: stopLaneDrain for its client, then
-	// roleReceiptTimeout, which roleLane.drain waits the handed-over forwards out for after it.
-	stopLaneGrace = stopLaneDrain + roleReceiptTimeout
+	// stopLaneGrace is the role lane's whole stop, and the invariant is the two waits the drain
+	// makes in order: stopLaneDrain for the lane's own client, then the wait roleLane.drain gives
+	// the handed-over forwards, which is roleForwardTimeout (role_lane.go). Every pod's grace is
+	// rendered from stopBudget, so a change to either wait moves the rendered grace with it.
+	stopLaneGrace = stopLaneDrain + roleForwardTimeout
 	// stopClientDrain bounds the main client's drain: 10 s for the deliveries in their handlers,
 	// as before the drain hooks, and the hooks' 3 s on top (bus's drainHookReserve).
 	stopClientDrain = 13 * time.Second
