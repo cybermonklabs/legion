@@ -52,9 +52,10 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-// fakeOMP answers a prompt with OMP's own sequence — the ack, then the turn — records every line
-// it reads, and reports on its stdout what the tests need to see from inside the child: that it
-// started, that a SIGTERM reached it, and a burst of frames on SIGUSR1.
+// fakeOMP runs a turn when the daemon's side asks for one (a `fake_turn` frame, which the shim
+// forwards as it forwards everything it does not act on itself), records every line it reads, and
+// reports on its stdout what the tests need to see from inside the child: that it started, that a
+// SIGTERM reached it, and a burst of frames on SIGUSR1.
 func fakeOMP() int {
 	var mu sync.Mutex
 	emit := func(line string) {
@@ -116,16 +117,11 @@ func fakeOMP() int {
 	for lines.Scan() {
 		line := lines.Bytes()
 		_, _ = record.Write(append(bytes.Clone(line), '\n'))
-		var frame struct{ Type, ID, Message string }
+		var frame struct{ Type, ID string }
 		_ = json.Unmarshal(line, &frame)
 		switch frame.Type {
-		case "prompt":
-			emit(fmt.Sprintf(`{"type":"response","id":%q,"command":"prompt","success":true}`, frame.ID))
+		case "fake_turn":
 			emit(`{"type":"agent_start"}`)
-			if frame.Message != "hold" {
-				emit(`{"type":"agent_end"}`)
-			}
-		case "fake_end_turn":
 			emit(`{"type":"agent_end"}`)
 		case "get_state":
 			emit(fmt.Sprintf(`{"type":"response","id":%q,"command":"get_state","success":true,"data":{"isStreaming":false}}`, frame.ID))
@@ -559,7 +555,7 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 
 	p := daemon.accept(t)
 	p.expectHello(t)
-	p.send(t, shimwire.Prompt{ID: "early", DeliveryID: "d0", Message: "not yet"})
+	p.sendLine(t, `{"type":"fake_turn"}`)
 	sh.log.await(t, "ignoring a frame received before hello_ack", 1)
 	if child.started() || sh.log.count("[worker-shim] spawned ") != 0 {
 		t.Fatalf("OMP was spawned before the daemon acked the hello; log:\n%s", sh.log)
@@ -572,7 +568,7 @@ func TestOMPIsSpawnedOnlyAfterTheHelloAck(t *testing.T) {
 		t.Fatalf("the probe was answered as %#v", raw)
 	}
 	if got := frameTypes(child.received(t)); !reflect.DeepEqual(got, []string{shimwire.TypeGetState}) {
-		t.Fatalf("OMP read %v; the pre-ack prompt must never reach it", got)
+		t.Fatalf("OMP read %v; the pre-ack frame must never reach it", got)
 	}
 }
 
@@ -755,8 +751,7 @@ func TestTheCodegraphWarmUpStartsOnTheChildsFirstFrameOnce(t *testing.T) {
 		t.Fatalf("the warm-up was started with %v, want once with %q", got, workspace)
 	}
 
-	p.send(t, shimwire.Prompt{ID: "p1", DeliveryID: "d1", Message: "go"})
-	p.expect(t, shimwire.Response{ID: "p1", Command: "prompt", Success: true})
+	p.sendLine(t, `{"type":"fake_turn"}`)
 	p.expect(t, shimwire.AgentStart{})
 	p.expect(t, shimwire.AgentEnd{})
 	_ = p.conn.Close()
@@ -1599,55 +1594,6 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 				t.Fatalf("the lock after the failed adoption: %v, want it left in place", err)
 			}
 		})
-	}
-}
-
-// The delivery dedupe end to end: the daemon retrying a prompt with the same deliveryId reaches
-// OMP once, and every repeat is answered by the shim with the replay rules of internal/shimwire
-// — the ack, a start carrying the deliveryId once the turn began, and its end once it is over.
-func TestARepeatedDeliveryReachesOMPOnceAndIsAnsweredLocally(t *testing.T) {
-	path := socketPath(t)
-	daemon := listen(t, path)
-	child := newOMP(t)
-	run(t, config(t, path, child), newClock())
-	p := daemon.accept(t)
-	p.open(t)
-	ack := func(id string) shimwire.Response {
-		return shimwire.Response{ID: id, Command: shimwire.TypePrompt, Success: true}
-	}
-
-	p.send(t, shimwire.Prompt{ID: "r1", DeliveryID: "d1", Message: "hold"})
-	p.expect(t, ack("r1"))
-	p.expect(t, shimwire.AgentStart{})
-
-	// Mid-turn: the ack and the start, which the daemon can fence on by its deliveryId.
-	p.send(t, shimwire.Prompt{ID: "r2", DeliveryID: "d1", Message: "hold"})
-	p.expect(t, ack("r2"))
-	p.expect(t, shimwire.AgentStart{DeliveryID: "d1"})
-
-	p.sendLine(t, `{"type":"fake_end_turn"}`)
-	p.expect(t, shimwire.AgentEnd{})
-
-	// After the turn: the end is replayed too, or the daemon would wait for one already sent.
-	p.send(t, shimwire.Prompt{ID: "r3", DeliveryID: "d1", Message: "hold"})
-	p.expect(t, ack("r3"))
-	p.expect(t, shimwire.AgentStart{DeliveryID: "d1"})
-	p.expect(t, shimwire.AgentEnd{})
-
-	// A new delivery is OMP's again.
-	p.send(t, shimwire.Prompt{ID: "r4", DeliveryID: "d2", Message: "the next task"})
-	p.expect(t, ack("r4"))
-	p.expect(t, shimwire.AgentStart{})
-	p.expect(t, shimwire.AgentEnd{})
-
-	var prompts []string
-	for _, frame := range child.received(t) {
-		if prompt, ok := frame.(shimwire.Prompt); ok {
-			prompts = append(prompts, prompt.ID)
-		}
-	}
-	if !reflect.DeepEqual(prompts, []string{"r1", "r4"}) {
-		t.Fatalf("OMP was prompted with %v, want [r1 r4]: d1 once, d2 once", prompts)
 	}
 }
 

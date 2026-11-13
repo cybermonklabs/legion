@@ -7,7 +7,7 @@ package daemon
 // resume, a relaunch after a death, and a resume after the daemon replaced the pod (the displaced
 // path) — each driven through the supervisor that observes it, the ready fact it fires
 // (workflowRuntime.terminal), the workflow's readyWorkerTask and the outbox row it queues, to the
-// task the agent is prompted with.
+// task the agent's claim holds for its worker to take.
 
 import (
 	"context"
@@ -30,7 +30,7 @@ import (
 // taskWithinOfReady is how long a phase holder may stand ready with no task before the daemon has
 // failed it (dispatch://INFRA-714 acceptance A9). It is measured where an operator reads it, over
 // the two times the claim view carries: the claim's last ready (supervise.Claim.LastReady) and the
-// acknowledgement of the task's prompt (supervise.Delivery.DeliveredAt).
+// moment its task was queued (supervise.Delivery.QueuedAt).
 const taskWithinOfReady = 2 * time.Minute
 
 // readyWorkerRig is a tester at work in its issue's testing phase, as the daemon leaves one: the
@@ -50,7 +50,7 @@ type readyWorkerRig struct {
 	issue   record.Issue
 }
 
-// newReadyWorkerRig starts the tester of a testing issue and prompts it with the start's task.
+// newReadyWorkerRig starts the tester of a testing issue and queues it the start's task.
 func newReadyWorkerRig(t *testing.T) *readyWorkerRig {
 	t.Helper()
 	ctx := context.Background()
@@ -236,9 +236,9 @@ func TestEveryComeBackToReadyGivesAPhaseHolderItsTaskWithinTwoMinutes(t *testing
 }
 
 // A phase holder that comes back still holding its task is given no second copy: the task it holds
-// is the work under way, and a second prompt for it would be a second turn of the same work. The
-// one it holds is sent again on the same delivery, which is the relaunch's own resend, not a task
-// of its own.
+// is the work under way, and a second task for it would be a second turn of the same work. The one
+// it holds is the one its worker takes, under the same delivery, which is the relaunch's own
+// resend, not a task of its own.
 func TestAComeBackWithATaskStillPendingGivesNoSecondCopy(t *testing.T) {
 	for name, comeBack := range comeBacks {
 		t.Run(name, func(t *testing.T) {
@@ -257,10 +257,8 @@ func TestAComeBackWithATaskStillPendingGivesNoSecondCopy(t *testing.T) {
 			if held := rig.claim().Pending; held == nil || held.ID != delivered || held.Task != "Test it." {
 				t.Fatalf("after the come-back the tester holds %+v, want the one task it held, %s", held, delivered)
 			}
-			for i, prompt := range rig.conn.Prompts() {
-				if prompt.DeliveryID != delivered {
-					t.Fatalf("prompt %d carried delivery %s, want every prompt to carry the one task the tester holds, %s", i+1, prompt.DeliveryID, delivered)
-				}
+			if take, accepted := takeOffered(context.Background(), t, rig.machine); !accepted || take.DeliveryID != delivered {
+				t.Fatalf("the tester's take after the come-back = %+v (accepted %v), want the one task it holds, %s", take, accepted, delivered)
 			}
 		})
 	}

@@ -13,8 +13,7 @@ package daemon
 // One sweep is one call of tellSilentPhaseWorkers over the claims the store holds now, as the
 // orphan sweep's tick makes it (sweepForSilence). What the sweep writes is a fact, and what the
 // fact writes is a start row and a notice; the rig's own outbox runner then runs those rows, so
-// the prompt a test reads at the worker's connection is the one the daemon's lifecycle lane
-// really sends.
+// the task a test's worker takes is the one the daemon's lifecycle lane really queued.
 
 import (
 	"context"
@@ -32,7 +31,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -229,18 +227,16 @@ func aSilentPhaseWorker(t *testing.T, beside ...podUpdateRole) *podUpdateRig {
 	return rig
 }
 
-// assertPromptedWithItsPhasesTask waits for the task the repair sent to reach the worker's
-// connection and holds it to the task the record builds for the issue, the phase's resume task a
-// claim level with the entry its phase row names is sent, on the row that carried it.
-func assertPromptedWithItsPhasesTask(t *testing.T, rig *podUpdateRig, conn *fake.Conn, before int) {
+// assertTakesItsPhasesTask waits for the task the repair queued to reach the worker's claim, has
+// the worker take it, and holds the take to the task the record builds for the issue, the phase's
+// resume task a claim level with the entry its phase row names is given, on the row that carried
+// it.
+func assertTakesItsPhasesTask(t *testing.T, rig *podUpdateRig, role claim.Role) {
 	t.Helper()
 	want := workflow.ResumePhaseTask(rig.issue())
-	testwait.Eventually(t, "the silent worker to be prompted with its phase's task", func() bool {
-		return len(conn.Prompts()) > before
-	})
-	sent := conn.Prompts()[before:]
-	if len(sent) != 1 || sent[0].Message != want {
-		t.Fatalf("the silent worker was sent %+v, want the one prompt %q", sent, want)
+	rig.awaitClaim(role, "the silent worker to be given its phase's task", func(c supervise.Claim) bool { return c.Pending != nil })
+	if answer := rig.take(role); answer.Outcome != supervise.TakeOutcomeAccepted || answer.Text != want {
+		t.Fatalf("the silent worker's take = %+v, want it accepted with %q", answer, want)
 	}
 }
 
@@ -289,8 +285,6 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	// The pod that replaced it brings the worker back on its own session, which is what the
 	// daemon's displaced path does, and the replacement registers and readies.
 	rig.displacedInto(worker, podUpdateReplacementPod)
-	conn, beside := rig.workers[worker], rig.workers[healthy]
-	before, besideBefore := len(conn.Prompts()), len(beside.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
 	// The worker beside it moves at the clock the sweep is about to read, so the last step the
 	// sweep judges it by is this moment and no silence stands over it.
@@ -307,10 +301,10 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 
 	rig.drain()
 
-	assertPromptedWithItsPhasesTask(t, rig, conn, before)
-	if sent := beside.Prompts()[besideBefore:]; len(sent) != 0 {
-		t.Fatalf("the %s was sent %+v, want nothing: it stepped inside the bound, and nothing of this sweep is owed to a worker that is not silent",
-			healthy, sent)
+	assertTakesItsPhasesTask(t, rig, worker)
+	if held := rig.claimOf(healthy).Pending; held != nil {
+		t.Fatalf("the %s holds %+v, want nothing: it stepped inside the bound, and nothing of this sweep is owed to a worker that is not silent",
+			healthy, held)
 	}
 	if c := rig.claimOf(worker); c.State != supervise.StateReady || c.Pending == nil {
 		t.Fatalf("the worker is %s holding %+v, want it ready holding the task the start row carried", c.State, c.Pending)
@@ -349,8 +343,6 @@ func TestSilentPhaseWorkerGetsItsTaskAgainWithNoUpdateRound(t *testing.T) {
 	worker := claim.RoleImplementer
 	rig.goesQuiet(worker)
 	rig.displacedInto(worker, podUpdateReplacementPod)
-	conn := rig.workers[worker]
-	before := len(conn.Prompts())
 	if c := rig.claimOf(worker); c.UpdateRound != "" {
 		t.Fatalf("the worker is in the round %q, which this case is the absence of", c.UpdateRound)
 	}
@@ -358,7 +350,7 @@ func TestSilentPhaseWorkerGetsItsTaskAgainWithNoUpdateRound(t *testing.T) {
 	rig.sweepForSilence()
 	rig.drain()
 
-	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+	assertTakesItsPhasesTask(t, rig, worker)
 }
 
 // The architect of the issue is the one reader that can act on a worker nothing will prompt, so
@@ -507,9 +499,9 @@ func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
 				notices, first.Format(time.RFC3339))
 		}
 
-		// The worker is sent the task the first silence repaired it with, takes its turn and
-		// ends it — which is a worker moving again, and what retires that task — and then stops
-		// for as long once more. The step the turn's start recorded is the second silence's own
+		// The worker takes the task the first silence repaired it with, takes its turn and ends
+		// it — which is a worker moving again, and what retires that task — and then stops for as
+		// long once more. The step the turn's start recorded is the second silence's own
 		// moment, so the fact the sweep mints for it is a fact of its own. The step record is no
 		// part of the machine's state: it is written through the store's own narrow call and
 		// read back from there (supervise's putStep, supervisor.Step), which is where the sweep
@@ -521,6 +513,9 @@ func TestSilentPhaseWorkerIsToldOncePerSilence(t *testing.T) {
 		rig.awaitClaim(worker, "the task the repair sent", func(c supervise.Claim) bool { return c.Pending != nil })
 		sent := rig.claimOf(worker).Pending.ID
 		second := rig.clock.Now().UTC()
+		if answer := rig.take(worker); answer.Outcome != supervise.TakeOutcomeAccepted {
+			t.Fatalf("the take of the task the repair sent = %+v, want it accepted", answer)
+		}
 		rig.handle(worker, supervise.StreamTurnStart{Claim: rig.tokens[worker]})
 		rig.endTurn(worker, sent)
 		rig.awaitClaim(worker, "the task to retire with its turn", func(c supervise.Claim) bool { return c.Pending == nil })
@@ -806,8 +801,6 @@ func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testin
 	rig := aBackgroundStalledWorker(t)
 	worker := claim.RoleImplementer
 	rig.goesQuiet(worker)
-	conn := rig.workers[worker]
-	before := len(conn.Prompts())
 	reported := rig.reportsBackgroundWork(worker, "async-job", "subagent")
 	rig.clock.advance(podUpdateBackground + time.Minute)
 
@@ -847,8 +840,8 @@ func TestWorkerBackgroundStalledIsToldToItsArchitectOnceAndSentNothing(t *testin
 	if len(topics) != 1 || topics[0] != notify.RoleTopicPrefix+string(architect) {
 		t.Fatalf("the notice was published to %v, want the one topic of %s", topics, architect)
 	}
-	if sent := conn.Prompts()[before:]; len(sent) != 0 {
-		t.Fatalf("the worker was sent %+v, want nothing at all", sent)
+	if held := rig.claimOf(worker).Pending; held != nil {
+		t.Fatalf("the worker holds %+v, want nothing at all", held)
 	}
 	lines := loggedLines(t, rig.logs.String(), "is waiting on background work that has stood past the bound")
 	if len(lines) != 1 {
@@ -1013,8 +1006,6 @@ func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(
 	// The pod goes with that task in it, and the replacement registers and readies. It reports
 	// nothing: the first report a Claude Code session makes is at the end of its first turn.
 	rig.displacedInto(worker, podUpdateReplacementPod)
-	conn := rig.workers[worker]
-	before := len(conn.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
 
 	rig.sweepForSilence()
@@ -1024,7 +1015,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessLeftABackgroundReportGetsItsTaskAgain(
 			podUpdateIssue, got)
 	}
 	rig.drain()
-	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+	assertTakesItsPhasesTask(t, rig, worker)
 }
 
 // The same worker, with one sweep more: the silence bound passes while the dead process's report
@@ -1055,8 +1046,6 @@ func TestSilentPhaseWorkerReadAsBusyBeforeItsPodWentGetsItsTaskAgain(t *testing.
 	}
 
 	rig.displacedInto(worker, podUpdateReplacementPod)
-	conn := rig.workers[worker]
-	before := len(conn.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
 
 	rig.sweepForSilence()
@@ -1070,7 +1059,7 @@ func TestSilentPhaseWorkerReadAsBusyBeforeItsPodWentGetsItsTaskAgain(t *testing.
 		t.Fatalf("the notices of %s = %+v, want the one worker-silent notice its architect is owed", podUpdateIssue, notices)
 	}
 	rig.drain()
-	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+	assertTakesItsPhasesTask(t, rig, worker)
 }
 
 // The worker's session reports between the sweep's read of the claims and the fact's
@@ -1085,8 +1074,6 @@ func TestSilentPhaseWorkerWhoseReminderReArmedAfterTheSweepReadGetsItsTaskOnceIt
 	rig := aSilentPhaseWorker(t)
 	worker := claim.RoleImplementer
 	rig.goesQuiet(worker)
-	conn := rig.workers[worker]
-	before := len(conn.Prompts())
 	// The sweep reads the claims while the worker's report explains nothing.
 	claims, err := rig.sup.Claims(rig.ctx)
 	if err != nil {
@@ -1123,7 +1110,7 @@ func TestSilentPhaseWorkerWhoseReminderReArmedAfterTheSweepReadGetsItsTaskOnceIt
 		t.Fatalf("the notices of %s = %+v, want the one worker-silent notice its architect is owed", podUpdateIssue, notices)
 	}
 	rig.drain()
-	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+	assertTakesItsPhasesTask(t, rig, worker)
 }
 
 // A dead process's report of background work can reach the store after the relaunch that
@@ -1151,8 +1138,6 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 	}); err != nil {
 		t.Fatalf("write the dead process's report: %v", err)
 	}
-	conn := rig.workers[worker]
-	before := len(conn.Prompts())
 	rig.clock.advance(podUpdateSilence + time.Minute)
 
 	rig.sweepForSilence()
@@ -1166,7 +1151,7 @@ func TestSilentPhaseWorkerWhoseDeadProcessReportLandedAfterItsRelaunchGetsItsTas
 		t.Fatalf("the notices of %s = %+v, want the one worker-silent notice its architect is owed", podUpdateIssue, notices)
 	}
 	rig.drain()
-	assertPromptedWithItsPhasesTask(t, rig, conn, before)
+	assertTakesItsPhasesTask(t, rig, worker)
 
 	rig.clock.advance(podUpdateBackground)
 

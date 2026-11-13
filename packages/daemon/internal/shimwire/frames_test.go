@@ -28,21 +28,6 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			NegotiateProtocol{ID: "r1", ProtocolVersion: 2},
 		},
 		{
-			"prompt",
-			`{"type":"prompt","id":"r2","deliveryId":"d1","message":"work"}`,
-			Prompt{ID: "r2", DeliveryID: "d1", Message: "work"},
-		},
-		{
-			"response",
-			`{"type":"response","id":"r2","command":"prompt","success":true}`,
-			Response{ID: "r2", Command: TypePrompt, Success: true},
-		},
-		{
-			"refusal response",
-			`{"type":"response","id":"r2","command":"prompt","success":false,"error":"busy"}`,
-			Response{ID: "r2", Command: TypePrompt, Success: false, Error: "busy"},
-		},
-		{
 			"get_state response",
 			`{"type":"response","id":"r3","command":"get_state","success":true,"data":{"isStreaming":true}}`,
 			Response{
@@ -78,35 +63,7 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 			Response{ID: "r9", Command: TypeCompact, Success: false, Error: "Nothing to compact (session too small)"},
 		},
 		{"agent_start", `{"type":"agent_start"}`, AgentStart{}},
-		{"replayed agent_start", `{"type":"agent_start","deliveryId":"d1"}`, AgentStart{DeliveryID: "d1"}},
 		{"agent_end", `{"type":"agent_end"}`, AgentEnd{}},
-		{
-			// Oh My Pi's own, measured against the pinned binary: it follows the agent_end of the
-			// turn the prompt ran. Its line carries `status` and `sessionSettled` besides, which
-			// the daemon reads nothing of and the decode drops
-			// (TestAPromptResultDecodesTheBinarysOwnLineWhole).
-			"prompt_result",
-			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: true},
-		},
-		{
-			// The error of a turn whose provider request failed with Oh My Pi's own retries
-			// exhausted: an object of the binary's PromptError, never a string.
-			"prompt_result of a turn that ended in a provider error",
-			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,` +
-				`"error":{"message":"429 Too Many Requests","provider":"anthropic","model":"claude-opus-4-5","httpStatus":429,"retryable":true}}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
-				Message: "429 Too Many Requests", Provider: "anthropic", Model: "claude-opus-4-5",
-				HTTPStatus: 429, Retryable: true,
-			}},
-		},
-		{
-			// A prompt Oh My Pi failed outright, which it writes with the two members its fail()
-			// fills and no provider at all.
-			"prompt_result of a prompt that ran no turn",
-			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"error":{"message":"no model","retryable":false}}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
-		},
 		{"shutdown", `{"type":"shutdown"}`, Shutdown{}},
 		{
 			"adopt-working-copy",
@@ -228,104 +185,43 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 	}
 }
 
-// The prompt_result lines the pinned Oh My Pi actually writes, members and order as its own
-// schema declares them (`PromptResultEvent { type, id?, agentInvoked, status, error?:
-// PromptError, sessionSettled }`, `PromptError { message, provider?, model?, httpStatus?,
-// retryable }`, read out of /opt/omp/bin/omp). The daemon reads three of those members, so the
-// decode must take the rest without being handed them and without refusing them: a frame it
-// refuses is a prompt whose end the daemon never learns, and a claim that waits for that end
-// forever.
-func TestAPromptResultDecodesTheBinarysOwnLineWhole(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		line string
-		want PromptResult
-	}{
-		{
-			"a turn that completed",
-			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"completed","sessionSettled":false}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: true},
-		},
-		{
-			// What a turn whose provider request ran out of retries ends with: the last assistant
-			// message stopped with "error", and Oh My Pi reports its detail as an object.
-			"a turn that ended in a provider error",
-			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error",` +
-				`"error":{"message":"429 Too Many Requests","provider":"anthropic","model":"claude-opus-4-5","httpStatus":429,"retryable":true},` +
-				`"sessionSettled":true}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
-				Message: "429 Too Many Requests", Provider: "anthropic", Model: "claude-opus-4-5",
-				HTTPStatus: 429, Retryable: true,
-			}},
-		},
-		{
-			// Oh My Pi's fail(): the prompt never reached a turn, and the error carries only the
-			// two members that path fills.
-			"a prompt that failed before any turn",
-			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":false,"status":"error",` +
-				`"error":{"message":"no model","retryable":false},"sessionSettled":true}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: false, Error: &PromptError{Message: "no model"}},
-		},
-		{
-			// A refusal of the provider's content filter: Oh My Pi sets retryable for its own
-			// transient class alone, so this failure is not retryable and names no status at
-			// all, where the same words from a 400 would carry one.
-			"a turn the provider's content filter refused",
-			`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error",` +
-				`"error":{"message":"Output blocked by content filtering policy","provider":"anthropic","model":"claude-opus-4-5","retryable":false},` +
-				`"sessionSettled":true}`,
-			PromptResult{ID: "d1.XYZ", AgentInvoked: true, Error: &PromptError{
-				Message: "Output blocked by content filtering policy", Provider: "anthropic", Model: "claude-opus-4-5",
-			}},
-		},
-		{
-			// `id` is optional in the schema, and a result that names no request names no
-			// delivery either; it still decodes, and the daemon drops it downstream.
-			"a result of no request of the daemon's",
-			`{"type":"prompt_result","agentInvoked":true,"status":"aborted","sessionSettled":true}`,
-			PromptResult{AgentInvoked: true},
-		},
+// The daemon sends no prompt: a task is a value the worker takes (internal/supervise, take.go).
+// So no frame of the prompt's is modelled any more. An old shim or an old Oh My Pi may still write
+// one — a `prompt` command a backlog replays, a `prompt_result` behind a turn's end — and each
+// decodes to Raw, which the stream drops (internal/stream), rather than to a type a reader could
+// act on. The turn frames are what the daemon reads of a turn, and they still decode as before:
+// a start an old shim replayed with the delivery it named decodes to the plain start.
+func TestNoPromptFrameIsModelledAndTheTurnFramesStillDecode(t *testing.T) {
+	for _, line := range []string{
+		`{"type":"prompt","id":"d1.XYZ","deliveryId":"d1","message":"work"}`,
+		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"completed","sessionSettled":false}`,
+		`{"type":"prompt_result","id":"d1.XYZ","agentInvoked":true,"status":"error",` +
+			`"error":{"message":"429 Too Many Requests","provider":"anthropic","httpStatus":429,"retryable":true},"sessionSettled":true}`,
 	} {
-		t.Run(tc.name, func(t *testing.T) {
-			decoded, err := Decode([]byte(tc.line))
-			if err != nil {
-				t.Fatalf("Decode(%s): %v", tc.line, err)
-			}
-			if !reflect.DeepEqual(decoded, tc.want) {
-				t.Fatalf("Decode(%s) = %#v, want %#v", tc.line, decoded, tc.want)
-			}
-			result := decoded.(PromptResult)
-			reason := ""
-			if result.Error != nil {
-				reason = result.Error.Message
-			}
-			if result.Reason() != reason {
-				t.Fatalf("Reason() = %q, want %q", result.Reason(), reason)
-			}
-			// Each member of the error object by itself: the daemon decides what a failed turn
-			// means from the four beside the message, so one dropped here is a failure it reads
-			// as something else.
-			if want := tc.want.Error; want != nil {
-				got := result.Error
-				if got == nil {
-					t.Fatalf("Decode(%s) dropped the whole error object", tc.line)
-				}
-				for _, member := range []struct {
-					name      string
-					got, want any
-				}{
-					{"message", got.Message, want.Message},
-					{"provider", got.Provider, want.Provider},
-					{"model", got.Model, want.Model},
-					{"httpStatus", got.HTTPStatus, want.HTTPStatus},
-					{"retryable", got.Retryable, want.Retryable},
-				} {
-					if member.got != member.want {
-						t.Errorf("error %s = %v, want %v", member.name, member.got, member.want)
-					}
-				}
-			}
-		})
+		decoded, err := Decode([]byte(line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", line, err)
+		}
+		if _, ok := decoded.(Raw); !ok {
+			t.Fatalf("Decode(%s) = %#v, want a Raw frame: no prompt frame is modelled", line, decoded)
+		}
+	}
+	for _, tc := range []struct {
+		line string
+		want Frame
+	}{
+		{`{"type":"agent_start"}`, AgentStart{}},
+		{`{"type":"agent_start","deliveryId":"d1"}`, AgentStart{}},
+		{`{"type":"agent_end"}`, AgentEnd{}},
+		{`{"type":"agent_end","messages":[{"role":"assistant"}]}`, AgentEnd{}},
+	} {
+		decoded, err := Decode([]byte(tc.line))
+		if err != nil {
+			t.Fatalf("Decode(%s): %v", tc.line, err)
+		}
+		if decoded != tc.want {
+			t.Fatalf("Decode(%s) = %#v, want %#v", tc.line, decoded, tc.want)
+		}
 	}
 }
 

@@ -105,7 +105,7 @@ type fleetRig struct {
 	// workers is the connection each claim's agent is reached over.
 	workers map[claim.Token]*fake.Conn
 	// taken is every task each claim's worker took and the daemon accepted, in order (sent).
-	taken map[claim.Token][]fake.Prompt
+	taken map[claim.Token][]acceptedTake
 	pods  map[string]string
 	// noPod is every issue whose claims a sweep reads as recording no pod (podless).
 	noPod map[string]bool
@@ -394,9 +394,9 @@ func (r *fleetRig) sent(issue string, role claim.Role) {
 	}
 	if answer.Outcome == supervise.TakeOutcomeAccepted {
 		if r.taken == nil {
-			r.taken = map[claim.Token][]fake.Prompt{}
+			r.taken = map[claim.Token][]acceptedTake{}
 		}
-		r.taken[c.Token] = append(r.taken[c.Token], fake.Prompt{DeliveryID: p.ID, Message: answer.Text})
+		r.taken[c.Token] = append(r.taken[c.Token], acceptedTake{DeliveryID: p.ID, Message: answer.Text})
 	}
 	m.Wait()
 }
@@ -411,7 +411,7 @@ func (r *fleetRig) machineOf(issue string, role claim.Role) *supervise.Machine {
 }
 
 // prompts is every task the worker of issue's role took, in order (sent).
-func (r *fleetRig) prompts(issue string, role claim.Role) []fake.Prompt {
+func (r *fleetRig) prompts(issue string, role claim.Role) []acceptedTake {
 	r.t.Helper()
 	return slices.Clone(r.taken[r.token(issue, role)])
 }

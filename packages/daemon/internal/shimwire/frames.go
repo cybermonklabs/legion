@@ -1,6 +1,6 @@
 // Package shimwire is the wire between a phase worker's `legion worker-shim` and the daemon:
-// the NDJSON framing both ends read and write, the frames they exchange, the rpc_chunk transport
-// for a frame too large for one line, and the shim-side delivery dedupe.
+// the NDJSON framing both ends read and write, the frames they exchange, and the rpc_chunk
+// transport for a frame too large for one line.
 //
 // It is shared by `cmd/legion worker-shim` and `internal/stream`, and it is where the protocol's
 // behaviour is kept rather than re-derived at each end. Every rule here was ported from the
@@ -28,7 +28,6 @@ const (
 	TypeHello                  = "hello"
 	TypeHelloAck               = "hello_ack"
 	TypeNegotiateProtocol      = "negotiate_protocol"
-	TypePrompt                 = "prompt"
 	TypeResponse               = "response"
 	TypeGetState               = "get_state"
 	TypeCompact                = "compact"
@@ -36,7 +35,6 @@ const (
 	TypeAgentEnd               = "agent_end"
 	TypeToolExecutionStart     = "tool_execution_start"
 	TypeToolExecutionEnd       = "tool_execution_end"
-	TypePromptResult           = "prompt_result"
 	TypeShutdown               = "shutdown"
 	TypeAdoptWorkingCopy       = "adopt-working-copy"
 	TypeAdoptWorkingCopyResult = "adopt-working-copy-result"
@@ -300,14 +298,6 @@ type NegotiateProtocol struct {
 	ProtocolVersion int    `json:"protocolVersion"`
 }
 
-// Prompt delivers one task to OMP. DeliveryID names the logical delivery the daemon is retrying
-// — the id the dedupe keys on — while ID is this attempt's request (worker-rpc.ts:452).
-type Prompt struct {
-	ID         string `json:"id"`
-	DeliveryID string `json:"deliveryId"`
-	Message    string `json:"message"`
-}
-
 // Response is OMP's answer to a request, carrying the request's own id. Data is the answer's
 // payload, left raw because its shape belongs to the command (worker-rpc.ts:369-377).
 type Response struct {
@@ -332,9 +322,9 @@ type GetState struct {
 
 // Compact asks Oh My Pi to compact the session's context: `{id?, type: "compact",
 // customInstructions?: string}` (omp://rpc.md, "Compaction"). The shim answers none of it — it
-// forwards it to Oh My Pi as it forwards a prompt — and Oh My Pi answers a `response` of the
-// same command, carrying its CompactionResult on success and `success: false` with the reason
-// when the compaction was refused or skipped.
+// forwards it to Oh My Pi as it forwards every frame it does not act on itself — and Oh My Pi
+// answers a `response` of the same command, carrying its CompactionResult on success and
+// `success: false` with the reason when the compaction was refused or skipped.
 //
 // CustomInstructions is what the summary is written to, and the daemon always sends one: Oh My
 // Pi runs the image-based snapcompact method only for a compaction with no instructions and no
@@ -346,60 +336,12 @@ type Compact struct {
 	CustomInstructions string `json:"customInstructions"`
 }
 
-// AgentStart is OMP beginning a turn. DeliveryID is set only on the shim's own synthetic replay
-// of a start it already observed (worker-shim.ts:365); OMP never sets it.
-type AgentStart struct {
-	DeliveryID string `json:"deliveryId,omitempty"`
-}
+// AgentStart is OMP beginning a turn.
+type AgentStart struct{}
 
 // AgentEnd is OMP finishing a turn. Its real form carries the whole transcript, which is why it
 // is the frame that arrives chunked.
 type AgentEnd struct{}
-
-// PromptResult is Oh My Pi reporting how one prompt's work ended, and the only frame that names
-// the prompt a turn belonged to: ID is the `prompt` command's own request id, where AgentEnd
-// carries no prompt identity at all ("that frame carries no prompt identity, so correlate
-// prompts through `prompt_result`", omp://rpc.md). An accepted prompt completes exactly once,
-// either as `data.agentInvoked: false` on its response — it finished locally and started no turn
-// — or as this frame, always written after that response.
-//
-// AgentInvoked is false for a prompt that ran no turn of its own, and Error is Oh My Pi's reason
-// when the work ended in one — an object, never a string (PromptError). Oh My Pi's own
-// prompt_result carries more than these three members — `status`, its word for how the work
-// ended, and `sessionSettled` among them — which nothing in the daemon reads; the decode drops
-// them.
-type PromptResult struct {
-	ID           string       `json:"id"`
-	AgentInvoked bool         `json:"agentInvoked"`
-	Error        *PromptError `json:"error,omitempty"`
-}
-
-// PromptError is how a prompt's work failed, as the pinned Oh My Pi declares it: `{message,
-// provider?, model?, httpStatus?, retryable}`, the "failure detail of a `prompt_result` with
-// `status: \"error\"`". Oh My Pi writes it for a prompt whose last assistant message ended with
-// stopReason "error" — a provider request its own retries could not get through, where
-// Retryable says it may still succeed later — and for one it failed outright before any turn.
-//
-// Only Message is read, as the reason a failed prompt is recorded with (PromptResult.Reason).
-// The other members are modelled so the frame survives this package whole, the way every other
-// frame does: a decode that kept only what today's reader wants would quietly drop the provider,
-// the model and the status behind a failure from anything that re-encodes it.
-type PromptError struct {
-	Message    string `json:"message"`
-	Provider   string `json:"provider,omitempty"`
-	Model      string `json:"model,omitempty"`
-	HTTPStatus int    `json:"httpStatus,omitempty"`
-	Retryable  bool   `json:"retryable"`
-}
-
-// Reason is Oh My Pi's message for work that ended in an error, and the empty string for work
-// that did not: the one thing the daemon reads of the failure.
-func (f PromptResult) Reason() string {
-	if f.Error == nil {
-		return ""
-	}
-	return f.Error.Message
-}
 
 // ToolExecutionStart is Oh My Pi beginning one tool call of a turn, and ToolExecutionEnd that
 // same call finishing. They are the only frames that say an agent mid-turn is still moving: the
@@ -416,9 +358,8 @@ func (f PromptResult) Reason() string {
 // the tool and the call id and nothing else of the call — no Args, no Intent — so whatever is
 // recorded of the arguments beside an end is what the start left (supervise's openCall). Oh My
 // Pi's own end carries a `result` object too, which nothing in the daemon reads; the decode
-// drops it, as it drops the members of a prompt_result nothing reads. The Claude Code bridge
-// writes a start with no call id at all (internal/claudebridge), which is a step with no call to
-// name rather than a frame to refuse.
+// drops it. The Claude Code bridge writes a start with no call id at all
+// (internal/claudebridge), which is a step with no call to name rather than a frame to refuse.
 type ToolExecutionStart struct {
 	ToolCallID string          `json:"toolCallId"`
 	ToolName   string          `json:"toolName"`
@@ -637,7 +578,6 @@ type Raw struct {
 func (Hello) FrameType() string                        { return TypeHello }
 func (HelloAck) FrameType() string                     { return TypeHelloAck }
 func (NegotiateProtocol) FrameType() string            { return TypeNegotiateProtocol }
-func (Prompt) FrameType() string                       { return TypePrompt }
 func (Response) FrameType() string                     { return TypeResponse }
 func (GetState) FrameType() string                     { return TypeGetState }
 func (Compact) FrameType() string                      { return TypeCompact }
@@ -645,7 +585,6 @@ func (AgentStart) FrameType() string                   { return TypeAgentStart }
 func (AgentEnd) FrameType() string                     { return TypeAgentEnd }
 func (ToolExecutionStart) FrameType() string           { return TypeToolExecutionStart }
 func (ToolExecutionEnd) FrameType() string             { return TypeToolExecutionEnd }
-func (PromptResult) FrameType() string                 { return TypePromptResult }
 func (Shutdown) FrameType() string                     { return TypeShutdown }
 func (AdoptWorkingCopy) FrameType() string             { return TypeAdoptWorkingCopy }
 func (AdoptWorkingCopyResult) FrameType() string       { return TypeAdoptWorkingCopyResult }
@@ -685,11 +624,6 @@ func (f NegotiateProtocol) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeNegotiateProtocol, plain(f))
 }
 
-func (f Prompt) MarshalJSON() ([]byte, error) {
-	type plain Prompt
-	return marshalFrame(TypePrompt, plain(f))
-}
-
 func (f Response) MarshalJSON() ([]byte, error) {
 	type plain Response
 	return marshalFrame(TypeResponse, plain(f))
@@ -705,10 +639,7 @@ func (f Compact) MarshalJSON() ([]byte, error) {
 	return marshalFrame(TypeCompact, plain(f))
 }
 
-func (f AgentStart) MarshalJSON() ([]byte, error) {
-	type plain AgentStart
-	return marshalFrame(TypeAgentStart, plain(f))
-}
+func (AgentStart) MarshalJSON() ([]byte, error) { return marshalFrame(TypeAgentStart, struct{}{}) }
 
 func (AgentEnd) MarshalJSON() ([]byte, error) { return marshalFrame(TypeAgentEnd, struct{}{}) }
 
@@ -720,11 +651,6 @@ func (f ToolExecutionStart) MarshalJSON() ([]byte, error) {
 func (f ToolExecutionEnd) MarshalJSON() ([]byte, error) {
 	type plain ToolExecutionEnd
 	return marshalFrame(TypeToolExecutionEnd, plain(f))
-}
-
-func (f PromptResult) MarshalJSON() ([]byte, error) {
-	type plain PromptResult
-	return marshalFrame(TypePromptResult, plain(f))
 }
 
 func (Shutdown) MarshalJSON() ([]byte, error) { return marshalFrame(TypeShutdown, struct{}{}) }
@@ -1277,8 +1203,6 @@ func Decode(line []byte) (Frame, error) {
 		return HelloAck{}, nil
 	case TypeNegotiateProtocol:
 		return decodeInto[NegotiateProtocol](trimmed)
-	case TypePrompt:
-		return decodeInto[Prompt](trimmed)
 	case TypeResponse:
 		return decodeInto[Response](trimmed)
 	case TypeGetState:
@@ -1286,15 +1210,13 @@ func Decode(line []byte) (Frame, error) {
 	case TypeCompact:
 		return decodeInto[Compact](trimmed)
 	case TypeAgentStart:
-		return decodeInto[AgentStart](trimmed)
+		return AgentStart{}, nil
 	case TypeAgentEnd:
 		return AgentEnd{}, nil
 	case TypeToolExecutionStart:
 		return decodeInto[ToolExecutionStart](trimmed)
 	case TypeToolExecutionEnd:
 		return decodeInto[ToolExecutionEnd](trimmed)
-	case TypePromptResult:
-		return decodeInto[PromptResult](trimmed)
 	case TypeShutdown:
 		return Shutdown{}, nil
 	case TypeAdoptWorkingCopy:

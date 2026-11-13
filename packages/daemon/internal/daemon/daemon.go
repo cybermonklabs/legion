@@ -206,6 +206,11 @@ type overrides struct {
 	// none of to reserve. nil, in production, is nothing: every launch reaches the real store's
 	// own check.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// taskValues is the task bucket the machines write each claim's value to, in place of the
+	// daemon's own (supervise.Deps.TaskValues): a test's in-memory bucket
+	// (supervise/supervisetest), which its worker reads its value back from through
+	// claims/task. nil is the daemon's own bucket, which none is until the daemon builds one.
+	taskValues supervise.TaskValues
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -774,6 +779,8 @@ type plan struct {
 	// checkLaunch is overrides.checkLaunch; nil wraps the store with nothing, so every launch
 	// reaches the real store's own CheckLaunch.
 	checkLaunch func(context.Context, supervise.Claim) error
+	// taskValues is overrides.taskValues: the task bucket the machines write to, nil for none.
+	taskValues supervise.TaskValues
 }
 
 // runtimeFactory builds the runtime over the worker stream (C3): ctx is supervision's lifetime,
@@ -855,6 +862,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		secretsEnroller: secretsEnroller, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
+		taskValues: o.taskValues,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)
@@ -1449,8 +1457,9 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		IssueInTurn: sup.claimInTurn,
 		LockIssue:   sup.lockIssue,
 		// T4 wires the bucket: until the daemon's task bucket (taskbucket.go) is built here, no
-		// value is written, and a worker is told its task by nothing.
-		TaskValues:              nil,
+		// value is written but a test's (overrides.taskValues), and a worker is told its task by
+		// nothing.
+		TaskValues:              p.taskValues,
 		Secrets:                 p.secretsEnroller,
 		PhaseHolds:              p.phaseHolds,
 		RootHears:               p.rootHears,
@@ -1677,10 +1686,6 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 			mapped, err := superviseEvent(ev)
 			if err != nil {
 				s.log.Error("worker stream: an event no machine can take", "error", err)
-				continue
-			}
-			if mapped == nil {
-				// A frame of the prompt no daemon sends any more, which an older shim replays.
 				continue
 			}
 			s.supervisor.post(claimOf(mapped), mapped)

@@ -30,7 +30,6 @@ import (
 	recordpkg "github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -263,13 +262,13 @@ func TestRunLaunchesTheComposedGoRolePromptWhenSpawnHasNoPromptFile(t *testing.T
 }
 
 // One claim from its spawn to a relaunch, through every source that feeds its machine: the
-// operator's routes, the agent's routes, the worker stream's events (the hello, the turn, the
-// late refusal), and the runtime's sweep.
+// operator's routes, the agent's routes — the registration, the ready, and the take of its task —
+// the worker stream's events (the hello, the turn), and the runtime's sweep.
 func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
-	d := startDaemon(t, cfg, fakeRuntime(rt, &record))
+	d := startDaemon(t, cfg, withTaskValues(fakeRuntime(rt, &record)))
 	spawn := architect()
 	spawn.Task = "Say hello."
 	token := d.spawn(spawn)
@@ -301,17 +300,17 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 		t.Fatalf("ready = %d; body %s", status, body)
 	}
 
-	// The task queued before ready goes once the agent is ready, over the claim's connection.
-	prompt := sh.prompt()
-	if prompt.Message != "Say hello." || prompt.DeliveryID == "" {
-		t.Fatalf("the daemon prompted %+v, want the queued task with its delivery id", prompt)
+	// The task queued before ready is the claim's value; the worker takes it once the agent is
+	// ready, and its turn runs it over the claim's connection.
+	worker := d.takeDriver(sh, token, "ses_architect", registered.Secret, 1)
+	first := worker.mustTake(t, "the architect takes the task queued before its ready")
+	if first.Text != "Say hello." || first.Number == 0 {
+		t.Fatalf("the architect took %+v, want the queued task under its number", first)
 	}
-	sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true})
-	sh.send(shimwire.AgentStart{})
+	worker.mustStartTurn(t)
 	testwait.Eventually(t, "the turn to start", func() bool { return d.claim(token).State == string(supervise.StateWorking) })
-	sh.send(shimwire.AgentEnd{})
-	// The prompt's result, which Oh My Pi writes behind that agent_end and the task retires on.
-	sh.send(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true})
+	// The turn's end, and the report naming the task's number behind it, which finishes the task.
+	worker.mustEndTurn(t)
 	testwait.Eventually(t, "the turn to end", func() bool {
 		c := d.claim(token)
 		return c.State == string(supervise.StateIdle) && c.Pending == nil
@@ -323,26 +322,19 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 		t.Fatalf("the state shows the architect as %+v, want the idle claim with its nested locator", architectView)
 	}
 
-	// OMP taking back a prompt it acknowledged is a stream event of its own: the task returns to
-	// waiting under a new id, and nothing is charged — the agent is in a turn of its own. The
-	// acknowledgement's read mark is memory only since migration 20261113175649_task_numbers and
-	// no claim view carries it, so nothing here waits for the mark: the refusal follows the
-	// acknowledgement on the same connection, and the two end alike in either order the machine
-	// takes them — a refusal taken first rotates the id, and the acknowledgement it overtook names
-	// an id the claim no longer holds, so it charges nothing and sends the task again under the
-	// new one (supervise's fenceOutcome).
+	// The operator's next task is the claim's next number, and the worker takes it: an accepted
+	// take charges nothing and leaves the claim idle until the take's turn starts.
 	if status, body := d.request(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/deliver",
 		api.DeliverRequest{Task: "Say it again."}, true); status != http.StatusOK {
 		t.Fatalf("deliver = %d; body %s", status, body)
 	}
-	second := sh.prompt()
-	acknowledged := d.claim(token).Pending.ID
-	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: true})
-	sh.send(shimwire.Response{ID: second.ID, Command: shimwire.TypePrompt, Success: false, Error: "Agent is already processing. Use steer() or followUp() to queue messages, or wait for completion."})
-	testwait.Eventually(t, "the refused task to return to waiting", func() bool {
-		c := d.claim(token)
-		return c.Pending != nil && c.Pending.ID != acknowledged && c.Budgets.PromptFailures == 0
-	})
+	second := worker.mustTake(t, "the architect takes the operator's next task")
+	if second.Text != "Say it again." || second.Number != first.Number+1 {
+		t.Fatalf("the architect took %+v, want the operator's task under number %d", second, first.Number+1)
+	}
+	if c := d.claim(token); c.State != string(supervise.StateIdle) || c.Budgets.PromptFailures != 0 {
+		t.Fatalf("after the take the claim is %s with %d prompt failures, want idle with none", c.State, c.Budgets.PromptFailures)
+	}
 
 	// The sweep finding the process gone relaunches the recorded session.
 	loc := d.claim(token).Locator
@@ -451,12 +443,12 @@ func (c *heldClock) fire(after time.Duration) int {
 // An agent registered over the API that never says it is ready is relaunched at the deadline as
 // the same session one generation later, with one launch failure charged, through the daemon's own
 // API, store, stream and machines. The relaunched agent's shim says hello, the agent registers and
-// says it is ready, and it is sent the task the claim held.
+// says it is ready, and it takes the task the claim held.
 func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) {
 	cfg := testConfig(t)
 	rt := fake.NewRuntime()
 	var record built
-	o := fakeRuntime(rt, &record)
+	o := withTaskValues(fakeRuntime(rt, &record))
 	clock := &heldClock{}
 	o.clock = clock
 	d := startDaemon(t, cfg, o)
@@ -512,8 +504,8 @@ func TestRunRelaunchesAClaimWhoseAgentRegisteredAndNeverSaidReady(t *testing.T) 
 	}, false); status != http.StatusNoContent {
 		t.Fatalf("ready = %d; body %s", status, body)
 	}
-	if prompt := sh.prompt(); prompt.Message != "Say hello." {
-		t.Fatalf("the relaunched agent was prompted %+v, want the task the claim held", prompt)
+	if task := d.takeDriver(sh, token, "ses_architect", secret, 2).mustTake(t, "the relaunched agent takes its task"); task.Text != "Say hello." {
+		t.Fatalf("the relaunched agent took %+v, want the task the claim held", task)
 	}
 	if c := d.claim(token); c.State != string(supervise.StateReady) || c.Budgets.LaunchFailures != 0 {
 		t.Fatalf("after the relaunched agent's ready the claim is %s with %d launch failures, want ready with 0",
@@ -1187,10 +1179,7 @@ func TestRunSupervisesWithTheConfiguredLimitsAndTimeouts(t *testing.T) {
 	}
 }
 
-// Every agent fact the worker stream reports reaches the claim's machine as its own event, and
-// the two frames of the prompt the daemon no longer sends — a prompt's result and its late
-// refusal, which an older shim still replays — reach none: the pump drops them (supervisor's
-// superviseEvent answers no event and no error).
+// Every agent fact the worker stream reports reaches the claim's machine as its own event.
 func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 	const token = claim.Token("legion-legion-legion-1-tester")
 	cases := []struct {
@@ -1198,7 +1187,7 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 		want supervise.Event
 	}{
 		{stream.Hello{Claim: token, Generation: 3}, supervise.StreamHello{Claim: token, Generation: 3}},
-		{stream.TurnStart{Claim: token, DeliveryID: "d1"}, supervise.StreamTurnStart{Claim: token}},
+		{stream.TurnStart{Claim: token}, supervise.StreamTurnStart{Claim: token}},
 		{stream.TurnEnd{Claim: token}, supervise.StreamTurnEnd{Claim: token}},
 		{stream.ToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: 4},
@@ -1206,8 +1195,6 @@ func TestEveryStreamEventMapsToItsSuperviseEvent(t *testing.T) {
 				ArgsBytes: 21, ArgsHash: "1eab1ef18bb109ae", ConnSequence: 4}},
 		{stream.ToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4},
 			supervise.StreamToolStep{Claim: token, Tool: "bash", CallID: "toolu_turn1_0", End: true, ConnSequence: 4}},
-		{stream.PromptResult{Claim: token, DeliveryID: "d1", AgentInvoked: true}, nil},
-		{stream.LateRefusal{Claim: token, DeliveryID: "d2", Error: "Agent is already processing.", Replayed: true, ConnSequence: 3}, nil},
 		{stream.Closed{Claim: token}, supervise.StreamClosed{Claim: token}},
 	}
 	mapped := map[string]bool{}
@@ -1243,6 +1230,37 @@ func acceptTake(ctx context.Context, t *testing.T, machine *supervise.Machine) s
 		t.Fatalf("the take of task %d on %s = %+v, %v, want it accepted", c.Pending.Number, c.Token, answer, err)
 	}
 	return answer.Text
+}
+
+// acceptedTake is one take of a worker's that the daemon accepted, as an in-process test records
+// it in place of what the daemon used to push: the id of the delivery taken, which names what
+// queued it, and the text the take was answered with.
+type acceptedTake struct {
+	DeliveryID, Message string
+}
+
+// takeOffered is the worker of the machine's claim taking the task its claim holds where its
+// plugin would take one now — a task pending and not yet taken, on a claim that is ready or idle —
+// and answers the take the daemon accepted, or false where it asked nothing or a hold refused the
+// take. It waits for every decision the take started, so what the take adopted is recorded by the
+// time it answers.
+func takeOffered(ctx context.Context, t *testing.T, machine *supervise.Machine) (acceptedTake, bool) {
+	t.Helper()
+	machine.Wait()
+	c := machine.Claim()
+	p := c.Pending
+	if p == nil || !p.ConfirmedAt.IsZero() || (c.State != supervise.StateReady && c.State != supervise.StateIdle) {
+		return acceptedTake{}, false
+	}
+	answer, err := machine.Take(ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
+	if err != nil {
+		t.Fatalf("the take of task %d on %s: %v", p.Number, c.Token, err)
+	}
+	machine.Wait()
+	if answer.Outcome != supervise.TakeOutcomeAccepted {
+		return acceptedTake{}, false
+	}
+	return acceptedTake{DeliveryID: p.ID, Message: answer.Text}, true
 }
 
 // turnSequence is the sequence the worker's turn-outcome reports carry, which only rises.

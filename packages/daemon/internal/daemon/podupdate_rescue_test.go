@@ -391,12 +391,12 @@ func TestAnswerByTurnEndEveryContract(t *testing.T) {
 			return nil, fmt.Errorf("worker-stream: %w (its agent answered: Unknown command: rescue-unpushed)", runtime.ErrRescueUnsupported)
 		})
 	}
-	// answersByTurnEnd is the worker reading the round's ask and ending that turn with no
+	// answersByTurnEnd is the worker taking the round's ask and ending that turn with no
 	// ready_for_update call, which is the answer of a `legion` tool that has no such operation
 	// at whatever contract its plugin declared (supervise's answerByTurnEnd).
 	answersByTurnEnd := func(r *podUpdateRig, role claim.Role, asked supervise.Claim) {
 		r.t.Helper()
-		r.handle(role, supervise.StreamTurnStart{Claim: r.tokens[role]})
+		r.askTurn(role)
 		r.endTurn(role, asked.Pending.ID)
 		r.awaitClaim(role, "the answer its turn's end gave", func(c supervise.Claim) bool {
 			return c.UpdateSignalledAt != nil && c.UpdateAnsweredByTurnEnd && c.Pending == nil

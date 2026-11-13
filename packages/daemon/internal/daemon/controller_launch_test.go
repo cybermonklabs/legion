@@ -16,7 +16,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
@@ -62,14 +61,14 @@ func registeredLaunch(t *testing.T, d *daemon, record *built, launch runtime.Spa
 // the launch's boot token — the credential the daemon minted for that launch, never one fetched
 // over the operator's bearer — and is answered as the operator's controller is, then recorded as
 // the project's controller (the state's controllerLocator, its grants). Once it says it is ready
-// the daemon hands it the start message, so every launch runs the skill's start procedure. The
+// it takes the start message as its task, so every launch runs the skill's start procedure. The
 // operator's secret route refuses meanwhile: one controller runs per project.
 func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 	cfg := testConfig(t)
 	cfg.ControllerLaunch = config.ControllerLaunchDaemon
 	rt := fake.NewRuntime()
 	var record built
-	d := startDaemon(t, cfg, fakeRuntime(rt, &record))
+	d := startDaemon(t, cfg, withTaskValues(fakeRuntime(rt, &record)))
 	project, err := claim.ProjectToken(cfg.Project)
 	if err != nil {
 		t.Fatal(err)
@@ -124,16 +123,14 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 	}, false); status != http.StatusNoContent {
 		t.Fatalf("ready = %d; body %s", status, body)
 	}
-	prompt := sh.prompt()
-	if prompt.Message != ControllerStartMessage {
-		t.Fatalf("the controller was prompted %q, want the start message %q", prompt.Message, ControllerStartMessage)
+	worker := d.takeDriver(sh, token, "ses_controller", registration.Secret, launch.Generation)
+	if task := worker.mustTake(t, "the controller takes its start message"); task.Text != ControllerStartMessage {
+		t.Fatalf("the controller took %q, want the start message %q", task.Text, ControllerStartMessage)
 	}
-	sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true})
-	sh.send(shimwire.AgentStart{})
-	sh.send(shimwire.AgentEnd{})
-	// What Oh My Pi writes behind the agent_end of the turn its prompt ran, and the only frame
-	// that names that prompt: the delivery's life ends on it.
-	sh.send(shimwire.PromptResult{ID: prompt.ID, AgentInvoked: true})
+	worker.mustStartTurn(t)
+	// The turn's end, and the report naming the task's number behind it: the start message's life
+	// ends on that report.
+	worker.mustEndTurn(t)
 	testwait.Eventually(t, "the start turn to end", func() bool {
 		c := d.claim(token)
 		return c.State == string(supervise.StateIdle) && c.Pending == nil

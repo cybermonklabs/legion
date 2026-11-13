@@ -452,10 +452,7 @@ func (s *supervisor) helloResolver(tokens *api.BootTokens, timeout time.Duration
 }
 
 // superviseEvent is the machine's event for a worker stream event: every agent fact the stream
-// reports has one, but the two a prompt drew — its result and its refusal — which no machine
-// takes since the daemon sends no prompt (a task is taken, supervise's take.go). A shim older
-// than that still replays them from its backlog, and they are dropped here: a nil event with no
-// error is one the pump skips.
+// reports has one.
 func superviseEvent(ev stream.Event) (supervise.Event, error) {
 	switch ev := ev.(type) {
 	case stream.Hello:
@@ -471,8 +468,6 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 	case stream.ToolStep:
 		return supervise.StreamToolStep{Claim: ev.Claim, Tool: ev.Tool, CallID: ev.CallID,
 			ArgsBytes: ev.ArgsBytes, ArgsHash: ev.ArgsHash, End: ev.End, ConnSequence: ev.ConnSequence}, nil
-	case stream.PromptResult, stream.LateRefusal:
-		return nil, nil
 	case stream.Closed:
 		return supervise.StreamClosed{Claim: ev.Claim}, nil
 	}

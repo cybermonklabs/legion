@@ -1883,7 +1883,7 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 		return n
 	}
 	launches, suspends := implementerLaunches(), len(rt.CallsOf("Suspend"))
-	prompts := len(conn.Prompts())
+	written := machine.Claim().TaskWritten
 
 	// The transition's effects run first — the tester is started, and the implementer stays live —
 	// and then every row still waiting comes due.
@@ -1905,8 +1905,8 @@ func TestOutboxRetryStartForAPhaseTheIssueLeftRelaunchesNothing(t *testing.T) {
 		t.Fatalf("after its phase ended the implementer was launched %d more times, suspended %d times, and is %s, want no launch, no stop, and idle",
 			relaunched, stopped, got.State)
 	}
-	if got.Pending != nil || len(conn.Prompts()) != prompts {
-		t.Fatalf("after its phase ended the implementer holds %+v and was prompted %d more times, want no task", got.Pending, len(conn.Prompts())-prompts)
+	if got.Pending != nil || got.TaskWritten != written {
+		t.Fatalf("after its phase ended the implementer holds %+v and was queued %d more tasks, want no task", got.Pending, got.TaskWritten-written)
 	}
 	if remaining := outboxRows(t, pool); remaining != 0 {
 		t.Fatalf("outbox rows left = %d, want the start written for the left phase finished, not retried", remaining)

@@ -2,9 +2,9 @@
 // and the daemon's worker stream. The shim always dials the daemon — the stream is the daemon's
 // listener, never the shim's — authenticates with the pane's boot token, and spawns OMP only
 // once the daemon has acked it. From then on it carries OMP's stdio NDJSON to the stream and
-// back, answers the frames that are its own (`shutdown`, `adopt-working-copy`, `rescue-unpushed`, a repeated
-// delivery), and outlives any one connection: a dropped stream is redialled, and what OMP says
-// meanwhile waits in a bounded backlog.
+// back, answers the frames that are its own (`shutdown`, `adopt-working-copy`,
+// `rescue-unpushed`), and outlives any one connection: a dropped stream is redialled, and what
+// OMP says meanwhile waits in a bounded backlog.
 //
 // The behaviour was ported from the TypeScript shim's `--connect` mode, which LEGION-223 removed; a
 // `worker-shim.ts:N` citation at a rule names its source in this repository's history. The wire
@@ -186,13 +186,7 @@ type shim struct {
 	grace     time.Duration
 	stopGrace time.Duration
 	log       *log.Logger
-	dedupe    shimwire.Dedupe
 	out       outbox
-
-	// order makes a dedupe decision and the daemon-bound frames it implies one step, as they are
-	// in the single-threaded shim this is ported from: a start replayed for a retried delivery
-	// never overtakes OMP's own start on its way to the daemon.
-	order sync.Mutex
 
 	// loop ends with the shim: every dial, connection, and backoff is bound to it.
 	loop context.Context
@@ -315,8 +309,8 @@ func (s *shim) connect() (acked bool, err error) {
 	}
 }
 
-// fromDaemon routes one daemon frame: those the shim acts on or answers itself, a delivery the
-// dedupe answers, and everything else to OMP unchanged (createShimBridge's onLine, worker-shim.ts).
+// fromDaemon routes one daemon frame: those the shim acts on or answers itself, and everything
+// else to OMP unchanged (createShimBridge's onLine, worker-shim.ts).
 func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
@@ -349,15 +343,7 @@ func (s *shim) fromDaemon(line []byte) {
 		s.podToken(f)
 		return
 	}
-	s.order.Lock()
-	forward, replies := s.dedupe.DaemonFrame(frame)
-	for _, reply := range replies {
-		s.toDaemon(reply)
-	}
-	s.order.Unlock()
-	if forward {
-		s.toChild(line)
-	}
+	s.toChild(line)
 }
 
 func frameType(line []byte) string {
@@ -464,8 +450,7 @@ func (s *shim) spawnOnce() bool {
 	return true
 }
 
-// pump carries OMP's stdout to the daemon, line by line and unchanged, after the dedupe has seen
-// each frame; the answers the dedupe owes other requests follow the frame that settled them
+// pump carries OMP's stdout to the daemon, line by line and unchanged
 // (createShimBridge's forwardToSocket, worker-shim.ts). The child's first line is also when the
 // workspace's CodeGraph warm-up starts (Config.WarmCodegraph), in its own goroutine so the pump
 // never waits on it.
@@ -491,17 +476,8 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 		}
 		s.warmed.Do(s.warmCodegraph)
 		line = bytes.Clone(line)
-		frame, err := shimwire.Decode(line)
-		s.order.Lock()
-		var owed []shimwire.Frame
-		if err == nil {
-			owed = s.dedupe.AgentFrame(frame)
-		}
 		s.out.send(line)
-		for _, f := range owed {
-			s.toDaemon(f)
-		}
-		s.order.Unlock()
+		frame, err := shimwire.Decode(line)
 		if err == nil {
 			if summary := summarize(frame); summary != "" {
 				s.log.Print(summary)

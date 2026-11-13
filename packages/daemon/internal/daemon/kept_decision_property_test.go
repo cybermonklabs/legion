@@ -575,7 +575,7 @@ type keptTree struct {
 	topic string
 	// takes is every take of the architect's worker the daemon accepted, in order, and prompts
 	// how many of them observe has read.
-	takes   []fake.Prompt
+	takes   []acceptedTake
 	prompts int
 	// handed is whether this issue has left the tree it started in for one of its own: a
 	// hand-over at the linger's end, with its run or without it, or a person's todo that orphaned
@@ -3473,7 +3473,7 @@ func (r *keptRun) workerTakes(tree *keptTree, machine *supervise.Machine) {
 	answer, err := machine.Take(r.ctx, supervise.RequestTake{Claim: c.Token, Generation: c.Generation, Session: c.Session, Number: p.Number})
 	machine.Wait()
 	if answer.Outcome == supervise.TakeOutcomeAccepted {
-		tree.takes = append(tree.takes, fake.Prompt{DeliveryID: p.ID, Message: answer.Text})
+		tree.takes = append(tree.takes, acceptedTake{DeliveryID: p.ID, Message: answer.Text})
 	}
 	r.tracef("take tree=%s delivery=%s outcome=%s hold=%s err=%v", tree.key, p.ID, answer.Outcome, answer.Hold, err)
 }

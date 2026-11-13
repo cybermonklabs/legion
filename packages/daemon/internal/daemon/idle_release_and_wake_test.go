@@ -92,14 +92,14 @@ func TestIdleReleaseAndWake(t *testing.T) {
 		}
 	})
 
-	// The task each role was given at the rig's start is its phase's own: the daemon's boot
-	// starts the implementer of an issue at `implementing`, whose phase it is, and the task it
-	// gives names that phase. The daemon adopts the working copy for such a task, once, before it
-	// sends it, so each start task came behind exactly one adopt-working-copy frame, which the
-	// role's own process recorded before it answered it (idleRigAdoption.Ahead). That the task
-	// names its phase is read from the daemon's own account of the adoption — the line it logs
-	// once the shim answers ok, naming the task's delivery and its phase — so this holds for the
-	// phase task itself and not for a frame some other send happened to bring.
+	// The task each role took at the rig's start is its phase's own: the daemon's boot starts the
+	// implementer of an issue at `implementing`, whose phase it is, and the task it gives names
+	// that phase. The daemon adopts the working copy for such a task, once, during its take, so
+	// each start task came behind exactly one adopt-working-copy frame, which the role's own
+	// process recorded before it answered it (idleRigAdoption.Ahead). That the task names its phase
+	// is read from the daemon's own account of the adoption — the line it logs once the shim
+	// answers ok, naming the task's number and its phase — so this holds for the phase task itself
+	// and not for a frame some other take happened to bring.
 	t.Run("APhaseTaskReachesItsRoleBehindOneAdoption", func(t *testing.T) {
 		for _, issue := range rig.issues {
 			prompts := rig.agents.prompts(issue.key, string(issue.role))
@@ -113,10 +113,10 @@ func TestIdleReleaseAndWake(t *testing.T) {
 					issue.name, len(ahead), ahead)
 			}
 			if adopted := rig.logged(idleRigAdoptedLine, map[string]string{
-				"claim": string(rig.token(issue)), "delivery": start.Delivery, "phase": string(phase.Implementing),
+				"claim": string(rig.token(issue)), "task": start.Task, "phase": string(phase.Implementing),
 			}); adopted != 1 {
-				t.Errorf("the daemon logged %d adoptions of the working copy for %s's start task %q of phase %s, want one",
-					adopted, issue.name, start.Delivery, phase.Implementing)
+				t.Errorf("the daemon logged %d adoptions of the working copy for %s's start task %s of phase %s, want one",
+					adopted, issue.name, start.Task, phase.Implementing)
 			}
 		}
 	})

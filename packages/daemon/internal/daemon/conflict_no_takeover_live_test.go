@@ -1,13 +1,13 @@
 //go:build e2e
 
 // The live proof's driver for the rule a CI red follows: it takes nobody's turn over. The
-// start it makes acts at once — the role the new phase belongs to is prompted while the role whose
-// phase ended is still working a turn it has not ended — nothing is sent to that role's connection
-// to end its turn, the role is told its phase is over by one message on its own Envoy role topic,
-// and a completion the old turn reports once the issue has handed the phase out again is refused
-// HANDOFF_STALE_ENTRY, where the completion of the new phase entry, in the turn that entry's task
-// starts, is taken. scripts/e2e/conflict-no-takeover.sh builds this driver with `-tags e2e` and
-// owns the nats-server and the PostgreSQL it runs against.
+// start it makes acts at once — the role the new phase belongs to takes its task while the role
+// whose phase ended is still working a turn it has not ended — nothing is sent to that role's
+// connection to end its turn, the role is told its phase is over by one message on its own Envoy
+// role topic, and a completion the old turn reports once the issue has handed the phase out again
+// is refused HANDOFF_STALE_ENTRY, where the completion of the new phase entry, in the turn that
+// entry's task starts, is taken. scripts/e2e/conflict-no-takeover.sh builds this driver with
+// `-tags e2e` and owns the nats-server and the PostgreSQL it runs against.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
 // own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
@@ -15,9 +15,10 @@
 // stream, the real openWorkflow, the real JetStream consumers and the real outbox lanes — the
 // phase-ended lane (record.LaneRoleMessage) among them. Facts enter only as production's do:
 // GitHub envelopes on the ENVOY_NOTIFICATIONS stream for the settlements, the pushes and the
-// synchronizes; the daemon's own HTTP routes for each role's registration, readiness, grants and
-// completions; and the daemon's worker stream for each role's turns, which this driver speaks as
-// `legion worker-shim` does (shimwire frames). Every assertion is a read of GET /legion/v1/state,
+// synchronizes; the daemon's own HTTP routes for each role's registration, readiness, task takes,
+// grants and completions; and the daemon's worker stream for each role's turns, which this driver
+// speaks as `legion worker-shim` does (shimwire frames), each role's plugin taking its task as the
+// package's takeDriver does. Every assertion is a read of GET /legion/v1/state,
 // of the operator's claim listing, of what the daemon published to the Envoy listener stand-in, of
 // what it sent — or did not send — to a role's own connection, or of what the fake runtime was
 // asked to launch and suspend. The store is read only for the one thing no route shows: whether
@@ -67,7 +68,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -167,7 +167,7 @@ func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	// reaches the fake's launch without the daemon cloning acme/widgets from github.com, which the
 	// tmux answer would have it try.
 	r.rt.InPod = true
-	o := fakeRuntime(r.rt, r.built)
+	o := withTaskValues(fakeRuntime(r.rt, r.built))
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
@@ -267,7 +267,8 @@ func (r *conflictNoTakeoverLive) waitFor(what string, want func(api.Issue) bool)
 
 // conflictClaimant is one role's claim as its agent reaches it: the shim that dialled the worker
 // stream with the boot token of the launch the fake runtime recorded, the registration that
-// exchanged it for the session's capability secret, and the prompt whose turn is running.
+// exchanged it for the session's capability secret, and the plugin that takes its tasks and runs
+// its turns (takeDriver).
 type conflictClaimant struct {
 	r       *conflictNoTakeoverLive
 	token   claim.Token
@@ -275,8 +276,7 @@ type conflictClaimant struct {
 	session string
 	secret  string
 	sh      *shim
-	// turn is the id of the prompt the running turn answers, "" for a turn of the agent's own.
-	turn string
+	worker  *takeDriver
 }
 
 // claimant brings the launched claim of role to ready, as its pane's shim and its agent do: it
@@ -307,47 +307,42 @@ func (r *conflictNoTakeoverLive) claimant(role claim.Role, session string) *conf
 	}, false); status != http.StatusNoContent {
 		t.Fatalf("ready %s = %d %s, want 204", token, status, body)
 	}
-	return &conflictClaimant{r: r, token: token, role: role, session: session, secret: registered.Secret, sh: sh}
+	return &conflictClaimant{r: r, token: token, role: role, session: session, secret: registered.Secret, sh: sh,
+		worker: r.d.takeDriver(sh, token, session, registered.Secret, launch.Generation)}
 }
 
-// takeTask is the agent taking the daemon's next task: it reads the prompt the daemon sends,
-// acknowledges it as Oh My Pi does and starts the turn that works it, and returns once the daemon
-// has recorded the claim working on that delivery.
-func (c *conflictClaimant) takeTask(want string) shimwire.Prompt {
+// takeTask is the agent taking the daemon's next task: its plugin reads the claim's value, takes
+// the task it names and starts the turn that works it, and this returns once the daemon has
+// recorded the claim working on that task.
+func (c *conflictClaimant) takeTask(want string) takenTask {
 	t := c.r.t
 	t.Helper()
-	prompt := c.sh.prompt()
-	if !strings.Contains(prompt.Message, want) {
-		t.Fatalf("the %s was prompted %q, want a task saying %q", c.role, prompt.Message, want)
+	task := c.worker.mustTake(t, fmt.Sprintf("the %s takes a task saying %q", c.role, want))
+	if !strings.Contains(task.Text, want) {
+		t.Fatalf("the %s took %q, want a task saying %q", c.role, task.Text, want)
 	}
-	c.sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true})
-	c.startTurn(prompt.ID)
-	return prompt
+	c.startTurn()
+	return task
 }
 
-// startTurn is the agent beginning a turn, on the prompt id when the daemon sent one and on
-// nothing when the turn is its own. It returns once the daemon has recorded the claim working.
-func (c *conflictClaimant) startTurn(prompt string) {
+// startTurn is the agent beginning a turn: the turn of the task it took last, or of nothing when
+// the turn is its own. It returns once the daemon has recorded the claim working.
+func (c *conflictClaimant) startTurn() {
 	t := c.r.t
 	t.Helper()
-	c.sh.send(shimwire.AgentStart{})
-	c.turn = prompt
+	c.worker.mustStartTurn(t)
 	testwait.Eventually(t, fmt.Sprintf("the %s's turn running", c.role), func() bool {
 		return c.r.d.claim(c.token).State == string(supervise.StateWorking)
 	})
 }
 
-// endTurn is the agent finishing its turn: the agent_end, and behind it the prompt's own result,
-// which is what names the prompt the turn belonged to (shimwire.PromptResult) and retires the
-// task. It returns once the daemon has recorded the claim out of its turn.
+// endTurn is the agent finishing its turn: the agent_end, and behind it the turn's report naming
+// the task the turn ran, which finishes that task. It returns once the daemon has recorded the
+// claim out of its turn.
 func (c *conflictClaimant) endTurn() {
 	t := c.r.t
 	t.Helper()
-	c.sh.send(shimwire.AgentEnd{})
-	if c.turn != "" {
-		c.sh.send(shimwire.PromptResult{ID: c.turn, AgentInvoked: true})
-	}
-	c.turn = ""
+	c.worker.mustEndTurn(t)
 	testwait.Eventually(t, fmt.Sprintf("the %s out of its turn", c.role), func() bool {
 		return c.r.d.claim(c.token).State == string(supervise.StateIdle)
 	})
@@ -415,7 +410,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	t := r.t
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
-	r.imp.startTurn("")
+	r.imp.startTurn()
 	if status, failure := r.imp.complete("implemented it", conflictFirstHead, ""); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -426,7 +421,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
 	prompt := r.test.takeTask("Phase: testing")
-	r.note("read back: the tester was launched, registered and prompted its testing task (%s)", firstLine(prompt.Message))
+	r.note("read back: the tester was launched, registered and took its testing task (%s)", firstLine(prompt.Text))
 	working := r.d.claim(r.test.token)
 	if working.State != string(supervise.StateWorking) || working.Pending == nil || working.Pending.ConfirmedAt == nil {
 		t.Fatalf("the tester is %s holding %+v, want working on a confirmed delivery of its testing task", working.State, working.Pending)
@@ -454,7 +449,7 @@ func (r *conflictNoTakeoverLive) redStartsAtOnce() {
 	// bounded by the connection's own five seconds (shim.next), so a start that waited for the
 	// tester's turn to end would fail here rather than hang.
 	prompt := r.imp.takeTask("the head conflicts with " + conflictBase)
-	r.note("read back: the implementer was prompted its fix task while the tester's turn ran (%s)", firstLine(prompt.Message))
+	r.note("read back: the implementer took its fix task while the tester's turn ran (%s)", firstLine(prompt.Text))
 	got := r.issue(r.key)
 	if got.Phase != phase.Implementing {
 		t.Fatalf("%s is in %s after the red, want implementing", r.key, got.Phase)
@@ -557,7 +552,7 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	// that work, never at the commit the refused completion named, and it is taken.
 	r.test.endTurn()
 	prompt := r.test.takeTask("Phase: testing")
-	r.note("read back: the tester's first turn ended and the second assignment's task reached it (%s)", firstLine(prompt.Message))
+	r.note("read back: the tester's first turn ended and it took the second assignment's task (%s)", firstLine(prompt.Text))
 	if status, failure := r.test.complete("tested the fix", conflictSecondTesterHandoff, "pass"); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
@@ -589,7 +584,7 @@ func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	r.note("drove the base of %s past %s, so GitHub answers its head conflicting, while the issue is in reviewing", r.key, conflictThirdHead)
 
 	prompt := r.imp.takeTask("the head conflicts with " + conflictBase)
-	r.note("read back: the start still acted — the implementer was prompted its fix task (%s)", firstLine(prompt.Message))
+	r.note("read back: the start still acted — the implementer took its fix task (%s)", firstLine(prompt.Text))
 	if got := r.issue(r.key); got.Phase != phase.Implementing {
 		t.Fatalf("%s is in %s after the red in reviewing, want implementing", r.key, got.Phase)
 	}

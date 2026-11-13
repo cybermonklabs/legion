@@ -1112,22 +1112,6 @@ func (s *shim) closed() {
 	}
 }
 
-// prompt answers the negotiation a connection opens with, when the daemon sends one, and returns
-// the prompt frame that follows.
-func (s *shim) prompt() shimwire.Prompt {
-	s.t.Helper()
-	frame := s.next()
-	if negotiate, ok := frame.(shimwire.NegotiateProtocol); ok {
-		s.send(shimwire.Response{ID: negotiate.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
-		frame = s.next()
-	}
-	prompt, ok := frame.(shimwire.Prompt)
-	if !ok {
-		s.t.Fatalf("the daemon sent %#v, want a prompt", frame)
-	}
-	return prompt
-}
-
 // A project whose every mapped repository lacks an App boots, serving none: it mints for no owner,
 // still knows the review App's login, and its state names each left-out repository with the App it
 // lacks, for an operator to install.

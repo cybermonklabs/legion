@@ -1315,9 +1315,9 @@ func TestTheRunAClaimServesSurvivesARestart(t *testing.T) {
 	if !ok {
 		t.Fatal("no machine for the tester")
 	}
-	if err := machine.Handle(context.Background(), supervise.StreamTurnEnd{Claim: tester.token}); err != nil {
-		t.Fatalf("end the task's turn: %v", err)
-	}
+	// The turn ends as the worker ends it: the agent_end and the report naming the task behind
+	// it, which finishes the task and leaves the claim serving its run.
+	finishTurn(t, machine)
 
 	if restarted := h.supervisor.restart(t, tester.token); restarted.Claim().ServingGeneration != 1 {
 		t.Fatalf("the rebuilt claim serves generation %d, want 1", restarted.Claim().ServingGeneration)

@@ -490,7 +490,7 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 	if pending := machine.Claim().Pending; pending != nil {
 		t.Fatalf("the delivery after its turn ended = %#v, want it retired", pending)
 	}
-	prompts := len(conn.Prompts())
+	written := machine.Claim().TaskWritten
 	if err := runner.execute(ctx, start); err != nil {
 		t.Fatalf("run the start row again: %v", err)
 	}
@@ -498,8 +498,8 @@ func TestARetriedStartDeliversItsTaskOnce(t *testing.T) {
 	if pending := machine.Claim().Pending; pending != nil {
 		t.Fatalf("the retried start queued %#v, want no second delivery", pending)
 	}
-	if got := len(conn.Prompts()) - prompts; got != 0 {
-		t.Fatalf("the retried start prompted the architect %d more times, want none", got)
+	if got := machine.Claim().TaskWritten - written; got != 0 {
+		t.Fatalf("the retried start queued the architect %d more tasks, want none", got)
 	}
 }
 
@@ -570,7 +570,7 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 	if pending := machine.Claim().Pending; pending != nil {
 		t.Fatalf("the delivery after its turn ended = %#v, want it retired", pending)
 	}
-	prompts := len(conn.Prompts())
+	written := machine.Claim().TaskWritten
 	if err := runner.execute(ctx, start); err != nil {
 		t.Fatalf("retry the start row: %v", err)
 	}
@@ -578,8 +578,8 @@ func TestAStartWhoseForgetFailedIsNotDeliveredAgainAfterItsTurn(t *testing.T) {
 	if pending := machine.Claim().Pending; pending != nil {
 		t.Fatalf("the retried start queued %#v again after the architect's turn on it ended; want each decision told once", pending)
 	}
-	if got := len(conn.Prompts()) - prompts; got != 0 {
-		t.Fatalf("the retried start prompted the architect %d more times, want none", got)
+	if got := machine.Claim().TaskWritten - written; got != 0 {
+		t.Fatalf("the retried start queued the architect %d more tasks, want none", got)
 	}
 	if left := keptDecisions(t, pool, store, issue.Key); len(left) != 0 {
 		t.Fatalf("kept after the retried start = %#v, want the told decision forgotten", left)

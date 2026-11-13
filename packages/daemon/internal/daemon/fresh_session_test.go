@@ -40,6 +40,8 @@ type freshSessionRig struct {
 	implementer claim.Token
 	machine     *supervise.Machine
 	conn        *fake.Conn
+	// taken is every task the implementer's worker took that the daemon accepted, in order (take).
+	taken []acceptedTake
 }
 
 const (
@@ -103,11 +105,12 @@ func newFreshSessionRig(t *testing.T) *freshSessionRig {
 	}
 	rig.register(oldSession, oldSessionFile)
 	rig.must(supervise.RequestDeliver{Claim: rig.implementer, Task: phaseTask, ID: "outbox:7", Phase: phase.Implementing, Generation: issue.Generation})
+	rig.take()
 	return rig
 }
 
 // register drives the launched claim through its shim's hello, its agent's registration on session
-// and its ready, at the claim's current generation, and waits out the send its ready starts.
+// and its ready, at the claim's current generation, and waits out the decisions its ready starts.
 func (r *freshSessionRig) register(session, file string) {
 	r.t.Helper()
 	generation := r.machine.Claim().Generation
@@ -127,6 +130,15 @@ func (r *freshSessionRig) must(ev supervise.Event) {
 	r.t.Helper()
 	if err := r.machine.Handle(context.Background(), ev); err != nil {
 		r.t.Fatalf("handle %T: %v", ev, err)
+	}
+}
+
+// take is the implementer's worker taking the task its claim holds where its plugin would take one
+// now (takeOffered), recorded in taken when the daemon accepts the take.
+func (r *freshSessionRig) take() {
+	r.t.Helper()
+	if take, accepted := takeOffered(context.Background(), r.t, r.machine); accepted {
+		r.taken = append(r.taken, take)
 	}
 }
 
@@ -285,12 +297,13 @@ func TestAnArchitectsRetryOfARefusedClaimStartsANewSessionWithThePhaseTask(t *te
 	// The task of the retried phase, behind the sentence that says this session replaced one the
 	// provider refused: a worker reading an empty transcript would otherwise take the task for a
 	// fresh start and do again what the abandoned session already pushed.
-	prompts := rig.conn.Prompts()
+	rig.take()
+	taken := rig.taken
 	task := "Continue Workflow. Issue: LEGION-208. Phase: implementing. Reason: retry held phase."
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, task) {
-		t.Fatalf("the new session was prompted %+v, want it to end with the retried phase's task %q", prompts, task)
+	if len(taken) != 2 || !strings.HasSuffix(taken[1].Message, task) {
+		t.Fatalf("the new session took %+v, want its task to end with the retried phase's task %q", taken, task)
 	}
-	wantsAbandonment(t, prompts[1].Message, refusal)
+	wantsAbandonment(t, taken[1].Message, refusal)
 }
 
 // An operator who stops a worker whose agent can do nothing — a provider that refuses its session,
@@ -341,11 +354,12 @@ func TestTheOperatorsFreshSessionRetryOfAStoppedWorkerStartsANewSessionWithThePh
 	if got := rig.machine.Claim(); got.Session != newSession || got.Session == oldSession {
 		t.Fatalf("the retried implementer registered session %q, want the new %q", got.Session, newSession)
 	}
-	prompts := rig.conn.Prompts()
-	if len(prompts) != 2 || !strings.HasSuffix(prompts[1].Message, phaseTask) {
-		t.Fatalf("the new session was prompted %+v, want it to end with its phase's task", prompts)
+	rig.take()
+	taken := rig.taken
+	if len(taken) != 2 || !strings.HasSuffix(taken[1].Message, phaseTask) {
+		t.Fatalf("the new session took %+v, want its task to end with its phase's task", taken)
 	}
-	wantsAbandonment(t, prompts[1].Message, "`legion claims forget-session`")
+	wantsAbandonment(t, taken[1].Message, "`legion claims forget-session`")
 }
 
 // wantsAbandonment is the check both retries make of the fresh session's first prompt: it names

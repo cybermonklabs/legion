@@ -389,9 +389,16 @@ func (c *stubConn) request(ctx context.Context, build func(id string) shimwire.F
 	}
 }
 
-func (c *stubConn) Prompt(ctx context.Context, deliveryID, message string) error {
+// turn has the stand-in run one turn with message (testdata/omp-standin.go's standin_turn):
+// the daemon hands a worker no task through its connection, so this frame is the test's own.
+func (c *stubConn) turn(ctx context.Context, message string) error {
 	_, err := c.request(ctx, func(id string) shimwire.Frame {
-		return shimwire.Prompt{ID: id, DeliveryID: deliveryID, Message: message}
+		line, _ := json.Marshal(struct {
+			Type    string `json:"type"`
+			ID      string `json:"id"`
+			Message string `json:"message"`
+		}{"standin_turn", id, message})
+		return shimwire.Raw{Type: "standin_turn", JSON: line}
 	})
 	return err
 }
@@ -755,7 +762,7 @@ func hasKillPane(argvs [][]string) bool {
 	return false
 }
 
-// A spawned agent's whole life on a real server: it opens, registers, is ready, answers a prompt
+// A spawned agent's whole life on a real server: it opens, registers, is ready, runs a turn
 // through its pane, runs under exactly the environment the runtime promises, stops gracefully when
 // asked, resumes as the same session, and — when it will not end itself — is killed after the
 // grace.
@@ -779,8 +786,8 @@ func TestRealTmuxLifecycle(t *testing.T) {
 
 	// OMP's RPC frames reach the pane's process and come back.
 	conn := r.stream.await(t, spec.Claim)
-	if err := conn.Prompt(ctx, "delivery-1", "hello"); err != nil {
-		t.Fatalf("Prompt: %v", err)
+	if err := conn.turn(ctx, "hello"); err != nil {
+		t.Fatalf("turn: %v", err)
 	}
 	conn.awaitEvent(t, shimwire.TypeAgentStart)
 	if state, err := conn.GetState(ctx); err != nil || state.IsStreaming {
@@ -920,8 +927,8 @@ func TestRealTmuxLifecycle(t *testing.T) {
 
 	// An agent that will not end itself: the grace runs out and its pane is killed.
 	conn2 := r.stream.await(t, spec.Claim)
-	if err := conn2.Prompt(ctx, "delivery-2", "ignore SIGTERM"); err != nil {
-		t.Fatalf("Prompt: %v", err)
+	if err := conn2.turn(ctx, "ignore SIGTERM"); err != nil {
+		t.Fatalf("turn: %v", err)
 	}
 	before = len(r.recorded())
 	impatient := r.newRuntime(func(o *Options) { o.StopGrace = 500 * time.Millisecond })

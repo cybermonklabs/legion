@@ -598,8 +598,8 @@ func TestAFinishedWorkerThatDiesIsRelaunchedAndItsFailureHoldsNothing(t *testing
 	}
 	boot()
 	relaunched := machine.Claim()
-	if relaunched.State != supervise.StateReady || relaunched.Session != "ses-plan" || relaunched.Generation == launched.Generation || relaunched.Pending != nil || len(conn.Prompts()) != 0 {
-		t.Fatalf("the relaunched planner is %+v with %d prompts, want ready on its session in a new launch, handed nothing", relaunched, len(conn.Prompts()))
+	if relaunched.State != supervise.StateReady || relaunched.Session != "ses-plan" || relaunched.Generation == launched.Generation || relaunched.Pending != nil || relaunched.TaskWritten != 0 {
+		t.Fatalf("the relaunched planner is %+v with %d tasks written, want ready on its session in a new launch, handed nothing", relaunched, relaunched.TaskWritten)
 	}
 
 	// It dies again, and every relaunch is refused: the claim fails.

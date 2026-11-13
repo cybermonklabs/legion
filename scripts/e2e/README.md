@@ -4140,7 +4140,7 @@ The driver boots the whole daemon through `run`, the function `legion start` cal
 Facts enter only as production's do:
 the base pushes that ask the daemon to read the head, the branch pushes and the synchronizes as `notifications.github.…` envelopes on the `ENVOY_NOTIFICATIONS` stream;
 the daemon's own HTTP routes for each role's registration, readiness, grants and completions;
-and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames: the prompt's response, `agent_start`, `agent_end` and the `prompt_result` behind it).
+and the daemon's worker stream for each role's turns, which the driver speaks as `legion worker-shim` does (`shimwire` frames: `agent_start` and `agent_end`), with each role's task taken as its plugin takes one (`internal/daemon/take_driver_test.go`'s `takeDriver`: the value read through `POST /legion/v1/claims/task`, then `task-seen`, `take` and, behind the turn's end, `turn-outcome` naming the task's number).
 The daemon's RPC has no abort frame, so the proof holds the stronger fact that leaves:
 the role's connection is sent nothing at all while the start acts, read by reading that connection for three seconds and finding it silent.
 
@@ -4442,7 +4442,7 @@ It boots the whole daemon through `run`, the function `legion start` calls, with
 — the repository mapping, the issue list, status writes and messages, and the read of the record a completion names — goes to the real routes.
 Four of the issues are seeded in the daemon's store, each the root of its own tree with its slot:
 two in `planning`, one in `testing` and one `implementing` on open pull requests, each phase's worker a launch a previous daemon began, which the boot relaunches serving run 1.
-Each worker is brought to ready over the daemon's worker stream as its pane's shim brings it (answering the daemon's negotiation, state probes and prompts, each prompt starting a turn the step ends after its completion), registered under a session the step names, and completes with a grant minted for it over `POST /legion/v1/handoff/complete`.
+Each worker is brought to ready over the daemon's worker stream as its pane's shim brings it (answering the daemon's negotiation and state probes), takes each task its claim is given as its plugin takes one (`internal/daemon/take_driver_test.go`'s `takeDriver`: `POST /legion/v1/claims/task`, `task-seen`, `take`, and `turn-outcome` behind the turn's end), each take starting a turn the step ends after its completion, is registered under a session the step names, and completes with a grant minted for it over `POST /legion/v1/handoff/complete`.
 Every handoff is written and read with the real `dispatch` CLI (`bun packages/envoy-client/bin/dispatch.ts`) as that session (`DISPATCH_HOST=omp`, `DISPATCH_SESSION_ID`, `DISPATCH_URL`, `DISPATCH_TOKEN`), with a home, configuration file (absent) and session state of the run's own.
 
 | step | driven by | read back as |

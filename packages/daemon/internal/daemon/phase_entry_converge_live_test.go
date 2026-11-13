@@ -182,7 +182,7 @@ func newPhaseEntryConvergeLive(t *testing.T) *phaseEntryConvergeLive {
 	// reaches the fake's launch without the daemon cloning acme/widgets from github.com, which the
 	// tmux answer would have it try.
 	r.rt.InPod = true
-	o := fakeRuntime(r.rt, r.built)
+	o := withTaskValues(fakeRuntime(r.rt, r.built))
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
 	// The wall clock, in place of this package's still one (daemon.go's RealClock for a nil
@@ -347,8 +347,9 @@ func (r *phaseEntryConvergeLive) entries() (phaseEntry, givenEntry int64) {
 
 // convergeClaimant is one role's claim as its agent reaches it: the shim that dialled the worker
 // stream with the boot token of the launch the fake runtime recorded, the registration that
-// exchanged it for the session's capability secret, and a reader that answers what the daemon asks
-// of the shim and hands each prompt to the step, starting its turn as the agent would.
+// exchanged it for the session's capability secret, a reader that answers what the daemon asks of
+// the shim, and the plugin that takes each task as its value comes and starts the turn that works
+// it, handing the task to the step (takeDriver.watch).
 type convergeClaimant struct {
 	r       *phaseEntryConvergeLive
 	token   claim.Token
@@ -356,12 +357,17 @@ type convergeClaimant struct {
 	session string
 	secret  string
 	sh      *shim
-	mu      sync.Mutex
-	// turn is whether a turn is running, which the daemon's state probe reads back, and prompt
-	// the id of the prompt that started it, which the result at its end names.
-	turn    bool
-	prompt  string
-	prompts chan shimwire.Prompt
+	worker  *takeDriver
+	tasks   chan takenTask
+}
+
+// convergeTask is a task the claim's worker took: the number and the text of the take, and the
+// id of the delivery it is of, which names the outbox row that queued it (supervise.Delivery.ID,
+// as the operator's claim listing shows the task the claim holds), "" for one the claim no longer
+// holds when it is read.
+type convergeTask struct {
+	takenTask
+	DeliveryID string
 }
 
 // claimant brings the launched claim of role to ready, as its pane's shim and its agent do: it
@@ -376,7 +382,7 @@ func (r *phaseEntryConvergeLive) claimant(role claim.Role, session string) *conv
 	address := r.built.address
 	r.built.mu.Unlock()
 	c := &convergeClaimant{r: r, token: token, role: role, session: session,
-		sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
+		sh: dialShim(t, address, launch.BootToken), tasks: make(chan takenTask, 8)}
 	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
 		AgentID: session, PluginContract: api.DaemonAPIVersion,
@@ -389,7 +395,9 @@ func (r *phaseEntryConvergeLive) claimant(role claim.Role, session string) *conv
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
 	c.secret = registered.Secret
+	c.worker = r.d.takeDriver(c.sh, token, session, registered.Secret, launch.Generation)
 	go c.serve()
+	c.worker.watch(t, func(task takenTask) { c.tasks <- task })
 	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
 		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
 	}, false); status != http.StatusNoContent {
@@ -399,10 +407,9 @@ func (r *phaseEntryConvergeLive) claimant(role claim.Role, session string) *conv
 }
 
 // serve reads every frame the daemon sends the shim until the connection closes: it answers the
-// protocol negotiation and the state probe (idle, or streaming while a turn runs), and takes each
-// prompt — answering it and starting the turn, as Oh My Pi does — for the step to read. It runs
-// for the claim's whole life, because a step that left the connection unread would have the
-// daemon's own requests time out and the task it was sending wait for a retry.
+// protocol negotiation and the state probe (idle, or streaming while a turn runs). It runs for the
+// claim's whole life, because a step that left the connection unread would have the daemon's own
+// requests time out.
 func (c *convergeClaimant) serve() {
 	// The reader dialShim read the hello_ack through, which may already hold the frames after it.
 	reader := c.sh.lines
@@ -420,88 +427,79 @@ func (c *convergeClaimant) serve() {
 		case shimwire.NegotiateProtocol:
 			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeNegotiateProtocol, Success: true})
 		case shimwire.GetState:
-			c.mu.Lock()
-			streaming := c.turn
-			c.mu.Unlock()
+			streaming := c.worker.inATurn()
 			data, _ := json.Marshal(shimwire.StateData{IsStreaming: &streaming})
 			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypeGetState, Success: true, Data: data})
-		case shimwire.Prompt:
-			c.send(shimwire.Response{ID: f.ID, Command: shimwire.TypePrompt, Success: true})
-			c.mu.Lock()
-			c.turn, c.prompt = true, f.ID
-			c.mu.Unlock()
-			c.send(shimwire.AgentStart{DeliveryID: f.DeliveryID})
-			c.prompts <- f
 		}
 	}
 }
 
-// send writes one frame to the daemon; the reader and the step both write.
+// send writes one frame to the daemon.
 func (c *convergeClaimant) send(frame shimwire.Frame) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
 	if err := c.sh.writer.WriteFrame(frame); err != nil {
 		c.r.t.Errorf("send %s for %s: %v", frame.FrameType(), c.token, err)
 	}
 }
 
-// startOwnTurn is the agent beginning a turn of its own, on no prompt of the daemon's: the turn
-// the seeded implementer is in when the proof reaches it. It returns once the daemon has recorded
-// the claim working.
+// startOwnTurn is the agent beginning a turn of its own, on no task it took: the turn the seeded
+// implementer is in when the proof reaches it. It returns once the daemon has recorded the claim
+// working.
 func (c *convergeClaimant) startOwnTurn() {
 	t := c.r.t
 	t.Helper()
-	c.mu.Lock()
-	c.turn, c.prompt = true, ""
-	c.mu.Unlock()
-	c.send(shimwire.AgentStart{})
+	c.worker.mustStartTurn(t)
 	testwait.Eventually(t, fmt.Sprintf("the %s's turn running", c.role), func() bool {
 		return c.r.d.claim(c.token).State == string(supervise.StateWorking)
 	})
 }
 
-// endTurn is the agent finishing its turn: the agent_end, and behind it the prompt's own result,
-// which is what names the prompt the turn belonged to (shimwire.PromptResult) and retires the
-// task. It returns once the daemon has recorded the claim out of its turn.
+// endTurn is the agent finishing its turn: the agent_end, and behind it the turn's report naming
+// the task the turn ran, which finishes that task. It returns once the daemon has recorded the
+// claim out of its turn.
 func (c *convergeClaimant) endTurn() {
 	t := c.r.t
 	t.Helper()
-	c.mu.Lock()
-	prompt := c.prompt
-	c.turn, c.prompt = false, ""
-	c.mu.Unlock()
-	c.send(shimwire.AgentEnd{})
-	if prompt != "" {
-		c.send(shimwire.PromptResult{ID: prompt, AgentInvoked: true})
-	}
+	c.worker.mustEndTurn(t)
 	testwait.Eventually(t, fmt.Sprintf("the %s out of its turn", c.role), func() bool {
 		return c.r.d.claim(c.token).State == string(supervise.StateIdle)
 	})
 }
 
-// awaitPrompt waits for the next task the daemon sends this claim, within bound, and returns it.
-func (c *convergeClaimant) awaitPrompt(what string, bound time.Duration) shimwire.Prompt {
+// awaitTask waits for the next task this claim's worker takes, within bound, and returns it with
+// the delivery it is of.
+func (c *convergeClaimant) awaitTask(what string, bound time.Duration) convergeTask {
 	t := c.r.t
 	t.Helper()
 	select {
-	case prompt := <-c.prompts:
-		return prompt
+	case task := <-c.tasks:
+		return c.ofDelivery(task)
 	case <-time.After(bound):
-		t.Fatalf("the %s was sent no task within %s: %s", c.role, bound, what)
-		return shimwire.Prompt{}
+		t.Fatalf("the %s took no task within %s: %s", c.role, bound, what)
+		return convergeTask{}
 	}
 }
 
-// drainPrompts takes every prompt the reader has already handed this claim and the steps have not
-// read, oldest first, and returns them. It never waits: a prompt still on its way is left for the
-// next awaitPrompt, so a step drains only where no task of the claim can be on its way, as run
-// two does while it holds the lane's lock (aDeletedStartRowLosesNoWork).
-func (c *convergeClaimant) drainPrompts() []shimwire.Prompt {
-	var drained []shimwire.Prompt
+// ofDelivery is task with the id of the delivery the claim holds it as: the take's turn runs, so
+// the claim still holds the task it took until that turn's report.
+func (c *convergeClaimant) ofDelivery(task takenTask) convergeTask {
+	c.r.t.Helper()
+	held := convergeTask{takenTask: task}
+	if pending := c.r.d.claim(c.token).Pending; pending != nil {
+		held.DeliveryID = pending.ID
+	}
+	return held
+}
+
+// drainTasks takes every task the worker has already taken and the steps have not read, oldest
+// first, and returns them. It never waits: a task still on its way is left for the next
+// awaitTask, so a step drains only where no task of the claim can be on its way, as run two does
+// while it holds the lane's lock (aDeletedStartRowLosesNoWork).
+func (c *convergeClaimant) drainTasks() []convergeTask {
+	var drained []convergeTask
 	for {
 		select {
-		case prompt := <-c.prompts:
-			drained = append(drained, prompt)
+		case task := <-c.tasks:
+			drained = append(drained, c.ofDelivery(task))
 		default:
 			return drained
 		}
@@ -622,9 +620,9 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheStartWaits() {
 	// implementer, which is live, is prompted its merge-forward task at once.
 	releaseRead()
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
-	fix := r.imp.awaitPrompt("the implementer's merge-forward task after the conflict", convergeOwedBound)
+	fix := r.imp.awaitTask("the implementer's merge-forward task after the conflict", convergeOwedBound)
 	r.note("let the held read of #%d run, with GitHub answering %s conflicting with %s: %s is in implementing and the implementer was prompted its merge-forward task (%s)",
-		r.number, convergeFirstHead, convergeBase, r.key, firstLine(fix.Message))
+		r.number, convergeFirstHead, convergeBase, r.key, firstLine(fix.Text))
 
 	// The second: the implementer's merge forward at a head of its own hands testing out again,
 	// which raises the tester's row to entry 2 and writes that entry's own task. GitHub answers
@@ -677,7 +675,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 	r.awaitLaunch(tester)
 	r.note("the pace let the tester's launch run: the fake runtime started its process")
 	r.test = r.claimant(claim.RoleTester, "ses_tester")
-	first := r.test.awaitPrompt("the tester's first task", convergeOwedBound)
+	first := r.test.awaitTask("the tester's first task", convergeOwedBound)
 	if first.DeliveryID != stale.ID {
 		t.Fatalf("the tester was sent delivery %s, want %s, the task of entry 1 its claim held while the phase changed", first.DeliveryID, stale.ID)
 	}
@@ -686,7 +684,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 		t.Fatalf("the state reads phaseEntry %d, givenEntry %d where the tester works entry 1's task, want 2 and 1", phaseEntry, givenEntry)
 	}
 	r.note("read back: the tester was sent %s on its own connection (%s) — the work of entry %d, with the phase on entry %d",
-		first.DeliveryID, firstLine(first.Message), givenEntry, phaseEntry)
+		first.DeliveryID, firstLine(first.Text), givenEntry, phaseEntry)
 
 	status, failure := r.test.complete("tested the first head", convergeFirstHead, "pass", r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
@@ -702,7 +700,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 	// same connection as a task of its own: the start row of entry 2, which waited behind the task
 	// the claim held, hands it over on its next attempt.
 	r.test.endTurn()
-	second := r.test.awaitPrompt("the task of the entry the phase is on", convergeOwedBound)
+	second := r.test.awaitTask("the task of the entry the phase is on", convergeOwedBound)
 	if second.DeliveryID == first.DeliveryID {
 		t.Fatalf("the tester was sent delivery %s again, want a task of its own for entry 2", second.DeliveryID)
 	}
@@ -711,7 +709,7 @@ func (r *phaseEntryConvergeLive) theLaunchRunsAndTheEntryIsWorked() {
 		return phaseEntry == 2 && givenEntry == 2
 	})
 	r.note("read back: the tester was sent %s (%s), and the state reads phaseEntry %d, givenEntry %d",
-		second.DeliveryID, firstLine(second.Message), phaseEntry, givenEntry)
+		second.DeliveryID, firstLine(second.Text), phaseEntry, givenEntry)
 
 	if status, failure := r.test.complete("tested the fix", convergeSecondHead, "pass", r.test.handoff("test")); status != http.StatusOK {
 		t.Fatalf("the completion of entry 2's work = %d %s %s, want 200", status, failure.Code, failure.Error)
@@ -757,7 +755,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	// The reviewer, on the start the move to reviewing wrote. Its completion is what asks the
 	// daemon to read the pull request, and that read is what carries the conflicting head.
 	r.rev = r.claimant(claim.RoleReviewer, "ses_reviewer")
-	r.rev.awaitPrompt("the reviewer's task", convergeOwedBound)
+	r.rev.awaitTask("the reviewer's task", convergeOwedBound)
 	r.note("the reviewer came up on the start the move to reviewing wrote, before the lock below")
 
 	// The lane's own lock, held on a connection of the driver's: while this transaction lives, no
@@ -798,9 +796,9 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 	// Every prompt run one left unread is drained here, under the lock: no lane can have run a
 	// start of the issue since the lock was taken, so nothing drained is the sweep's delivery,
 	// and the sweep's delivery cannot arrive until the lock goes.
-	for _, left := range r.imp.drainPrompts() {
-		r.note("drained a prompt the implementer's connection received before the delete and no step read: %s (%s)",
-			left.DeliveryID, firstLine(left.Message))
+	for _, left := range r.imp.drainTasks() {
+		r.note("drained a task the implementer's worker took before the delete and no step read: %s (%s)",
+			left.DeliveryID, firstLine(left.Text))
 	}
 	if err := lock.Rollback(ctx); err != nil {
 		t.Fatalf("let the lane's lock go: %v", err)
@@ -818,7 +816,7 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 
 	// Nothing of the project is published from here on: what sends the entry's work is the
 	// daemon's own sweep.
-	task := r.imp.awaitPrompt(fmt.Sprintf("the work of entry %d, which the implementer's phases row names and whose start row %s%d this step deleted",
+	task := r.imp.awaitTask(fmt.Sprintf("the work of entry %d, which the implementer's phases row names and whose start row %s%d this step deleted",
 		deleted.entry, outboxDeliveryPrefix, deleted.id), convergeOwedBound)
 	// The delivery's id names the outbox row it came from (the outbox's outboxDeliveryPrefix), so
 	// it says in one value that the task reached the worker from a row written after the deleted
@@ -837,15 +835,15 @@ func (r *phaseEntryConvergeLive) aDeletedStartRowLosesNoWork() {
 		t.Fatalf("the implementer was sent delivery %s, of row %d, at or below the deleted row %s%d, want a row the sweep wrote after the delete",
 			task.DeliveryID, row, outboxDeliveryPrefix, deleted.id)
 	}
-	if !strings.Contains(task.Message, "the head conflicts with "+convergeBase) {
-		t.Fatalf("the implementer was sent %q, want the task entry %d names, which the conflict at %s wrote", task.Message, deleted.entry, convergeSecondHead)
+	if !strings.Contains(task.Text, "the head conflicts with "+convergeBase) {
+		t.Fatalf("the implementer took %q, want the task entry %d names, which the conflict at %s wrote", task.Text, deleted.entry, convergeSecondHead)
 	}
 	testwait.Eventually(t, "the implementer given the entry its phases row names", func() bool {
 		phaseEntry, givenEntry = r.entries()
 		return phaseEntry == deleted.entry && givenEntry == deleted.entry
 	})
 	r.note("read back: with no fact of the project arriving, the sweep (period %s here, %s in the shipped binary) sent the implementer %s (%s) on its own connection, row %d above the deleted row %s%d, and the state reads phaseEntry %d, givenEntry %d",
-		convergeEntrySweep, entrySweepInterval, task.DeliveryID, firstLine(task.Message), row, outboxDeliveryPrefix, deleted.id, phaseEntry, givenEntry)
+		convergeEntrySweep, entrySweepInterval, task.DeliveryID, firstLine(task.Text), row, outboxDeliveryPrefix, deleted.id, phaseEntry, givenEntry)
 	r.imp.endTurn()
 }
 

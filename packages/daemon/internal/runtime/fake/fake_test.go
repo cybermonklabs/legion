@@ -3,6 +3,7 @@ package fake
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -338,20 +339,6 @@ func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 	ctx := context.Background()
 	conn := NewConn()
 
-	if err := conn.Prompt(ctx, "delivery-1", "plan LEGION-208"); err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	if err := conn.Prompt(ctx, "delivery-1", "plan LEGION-208"); err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	prompts := conn.Prompts()
-	if len(prompts) != 2 {
-		t.Fatalf("prompts: got %d, want 2 — a repeated delivery is still a frame the daemon sent", len(prompts))
-	}
-	if prompts[0].DeliveryID != "delivery-1" || prompts[0].Message != "plan LEGION-208" {
-		t.Fatalf("prompt recorded %+v", prompts[0])
-	}
-
 	state, err := conn.GetState(ctx)
 	if err != nil {
 		t.Fatalf("get state: %v", err)
@@ -380,19 +367,13 @@ func TestConnRecordsWhatTheDaemonAskedOfTheAgent(t *testing.T) {
 		t.Fatalf("shutdowns: got %d, want 1", conn.Shutdowns())
 	}
 
-	conn.RefusePrompt("the agent is busy")
-	err = conn.Prompt(ctx, "delivery-2", "test LEGION-208")
-	if !errors.Is(err, runtime.ErrPromptRefused) {
-		t.Fatalf("a scripted refusal: got %v, want one wrapping runtime.ErrPromptRefused", err)
+	refused := fmt.Errorf("jj wedged: %w", runtime.ErrAdoptRefused)
+	conn.FailAdoptWorkingCopy(refused)
+	if err := conn.AdoptWorkingCopy(ctx, identity, 30*time.Second); !errors.Is(err, runtime.ErrAdoptRefused) {
+		t.Fatalf("a scripted refusal: got %v, want one wrapping runtime.ErrAdoptRefused", err)
 	}
-	lost := errors.New("connection reset")
-	conn.FailPrompt(lost)
-	err = conn.Prompt(ctx, "delivery-2", "test LEGION-208")
-	if !errors.Is(err, lost) || errors.Is(err, runtime.ErrPromptRefused) {
-		t.Fatalf("a scripted transport failure: got %v, want %v and no refusal", err, lost)
-	}
-	if len(conn.Prompts()) != 4 {
-		t.Fatalf("a failed prompt is still a frame the daemon sent: %+v", conn.Prompts())
+	if len(conn.Adoptions()) != 2 {
+		t.Fatalf("a refused adoption is still a frame the daemon sent: %+v", conn.Adoptions())
 	}
 }
 

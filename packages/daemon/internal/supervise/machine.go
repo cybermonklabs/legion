@@ -2677,6 +2677,13 @@ func (m *Machine) endProcess(ctx context.Context) error {
 // Dropping first and clearing afterwards stores the retired claim twice, and the first of the
 // two is the claim the paragraph above forbids: retired, and still recording its round. A
 // crash or a failed write between them would leave exactly that behind.
+//
+// A take of the claim's task whose turn has not started is taken back in that same write: the
+// process that took it is the one the claim stops running, so that turn never starts, and the
+// next launch's worker — an operator's retry, a reopened issue's start — takes the number afresh,
+// its text composed again (Delivery.message), where a take answered from the record would hand a
+// fresh session the text the stopped one was given, without the sentence naming the session it
+// replaced (abandonedTask).
 func (m *Machine) retire(ctx context.Context) error {
 	m.letGo()
 	m.claim.State = StateRetired
@@ -2688,6 +2695,11 @@ func (m *Machine) retire(ctx context.Context) error {
 	m.clearUpdate()
 	if drops {
 		return m.dropPending(ctx, "retired")
+	}
+	if p := m.claim.Pending; p != nil && p.awaitsTurn() {
+		p.ConfirmedAt, p.TakenText = time.Time{}, ""
+		m.log.Info("supervise: a task was taken back", "task", p.Number, "cause", "retired")
+		return m.saved(m.owes("PutClaimAndDelivery", m.putClaimAndPending(ctx)))
 	}
 	return m.persist(ctx)
 }

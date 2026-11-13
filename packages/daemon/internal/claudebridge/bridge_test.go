@@ -174,8 +174,8 @@ func fakeClaude() int {
 			// rather than taken from a recording: no result of the measurement carries this
 			// subtype (dispatch://INFRA-956/artifact/claude-code-2-1-310-refusal-measurement-tgz),
 			// so it names the one terminal_reason that was measured, which is the value that
-			// would put an error in the prompt_result were the subtype not excluded by name
-			// (bridge.go's providerFailed).
+			// would count the turn refused were the subtype not excluded by name (bridge.go's
+			// providerFailed).
 			emit(map[string]any{"type": "result", "subtype": "error_max_turns", "is_error": true,
 				"terminal_reason": "api_error", "errors": []string{"Reached max turns (30)"}})
 			continue
@@ -481,10 +481,13 @@ func (c *inboxClient) noAnswer() {
 	}
 }
 
-func (r *rig) prompt(id, message string) {
+// turn starts a turn of the bridge's own with message as its first user message: an Envoy
+// delivery between turns, which is what starts one (the daemon pushes no task on the stream). It
+// goes down an inbox connection of its own, which keeps its answer, so a test's own inbox client
+// reads the answers of its own deliveries alone.
+func (r *rig) turn(id, message string) {
 	r.t.Helper()
-	r.send(shimwire.Prompt{ID: id, DeliveryID: "d-" + id, Message: message})
-	r.expect("response", map[string]any{"id": id, "command": "prompt", "success": true})
+	r.dialInbox().deliver(id, message)
 }
 
 func (r *rig) state(id string) bool {
@@ -496,11 +499,11 @@ func (r *rig) state(id string) bool {
 
 const sessionID = "11111111-2222-4333-8444-555555555555"
 
-func TestAFreshSessionIsSeededBeforeTheDaemonsFirstPrompt(t *testing.T) {
+func TestAFreshSessionIsSeededBeforeItsFirstTurn(t *testing.T) {
 	r := newRig(t, "-p", "--session-id", sessionID)
 	r.send(shimwire.NegotiateProtocol{ID: "n1", ProtocolVersion: 2})
 	r.expect("response", map[string]any{"id": "n1", "command": "negotiate_protocol", "success": true})
-	r.prompt("p1", "say hello WAITING")
+	r.turn("ev1", "say hello WAITING")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
 	lines := strings.Split(r.recorded(), "\n")
@@ -511,7 +514,7 @@ func TestAFreshSessionIsSeededBeforeTheDaemonsFirstPrompt(t *testing.T) {
 		}
 	}
 	if len(inputs) < 2 || !strings.Contains(inputs[0], `"text":"/rename Legion implementer · ACME-7"`) || !strings.Contains(inputs[1], "say hello") {
-		t.Fatalf("Claude Code read %q, want the seed and then the prompt", inputs)
+		t.Fatalf("Claude Code read %q, want the seed and then the delivery", inputs)
 	}
 	if path := inboxPathOf(t, r); !strings.HasSuffix(path, "/inbox.sock") {
 		t.Errorf("Claude Code was told the inbox %q", path)
@@ -520,7 +523,7 @@ func TestAFreshSessionIsSeededBeforeTheDaemonsFirstPrompt(t *testing.T) {
 
 func TestAResumedSessionIsNotSeeded(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "say WAITING for CI")
+	r.turn("ev1", "say WAITING for CI")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
 	if strings.Contains(r.recorded(), "/rename") {
@@ -533,7 +536,7 @@ func TestATurnIsOneUserMessageWhenTheHandoffSucceeds(t *testing.T) {
 	if r.state("g1") {
 		t.Fatal("isStreaming before any turn")
 	}
-	r.prompt("p1", "handoff ok")
+	r.turn("ev1", "handoff ok")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
 	if strings.Count(r.recorded(), `"type":"user"`) != 1 {
@@ -541,25 +544,35 @@ func TestATurnIsOneUserMessageWhenTheHandoffSucceeds(t *testing.T) {
 	}
 }
 
-// A prompt during a turn is acknowledged and then refused in Oh My Pi's busy words, so the daemon
-// takes the task back uncharged and sends it again at the turn's end. The gate holds the turn's
-// own result back, so the turn is still running when the second prompt arrives.
-func TestAPromptDuringATurnIsRefusedBusy(t *testing.T) {
+// get_state says a turn is running from its agent_start to its agent_end, whichever started it: a
+// turn of the bridge's own, and one Claude Code started by itself when a background task
+// finished. The gate holds each turn's own result back, so the turn is still running when the
+// state is asked.
+func TestGetStateSaysATurnIsRunningWhicheverStartedIt(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", backgroundDuringPrompt)
+	r.turn("ev1", backgroundDuringPrompt)
 	r.expect("agent_start", nil)
 	if !r.state("g1") {
 		t.Error("isStreaming during the turn is false")
 	}
-	r.prompt("p2", "say again")
-	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if !strings.HasPrefix(refusal["error"].(string), "Agent is already processing") {
-		t.Errorf("the refusal %q is not Oh My Pi's busy answer", refusal["error"])
+	r.open()
+	r.expect("agent_end", nil)
+	if r.state("g2") {
+		t.Error("isStreaming after the turn is true")
+	}
+
+	r = newRig(t, "-p", "--resume", sessionID)
+	r.turn("ev1", backgroundTurn)
+	r.expect("agent_start", nil)
+	r.expect("agent_end", nil)
+	r.expect("agent_start", nil)
+	if !r.state("g3") {
+		t.Error("isStreaming during the turn Claude Code started is false")
 	}
 	r.open()
 	r.expect("agent_end", nil)
-	if strings.Contains(r.recorded(), "say again") {
-		t.Errorf("Claude Code read the refused prompt: %s", r.recorded())
+	if r.state("g4") {
+		t.Error("isStreaming after the turn Claude Code started is true")
 	}
 }
 
@@ -567,7 +580,7 @@ func TestAPromptDuringATurnIsRefusedBusy(t *testing.T) {
 // assistant message_end with stopReason "error" and the failure as its errorMessage.
 func TestAFailedStepIsOhMyPisFailedMessage(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "fail WAITING on the provider")
+	r.turn("ev1", "fail WAITING on the provider")
 	r.expect("agent_start", nil)
 	frame := r.expect("message_end", nil)
 	message, _ := frame["message"].(map[string]any)
@@ -581,64 +594,11 @@ func TestAFailedStepIsOhMyPisFailedMessage(t *testing.T) {
 	r.expect("agent_end", nil)
 }
 
-// The prompt_result of a turn the provider failed carries the failure, as Oh My Pi's does
-// (shimwire.PromptError), and the prompt_result of a turn that ended any other way carries
-// none: the daemon keeps the task and sends it again for every error in this frame, so a turn
-// Claude Code's own limit ended, or one a tool failed in, must reach it as a turn to retire the
-// task on (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d). The message is
-// Claude Code's own words, and the status is there only when Claude Code named one.
-func TestOnlyAProviderFailureFillsThePromptResultsError(t *testing.T) {
-	for _, tc := range []struct {
-		name   string
-		script string
-		// errored is whether the frame carries an error object, and status the status in it.
-		errored bool
-		status  any
-	}{
-		{name: "a provider failure with a status", script: "api-error-529 WAITING on the provider",
-			errored: true, status: float64(529)},
-		{name: "a content filter's refusal, which names none", script: "refusal WAITING on the provider",
-			errored: true, status: nil},
-		{name: "a turn a tool failed in", script: "fail WAITING on the provider"},
-		{name: "a turn Claude Code's own limit ended", script: "max-turns"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := newRig(t, "-p", "--resume", sessionID)
-			r.prompt("p1", tc.script)
-			r.expect("agent_start", nil)
-			r.expect("message_end", nil)
-			r.expect("agent_end", nil)
-			frame := r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
-			failure, _ := frame["error"].(map[string]any)
-			if !tc.errored {
-				if failure != nil {
-					t.Fatalf("the turn's prompt_result carries %v, want no error object: the daemon retires the task on it", failure)
-				}
-				return
-			}
-			if failure == nil {
-				t.Fatalf("the failed turn's prompt_result is %v, want an error object", frame)
-			}
-			if got, _ := failure["message"].(string); !strings.Contains(got, "API Error: 529 overloaded") {
-				t.Errorf("the error's message %q is not Claude Code's own words", got)
-			}
-			// False for every failure of the bridge's: it knows nothing that says one can clear,
-			// and the daemon decides from the status alone (supervise's holdsTheIssue).
-			if failure["retryable"] != false {
-				t.Errorf("retryable = %v, want false", failure["retryable"])
-			}
-			if failure["httpStatus"] != tc.status {
-				t.Errorf("httpStatus = %v, want %v", failure["httpStatus"], tc.status)
-			}
-		})
-	}
-}
-
 // An Envoy delivery during a turn is the turn's next user message; one between turns starts a turn.
 // Either way the inbox answers it once Claude Code has taken it, and refuses a malformed one.
 func TestEnvoyDeliveriesBecomeUserTurns(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "wait r1")
+	r.turn("p1", "wait r1")
 	r.expect("agent_start", nil)
 	inbox := r.dialInbox()
 	inbox.deliver("ev1", "say WAITING on the CI")
@@ -648,9 +608,6 @@ func TestEnvoyDeliveriesBecomeUserTurns(t *testing.T) {
 		t.Fatalf("the inbox answered %+v", answer)
 	}
 	r.expect("agent_end", nil)
-	// The prompt's turn is over and the bridge says so: the frame that names the prompt, which an
-	// agent_end never does (shimwire.PromptResult).
-	r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
 	if recorded := r.recorded(); !strings.Contains(recorded, `"text":"say WAITING on the CI"`) {
 		t.Fatalf("the delivery was not a user message: %s", recorded)
 	}
@@ -691,7 +648,7 @@ func TestTheInboxAnswersOnceClaudeCodeTakesTheDelivery(t *testing.T) {
 // next steps in the order they came, and each is answered as Claude Code takes it, not before.
 func TestDeliveriesQueuedInATurnAreAnsweredAsEachIsTaken(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "wait r1")
+	r.turn("p1", "wait r1")
 	r.expect("agent_start", nil)
 	inbox := r.dialInbox()
 	inbox.deliver("ev1", "wait d1")
@@ -710,7 +667,6 @@ func TestDeliveriesQueuedInATurnAreAnsweredAsEachIsTaken(t *testing.T) {
 	}
 	r.release("d2")
 	r.expect("agent_end", nil)
-	r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
 	r.quiet()
 }
 
@@ -718,7 +674,7 @@ func TestDeliveriesQueuedInATurnAreAnsweredAsEachIsTaken(t *testing.T) {
 // read and exited without taking, and the one the bridge still held for the step after it.
 func TestADeliveryClaudeCodeNeverTakesIsAnsweredWithAnError(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "wait r1")
+	r.turn("p1", "wait r1")
 	r.expect("agent_start", nil)
 	inbox := r.dialInbox()
 	inbox.deliver("ev1", "die")
@@ -733,32 +689,14 @@ func TestADeliveryClaudeCodeNeverTakesIsAnsweredWithAnError(t *testing.T) {
 	}
 }
 
-// The bridge's own user messages come back re-emitted too, and answer no delivery: the echo of the
-// daemon's prompt leaves a delivery queued with the very same text unanswered until Claude Code
-// takes that delivery in its turn.
-func TestAPromptsEchoAnswersNoDelivery(t *testing.T) {
-	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "held same")
-	r.expect("agent_start", nil)
-	inbox := r.dialInbox()
-	inbox.deliver("ev1", "held same")
-	r.logged("Envoy delivery ev1 waits for the next step")
-	r.release("same")
-	inbox.noAnswer()
-	r.release("same")
-	if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
-		t.Fatalf("the inbox answered %+v", answer)
-	}
-	r.expect("agent_end", nil)
-}
-
 // backgroundTurn and backgroundDuringPrompt are the two recorded streams these cases drive the
-// bridge with (replay). In backgroundTurn one prompt starts a background Bash command and ends its
-// turn; the task finishes between turns, and lines 13-15 — task_updated, task_notification and
-// background_tasks_changed, each naming the task and its run — are followed by the system/init of
-// the turn Claude Code starts by itself, its assistant lines and its own result. In
-// backgroundDuringPrompt the task finishes while a foreground command of the same turn still runs,
-// and the same three lines arrive inside that turn, which has one result, its last line.
+// bridge with (replay). In backgroundTurn one user message starts a background Bash command and
+// ends its turn; the task finishes between turns, and lines 13-15 — task_updated,
+// task_notification and background_tasks_changed, each naming the task and its run — are followed
+// by the system/init of the turn Claude Code starts by itself, its assistant lines and its own
+// result. In backgroundDuringPrompt the task finishes while a foreground command of the same turn
+// still runs, and the same three lines arrive inside that turn, which has one result, its last
+// line.
 const (
 	backgroundTurn         = "replay background-turn.jsonl"
 	backgroundDuringPrompt = "replay background-during-prompt.jsonl"
@@ -766,12 +704,11 @@ const (
 
 // A background task that finishes between turns wakes Claude Code into a turn of its own, which
 // the daemon is told of as a turn: agent_start when the init of that turn arrives, agent_end when
-// its result does, and in between only what Claude Code's own lines carry. The prompt's turn ends
-// on its own result first, so the daemon sees two turns, not one long one — and only the first
-// carries a prompt_result behind it, which is the whole of how the daemon tells them apart.
+// its result does, and in between only what Claude Code's own lines carry. The first turn ends
+// on its own result first, so the daemon sees two turns, not one long one.
 func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", backgroundTurn)
+	r.turn("p1", backgroundTurn)
 	r.open()
 	var types []string
 	for ends := 0; ends < 2; {
@@ -781,10 +718,10 @@ func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 			ends++
 		}
 	}
-	// The prompt's turn carries one tool call, the background Bash command, which the bridge shows
+	// The first turn carries one tool call, the background Bash command, which the bridge shows
 	// on the pane; the turn Claude Code started by itself calls no tool, so the bridge writes
 	// nothing of its own between that turn's start and its end.
-	want := []string{"agent_start", "tool_execution_start", "agent_end", "prompt_result", "agent_start", "agent_end"}
+	want := []string{"agent_start", "tool_execution_start", "agent_end", "agent_start", "agent_end"}
 	if !slices.Equal(types, want) {
 		t.Fatalf("the daemon saw %q, want %q", types, want)
 	}
@@ -795,7 +732,7 @@ func TestATurnClaudeCodeStartsByItselfIsATurnOfTheDaemons(t *testing.T) {
 // sees one agent_start, and the agent_end only once the turn's own result arrives.
 func TestABackgroundTaskFinishingDuringATurnDoesNotEndIt(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", backgroundDuringPrompt)
+	r.turn("p1", backgroundDuringPrompt)
 	r.expect("agent_start", nil)
 	// The turn's two tool calls, the background command and the foreground one; the task's three
 	// lines come between the second call and the turn's result, which the gate holds back.
@@ -807,34 +744,7 @@ func TestABackgroundTaskFinishingDuringATurnDoesNotEndIt(t *testing.T) {
 	r.quiet()
 	r.open()
 	r.expect("agent_end", nil)
-	r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
 	r.quiet()
-}
-
-// A prompt that arrives during a turn Claude Code started by itself is refused as one during any
-// turn is, and the daemon sends it again at that turn's end; the turn itself is untouched, and
-// Claude Code never reads the refused task.
-func TestAPromptDuringAClaudeStartedTurnIsRefusedBusy(t *testing.T) {
-	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", backgroundTurn)
-	r.expect("agent_start", nil)
-	r.expect("agent_end", nil)
-	r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
-	r.expect("agent_start", nil)
-	if !r.state("g1") {
-		t.Error("isStreaming during the turn Claude Code started is false")
-	}
-	r.prompt("p2", "say again")
-	refusal := r.expect("response", map[string]any{"id": "p2", "command": "prompt", "success": false})
-	if !strings.HasPrefix(refusal["error"].(string), "Agent is already processing") {
-		t.Errorf("the refusal %q is not Oh My Pi's busy answer", refusal["error"])
-	}
-	r.open()
-	r.expect("agent_end", nil)
-	r.quiet()
-	if strings.Contains(r.recorded(), "say again") {
-		t.Errorf("Claude Code read the refused prompt: %s", r.recorded())
-	}
 }
 
 // An Envoy delivery that arrives during a turn Claude Code started by itself is queued as it is
@@ -842,10 +752,9 @@ func TestAPromptDuringAClaudeStartedTurnIsRefusedBusy(t *testing.T) {
 // the bridge starts as soon as that one ends, answered once Claude Code takes it there.
 func TestAnEnvoyDeliveryDuringAClaudeStartedTurnFollowsIt(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", backgroundTurn)
+	r.turn("p1", backgroundTurn)
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
-	r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
 	r.expect("agent_start", nil)
 	inbox := r.dialInbox()
 	inbox.deliver("ev9", "say the CI is green")
@@ -886,16 +795,14 @@ const (
 	commandBlockUnfinished = "replay command-block-unfinished.jsonl"
 )
 
-// A command's block between turns is no turn of anyone's: the daemon is told of no agent_start,
-// no agent_end and no prompt_result for it. The command's `init` is not a turn Claude Code
-// started by itself, and its `result` ends nothing, so the prompt's turn is the one turn the
-// daemon sees.
+// A command's block between turns is no turn of anyone's: the daemon is told of no agent_start
+// and no agent_end for it. The command's `init` is not a turn Claude Code started by itself, and
+// its `result` ends nothing, so the delivery's turn is the one turn the daemon sees.
 func TestACommandsBlockBetweenTurnsIsNoTurn(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", commandBlock)
+	r.turn("p1", commandBlock)
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
-	r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
 	// The block's `started`, its `init`, the command's output and its `result`; the `completed`
 	// row is the stream's last line, which the gate holds back.
 	r.quiet()
@@ -909,10 +816,10 @@ func TestACommandsBlockBetweenTurnsIsNoTurn(t *testing.T) {
 // A command's block inside a turn ends no step of that turn: the delivery that waits for the next
 // step is neither sent during the block nor answered errNotTaken by the command's result, and the
 // turn's own result, which comes after the block, ends the step as it always did — the delivery
-// is sent then, taken, and the turn ends with its prompt_result behind it.
+// is sent then, taken, and the turn ends.
 func TestACommandsBlockInsideATurnEndsNoStep(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", commandBlockInTurn)
+	r.turn("p1", commandBlockInTurn)
 	r.expect("agent_start", nil)
 	inbox := r.dialInbox()
 	inbox.deliver("ev1", "say the CI is green")
@@ -925,7 +832,6 @@ func TestACommandsBlockInsideATurnEndsNoStep(t *testing.T) {
 		t.Fatalf("the inbox answered %+v, want the delivery taken by the step the turn's own result started", answer)
 	}
 	r.expect("agent_end", nil)
-	r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
 	r.quiet()
 	// The block did arrive: the result the bridge passed over is the command's own.
 	r.logged("ignoring the success result of the command Claude Code is running")
@@ -943,76 +849,53 @@ func TestATornCommandBlockLeavesALaterTurnWorking(t *testing.T) {
 	} {
 		t.Run(torn.name, func(t *testing.T) {
 			r := newRig(t, "-p", "--resume", sessionID)
-			r.prompt("p1", torn.stream)
+			r.turn("p1", torn.stream)
 			r.expect("agent_start", nil)
 			r.expect("agent_end", nil)
-			r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
 			r.open()
 			r.quiet()
-			r.prompt("p2", "say the torn block cost nothing")
+			r.turn("p2", "say the torn block cost nothing")
 			r.expect("agent_start", nil)
 			r.expect("agent_end", nil)
-			r.expect("prompt_result", map[string]any{"id": "p2", "agentInvoked": true})
 		})
 	}
 }
 
 // A command still running when the bridge writes its next user message — its `started` read, its
 // `completed` not — ends no step of the bridge's. A person sends `/compact` to an idle pane (6 to
-// 29 s, measured in this issue's earlier rounds), and while it runs an Envoy delivery or the
-// daemon's own prompt arrives, so the bridge starts a turn inside the open block. The command's
-// own result must not end that turn: a delivery answered errNotTaken is sent to the agent a
-// second time, and a prompt_result written before its turn has run leaves the real turn to be
-// read as one Claude Code started by itself.
+// 29 s, measured in this issue's earlier rounds), and while it runs an Envoy delivery arrives, so
+// the bridge starts a turn inside the open block. The command's own result must not end that
+// turn: a delivery answered errNotTaken is sent to the agent a second time, and the turn's end
+// written before it has run leaves the real turn to be read as one Claude Code started by itself.
 //
 // The fake writes the command's result before it reads the user message waiting on its stdin,
 // which is one of the two orders Claude Code can write them in; the bridge's rule — spend the one
 // result each `started` owes, close no block whose `completed` has not come — holds in either,
 // since no line of the stream says when Claude Code took its stdin.
 func TestACommandStillRunningEndsNoStepTheBridgeStarted(t *testing.T) {
-	t.Run("an Envoy delivery arrives inside the block", func(t *testing.T) {
-		r := newRig(t, "-p", "--resume", sessionID)
-		r.prompt("p1", commandBlockUnfinished)
-		r.expect("agent_start", nil)
-		r.expect("agent_end", nil)
-		r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
-		// The block is open: its `started` row and its own `init` are read, and its own `result`
-		// is the stream's last line, which the gate holds back.
-		r.logged("ignoring the init of the command Claude Code is running")
-		inbox := r.dialInbox()
-		inbox.deliver("ev1", "held h1")
-		r.expect("agent_start", nil)
-		inbox.noAnswer()
-		// The command's own result. Claude Code reads the delivery behind it, and answers it only
-		// once the test releases h1, so no frame of the delivery's turn stands in the way here.
-		r.open()
-		inbox.noAnswer()
-		r.quiet()
-		r.logged("ignoring the success result of the command Claude Code is running")
-		r.release("h1")
-		if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
-			t.Fatalf("the inbox answered %+v, want the delivery taken by the turn begun inside the block", answer)
-		}
-		r.expect("agent_end", nil)
-		r.quiet()
-	})
-	t.Run("the daemon's prompt arrives inside the block", func(t *testing.T) {
-		r := newRig(t, "-p", "--resume", sessionID)
-		r.prompt("p1", commandBlockUnfinished)
-		r.expect("agent_start", nil)
-		r.expect("agent_end", nil)
-		r.expect("prompt_result", map[string]any{"id": "p1", "agentInvoked": true})
-		r.logged("ignoring the init of the command Claude Code is running")
-		r.prompt("p2", "held h2")
-		r.expect("agent_start", nil)
-		r.open()
-		// p2's turn has not run, so neither its agent_end nor its prompt_result may come yet.
-		r.quiet()
-		r.logged("ignoring the success result of the command Claude Code is running")
-		r.release("h2")
-		r.expect("agent_end", nil)
-		r.expect("prompt_result", map[string]any{"id": "p2", "agentInvoked": true})
-	})
+	r := newRig(t, "-p", "--resume", sessionID)
+	r.turn("p1", commandBlockUnfinished)
+	r.expect("agent_start", nil)
+	r.expect("agent_end", nil)
+	// The block is open: its `started` row and its own `init` are read, and its own `result`
+	// is the stream's last line, which the gate holds back.
+	r.logged("ignoring the init of the command Claude Code is running")
+	inbox := r.dialInbox()
+	inbox.deliver("ev1", "held h1")
+	r.expect("agent_start", nil)
+	inbox.noAnswer()
+	// The command's own result. Claude Code reads the delivery behind it, and answers it only
+	// once the test releases h1, so no frame of the delivery's turn stands in the way here.
+	r.open()
+	inbox.noAnswer()
+	r.quiet()
+	r.logged("ignoring the success result of the command Claude Code is running")
+	r.release("h1")
+	if answer := inbox.answer(); answer != (InboxAnswer{ID: "ev1", OK: true}) {
+		t.Fatalf("the inbox answered %+v, want the delivery taken by the turn begun inside the block", answer)
+	}
+	r.expect("agent_end", nil)
+	r.quiet()
 }
 
 // A delivery that carries a person's pictures reaches Claude Code as the blocks claude-envoy
@@ -1041,7 +924,7 @@ func TestADeliveryWithPicturesIsSentAsItsBlocks(t *testing.T) {
 // keeps its inbox's directory.
 func TestTheBridgeEndsWithAnInboxClientConnected(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "say WAITING for CI")
+	r.turn("p1", "say WAITING for CI")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
 	path := inboxPathOf(t, r)
@@ -1154,7 +1037,7 @@ func TestUnknownRequestsAreRefusedByName(t *testing.T) {
 // The bridge's exit status is Claude Code's, and the shim closing the bridge's input ends it.
 func TestTheShimClosingInputEndsClaudeCode(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
-	r.prompt("p1", "say WAITING")
+	r.turn("p1", "say WAITING")
 	r.expect("agent_start", nil)
 	r.expect("agent_end", nil)
 	_ = r.daemon.Close()

@@ -55,19 +55,55 @@ func compactDoors() []compactDoor {
 	}
 }
 
-// connected gives the claim a connection to Oh My Pi, which a compaction and a send both need;
-// the harness registers none of its own (operator_test.go's forget-session case).
+// connected gives the claim a connection to Oh My Pi, which a compaction needs; the harness
+// registers none of its own (operator_test.go's forget-session case).
 func connected(h *harness, token claim.Token) *fake.Conn {
 	conn := fake.NewConn()
 	h.conns.Register(token, conn)
 	return conn
 }
 
-// settled waits for the send the compaction's end started, so what the connection was asked is
-// all of what it was asked.
+// settled waits for every decision the compaction's end started, so what the bucket holds is all
+// the compaction wrote.
 func settled(h *harness, token claim.Token) {
 	m, _ := h.supervisor.Machine(token)
 	m.Wait()
+}
+
+// valueWrites is how many values the bucket has taken for token's claim so far: each is a task
+// value written, which is what hands a worker its task.
+func (h *harness) valueWrites(token claim.Token) int {
+	writes := 0
+	for _, write := range h.taskValues().Writes() {
+		if write.Token == token {
+			writes++
+		}
+	}
+	return writes
+}
+
+// wantTheOwedTaskWrittenAgain holds that the claim's value was written again once since the
+// bucket had taken writes values for it, naming owed, the number of the task it owes, and that
+// the worker's take of it is accepted: the task goes again, once.
+func wantTheOwedTaskWrittenAgain(t *testing.T, h *harness, token claim.Token, owed uint64, writes int) {
+	t.Helper()
+	if got := h.valueWrites(token) - writes; got != 1 {
+		t.Fatalf("the claim's value was written %d times, want once: the one task it owes, given back", got)
+	}
+	if value, held := h.taskValues().Value(token); !held || value.Number != owed {
+		t.Fatalf("the bucket holds %+v (held %v) for the claim, want task %d, the one it owed", value, held, owed)
+	}
+	m, _ := h.supervisor.Machine(token)
+	acceptTake(t, m)
+}
+
+// wantNoValueWritten holds that the claim's value was not written again since the bucket had
+// taken writes values for it: its task was not handed out.
+func wantNoValueWritten(t *testing.T, h *harness, token claim.Token, writes int, why string) {
+	t.Helper()
+	if got := h.valueWrites(token) - writes; got != 0 {
+		t.Fatalf("the claim's value was written %d times, want none: %s", got, why)
+	}
 }
 
 // decodeCompaction reads a 200 answer as the compaction it reports.
@@ -81,7 +117,7 @@ func decodeCompaction(t *testing.T, recorder *httptest.ResponseRecorder) Compact
 	return answer
 }
 
-// A claim idle on the provider-error ladder keeps its session, has it compacted, and is sent the
+// A claim idle on the provider-error ladder keeps its session, has it compacted, and is handed the
 // task it owes again — once, and only after the compaction, rather than at the end of a ladder
 // step counted against the transcript the compaction just shortened. The run of provider-error
 // turns it carried goes back to zero, so the project's controller can be told a second time.
@@ -92,7 +128,7 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 			token := idleOnTheLadder(t, h)
 			conn := connected(h, token)
 			before := h.stored(token)
-
+			writes := h.valueWrites(token)
 			recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
 			if answer := decodeCompaction(t, recorder); !answer.Compacted || answer.Reason != "" {
@@ -113,10 +149,7 @@ func TestACompactionKeepsTheSessionAndSendsTheOwedTaskAgain(t *testing.T) {
 			if got := len(conn.Compactions()); got != 1 {
 				t.Fatalf("Oh My Pi was asked for %d compactions, want one", got)
 			}
-			prompts := conn.Prompts()
-			if len(prompts) != 1 || prompts[0].DeliveryID != before.Pending.ID {
-				t.Fatalf("the connection was sent %#v, want the one task the claim owed (%s)", prompts, before.Pending.ID)
-			}
+			wantTheOwedTaskWrittenAgain(t, h, token, before.Pending.Number, writes)
 		})
 	}
 }
@@ -147,7 +180,7 @@ func TestACompactionAsksOhMyPiForATextSummary(t *testing.T) {
 	}
 }
 
-// A claim that owes no task is sent none: a root architect between turns has its session
+// A claim that owes no task is handed none: a root architect between turns has its session
 // compacted and nothing else.
 func TestACompactionSendsNoTaskToAClaimThatOwesNone(t *testing.T) {
 	h := compactHarness(t, nil)
@@ -157,6 +190,7 @@ func TestACompactionSendsNoTaskToAClaimThatOwesNone(t *testing.T) {
 	token := freshSessionToken(t, "LEGION-208", claim.RoleArchitect)
 	conn := connected(h, token)
 	h.ready(token, "ses_architect", 1)
+	writes := h.valueWrites(token)
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
@@ -167,14 +201,15 @@ func TestACompactionSendsNoTaskToAClaimThatOwesNone(t *testing.T) {
 	if got := len(conn.Compactions()); got != 1 {
 		t.Fatalf("Oh My Pi was asked for %d compactions, want one", got)
 	}
-	if prompts := conn.Prompts(); len(prompts) != 0 {
-		t.Fatalf("the root architect was sent %#v, want nothing: it owed no task", prompts)
+	wantNoValueWritten(t, h, token, writes, "it owed no task")
+	if _, held := h.taskValues().Value(token); held {
+		t.Fatal("the bucket holds a value for the root architect, want none: it owed no task")
 	}
 }
 
 // A compaction Oh My Pi refuses or skips — a session too small, one already compacted — is
-// reported to the caller in Oh My Pi's own words, the owed task goes again all the same, and the
-// claim's run of provider-error turns stands: the session is as it was.
+// reported to the caller in Oh My Pi's own words, the owed task is handed out again all the same,
+// and the claim's run of provider-error turns stands: the session is as it was.
 func TestACompactionThatIsRefusedOrSkippedTellsTheCallerAndStillSendsTheOwedTask(t *testing.T) {
 	for _, reason := range []string{"Nothing to compact (session too small)", "Already compacted"} {
 		for _, door := range compactDoors() {
@@ -183,7 +218,7 @@ func TestACompactionThatIsRefusedOrSkippedTellsTheCallerAndStillSendsTheOwedTask
 				token := idleOnTheLadder(t, h)
 				conn := connected(h, token)
 				conn.RefuseCompact(reason)
-				owed := h.stored(token).Pending.ID
+				owed, writes := h.stored(token).Pending.Number, h.valueWrites(token)
 
 				recorder := door.ask(t, h, "LEGION-209", claim.RoleImplementer)
 
@@ -196,10 +231,7 @@ func TestACompactionThatIsRefusedOrSkippedTellsTheCallerAndStillSendsTheOwedTask
 				if after.ProviderErrorRun != 1 {
 					t.Errorf("the claim's run of provider errors is %d, want the 1 it carried: nothing was compacted", after.ProviderErrorRun)
 				}
-				prompts := conn.Prompts()
-				if len(prompts) != 1 || prompts[0].DeliveryID != owed {
-					t.Fatalf("the connection was sent %#v, want the one task the claim owed (%s)", prompts, owed)
-				}
+				wantTheOwedTaskWrittenAgain(t, h, token, owed, writes)
 			})
 		}
 	}
@@ -348,7 +380,7 @@ func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *tes
 			h := compactHarness(t, nil)
 			token := idleOnTheLadder(t, h)
 			conn := connected(h, token)
-			owed := h.stored(token).Pending.ID
+			owed, writes := h.stored(token).Pending.ID, h.valueWrites(token)
 			release := conn.HoldCompact()
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			go func() { answered <- door.ask(t, h, "LEGION-209", claim.RoleImplementer) }()
@@ -370,9 +402,7 @@ func TestACompactionASuspensionHeldOverItEndedSaysTheClaimWasNotGivenBack(t *tes
 			if after.Pending == nil || after.Pending.ID != owed {
 				t.Errorf("the claim holds %+v, want the task %s it still owes", after.Pending, owed)
 			}
-			if prompts := conn.Prompts(); len(prompts) != 0 {
-				t.Errorf("the connection was sent %#v, want nothing: the claim was not given back", prompts)
-			}
+			wantNoValueWritten(t, h, token, writes, "the claim was not given back")
 		})
 	}
 }
@@ -392,7 +422,7 @@ func TestACompactionThatEndedIntoATurnUnderAHeldSuspensionSaysTheClaimWasNotGive
 			h := compactHarness(t, nil)
 			token := idleOnTheLadder(t, h)
 			conn := connected(h, token)
-			owed := h.stored(token).Pending.ID
+			owed, writes := h.stored(token).Pending.ID, h.valueWrites(token)
 			release := conn.HoldCompact()
 			answered := make(chan *httptest.ResponseRecorder, 1)
 			go func() { answered <- door.ask(t, h, "LEGION-209", claim.RoleImplementer) }()
@@ -424,9 +454,7 @@ func TestACompactionThatEndedIntoATurnUnderAHeldSuspensionSaysTheClaimWasNotGive
 			if after.Pending == nil || after.Pending.ID != owed {
 				t.Errorf("the claim holds %+v, want the task %s it still owes, unsent", after.Pending, owed)
 			}
-			if prompts := conn.Prompts(); len(prompts) != 0 {
-				t.Errorf("the connection was sent %#v, want nothing: the claim was not given back", prompts)
-			}
+			wantNoValueWritten(t, h, token, writes, "the claim was not given back")
 		})
 	}
 }
@@ -598,14 +626,14 @@ func TestTheControllersCompactNeedsAControllerGrantAndAClaim(t *testing.T) {
 }
 
 // A compaction the daemon could not get an answer to — the wait ran out, or the transport failed
-// — is reported as a compaction that did not happen, and the owed task goes again: the claim is
-// never left working on a compaction nobody will answer for.
+// — is reported as a compaction that did not happen, and the owed task is handed out again: the
+// claim is never left working on a compaction nobody will answer for.
 func TestACompactionWhoseAnswerNeverCameGivesTheClaimBack(t *testing.T) {
 	h := compactHarness(t, nil)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
 	conn.FailCompact(errors.New("worker-stream: compact: no answer came"))
-	owed := h.stored(token).Pending.ID
+	owed, writes := h.stored(token).Pending.Number, h.valueWrites(token)
 
 	recorder := h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(token)+"/compact", nil)
 
@@ -617,9 +645,7 @@ func TestACompactionWhoseAnswerNeverCameGivesTheClaimBack(t *testing.T) {
 	if after := h.stored(token); after.State != supervise.StateIdle {
 		t.Errorf("the claim is %s, want idle again", after.State)
 	}
-	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].DeliveryID != owed {
-		t.Fatalf("the connection was sent %#v, want the one task the claim owed (%s)", prompts, owed)
-	}
+	wantTheOwedTaskWrittenAgain(t, h, token, owed, writes)
 }
 
 // A claim the machine takes no compaction in is refused in the words of its own state, not as a
@@ -672,6 +698,7 @@ func TestACompactionWhoseEndTheStoreWouldNotWriteAnswersTheStoreFailure(t *testi
 	h := compactHarness(t, nil)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
+	writes := h.valueWrites(token)
 	release := conn.HoldCompact()
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -695,12 +722,10 @@ func TestACompactionWhoseEndTheStoreWouldNotWriteAnswersTheStoreFailure(t *testi
 	if got := len(conn.Compactions()); got != 1 {
 		t.Fatalf("Oh My Pi was asked for %d compactions, want the one that ran", got)
 	}
-	if prompts := conn.Prompts(); len(prompts) != 0 {
-		t.Fatalf("the connection was sent %#v, want nothing: the claim was never given back", prompts)
-	}
+	wantNoValueWritten(t, h, token, writes, "the claim was never given back")
 }
 
-// A claim that loses its process while its session is being compacted is sent nothing by the
+// A claim that loses its process while its session is being compacted is handed nothing by the
 // compaction's end: that end reaches a claim the relaunch has moved past, so it decides nothing.
 // The answer says the claim was not given back and its owed task was not sent, and says nothing
 // of when that task goes, where a compaction reported as run would have the CLI say the task
@@ -709,7 +734,7 @@ func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.
 	h := compactHarness(t, nil)
 	token := idleOnTheLadder(t, h)
 	conn := connected(h, token)
-	owed := h.stored(token).Pending.ID
+	owed, writes := h.stored(token).Pending.Number, h.valueWrites(token)
 	release := conn.HoldCompact()
 	answered := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
@@ -723,16 +748,16 @@ func TestACompactionOfAClaimThatLosesItsProcessSaysItWasNotGivenBack(t *testing.
 	wantFreshSessionRefusal(t, <-answered, http.StatusConflict, compactionFailed,
 		string(token)+" lost its process while its session was being compacted: it was not given back, and the task it owes was not sent. "+wantAskAgainLater)
 	settled(h, token)
-	if prompts := conn.Prompts(); len(prompts) != 0 {
-		t.Fatalf("the connection was sent %#v, want nothing: the compaction's end reached a claim its relaunch had moved past", prompts)
-	}
+	wantNoValueWritten(t, h, token, writes, "the compaction's end reached a claim its relaunch had moved past")
 
 	h.ready(token, "ses_implementer", 2)
 
 	settled(h, token)
-	if prompts := conn.Prompts(); len(prompts) != 1 || prompts[0].DeliveryID != owed {
-		t.Fatalf("the relaunched claim was sent %#v, want the one task it owed (%s)", prompts, owed)
+	if value, held := h.taskValues().Value(token); !held || value.Number != owed {
+		t.Fatalf("the bucket holds %+v (held %v) for the relaunched claim, want task %d, the one it owed", value, held, owed)
 	}
+	m, _ := h.supervisor.Machine(token)
+	acceptTake(t, m)
 }
 
 // The reason a compaction did not run is words the daemon did not write — Oh My Pi's, and

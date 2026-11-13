@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -74,17 +75,11 @@ func (r *reportingRig) reported() claim.TurnOutcomeRequest {
 	}
 }
 
-// untilTurnEnds reads the bridge's frames up to and including the turn's end, and the
-// `prompt_result` behind it. A turn the daemon's prompt started ends with two frames, not one:
-// `agent_end`, which names no prompt, because a turn Claude Code started by itself when a
-// background task finished ends with one just like it, and then the `prompt_result` that says
-// whose turn it was. Every turn of these cases is a prompt's, so leaving the second frame unread
-// would hand it to the next read of the stream.
+// untilTurnEnds reads the bridge's frames up to and including the turn's end.
 func (r *rig) untilTurnEnds() {
 	r.t.Helper()
 	for r.next()["type"] != "agent_end" {
 	}
-	r.expect("prompt_result", nil)
 }
 
 // The bridge reports every turn it ends, clean and refused alike, with its own sequence counted
@@ -94,7 +89,7 @@ func (r *rig) untilTurnEnds() {
 func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 
-	r.prompt("p1", "say hello")
+	r.turn("p1", "say hello")
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
 
@@ -106,7 +101,7 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 		t.Fatalf("the clean turn was reported %+v, want %+v", clean, want)
 	}
 
-	r.prompt("p2", "api-error-529 the provider refused")
+	r.turn("p2", "api-error-529 the provider refused")
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
 
@@ -128,7 +123,7 @@ func TestTheBridgeReportsEveryTurnItEndsCleanAndRefusedAlike(t *testing.T) {
 func TestOnlyTheStepsTheProviderRefusedAreReportedRefused(t *testing.T) {
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 
-	r.prompt("p1", "maxturns worked to the cap")
+	r.turn("p1", "maxturns worked to the cap")
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
 
@@ -141,7 +136,7 @@ func TestOnlyTheStepsTheProviderRefusedAreReportedRefused(t *testing.T) {
 	// The order is the test's to fix, not a race to be hoped for: the delivery goes in first, the
 	// bridge's own log says it is queued, and only then is the refusal let go.
 	inbox := r.dialInbox()
-	r.prompt("p2", "fail-when go")
+	r.turn("p2", "fail-when go")
 	r.expect("agent_start", nil)
 	inbox.deliver("ev1", "say the CI is green")
 	r.logged("Envoy delivery ev1 waits for the next step")
@@ -150,6 +145,42 @@ func TestOnlyTheStepsTheProviderRefusedAreReportedRefused(t *testing.T) {
 
 	if report := r.reported(); report.Outcome != claim.TurnClean || report.Message != "" {
 		t.Fatalf("the turn whose last step ran was reported %+v, want it clean: the provider answered after all", report)
+	}
+}
+
+// Only a turn the provider failed is reported refused, with Claude Code's own words as its
+// message: a provider failure with a status, and a content filter's refusal, which names none
+// (testdata/refusal-turn.jsonl:5). A turn a tool failed in and one Claude Code's own limit ended
+// are the agent having worked, reported clean
+// (dispatch://INFRA-956/comment/4fa88c00-3313-4008-8eea-d7f95a04e24d).
+func TestOnlyAProviderFailureIsReportedRefused(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		script  string
+		refused bool
+	}{
+		{name: "a provider failure with a status", script: "api-error-529 WAITING on the provider", refused: true},
+		{name: "a content filter's refusal, which names none", script: "refusal WAITING on the provider", refused: true},
+		{name: "a turn a tool failed in", script: "fail WAITING on the provider"},
+		{name: "a turn Claude Code's own limit ended", script: "max-turns"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newReportingRig(t, "-p", "--resume", sessionID)
+			r.turn("p1", tc.script)
+			r.expect("agent_start", nil)
+			r.expect("message_end", nil)
+			r.untilTurnEnds()
+			report := r.reported()
+			if !tc.refused {
+				if report.Outcome != claim.TurnClean || report.Message != "" {
+					t.Fatalf("the turn was reported %+v, want it clean: the agent worked", report)
+				}
+				return
+			}
+			if report.Outcome != claim.TurnRefused || !strings.Contains(report.Message, "API Error: 529 overloaded") {
+				t.Fatalf("the turn was reported %+v, want it refused with Claude Code's own words", report)
+			}
+		})
 	}
 }
 
@@ -162,7 +193,7 @@ func TestARefusalWithNothingQueuedEndsItsTurnAndTheNextDeliveryIsANewOne(t *test
 	r := newReportingRig(t, "-p", "--resume", sessionID)
 	inbox := r.dialInbox()
 
-	r.prompt("p1", "fail-when now")
+	r.turn("p1", "fail-when now")
 	r.expect("agent_start", nil)
 	r.release("now")
 	r.untilTurnEnds()
@@ -191,7 +222,7 @@ func TestARefusalWithNothingQueuedEndsItsTurnAndTheNextDeliveryIsANewOne(t *test
 func TestABridgeWithNoDaemonReportsNothingAndStillBridges(t *testing.T) {
 	r := newRig(t, "-p", "--resume", sessionID)
 
-	r.prompt("p1", "say hello")
+	r.turn("p1", "say hello")
 	r.expect("agent_start", nil)
 	r.untilTurnEnds()
 	r.quiet()

@@ -33,8 +33,8 @@ type Writer struct {
 func NewWriter(dst io.Writer) *Writer {
 	w := &Writer{dst: dst}
 	w.json = json.NewEncoder(&w.buf)
-	// JSON.stringify does not escape <, > or &, and a prompt message is arbitrary task text. A
-	// Go peer writes the same bytes the shipped one does.
+	// JSON.stringify does not escape <, > or &, and a compaction's instructions are arbitrary
+	// text. A Go peer writes the same bytes the shipped one does.
 	w.json.SetEscapeHTML(false)
 	return w
 }

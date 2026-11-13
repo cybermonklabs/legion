@@ -108,7 +108,7 @@ type mainPathRig struct {
 	seq  int64
 	tick int
 	// taken is every take of the architect's worker the daemon accepted, in order.
-	taken []fake.Prompt
+	taken []acceptedTake
 }
 
 func newMainPathRig(t *testing.T, wired bool) *mainPathRig {
@@ -353,7 +353,7 @@ func (r *mainPathRig) waitMachine() {
 // prompts is every task the architect's worker took, in order. The rig's worker takes the task the
 // claim holds whenever the test reads what reached it, as a worker takes once its host is idle; a
 // take a hold refuses leaves the task where it is.
-func (r *mainPathRig) prompts() []fake.Prompt {
+func (r *mainPathRig) prompts() []acceptedTake {
 	r.t.Helper()
 	if machine, found := r.sup.Machine(r.token); found {
 		c := machine.Claim()
@@ -364,7 +364,7 @@ func (r *mainPathRig) prompts() []fake.Prompt {
 			}
 			machine.Wait()
 			if answer.Outcome == supervise.TakeOutcomeAccepted {
-				r.taken = append(r.taken, fake.Prompt{DeliveryID: p.ID, Message: answer.Text})
+				r.taken = append(r.taken, acceptedTake{DeliveryID: p.ID, Message: answer.Text})
 			}
 		}
 	}
