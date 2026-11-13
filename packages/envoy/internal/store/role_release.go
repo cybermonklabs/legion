@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -75,9 +76,12 @@ func (a RoleReleaseAuthority) frees(claim RoleClaim, sessionID string) bool {
 	return a.Force || claim.ClientInstanceID == "" || claim.HeldByProcess(a.ClientInstanceID)
 }
 
-// releaseRoleClaims releases the claim of each role topic in topics that release authorises
-// (RoleReleaseAuthority.frees), and leaves every other topic alone: a topic that is not a role
-// lane's, and a role name a subscription wildcard reaches, which names no one role to free.
+// releaseRoleClaims releases the claim of each role topic in topics, the topics a caller of
+// Registry.Remove named, that release authorises (RoleReleaseAuthority.frees), and leaves every
+// other topic alone: a topic that is not a role lane's, and a role name a subscription wildcard
+// reaches, which names no one role to free. A deregistration names no topic and does not come
+// here: the roles it releases are those its interest record and the role claim view name
+// together (releaseAllRoleClaims).
 //
 // It answers the lane topics it left standing: the ones whose claim still names sessionID and
 // which this release did not free. Those are the topics Registry.Remove keeps in the session's
@@ -90,8 +94,8 @@ func (a RoleReleaseAuthority) frees(claim RoleClaim, sessionID string) bool {
 //
 // A release that is its caller's hand-back (RoleReleaseAuthority.handsBack) marks a claim it may
 // not free rather than leaving it as it stands (releaseReadRoleClaim). Nothing here infers that:
-// whether a list of topics is the caller's own hand-back or the expansion of a record a
-// deregistration read is something only Registry.Remove knows, and only it may say so.
+// whether a list of topics is the caller's own hand-back is something only Registry.Remove knows,
+// and only it may say so.
 func (r *Registry) releaseRoleClaims(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
 	var kept []string
 	for _, topic := range topics {
@@ -381,45 +385,65 @@ func (r *Registry) releaseReadExpiredRoleClaim(ctx context.Context, role string,
 	}
 }
 
-// releaseAllRoleClaims releases every claim the role claim view names sessionID the holder of
-// that release authorises freeing (RoleReleaseAuthority.frees), in the order RolesHeldBy sorts
-// them, and leaves a claim the release does not authorise exactly as it stands: a release that
-// authorises none still reads the session's roles and frees none of them. The view is where the
-// roles come from because it answers from the watcher's copy and makes no bucket call
-// (RolesHeldBy), so a deregistration costs the roles its session holds rather than the bucket's
-// size: reading them from a list of every key of the bucket instead is one scan of the whole
-// bucket per deregistration, which is what answered the route 503. A role the session holds
-// whose topic its own interest record has lost is released here all the same, because the view
-// names the holder of a role rather than the topics the record kept. It marks no claim handed
-// back: a deregistration names no role's lane topic and so hands no one role back, it is the
-// whole of the session's interests, and a session that goes on running after it holds its
-// unfreed claims exactly as it did before.
+// releaseAllRoleClaims is a deregistration's release of sessionID's role claims: it releases
+// every claim that release authorises freeing (RoleReleaseAuthority.frees) among the roles the
+// deregistration weighs, and leaves a claim the release does not authorise exactly as it stands,
+// so a release that authorises none still reads each of those claims and frees none of them. The
+// roles weighed are the role topics of topics (rolesOfTopics), which are the topics of the
+// session's interest record as Registry.Remove read it from the bucket for this deregistration,
+// together with the roles the role claim view names sessionID the holder of (RolesHeldBy). They
+// are sorted and without repeats, so each claim is read once and released once
+// (releaseRoleClaim), on what its own claim record says.
 //
-// It is the second of the two sources a deregistration releases from. Remove runs the first, the
-// pass over the role topics of the session's own interest record (releaseRoleClaims), before it,
-// and every release that pass makes leaves the view (forgetRoleHolder), so the sweep that follows
-// reads no claim twice. A claim in neither source - one another listener wrote that this
-// listener's watch has not delivered, or a copy up to the stale bound behind the bucket - is left
-// to the role claim reaper (ReapRoleClaims), which releases it once its holder is gone; a session
-// that deregisters and goes on heartbeating (an unsubscribe-all) never becomes a gone holder, so
-// a claim missed here stands for the rest of that session's life, where the scan of the whole
-// bucket this view replaced released it at the deregistration itself.
+// Neither source decides a release; each only names a claim to read. The record names a claim
+// the view has lost, because a grant writes the role's lane topic into its holder's record beside
+// the claim (SetRoleWithPrevious). The view names a claim whose lane topic the record does not
+// carry: a record this build could not decode, which a registration's write replaced with its
+// own topics, or one an earlier build stored without the lane topic. A role either source names
+// whose claim record gives it to another session, or to nobody, is left as the store holds it.
+// Neither source costs a scan: the record is one read, which the caller made, and the view
+// answers from the watcher's copy and makes no bucket call. A deregistration therefore costs one
+// claim read per role weighed and not the bucket's size; reading the roles from a list of every
+// key of the bucket instead is one scan of the whole bucket per deregistration, which is what
+// answered the route 503. It marks no claim handed back: a deregistration names no role's lane
+// topic and so hands no one role back, it is the whole of the session's interests, and a session
+// that goes on running after it holds its unfreed claims exactly as it did before.
+//
+// A claim in neither source - one whose lane topic the record does not carry, while the view has
+// not been delivered it or has lost it - is left to the role claim reaper (ReapRoleClaims), which
+// releases it once its holder is gone; a session that deregisters and goes on heartbeating (an
+// unsubscribe-all) never becomes a gone holder, so a claim missed here stands for the rest of
+// that session's life.
+//
+// A claim read that does not answer or fails ends the release there and fails it: the roles after
+// it are not released, since the caller's retry finds them again with the interest record this
+// failure leaves in place, and a release that cannot tell which record it met must not report the
+// claim freed. A key the bus refuses is no failure (releaseRoleClaim).
 //
 // A view that cannot be served (ErrRoleViewNotReady) names no roles at all, which is not the
-// answer that the session holds none, so a deregistration it refuses falls back to
-// releaseAllRoleClaimsByScan, the scan of the bucket itself, which releases each claim from the
-// record that scan delivered rather than reading it again, and says there what that costs.
-func (r *Registry) releaseAllRoleClaims(ctx context.Context, sessionID string, release RoleReleaseAuthority) error {
-	roles, err := r.RolesHeldBy(sessionID)
-	// RolesHeldBy refuses only with ErrRoleViewNotReady - RoleViewErr's error is the one error it
-	// has - and the scan is the answer to any refusal, so no refusal releases nothing silently.
-	if err != nil {
-		return r.releaseAllRoleClaimsByScan(ctx, sessionID, err, release)
+// answer that the session holds none. A deregistration it refuses releases the record's roles,
+// each read as every role weighed is, and then falls back to releaseAllRoleClaimsByScan, the scan
+// of the bucket itself, which finds the claims whose lane topic the record does not carry. That
+// scan releases each claim from the record it delivered rather than reading it again, and says
+// there what that costs.
+func (r *Registry) releaseAllRoleClaims(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) error {
+	roles := rolesOfTopics(topics)
+	held, viewErr := r.RolesHeldBy(sessionID)
+	if viewErr == nil {
+		roles = append(roles, held...)
+		slices.Sort(roles)
+		roles = slices.Compact(roles)
 	}
 	for _, role := range roles {
 		if _, err := r.releaseRoleClaim(ctx, sessionID, role, release); err != nil {
 			return err
 		}
+	}
+	// RolesHeldBy refuses only with ErrRoleViewNotReady - RoleViewErr's error is the one error it
+	// has - and the scan is the answer to any refusal, so no refusal leaves a claim the view would
+	// have named unreleased silently.
+	if viewErr != nil {
+		return r.releaseAllRoleClaimsByScan(ctx, sessionID, viewErr, release)
 	}
 	return nil
 }

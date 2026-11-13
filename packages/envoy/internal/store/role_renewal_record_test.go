@@ -492,7 +492,7 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 // Every act that turns on who holds a role reads that role's claim record, in both directions the
 // copy can be wrong in: a surplus copy names the session where the store names another session or
 // none, and a lost copy lacks a claim the store gives the session. Each act is required to do what
-// the store's claim says. The release and the controller lane add their cases beside the renewal's.
+// the store's claim says. The controller lane adds its case beside the renewal's and the release's.
 func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 	t.Run("renewal", func(t *testing.T) {
 		const (
@@ -565,11 +565,91 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 			}
 		})
 	})
+
+	t.Run("release", func(t *testing.T) {
+		const (
+			role   = "direction-release-role"
+			holder = "ses_direction_releaser"
+			other  = "ses_direction_release_other"
+		)
+		own := contracts.AgentTopicPrefix + holder
+		lane := contracts.RoleTopicPrefix + role
+
+		// The copy names the session for a role whose claim names another session, or which no
+		// claim record holds, and the session's record names no such role: the copy alone puts
+		// the role in the deregistration's set, its claim is read once, and the claim record
+		// leaves it as the store holds it.
+		t.Run("surplus", func(t *testing.T) {
+			for name, storeHolder := range map[string]string{"another session": other, "no claim": ""} {
+				t.Run(name, func(t *testing.T) {
+					rig := newRepairRig(t, nil)
+					revision := uint64(1)
+					if storeHolder != "" {
+						claimRoleAs(t, rig.reg, storeHolder, "m1", role, roleClaimInstance)
+					}
+					settle(rig)
+					claimed := storedRoleClaim(t, rig.reg, role)
+					if claimed.Revision > 0 {
+						revision = claimed.Revision + 1
+					}
+					rig.reg.applyRoleClaim(roleClaimEntry(role, holder, revision))
+					if got := heldRoles(t, rig.reg, holder); !slices.Equal(got, []string{role}) {
+						t.Fatalf("with the surplus claim in the copy, RolesHeldBy(%s) = %v, want [%s]", holder, got, role)
+					}
+					registered(t, rig.reg, holder, own)
+					claims := countRoleReads(rig.reg)
+
+					if _, err := rig.reg.Remove(context.Background(), holder, nil, releasedByItsProcess); err != nil {
+						t.Fatalf("deregister %s: %v", holder, err)
+					}
+					if reads := claims.reads(); reads != 1 {
+						t.Fatalf("the deregistration read %s's claim %d times, want once: the copy names it, and the claim record decides it", role, reads)
+					}
+					if stored := storedRoleClaim(t, rig.reg, role); stored != claimed {
+						t.Fatalf("the claim is now %+v, want it as the store held it, %+v: the store gives the role to %q", stored, claimed, storeHolder)
+					}
+					assertNoInterestRecord(t, rig, holder)
+				})
+			}
+		})
+
+		// The store gives the session the role and the copy lost it, and the record in the bucket
+		// names the role's lane: the claim is released. The interest cache is the second copy the
+		// deregistration does not read its record from, so the case runs again with that cache
+		// holding the session's row without the lane topic.
+		t.Run("lost", func(t *testing.T) {
+			for name, staleCache := range map[string]bool{"the role claim copy": false, "the role claim copy and the interest cache": true} {
+				t.Run(name, func(t *testing.T) {
+					rig := newRepairRig(t, nil)
+					claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
+					settle(rig)
+					loseRoleClaim(rig.reg, role)
+					if got := heldRoles(t, rig.reg, holder); len(got) != 0 {
+						t.Fatalf("with its claim taken out of the copy, RolesHeldBy(%s) = %v, want nothing", holder, got)
+					}
+					if staleCache {
+						stopInterestCache(rig.reg)
+						if cached := seedStaleInterest(t, rig, holder, lane); slices.Contains(cached.Topics, lane) {
+							t.Fatalf("the interest cache holds %s's row with %s, want it without", holder, lane)
+						}
+					}
+
+					if _, err := rig.reg.Remove(context.Background(), holder, nil, releasedByItsProcess); err != nil {
+						t.Fatalf("deregister %s: %v", holder, err)
+					}
+					if stored := storedRoleClaim(t, rig.reg, role); stored.Revision != 0 {
+						t.Fatalf("the claim is now %+v, want it released: the store gave the session the role", stored)
+					}
+					assertNoInterestRecord(t, rig, holder)
+				})
+			}
+		})
+	})
 }
 
 // An act whose claim read fails does not act as if the read had answered: it holds, says so, and
 // leaves the claim as the store holds it. The control of each is the same drive with the read
-// working, which acts. The release and the controller lane add their cases beside the renewal's.
+// working, which acts. The controller lane adds its case beside the renewal's and the release's.
 func TestTheActHoldsOnAFailedRead(t *testing.T) {
 	t.Run("renewal", func(t *testing.T) {
 		const (
@@ -604,6 +684,45 @@ func TestTheActHoldsOnAFailedRead(t *testing.T) {
 					t.Fatalf("the renewal whose claim read failed renewed %v and left the claim %+v, want nothing renewed and the claim %+v", renewal.Renewed, stored, claimed)
 				}
 				requireRenewalFailure(t, rig.reg, role, holder, at, errClaimReadFailed)
+			})
+		}
+	})
+
+	// A deregistration whose claim read fails frees nothing and fails, leaving the claim and the
+	// interest record for the caller's retry; with the read working it releases the claim and
+	// deletes the record.
+	t.Run("release", func(t *testing.T) {
+		const (
+			role   = "held-release-role"
+			holder = "ses_release_held_on_failed_read"
+		)
+		for name, fails := range map[string]bool{"failed read": true, "reads working": false} {
+			t.Run(name, func(t *testing.T) {
+				rig := newRepairRig(t, nil)
+				claimRoleAs(t, rig.reg, holder, "m1", role, roleClaimInstance)
+				claimed := storedRoleClaim(t, rig.reg, role)
+				claims := countRoleReads(rig.reg)
+				claims.failGets.Store(fails)
+
+				_, err := rig.reg.Remove(context.Background(), holder, nil, releasedByItsProcess)
+				claims.failGets.Store(false)
+				stored := storedRoleClaim(t, rig.reg, role)
+				if !fails {
+					if err != nil || stored.Revision != 0 {
+						t.Fatalf("with the claim read working the deregistration answered %v and left the claim %+v, want no error and the claim released", err, stored)
+					}
+					assertNoInterestRecord(t, rig, holder)
+					return
+				}
+				if !errors.Is(err, errClaimReadFailed) {
+					t.Fatalf("the deregistration whose claim read failed answered %v, want an error carrying %v", err, errClaimReadFailed)
+				}
+				if stored != claimed {
+					t.Fatalf("the deregistration whose claim read failed left the claim %+v, want it as the store held it, %+v", stored, claimed)
+				}
+				if _, err := rig.interests.Get(holder); err != nil {
+					t.Fatalf("read %s's interest record after the failed deregistration: %v, want the record left for the retry", holder, err)
+				}
 			})
 		}
 	})

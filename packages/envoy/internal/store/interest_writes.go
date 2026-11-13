@@ -462,7 +462,7 @@ func (r *Registry) controllerLaneRoles(sessionID string, topics ...[]string) ([]
 // (cmd/listener's sessionConsumerFilter), and a role message reaches its holder's agent subject
 // with the holder read off the claim (cmd/listener's resolveCoreRoleHolder) - but the record is
 // where a deregistration of this session finds the role claims it frees (the empty-topics
-// branch below, releaseRoleClaims), so a release from a process that does not hold the claim
+// branch below, releaseAllRoleClaims), so a release from a process that does not hold the claim
 // would otherwise take the lane topic out from under the process that does and leave the claim
 // standing with nothing in the record naming it. Every other topic the caller named is
 // removed exactly as before - one that is not a role lane's, a wildcard, a role no record
@@ -477,34 +477,37 @@ func (r *Registry) controllerLaneRoles(sessionID string, topics ...[]string) ([]
 // happen. A deregistration answers no list at all - it deletes the whole record, so there is no
 // list of named topics to report, and its route writes the empty list for it.
 //
-// An empty topics is the whole of the session's interests, so the claims a deregistration
-// releases come from two sources: the role topics of the session's own interest record
-// (releaseRoleClaims), which runs first, and then the roles the role claim view names it the
-// holder of (releaseAllRoleClaims). A role the session holds whose topic the record has lost is
-// therefore released too, by the same authority as the rest.
+// An empty topics is the whole of the session's interests, so a deregistration releases every
+// role either of two sources names, each once and each as its own claim record says
+// (releaseAllRoleClaims): the role topics of the session's interest record, and the roles the
+// role claim view names it the holder of. The record is read here from the bucket
+// (getWithRevision) and not from the interest cache Get answers from, which is a copy of the
+// bucket as well and may not yet hold the lane topic a grant on another listener wrote into the
+// record. A role the view has lost is therefore released from the record, and a role whose topic
+// the record has lost is released from the view, by the same authority as the rest; while the
+// view cannot be served, a scan of the role bucket stands in for it. A session the bucket holds
+// no record for, and a record this build cannot decode, name no roles, and the view's are
+// released alone. A read of the record that did not answer or failed fails the deregistration
+// before it releases anything.
 //
 // Whether this release may mark a claim it cannot free handed back (RoleClaim.HandedBack) is
 // decided here and nowhere else, and carried on the release itself
 // (RoleReleaseAuthority.handsBack, which no caller outside this package can set): a release
 // marks exactly when the caller named topics of its own, and stated no process, and did not
 // force. The named topics are what make the release a hand-back of those very roles - the
-// caller named that role's lane topic - while the empty-topics branch expands the stored
-// record's own topics and then sweeps the view, which is a deregistration of everything the
-// session has and a hand-back of no one role, so it marks nothing whatever those topics turn
-// out to be. A release that names a process frees the claims of that process and leaves
-// another process's alone, and the administrator's force frees them all; neither leaves a
-// mark, since a mark is for the hand-back that could free nothing.
+// caller named that role's lane topic - while the empty-topics branch weighs the stored record's
+// roles and the view's, which is a deregistration of everything the session has and a hand-back
+// of no one role, so it marks nothing whatever those topics turn out to be. A release that names
+// a process frees the claims of that process and leaves another process's alone, and the
+// administrator's force frees them all; neither leaves a mark, since a mark is for the hand-back
+// that could free nothing.
 func (r *Registry) Remove(ctx context.Context, sessionID string, topics []string, release RoleReleaseAuthority) ([]string, error) {
 	if len(topics) == 0 {
-		item, err := r.Get(ctx, sessionID)
-		if err == nil {
-			if _, err := r.releaseRoleClaims(ctx, sessionID, item.Topics, release); err != nil {
-				return nil, err
-			}
-		} else if !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
+		record, _, err := r.getWithRevision(ctx, sessionID, true)
+		if err != nil && !errors.Is(err, nats.ErrKeyNotFound) && !errors.Is(err, ErrMalformedInterest) {
 			return nil, err
 		}
-		if err := r.releaseAllRoleClaims(ctx, sessionID, release); err != nil {
+		if err := r.releaseAllRoleClaims(ctx, sessionID, record.Topics, release); err != nil {
 			return nil, err
 		}
 		return nil, r.removeInterestTopics(ctx, sessionID, topics)
