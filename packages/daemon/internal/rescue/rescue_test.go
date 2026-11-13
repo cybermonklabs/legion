@@ -642,14 +642,19 @@ func TestRescueNamesNoBookmarkTheRemoteHasThatCarriesNoWorkOfItsOwn(t *testing.T
 				d := rescuetest.New(t, issue)
 				remoteOnFailure(t, d)
 				work := ownWork(d)
+				// The remote's feature is work, which the clone holds. The push names origin, so it
+				// sets the clone's refs/remotes/origin/feature to work on every git; the case then
+				// sets that ref itself. A push to the remote's path cannot stand in for it: since
+				// git 2.56 such a push also updates the remote-tracking ref of the configured remote
+				// whose URL it matches.
+				d.Run(d.Clone, "git", "push", "--quiet", "origin", work+":refs/heads/feature")
 				tracking := "" // the clone's refs/remotes/origin/feature
 				if fetched {
-					// A push to origin by its name sets the clone's remote-tracking ref.
-					d.Run(d.Clone, "git", "push", "--quiet", "origin", d.Base+":refs/heads/feature")
 					tracking = d.Base
+					d.Run(d.Clone, "git", "update-ref", "refs/remotes/origin/feature", tracking)
+				} else {
+					d.Run(d.Clone, "git", "update-ref", "-d", "refs/remotes/origin/feature")
 				}
-				// A push to the remote's path sets no remote-tracking ref of the clone.
-				d.Run(d.Clone, "git", "push", "--quiet", d.Remote, work+":refs/heads/feature")
 				d.JJ("bookmark", "set", "feature", "-r", work)
 				// More work, so that the check has something to push.
 				d.Write(d.Workspace, "more.txt", "more of the issue's own work\n")
