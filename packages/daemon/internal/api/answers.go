@@ -38,7 +38,7 @@ const ServingFloor = 46
 // The last is the constant rather than its number, because this change's own entry is the last
 // one: a renumber of this change moves shapedAnswersContract and this list with it, and moving
 // one of the two alone would describe a shape at a contract no entry declares.
-var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, shapedAnswersContract}
+var SupportedContracts = []int{46, 48, 49, 51, 52, 53, 54, 55, 56, 57, 58, 59, 62, 64, 68, 73, 75, 85, 86, 87, 94, 98, 104, shapedAnswersContract}
 
 // AnswerID names one answer a plugin parses. It is stable: every write of this package goes
 // through `shapeAnswer(id, …)`, so the id outlives the route that happens to carry the answer

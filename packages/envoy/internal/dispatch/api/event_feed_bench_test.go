@@ -88,7 +88,7 @@ func benchmarkFeedRead(b *testing.B, handler http.Handler, target string, trees 
 func benchmarkFeedProject(b *testing.B, database *store.Store, key string) {
 	b.Helper()
 	if _, err := database.Pool.Exec(b.Context(),
-		`insert into projects (key, name) values ($1, $2)`, key, key+" project"); err != nil {
+		`insert into projects (key, name, default_assignee) values ($1, $2, 'alice')`, key, key+" project"); err != nil {
 		b.Fatalf("seed project %s: %v", key, err)
 	}
 }

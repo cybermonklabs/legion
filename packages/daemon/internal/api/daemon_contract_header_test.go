@@ -31,6 +31,7 @@ var registeredPatterns = []string{
 	"GET /legion/v1/state",
 	"GET /legion/v1/issues/{key}/record",
 	"GET /healthz",
+	"GET /readyz",
 	"POST /legion/v1/claims/register",
 	"POST /legion/v1/claims/ready",
 	"POST /legion/v1/claims/ready-for-update",

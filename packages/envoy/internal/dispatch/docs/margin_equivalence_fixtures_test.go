@@ -481,7 +481,7 @@ func newEquivalenceSide(t *testing.T, name string, margin bool, write marginWrit
 	t.Helper()
 	database := storetest.Open(t)
 	service, _ := newTestServiceInstance(t, database)
-	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name) values ('EQ', 'Equivalence')`); err != nil {
+	if _, err := database.Pool.Exec(context.Background(), `insert into projects (key, name, default_assignee) values ('EQ', 'Equivalence', 'alice')`); err != nil {
 		t.Fatalf("create the %s's project: %v", name, err)
 	}
 	return &equivalenceSide{name: name, margin: margin, write: write, database: database, service: service}

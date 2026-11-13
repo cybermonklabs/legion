@@ -13,6 +13,9 @@ body: |-
   on this daemon, and a plugin roll that replaces one pod at a time leaves `legion` working in
   every pod it has not replaced yet whose plugin speaks contract 46 or later. A caller below 46 is
   served the shape of 46.
+  A fresh session that stopped the claim and could not start it again answers a caller below
+  contract 104 as the daemon did before 104: the failure of the refused step, and no 200 with
+  `phaseNotRestarted`. A plugin below 104 reads that 200 as a claim that runs again.
   `GET /legion/v1/issues/{key}/record` answers one issue on its own, and `GET /healthz` answers
   the project the daemon serves beside its status.
 time: 2026-11-12T21:55:42.614806298Z

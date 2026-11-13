@@ -175,23 +175,30 @@ func sentenceNaming(t *testing.T, refusal, needle string) string {
 // one runs — three states for the fresh session, which suspends a registered agent too, and
 // the machine's own two for the compaction, which has no session to ask until the agent is
 // ready (agentRunning, supervise.TakesCompaction). stopped is the claim it starts where no
-// process runs, which only the fresh session reaches (startsAgain).
+// process runs, which only the fresh session reaches (startsAgain). overADeadProcess is the
+// state a door reaches by reading the claim's process at the request rather than from the
+// record alone: a claim stored working that no process stands behind, which the fresh session
+// suspends where the request arrives and starts again, and which the compaction refuses, since
+// it has no agent to ask for a compaction at all.
 type reachDoor struct {
-	op      controllerOp
-	live    func(supervise.ClaimState) bool
-	stopped func(supervise.ClaimState) bool
+	op               controllerOp
+	live             func(supervise.ClaimState) bool
+	stopped          func(supervise.ClaimState) bool
+	overADeadProcess func(supervise.ClaimState) bool
 }
 
 func reachDoors() []reachDoor {
 	return []reachDoor{
-		{op: freshSessionOp, live: agentRunning, stopped: startsAgain},
+		{op: freshSessionOp, live: agentRunning, stopped: startsAgain, overADeadProcess: storedWorking},
 		{op: compactOp, live: supervise.TakesCompaction},
 	}
 }
 
-// reaches is every state a door reaches, live or stopped.
+// reaches is every state a door reaches: an agent that runs, a stopped claim it starts, and one
+// stored working whose process it reads and finds gone.
 func (d reachDoor) reaches(state supervise.ClaimState) bool {
-	return d.live(state) || (d.stopped != nil && d.stopped(state))
+	return d.live(state) || (d.stopped != nil && d.stopped(state)) ||
+		(d.overADeadProcess != nil && d.overADeadProcess(state))
 }
 
 // Each door's words for the states it reaches are the states its own predicates admit, over

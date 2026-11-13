@@ -695,6 +695,15 @@ const phaseEntriesContract = 94
 // It changed no request a plugin sends.
 const heldContract = 98
 
+// processReadContract is the daemon contract at which the two claim recoveries read the claim's
+// process (version.go's 104). It moved no key path of any answer. It changed what one answer
+// means: a fresh session that stopped the claim and could not start it again answers 200 with
+// the refusal in `phaseNotRestarted`, where contract 103 answered the failure of the refused
+// step. A caller below it gets that failure (readsTheStopAsAFailure), because its `legion` tool
+// description reads a 200 as a claim that runs again. The refusal codes that moved at this
+// contract are values of the refusal body's `code`, which no reader enumerates.
+const processReadContract = 104
+
 // shapedAnswersContract is the daemon contract this change lands under (version.go's 105), and
 // the contract that added five keys of its own: `lowestPluginContract` on the state, the
 // lowest contract any claim of the project records, and each claim view's `updateState`,
@@ -1243,10 +1252,11 @@ func stripTurnRecord(view ClaimView) ClaimView {
 	return view
 }
 
-// answerUnparsed names a body no plugin parses: the operator's own answers and the controller's
-// secret and credential, which `legion` the command and the daemon's own controller read. It is
-// no row of Answers, which is the plugin's table alone, and it shapes to nothing, since no
-// contract describes a shape for a body no plugin reads (writeUnparsedAnswer).
+// answerUnparsed names a body no plugin parses: the operator's own answers, the controller's
+// secret and credential, which `legion` the command and the daemon's own controller read, and
+// the readiness probe's answer, which the kubelet reads (readyz). It is no row of Answers, which
+// is the plugin's table alone, and it shapes to nothing, since no contract describes a shape for
+// a body no plugin reads (writeUnparsedAnswer).
 const answerUnparsed AnswerID = "unparsed"
 
 // answerWritten is told the pattern of the route and the id of the answer of every body this
@@ -1293,11 +1303,12 @@ func (s *server) writeAnswerFrom(w http.ResponseWriter, r *http.Request, id Answ
 	writeJSON(w, status, shaped)
 }
 
-// writeUnparsedAnswer writes a success body no plugin parses: the operator's claim answers and
-// the controller's secret and credential (answerUnparsed). It is written through the one writer
-// like every other body, so a route cannot reach writeJSON around the shaping; what it says is
-// that there is no contract to shape this body to. A refusal on those same routes is a refusal
-// like any other, and is written as AnswerRefusal.
+// writeUnparsedAnswer writes a body no plugin parses: the operator's claim answers, the
+// controller's secret and credential, and the readiness probe's 200 and 503 (answerUnparsed). It
+// is written through the one writer like every other body, so a route cannot reach writeJSON
+// around the shaping; what it says is that there is no contract to shape this body to. A refusal
+// on the operator's and the controller's routes is a refusal like any other, and is written as
+// AnswerRefusal.
 func (s *server) writeUnparsedAnswer(w http.ResponseWriter, r *http.Request, status int, body any) {
 	s.writeAnswer(w, r, answerUnparsed, status, body)
 }

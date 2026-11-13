@@ -30,7 +30,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -72,7 +71,7 @@ const (
 type adoptionRig struct {
 	t         *testing.T
 	ctx       context.Context
-	pool      *pgxpool.Pool
+	pool      *store.Pool
 	records   record.Store
 	st        *store.Store
 	engine    *workflow.Engine
