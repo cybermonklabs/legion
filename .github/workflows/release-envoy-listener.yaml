@@ -261,7 +261,7 @@ jobs:
     # this job carried, plus its slowest retried step alone — `Check this job holds no
     # credential (tripwire)`, which runs .github/scripts/release-push.sh and so holds that
     # script's leak-guard fetch at every one of its call sites, 6 call sites of one 450 s
-    # fetch = 2700 s, as this file's own docker-build job words it, above setup-bun's two
+    # fetch = 2700 s, as the `build` job of this file words it, above setup-bun's two
     # `ci_tools_fetch` calls at 2562 s and above the Go module download and the workspace
     # install at 5 x 180 + 150 = 1050 s each. 4800 + 2700 = 7500 s -> 126 min.
     # THE REVIEWER'S EIGHT DID NOT HOLD THIS ONE: rule 8's job-derivation clause found it,

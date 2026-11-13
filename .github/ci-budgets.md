@@ -206,58 +206,6 @@ What a run that does exhaust those ladders ends on is that step's own budget, an
 the ladder's per-attempt bound is the row's `max_time`, a variable it cannot read, so its DECLARED_LOOPS entry for .github/scripts/ci-tools.sh `curl` writes what one call of that helper costs, 1281 s, and the passes of a loop it cannot count are not multiplied into it.
 The step below carries the next whole minute above that figure, and the nine requests a row really makes are why this job's ceiling is not raised to meet them.
 
-## The tool-fallback job
-
-The live proof of the second source every tool install of this repository now has:
-it faults the host the first source is on, installs all eight tools through the source .github/ci-tools.yaml names for each, and then serves sixteen corrupted payloads and reads the refusal of every one of them.
-It is permanent rather than a scaffold.
-A second source nothing exercises rots — a copy nothing fills, a seam a refactor dropped, a digest nobody reads
-— and the hour of 504s this work answers is the hour nobody wants to learn that in (dispatch://INFRA-1873).
-This repository's own principle is that testing means booting and running it, so what says the fallback works on the day the assets are down is a job that takes them down and installs anyway.
-
-Once the fault is up, no step of this job needs a GitHub release host to answer.
-Every install that must succeed reads a source the fault does not hold
-— the ghcr copy, npm, PyPI or get.pulumi.com
-— or, for the Pulumi CLI, whose primary is get.pulumi.com and whose second source is the release asset, the origin serving that release's own staged bytes;
-the bytes the corrupted cases serve were staged before the fault;
-and the one case about a binary a third party installed seeds mise's install directory from that staged payload rather than downloading one inside the fault.
-That is what keeps ci-ok green during the very outage this job proves survivable:
-this job is in ci-ok's `needs:`, and its filter selects ci.yaml, .bun-version, the worker image's Dockerfile, the manifest and the helper beside it, and the eight actions, so a step of it that waited on a release host would turn every pull request touching one of those files red on exactly the day the fallback is doing its work. .github/scripts/ci-tools-proof.sh is the rig, and this job and tool-fallback-arm are its only callers.
-It needs ci-images, which fills the copy this proof reads; the comment on the ci_images filter says why that filter is a superset of this job's.
-
-WHAT THIS JOB DRIVES, AND WHAT IT ONLY REASONS ABOUT.
-Everything a case is read on is driven here:
-the fault, the origin that stands in for all four sources, the corrupted payloads, and the removals each case makes before it.
-One thing is not.
-oven-sh/setup-bun, which .github/actions/setup-bun's setup-bun step pins, restores a cached Bun into ~/.bun/bin/bun inside a step of its own, and the Actions cache it restores from is on hosts this job's fault does not hold. .bun-version holds an exact version, so that action builds its key and its URL without asking any host which version to take, and nothing the fault refuses stands in its way.
-Taking a bun away before that step is therefore no answer to the cache, since the step would put a restored one back.
-What keeps every case here a reading of an install is the wrapper's own `no-cache`, true for every job whose id starts with `tool-fallback` — `github.job` in a composite action is the id of the job that called it
-— so no call of that action in this job can be served by the Actions cache, on any event and any ref.
-That is read from the wrapper's expression rather than from a run of this job:
-a run that told the action not to read the cache cannot measure what the cache would have served.
-The removals the cases do make are about this job's own state:
-a case that must read the second source takes ~/.bun/bin/bun and the bunx beside it away before its install, so what it reads is not the bun an earlier case left.
-
-## The negative control's dead ports
-
-The merge base's seven fail for two reasons, and which one is each install's depends on whether that install already read the helper there.
-Its crane, changie, jj and Bun do, so their primary meets the fault and the ghcr and npm seams send them to a dead port.
-Its elan, uv and Pulumi CLI read no seam at all, each being a `curl` of its own:
-elan's and uv's one source is the release asset this fault holds, and the CLI's is get.pulumi.com, which this fault does not hold, so that step carries a dead proxy of its own instead.
-Once this change is on main the base is this tree, and every one of the eight fails for the dead ports alone, which leave its second source nothing to reach.
-A control that leaned on the merge base having one source each would expire the day this change lands on main:
-the base would then be this tree, each primary would meet the fault, each second source would reach the real ghcr
-— whose blobs redirect to pkg-containers.githubusercontent.com, which this fault leaves alone on purpose
-— or the real npm, PyPI or get.pulumi.com, every one of them would succeed, and this step would fail every pull request and merge group that selects this job.
-On a workflow_dispatch the ref below falls through to github.sha, the head itself, so that control is wrong already.
-A dead port rather than a manifest with its `second_source` rows deleted:
-a row with no second source makes ci_tools__second_source refuse the empty field, so the install would fail for the wrong reason
-— it would prove the helper rejects an empty field, not that the install had nowhere to go, and a negative control must fail for the reason the check names.
-A base that does not have the helper ignores both variables and fails as it always did.
-The merge-base checkout stays.
-It is this repository's only caller of the rule .github/scripts/check-image-trigger-paths.sh keeps about a local `uses:` under a second checkout of this same repository, and that check's own comment names this job for it.
-After this change is on main the checkout is redundant to the dead ports below, which drive the control by themselves, so a later reader who deletes the merge base's seven steps is deleting that caller too and should move the rule's exercise rather than lose it.
-
 ## The tool-fallback-arm job
 
 The same two halves of the Bun install, proved again on an arm64 runner. .github/actions/setup-bun's bun-second-source step selects a row from `uname -m` — `bun-linux-aarch64` here
@@ -597,7 +545,7 @@ job 129874475871 made 65 fetches through the stand-in, and 29 of them were short
 — 19 of github.com, 9 of the dead address and 1 of get.pulumi.com behind the base-pulumi control's dead proxy.
 The other 36 kept the pinned ladder: the kept case's own fetch at 63 s, which is that job's reading at the 60 s bound and reads 127 s at a bound above it, measured at the 120 s one (job 130417801504) and unchanged at 300 s, since a host that refuses at once makes its eight attempts either way, the probe's reserved control name, and the honest fetches of the package, npm, PyPI, get.pulumi.com and the local origin, none of which took more than a second (1), the bytes the installs and the sixteen cases move, over npm, PyPI, get.pulumi.com and loopback, the two 107 MB Bun tarballs among them (3), and the readings, the `ladder-report` step, the stop-fault step and the report (1).
 That is 18, three more than the 15 this list came to at the 120 s bound, because the kept case's own ladder moved from (5) to (8), and a job its own limit cuts off reports `cancelled`, which ci-ok fails, so the limit must stand above the sum rather than at it.
-IT IS NOT DERIVED FROM THAT SUM: 114 is the 104 this construction gives with ten minutes added, the same ten the 75 before it carried over 65, and what has to fit inside it is the rule below - the staging step's own 5124 s, 86 minutes - which is far above these 18 minutes of steps.
+IT IS NOT DERIVED FROM THAT SUM: 114 is the 104 this construction gives with ten minutes added, the same ten the 75 before it carried over 65, and what has to fit inside it is the staging step's own 5124 s, 86 minutes, whose derivation is beside that step in `.github/workflows/ci.yaml` - far above these 18 minutes of steps.
 The sum is what runs beside that step, not the thing the limit is built from.
 This budget replaced 65 minutes with a limit of 75 and now carries 114, and 45 of those original 65 were the twenty-one steps whose primary the fault holds, allowed at 126 s each.
 That 126 s is what a negative control costs, because it drives two ladders;
@@ -611,7 +559,7 @@ So the durations above stand and the limit does not (dispatch://INFRA-1545).
 
 THIS CHANGE ADDS TEN STEPS TO THAT SUM AND NINE COST NOTHING A READER WOULD NOTICE:
 eight marks, one `echo` each before an install with nowhere to go, and the watch's report, all 0 s in jobs 130015112773, 129940828354 and 129966328215 and at most 1 s in job 130289341628.
-The tenth is the watch's start, 3 s, 5 s, 4 s and 9 s in those jobs, which the item above allows for;
+The tenth is the watch's start, 3 s, 5 s and 4 s in those three jobs and 9 s in job 130306447638, which the step list in "The tool-fallback job's budget, part by part" allows for;
 the watch itself is a sampler beside the job (dispatch://INFRA-2605).
 
 SEVEN OF THE EIGHT INSTALLS WITH NOWHERE TO GO DECLARE `timeout-minutes: 11`, the eighth, the docker provider plugin's, 13.

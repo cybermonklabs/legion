@@ -378,6 +378,7 @@ jobs:
               # its own tests replay.
               - 'packages/envoy/internal/brokerclient/**'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/contracts/*'
               # pmdoc reads a stored text's display tree through this cache (pmdoc/display_json.go),
               # so every build of the parser compiles it.
@@ -430,6 +431,7 @@ jobs:
               - 'packages/envoy/internal/broker/wire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/contracts/*'
               - 'packages/envoy/internal/dispatch/accesslog/*'
@@ -594,6 +596,7 @@ jobs:
               - 'packages/envoy/internal/broker/oauthwire/*'
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/config/*'
               - 'packages/envoy/internal/contracts/*'
@@ -635,6 +638,7 @@ jobs:
               - 'packages/envoy/internal/brokertoken/*'
               - 'packages/envoy/internal/dispatch/**'
               - 'packages/envoy/internal/bus/*'
+              - 'packages/envoy/internal/bus/testdata/*'
               - 'packages/envoy/internal/bus/bustest/*'
               - 'packages/envoy/internal/cistore/*'
               - 'packages/envoy/internal/cmdtest/*'
@@ -816,6 +820,8 @@ jobs:
               - 'scripts/dispatch/**'
               - 'scripts/github-apps/**'
               - 'scripts/sessions/**'
+              # The approval-eval statistics: its lint, typecheck and test steps read it.
+              - 'scripts/approval-eval/**'
               # The tools the job installs: jj, mise and Oh My Pi, uv, changie, and the NATS images.
               - *omp_install
               - '.github/actions/install-uv/**'
@@ -993,6 +999,11 @@ jobs:
               # src/__tests__/delivery.test.ts:16-17 and dispatch-config.test.ts:5.
               - 'packages/contracts/fixtures/dispatch-targeted-delivery.json'
               - 'packages/contracts/fixtures/dispatch-public-url.json'
+              # src/__tests__/dispatch-execute.test.ts holds goBlankPattern to this list, which
+              # the Go test of packages/envoy/internal/dispatch/text holds unicode.IsSpace to:
+              # an edit of the list alone must start both jobs, or the side it disagrees with
+              # stays green.
+              - 'packages/contracts/fixtures/go-unicode-isspace.json'
               # The Go copy its test holds the TypeScript to: src/__tests__/askgate-new-asks.test.ts
               # reads the Dispatch server's decision-block table, which the Go API test reads too.
               - 'packages/envoy/internal/dispatch/api/testdata/**'
@@ -1092,6 +1103,10 @@ jobs:
               - 'packages/pi-shared/src/**'
               - 'packages/pi-shared/test/**'
               - 'packages/envoy-client/src/**'
+              # extensions/legion.test.ts reaches the Envoy plugin's own test helper for a
+              # registration answer (packages/envoy-client/test/subscribe-answer.ts), so the tsc
+              # program of this package compiles that file too.
+              - 'packages/envoy-client/test/subscribe-answer.ts'
               # And @legion/broker-client with it (ci_job_reads.py's envoy_client_dep).
               - 'packages/broker-client/**'
               - 'packages/contracts/src/**'
@@ -1364,6 +1379,10 @@ jobs:
               - 'packages/contracts/fixtures/live/**'
               - 'packages/contracts/fixtures/decision-blocks/**'
               - 'packages/contracts/fixtures/checks-settlement/**'
+              # internal/dispatch/text/whitespace_fixture_test.go holds unicode.IsSpace to this
+              # list, which packages/envoy-client holds goBlankPattern to: an edit of the list
+              # alone must start both jobs, or the side it disagrees with stays green.
+              - 'packages/contracts/fixtures/go-unicode-isspace.json'
               # The claim list its fence reads: internal/broker/oauth/claims_doc_test.go:161.
               - 'docs/kubernetes.md'
               - '.github/actions/pull-test-images/**'
@@ -2138,8 +2157,7 @@ jobs:
     # 1050 s measured maximum, plus its slowest retried step alone — the Go module download,
     # whose three calls are 3 x (5 x 180 + 150) = 3150 s, above setup-bun's two
     # `ci_tools_fetch` calls at 2562 s, the workspace install's and the lockfile install's
-    # 1050 s each and the ci-ok report's 600 s. 1800 + 3150 = 4950 s ->
-    # 83 min. The pull request's text is checked in the `pr-title` job now, so that job carries
+    # 1050 s each and the ci-ok report's 600 s. 1800 + 3150 = 4950 s -> 83 min. The pull request's text is checked in the `pr-title` job now, so that job carries
     # check-pr-text.sh's and post-check-run.sh's arithmetic.
     timeout-minutes: 83
     # The ci-ok-report step is the whole of this job's GitHub writing: it posts a failing ci-ok
@@ -2482,11 +2500,13 @@ jobs:
 
     # The rule every other budget of this file is written to (ci-budgets.md's Budgets note) — a
     # job carries its measured duration plus the arithmetic of its single slowest retried step
-    # — sits inside that 114 rather than being added to it. The slowest retried step here is
+    # — sits inside this job's own 114 rather than being added to it. The slowest retried step
+    # here is
     # the staging step, whose twelve `ci_tools_curl` ladders its own comment derives as 5124 s
     # under the 86 minutes that step carries, above install-jj's 2562 + 450 = 3012 s, either
     # setup-bun step's 2562 s, the blob read's 2015 s and the ci-ok report's 600 s. The three
-    # minutes of steps counted above are all that runs before it - measured at 0.3 minutes in
+    # minutes of steps that .github/ci-budgets.md counts for this job, in "The tool-fallback
+    # job's budget, part by part", are all that runs before it - measured at 0.3 minutes in
     # job 129478173535, a 28.7-minute run of this job - so a staging step that spends its whole
     # ladder ends on its own budget at about 86 minutes with this job's limit unspent, and that
     # step names the fetch that failed rather than the job reporting GitHub's bare timeout line.
@@ -2501,6 +2521,9 @@ jobs:
     # step first, and no retried step of job 129478173535 reached past 41.6 minutes. A step
     # added late with a ladder of its own has to be read against this limit rather than assumed
     # safe by it.
+    # The construction .github/ci-budgets.md derives in "The tool-fallback job's budget, part by
+    # part" gives 86 + 18 = 104, and this key is that with the ten minutes it has always
+    # carried -> 114 min.
     timeout-minutes: 114
     # What the eleven minutes those installs carry is derived from, and why a bound would have
     # changed nothing in the incident that asked for it: .github/ci-budgets.md, "What the
@@ -4098,6 +4121,16 @@ jobs:
       - name: Test the session message-wait script
         run: bun test scripts/sessions
 
+      - name: Lint the approval-eval statistics
+        run: bunx biome check --error-on-warnings scripts/approval-eval
+
+      # scripts/approval-eval is no workspace either; the root package pins its TypeScript and Bun types.
+      - name: Typecheck the approval-eval statistics
+        run: bunx tsc --noEmit -p scripts/approval-eval
+
+      - name: Test the approval-eval statistics
+        run: bun test scripts/approval-eval
+
       - id: setup-go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -4689,7 +4722,7 @@ jobs:
       # The release's pack (release.yaml's pi_envoy_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose
-      # license cannot be determined) and stages this plugin's eight skills. The listing shows the
+      # license cannot be determined) and stages this plugin's eleven skills. The listing shows the
       # tarball ships those and nothing of the Legion plugin's: no legion.js, no agents/, none of
       # its skills.
       - name: Pack pi-envoy
@@ -5418,7 +5451,7 @@ jobs:
     # the live tests' tools, each 5 x 180 + 150 = 1050 s, so 4200 s, above both
     # packages/envoy/infra's own `go mod download` at 1050 s and the ci-ok report's 600 s.
     # 900 + 4200 = 5100 s, and that step's own arithmetic is a whole number of minutes, so it
-    # takes one more (71) and this job takes it with it: 900 + 4260 = 5160 s, a whole number of minutes, so the key takes the one above it -> 87 min. That is
+    # takes one more (71) and this job takes it with it: 900 + 4260 = 5160 s -> 87 min, the whole minute above a sum that is itself a whole number of minutes. That is
     # the rule the Budgets note states and the twelve ceilings of this change apply; this one
     # had it on the step alone.
     timeout-minutes: 87
@@ -6222,7 +6255,7 @@ jobs:
     # whose two calls for packages/envoy and packages/envoy/infra are 2 x (5 x 180 + 150) =
     # 2100 s, above install-pulumi's 1281 s, the docker provider plugin's 1281 s and the ci-ok
     # report's 600 s. That arithmetic is a whole number of minutes, so the step's own budget
-    # takes one more and this job takes it too: 1200 + 2160 = 3360 s, a whole number of minutes, so the key takes the one above it -> 57 min.
+    # takes one more and this job takes it too: 1200 + 2160 = 3360 s -> 57 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 57
     env:
       # The runner VM is discarded after the job, so testcontainers' Ryuk reaper has nothing to
@@ -6638,7 +6671,7 @@ jobs:
     # measured maximum, plus its slowest retried step alone — the ci-ok report, which is this
     # job's only download: its `gh api` read and the POST of the check run, 2 x (5 x 30 + 150) =
     # 600 s, carried at the 720 s budget that step's own comment derives.
-    # 600 + 720 = 1320 s, a whole number of minutes, so the key takes the one above it -> 23 min.
+    # 600 + 720 = 1320 s -> 23 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 23
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -6674,13 +6707,14 @@ jobs:
   # faulted site: install-jj, whose two `ci_tools_fetch` calls are 2562 s and whose
   # `mise install` of the jj release is 5 x 60 + 150 = 450 s, 3012 s together (ci-budgets.md's
   # Budgets note) — above setup-bun's 2562 s, the unfaulted workspace install's 1050 s and the
-  # ci-ok report's 600 s. So 11330 + 3012 = 14342 s, which is 239.03 minutes and takes the whole
-  # minute above it: 240. THIS KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that
+  # ci-ok report's 600 s. So 11330 + 3012 = 14342 s -> 240 min, the whole minute above the
+  # 239.03 that sum gives. THIS KEY READ 221 UNTIL ROUND 28 OF dispatch://INFRA-1545, where that
   # 221 came from 11310 + 1932 = 13242 s - the measured term before the stall arm's budget grew
   # by 20 s, and install-jj's two ladders before each `ci_tools_fetch` went from 741 s to
   # 1281 s. The lane is the one job whose cancellation this whole issue exists to prevent, and
-  # it is the one job of this repository whose key the rule-8 job clause cannot read, because
-  # its derivation is written above the job's id rather than above its key.
+  # its derivation is written above this job's id rather than above its key, which is one of
+  # the shapes rule 8's job clause passes over; the `-> 240 min` above is what its pricing rule
+  # reads, and that rule refuses any job holding a retried step whose comments price none.
   #
   # Each site's budget above carries 20 s more than it did before the probe: `report` measures a
   # site from the moment its proxy started, and the probe's two requests are made between the
@@ -7191,7 +7225,7 @@ jobs:
   # steps, which is 5540 s — and the rule adds its single slowest retried step. That step is the
   # ci-ok report, the one download of this job that is not a faulted build: its `gh api` read
   # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, carried at the 720 s budget that
-  # step's own comment derives. So 5540 + 720 = 6260 s, or 105 minutes. Each build's budget
+  # step's own comment derives. So 5540 + 720 = 6260 s -> 105 min. Each build's budget
   # carries 20 s more than it did before the probe, for the two 10 s bounded requests the probe
   # makes between the proxy's start and the build, which `report` measures from the former.
   download-retry-images:
@@ -7615,7 +7649,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, plus its
     # slowest retried step alone — the text check's six `gh api` ladders, 6 x (5 x 30 + 150) =
     # 1800 s, a whole number of minutes, so that step's own budget takes one more and this job
-    # takes it too. 600 + 1860 = 2460 s, a whole number of minutes, so the key takes the one above it -> 42 min.
+    # takes it too. 600 + 1860 = 2460 s -> 42 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 42
     # What the two scripts below read through gh, and nothing else: the pull request's commits
     # from the compare route (`contents: read`), the pull request itself, its reviews and its
@@ -7675,7 +7709,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job was written with, plus
     # its slowest retried step alone — the one `run:` step below, whose run list and force-cancel
     # are 5 x 30 + 150 = 300 s each, 600 s together, and whose own budget is 720 s for the
-    # reason written beside it. 600 + 720 = 1320 s, a whole number of minutes, so the key takes the one above it -> 23 min.
+    # reason written beside it. 600 + 720 = 1320 s -> 23 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 23
     permissions:
       actions: write
@@ -7775,7 +7809,7 @@ jobs:
     # Budget (ci-budgets.md's Budgets note): 600 s, the 10 minutes this job carried, plus its
     # slowest retried step alone — the reconcile's check-run read and the three PATCHes its
     # budget is written for, 300 + 3 x 300 = 1200 s, a whole number of minutes, so that step's
-    # own budget takes one more and this job takes it too. 600 + 1260 = 1860 s, a whole number of minutes, so the key takes the one above it -> 32 min.
+    # own budget takes one more and this job takes it too. 600 + 1260 = 1860 s -> 32 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 32
     permissions:
       checks: write

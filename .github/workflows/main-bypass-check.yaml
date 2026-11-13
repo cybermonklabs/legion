@@ -52,7 +52,7 @@ jobs:
     # 10 minutes that gives, plus this job's slowest retried step alone, as ci-budgets.md's Budgets
     # note derives one — the one `run:` step below, whose three retried calls are
     # 3 x (5 x 30 + 150) = 900 s, a whole number of minutes, so that step's own budget takes one
-    # more and this job takes it too. 600 + 960 = 1560 s, a whole number of minutes, so the key takes the one above it -> 27 min.
+    # more and this job takes it too. 600 + 960 = 1560 s -> 27 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 27
     # The dispatch of ci.yaml needs `actions: write`, and `gh run list` needs no more than that;
     # nothing here needs another scope. The checkout needs no `contents: read`, because this

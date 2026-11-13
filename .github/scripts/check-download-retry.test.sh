@@ -1921,6 +1921,8 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # Budget: 0 s measured, plus its slowest retried step alone, the changie tarball's
+    # 5 x 60 + 150 = 450 s -> 9 min.
     timeout-minutes: 9
     steps:
       - name: Install changie
@@ -2092,6 +2094,7 @@ cat > "$root/.github/workflows/case.yaml" <<'YAML'
 name: Case
 on: [push]
 jobs:
+  # Budget: 1350 s measured, plus the large fetch's 5 x 180 + 150 = 1050 s -> 40 min.
   build:
     runs-on: ubuntu-24.04
     timeout-minutes: 40
@@ -2112,6 +2115,90 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 
+# EVERY CLAIM THIS RULE'S HEADER MAKES ABOUT WHAT IT REFUSES HAS A CASE HERE THAT FAILS WHEN
+# THAT BEHAVIOUR IS REMOVED. The claims were written from memory of the change three rounds
+# running and were wrong each time: a reviewer turned `<=` back into `<` and the gate and all
+# 299 cases stayed green, so the eleven keys that operator raised were guarded by nothing
+# (dispatch://INFRA-1545, review round 26). A claim with no case behind it is a sentence.
+echo "case: a job key equal to the sum its own comment states is refused"
+root=$(fixture job-key-equals-sum)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 37 min.
+    timeout-minutes: 37
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says the sum is above the key, not under it" \
+  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which is above it")"
+# 37 minutes is 2220 s, under the sum; 38 is 2280 s, above it. The case above and the case
+# below therefore fail together when `allowed <= total` becomes `allowed < total`, which is the
+# mutation that exposed this gap.
+echo "case: one minute above that sum passes"
+root=$(fixture job-key-above-sum)
+sed 's/-> 37 min/-> 38 min/; s/^    timeout-minutes: 37$/    timeout-minutes: 38/' \
+  "$work/job-key-equals-sum/.github/workflows/case.yaml" > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job holding a retried step whose comments price nothing is refused"
+root=$(fixture job-prices-nothing)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s, which comes to 2250 s and takes
+    # the whole minute above it: 38.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the retried step it holds" "$(contains "$out" "holds a retried step")"
+check "says no comment above the key prices it" \
+  "$(contains "$out" "no comment above that key prices it")"
+check "says what to write" "$(contains "$out" 'as .-> N min. in the block that derives it')"
+
+echo "case: the same job priced as -> N min passes, wherever the block sits"
+root=$(fixture job-priced-above-its-id)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  # Budget: 1200 s measured, plus the large fetch's 1050 s: 1200 + 1050 = 2250 s -> 38 min.
+  # This block sits above the job's id rather than above its key, which is where two jobs of
+  # this repository state their sums.
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
 echo "case: a job whose comment derives its key another way is passed over"
 root=$(fixture job-derivation-construction)
 cat > "$root/.github/workflows/case.yaml" <<'YAML'
@@ -2122,7 +2209,8 @@ jobs:
     runs-on: ubuntu-24.04
     # Budget: NOT first-plus-slowest. The large fetch's own 18 minutes have to finish before
     # this ceiling, and the steps beside it measure 2 minutes, so the limit is those two with
-    # room on top: 18 + 2 = 20, written as 30 for the ten minutes this job has always carried.
+    # room on top: 18 + 2 = 20, written as 30 for the ten minutes this job has always carried
+    # -> 30 min.
     timeout-minutes: 30
     steps:
       - name: The large fetch
@@ -2142,6 +2230,7 @@ on: [push]
 jobs:
   build:
     runs-on: ubuntu-24.04
+    # Budget: 0 s measured, plus the changie tarball's 5 x 60 + 150 = 450 s -> 9 min.
     timeout-minutes: 9
     steps:
       - name: Install changie

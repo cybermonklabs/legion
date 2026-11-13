@@ -52,7 +52,7 @@ repeat() {
 # 130374882879 (`tool-fallback`, success, head 9300f28b1c) read 65 records on a runner, and the
 # three that carry the name are the one case that keeps the pinned ladder, at 63 s, 0 s and 1 s
 # (records 18 to 20 of its listing). THOSE 63 s ARE A READING OF THE 60 s LADDER that job ran
-# under. Since dispatch://INFRA-1545 raised `--retry-max-time` to 120 s the same case reads
+# under. Since dispatch://INFRA-1545 raised `--retry-max-time` to 300 s the same case reads
 # 127 s, and the window it is held to moved with it, so the records below are re-derived from
 # this tree's own listing rather than carried: job 130686006739 (`tool-fallback`, success, head
 # 974a67db6338) reads `github.com: full, curl exit 22, 127s` beside honest ghcr.io fetches of

@@ -2928,6 +2928,15 @@ def action_arithmetic(path: str, seen: set[str]) -> int | None:
 
 
 JOB_SLOWEST: dict[tuple[str, str], dict] = {}
+def step_name(budget) -> str:
+    """What a refusal calls this step. A `uses:` step with no `name:` reads as '-' in the
+    workflow, which names nothing a reader can search for, so the action it runs is what the
+    message gives them instead (dispatch://INFRA-1545, review round 26)."""
+    if budget.step == "-" and budget.uses:
+        return f"the step running {budget.uses}"
+    return budget.step
+
+
 for budget in budgets:
     # One `seen` for the whole step: the script its `run:` calls, the action it uses and that
     # action's own scripts are one reading set, so a file two of those paths reach is read, and
@@ -2948,11 +2957,7 @@ for budget in budgets:
                                          {"line": budget.job_line, "minutes": budget.job_minutes,
                                           "cost": 0, "step": ""})
         if cost > slowest["cost"]:
-            # A `uses:` step with no `name:` is '-' in this check's own reading, which names
-            # nothing a reader can find; the action it runs is what they would look for.
-            slowest["cost"] = cost
-            slowest["step"] = (f"the step running {budget.uses}"
-                               if budget.step == "-" and budget.uses else budget.step)
+            slowest["cost"], slowest["step"] = cost, step_name(budget)
     blocking = list(budget.uncounted)
     for target in sorted(seen):
         blocking += script_uncounted.get(target, []) + action_uncounted.get(target, [])
@@ -3080,7 +3085,7 @@ for budget in budgets:
                         "`for x in 1 2 3 4 5 6 7`, a `for x in $(seq 1 7)`, or a "
                         "`for ((i = 0; i < 7; i++))` — or ")
         problem(budget.path, budget.line,
-                f"step '{budget.step}' {carries} and this "
+                f"step '{step_name(budget)}' {carries} and this "
                 "check can put no figure on it: it runs a retried call inside a loop whose "
                 f"passes it cannot read — {named}. {cost_read}, so a budget written for one "
                 "pass is a step the runner "
@@ -3089,7 +3094,7 @@ for budget in budgets:
     if unpriced:
         named = "; ".join(f"`{item.what}` at {item.path}:{item.line}" for item in unpriced)
         problem(budget.path, budget.line,
-                f"step '{budget.step}' {carries} and this check can put no figure on it: it "
+                f"step '{step_name(budget)}' {carries} and this check can put no figure on it: it "
                 "runs a retried call whose attempts are bounded by a variable rather than by "
                 f"a number — {named}. What one call there takes is therefore a figure this "
                 "check cannot make, and a budget cannot be held above a wait nobody can "
@@ -3108,7 +3113,7 @@ for budget in budgets:
         continue
     if budget.minutes is None:
         problem(budget.path, budget.line,
-                f"step '{budget.step}' holds {cost} s of retries and carries no "
+                f"step '{step_name(budget)}' holds {cost} s of retries and carries no "
                 "`timeout-minutes` of its own, so nothing holds that arithmetic above "
                 "anything: this rule compares a step's attempts with the budget that step "
                 "writes, and a step writing none is judged by nothing while the job's ceiling "
@@ -3124,7 +3129,7 @@ for budget in budgets:
                    "which it runs: a step waits for every attempt the scripts it calls make."
                    if followed else "")
         problem(budget.path, budget.line,
-                f"step '{budget.step}' carries `timeout-minutes: {budget.minutes}`, "
+                f"step '{step_name(budget)}' carries `timeout-minutes: {budget.minutes}`, "
                 f"{60 * budget.minutes} s, and its own retries take {cost} s to exhaust, which "
                 f"that budget does not strictly exceed.{through} A budget its own retries reach "
                 "is a race between the last attempt's error and the runner's kill, and the "
@@ -3146,7 +3151,7 @@ for budget in budgets:
             else f"job '{budget.job}' writes no `timeout-minutes`, so GitHub gives it "
                  f"{JOB_DEFAULT_MINUTES} minutes, {60 * JOB_DEFAULT_MINUTES} s")
         problem(budget.path, budget.job_line,
-                f"{job_carries}, and its step '{budget.step}' holds retries taking {cost} s to "
+                f"{job_carries}, and its step '{step_name(budget)}' holds retries taking {cost} s to "
                 "exhaust, which that budget does not strictly exceed. A job whose ceiling sits "
                 "under one of its own steps' arithmetic cuts that step before the step's own "
                 "budget can name the site that failed, so the step's `timeout-minutes` buys "
@@ -3161,7 +3166,7 @@ for budget in budgets:
             else f"job '{budget.job}' writes no `timeout-minutes`, so GitHub gives it "
                  f"{JOB_DEFAULT_MINUTES} minutes")
         problem(budget.path, budget.job_line,
-                f"{job_carries}, and its step '{budget.step}' carries "
+                f"{job_carries}, and its step '{step_name(budget)}' carries "
                 f"`timeout-minutes: {budget.minutes}`, which that job budget does not strictly "
                 "exceed. The step's retries fit inside the step's own budget here, so the clause "
                 "above says nothing; what cuts the step is the job, because the job holds that "
@@ -3263,6 +3268,41 @@ for path in sorted(set(budget.path for budget in budgets)):
 # matches, which the clause above refuses by name. Before that clause existed, each of the nine
 # keys this issue raised could be put back with its comment left alone and this check stayed
 # green — the reviewer drove all nine, and three of them again afterwards to see them refused.
+# Rule 8, the job that prices nothing. The two clauses below read a figure a comment states;
+# this one refuses a job that states none at all, which is what makes their reach total rather
+# than a sentence in a header. THE HEADER OF THIS RULE CLAIMED A REACH IT DID NOT HAVE THREE
+# ROUNDS RUNNING (dispatch://INFRA-1545): `download-retry` — the very job whose cancellation
+# this issue exists to prevent — could be put back to its old key and every clause stayed
+# silent, because its derivation names its minutes in words rather than as `-> N min`. A key
+# nothing measures is a key that drifts, so a job holding a retried step must price itself
+# somewhere its own blocks can be read.
+#
+# A job prices itself where either of the two clauses below can find it: a `-> N min` in a
+# comment block above its key, or above its id. Nothing else is asked — not the shape of the
+# sum, not where the block sits — so a job with a derivation of any form passes by writing its
+# minute figure beside it.
+for (path, job), row in sorted(JOB_SLOWEST.items()):
+    if row["cost"] <= 0:
+        continue
+    lines = Path(path).read_text().split("\n")
+    priced = False
+    for number in range(max(0, row["line"] - 40), row["line"]):
+        if lines[number].lstrip().startswith("#") and PRICED.search(lines[number]):
+            priced = True
+            break
+    if priced:
+        continue
+    problem(path, row["line"],
+            f"job '{job}' carries `timeout-minutes: {row['minutes']}` and holds a retried step "
+            f"— '{row['step']}', whose retries take {row['cost']} s to exhaust — and no comment "
+            "above that key prices it: none of them writes a figure as `-> N min`. A key no "
+            "comment prices is a key the two clauses below cannot read, so it drifts in silence: "
+            "at the head that earned this rule, `download-retry` could be put back from 240 to "
+            "the 221 it carried before this issue raised it, and every rule here stayed green, "
+            "because its own derivation ends `takes the whole minute above it: 240` rather than "
+            "`-> 240 min` (dispatch://INFRA-1545). Write this job's own figure as `-> N min` in "
+            "the block that derives it, which is what the clauses below read.")
+
 DERIVATION = re.compile(r"(\d+)\s*\+\s*(\d+)\s*=\s*(\d+)\s*s\s*->\s*(\d+)\s*min")
 for (path, job), row in sorted(JOB_SLOWEST.items()):
     lines = Path(path).read_text().split("\n")

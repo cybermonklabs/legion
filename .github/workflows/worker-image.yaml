@@ -106,7 +106,7 @@ jobs:
     # Budget (the Budgets note of .github/ci-budgets.md): 1800 s, the 30 minutes
     # this job carried, plus its slowest retried step alone — the ci-ok report's `gh api` read
     # and the POST of the check run, 2 x (5 x 30 + 150) = 600 s, carried at the 720 s budget
-    # that step's own comment derives. 1800 + 720 = 2520 s, a whole number of minutes, so the key takes the one above it -> 43 min.
+    # that step's own comment derives. 1800 + 720 = 2520 s -> 43 min, the whole minute above a sum that is itself a whole number of minutes.
     timeout-minutes: 43
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
