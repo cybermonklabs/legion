@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -52,8 +51,9 @@ const (
 	mentionPendingDelay = 2 * time.Second
 	// recordTimeout bounds the write of a batch's or a fallback pass's outcome (recordBatch,
 	// recordFallbackCopies), which a stopping process still makes after its context has ended: one
-	// statement, which a healthy database answers in milliseconds, so a write that takes longer is
-	// left undone, and the batch, or the row, is read again.
+	// statement, and before a batch's the read of the roles its mention receipts' sessions claimed
+	// (sessionsInARole), each of which a healthy database answers in milliseconds, so a write that
+	// takes longer is left undone, and the batch, or the row, is read again.
 	recordTimeout = 5 * time.Second
 	// claimTimeout bounds the fallback pass's claim (claimFallbackCopies), which runs outside the
 	// pass's own context so that one ending mid-statement cannot leave its rows claimed for the
@@ -351,7 +351,11 @@ func publishBatch(ctx context.Context, deps Deps, hold fence, holder uuid.UUID, 
 		// accepted and releases the rest.
 		record, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordTimeout)
 		defer cancel()
-		reached := deliveredGraph(settled, time.Now())
+		inARole, err := sessionsInARole(record, deps, settled)
+		if err != nil {
+			return done, fmt.Errorf("record the batch's outcome: %w", err)
+		}
+		reached := deliveredGraph(settled, inARole, time.Now())
 		holds, err := recordBatch(record, deps, outcomes, holder, reached)
 		done.holds = holds
 		return done, err
@@ -904,16 +908,16 @@ type resolvedRole struct {
 
 // deliveredGraph is what the settled events of one record state about the people and agents of
 // the store (graphstore): the role each event routed to with the session resolveRoleHolders
-// found holding it, the sessions a sent mention reached, and one delivered_to tuple per delivery
-// of something this tree gives a node.
+// found holding it, the session each sent mention attempt reached, and one delivered_to tuple
+// per delivery of something this tree gives a node.
 //
 // A node and a tuple are separate facts here, and the two requirements part them.
 //
 // The node side is R19's: the row a store census holds a node against is "the set of distinct
 // actors and sessions the tables this child projects hold", which for a session is a comment
 // whose author it is and a delivery attempt that settled `sent` against it. So a session is
-// recorded here only where such a row exists - `deliveredByMention` is exactly that, a mention
-// whose `comment_deliveries` attempt is sent - and a destination this batch reached over the
+// recorded here only where such a row exists - the receipt of a mention attempt that settled
+// sent (mentionReached) is that row's own record - and a destination this batch reached over the
 // bus is not: a route delivery leaves no row in `comment_deliveries` or `message_deliveries`,
 // so no table this child projects holds that session and a node for it would be a node the
 // census rightly reports as projected by no row. The two writers that do see such a row record
@@ -928,17 +932,30 @@ type resolvedRole struct {
 // tuple at all; the children that give an issue, an ask and a message their nodes append those
 // (dispatch://INFRA-1253, dispatch://INFRA-1152).
 //
-// A delivery is a destination this batch reached, and a mention of a new comment that some
-// attempt already delivered (mentionDeliveries.sent): the outbox sends such a session nothing,
-// the mention having delivered it, so without that arm what reached a person through a mention
-// would be recorded nowhere. An attempt still pending or failed delivered nothing and is in
-// neither list. A delivery to a role ends at the role node: the session it was forwarded to is
-// what the role's held_by tuple names.
+// A delivery is a destination this batch reached, and a mention attempt that settled sent. A
+// mention's is recorded under the comment.delivery receipt its settle appended (mentionReached),
+// by the batch that reads that receipt: the receipt is the one event that says the attempt was
+// sent, and an attempt carries exactly one (api's settleDeliveryAttempt), so each sent attempt
+// is recorded once, however long after its comment it settled. The comment's own event cannot
+// record it. Its batch reads the attempt as it stands then, and nothing holds the comment back
+// for a mention of a session it sends no copy to, so that batch commonly runs before the send is
+// answered and a delivery that settled after it would be recorded nowhere; and stated by both
+// events, one delivery would be two rows of the log. The outbox sends a session a mention
+// delivered nothing, the mention having delivered it. An attempt still pending or failed
+// delivered nothing, and its receipt states nothing here. A delivery to a role ends at the role
+// node: the session it was forwarded to is what the role's held_by tuple names.
+//
+// A session's own page, and that page's part_of the session, are written only for a session that
+// claimed no role (R14): a session that claimed one is part_of that role, and the role's page is
+// its page. Whether it claimed one is what this batch resolved (held, below) or, for a role an
+// earlier batch resolved, what the store already holds (inARole, which sessionsInARole reads
+// before the record), since a receipt is commonly recorded in a batch that resolves no role at
+// all. The session's node is written either way: the attempt's row names it.
 //
 // The roles and their pages are written whatever a row says of their holders, because their own
 // row side is there: `comment_deliveries.target`, `messages.target` and `issues.route` each hold
 // the role a delivery was routed by (graphcensus's addressedRoles).
-func deliveredGraph(events []*batchEvent, at time.Time) graphWrite {
+func deliveredGraph(events []*batchEvent, inARole map[string]struct{}, at time.Time) graphWrite {
 	roles := map[string]resolvedRole{}
 	var roleOrder []string
 	sessions := map[string]int64{}
@@ -979,12 +996,10 @@ func deliveredGraph(events []*batchEvent, at time.Time) graphWrite {
 				write.tuples = append(write.tuples, deliveredTo(kind, id, toKind, toID, at, cause))
 			}
 		}
-		for _, session := range event.deliveredByMention {
+		if comment, session, sent := mentionReached(event.event); sent {
 			recordSession(session, cause)
-			if delivers {
-				write.tuples = append(write.tuples,
-					deliveredTo(kind, id, graphstore.KindSession, session, at, cause))
-			}
+			write.tuples = append(write.tuples,
+				deliveredTo(commentNodeKind, comment, graphstore.KindSession, session, at, cause))
 		}
 	}
 	held := map[string]struct{}{}
@@ -1023,14 +1038,15 @@ func deliveredGraph(events []*batchEvent, at time.Time) graphWrite {
 			partOf(graphstore.KindSession, claim.holder, graphstore.KindRole, role, at, claim.event))
 	}
 	for _, session := range sessionOrder {
-		if _, holds := held[session]; holds {
+		cause := sessions[session]
+		write.nodes = append(write.nodes, graphstore.SessionNode(session, graphWriter, at, cause))
+		_, holds := held[session]
+		_, claimed := inARole[session]
+		if holds || claimed {
 			continue
 		}
-		cause := sessions[session]
 		page := graphstore.SessionPageID(session)
-		write.nodes = append(write.nodes,
-			graphstore.SessionNode(session, graphWriter, at, cause),
-			graphstore.PageNode(page, graphWriter, at, cause))
+		write.nodes = append(write.nodes, graphstore.PageNode(page, graphWriter, at, cause))
 		write.claims = append(write.claims,
 			partOf(graphstore.KindPage, page, graphstore.KindSession, session, at, cause))
 	}
@@ -1081,6 +1097,10 @@ func nodeOfSubject(subject string) (kind, id string, ok bool) {
 	return "", "", false
 }
 
+// commentNodeKind is the kind of a comment's node, the one thing a delivery is recorded from
+// today (deliveredItem, mentionReached).
+const commentNodeKind = "comment"
+
 // deliveredItem is the node an event delivered, as the store holds it today: a comment, whose
 // id its payload carries. An event about anything else reaches its destinations all the same,
 // and the tuple that records that waits for the child which makes issues, asks and messages
@@ -1090,7 +1110,78 @@ func deliveredItem(event model.Event) (kind, id string, ok bool) {
 		return "", "", false
 	}
 	id = payloadString(event.Payload, "id")
-	return "comment", id, id != ""
+	return commentNodeKind, id, id != ""
+}
+
+// mentionReached is the delivery a comment.delivery receipt states: the comment its attempt
+// carried and the session that attempt reached. Only the receipt of an attempt that settled sent
+// against a session states one, R14's "a sent attempt is a delivery; a pending or failed one is
+// not" (graphstore.DeliverySent): a failed attempt reached nobody, and a sent one whose
+// resolution named no session reached nobody the store can name. The session is trimmed as
+// graphstore.Reached trims it, so the tuple points at the node that settle made.
+func mentionReached(event model.Event) (comment, session string, ok bool) {
+	if event.Type != "comment.delivery" || payloadString(event.Payload, "state") != graphstore.DeliverySent {
+		return "", "", false
+	}
+	comment = payloadString(event.Payload, "comment_id")
+	session = strings.TrimSpace(payloadString(event.Payload, "session_id"))
+	return comment, session, comment != "" && session != ""
+}
+
+// sessionsInARole are the sessions the sent mention receipts among events reached that the store
+// already holds in a role: a role's current held_by into the session, or the session's current
+// part_of a role, each read as every current read reads a relation (graphstore.CurrentIn,
+// graphstore.CurrentOut). A session that claimed a role carries no page of its own
+// (deliveredGraph), and the batch that records a receipt commonly resolves no role, so its own
+// resolution cannot say. The part_of outlives the claim - a session is part_of the role it
+// claimed while it ran - so a session whose claim has since ended still reads as one that
+// claimed a role. The reads run under the statement gate the batch's other statements take
+// (lanes.statement), and a read that fails fails the record: a page written or left out on a
+// guess would stand for good, while a record that fails leaves its events to be read and
+// recorded again.
+func sessionsInARole(ctx context.Context, deps Deps, events []*batchEvent) (map[string]struct{}, error) {
+	var sessions []string
+	for _, event := range events {
+		if _, session, sent := mentionReached(event.event); sent && !slices.Contains(sessions, session) {
+			sessions = append(sessions, session)
+		}
+	}
+	if len(sessions) == 0 {
+		return nil, nil
+	}
+	inARole := map[string]struct{}{}
+	if err := deps.lanes.statement(func() error {
+		for _, session := range sessions {
+			claimed, err := claimedARole(ctx, deps.Store.Pool, session)
+			if err != nil {
+				return err
+			}
+			if claimed {
+				inARole[session] = struct{}{}
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read whether the sessions a mention reached claimed a role: %w", err)
+	}
+	return inARole, nil
+}
+
+// claimedARole reports whether the store holds session in a role now: a role's held_by into it,
+// or its part_of a role.
+func claimedARole(ctx context.Context, q graphstore.Queryer, session string) (bool, error) {
+	held, err := graphstore.CurrentIn(ctx, q, graphstore.KindSession, session, []string{graphstore.TupleHeldBy})
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(held, func(claim graphstore.Tuple) bool { return claim.FromKind == graphstore.KindRole }) {
+		return true, nil
+	}
+	parts, err := graphstore.CurrentOut(ctx, q, graphstore.KindSession, session, []string{graphstore.TuplePartOf})
+	if err != nil {
+		return false, err
+	}
+	return slices.ContainsFunc(parts, func(part graphstore.Tuple) bool { return part.ToKind == graphstore.KindRole }), nil
 }
 
 // resolveDestinations gives every event of a batch that has an owner and can be read its envelope
@@ -1150,8 +1241,7 @@ func resolveDestinations(ctx context.Context, deps Deps, events []*batchEvent) (
 	resolved := resolveUnpinnedRoleMentions(ctx, deps, found.readings()...)
 	for _, event := range resolvable {
 		to, err := eventDestinations(ctx, deps, event, found)
-		event.destinationsOf, event.mentionPending = to.list, to.mentionPending
-		event.deliveredByMention, event.resolveErr = to.sentMentions(), err
+		event.destinationsOf, event.mentionPending, event.resolveErr = to.list, to.mentionPending, err
 		event.resolveLost = lostToContextEnd(ctx, event.resolveErr)
 		var unanswered *unansweredRecipients
 		event.incomplete = errors.As(event.resolveErr, &unanswered)
@@ -1176,14 +1266,6 @@ type destinations struct {
 	mentions       mentionDeliveries
 	mentionPending bool
 	failed         []error
-}
-
-// sentMentions are the sessions a mention of this comment already reached
-// (mentionDeliveries.deliveredMentions), in session order so one batch writes them the same way
-// whenever it is read again. Each is a delivery the record writes (deliveredGraph) and no
-// destination of the event: the mention delivered the comment, so the outbox sends it nothing.
-func (d *destinations) sentMentions() []string {
-	return slices.Sorted(maps.Keys(d.mentions.deliveredMentions))
 }
 
 func (d *destinations) add(subject, label, id string) {
@@ -1292,9 +1374,10 @@ func (d *destinations) err(cause error) error {
 // topic (item.item.Topic), then - for an event that notifies and is not a targeted message - its
 // owner's route, its claimant route, its primary document's sessions and its author routes, then
 // its follower routes and the previous claimant's notice. It answers the whole reading: the list,
-// a session's copy held back for a mention still being sent (destinations.leftTo), and the
-// sessions a mention already delivered the comment to (destinations.sentMentions), which are the
-// batch's deliveries without a send of its own. The mention deliveries of a new comment that
+// and whether a session's copy was held back for a mention still being sent (destinations.leftTo).
+// A session a mention already delivered the comment to is no destination of it, and the batch
+// sends it nothing: that delivery is recorded under the attempt's own receipt (deliveredGraph).
+// The mention deliveries of a new comment that
 // names a mention at all (payloadHasMentions) are read before anything else, so a lookup of them
 // that fails leaves the event with no destination. Any other lookup that fails, or a route that
 // does not parse, ends the list there: the destinations before it are returned with the error,

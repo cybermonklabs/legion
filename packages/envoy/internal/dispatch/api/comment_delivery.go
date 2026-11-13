@@ -462,6 +462,10 @@ func (s *server) completeCommentDelivery(
 			// (graphstore.Reached): a sent attempt is a delivery and its session is a node from
 			// this moment, a pending or failed one reached nobody and writes nothing. A row
 			// whose resolution named no session carries a null, which records nothing either.
+			// The rest of what the delivery states - its delivered_to tuple, the session's page
+			// and that page's part_of - is the publisher's, recorded under the receipt this
+			// settle appends (outbox.deliveredGraph), so it is stated whether the attempt
+			// settles before its comment's event is published or after.
 			session := ""
 			if settled.SessionID != nil {
 				session = *settled.SessionID

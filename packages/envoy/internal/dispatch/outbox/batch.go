@@ -360,16 +360,11 @@ type batchEvent struct {
 	// likely to be pinned elsewhere, so leaving either out would let the owner's next event
 	// overtake it at that session, and it stays in the list holding its key instead
 	// (planChains).
-	//
-	// deliveredByMention are the sessions a mention of this comment already reached, which are
-	// no destination of it either - the mention delivered the comment - and which the record
-	// writes as the deliveries they are (deliveredGraph).
-	delivered          map[string]struct{}
-	destinationsOf     []destination
-	deliveredByMention []string
-	resolveErr         error
-	resolveLost        bool
-	mentionPending     bool
+	delivered      map[string]struct{}
+	destinationsOf []destination
+	resolveErr     error
+	resolveLost    bool
+	mentionPending bool
 	// incomplete is that the list ends at a recipient read that failed (unansweredRecipients): the
 	// sessions that read would add are unknown, so the event holds its owner's later events back
 	// from every session key its list neither names nor it already reached (planChains).
