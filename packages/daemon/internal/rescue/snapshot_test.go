@@ -194,16 +194,34 @@ func gitSubcommand(args []string) (string, []string) {
 
 // readsTheWorktreeThroughJJAndNamedPaths asserts the check read dir's files through jj's
 // snapshot, with no whole-tree read of git's but the one git's own rule for new files is: no
-// `add --all` and no add without `--` and at least one path after it, none of those paths `.`,
-// so every add names the files it adds; no `update-index --refresh`, which hashes every tracked
-// file; no `status`; and no `ls-files` listing the files the index does not track but the one
-// `ls-files -z --others --exclude-standard -- .` the carry reads them by (rescue.carried). Every
-// other jj it ran there carries --ignore-working-copy, so it reads jj's view and snapshots
-// nothing.
+// `add --all`, and no add — a `git add`, or a `git update-index` carrying `--add` — without `--`
+// and at least one path after it, none of those paths `.`, so every add names the files it adds
+// (rescue.carried); no `update-index --refresh`, `--really-refresh` or `--again`, which read
+// every tracked file, while `update-index -z --index-info`, which reads its records from its
+// standard input, is the seed's and allowed; no `status`; and no `ls-files` listing the files the
+// index does not track but the one `ls-files -z --others --exclude-standard -- .` the carry reads
+// them by. Every other jj it ran there carries --ignore-working-copy, so it reads jj's view and
+// snapshots nothing.
 func readsTheWorktreeThroughJJAndNamedPaths(t *testing.T, c *commands, dir string) {
 	t.Helper()
 	snapshot := theSnapshotOf(t, c, dir)
 	others := []string{"-z", "--others", "--exclude-standard", "--", "."}
+	// namesPaths fails the test unless an add's arguments carry `--` and at least one path after
+	// it, none of them `.`; it answers the arguments before `--`.
+	namesPaths := func(what string, args, rest []string) []string {
+		t.Helper()
+		flags, paths, named := rest, []string(nil), false
+		if at := slices.Index(rest, "--"); at >= 0 {
+			flags, paths, named = rest[:at], rest[at+1:], true
+		}
+		if !named || len(paths) == 0 {
+			t.Errorf("the check ran a `%s` over %s that names no path after `--`: %v", what, dir, args)
+		}
+		if slices.Contains(paths, ".") {
+			t.Errorf("the check ran a `%s` over %s naming `.`, the whole tree, where it names the files it adds: %v", what, dir, args)
+		}
+		return flags
+	}
 	for _, r := range c.in(dir) {
 		if r.name == "jj" && !slices.Equal(r.args, snapshot.args) && !slices.Contains(r.args, "--ignore-working-copy") {
 			t.Errorf("the check ran jj over %s without --ignore-working-copy, which is a second snapshot of the working copy: %v", dir, r.args)
@@ -214,25 +232,23 @@ func readsTheWorktreeThroughJJAndNamedPaths(t *testing.T, c *commands, dir strin
 		sub, rest := gitSubcommand(r.args)
 		switch sub {
 		case "add":
-			flags, paths, named := rest, []string(nil), false
-			if at := slices.Index(rest, "--"); at >= 0 {
-				flags, paths, named = rest[:at], rest[at+1:], true
-			}
+			flags := namesPaths("git add", r.args, rest)
 			for _, all := range []string{"--all", "-A", "--no-ignore-removal"} {
 				if slices.Contains(flags, all) {
 					t.Errorf("the check ran `git add %s` over %s, which is the whole-tree read jj's snapshot replaces: %v", all, dir, r.args)
 				}
 			}
-			if !named || len(paths) == 0 {
-				t.Errorf("the check ran a `git add` over %s that names no path after `--`: %v", dir, r.args)
-			}
-			if slices.Contains(paths, ".") {
-				t.Errorf("the check ran a `git add` over %s naming `.`, the whole tree, where it names the files it adds: %v", dir, r.args)
-			}
 		case "update-index":
-			for _, refresh := range []string{"--refresh", "--really-refresh"} {
-				if slices.Contains(rest, refresh) {
-					t.Errorf("the check ran `git update-index %s` over %s, which hashes every tracked file: %v", refresh, dir, r.args)
+			flags := rest
+			if at := slices.Index(rest, "--"); at >= 0 {
+				flags = rest[:at]
+			}
+			if slices.Contains(flags, "--add") {
+				namesPaths("git update-index --add", r.args, rest)
+			}
+			for _, whole := range []string{"--refresh", "--really-refresh", "--again", "-g"} {
+				if slices.Contains(flags, whole) {
+					t.Errorf("the check ran `git update-index %s` over %s, which reads every tracked file: %v", whole, dir, r.args)
 				}
 			}
 		case "status":
@@ -663,9 +679,11 @@ func TestARefusedFileWhoseNameJJWritesAsTwoRefusedPathsIsCarriedAndTheWorkspaceI
 // commit this check can push, and a workspace reported clean would have its pod replaced and the
 // file lost with it. The file here is one jj refused for the workspace's own size limit and that
 // no one may read (mode 000): jj refuses it from its size alone, git lists it among the files the
-// index does not track, and the add that names it exits 128. Measured on this build, `git add --
-// refused.bin` over it wrote `error: open("refused.bin"): Permission denied` and `fatal: adding
-// files failed`, as the whole-tree `git add --all` the route replaces did over the same file.
+// index does not track, and the add that names it exits 128. Measured on this build,
+// `update-index --add --replace -- refused.bin` over it wrote `error: open("refused.bin"):
+// Permission denied` and `fatal: Unable to process path refused.bin`, and `git add --
+// refused.bin` wrote the same open error, as the whole-tree `git add --all` the route replaces
+// did over the same file.
 func TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	d.JJ("config", "set", "--repo", "snapshot.max-new-file-size", `"1KiB"`)
@@ -686,7 +704,7 @@ func TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing(t *testing.T) {
 		t.Fatalf("the check reported %+v, want the workspace failed with nothing pushed", w)
 	}
 	failedAt(t, w, rescuetest.FileStep)
-	for _, want := range []string{`"add", "--", "refused.bin"`, `open("refused.bin"): Permission denied`} {
+	for _, want := range []string{`"update-index", "--add", "--replace", "--", "refused.bin"`, `open("refused.bin"): Permission denied`} {
 		if !strings.Contains(w.Error, want) {
 			t.Errorf("the failure says %q, want it to name the add that could not carry the file, %s", w.Error, want)
 		}

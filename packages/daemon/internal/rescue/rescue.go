@@ -28,14 +28,20 @@
 // The snapshot writes the colocated git index, so a role's own staged git index in that
 // workspace can be overwritten. What the tree this check pushes holds is not changed by that:
 // the check copies that index before the snapshot, and the carry into jj's tree reads the copy
-// (snapshotTree, carried). Both halves of that carry come from the input and the rule of the
-// `git add --all` read the snapshot replaces: the files the index copy tracks, and the files
-// git's own `ls-files --others --exclude-standard` lists as untracked and not ignored, the one
-// read of the whole worktree this route makes, which walks directories and hashes no file. So
-// every path that read keeps is kept, a file .gitignore ignores that a role forced into the
-// index with `git add -f` among them, with one exception: an embedded git repository, which
-// that read records as a gitlink and this route records as nothing. A differential test
-// compares the two trees over every shape found so far (differential_test.go).
+// (snapshotTree, carried). The carry is closed over the inputs of the `git add --all` read the
+// snapshot replaces, and has three: the untracked set is git's own rule (`ls-files --others
+// --exclude-standard`, the one read of the whole worktree this route makes, which walks
+// directories and hashes no file) over that read's own index, the copy; the tracked set is the
+// copy's records jj's tree lacks and the worktree still holds; and jj's tree is the third input,
+// whose blobs neither half derives again. The named exceptions live in that third input and
+// beside it: a same-size rewrite whose mtime was set back on purpose to the one jj recorded, a
+// committed submodule whose own HEAD moved, a skip-worktree entry whose file is gone, a file
+// forced into the index under an unborn HEAD, which the route keeps and that read loses, and an
+// embedded git repository, which that read records as a gitlink and this route records as
+// nothing (carried says each). A file .gitignore ignores that a role forced into the index with
+// `git add -f` is carried. A differential test compares the two trees in both directions over
+// every shape found so far, each exception declared by the row that needs it
+// (differential_test.go).
 package rescue
 
 import (
@@ -644,11 +650,14 @@ const readsBeforeThePush = 90 * time.Second
 // indexTree), whose index git itself wrote with stat data it can use. A worktree jj holds takes
 // jj's own snapshot here in its place, and one `git ls-files --others --exclude-standard` over
 // the worktree, which walks its directories and hashes no file (snapshotTree). Measured on
-// 2026-11-12 on a fixture of 290,000 tracked files and 3.2 GB whose index carries no stat data,
-// the snapshot took 21 to 27 s and that read 2.6 to 2.9 s, where `git add --all` took 183.5 s.
-// The first snapshot after a colocated `jj git init` took 62.5 s on that fixture, because it also
-// imports the git repository (it prints `Done importing changes from the underlying Git repo.`);
-// the live check pays such an import only where git HEAD moved behind jj's back.
+// 2026-11-13 on a fixture of 290,400 tracked files and 3.6 GB whose index carries no stat data,
+// the snapshot took 22.8 to 25.9 s and that read 1.8 to 2.1 s, and every read before the push
+// 31.4 s on the clean tree and 34.3 s with 200 new files of 1 MB, where `git add --all` over a
+// copy of the index took 159.8 s and 217.0 s.
+// The first snapshot after a colocated `jj git init` took 62.5 s on that fixture on 2026-11-12,
+// because it also imports the git repository (it prints `Done importing changes from the
+// underlying Git repo.`); the live check pays such an import only where git HEAD moved behind
+// jj's back.
 const worktreeRead = 30 * time.Minute
 
 // pushReserve is what a workspace's bound keeps back from the read of its files: the guard's own
@@ -1186,15 +1195,30 @@ func (r runner) snapshotTree(dir string) (string, error) {
 // worktree's own index nor any ref moves and jj's record of what the role's working copy tracks
 // is untouched: jj's tree is read into that index, the files below are added to it, and the
 // tree it writes is the answer. tracked is the copy of the worktree's own index snapshotTree
-// took before the snapshot.
+// took before the snapshot, which is the index the git read starts from wherever HEAD names a
+// commit (indexTree).
 //
-// `git add --all` over a copy of the worktree's index does two things: it updates every file
-// that index tracks, whatever an ignore rule says, and it adds as new every file it does not
-// track that no ignore rule covers. The carry takes both of its halves from that read's own
-// input and its own rule — the index copy, and git's own `ls-files --others` read — rather than
-// from a model of what jj's snapshot leaves out, so every path that read keeps is kept, with one
-// exception: an embedded git repository, which that read records as a gitlink and this route
-// records as nothing.
+// `git add --all` over that copy does two things: it updates every entry the copy holds from the
+// worktree, whatever an ignore rule says, and it adds as new every file the copy does not hold
+// that no ignore rule covers, which is what `ls-files --others --exclude-standard` against the
+// copy lists. The carry is closed over that read's inputs, and each was checked. The untracked
+// set is read against the index the git read walks, entry for entry: the copy itself, by git's
+// own rule, with no index derived from it. The tracked set is that index's entries jj's tree
+// lacks and the worktree still holds as a file (seeds). jj's tree is the third input, whose
+// blobs neither half derives again, and that is where the exceptions live, each a row of the
+// differential test (differential_test.go). A tracked file rewritten at its size with its mtime
+// set back on purpose to the one jj recorded (`touch -r` or `-d`, `cp -p`, `rsync -t`, an archive
+// tool writing stored times) is one jj's stat rule passes over, so jj's tree keeps the old blob
+// where the git read, hashing every file of an index with no stat data, reads the new one; the
+// role's own jj commit misses that edit by the same rule. It is no race: this volume reports
+// mtime to the nanosecond, and a same-size rewrite whose mtime moves, however soon after jj's
+// record, is carried (measured on 2026-11-12, and a row of the differential test). Likewise
+// a committed submodule whose own HEAD moved is one jj's tree keeps at the gitlink it holds,
+// where the git read records the new HEAD. Beside them, a skip-worktree entry whose file is gone
+// is one the git read leaves alone and keeps, where the tracked set reads the missing path as a
+// deletion; a file a role forced into the index under an unborn HEAD is one the git read, which
+// then starts from an empty index, loses, where the route keeps it; and an embedded git
+// repository is one the git read records as a gitlink and this route records as nothing.
 //
 // The tracked half is the seed: every file the index copy holds that tree does not and the
 // worktree still does (seeds) is put into the scratch index as the copy records it, with
@@ -1203,32 +1227,41 @@ func (r runner) snapshotTree(dir string) (string, error) {
 // --all` updates whatever an ignore rule says, so -f adds nothing that read would leave out. A
 // file .gitignore ignores that a role forced into the index with `git add -f` is one of them,
 // and is carried; so is a tracked file under a directory that has since become a jj or git
-// repository of its own, which jj's snapshot leaves out. The seed comes before the untracked
-// half is read, because the entries it writes under a directory that has become a git
-// repository are what make git walk into that directory, as the git read does. Measured on this
-// build on 2026-11-12, over a d that jj had snapshotted d/a.txt in and that then became a
-// colocated jj repository holding a new d/b.txt: with the scratch index holding jj's tree alone,
-// `ls-files --others` listed d/ as an embedded repository; seeded with the copy's d/a.txt, it
-// listed d/b.txt, which the git read keeps. And `git add -f -- <file>` over an index that holds
-// that file updates it to the worktree's content even under a directory holding its own .git,
-// where over an index that does not hold it the same add exits 0 having added nothing.
+// repository of its own, which jj's snapshot leaves out: `git add -f -- <file>` over an index
+// that holds that file updates it to the worktree's content even under a directory holding its
+// own .git.
 //
 // The untracked half is one `ls-files -z --others --exclude-standard -- .` over the whole
-// worktree against the scratch index, after the seed: git's own rule for what `git add --all`
-// adds as new, the files that index does not hold and no ignore rule covers. It is the one
-// whole-tree read of the worktree this route makes, made once here and once more by the
-// read-back below, and it walks the worktree's directories and compares names: it hashes no
-// file and refreshes no entry, so its cost does not follow the size of the tracked tree the way
-// the git read's does (worktreeRead). A file jj refused for its size, a name that is not valid
-// UTF-8 and the files of a directory holding a .jj of its own are all among what it lists, as
-// any other file the index does not hold. Each entry is added by name with `git add --
-// <file>...` and no -f: what -f would add there is what an ignore rule covers, which is content
-// the git read leaves out and this carry must not push (edits).
+// worktree against the index copy (GIT_INDEX_FILE=tracked): git's own rule for what `git add
+// --all` adds as new, over the index that read adds to. So git walks into a directory holding a
+// .git exactly where that read does, which is where the copy holds an entry under it, a deleted
+// one among them, whatever the seed holds. A copy that does not exist is read by git as an
+// index that holds nothing. It is the one whole-tree read of the worktree this route makes, and
+// it walks the worktree's directories and compares names: it hashes no file and refreshes no
+// entry, so its cost does not follow the size of the tracked tree the way the git read's does
+// (worktreeRead). A file jj refused for its size, a name that is not valid UTF-8 and the files
+// of a directory holding a .jj of its own are all among what it lists, as any other file the
+// copy does not hold. So are files jj's tree already holds, the new files jj snapshotted that
+// the copy lacks; adding them again is harmless, since it writes for each the blob the git read
+// writes for it.
+//
+// Each entry is added by name with `update-index --add --replace -- <file>...`, which adds the
+// files it names and walks no directory; it adds no file an ignore rule covers, because it is
+// handed none. It is not `git add -- <file>...`, whose walk over the scratch index would not be
+// the git read's: that index holds jj's tree and the seed and nothing of a deleted file, and
+// over an index holding no entry under a directory that holds a .git, `git add` exits 0 having
+// added nothing there. Measured on this build on 2026-11-12, over a d whose tracked d/old.txt
+// was deleted and which then became a git repository with a commit of d/loose.txt and a new
+// d/new.txt: `git add -- d/loose.txt d/new.txt` over an index holding nothing under d exited 0
+// and added neither, and `update-index --add` added both at the blobs `git add --all` over the
+// copy wrote. --replace lets an added file take the place of an entry the scratch index holds at
+// one of its directories, as `git add` lets it: the worktree holds a directory at that path, so
+// the git read keeps no entry there either.
 //
 // An entry git lists with a trailing slash is an embedded git repository (embeddedRepository)
 // and is left out, which is that one exception. The route drops an entry only where this read
 // itself answers a name ending in a slash, and it has no check of its own for a .git or a .jj: a
-// directory holding a .git that git walks into, because the seed holds an entry under it, is no
+// directory holding a .git that git walks into, because the copy holds an entry under it, is no
 // embedded repository to git and its files are carried, as the git read keeps them. Adding an
 // embedded repository's directory itself would have git record the gitlink, or refuse it where
 // the repository has no commit checked out, and either way take down the tracked files under it:
@@ -1241,12 +1274,14 @@ func (r runner) snapshotTree(dir string) (string, error) {
 // names the files it adds, in chunks (inChunks); and nothing here runs a bare add, `add --all`,
 // `update-index --refresh` or `status` over the worktree.
 //
-// Then what was added is read back (notCarried), and a file it finds the index lacks is missed:
-// the workspace fails naming those files, since they are in no commit this check can push, and
-// a workspace reported clean would have the pod replaced and them lost with it. The failure
-// names ten of them and counts the rest, which is what keeps the message inside what Dispatch
-// takes, and writes each with %q, so that a name which is not valid UTF-8 and a name holding
-// the separator are both readable.
+// Then each file of the untracked set is read back by its name (notCarried), and a file the
+// scratch index does not hold is missed: the workspace fails naming those files, since they are
+// in no commit this check can push, and a workspace reported clean would have the pod replaced
+// and them lost with it. The failure names ten of them and counts the rest, which is what keeps
+// the message inside what Dispatch takes, and writes each with %q, so that a name which is not
+// valid UTF-8 and a name holding the separator are both readable. The seeded half is not read
+// back: `update-index --index-info` writes each seeded entry before its add, so a read of it by
+// name cannot fail, and the add's exit status is that half's guard.
 //
 // Where nothing was seeded and the untracked read listed nothing to add, the scratch index is
 // jj's tree as read, so that tree is the answer as it is, with no write-tree and no read-back.
@@ -1271,7 +1306,7 @@ func (r runner) carried(dir, tracked, index, tree string) (string, error) {
 			return "", err
 		}
 	}
-	listed, err := r.gitPaths(dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
+	listed, err := r.gitPaths(dir, []string{"GIT_INDEX_FILE=" + tracked}, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
 	if err != nil {
 		return "", err
 	}
@@ -1280,12 +1315,12 @@ func (r runner) carried(dir, tracked, index, tree string) (string, error) {
 		return tree, nil
 	}
 	if err := inChunks(untracked, func(files []string) error {
-		_, err := r.git(dir, env, append([]string{"add", "--"}, files...)...)
+		_, err := r.git(dir, env, append([]string{"update-index", "--add", "--replace", "--"}, files...)...)
 		return err
 	}); err != nil {
 		return "", err
 	}
-	missed, err := r.notCarried(dir, env, seeded)
+	missed, err := r.notCarried(dir, env, untracked)
 	if err != nil {
 		return "", err
 	}
@@ -1307,15 +1342,20 @@ const gitlinkMode = "160000"
 // decides nothing.
 //
 // A file that is not in the worktree, or one of whose directories is now a file of its own, is a
-// deletion: the git read records it as one, and jj's tree, missing the file, already does. So
-// is a file that is now a directory, but for a gitlink, whose worktree path is a directory: the
-// git read removes the file's entry and adds what is under the directory as new by the ignore
-// rules, which the untracked half reads. A seed of the file there would be wrong twice: the
-// `git add -f` that follows a seed would take the directory whole, ignore rules overridden —
-// measured on this build on 2026-11-12, seeding a file x that had become a directory holding
-// x/k.txt and an ignored x/i.log put x/i.log into the index — and the read-back would then miss x
-// by its name. Any other failure to stat a file keeps it, so its add fails and the workspace
-// with it rather than the file being passed over.
+// deletion: the git read records it as one, and jj's tree, missing the file, already does. The
+// one entry the git read does not read that way is one marked skip-worktree, which it leaves
+// alone and keeps whatever the worktree holds; the route reads it as any other, and that is one
+// of the exceptions carried names. So is a file that is now a directory, but for a gitlink, whose
+// worktree path is a directory: the git read removes the file's entry and adds what is under the
+// directory as new by the ignore rules, which the untracked half reads. A seed of the file there
+// would be wrong: the `git add -f` that follows a seed would take the directory whole, ignore
+// rules overridden — measured on this build on 2026-11-12, seeding a file x that had become a
+// directory holding x/k.txt and an ignored x/i.log put x/i.log into the index. Any other failure
+// to stat a file keeps it, so its add fails and the workspace with it rather than the file being
+// passed over.
+//
+// What is seeded decides nothing of what git walks into: the untracked half is read against the
+// copy itself, which holds a deleted file's record whether or not it is seeded (carried).
 func (r runner) seeds(dir, tracked, tree string) (string, []string, error) {
 	inTree, err := r.gitPaths(dir, nil, "ls-tree", "-r", "-z", "--name-only", tree)
 	if err != nil {
@@ -1398,24 +1438,19 @@ func inChunks(paths []string, each func(chunk []string) error) error {
 	return nil
 }
 
-// notCarried is every file the carry at env should have added and the index there does not
-// hold, read by one rule. Whatever the whole-tree `ls-files --others --exclude-standard` still
-// lists after the adds is not in the index: that is the read the untracked half came from, made
-// again, with an embedded git repository left out of it by the same rule it was left out of the
-// adds by (withoutEmbeddedRepositories), since git lists one as itself whatever the index holds
-// beside it. And every file of seeded that `ls-files` over its own name does not answer by that
-// exact name is not in the index either. Nothing is matched as a pathspec against what the index
-// holds.
+// notCarried is every file of untracked that the index at env does not hold: each is read by its
+// own name with `ls-files -z -- <file>...`, in chunks, and a file is held only where git answers
+// that exact name. It is a read of named paths, not a second read of the whole worktree.
 //
-// This read-back is defence in depth: `git add` exits 0 for a path it added nothing of, so git's
-// exit status alone does not say a file was carried.
-func (r runner) notCarried(dir string, env []string, seeded []string) ([]string, error) {
-	listed, err := r.gitPaths(dir, env, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
-	if err != nil {
-		return nil, err
-	}
-	missing := withoutEmbeddedRepositories(listed)
-	err = inChunks(seeded, func(files []string) error {
+// This read-back is defence in depth, and it covers only what can refuse: the files the
+// untracked half adds, since the seeded half writes each entry before its add (carried). No test
+// of this package reaches its failing branch: measured on this build on 2026-11-12, with
+// notCarried answering nothing, the whole package passed. `update-index --add` exits non-zero
+// for a file it cannot add, and that exit fails the workspace before the read-back runs
+// (TestAFileTheCarryCannotAddFailsTheWorkspaceAndPushesNothing).
+func (r runner) notCarried(dir string, env []string, untracked []string) ([]string, error) {
+	var missing []string
+	err := inChunks(untracked, func(files []string) error {
 		held, err := r.gitPaths(dir, env, append([]string{"ls-files", "-z", "--"}, files...)...)
 		if err != nil {
 			return err

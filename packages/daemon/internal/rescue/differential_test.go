@@ -15,21 +15,32 @@ package rescue_test
 // route's (rescue.TreeTheJJRouteBuilds).
 //
 // The two trees are held to each other in both directions (heldAsRuled). Every entry of the git
-// read's tree must be in the jj route's with the same path, the same mode and the same blob, but
-// for one exception: an embedded git repository, which the git read records as a gitlink and the
-// route records as nothing. And the jj route's tree may hold no path the git read's lacks, but
-// for the paths a row declares by name, each with its reason. The exception and each declared
-// path are checked for exactly the paths they cover, so an allowance that grew fails as loudly
-// as a lost entry does. A conflicted path is neither: it is carried in jj's own shape, which is
-// checked path for path on its own (carriedAsItsSides).
+// read's tree must be in the jj route's with the same path, the same mode and the same blob, and
+// the jj route's tree may hold no path the git read's lacks, but for the exceptions below. Each
+// is checked for exactly the paths it covers, so an allowance that grew fails as loudly as a lost
+// entry does, and so does one that no longer describes the route: a declared path the two trees
+// hold at the same entry fails. A conflicted path is no exception: it is carried in jj's own
+// shape, which is checked path for path on its own (carriedAsItsSides).
 //
-// One row alone declares such a path, and no other row may: a worktree whose git HEAD is
-// unborn, holding a file .gitignore ignores that a role forced into the index with `git add
-// -f`. The git read copies the worktree's index only where HEAD names a commit, and otherwise
-// starts from an empty index (`read-tree --empty`), so it loses that file; the route seeds what
-// it carries from the copy of the index whatever HEAD is, so it keeps the file. A file the role
-// put in its own index is work, and the route that pushes it loses nothing the git read kept;
-// everywhere else the route must answer the git read's tree exactly.
+// The exceptions are these, each a row of its own:
+//
+//   - An embedded git repository, which the git read records as a gitlink and the route records
+//     as nothing (gitlinks).
+//   - A file a role forced into the index with `git add -f` that .gitignore ignores, under an
+//     unborn git HEAD. The git read copies the worktree's index only where HEAD names a commit,
+//     and otherwise starts from an empty index (`read-tree --empty`), so it loses that file; the
+//     route reads the copy of the index whatever HEAD is, so it keeps the file.
+//   - A tracked file rewritten at its size with its mtime set back to the one jj recorded. jj's
+//     stat rule passes over it, as the role's own jj commit would, so jj's tree keeps the old
+//     blob; the git read carries the new one only because the index jj writes has no stat data
+//     and git hashes every file.
+//   - A skip-worktree entry whose file is gone. The git read leaves the entry alone and keeps its
+//     blob; the route reads the missing path as a deletion.
+//   - A committed submodule whose own HEAD moved. The git read records the submodule's new HEAD;
+//     jj's tree keeps the gitlink it holds.
+//
+// The last four are declared by name in the row's differs, each with its reason. Everywhere else
+// the route must answer the git read's tree exactly.
 //
 // A row whose route fails says so, and the failure is asserted: a workspace that fails is never a
 // silent loss, since its pod is not replaced for it. A row that expects a tree and gets a failure,
@@ -174,18 +185,22 @@ var conflictTerm = regexp.MustCompile(`^\.jjconflict-(?:base|side)-[0-9]+/(.+)$`
 // heldAsRuled compares the two trees of a row in both directions.
 //
 // It fails the test for every entry of the git read's that the jj route's does not hold at the
-// same path, mode and blob, but for the one exception: an entry at or under a path the git
-// read's tree holds as a gitlink, which is an embedded git repository. `git add --all` records it
-// as a gitlink and carries no file of it, and the route records nothing of it (rescue.carried
-// leaves out every entry git lists with a trailing slash), so neither read carries what is in it.
-// The exception covers only a path the jj route's tree holds nothing at, and is checked for
-// exactly the paths it covers: the row names them, and an exception covering one more or one
-// fewer than the row names fails, as a lost entry does.
+// same path, mode and blob, but for two exceptions. The first is an entry at or under a path the
+// git read's tree holds as a gitlink, which is an embedded git repository. `git add --all`
+// records it as a gitlink and carries no file of it, and the route records nothing of it
+// (rescue.carried leaves out every entry git lists with a trailing slash), so neither read
+// carries what is in it. That exception covers only a path the jj route's tree holds nothing at,
+// and is checked for exactly the paths it covers: the row names them, and an exception covering
+// one more or one fewer than the row names fails, as a lost entry does.
+//
+// The second is a path the row declares in differs, each by name with its reason: a path the jj
+// route's tree may hold at another entry than the git read's, or not hold, or hold where the git
+// read's holds nothing. It is checked the same way, path for path: a difference at a path the row
+// does not declare fails, and so does a declared path the two trees hold at the same entry, or
+// both lack, so an allowance that no longer describes the route fails as loudly as a loss does.
 //
 // And it fails the test for every path of the jj route's tree that the git read's lacks, but for
-// the paths the row declares as gained, each by name with its reason, which are checked the same
-// way: a gained path the row does not name fails, and so does a named one the route does not
-// gain.
+// the paths the row declares.
 //
 // Beside them, and not one of them, is a conflicted path, carried as its sides
 // (carriedAsItsSides): a path jj lists as conflicted in the working-copy commit, where the git
@@ -226,6 +241,10 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 		slices.Sort(paths)
 		return paths
 	}
+	declared := func(path string) bool {
+		_, ok := row.differs[path]
+		return ok
+	}
 	var coveredAsGitlinks []string
 	for _, path := range sorted(was) {
 		if slices.Contains(listed, path) {
@@ -236,6 +255,8 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 		}
 		kept, held := now[path]
 		switch {
+		case declared(path):
+			continue
 		case held && kept == was[path]:
 			continue
 		case !held && underAGitlink(path):
@@ -251,7 +272,7 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 	}
 	var gained []string
 	for _, path := range sorted(now) {
-		if _, held := was[path]; held {
+		if _, held := was[path]; held || declared(path) {
 			continue
 		}
 		if len(listed) > 0 {
@@ -271,13 +292,23 @@ func heldAsRuled(t *testing.T, d *rescuetest.Disk, today, route string, row diff
 		}
 		gained = append(gained, path)
 	}
-	declared := make([]string, 0, len(row.gained))
-	for path := range row.gained {
-		declared = append(declared, path)
+	if len(gained) > 0 {
+		t.Errorf("gained: the jj route's tree holds %q, which the git read's lacks and the row does not declare", gained)
 	}
-	slices.Sort(declared)
-	if !slices.Equal(gained, declared) {
-		t.Errorf("the jj route's tree holds %q, which the git read's lacks, want exactly the %q this row declares", gained, declared)
+	declaredPaths := make([]string, 0, len(row.differs))
+	for path := range row.differs {
+		declaredPaths = append(declaredPaths, path)
+	}
+	slices.Sort(declaredPaths)
+	for _, path := range declaredPaths {
+		before, inWas := was[path]
+		after, inNow := now[path]
+		switch {
+		case !inWas && !inNow:
+			t.Errorf("the row declares that the two trees may differ at %q (%s), and neither tree holds that path: the allowance no longer describes the route", path, row.differs[path])
+		case inWas && inNow && before == after:
+			t.Errorf("the row declares that the two trees may differ at %q (%s), and both hold it at mode %s blob %s: the allowance no longer describes the route", path, row.differs[path], before.mode, before.object)
+		}
 	}
 }
 
@@ -370,9 +401,11 @@ type differentialRow struct {
 	fails string
 	// gitlinks is the entries the embedded-repository exception covers in this row, sorted.
 	gitlinks []string
-	// gained is every path the jj route's tree may hold that the git read's lacks, each with the
-	// reason it may; one row alone declares any (the comment at the head of this file).
-	gained map[string]string
+	// differs is every path the jj route's tree may hold at another entry than the git read's,
+	// or not hold, or hold where the git read's holds nothing, each with the reason it may: the
+	// exceptions the comment at the head of this file lists, each checked for exactly its path
+	// (heldAsRuled).
+	differs map[string]string
 	// holds is paths both trees must hold, and absent is paths neither may: the comparison
 	// alone passes two trees that agree in losing a file, or in keeping one they should not.
 	holds, absent []string
@@ -514,6 +547,36 @@ func deleted(t *testing.T, d *rescuetest.Disk, file string) {
 	t.Helper()
 	if err := os.Remove(filepath.Join(d.Workspace, file)); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// rewrittenAtTheSameSize rewrites the tracked file at file with body, which is the size of what
+// the role's jj recorded there. With setBack the file's mtime is then set back to the one it had
+// before, which is the one jj recorded, so the file has the size and the mtime jj's stat rule
+// compares; without it the mtime is left where the write moved it, and the row fails where it did
+// not move, since the row then stands on nothing.
+func rewrittenAtTheSameSize(t *testing.T, d *rescuetest.Disk, file, body string, setBack bool) {
+	t.Helper()
+	path := filepath.Join(d.Workspace, file)
+	was, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if was.Size() != int64(len(body)) {
+		t.Fatalf("%s holds %d bytes, want the %d of the body it is rewritten with", file, was.Size(), len(body))
+	}
+	d.Write(d.Workspace, file, body)
+	if setBack {
+		if err := os.Chtimes(path, was.ModTime(), was.ModTime()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	now, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if moved := !now.ModTime().Equal(was.ModTime()); moved == setBack {
+		t.Fatalf("%s has the mtime %s after the rewrite, from %s before it: the row stands on its mtime being set back (%v)", file, now.ModTime(), was.ModTime(), setBack)
 	}
 }
 
@@ -821,7 +884,7 @@ var differentialRows = []differentialRow{
 				t.Fatalf("the workspace's git HEAD is %s, want it unborn, which this row stands on", head)
 			}
 		},
-		gained: map[string]string{
+		differs: map[string]string{
 			"forced.log": "the index the role forced it into holds it, and the git read, which starts from an empty index where HEAD is unborn, does not read that index",
 		},
 		holds: []string{".gitignore"},
@@ -868,7 +931,8 @@ var differentialRows = []differentialRow{
 	{
 		// The reviewer's shape of round 4 (thread PRRT_kwDORFy7ds62y2rH): HEAD tracks d/sub/x.txt,
 		// jj drops d whole for its nested .jj, and d/sub becomes a git repository with a commit.
-		// The seed's entry under d/sub is what makes git walk into it, as the git read does.
+		// The index copy's entry under d/sub is what makes git walk into it, in the route's read
+		// of the untracked files as in the git read.
 		name: "a tracked file under a directory jj drops for a nested .jj, whose subdirectory becomes a git repository with a commit",
 		build: func(t *testing.T, d *rescuetest.Disk) {
 			d.Write(d.Workspace, "d/sub/x.txt", "a tracked file under what becomes a repository\n")
@@ -887,23 +951,120 @@ var differentialRows = []differentialRow{
 		absent:   []string{"e/inner.txt", "e/loose.txt"},
 	},
 	{
+		// The reviewer's shape of round 8: the index copy holds d/old.txt, so the git read walks
+		// into d although d holds a .git, and keeps what it finds there; d/old.txt itself is gone.
+		name: "a tracked file deleted under a directory that then becomes a plain git repository with a commit",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "d/old.txt", "a tracked file the role deletes before d becomes a repository\n")
+			pushedByTheRole(t, d, "the file under d")
+			deleted(t, d, "d/old.txt")
+			becomesAGitRepository(d, "d")
+			d.Write(d.Workspace, "d/new.txt", "a file written after d became a repository\n")
+		},
+		holds:  []string{"d/loose.txt", "d/new.txt"},
+		absent: []string{"d/old.txt"},
+	},
+	{
+		name: "a file new in @ deleted under a directory that then becomes a colocated jj repository",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "d/a.txt", "a file a role's jj snapshotted before the role deleted it\n")
+			intentToAdd(t, d, "d/a.txt")
+			deleted(t, d, "d/a.txt")
+			becomesAColocatedJJRepository(d, "d")
+		},
+		holds:  []string{"d/b.txt"},
+		absent: []string{"d/a.txt"},
+	},
+	{
+		name: "a tracked file rewritten at the same size with its mtime set back to the one jj recorded",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "f.txt", "AAAA")
+			pushedByTheRole(t, d, "the file rewritten at the same size")
+			rewrittenAtTheSameSize(t, d, "f.txt", "BBBB", true)
+		},
+		differs: map[string]string{
+			"f.txt": "an mtime set back on purpose to the value jj recorded hides a same-size rewrite from jj's stat rule, the role's own jj commit misses it the same way, and the git read carried it only because the stat-less index makes git hash every file",
+		},
+		holds: []string{"f.txt"},
+	},
+	{
+		// The comparison proves both trees hold f.txt as BBBB.
+		name: "a tracked file rewritten at the same size with its mtime left to move",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "f.txt", "AAAA")
+			pushedByTheRole(t, d, "the file rewritten at the same size")
+			rewrittenAtTheSameSize(t, d, "f.txt", "BBBB", false)
+		},
+		holds: []string{"f.txt"},
+	},
+	{
+		name: "a file new in @ under a plain directory",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "p/new.txt", "a file a role's jj snapshotted under a plain directory\n")
+			intentToAdd(t, d, "p/new.txt")
+		},
+		holds: []string{"p/new.txt"},
+	},
+	{
+		name: "a file new in @ that a later .gitignore rule covers",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "late.log", "a file a role's jj snapshotted before *.log was ignored\n")
+			intentToAdd(t, d, "late.log")
+			d.Write(d.Workspace, ".gitignore", "*.log\n")
+		},
+		holds: []string{"late.log", ".gitignore"},
+	},
+	{
+		name: "a skip-worktree entry whose file is gone",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, ".gitignore", "*.log\n")
+			pushedByTheRole(t, d, "the ignore rules")
+			d.Write(d.Workspace, "forced.log", "a file a role forced into the index and marked skip-worktree\n")
+			d.Git("add", "-f", "forced.log")
+			d.Git("update-index", "--skip-worktree", "forced.log")
+			deleted(t, d, "forced.log")
+		},
+		differs: map[string]string{
+			"forced.log": "the git read leaves a skip-worktree entry alone and keeps its blob, where the route reads the missing path as a deletion and does not seed it",
+		},
+	},
+	{
+		name: "a committed submodule whose own HEAD moved",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			at := embeddedRepository(d, "sub")
+			d.Git("add", "sub")
+			d.Git("commit", "--quiet", "-m", "a submodule committed with plain git")
+			d.Run(at, "git", "add", "loose.txt")
+			d.Run(at, "git", "commit", "--quiet", "-m", "a commit made inside the submodule")
+		},
+		differs: map[string]string{
+			"sub": "the git read records the submodule's new HEAD, and jj's tree keeps the gitlink it holds",
+		},
+		holds: []string{"sub"},
+	},
+	{
 		name:     "every shape that answers a tree at once, the tester's adversarial worktree",
 		build:    everyShapeAtOnce,
 		gitlinks: []string{"b", "eg", "nested"},
 		holds: []string{
 			"forced.log", "big: 1B (1 bytes); the maximum size allowed is 1B\n  z", "refused-01\n  spill.bin",
 			"jd/a.txt", "jd/b.txt", "m/a.txt", "m/loose.txt", "x/k.txt",
+			"ga/loose.txt", "ga/new.txt", "jb/b.txt", "rw.txt", "pd/new.txt", "late.log",
 		},
-		absent: []string{"x", "x/i.log", "gone.txt", "eg/inner.txt", "eg/loose.txt"},
+		absent: []string{"x", "x/i.log", "gone.txt", "eg/inner.txt", "eg/loose.txt", "ga/old.txt", "jb/a.txt"},
 	},
 }
 
 // everyShapeAtOnce is one worktree holding every shape of the rows above whose route answers a
-// tree and whose git HEAD names a commit; the unborn HEAD's row is the one left out, since its
-// HEAD cannot be both. The jj commands come first, the snapshot that puts jd/a.txt and m/a.txt in
-// the colocated index among them, then the plain git commit that moves the git HEAD behind jj's
-// back, then the files and the directories that change, and the `git add -f` last: any jj
-// command of the workspace after it would rewrite the index that holds the forced file.
+// tree, whose git HEAD names a commit and that declare no path the two trees may differ at. The
+// rows that declare one are left out, each standing alone so that its exception covers its own
+// shape and no other: the unborn HEAD's, whose HEAD cannot be both anyway, the mtime set back,
+// the skip-worktree entry and the submodule. The jj commands come first, the snapshot that puts
+// jd/a.txt, m/a.txt, jb/a.txt, pd/new.txt and late.log in the colocated index among them, then
+// the plain git commit that moves the git HEAD behind jj's back, then the files and the
+// directories that change, and the `git add -f` last: any jj command of the workspace after it
+// would rewrite the index that holds the forced file. The rewrite of rw.txt at its size leaves
+// its mtime to move, so this row declares no path for it.
 func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	limitTo(d, oneMiB)
 	d.Write(d.Workspace, "aa", "the tracked file the refused name is magic for\n")
@@ -911,12 +1072,18 @@ func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	d.Write(d.Workspace, "dir/kept.txt", "a file of the directory the patterns name\n")
 	d.Write(d.Workspace, "x", "a tracked file that becomes a directory\n")
 	d.Write(d.Workspace, "gone.txt", "a tracked file the role deletes\n")
+	d.Write(d.Workspace, "ga/old.txt", "a tracked file the role deletes before ga becomes a repository\n")
+	d.Write(d.Workspace, "rw.txt", "AAAA")
 	d.JJ("sparse", "set", "--add", "dir")
 	pushedByTheRole(t, d, "the tracked files the shapes stand on")
 	d.Write(d.Workspace, "jd/a.txt", "a file a role's jj snapshotted before jd became a repository\n")
 	d.Write(d.Workspace, "m/a.txt", "a file a role's jj snapshotted before m became a repository\n")
-	intentToAdd(t, d, "jd/a.txt", "m/a.txt")
+	d.Write(d.Workspace, "jb/a.txt", "a file a role's jj snapshotted before the role deleted it\n")
+	d.Write(d.Workspace, "pd/new.txt", "a file a role's jj snapshotted under a plain directory\n")
+	d.Write(d.Workspace, "late.log", "a file a role's jj snapshotted before *.log was ignored\n")
+	intentToAdd(t, d, "jd/a.txt", "m/a.txt", "jb/a.txt", "pd/new.txt", "late.log")
 	commitWithGit(d, "fix.txt", "a fix made with plain git\n")
+	rewrittenAtTheSameSize(t, d, "rw.txt", "BBBB", false)
 
 	d.Write(d.Workspace, "base.txt", "base, edited\n")
 	d.Write(d.Workspace, "notes/draft.txt", "an edit in no commit\n")
@@ -941,6 +1108,11 @@ func everyShapeAtOnce(t *testing.T, d *rescuetest.Disk) {
 	becomesAGitRepository(d, "m")
 	becomesADirectory(t, d, "x")
 	deleted(t, d, "gone.txt")
+	deleted(t, d, "ga/old.txt")
+	becomesAGitRepository(d, "ga")
+	d.Write(d.Workspace, "ga/new.txt", "a file written after ga became a repository\n")
+	deleted(t, d, "jb/a.txt")
+	becomesAColocatedJJRepository(d, "jb")
 
 	d.Write(d.Workspace, ".gitignore", "*.log\n!keep.log\nignored/\n*.tmp\n")
 	d.Write(d.Workspace, "scratch.tmp", "a file the uncommitted .gitignore covers\n")
@@ -990,19 +1162,10 @@ func heldAndAbsent(t *testing.T, d *rescuetest.Disk, row differentialRow, trees 
 }
 
 // The whole-worktree git read and the jj route answer the same tree, row by row: every entry the
-// git read keeps, the jj route keeps at the same path, mode and blob, but for the one exception
-// heldAsRuled names, and the jj route keeps no path the git read lacks, but for the paths the one
-// row that may declares; and where the route fails, the row says so.
+// git read keeps, the jj route keeps at the same path, mode and blob, and the jj route keeps no
+// path the git read lacks, but for the exceptions heldAsRuled names, each checked for exactly the
+// paths a row names; and where the route fails, the row says so.
 func TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps(t *testing.T) {
-	var declaring []string
-	for _, row := range differentialRows {
-		if len(row.gained) > 0 {
-			declaring = append(declaring, row.name)
-		}
-	}
-	if len(declaring) > 1 {
-		t.Fatalf("the rows %q each declare a path the jj route may hold that the git read lacks, want one row at most: the unborn HEAD's", declaring)
-	}
 	for _, row := range differentialRows {
 		t.Run(row.name, func(t *testing.T) {
 			d := rescuetest.New(t, issue)
