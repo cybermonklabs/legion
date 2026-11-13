@@ -75,7 +75,19 @@ func updateHarness(t *testing.T, contract int) *harness {
 // while the round is open.
 func (h *harness) openUpdate(round, reasons string) {
 	h.t.Helper()
-	h.must(PodUpdateOpen{Claim: h.token, Round: round, Reasons: reasons, Task: UpdateTask(round, reasons)})
+	h.must(PodUpdateOpen{Claim: h.token, Round: round, Reasons: reasons, Task: h.updateText(round, reasons)})
+}
+
+// updateText is the ask of round as the sweep builds it, and as the free slot's ask builds it
+// from the claim's record (takeSlotForUpdate): the moment it names is the round's opening plus
+// the bound, and a round the claim is not in yet opens now.
+func (h *harness) updateText(round, reasons string) string {
+	h.t.Helper()
+	opened := h.clock.Now()
+	if c := h.claim(); c.UpdateRound == round && c.UpdateOpenedAt != nil {
+		opened = *c.UpdateOpenedAt
+	}
+	return UpdateTask(round, reasons, opened.Add(slotUpdateGrace))
 }
 
 // asksRound is whether a delivery id is an ask of round. Each ask of a round has an id of its own
@@ -167,7 +179,7 @@ func TestPodUpdateOpensARoundAndSendsItsTask(t *testing.T) {
 	if !asksRound(prompt.DeliveryID, testRound) {
 		t.Errorf("delivery id = %q, want an ask of the round %q", prompt.DeliveryID, testRound)
 	}
-	if prompt.Message != UpdateTask(testRound, testReasons) {
+	if prompt.Message != h.updateText(testRound, testReasons) {
 		t.Errorf("message = %q, want the round's own words", prompt.Message)
 	}
 	if h.store.load(h.token).UpdateRound != testRound {
@@ -272,7 +284,7 @@ func TestPodUpdateTheRoundsAskTakesTheSlotTheWorkersOwnTurnFrees(t *testing.T) {
 			c)
 	}
 	ask := h.wantPrompts(2)[1]
-	if !asksRound(ask.DeliveryID, testRound) || ask.Message != UpdateTask(testRound, testReasons) {
+	if !asksRound(ask.DeliveryID, testRound) || ask.Message != h.updateText(testRound, testReasons) {
 		t.Fatalf("the task after the turn = %+v, want the round's own words under an ask of %q: the slot that turn freed is the round's, and a sweep an instant later would be refused behind the next task",
 			ask, testRound)
 	}
@@ -323,7 +335,7 @@ func TestPodUpdateTheRoundsAskTakesTheSlotTheOperatorsResumeLeavesFree(t *testin
 
 	h.wantState(StateLaunching)
 	ask := h.pending()
-	if !asksRound(ask.ID, testRound) || ask.Task != UpdateTask(testRound, testReasons) {
+	if !asksRound(ask.ID, testRound) || ask.Task != h.updateText(testRound, testReasons) {
 		t.Fatalf("pending after the resume = %+v, want the round's own words under an ask of %q", ask, testRound)
 	}
 	if c := h.claim(); c.UpdateTaskedAt == nil {
@@ -532,7 +544,7 @@ func TestPodUpdateAsksAnUnansweredClaimAgainUnderANewDeliveryID(t *testing.T) {
 		t.Errorf("the second ask carries the first ask's id %q; the shim answers such a prompt itself and never prompts the worker",
 			again.DeliveryID)
 	}
-	if again.Message != UpdateTask(testRound, testReasons) {
+	if again.Message != h.updateText(testRound, testReasons) {
 		t.Errorf("the second ask says %q, want the round's own words", again.Message)
 	}
 	c := h.claim()
@@ -832,17 +844,66 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 	}
 }
 
-// A pod round's task tells the worker what the replacement takes beyond its unpushed commits: the
-// pod's scratch and temporary files, which no commit holds, and that evidence it still needs goes
-// on Dispatch before it answers.
-func TestThePodRoundsTaskSaysTheScratchGoesWithThePod(t *testing.T) {
-	pod := UpdateTask(testRound, testReasons)
+// The ask says when the pod goes and what that costs. It keeps the round's id, the drift and the
+// push instruction, names the moment the round ends in RFC 3339 UTC, says that every answer
+// brings that moment forward and that no answer delays it, and names what goes with the pod
+// then. It says what the push check saves, the rescue branch it saves to, and the pod whose shim
+// cannot run the check. A role whose tool has no ready_for_update is told to push, because the
+// round ends at that moment whatever it does: the end of its turn is no answer.
+func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
+	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
+	text := UpdateTask(testRound, `image "sha256:1"`, endsAt)
 	for _, want := range []string{
-		"The pod's scratch and temporary files go with the pod",
-		"If you need such a file as evidence, put it on Dispatch before you answer.",
+		"The round is " + testRound + ".",
+		`The reasons are: image "sha256:1".`,
+		"Push every commit that you want to keep to this issue's branch.",
+		`Call the ` + "`legion`" + ` tool with op: "ready_for_update" and round: "` + testRound + `".`,
+		"The round ends at 2026-11-13T12:30:00Z (UTC).",
+		"If every role answers, the round can end before that moment.",
+		"If a role does not answer, the round still ends at 2026-11-13T12:30:00Z.",
+		"A turn in progress does not delay that moment.",
+		"The round ends at 2026-11-13T12:30:00Z whatever you do.",
+		"- The turn that is in progress.",
+		"- The background jobs of that turn.",
+		"- Each file that .gitignore ignores.",
+		"- The pod's test database.",
+		"- The pod's caches.",
+		"the daemon runs a push check on each workspace of the pod.",
+		"- Each commit that the workspace holds and the remote does not have.",
+		"- One commit of the workspace's files as they are at that moment. This commit does not hold the files that .gitignore ignores.",
+		"The push check pushes them to a rescue branch.",
+		`The name of a rescue branch is this issue's branch name, then "-rescue-", then the first 8 characters of the pod's ID.`,
+		"The daemon does not run the push check on a pod whose shim is older than the push check. On such a pod, work that you do not push is lost.",
+		"The daemon holds your next task until your process runs again.",
 	} {
-		if !strings.Contains(pod, want) {
-			t.Errorf("the pod round's task does not say %q:\n%s", want, pod)
+		if !strings.Contains(text, want) {
+			t.Errorf("the ask does not say %q:\n%s", want, text)
+		}
+	}
+	for _, gone := range []string{"reads the end of this turn as your answer", "WAITING"} {
+		if strings.Contains(text, gone) {
+			t.Errorf("the ask still says %q, which no answer of this round rests on:\n%s", gone, text)
+		}
+	}
+}
+
+// A rescue branch is named for the pod rather than for a session, so it can hold another
+// session's commits. The ask tells a role to read a branch's commits before it takes any, by
+// subject and Omp-Session trailer, and names the daemon's own commit, whose files are read
+// rather than its authorship.
+func TestUpdateTaskWarnsToReadARescueBranchsCommitsFirst(t *testing.T) {
+	text := UpdateTask(testRound, testReasons, epoch)
+	for _, want := range []string{
+		"A rescue branch has the name of the pod, not of a session.",
+		"A rescue branch can hold commits of another session.",
+		"Before you take a commit from a rescue branch, read each commit on it.",
+		"Read the subject of each commit.",
+		"For a commit that an agent made, read its Omp-Session trailer.",
+		`Its subject starts with "Edits left in the workspace".`,
+		"Read its files to know whose work it holds.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the ask does not say %q:\n%s", want, text)
 		}
 	}
 }
@@ -1233,7 +1294,7 @@ func TestPodUpdateANewRoundReplacesTheEarlierRoundsUnreadAsk(t *testing.T) {
 	if !asksRound(got, second) {
 		t.Fatalf("pending delivery = %q, want an ask of the second round %q", got, second)
 	}
-	if h.pending().Task != UpdateTask(second, "image, resources") {
+	if h.pending().Task != h.updateText(second, "image, resources") {
 		t.Errorf("pending task = %q, want the second round's words", h.pending().Task)
 	}
 }
@@ -1552,7 +1613,7 @@ func TestPodUpdateARoundDoesNotTakeTheAnswerOfTheRoundItReplaced(t *testing.T) {
 			h.openUpdate(testRound, testReasons)
 
 			asked := h.prompts()[len(h.prompts())-1]
-			if !asksRound(asked.DeliveryID, testRound) || asked.Message != UpdateTask(testRound, testReasons) {
+			if !asksRound(asked.DeliveryID, testRound) || asked.Message != h.updateText(testRound, testReasons) {
 				t.Errorf("the ask after the switch = %+v, want the second round's own words", asked)
 			}
 			h.signalUpdateFor(testRound, "c0ffee")

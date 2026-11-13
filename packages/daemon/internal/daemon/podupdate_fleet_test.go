@@ -178,7 +178,7 @@ func newFleetRig(t *testing.T, issues ...fleetIssue) *fleetRig {
 		grants: credential.New(nil), handoffs: &fleetHandoffs{handoffs: map[string]dispatch.Handoff{}},
 		tokens: tokens, pods: pods, noPod: map[string]bool{}}
 	rig.s = &supervision{
-		cfg: config.Config{Project: "LEGION", PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice},
+		cfg: config.Config{Project: "LEGION", PodUpdateGrace: podUpdateGrace},
 		log: quietLogger(), plan: plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
 		enqueue:     (&workflowRuntime{pool: pool, records: records, log: quietLogger()}).enqueueOutbox,

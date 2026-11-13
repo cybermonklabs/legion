@@ -199,6 +199,18 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 			if len(messages) != 1 || !strings.Contains(messages[0], "`"+branch+"` (commit "+held+")") || !strings.Contains(messages[0], d.Workspace) {
 				t.Fatalf("the issue was told %q, want one message naming %s at %s from %s", messages, branch, held, d.Workspace)
 			}
+			// A rescue branch is named for the pod, not for a session, so the message tells the
+			// reader to read each commit before it takes any, and names the check's own commit.
+			for _, warning := range []string{
+				"Before you take a commit from a rescue branch, read each commit on it.",
+				"For a commit that an agent made, read its Omp-Session trailer.",
+				`Its subject starts with "Edits left in the workspace".`,
+				"Read its files to know whose work it holds.",
+			} {
+				if !strings.Contains(messages[0], warning) {
+					t.Errorf("the issue's rescue message does not say %q:\n%s", warning, messages[0])
+				}
+			}
 			if logs := rig.logs.String(); !strings.Contains(logs, branch+"@"+held) || !strings.Contains(logs, "push check of a workspace before its pod is replaced: rescued") {
 				t.Errorf("the sweep's log does not name %s@%s on its workspace line and its replacement line:\n%s", branch, held, logs)
 			}
@@ -318,7 +330,7 @@ func TestPodUpdateHoldsTheRoundWhenThePushCheckFails(t *testing.T) {
 		t.Fatalf("the controller was told %d times before the notice bound", len(notices))
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.awaitRescues(len(rig.rt.CallsOf("RescueUnpushed"))+1, "past the notice bound")
 	rig.tick()
 	rig.tick()

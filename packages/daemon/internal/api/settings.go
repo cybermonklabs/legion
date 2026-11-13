@@ -75,18 +75,16 @@ type Settings struct {
 	// file takes them, decimal numbers of hours.
 	LingerHours          float64 `json:"linger_hours"`
 	ProductionCheckHours float64 `json:"production_check_hours"`
-	// PodUpdateRetaskHours and PodUpdateNoticeHours are `pod_update_retask_hours` and
-	// `pod_update_notice_hours`, decimal numbers of hours as the two above are: how long an open
-	// update round waits before it asks a worker again, and how long after the round opened the
-	// controller is told it is stalled. They are decimals so a live proof and the production
-	// check can drive each bound inside one run.
-	PodUpdateRetaskHours float64 `json:"pod_update_retask_hours"`
-	PodUpdateNoticeHours float64 `json:"pod_update_notice_hours"`
+	// PodUpdateGraceMinutes is `pod_update_grace_minutes`, a decimal number of minutes: how long
+	// a pod's update round waits for its roles after it opens. An answer from every role ends the
+	// round before it, and no answer holds the round past it. It is a decimal so a live proof can
+	// drive the bound inside one run.
+	PodUpdateGraceMinutes float64 `json:"pod_update_grace_minutes"`
 	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
 	// phase worker's last recorded step may be in the past before the daemon reads that worker as
 	// one nothing will prompt and sends it its phase's task again. It is in minutes, where the
-	// four above are in hours, because the bound is tens of minutes and the file takes it that
-	// way (config's readMinutes).
+	// two hour keys above are in hours, because the bound is tens of minutes and the file takes it
+	// that way (config's readMinutes).
 	WorkerSilenceMinutes float64 `json:"worker_silence_minutes"`
 	// WorkerBackgroundHours is `worker_background_hours`, a decimal number of hours: how long
 	// the background work a phase worker's own session reports may stand before the daemon names
@@ -379,8 +377,7 @@ func SettingsOf(cfg config.Config) Settings {
 		Gates:                                   GatesSettings{Design: append([]record.DesignStep{}, cfg.Gates.Steps()...)},
 		LingerHours:                             cfg.Linger.Hours(),
 		ProductionCheckHours:                    cfg.ProductionCheckBound.Hours(),
-		PodUpdateRetaskHours:                    cfg.PodUpdateRetask.Hours(),
-		PodUpdateNoticeHours:                    cfg.PodUpdateNotice.Hours(),
+		PodUpdateGraceMinutes:                   cfg.PodUpdateGrace.Minutes(),
 		WorkerSilenceMinutes:                    cfg.WorkerSilence.Minutes(),
 		WorkerBackgroundHours:                   cfg.WorkerBackground.Hours(),
 		PodUpdateMaxOpenRounds:                  cfg.PodUpdateMaxOpenRounds,

@@ -45,10 +45,11 @@ const (
 	podUpdatePod = "9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22"
 	// podUpdateRound is what the sweep names the round of that pod.
 	podUpdateRound = "pod:" + podUpdatePod
-	// podUpdateRetask and podUpdateNotice are the two bounds under test, as legion.yaml's
-	// pod_update_retask_hours and pod_update_notice_hours set them.
+	// podUpdateRetask is the machine's re-ask bound under test (supervise.Deps.PodUpdateRetask),
+	// and podUpdateGrace the round's bound, as legion.yaml's pod_update_grace_minutes sets it: 240
+	// minutes here, so the re-ask bound passes well inside it.
 	podUpdateRetask = 30 * time.Minute
-	podUpdateNotice = 4 * time.Hour
+	podUpdateGrace  = 4 * time.Hour
 	// podUpdateSilence is the third, as legion.yaml's worker_silence_minutes sets it: how long a
 	// phase worker's last recorded step may be in the past before the silence sweep reads that
 	// worker as one nothing will prompt (config.Config.WorkerSilence). It is the shipped default.
@@ -200,7 +201,7 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		// deployment's: that is what the Claude Code role's exemption from the stale-plugin
 		// lane is read from, beside the role's backend (noPluginInstall).
 		cfg: config.Config{Project: "LEGION", Runtime: config.Runtime{Name: "kubernetes"},
-			PodUpdateRetask: podUpdateRetask, PodUpdateNotice: podUpdateNotice, WorkerSilence: podUpdateSilence},
+			PodUpdateGrace: podUpdateGrace, WorkerSilence: podUpdateSilence},
 		log:     log,
 		plan:    plan{clock: clock, project: podUpdateProject, pluginRelaunchable: true, orphanSweep: orphanSweepInterval},
 		runtime: rt, supervisor: sup,
@@ -758,7 +759,7 @@ func TestPodUpdateHoldsTheReplacementWhileAClaimIsWorking(t *testing.T) {
 // A claim the round has asked and that cannot answer until a person acts pins the round: an
 // operator's own suspension holds it, it takes the task only on the operator's resume, and
 // nobody can say whether its workspace holds unpushed work. The pod is not replaced, and the
-// controller is told once pod_update_notice_hours after the round opened, which is what brings
+// controller is told once pod_update_grace_minutes after the round opened, which is what brings
 // the operator.
 func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
 	rig := newPodUpdateRig(t,
@@ -780,7 +781,7 @@ func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
 		t.Fatalf("ReplacePod called %d times with an operator-suspended claim pinning the round", len(calls))
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	notices := rig.notices()
@@ -802,7 +803,7 @@ func TestPodUpdateTellsTheControllerOnceAfterTheNoticeBound(t *testing.T) {
 		t.Fatalf("the notice waits on %+v, want the suspended implementer alone", notice.Update.Waiting)
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	if notices := rig.notices(); len(notices) != 1 {
@@ -849,7 +850,7 @@ func TestPodUpdateReplacesThePodWithoutWaitingForAFailedClaim(t *testing.T) {
 }
 
 // A worker the round asked and that answered nothing is asked again, and only once
-// pod_update_retask_hours has passed since the last ask: the round's own clock never postpones
+// the machine's re-ask bound has passed since the last ask: the round's own clock never postpones
 // the notice, and the worker is not asked at every tick. Each ask is a delivery of its own, so
 // the second one reaches a worker the shim would answer for under the first ask's id.
 //
@@ -1530,7 +1531,7 @@ func TestPodUpdateIgnoresARetiredClaimsLeftoverRound(t *testing.T) {
 	// The leftover round is still on the retired claim, and every later tick reads it the same
 	// way: not at all.
 	for range 3 {
-		rig.clock.advance(podUpdateNotice)
+		rig.clock.advance(podUpdateGrace)
 		rig.tick()
 	}
 
@@ -1562,7 +1563,7 @@ func TestPodUpdateWaitsWhileNoClaimRecordsThePod(t *testing.T) {
 	})
 
 	rig.tick()
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	if messages := rig.messages(); len(messages) != 0 {
@@ -1703,7 +1704,7 @@ func TestStalePluginLeavesEveryClaimInARoundToThatRound(t *testing.T) {
 }
 
 // A round every worker answered still replaces nothing while a turn runs. That wait is held to
-// the same bound as a worker that never answers: past pod_update_notice_hours the controller is
+// the same bound as a worker that never answers: past pod_update_grace_minutes the controller is
 // told, naming the turns the round waits on. Without it a turn that never ends holds every
 // signalled worker's next task for ever, with only a log line to show for it.
 func TestPodUpdateTellsTheControllerWhenTheTurnsNeverEnd(t *testing.T) {
@@ -1724,7 +1725,7 @@ func TestPodUpdateTellsTheControllerWhenTheTurnsNeverEnd(t *testing.T) {
 		t.Fatalf("the controller was told %d times before the notice bound", len(notices))
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	notices := rig.notices()
@@ -1745,7 +1746,7 @@ func TestPodUpdateTellsTheControllerWhenTheTurnsNeverEnd(t *testing.T) {
 		t.Fatalf("ReplacePod called %d times while a turn ran", len(calls))
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	if notices := rig.notices(); len(notices) != 1 {
@@ -1774,7 +1775,7 @@ func TestPodUpdateTellsTheControllerWhenTheReplacementKeepsFailing(t *testing.T)
 		t.Fatalf("the round = %q after a failed replacement, want it still open", c.UpdateRound)
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	notices := rig.notices()
@@ -1798,7 +1799,7 @@ func TestPodUpdateNoticeKeepsTheReasonsWhole(t *testing.T) {
 		reasons: podUpdateTwoReasons,
 	})
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	rows := rig.rows(record.OutboxKindControllerNotice)
@@ -1899,7 +1900,7 @@ func TestPodUpdateMeasuresTheLateNoticeFromTheLastAnswer(t *testing.T) {
 
 	// The round all but reaches its bound with nobody having answered, and then both workers
 	// answer. The implementer's turn runs on.
-	rig.clock.advance(podUpdateNotice - time.Minute)
+	rig.clock.advance(podUpdateGrace - time.Minute)
 	rig.signal(claim.RoleImplementer, "a1b2c3d")
 	rig.signal(claim.RoleTester, "a1b2c3d")
 	rig.tick()
@@ -1917,7 +1918,7 @@ func TestPodUpdateMeasuresTheLateNoticeFromTheLastAnswer(t *testing.T) {
 			len(notices))
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	notices := rig.notices()
@@ -1952,7 +1953,7 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 		t.Fatalf("the controller was told %d times before the notice bound", len(notices))
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	notices := rig.notices()
@@ -1970,7 +1971,7 @@ func TestPodUpdateTellsTheControllerWhenNoClaimRecordsThePod(t *testing.T) {
 		t.Fatalf("the issue was written on %d times: %q. The operator reads this round through the notice", len(messages), messages)
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	if notices := rig.notices(); len(notices) != 1 {
@@ -2291,7 +2292,7 @@ func TestPodUpdateTellsNobodyOfAPodlessRoundEveryWorkerHasAnswered(t *testing.T)
 	})
 
 	for range 2 {
-		rig.clock.advance(podUpdateNotice)
+		rig.clock.advance(podUpdateGrace)
 		rig.tick()
 	}
 
@@ -2322,7 +2323,7 @@ func TestPodUpdatePodlessNoticeListsOnlyTheWorkersThatHaveNotAnswered(t *testing
 		})
 	}
 
-	rig.clock.advance(podUpdateNotice)
+	rig.clock.advance(podUpdateGrace)
 	rig.tick()
 
 	notices := rig.notices()
@@ -2463,7 +2464,7 @@ func TestPodUpdateTellsNobodyOfARoundWaitingOnlyOnAClaimMidDecision(t *testing.T
 				}
 			}
 
-			rig.clock.advance(podUpdateNotice)
+			rig.clock.advance(podUpdateGrace)
 			rig.tick()
 
 			notices := rig.notices()
@@ -2689,7 +2690,7 @@ func TestPodUpdateDecidesAGonePodsRoundRatherThanWaitForATurnInThePodThatReplace
 	rig.settleAll()
 	// Long past the bound the round's own stall is told at, so a sweep that waited for that
 	// turn would tell the operator's side of a pod that is gone.
-	rig.clock.advance(podUpdateNotice + time.Hour)
+	rig.clock.advance(podUpdateGrace + time.Hour)
 
 	rig.tick()
 

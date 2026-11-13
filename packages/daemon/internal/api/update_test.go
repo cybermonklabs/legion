@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -43,7 +44,7 @@ func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 	}
 	round := supervise.PodUpdateOpen{
 		Claim: token, Round: testUpdateRound, Reasons: "image",
-		Task: supervise.UpdateTask(testUpdateRound, "image"),
+		Task: supervise.UpdateTask(testUpdateRound, "image", time.Now().Add(30*time.Minute)),
 	}
 	if err := machine.Handle(h.ctx, round); err != nil {
 		t.Fatalf("open the update round: %v", err)
@@ -109,7 +110,7 @@ func TestReadyForUpdateForAPluginRoundThisBootEndedIsRefusedAndRecordsNothing(t 
 	// The round an earlier daemon opened over this claim, and the end this boot posts for it.
 	round := supervise.PluginRoundPrefix + strconv.Itoa(DaemonAPIVersion)
 	if err := machine.Handle(h.ctx, supervise.PodUpdateOpen{
-		Claim: token, Round: round, Reasons: "plugin", Task: supervise.UpdateTask(round, "plugin"),
+		Claim: token, Round: round, Reasons: "plugin", Task: supervise.UpdateTask(round, "plugin", time.Now().Add(30*time.Minute)),
 	}); err != nil {
 		t.Fatalf("open the plugin round: %v", err)
 	}

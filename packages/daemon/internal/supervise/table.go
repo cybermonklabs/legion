@@ -250,57 +250,87 @@ type PodUpdateOpen struct {
 	Task    string
 }
 
-// UpdateTask is the task text an update round sends. round is the round, which the worker answers
-// with, and reasons is what the daemon found, as Claim.UpdateReasons holds it. The sweep
-// (internal/daemon) is its one caller, and gives it the round it opened.
+// UpdateTask is the text a pod's update round asks each role with. round is the round, which the
+// role answers with, reasons is what the daemon found, as Claim.UpdateReasons holds it, and
+// endsAt is the moment the round ends at the latest: the round's recorded opening
+// (Claim.UpdateOpenedAt) plus pod_update_grace_minutes. The sweep (internal/daemon) builds it
+// from the round's record, so the text names one moment for every role of the round, and the
+// text rides record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle
+// of a turn, so the text tells the role to act now rather than after the turn.
 //
-// The task names the round's own id, and the worker passes it back in its answer
-// (PodUpdateSignalled): an answer counts only for the round whose task the worker read, so the
-// id in the worker's hand is what says which round it is answering. A worker that reads this
-// task while a later round has already replaced it names the round it read, and is refused
-// rather than counted for the round it never saw (podUpdateSignalled).
+// The text names the round's own id, and the role passes it back in its answer
+// (PodUpdateSignalled): an answer counts only for the round whose ask the role read, so the id
+// in the role's hand is what says which round it is answering. A role that reads this ask while
+// a later round has already replaced it names the round it read, and is refused rather than
+// counted for the round it never saw (podUpdateSignalled).
 //
-// Step 2 is the one step a worker can be unable to do: the op list its `legion` tool holds is a
+// An answer only brings the round's end forward. No answer, and no turn, holds the pod past
+// endsAt, so the text names that moment and what goes with the pod then: the turn in progress,
+// its background jobs, each ignored file, the pod's test database and its caches. The step to
+// answer is the one step a role can be unable to do: the op list its `legion` tool holds is a
 // closed enum compiled into its plugin, and a plugin below PodUpdateContract has no
-// ready_for_update in it. Such a worker is asked all the same, and the last paragraph tells it
-// what to do instead, because the daemon takes the end of the turn this task starts as its
-// answer (turnEnded). One text serves both, so no claim is left out of a round for the contract
-// it records.
+// ready_for_update in it. Such a role is told to push all the same, because its round ends at
+// endsAt whatever it does.
 //
-// One round sends this task, so there is one consequence to state: a pod's round deletes the pod
-// and the disk the workspace is on, so work the worker does not push is lost, and so is every
-// scratch and temporary file the worker keeps on that disk outside its commits: a log, a harness,
-// a measurement it still needs as evidence. Step 1 says so, and tells it where such a file goes
-// before it answers. A claim's own plugin round once took these same three steps under words of
-// its own — it kept the pod and the disk, and waited for the turn to end — and it went with the
-// ask itself: the stale-plugin lane relaunches a stale process and asks its worker nothing
-// (refreshPlugin, relaunchStale), so no task this daemon sends is about a plugin contract.
+// The text also says what the daemon's push check saves before the pod goes, and to which
+// rescue branch (rescue.Request.Branch, the daemon's rescueBranch), and that a pod whose shim
+// predates the check is not checked. A rescue branch is named for the pod rather than for a
+// session, so it can hold another session's commits: the text tells the role to read a branch's
+// commits before it takes any, and names the daemon's own commit ("Edits left in the
+// workspace", internal/rescue), whose files say whose work it holds and whose author does not.
+// The daemon's rescueMessage gives the issue the same warning.
 //
 // The text is built in three pieces, and reasons goes in a piece of its own. A reason is the JSON
 // the daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can hold a quote
 // character. A value put between two constant pieces that both hold that same quote reads as the
 // end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The sentence that holds
 // reasons has no quote character in it, and the sentences on each side of it are pieces of their
-// own. The three pieces make the same bytes as the one format string this text was.
+// own.
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
 // and no word that has a second reading.
-func UpdateTask(round, reasons string) string {
+func UpdateTask(round, reasons string, endsAt time.Time) string {
+	ends := endsAt.UTC().Format(time.RFC3339)
 	return "The daemon must replace the pod that runs this issue's roles. " +
 		fmt.Sprintf("The reasons are: %s.", reasons) +
 		fmt.Sprintf(`
 
-Do these three steps now:
+The round is %s. The round ends at %s (UTC). When the round ends, the daemon deletes the pod and the disk. The disk holds your workspace.
 
-1. Push every commit you want to keep to this issue's branch. The pod's scratch and temporary files go with the pod: logs, test output, a harness, any file outside your commits. If you need such a file as evidence, put it on Dispatch before you answer.
-2. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".
-3. End your turn.
+If every role answers, the round can end before that moment. The round then ends when no role is in a turn. If a role does not answer, the round still ends at %s. A turn in progress does not delay that moment.
 
-If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 and step 3 only. End your last message with a line that starts with WAITING and names this round, so your own plugin does not continue the turn. The daemon reads the end of this turn as your answer.
+This message can arrive while you are in a turn. Do these four steps now:
 
-The replacement deletes the pod and the disk. The disk holds your workspace. Work that you do not push is lost.
+1. Push every commit that you want to keep to this issue's branch.
+2. If you need a scratch file as evidence, put it on Dispatch.
+3. Call the `+"`legion`"+` tool with op: "ready_for_update" and round: "%s".
+4. End your turn.
 
-The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`, round)
+If your `+"`legion`"+` tool has no "ready_for_update" operation, do step 1 and step 2 now. Then end your turn. The round ends at %s whatever you do.
+
+These things go with the pod when the round ends:
+
+- The turn that is in progress.
+- The background jobs of that turn.
+- Each file that .gitignore ignores.
+- The pod's test database.
+- The pod's caches.
+
+When the round ends, the daemon runs a push check on each workspace of the pod. The push check saves two things:
+
+- Each commit that the workspace holds and the remote does not have.
+- One commit of the workspace's files as they are at that moment. This commit does not hold the files that .gitignore ignores.
+
+The push check pushes them to a rescue branch. The name of a rescue branch is this issue's branch name, then "-rescue-", then the first 8 characters of the pod's ID. Then "-" and a number end the name. After the replacement, the daemon writes the name of each rescue branch on this issue.
+
+The daemon does not run the push check on a pod whose shim is older than the push check. On such a pod, work that you do not push is lost.
+
+A rescue branch has the name of the pod, not of a session. A rescue branch can hold commits of another session. Before you take a commit from a rescue branch, read each commit on it. Read the subject of each commit. For a commit that an agent made, read its Omp-Session trailer. The trailer names the session that made the commit.
+
+One commit on a rescue branch can be the daemon's own commit. Its subject starts with "Edits left in the workspace". It has no Omp-Session trailer. Read its files to know whose work it holds. Its author does not tell you that.
+
+The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`,
+			round, ends, ends, round, ends)
 }
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
@@ -2755,12 +2785,19 @@ func (m *Machine) askForUpdate(ctx context.Context, open PodUpdateOpen, now time
 }
 
 // updateReaskDue is whether the round may ask this claim now: it has never been asked, or the
-// re-task bound has passed since the last ask (pod_update_retask_hours). It is the one bound
-// both the sweep's ask and the free slot's ask read (askForUpdate, takeSlotForUpdate).
+// re-task bound has passed since the last ask (Deps.PodUpdateRetask). It is the one bound both
+// the sweep's ask and the free slot's ask read (askForUpdate, takeSlotForUpdate).
 func (m *Machine) updateReaskDue(now time.Time) bool {
 	tasked := m.claim.UpdateTaskedAt
 	return tasked == nil || now.Sub(*tasked) >= m.deps.podUpdateRetask()
 }
+
+// slotUpdateGrace is the bound takeSlotForUpdate adds to the round's opening for the moment its
+// ask names: config's thirty-minute default of pod_update_grace_minutes, because this path holds
+// no event that carries the deployment's own bound and Deps holds none. It is temporary:
+// takeSlotForUpdate goes once the sweep publishes the round's ask itself (record.UpdateAsk), and
+// this constant goes with it.
+const slotUpdateGrace = 30 * time.Minute
 
 // takeSlotForUpdate gives this claim's open pod round its ask while the claim's one delivery
 // slot is free, which is what the end of a turn and the operator's resume each leave behind
@@ -2815,9 +2852,13 @@ func (m *Machine) takeSlotForUpdate(ctx context.Context, launching bool) error {
 	if !m.updateReaskDue(now) {
 		return nil
 	}
+	ends := now.Add(slotUpdateGrace)
+	if opened := m.claim.UpdateOpenedAt; opened != nil {
+		ends = opened.Add(slotUpdateGrace)
+	}
 	task := RequestDeliver{
 		Claim: m.claim.Token, ID: updateTaskID(m.claim.UpdateRound),
-		Task: UpdateTask(m.claim.UpdateRound, m.claim.UpdateReasons),
+		Task: UpdateTask(m.claim.UpdateRound, m.claim.UpdateReasons, ends),
 	}
 	if err := m.queue(ctx, task); err != nil {
 		return err

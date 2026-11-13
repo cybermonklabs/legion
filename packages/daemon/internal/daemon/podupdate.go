@@ -782,7 +782,12 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 // rescueMessage is what the issue is told after its pod's replacement when the push check pushed
 // rescue branches or could not check the pod, and "" when it found nothing. The issue's branch
 // does not hold rescued work, and the next pod provisions from that branch, so somebody must bring
-// it in. Another agent reads it, so it follows ASD-STE100.
+// it in. A rescue branch is named for the pod rather than for a session (rescueBranch), so it can
+// hold another session's commits, and a role that takes such a branch whole can merge another
+// tree's work into its own pull request. The message therefore tells the reader to read each
+// commit before it takes any, and names the push check's own commit (internal/rescue's "Edits
+// left in the workspace"), which carries no session trailer. supervise.UpdateTask gives the ask
+// the same warning. Another agent reads it, so it follows ASD-STE100.
 func rescueMessage(round string, checked pushCheck) string {
 	if checked.unchecked != "" {
 		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)
@@ -798,7 +803,11 @@ func rescueMessage(round string, checked pushCheck) string {
 
 %s
 
-The issue branch does not have this work, and the new pod starts from the issue branch. Merge each branch into the issue branch, or delete the branch if its work is not necessary.`, round, strings.Join(lines, "\n"))
+The issue branch does not have this work, and the new pod starts from the issue branch. Take the commits that you need from each branch into the issue branch, or delete the branch if its work is not necessary.
+
+A rescue branch has the name of the pod, not of a session. A rescue branch can hold commits of another session. Before you take a commit from a rescue branch, read each commit on it. Read the subject of each commit. For a commit that an agent made, read its Omp-Session trailer. The trailer names the session that made the commit.
+
+One commit on a rescue branch can be the daemon's own commit. Its subject starts with "Edits left in the workspace". It has no Omp-Session trailer. Read its files to know whose work it holds. Its author does not tell you that.`, round, strings.Join(lines, "\n"))
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -890,7 +899,7 @@ func (s *supervision) tellLateRound(ctx context.Context, issue string, group []s
 	if since == nil {
 		since = roundOpenedAt(group, round)
 	}
-	if since == nil || now.Sub(*since) < s.cfg.PodUpdateNotice {
+	if since == nil || now.Sub(*since) < s.cfg.PodUpdateGrace {
 		return
 	}
 	s.tellUpdateStalled(ctx, updateStall{
@@ -921,7 +930,7 @@ func (s *supervision) tellPodlessRound(ctx context.Context, issue string, group 
 		return
 	}
 	opened := roundOpenedAt(group, round)
-	if opened == nil || now.Sub(*opened) < s.cfg.PodUpdateNotice {
+	if opened == nil || now.Sub(*opened) < s.cfg.PodUpdateGrace {
 		return
 	}
 	s.tellUpdateStalled(ctx, updateStall{
@@ -1000,7 +1009,9 @@ func (s *supervision) endRoundOverAGonePod(ctx context.Context, issue string, gr
 // openPodUpdate opens the round, or keeps it open: every claim that blocks it is posted
 // PodUpdateOpen at every tick while the round runs. The event is idempotent and carries the
 // re-task clock itself (supervise's openPodUpdate), so the sweep states the round and the machine
-// decides whether this is the first ask or the next one, pod_update_retask_hours after the last.
+// decides whether this is the first ask or the next one. The ask names the moment the round ends
+// at the latest: the round's recorded opening plus pod_update_grace_minutes, or now plus that
+// bound at the tick that opens the round, an instant before the opening the machine records.
 //
 // A claim that blocks the round has a session — an agent has run for it, and may hold unpushed
 // work. A claim with no session has never had a worker and blocks nothing. An operator-suspended
@@ -1023,20 +1034,24 @@ func (s *supervision) openPodUpdate(ctx context.Context, issue string, group []s
 	round := supervise.PodRound(pod)
 	blocking := blockingClaims(group)
 	reached := len(askedClaims(group)) > 0
-	task := supervise.UpdateTask(round, reasons)
+	opened := roundOpenedAt(group, round)
+	endsAt := now.Add(s.cfg.PodUpdateGrace)
+	if opened != nil {
+		endsAt = opened.Add(s.cfg.PodUpdateGrace)
+	}
+	task := supervise.UpdateTask(round, reasons, endsAt)
 	for _, c := range blocking {
 		s.supervisor.post(c.Token, supervise.PodUpdateOpen{Claim: c.Token, Round: round, Reasons: reasons, Task: task})
 	}
 	// The round is told of only once a claim records it: the operator reads the round on the
 	// claims the notice names, the mark that tells it once is a claim's own (UpdateToldAt), and
 	// the posts above are what write both. The tick that opens a round therefore tells nothing,
-	// and the next one tells what it finds — the round's own bound is hours, and the stall that
+	// and the next one tells what it finds — the round's own bound is minutes, and the stall that
 	// waits for no bound waits one sweep.
-	opened := roundOpenedAt(group, round)
 	if opened == nil {
 		return reached
 	}
-	if now.Sub(*opened) < s.cfg.PodUpdateNotice {
+	if now.Sub(*opened) < s.cfg.PodUpdateGrace {
 		return reached
 	}
 	// The notice is built unmasked: the mask is the replacement's own caution about a claim

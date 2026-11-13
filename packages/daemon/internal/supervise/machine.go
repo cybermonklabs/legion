@@ -856,9 +856,9 @@ type Deps struct {
 	// machine's decision, so it returns at once and writes its row elsewhere.
 	StallBackstopped func(c Claim, stop StallBackstopStop)
 	// PodUpdateRetask is how long after an update task was sent an update round asks a claim that
-	// has not answered again (openPodUpdate), from the daemon's pod_update_retask_hours. The
-	// re-task clock runs from each send (Claim.UpdateTaskedAt), so asking again never postpones
-	// the round's own clock. Zero takes defaultPodUpdateRetask.
+	// has not answered again (openPodUpdate). The daemon sets none, since no legion.yaml key
+	// carries it any more. The re-task clock runs from each send (Claim.UpdateTaskedAt), so asking
+	// again never postpones the round's own clock. Zero takes defaultPodUpdateRetask.
 	PodUpdateRetask time.Duration
 	// ProviderErrorRunReached is told of a claim whose turns have ended in a provider error
 	// providerErrorRunTold times in a row, once per run, with the reason the project's controller
