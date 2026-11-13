@@ -222,6 +222,27 @@ for form in 'uvx pkg~=1.2' 'uvx \\"pkg>=1.2\\"' 'npx cowsay@^1.2.3' 'bunx tsx@ne
     case_result "a form no rule names is refused: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
 done
 
+# 16-18. A command the reader cannot resolve passes it at 03bd226bb0, against the header's
+# rule that any form it does not recognise fails the row. Each one runs code the reader
+# never sees:
+#   16. a shell given a variable as its command, `sh -c "$CMD"`: the reader reads the
+#       string `$CMD` and finds no runner in it;
+#   17. python started through the deliverable's own interpreter variable, as hundreds of
+#       rows start it, `$IOC_PY -c '... os.system(...)'`: the python -c rule reads only a
+#       word whose name is python, so code that starts a process passes;
+#   18. a runner named by a variable, `{ R=uvx; $R pyshacl; }`: the reader looks for the
+#       word uvx and finds `$R`. The group keeps the `true ||` in front of all of it, so
+#       nothing of it runs.
+for form in 'sh -c \\"$CMD\\"' "\$IOC_PY -c 'import os; os.system(0)'" '{ R=uvx; $R pyshacl; }'; do
+    dir="$(fresh "unresolved-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || $form; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    grep -qF "$(printf '%s' "$form" | tr -d '\\' | cut -c1-6)" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+        printf 'FAIL the form %s could not be planted\n' "$form"
+        exit 1
+    }
+    case_result "a command the reader cannot resolve is refused: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
