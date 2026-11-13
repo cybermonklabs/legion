@@ -221,15 +221,15 @@ type shim struct {
 	// is gone.
 	//
 	// It ends at the first of the shim's three ends, because no one of them covers every way it
-	// goes. s.ending alone never ends on the path the tmux runtime stops a pane by: the daemon
-	// sends `shutdown` first (internal/runtime/tmux's stop), fromDaemon answers it with terminate,
-	// the agent exits, reap's finish ends s.loop, and Run returns with the context it was given
-	// still live — leaving the command running in a process that is already exiting, and no SIGHUP
-	// to reach it afterwards. s.loop alone would end a command only once the shim had finished —
-	// once the agent, SIGTERMed and killed at the grace if it ignores that, had been reaped —
-	// which is a whole grace of that command running against the shared clone after the stop
-	// arrived. So terminate ends them too, beside the warm-up, and the command's own stop is spent
-	// inside the grace the agent is already being given rather than after it.
+	// goes. Run's own context alone never ends on the path the tmux runtime stops a pane by: the
+	// daemon sends `shutdown` first (internal/runtime/tmux's stop), fromDaemon answers it with
+	// terminate, the agent exits, reap's finish ends s.loop, and Run returns with the context it
+	// was given still live — leaving the command running in a process that is already exiting, and
+	// no SIGHUP to reach it afterwards. s.loop alone would end a command only once the shim had
+	// finished — once the agent, SIGTERMed and killed at the grace if it ignores that, had been
+	// reaped — which is a whole grace of that command running against the shared clone after the
+	// stop arrived. So terminate ends them too, beside the warm-up, and the command's own stop is
+	// spent inside the grace the agent is already being given rather than after it.
 	//
 	// Each of these commands is answered in a goroutine of its own (answer), so nothing of the
 	// shim waits on one while it runs; Run waits for them once this context has ended and before
