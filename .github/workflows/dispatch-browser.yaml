@@ -389,12 +389,12 @@ jobs:
     # the install runs, and `bun install --frozen-lockfile`, 62 s there and 11 s here.
     #
     # The rows: listed at this file's head with `bunx playwright test --config
-    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,457 rows in 201
+    # e2e/playwright.config.ts --list` from packages/dispatch, the suite holds 1,459 rows in 201
     # files (`--project='*'`), which is two listings rather than one: the three `-alone`
     # projects are out of the default selection since dispatch://INFRA-1280, so a command that
-    # names no project lists 1,406 rows in 198 files and one that names those three lists the
+    # names no project lists 1,408 rows in 198 files and one that names those three lists the
     # other 51, in 3 files. The ten projects this job's shard command names on the full lane
-    # hold 1,386 rows in 197 files. The four the pull-request lane names hold 1,285 in 195, of
+    # hold 1,388 rows in 197 files. The four the pull-request lane names hold 1,287 in 195, of
     # which that lane's `@pr` grep selects 289, in 148 files. The two `visual` projects hold
     # 20, which the visual job runs one row at a time, and the 51 wall-clock rows are the alone
     # job's.
