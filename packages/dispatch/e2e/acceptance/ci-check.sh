@@ -714,13 +714,16 @@ derived k3 "a conclusion R3 does not name prints a fail, naming it as GitHub wro
   "$k3_sha" superseded 301 "$ci_words"
 
 # unread SECTION WHAT WORDS: the last output says GitHub could not be read for c-ci at k3's head,
-# with WORDS from what GitHub answered, and prints neither a pass nor a fail.
+# with WORDS from what GitHub answered, prints neither a pass nor a fail, and says it is not known
+# whether a pass stands.
 unread() {
   local said
   said="$(grep -F -- "- c-ci (before_merge): no result: GitHub could not be read for the check runs of $driven_repo at $k3_sha: " "$work/out")" ||
     fail "$1" "$2" "no line saying GitHub could not be read: $(<"$work/out")"
   [[ "$said" == *"$3"* ]] || fail "$1" "$2" "the line does not carry \"$3\": $said"
   pass "$1" "$2: $said"
+  line "$1" "c-ci says it is not known whether a pass stands, since the read failed" \
+    "  A pass stands: not known."
   line "$1" "c-ci's pull-request body line says its run has no result (github_unreadable)" \
     "  Pull request line: - Check c-ci (before_merge): CI run contracts has no result (github_unreadable)"
   no_line "$1" "c-ci prints neither a pass nor a fail" " by ci (CI run "

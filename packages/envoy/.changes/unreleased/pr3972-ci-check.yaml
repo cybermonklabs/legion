@@ -8,5 +8,6 @@ body: |-
   `block_type: "check"`. `POST /api/v1/issues/{key}/results` refuses a result for such a check with
   `409 CHECK_PROVED_BY_CI`. `GET /api/v1/issues/{key}/results` answers it with one result derived
   from the named run at the issue's newest open, else merged, pull request head, and a `ci` member
-  that names the run, its state, the case that decided it and the pull request body line. Nothing is
-  stored for it.
+  that names the run, its state, the case that decided it and the pull request body line. A read of
+  GitHub that fails answers the check's `pass_stands` as unknown, never as a pass or a fail. Nothing
+  is stored for it.

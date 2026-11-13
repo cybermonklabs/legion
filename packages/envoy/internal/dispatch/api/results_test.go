@@ -2997,7 +2997,8 @@ func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 }
 
 // assertUnread asserts that a check CI proves reads as GitHub unread, with each of words in its
-// detail and no token, and holds no result and no pass.
+// detail and no token, and holds no result and a pass standing that is not known: a failed read
+// is neither a pass nor a fail.
 func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 	t.Helper()
 	assertCI(t, check, ciCheckRun, model.CIStateUnread, "github_unreadable",
@@ -3010,8 +3011,8 @@ func assertUnread(t *testing.T, check model.CheckBlock, words ...string) {
 	if strings.Contains(check.CI.Detail, "ghs_") {
 		t.Fatalf("c1's detail %q carries a token", check.CI.Detail)
 	}
-	if len(check.Results) != 0 || check.PassStands.Answer == model.PassStandsYes {
-		t.Fatalf("c1 holds %+v and pass_stands %+v, want no result and no pass", check.Results, check.PassStands)
+	if len(check.Results) != 0 || check.PassStands.Answer != model.PassStandsUnknown {
+		t.Fatalf("c1 holds %+v and pass_stands %+v, want no result and pass_stands unknown", check.Results, check.PassStands)
 	}
 }
 

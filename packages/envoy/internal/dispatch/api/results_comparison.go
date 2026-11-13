@@ -550,12 +550,14 @@ func (c *comparisonReader) onNamedBranch(
 // stand, in the order the results come, which is newest first.
 //
 // A check whose repository Dispatch could not read answers unknown, since it could compare
-// nothing at all. So does a check whose standing pass is held up only by a commit Dispatch
-// could not place. A check that compared with nothing because there is no pull request and no
-// branch answers no: there is nothing for a pass to stand at, and that is a fact about the
-// work rather than a failed read.
+// nothing at all. So does a check CI proves whose check runs GitHub could not be read for: it
+// holds no result, and the read that would have made one failed. So does a check whose standing
+// pass is held up only by a commit Dispatch could not place. A check that compared with nothing
+// because there is no pull request and no branch answers no: there is nothing for a pass to
+// stand at, and that is a fact about the work rather than a failed read.
 func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassStands {
-	if compared.reason == model.ReasonRepositoryUnreadable {
+	if compared.reason == model.ReasonRepositoryUnreadable ||
+		(check.CI != nil && check.CI.State == model.CIStateUnread) {
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	var roles []string
