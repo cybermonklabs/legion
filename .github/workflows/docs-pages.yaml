@@ -163,6 +163,7 @@ on:
       - 'packages/envoy/internal/dispatch/embed/*'
       - 'packages/envoy/internal/dispatch/embedqueue/*'
       - 'packages/envoy/internal/dispatch/envoy/*'
+      - 'packages/envoy/internal/dispatch/evals/**'
       - 'packages/envoy/internal/dispatch/events/*'
       - 'packages/envoy/internal/dispatch/files/*'
       - 'packages/envoy/internal/dispatch/githubapi/*'
