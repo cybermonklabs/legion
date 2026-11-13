@@ -216,6 +216,9 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 		NoPluginInstall:    func(c supervise.Claim) bool { return noPluginInstall(s.cfg, c) },
 		PodUpdateRetask:    podUpdateRetask,
 		RefreshGate:        supervise.NewRefreshGate(0),
+		// A firing timer and a prompt's send take a hold mark of their own, as openSupervision
+		// sets for the daemon, so the guard sees the machines as it does in production.
+		Worker: store.ForConcurrentWorker,
 	}
 	t.Cleanup(sup.stop)
 	stored, err := sup.Claims(ctx)
@@ -225,7 +228,12 @@ func newPodUpdateRig(t *testing.T, roles ...podUpdateRole) *podUpdateRig {
 	if _, err := sup.restore(ctx, stored); err != nil {
 		t.Fatalf("restore the seeded claims: %v", err)
 	}
-	rig := &podUpdateRig{t: t, ctx: ctx, s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
+	// The rig's own calls — its sweeps, ticks and reads — run on a hold mark of their own, as the
+	// orphan sweep's goroutine does in production (store.ForConcurrentWorker(s.supervisor.ctx)),
+	// while the supervisor keeps the unmarked base context production gives it. On an unmarked
+	// context the pool refuses nothing, so a sweep that asked it for a second connection under a
+	// held one would pass every test of this rig (INFRA-3169).
+	rig := &podUpdateRig{t: t, ctx: store.ForConcurrentWorker(ctx), s: s, sup: sup, rt: rt, pool: pool, records: records, clock: clock, conns: conns,
 		workers: map[claim.Role]*fake.Conn{}, tokens: tokens, st: st, logs: logs, log: log}
 	for _, role := range roles {
 		if !role.session {

@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -664,7 +665,7 @@ func TestReconcileOrphansSweepsForSilentPhaseWorkers(t *testing.T) {
 	rig.s.plan.orphanSweep = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(rig.ctx)
 	defer cancel()
-	go rig.s.reconcileOrphans(ctx)
+	go rig.s.reconcileOrphans(store.ForConcurrentWorker(ctx))
 
 	testwait.Eventually(t, "the orphan sweep to tell the workflow of the silent phase worker", func() bool {
 		return len(rig.starts()) > 0
