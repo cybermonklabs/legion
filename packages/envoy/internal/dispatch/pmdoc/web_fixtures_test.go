@@ -275,3 +275,5 @@ func webSnippetJSON(t *testing.T, markdown string) json.RawMessage {
 	}
 	return tree
 }
+
+// INFRA-1413 selection probe, never merged.
