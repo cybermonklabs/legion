@@ -382,18 +382,24 @@ function useDefaultAssigneeWrite(project: string): {
     error: refused?.error ?? null,
     pending: pendingPicks.length > 0,
     retry: () => {
-      if (refused?.pick === undefined) {
+      // The newest save is read from the cache itself, not from `saves`: `useMutationState` shares
+      // what its `select` gives structurally, so the pick it holds can be an older save's pick of
+      // the same assignee, and that save is not the one the refusal is about.
+      const newestSave = queryClient
+        .getMutationCache()
+        .findAll({ exact: true, mutationKey })
+        .at(-1) as DefaultAssigneeSave | undefined;
+      const press = newestSave?.state.status === "error" ? newestSave.state.variables : undefined;
+      if (press === undefined) {
         return;
       }
-      // The Retry of the press the refusal is about: one this row made and the reader stopped is
-      // made again under its key (`again`). A refusal Dispatch decided, or a press of a row
-      // mounted before this one, is retried as a new pick under a key of its own.
-      const stopped = mutation.stopped((pick) => pick === refused.pick);
-      if (stopped !== undefined) {
-        mutation.again(stopped);
-        return;
+      // The Retry of the press the refusal is about, which is the very press the cache holds: one
+      // this row made and the reader stopped is made again under its key (`again`). A refusal
+      // Dispatch decided, or a press of a row mounted before this one, is retried as a new pick
+      // under a key of its own.
+      if (!mutation.again(press)) {
+        mutation.mutate({ assignee: press.variables.assignee });
       }
-      mutation.mutate({ assignee: refused.pick.assignee });
     },
     shown: pendingPicks.at(-1)?.pick?.assignee,
     submit: (assignee) => mutation.mutate({ assignee }),

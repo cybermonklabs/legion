@@ -104,10 +104,11 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
   readonly stopped: (
     wanted: (variables: TVariables) => boolean
   ) => KeyedPress<TVariables> | undefined;
-  /** Makes `press`, which `stopped` handed back, again under its own key. It leaves the presses
-   *  the hook holds while it is out, and is held again, under the same key, if the reader stops
-   *  it again. A press the hook does not hold - out again already, or decided - is not made. */
-  readonly again: (press: KeyedPress<TVariables>) => void;
+  /** Makes `press`, which `stopped` handed back, again under its own key, and says whether it
+   *  did. It leaves the presses the hook holds while it is out, and is held again, under the same
+   *  key, if the reader stops it again. A press the hook does not hold - out again already, or
+   *  decided - is not made, and `again` returns `false`. */
+  readonly again: (press: KeyedPress<TVariables>) => boolean;
 };
 
 /** The callbacks a surface hands one `mutate`, as TanStack calls them with the press the hook made
@@ -265,23 +266,17 @@ export function useKeyedWrite<TData, TVariables = void, TContext = unknown>({
     (press: KeyedPress<TVariables>) => {
       const made = held.current.find((each) => each === press);
       if (made === undefined) {
-        return;
+        return false;
       }
       held.current = held.current.filter((each) => each !== made);
       makePress(made);
+      return true;
     },
     [makePress]
   );
   const newest = mutation.variables;
   const retry = useCallback(() => {
-    if (newest === undefined) {
-      return;
-    }
-    if (held.current.includes(newest)) {
-      again(newest);
-      return;
-    }
-    mutate(newest.variables);
+    if (newest !== undefined && !again(newest)) mutate(newest.variables);
   }, [again, mutate, newest]);
   // TanStack's result is a union over `status`, each member with the press it ran, and the
   // press's own variables stand in for it member by member, which the spread does not show.

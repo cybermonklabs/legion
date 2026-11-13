@@ -46,9 +46,7 @@ interface MappingInput {
 
 /** A mapping write the server refused or never answered, with what the page says about it: the
  *  server's reason when it gave one (a mapping issues still name, say), else a generic line. */
-type FailedAction =
-  | ({ readonly kind: "put"; readonly message: string } & MappingInput)
-  | { readonly kind: "delete"; readonly message: string; readonly repo: string };
+type FailedAction = { readonly kind: "put" | "delete"; readonly message: string };
 
 /** The mappings with `mapping` in place of its row, and, when it is its project's default, every
  *  other mapping of that project no longer the default: a project has at most one. */
@@ -89,7 +87,6 @@ export function SettingsPage(): ReactNode {
       setFailedAction({
         kind: "put",
         message: apiErrorMessage(error, `Couldn't save ${variables.repo}.`),
-        ...variables,
       });
     },
     onMutate: async (variables) => {
@@ -141,7 +138,6 @@ export function SettingsPage(): ReactNode {
       setFailedAction({
         kind: "delete",
         message: apiErrorMessage(error, `Couldn't delete ${repo}.`),
-        repo,
       });
     },
     onMutate: async (repo) => {

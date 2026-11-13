@@ -4,8 +4,9 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { userOnFakeClock } from "../../__tests__/user";
-import { ApiError, api } from "../../api/client";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { Project } from "../../api/types";
 import { ProjectsSection } from "./ProjectsSection";
 
@@ -65,5 +66,59 @@ test("a create answered KEY_COMMITTED clears the form, says the project was made
     listProjects.mockRestore();
     listDefaults.mockRestore();
     createProject.mockRestore();
+  }
+});
+
+// A row's Retry is of the project's newest save. Here the reader stopped a save of alice, picked
+// alice again and stopped that save too, so the two picks read alike: the Retry makes the newer
+// save again under its own key, where Dispatch answers with what that save did, and never the
+// older one, whose key Dispatch would answer with what an earlier pick did there.
+test("Retry after two stopped saves of the same default assignee goes under the newer save's key", async () => {
+  jest.useFakeTimers();
+  const user = userOnFakeClock();
+  const listProjects = spyOn(api, "listProjects").mockResolvedValue([core]);
+  const listDefaults = spyOn(api, "listProjectDefaultAssignees").mockResolvedValue([]);
+  const listUsers = spyOn(api, "listUsers").mockResolvedValue([{ login: "alice@example.com" }]);
+  const putDefault = spyOn(api, "putProjectDefaultAssignee").mockRejectedValue(
+    new NetworkError("/api/v1/projects/CORE/default-assignee", new TypeError("Failed to fetch"))
+  );
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+
+  try {
+    render(
+      <QueryClientProvider client={queryClient}>
+        <ProjectsSection />
+      </QueryClientProvider>
+    );
+    const control = await screen.findByRole<HTMLSelectElement>("combobox", {
+      name: "Default assignee of CORE",
+    });
+    await waitFor(() => expect(control.disabled).toBe(false));
+    await user.hover(control);
+    await screen.findByRole("option", { name: "alice@example.com" });
+
+    await user.selectOptions(control, "alice@example.com");
+    await stopTheLateWrite(queryClient);
+    const firstKey = putDefault.mock.calls[0]?.[2]?.key;
+
+    await user.selectOptions(control, "alice@example.com");
+    await tick(0);
+    const secondKey = putDefault.mock.calls.at(-1)?.[2]?.key;
+    expect(secondKey).not.toBe(firstKey);
+    await stopTheLateWrite(queryClient);
+
+    putDefault.mockResolvedValueOnce({ assignee: "alice@example.com", project: "CORE" });
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await tick(0);
+    expect(putDefault.mock.calls.at(-1)?.[2]?.key).toBe(secondKey);
+  } finally {
+    realClock();
+    cleanup();
+    queryClient.clear();
+    listProjects.mockRestore();
+    listDefaults.mockRestore();
+    listUsers.mockRestore();
+    putDefault.mockRestore();
   }
 });

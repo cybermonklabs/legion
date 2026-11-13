@@ -1112,9 +1112,9 @@ describe("dispatch_ask's standing review", () => {
   });
 
   test("the reason is printed as the server cut it, with no second cut here", async () => {
-    // The server cuts the reason by characters (firstCharacters in standing_review_advice.go), which is
-    // where the 500 is decided and proven. Cutting again here would count UTF-16 code units and
-    // could split a character the server kept whole, so the line prints what it was sent.
+    // The server cuts the reason by characters (firstCharacters in standing_review_advice.go),
+    // which is where the 500 is decided and proven. Cutting again here would count UTF-16 code
+    // units and could split a character the server kept whole, so the line prints what it was sent.
     const reason = "é".repeat(500);
     const result = await askWithReview({
       by: "alice",

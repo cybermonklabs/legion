@@ -124,10 +124,7 @@ test("the correction sends the rename and shows the new title with no reload", a
     await user.click(screen.getByRole("button", { name: "Correct title" }));
     const title = screen.getByRole("textbox", { name: "Title" });
     expect(title).toHaveValue("Lauch notes");
-    await user.clear(title);
-    await user.click(title);
-    await user.paste("Launch notes");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await saveTitle(user, "Launch notes");
 
     await waitFor(() =>
       expect(renameArtifact).toHaveBeenCalledWith(
@@ -235,10 +232,7 @@ test("a refused correction shows the server's own sentence", async () => {
   try {
     await screen.findByRole("heading", { name: "Lauch notes" });
     await user.click(screen.getByRole("button", { name: "Correct title" }));
-    await user.clear(screen.getByRole("textbox", { name: "Title" }));
-    await user.click(screen.getByRole("textbox", { name: "Title" }));
-    await user.paste("Launch notes");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await saveTitle(user, "Launch notes");
 
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "CORE-1 already holds a document named Launch notes"

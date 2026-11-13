@@ -1,9 +1,8 @@
 import { expect, jest, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { act } from "@testing-library/react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
+import { renderOnQueue } from "../../__tests__/query-provider";
 import { answerIssuePatches } from "../../__tests__/send-answers";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { NetworkError } from "../../api/client";
@@ -13,12 +12,7 @@ import { useIssueAssignee } from "./useIssueAssignee";
 /** The assignee field of CORE-1 over one app's queue, with alice signed in: the field every
  *  single-field issue write is made through (`useIssueFieldWrite`). */
 function renderAssignee() {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  return { client, hook: renderHook(() => useIssueAssignee("CORE-1"), { wrapper }) };
+  return renderOnQueue(() => useIssueAssignee("CORE-1"));
 }
 
 /** CORE-1's assignee as Dispatch holds it, answering its patches as it keeps a key

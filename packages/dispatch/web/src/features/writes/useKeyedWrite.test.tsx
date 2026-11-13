@@ -1,10 +1,10 @@
 import { expect, jest, spyOn, test } from "bun:test";
-import { onlineManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, renderHook } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { onlineManager } from "@tanstack/react-query";
+import { act } from "@testing-library/react";
 
 import { realClock, tick } from "../../__tests__/fake-clock";
 import { keptTab } from "../../__tests__/kept-sends-harness";
+import { renderOnQueue } from "../../__tests__/query-provider";
 import { stopTheLateWrite } from "../../__tests__/stop-late-write";
 import { ApiError, api, NetworkError } from "../../api/client";
 import { SEND_DEADLINE_MS, SendStoppedError } from "./keyed-write";
@@ -13,16 +13,6 @@ import { writesOf } from "./write-store";
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
 const verdict = new ApiError(422, { code: "KEY_REUSED", error: "the key names another write" });
-
-/** `useWrite` rendered over one app's queue, with alice signed in. */
-function renderOnQueue<T>(useWrite: () => T) {
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  return { client, hook: renderHook(useWrite, { wrapper }) };
-}
 
 /** A surface's write of an answer, as `AskCard`'s form makes it, over one app's queue. */
 function renderAnswerWrite() {
@@ -57,10 +47,9 @@ test("a surface's Retry keeps the key after Stop trying, and takes a new one aft
   const tab = keptTab();
   const answerAsk = spyOn(api, "answerAsk").mockRejectedValue(refusal);
   const { client, hook } = renderAnswerWrite();
-  const input = { selected: ["Ship"] };
 
   try {
-    act(() => hook.result.current.mutate(input));
+    act(() => hook.result.current.mutate({ selected: ["Ship"] }));
     await stopTheLateWrite(client);
     expect(hook.result.current.error).toBeInstanceOf(SendStoppedError);
     const stoppedKey = answerAsk.mock.calls[0]?.[2]?.key;
@@ -138,12 +127,12 @@ test("the press `stopped` handed back, made again, goes under its own key", asyn
     await stopTheLateWrite(client);
     const stoppedKey = answerAsk.mock.calls[0]?.[2]?.key;
 
-    const again = hook.result.current.stopped((press) => press.selected[0] === "Ship");
-    if (again === undefined) {
+    const stopped = hook.result.current.stopped((variables) => variables.selected[0] === "Ship");
+    if (stopped === undefined) {
       throw new Error("the hook held no stopped press to make again");
     }
     answerAsk.mockRejectedValueOnce(verdict);
-    act(() => hook.result.current.again(again));
+    act(() => hook.result.current.again(stopped));
     await tick(0);
 
     expect(answerAsk.mock.calls.at(-1)?.[2]?.key).toBe(stoppedKey);
@@ -251,24 +240,17 @@ test("a write answered KEY_COMMITTED succeeds with null: no error and no rollbac
   );
   let rolledBack = 0;
   const succeeded: unknown[] = [];
-  const client = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  client.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
-  const wrapper = ({ children }: { children: ReactNode }) => (
-    <QueryClientProvider client={client}>{children}</QueryClientProvider>
-  );
-  const hook = renderHook(
-    () =>
-      useKeyedWrite({
-        inline: true,
-        label: () => "Answer to “Ship?”",
-        onError: () => {
-          rolledBack += 1;
-        },
-        onSuccess: (data) => succeeded.push(data),
-        write: (input: { selected: string[] }, bounds) =>
-          api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
-      }),
-    { wrapper }
+  const { client, hook } = renderOnQueue(() =>
+    useKeyedWrite({
+      inline: true,
+      label: () => "Answer to “Ship?”",
+      onError: () => {
+        rolledBack += 1;
+      },
+      onSuccess: (data) => succeeded.push(data),
+      write: (input: { selected: string[] }, bounds) =>
+        api.answerAsk("ask-1", { expected_edited_at: null, ...input }, bounds),
+    })
   );
 
   try {

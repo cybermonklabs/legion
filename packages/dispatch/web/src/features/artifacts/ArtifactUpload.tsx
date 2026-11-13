@@ -367,17 +367,17 @@ export function useDraftUpload(insert: (text: string) => void): DraftUpload {
         // stopped last, so the press made again is the one that sent this very file, reached by
         // the handle the hook gives for it; a refusal Dispatch decided has no stopped press of
         // its own to make again.
-        const again = retriesUnderItsKey(upload.error ?? undefined)
-          ? upload.stopped((press) => press.file === last.file)
+        const stopped = retriesUnderItsKey(upload.error ?? undefined)
+          ? upload.stopped((variables) => variables.file === last.file)
           : undefined;
-        if (again === undefined) {
+        if (stopped === undefined) {
           void send([last.file], last.owner);
           return;
         }
         // The very same press, base and all: nothing is read for it, so the write counts as
         // pending from here, as `send` counts one of its own.
         setPending((count) => count + 1);
-        upload.again(again);
+        upload.again(stopped);
       });
     },
   };
@@ -534,11 +534,11 @@ export function useArtifactUpload(
         // `mutate` would be a press of its own under a key of its own. A press of another file
         // finds no such press and is one of its own: it takes the base read when that file was
         // chosen, or reads the token the document is at now.
-        const again = upload.stopped((press) => press.file === file);
+        const stopped = upload.stopped((variables) => variables.file === file);
         const chosen = chosenBase.current;
         chosenBase.current = undefined;
-        if (again !== undefined) {
-          upload.again(again);
+        if (stopped !== undefined) {
+          upload.again(stopped);
           return;
         }
         void send(file, chosen ?? captureUploadBase(owner, file, name));
