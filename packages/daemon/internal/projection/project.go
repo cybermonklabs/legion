@@ -83,22 +83,22 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	// The entry each claim was last queued a task of, by the issue and role the claim holds
 	// (supervise.Claim.GivenEntry), and beside it the times of the task that claim holds of that
 	// entry: the numbers and the handshake an issue's view shows beside the entry its phases row
-	// names. Both are keyed by issue and role rather than by claim token because the token on
+	// names. They are keyed by issue and role rather than by claim token because the token on
 	// the phases row can be empty, for a role no claim was ever created for, or stale, from a
 	// claim an earlier run retired, where the claim of this issue and this role is the one the
-	// admission pass weighs (admit's resumeSlottedWorkers).
-	givenEntries := make(map[issueRole]int64, len(claims))
-	entryTimes := make(map[issueRole]entryHandshake, len(claims))
+	// admission pass weighs (admit's resumeSlottedWorkers). One claim stands per issue and role
+	// (claim.NewToken), so one entry holds both readings of it.
+	entries := make(map[issueRole]roleEntry, len(claims))
 	for _, current := range claims {
-		key := issueRole{issue: current.Issue, role: current.Role}
-		givenEntries[key] = current.GivenEntry
+		entry := roleEntry{given: current.GivenEntry}
 		// The task a claim holds is that entry's own only where it carries the entry the claim
 		// was given: a wake, a resume, a production check's look and an operator's task each
 		// carry no entry and leave the given number where it stands, so the handshake is read
 		// from the delivery carrying that number and from no other.
 		if pending := current.Pending; pending != nil && pending.Entry != 0 && pending.Entry == current.GivenEntry {
-			entryTimes[key] = entryHandshake{queued: pending.QueuedAt, confirmed: pending.ConfirmedAt}
+			entry.handshake = entryHandshake{queued: pending.QueuedAt, confirmed: pending.ConfirmedAt}
 		}
+		entries[issueRole{issue: current.Issue, role: current.Role}] = entry
 	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
@@ -220,9 +220,9 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
 		// the same role's claim against, so the state shows what the admission pass weighs.
 		if role := phase.RoleFor(issue.Phase); role != "" {
-			key := issueRole{issue: issue.Key, role: role}
-			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, givenEntries[key]
-			view.EntryQueuedAt, view.EntryConfirmedAt = entryTimes[key].views()
+			entry := entries[issueRole{issue: issue.Key, role: role}]
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entry.given
+			view.EntryQueuedAt, view.EntryConfirmedAt = entry.handshake.views()
 		}
 
 		pr, err := s.PullRequest(ctx, tx, issue.Key)
@@ -451,6 +451,14 @@ type memoryDraw struct {
 type issueRole struct {
 	issue string
 	role  claim.Role
+}
+
+// roleEntry is what the claim of one issue and role says of its entry: the entry it was last
+// queued a task of (supervise.Claim.GivenEntry), and the handshake of the task it holds of that
+// entry, zero where it holds none.
+type roleEntry struct {
+	given     int64
+	handshake entryHandshake
 }
 
 // entryHandshake is what the task a claim holds of its given entry says: when that task was

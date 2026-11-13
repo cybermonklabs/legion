@@ -133,13 +133,33 @@ A root whose own architect is not taking the work the daemon states it is owed.
   The daemon writes no second start while that task stands, so this wake is the one thing left.
 
 - "the architect's claim cannot be reached": the claim is failed or retired, or the root has no architect claim at all and the work of its entry has stood that same bound.
+  For a root with no claim, the reason also says whether the daemon wrote the start of its architect again in the same transaction as the wake.
 
 - "the root is slow before its gate": the root stands at `admitted` with no design-gate step registered, 90 minutes after it was admitted or after its architect's entry was last raised, whichever is later.
   An architect that is writing a spec raises this one, and that is healthy work: the wake reports it and decides nothing.
 
-Read `issues.<KEY>`'s `phaseEntry`, `givenEntry`, `entryQueuedAt` and `entryConfirmedAt` to see the handshake the daemon and that architect have, and `designGate` to see where its gate stands.
-Take nothing for the first arm: the daemon sends the entry's work again by itself on every pass.
-For the second, read the claim (`legion claims list`), and for a claim an operator stopped, say so in the day's report: only the operator's own retry starts it again.
+Read `issues.<KEY>`'s `phaseEntry`, `givenEntry`, `entryQueuedAt` and `entryConfirmedAt` to see the handshake the daemon and that architect have, and `gatedSteps` to see where each step of its gate stands.
+
+For the first arm, read the root's architect claim in `read_state` (`issues.<KEY>.architect`).
+The daemon sends that task no second time while it stands, so you are the one who acts on it:
+
+1. When the claim's `state` is `working`, it is in a turn, and the task reaches it when that turn ends.
+   Take nothing, and name the root in the day's report.
+
+2. Otherwise the task did not reach its session.
+   `compact` that claim with the `legion` tool, with the root's key as the issue and `architect` as the role.
+   The daemon shortens the claim's session and sends it the task it owes again.
+   A refusal of `compact` names the door to use in its place.
+
+3. Use `fresh_session` on that claim only when it still does not take its task after the compaction.
+   A new session loses everything the old one held.
+
+For the second arm, read the root's architect claim in `read_state` too.
+A `failed` or `retired` claim takes nothing the daemon sends, and `fresh_session` on it, with the root's key as the issue and `architect` as the role, starts it again.
+A root with no architect claim has no claim for `compact` or `fresh_session` to reach, and each answers `NO_CLAIM` for it.
+When the reason says the daemon wrote the start of its architect again, take nothing, because that start creates the claim when it runs, and name the root in the day's report.
+When the reason says no start waits in the queue, or a later `read_state` still shows no `architect` for the root, name it in the day's report as a root the daemon could not start.
+
 For the third, decide what the time means — a tree whose spec is long is working, and a tree whose architect has nothing to show is an escalation (`skill://legion-controller/references/escalation.md`).
 
 ## `parked-decision on <KEY>` (`{kind: "parked-decision", decision, root, ref, actor, version?, reason?}`)

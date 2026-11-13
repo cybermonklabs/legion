@@ -254,11 +254,11 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, released supervise
 
 // OpenPhaseRole is the phase worker of an open phase, and "" where there is none: a phase no role
 // works, and the architect, whose phases (admitted and accepting) are the architect's own turn
-// rather than a worker's. It is the one statement of
-// "the worker of the open phase" the release reads: which role a release arms a backstop for —
-// an architect gets none, because nothing of its own is due and a sub-architect woken for nothing
-// would hold a pod open for the backstop period — which role a CI settlement wakes, and which
-// live claim of a pod has a phase reminder armed in it.
+// rather than a worker's. It is the one statement of "the worker of the open phase" the release
+// reads: which role a release arms a backstop for — an architect gets none, because nothing of
+// its own is due and a sub-architect woken for nothing would hold a pod open for the backstop
+// period — which role a CI settlement wakes, and which live claim of a pod has a phase reminder
+// armed in it.
 func OpenPhaseRole(p phase.Phase) claim.Role {
 	if role := phase.RoleFor(p); role != claim.RoleArchitect {
 		return role

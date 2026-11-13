@@ -80,9 +80,9 @@ func architectStartOf(t *testing.T, pool *pgxpool.Pool) record.SuperviseRequest 
 // A root's architect holds a row of the phases record carrying the entry its work stands at,
 // that entry's task and the moment it was raised, exactly as every phase worker does
 // (record.PhaseRow.Entry, EntryTask, EntryRaisedAt). EnterArchitect is the one way that entry is
-// raised from outside this package, and it raises the number rather than writing one: a tree
-// whose architect has been handed work before counts from where it stood, which is what tells
-// the work of one entry from the work of the next.
+// raised, and it raises the number rather than writing one: a tree whose architect has been
+// handed work before counts from where it stood, which is what tells the work of one entry from
+// the work of the next.
 //
 // The row is the architect's own: the entry of a phase worker of the same issue stands where it
 // was, because the record counts the entries each role has been handed.

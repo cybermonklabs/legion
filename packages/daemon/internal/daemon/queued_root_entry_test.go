@@ -16,7 +16,7 @@ import (
 
 // architectStalledWakes is every architect-stalled controller notice of issue the outbox holds,
 // oldest first, as the reason each carries (record.ArchitectStalledNotice, admit's
-// wakeStalledArchitect). A proof reads it to say that a root the daemon served raises no wake of
+// architectStalls). A proof reads it to say that a root the daemon served raises no wake of
 // any arm: each arm is a reading that the architect did not take its work, is not there, or has
 // not moved, and none of the three is true of a root whose architect holds the task it was sent.
 func architectStalledWakes(t *testing.T, pool *store.Pool, issue string) []string {

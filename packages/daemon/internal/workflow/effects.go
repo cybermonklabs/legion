@@ -714,14 +714,14 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 // record exactly as every phase worker does, so what it was handed, what that work is and how
 // long it has stood are read from the record rather than from the outbox row that carried it.
 //
-// It is the one way a root architect's entry is raised from outside this package, and admission's
-// promotion of a queued root is its one caller: that promotion composes the architect's first
-// task itself (ArchitectStartTask) and enqueues its start itself, because an architect's start
-// waits for no admission slot, so it writes neither through start nor through started, both of
-// which are a phase worker's. The rule it is held to is enter's own, which is why it is one call
-// and not a second implementation: it is made in the transaction that writes that start, and only
-// where the start hands the architect work it was not already on. The resume of a root a person
-// answered raises its entry inside this package instead (ResumeAwaitedRoot).
+// It is the one way a root architect's entry is raised, and three starts that hand the architect
+// work it was not on make it: admission's promotion of a queued root (admit's LineQueuedRoot
+// branch), the sweep's raise for an architect whose row names no entry
+// (RaiseArchitectEntryAndStart), and the resume of a root a person answered (ResumeAwaitedRoot).
+// Each composes the architect's task itself and enqueues its start itself, because an
+// architect's start waits for no admission slot, so none writes through start or started, both
+// of which are a phase worker's. The rule it is held to is enter's own, which is why it is one
+// call and not a second implementation: it is made in the transaction that writes that start.
 func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string) (int64, error) {
 	return e.enter(ctx, tx, root, claim.RoleArchitect, task)
 }

@@ -40,10 +40,10 @@ type ArchitectStart struct {
 	// is open at, the phase it stands in and whether its run has stood in a phase of its own
 	// (record.Issue.TakenBack).
 	Root record.Issue
-	// Carried is what the hand-over mark says: a root that arrived from another tree and has
-	// still to open a tree of its own (record.Issue.HandedOverFrom). Admission reads it from the
-	// record before the write that opens the tree clears it, and the narrowing of a held task
-	// reads the mark the record holds at the narrowing.
+	// Carried says a hand-over carried the root in at the phase it stands in. Admission reads it
+	// from the mark on the issue (record.Issue.HandedOverFrom) before the write that opens the
+	// tree clears it, and every reader after that write reads the hand-over row of the root's
+	// generation instead (ArchitectCarried): the sweep's start and the narrowing of a held task.
 	Carried bool
 	// Gate is the steps the deployment gates and the design gate rows the root holds now
 	// (record.Store.GatesOf). The zero value is a root that has registered nothing.

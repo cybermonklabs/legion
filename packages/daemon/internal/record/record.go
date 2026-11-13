@@ -1362,7 +1362,7 @@ type Store interface {
 	// raised (PhaseRow.Entry, PhaseRow.EntryRaisedAt), by issue and role, read in one statement.
 	// Admission's sweep weighs every role it holds against that number (admit's
 	// owedEntryRoles), and reads the moment beside it to tell how long a role has been owed the
-	// work the number names (admit's wakeStalledArchitect), and a read an issue would cost one
+	// work the number names (admit's architectStalls), and a read an issue would cost one
 	// round trip a slot on every fact of the project, which a project running hundreds of trees
 	// pays hundreds of times over. A row the record does not hold is absent from the answer,
 	// which reads as the zero entry: a role no transition has ever handed work on.
@@ -1457,15 +1457,24 @@ type Store interface {
 	// and boot runs does not tell it again. A re-admission opens a new generation of the tree and
 	// so tells it anew, and so does a hand-over, which gives the issue a tree of its own.
 	TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, at time.Time) (bool, error)
-	// TellArchitectStalled marks that the project's controller has been told, for the run
-	// generation of tree, that arm reads issue's own architect as stalled, and reports whether
-	// this call is the telling. Each arm has a mark of its own, so a root two arms read wakes
-	// the controller twice and one arm hides no other. Each arm is told once, because the pass
-	// that raises them runs on every fact of the project, and a wake that pass repeats would
-	// bury the controller's topic. A re-admission opens a new generation and tells it anew, as
-	// TellChildrenFirst does, and the tree is in the key for the same reason: a generation names
-	// a run within one tree alone.
-	TellArchitectStalled(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64, arm ArchitectStallArm, at time.Time) (bool, error)
+	// TellArchitectsStalled marks that the project's controller has been told each of stalls,
+	// for the run its generation names of its tree, and answers, at each index of stalls,
+	// whether this call is the telling of that one: a stall already marked, or one an earlier
+	// index of the same call marked, answers false, so the one row decides who tells. Each arm has
+	// a mark of its own, so a root two arms read wakes the controller twice and one arm hides no
+	// other. Each arm is told once, because the pass that raises them runs on every fact of the
+	// project, and a wake that pass repeats would bury the controller's topic. A re-admission
+	// opens a new generation and tells it anew, as TellChildrenFirst does, and the tree is in the
+	// key for the same reason: a generation names a run within one tree alone. It is one
+	// statement however many stalls it marks, and none for no stall, since every fact of the
+	// project runs the pass that calls it
+	// (admit's TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld).
+	TellArchitectsStalled(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) ([]bool, error)
+	// ArchitectStallsUntold says whether any of stalls holds no mark yet, which is whether the
+	// pass TellArchitectsStalled is called from would tell the controller anything. It writes
+	// nothing, so the entry sweep's gate asks it in its read-only transaction (admit's
+	// OwesEntryWork), in one statement, and in none for no stall.
+	ArchitectStallsUntold(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) (bool, error)
 	// ForgetKeptDecisions tells what outbox row's published catch-up named of what tree is owed
 	// (KeptDecisions), of the rows row claims or nothing claims: every parked decision still
 	// standing at the reference and time it named — a newer decision on the same reference, kept

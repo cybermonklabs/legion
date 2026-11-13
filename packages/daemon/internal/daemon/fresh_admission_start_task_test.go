@@ -30,7 +30,7 @@ import (
 //
 // Nothing wakes the project's controller about this root. Each of the three stall arms is a
 // reading that the architect did not take its work, is not there, or has not moved (admit's
-// wakeStalledArchitect), and a root the daemon has just served is none of the three: a wake here
+// architectStalls), and a root the daemon has just served is none of the three: a wake here
 // would send a person after a tree that is running.
 func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 	r := newMainPathRig(t, true)

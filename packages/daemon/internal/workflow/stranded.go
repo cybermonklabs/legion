@@ -23,6 +23,15 @@ const strandedRoleRunBatchSize = 200
 // running out, and reads it here rather than keeping a second ten minutes of its own.
 const StrandedReleaseWake = 10 * time.Minute
 
+// ArchitectGateWake is how long a root may stand at phase.Admitted with no step of its design
+// gate registered before the controller is told its architect has not moved it (admit's
+// architectSlowBeforeGate, record.ArchitectSlowBeforeGate): 90 minutes, above the longest
+// healthy time measured, 77 minutes (dispatch://INFRA-2614). It is the bound of that arm alone,
+// since a root writing its own design has turns of its own to take before it registers
+// anything, and the two arms that read a handshake take StrandedReleaseWake. It is the one copy
+// of that bound: `legion state`'s plain line reads it here, as admission does.
+const ArchitectGateWake = 90 * time.Minute
+
 // ReleasedWake is one recorded wake of a released pod as the stranded rule reads it: the pod and
 // the role the wake was for, when the wake reached the daemon, and whether a stuck pass has
 // already said so. The daemon reads them from its own records (store.Store.UnfinishedPodResumesTx,

@@ -2,6 +2,7 @@ package record
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -37,7 +38,7 @@ func TestTheArchitectStalledWakeIsOneOfTheControllerOnlyNoticeKinds(t *testing.T
 }
 
 // Each arm says its own words, and no two arms say the same ones: the reason of every wake
-// begins with them (admit's wakeStalledArchitect), so a controller holding two wakes of one root
+// begins with them (admit's wakeStalledArchitects), so a controller holding two wakes of one root
 // reads two different facts rather than one sentence twice.
 func TestEachArchitectWakeArmSaysWordsOfItsOwn(t *testing.T) {
 	said := map[string]ArchitectStallArm{}
@@ -58,7 +59,11 @@ func TestEachArchitectWakeArmSaysWordsOfItsOwn(t *testing.T) {
 
 // The mark tells once for one issue, one tree, one run and one arm, and tells again for a second
 // arm and for the run after it. It is what keeps the wake the admission pass raises to one
-// however many facts, ticks and sweeps read the same root (admit's wakeStalledArchitect).
+// however many facts, ticks and sweeps read the same root (admit's architectStalls), and the
+// pass writes every mark of one pass in one call, so the call answers each stall at its own
+// index: a mark that stands answers false, and so does a second copy of one stall in the same
+// call. The read the entry sweep's gate makes before any of that (ArchitectStallsUntold) says
+// whether any stall would still be told, and it changes nothing.
 func TestTheArchitectWakeMarkTellsOncePerArmAndRun(t *testing.T) {
 	ctx := context.Background()
 	st := migratedStore(t)
@@ -66,27 +71,41 @@ func TestTheArchitectWakeMarkTellsOncePerArmAndRun(t *testing.T) {
 	root := issueFixture("LEGION-829")
 	root.Parent = nil
 	at := time.Date(2026, 11, 12, 9, 0, 0, 0, time.UTC)
+	stall := func(arm ArchitectStallArm, generation uint64, at time.Time) ArchitectStall {
+		return ArchitectStall{Issue: root.Key, Tree: root.Tree, Generation: generation, Arm: arm, At: at}
+	}
+	took := stall(ArchitectTookNothing, root.Generation, at)
+	slow := stall(ArchitectSlowBeforeGate, root.Generation, at)
+	nextRun := stall(ArchitectTookNothing, root.Generation+1, at)
 	inTx(t, st, func(tx pgx.Tx) {
 		must(t, records.PutIssue(ctx, tx, root))
-		told, err := records.TellArchitectStalled(ctx, tx, root.Key, root.Tree, root.Generation, ArchitectTookNothing, at)
+		untold, err := records.ArchitectStallsUntold(ctx, tx, []ArchitectStall{took})
 		must(t, err)
-		if !told {
-			t.Fatalf("the first call for an arm answers false, so nothing would ever tell the controller")
+		if !untold {
+			t.Fatalf("an arm no call has marked reads as told, so the sweep's gate would never open for it")
 		}
-		told, err = records.TellArchitectStalled(ctx, tx, root.Key, root.Tree, root.Generation, ArchitectTookNothing, at.Add(time.Minute))
+		told, err := records.TellArchitectsStalled(ctx, tx, []ArchitectStall{took})
 		must(t, err)
-		if told {
-			t.Fatalf("the second call for the same root, run and arm answers true, so every pass would wake the controller again")
+		if len(told) != 1 || !told[0] {
+			t.Fatalf("the first call for an arm answers %v, want [true]: nothing would ever tell the controller", told)
 		}
-		told, err = records.TellArchitectStalled(ctx, tx, root.Key, root.Tree, root.Generation, ArchitectSlowBeforeGate, at)
-		must(t, err)
-		if !told {
-			t.Fatalf("a second arm of the same root answers false, so one arm would hide the other")
+		if untold, err = records.ArchitectStallsUntold(ctx, tx, []ArchitectStall{took}); err != nil || untold {
+			t.Fatalf("an arm marked told reads as untold (%v), so the sweep's gate would open for it on every period", err)
 		}
-		told, err = records.TellArchitectStalled(ctx, tx, root.Key, root.Tree, root.Generation+1, ArchitectTookNothing, at)
+		if untold, err = records.ArchitectStallsUntold(ctx, tx, []ArchitectStall{took, slow}); err != nil || !untold {
+			t.Fatalf("a second arm of the same root reads as told (%v), so one arm would hide the other at the gate", err)
+		}
+		told, err = records.TellArchitectsStalled(ctx, tx, []ArchitectStall{stall(ArchitectTookNothing, root.Generation, at.Add(time.Minute)), slow, nextRun, slow})
 		must(t, err)
-		if !told {
-			t.Fatalf("the run after a re-admission answers false, so the new run's controller would never hear it")
+		if want := []bool{false, true, true, false}; !slices.Equal(told, want) {
+			t.Fatalf("the second call answers %v, want %v: the marked arm again tells nothing, a second arm and the run after a re-admission each tell, and a second copy of one stall in one call tells nothing",
+				told, want)
+		}
+		if untold, err = records.ArchitectStallsUntold(ctx, tx, []ArchitectStall{took, slow, nextRun}); err != nil || untold {
+			t.Fatalf("every stall marked reads as untold (%v), want none", err)
+		}
+		if untold, err = records.ArchitectStallsUntold(ctx, tx, nil); err != nil || untold {
+			t.Fatalf("no stall at all reads as untold (%v), want nothing to tell", err)
 		}
 	})
 }

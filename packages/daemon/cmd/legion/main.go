@@ -1106,30 +1106,32 @@ type entryBehind struct {
 	arm string
 }
 
-// slowBeforeGate is how long a root may stand at admitted with no registered design gate before
-// a wake names it: 90 minutes, which is above the longest healthy time measured, 77 minutes
-// (dispatch://INFRA-2614, R7's third arm). The clock runs from the later of the root's admission
-// and the queueing of its architect's task, so a root whose architect was given work later is
-// given its own 90 minutes from that moment.
-const slowBeforeGate = 90 * time.Minute
-
-// rootWakeArm is why a wake of the daemon names this root, and "" for a root no arm holds for.
-// The arms are R7's of dispatch://INFRA-2614, read here from the state alone, as the daemon's own
-// pass reads them from its records:
+// rootWakeArm is why a wake of the daemon would name this root, and "" for a root no arm holds
+// for. The arms are R7's of dispatch://INFRA-2614, read here from the state alone, the way the
+// daemon's own pass reads them from its records (admit's architectStalls):
 //
 //   - the architect took nothing: the task of the root's entry was first queued more than
 //     workflow.StrandedReleaseWake ago and no turn of its claim's worker confirmed it
 //     (api.Issue.EntryQueuedAt and EntryConfirmedAt);
 //   - the claim cannot be reached: the architect's claim is failed or retired, which no further
 //     send cures;
-//   - the root is slow before its gate: it stands at admitted with no registered design gate
-//     slowBeforeGate after the later of its admission and the queueing of its architect's task,
-//     which names a root holding a slot and leaves what that means to the controller.
+//   - the root is slow before its gate: it stands at admitted with no step of its design gate
+//     registered workflow.ArchitectGateWake after the later of its admission and the queueing of
+//     its architect's task, which names a root holding a slot and leaves what that means to the
+//     controller.
+//
+// The line names a root wherever an arm holds, whether or not the controller was told: the state
+// carries no mark of a wake, and the daemon wakes the controller once per arm and run. It reads
+// the arms over a tree's own root alone, as the daemon's pass does (admit's rootArchitectOf): a
+// child at admitted is the architect's phase by phase.RoleFor, and no wake names it.
 //
 // A root whose two entry numbers merely differ is named by none of them: every root reads that
 // way for the moments between a transition and its delivery, so the difference alone would name
 // a healthy root at every read.
 func rootWakeArm(issue api.Issue, now time.Time) string {
+	if issue.Key != issue.Tree {
+		return ""
+	}
 	if issue.EntryQueuedAt != nil && issue.EntryConfirmedAt == nil &&
 		now.Sub(*issue.EntryQueuedAt) > workflow.StrandedReleaseWake {
 		return "its architect took nothing"
@@ -1140,11 +1142,7 @@ func rootWakeArm(issue api.Issue, now time.Time) string {
 			return "its claim is " + issue.Architect.State
 		}
 	}
-	// The gate is registered once the root's spec step holds a document, which is what
-	// `designGate` carries (api.Issue.DesignGate); a root that has registered none has stood
-	// here since the later of the two moments below, and a root of a deployment that gates no
-	// step registers none at all.
-	if issue.Phase == phase.Admitted && issue.DesignGate == nil {
+	if issue.Phase == phase.Admitted && !gateRegistered(issue) {
 		since := time.Time{}
 		if issue.Slot != nil {
 			since = issue.Slot.AdmittedAt
@@ -1152,11 +1150,26 @@ func rootWakeArm(issue api.Issue, now time.Time) string {
 		if issue.EntryQueuedAt != nil && issue.EntryQueuedAt.After(since) {
 			since = *issue.EntryQueuedAt
 		}
-		if !since.IsZero() && now.Sub(since) > slowBeforeGate {
+		if !since.IsZero() && now.Sub(since) > workflow.ArchitectGateWake {
 			return "slow before its gate"
 		}
 	}
 	return ""
+}
+
+// gateRegistered is whether root has registered any step of its design gate, which is what the
+// daemon's gate arm reads the absence of (admit's architectSlowBeforeGate, any gate row of the
+// root). `designGate` carries the spec step alone (api.Issue.DesignGate), so a deployment that
+// gates the decisions or the criteria step without the spec is read from `gatedSteps`, which
+// holds one entry for each step the deployment gates (api.GatedStepViewsOf). A root of a
+// deployment that gates no step registers none at all.
+func gateRegistered(root api.Issue) bool {
+	if root.DesignGate != nil {
+		return true
+	}
+	return slices.ContainsFunc(root.GatedSteps, func(step api.GatedStepView) bool {
+		return step.Status != api.GatedStepUnregistered
+	})
 }
 
 // entriesBehind is every issue of the state the plain line names, by issue key: one whose role

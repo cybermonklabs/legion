@@ -608,7 +608,7 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // An architect-stalled notice names a root whose own architect has stalled, in one of the three
 // readings ArchitectStallArm names below. Its Role is the architect, and its
 // Reason names the arm, the root and what the record says. One root raises one notice per arm,
-// per run of its tree (Store.TellArchitectStalled, admit's wakeStalledArchitect), so a root that
+// per run of its tree (Store.TellArchitectsStalled, admit's architectStalls), so a root that
 // two arms read raises two and neither hides the other. Nobody inside the tree is told: the
 // architect is the role that would be, and each arm is a reading that it did not take, cannot be
 // reached, or has not moved (dispatch://INFRA-2614).
@@ -626,9 +626,9 @@ const (
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
-// mark that keeps one wake to one root, one run and one arm (Store.TellArchitectStalled), and
-// the first words of the notice's reason, so a controller that reads two wakes of one root reads
-// two different facts:
+// mark that keeps one wake to one root, one run and one arm (ArchitectStall,
+// Store.TellArchitectsStalled), and the first words of the notice's reason, so a controller that
+// reads two wakes of one root reads two different facts:
 //
 //   - ArchitectTookNothing: the task of the architect's phase entry was queued to its claim more
 //     than workflow.StrandedReleaseWake ago and no turn of that claim confirmed it. The daemon
@@ -636,7 +636,7 @@ const (
 //     wake is the one thing left.
 //   - ArchitectClaimUnreachable: the architect's claim is failed or retired, or the root has no
 //     architect claim at all and the work of its entry has stood that same bound. It is the
-//     first wake for a claim workflow.Stranded names, which until now woke nobody.
+//     wake for a claim workflow.Stranded names.
 //   - ArchitectSlowBeforeGate: the root stands at phase.Admitted with no design-gate step
 //     registered 90 minutes after it was admitted, or after its architect's entry was last
 //     raised, whichever is later.
@@ -649,7 +649,7 @@ const (
 )
 
 // Words is the arm in the words an architect-stalled notice's reason begins with, before what
-// the record says (admit's wakeStalledArchitect). The words and the mark's arm are written from
+// the record says (admit's architectStalls). The words and the mark's arm are written from
 // one value, so the wake a controller reads and the row that keeps it to one cannot name two
 // different readings. An arm nothing here names reads as its own value, which no caller writes.
 func (a ArchitectStallArm) Words() string {
@@ -662,6 +662,18 @@ func (a ArchitectStallArm) Words() string {
 		return "the root is slow before its gate"
 	}
 	return string(a)
+}
+
+// ArchitectStall is one arm an admission pass read over one root's own architect: the root, the
+// tree it stands in, the generation of that tree's run, the arm, and the moment the pass read it.
+// The first four are the key of the mark that keeps one wake to one root, one run and one arm
+// (Store.TellArchitectsStalled), and At is kept on the mark for a reader of the table alone.
+type ArchitectStall struct {
+	Issue      string
+	Tree       string
+	Generation uint64
+	Arm        ArchitectStallArm
+	At         time.Time
 }
 
 // NoticePerClaim is whether one unpublished controller notice of kind stands per claim — the

@@ -535,7 +535,7 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // (record.Waiting's LineFirstPhase), in the same admission pass that resumed this root.
 //
 // The resume hands the architect work it was not on, so it raises the architect's phase entry and
-// writes this task as the work of that entry (enter), and the start carries the number
+// writes this task as the work of that entry (EnterArchitect), and the start carries the number
 // (record.SuperviseRequest.Entry) as a phase worker's start does. That is what makes a resume
 // survivable: the answer a person gave lives on the record, so a start row that reaches no claim
 // loses nothing, and the architect can be sent that task again from the record alone. Both
@@ -555,7 +555,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 		return err
 	}
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
-	entry, err := e.enter(ctx, tx, root, claim.RoleArchitect, task)
+	entry, err := e.EnterArchitect(ctx, tx, root, task)
 	if err != nil {
 		return err
 	}

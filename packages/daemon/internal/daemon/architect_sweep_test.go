@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -125,5 +127,100 @@ func TestTheArchitectSweepTickSendsARootArchitectTheWorkOfItsEntry(t *testing.T)
 	if starts := sweptStarts(t, pool, root.Key); len(starts) != 1 || starts[0] != first {
 		t.Fatalf("the start rows of %s after %d sweeps = %+v, want the one row %+v the first sweep wrote: a later sweep reads the start already on its way and writes nothing",
 			root.Key, swept(), starts, first)
+	}
+}
+
+// A stall alone runs the sweep. The project is quiet — no Dispatch event, no completion, no tick
+// of the controller — and its one root's architect holds the task of its entry, queued twenty
+// minutes ago, with no turn of its claim confirming it. That architect is owed nothing the pass
+// sends: the daemon writes no second start while that task stands (workflow's
+// ArchitectStartPending). So the gate the runtime asks before each sweep must open for the stall
+// itself (admit's OwesEntryWork): a gate that asked only whether a role is owed its entry's work
+// would apply no fact, and the controller would hear of the stall at the project's next fact,
+// which in a quiet project is its own hourly tick.
+//
+// The next sweep applies its fact and wakes the controller with the first arm's words. The mark
+// that fact wrote is what shuts the gate again, so a sweep after it applies nothing and the
+// controller is woken once.
+func TestTheArchitectSweepWakesTheControllerForAStallInAQuietProject(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	log := quietLogger()
+	records := record.NewStore()
+	const sweepProject = "ARCHSTALL"
+	now := time.Now().UTC()
+	root := record.Issue{Key: "ARCHSTALL-910", Tree: "ARCHSTALL-910", Project: sweepProject, Title: "the root",
+		Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress",
+		Rank: "ARCHSTALL-910", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}
+	project, err := claim.ProjectToken(sweepProject)
+	if err != nil {
+		t.Fatal(err)
+	}
+	token, err := claim.NewToken(project, root.Key, claim.RoleArchitect)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const entry = 2
+	queued := now.Add(-20 * time.Minute)
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		if err := records.PutIssue(ctx, tx, root); err != nil {
+			return err
+		}
+		if err := records.PutSlot(ctx, tx, record.Slot{Issue: root.Key, Index: 0, AdmittedAt: queued}); err != nil {
+			return err
+		}
+		if err := records.PutPhase(ctx, tx, record.PhaseRow{Issue: root.Key, Role: claim.RoleArchitect, Claim: token,
+			Entry: entry, EntryTask: "Take the tree up.", EntryRaisedAt: queued}); err != nil {
+			return err
+		}
+		// The architect's claim was given that entry and holds its task, unconfirmed.
+		if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file, state,
+			serving_generation, launch_failures, prompt_failures, prompt_retires, uncertain_streak, given_entry)
+			values ($1, $2, $3, $3, 'architect', 1, 'ses', '/sessions/ses.jsonl', 'idle', 1, 0, 0, 0, 0, $4)`,
+			string(token), project, root.Key, int64(entry)); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `insert into pending_task_deliveries (claim_token, delivery_id, task, queued_at, generation, phase, entry)
+			values ($1, 'outbox:31', 'Take the tree up.', $2, 1, '', $3)`, string(token), queued, int64(entry))
+		return err
+	}); err != nil {
+		t.Fatalf("seed the root whose architect took nothing: %v", err)
+	}
+
+	engine := workflow.New(records, workflow.Config{Project: sweepProject, Repositories: testRepositories,
+		Steps: config.DesignGateRootIssues.Steps()}, log)
+	admission := admit.New(records, engine, 1, sweepProject, log)
+	w := &workflowRuntime{
+		pool: pool, records: tickRecords(), admission: admission, handlers: []intake.Handler{engine, admission},
+		dispatchProject: sweepProject, bootID: "test-boot", log: log,
+	}
+	swept := func() (n int) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `select count(*) from processed_events
+			where event_id like 'entry-sweep:ARCHSTALL:test-boot:%'`).Scan(&n); err != nil {
+			t.Fatalf("read the sweeps applied: %v", err)
+		}
+		return n
+	}
+
+	// On a hold mark of its own, as the sweep runs in production (tickEntrySweep's caller).
+	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now())
+	if n := swept(); n != 1 {
+		t.Fatalf("the sweep over a quiet project whose one root's architect took nothing applied %d facts, want the one that wakes the controller", n)
+	}
+	wakes := architectStalledWakes(t, pool, root.Key)
+	if len(wakes) != 1 || !strings.HasPrefix(wakes[0], record.ArchitectTookNothing.Words()+":") {
+		t.Fatalf("the architect-stalled wakes of %s = %q, want the one wake of the first arm", root.Key, wakes)
+	}
+	if starts := sweptStarts(t, pool, root.Key); len(starts) != 0 {
+		t.Fatalf("the sweep wrote %s %+v, want no start: its architect holds the task of its entry, and the wake is what is left", root.Key, starts)
+	}
+
+	w.applyEntrySweep(store.ForConcurrentWorker(ctx), time.Now().Add(time.Second))
+	if n := swept(); n != 1 {
+		t.Fatalf("a second sweep after the wake applied %d facts in all, want still the one: the mark shuts the gate once the stall is told", n)
+	}
+	if wakes := architectStalledWakes(t, pool, root.Key); len(wakes) != 1 {
+		t.Fatalf("the architect-stalled wakes of %s after a second sweep = %q, want the one", root.Key, wakes)
 	}
 }

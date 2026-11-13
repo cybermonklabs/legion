@@ -47,13 +47,16 @@ func ArchitectAtWork(ctx context.Context, tx pgx.Tx, store record.Store, root re
 	if !root.CarriesRun() {
 		return false, nil
 	}
-	return architectCarried(ctx, tx, store, root)
+	return ArchitectCarried(ctx, tx, store, root)
 }
 
-// architectCarried is whether a hand-over created root at the generation it stands at
+// ArchitectCarried is whether a hand-over created root at the generation it stands at
 // (record.Store.HandedOverRoot), which is what says the phase it stands in came with it. A row of
-// an earlier generation belongs to a run that has ended, so it says nothing of this one.
-func architectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue) (bool, error) {
+// an earlier generation belongs to a run that has ended, so it says nothing of this one. It is
+// the reading every caller past the promotion makes, since that promotion clears the mark on the
+// issue (record.Issue.HandedOverFrom): the sweep's reach (ArchitectAtWork), the task its start
+// derives (architectStartWork) and the daemon's narrowing of a held task (its rootTask).
+func ArchitectCarried(ctx context.Context, tx pgx.Tx, store record.Store, root record.Issue) (bool, error) {
 	handed, err := store.HandedOverRoot(ctx, tx, root.Key)
 	if err != nil {
 		return false, err
@@ -142,9 +145,14 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 	if err != nil {
 		return "", nil, err
 	}
-	carried, err := architectCarried(ctx, tx, e.store, root)
-	if err != nil {
-		return "", nil, err
+	// The derivation reads whether the root was carried only past phase.Admitted (its rule 1),
+	// so the hand-over row is read there alone; a root at admitted, which is almost every start
+	// the sweep writes, is given the same task either way.
+	carried := false
+	if root.Phase != phase.Admitted {
+		if carried, err = ArchitectCarried(ctx, tx, e.store, root); err != nil {
+			return "", nil, err
+		}
 	}
 	return ArchitectStartTask(ArchitectStart{Root: root, Carried: carried, Gate: gate,
 		Launch: launches[root.Tree], Decided: decided}), kept, nil
@@ -155,6 +163,6 @@ func (e *Engine) architectStartWork(ctx context.Context, tx pgx.Tx, root record.
 func (e *Engine) enqueueArchitectStart(ctx context.Context, tx pgx.Tx, root record.Issue, task string,
 	kept *record.KeptDecisions, entry int64,
 ) error {
-	return EnqueueNaming(ctx, tx, e.store, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
+	return e.EnqueueNaming(ctx, tx, root.Key, root.Tree, record.SuperviseRequest{Op: "start", Tree: root.Tree,
 		Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry, Kept: kept}, kept, e.now())
 }

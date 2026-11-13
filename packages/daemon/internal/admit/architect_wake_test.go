@@ -17,19 +17,19 @@ import (
 )
 
 // architectWakeGeneration is the run every root of this file stands at, where no case says
-// otherwise. The mark that keeps one arm to one wake is keyed by it (record.Store.TellArchitectStalled).
+// otherwise. The mark that keeps one arm to one wake is keyed by it (record.ArchitectStall).
 const architectWakeGeneration = 2
 
 // pastTheHandshake is how long ago a fixture queues a task or raises an entry when the case is
 // about an architect that has had the work long enough: one minute past the bound the two
 // handshake arms read (workflow.StrandedReleaseWake). insideTheHandshake is the other side of
 // that bound, and pastTheGate and insideTheGate the two sides of the gate arm's own
-// (admit's architectGateWake).
+// (workflow.ArchitectGateWake).
 var (
 	pastTheHandshake   = workflow.StrandedReleaseWake + time.Minute
 	insideTheHandshake = workflow.StrandedReleaseWake - time.Minute
-	pastTheGate        = architectGateWake + 30*time.Minute
-	insideTheGate      = architectGateWake - 30*time.Minute
+	pastTheGate        = workflow.ArchitectGateWake + 30*time.Minute
+	insideTheGate      = workflow.ArchitectGateWake - 30*time.Minute
 )
 
 // architectWakeFixture is one root the stall reading is asked about. The base shape
@@ -222,16 +222,24 @@ func assertArchitectWakes(t *testing.T, pool *pgxpool.Pool, root string, arms []
 // Each of the three arms wakes the project's controller once for a root and a run, however many
 // passes read it. The pass runs on every fact of the project and on the sweep's own minute, so a
 // wake decided by the reading alone would reach the controller again on each of them; the mark
-// the arm writes is what keeps it to one (record.Store.TellArchitectStalled).
+// the arm writes is what keeps it to one (record.Store.TellArchitectsStalled).
 //
 // Each root is the base fixture — the one the reading raises nothing for — with the fields its
 // own arm is about changed, so each wake turns on the thing its case names and on nothing else.
+//
+// The root with no architect claim at all is one the first pass also writes the start of its
+// architect for, before it reads the arms: the wake stands, since a root with no claim that long
+// is stalled whatever that pass writes, and its reason says the start was written in the same
+// transaction rather than that no start waits in the queue, which after that pass is false.
 func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		arm    record.ArchitectStallArm
 		change func(*architectWakeFixture)
 		why    string
+		// says is a phrase the wake's reason must carry, and never one it must not, where the
+		// case names one.
+		says, never string
 	}{
 		{
 			name: "the architect took nothing", arm: record.ArchitectTookNothing,
@@ -253,7 +261,9 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 				f.claimed, f.task = false, false
 				f.raisedAt = fixedNow.Add(-pastTheHandshake)
 			},
-			why: "the work of its entry has stood past the bound, no claim was ever created for it and no start of one waits in the queue",
+			why:   "the work of its entry has stood past the bound and no claim was ever created for it, and the first pass wrote the start of its architect again",
+			says:  "the daemon wrote the start of its architect again in the same transaction as this wake",
+			never: "no start of one waits in the queue",
 		},
 		{
 			name: "the root is slow before its gate", arm: record.ArchitectSlowBeforeGate,
@@ -279,6 +289,18 @@ func TestEachArchitectWakeArmTellsTheControllerOnceForARootAndRun(t *testing.T) 
 			assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{tc.arm}, tc.why)
 			if marks := architectWakeMarks(t, pool, root, architectWakeGeneration); len(marks) != 1 || marks[0] != string(tc.arm) {
 				t.Fatalf("the arms %s is marked told for = %v, want the one %s: %s", root, marks, tc.arm, tc.why)
+			}
+			reason := architectWakes(t, pool, root)[0]
+			if tc.says != "" && !strings.Contains(reason, tc.says) {
+				t.Fatalf("the wake of %s = %q, want it to say %q: %s", root, reason, tc.says, tc.why)
+			}
+			if tc.never != "" && strings.Contains(reason, tc.never) {
+				t.Fatalf("the wake of %s = %q, want it not to say %q: %s", root, reason, tc.never, tc.why)
+			}
+			if tc.says != "" {
+				if starts := architectStartsOf(t, pool, root); len(starts) != 1 {
+					t.Fatalf("the architect starts of %s = %+v, want the one the first pass wrote: the reason says it wrote one", root, starts)
+				}
 			}
 		})
 	}
@@ -527,4 +549,47 @@ func TestTheGateArchitectWakeReadsTheLaterOfTheAdmissionAndTheEntryRaised(t *tes
 	applySweep(t, pool, admission, "answered-3")
 	assertArchitectWakes(t, pool, root, []record.ArchitectStallArm{record.ArchitectSlowBeforeGate},
 		"the root has now stood its own 90 minutes since the work came back to it, and the wake is told once")
+}
+
+// The entry sweep's gate opens for an arm no wake has told yet, and the wake the sweep's pass
+// then sends is what closes it. A root whose architect took nothing is owed nothing the pass
+// sends — its task stands unconfirmed, so the pass writes no second start
+// (workflow.ArchitectStartPending) — so a gate that asked only whether a role is owed its entry's
+// work would answer no, and in a quiet project the controller would hear of the stall only at the
+// next fact. A root beside it that is moving along raises nothing, so it holds the gate open
+// neither before the wake nor after it.
+func TestTheArchitectWakeOpensTheEntrySweepsGateUntilItIsTold(t *testing.T) {
+	ctx := context.Background()
+	pool := migratedPool(t)
+	admission := quiet(t, 2)
+	const stalled, moving = "LEGION-840", "LEGION-841"
+	fixture := architectWakeRoot(stalled)
+	fixture.queuedAt, fixture.confirmed = fixedNow.Add(-pastTheHandshake), false
+	seedArchitectWakeRoot(t, pool, fixture)
+	seedArchitectWakeRoot(t, pool, architectWakeRoot(moving))
+	owes := func() bool {
+		t.Helper()
+		var owed bool
+		if err := pgx.BeginTxFunc(ctx, pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+			var err error
+			owed, err = admission.OwesEntryWork(ctx, tx)
+			return err
+		}); err != nil {
+			t.Fatalf("ask the entry sweep's gate: %v", err)
+		}
+		return owed
+	}
+
+	if !owes() {
+		t.Fatalf("the gate over %s, whose architect took nothing and whose arm no wake has told, answers no: the sweep would apply no fact for it", stalled)
+	}
+	applySweep(t, pool, admission, "gate-1")
+	assertArchitectWakes(t, pool, stalled, []record.ArchitectStallArm{record.ArchitectTookNothing},
+		"the pass the gate opened for reads the arm and tells the controller")
+	if reasons := architectWakes(t, pool, moving); len(reasons) != 0 {
+		t.Fatalf("the architect wakes of %s = %q, want none: its architect took the task it was sent", moving, reasons)
+	}
+	if owes() {
+		t.Fatalf("the gate after the wake of %s was told answers yes: the sweep would apply a fact a minute for a stall already told", stalled)
+	}
 }

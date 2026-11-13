@@ -2171,6 +2171,8 @@ The daemon wakes the project's controller with `architect-stalled on <KEY>` (`sk
 
 - the root is slow before its gate: it still stands at `admitted` with no design-gate step registered 90 minutes after its admission or its architect's last raised entry, whichever is later.
 
+The daemon reads the three arms on every admission pass, and its sweep of each minute runs while an arm holds that no wake has told yet, so in a project where no other fact arrives the controller is woken within a minute of the arm holding.
+
 Store migration 20261113181500_architect_stalled_notices adds `architect_stalled_notices`, which marks each wake told.
 Store migration 20261113182000_architect_entry_upgrade settles every root architect of the release before it at entry 1, on its row and on its claim, and marks the first and the third arm told for each root, so the upgrade sends no running architect a first task and wakes the controller for none of them.
 The state of such a root carries its two numbers and neither time, since the upgrade queues no task.

@@ -57,6 +57,12 @@ func slottedKey(i int) string { return fmt.Sprintf("LEGION-%d", 1000+i) }
 // trips on each fact, and the Dispatch consumer, whose events are mostly facts of recorded
 // issues, fell behind. Finished trees' slots are still released in slot order, whatever order the
 // records come in, and another project's slot in the shared table is neither released nor counted.
+//
+// The count holds as well where every slotted root is stalled: each has stood at admitted past
+// the gate arm's bound with no step of its design gate registered, and an earlier fact has told
+// the controller so. The pass reads that arm over every root on every fact, and marks what it
+// reads in one statement for the whole pass (record.Store.TellArchitectsStalled), so a root that
+// stays stalled costs no statement of its own.
 func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	facts := []struct {
 		name string
@@ -68,7 +74,7 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 		{"an observation of an issue Legion does not record", intake.DispatchIssue{Key: "LEGION-9", Seq: 5, Type: "issue.updated", Status: "backlog",
 			Title: "someone else's", Rank: "Z", ResolvedRepo: "acme/widgets"}},
 	}
-	run := func(t *testing.T, held int) ([]int64, *pgxpool.Pool) {
+	run := func(t *testing.T, held int, stalled bool) ([]int64, *pgxpool.Pool) {
 		t.Helper()
 		pool := migratedPool(t)
 		for i := range held {
@@ -78,6 +84,19 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 		counted := countedPool(t, pool, counter)
 		admission := newAdmission(t, 2*held+2, slog.New(slog.NewTextHandler(io.Discard, nil)))
 		handlers := []intake.Handler{blockers.NewMirror(record.NewStore(), testProject), admission.engine, admission}
+		if stalled {
+			if _, err := pool.Exec(context.Background(), `update slots set admitted_at = $1`, fixedNow.Add(-pastTheGate)); err != nil {
+				t.Fatalf("age the slots of %d roots past the gate arm's bound: %v", held, err)
+			}
+			if _, err := intake.ApplyFact(context.Background(), pool, "entry-sweep", "tell-the-stalls", intake.EntrySweep{}, handlers...); err != nil {
+				t.Fatalf("apply the fact that tells the controller of %d stalled roots: %v", held, err)
+			}
+			for i := range held {
+				if wakes := architectWakes(t, pool, slottedKey(i)); len(wakes) != 1 {
+					t.Fatalf("the architect wakes of %s before the counted facts = %q, want the one the first fact told: the case's premise", slottedKey(i), wakes)
+				}
+			}
+		}
 		sent := make([]int64, len(facts))
 		for i, tc := range facts {
 			counter.sent.Store(0)
@@ -92,11 +111,18 @@ func TestAFactAsksAsManyStatementsWhateverNumberOfSlotsIsHeld(t *testing.T) {
 	}
 
 	const slotsHeld = 40
-	few, _ := run(t, 1)
-	many, pool := run(t, slotsHeld)
+	few, _ := run(t, 1, false)
+	many, pool := run(t, slotsHeld, false)
 	for i, tc := range facts {
 		if many[i] != few[i] {
 			t.Errorf("%s: %d statements with %d slots held, %d with 1; want as many", tc.name, many[i], slotsHeld, few[i])
+		}
+	}
+	fewStalled, _ := run(t, 1, true)
+	manyStalled, _ := run(t, slotsHeld, true)
+	for i, tc := range facts {
+		if manyStalled[i] != fewStalled[i] {
+			t.Errorf("%s: %d statements with %d stalled roots told already, %d with 1; want as many", tc.name, manyStalled[i], slotsHeld, fewStalled[i])
 		}
 	}
 

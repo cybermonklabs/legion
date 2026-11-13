@@ -129,6 +129,74 @@ func TestAHeldTaskNamingOnlyTheHandedOverChildsDecisionsIsRetired(t *testing.T) 
 	}
 }
 
+// A held task of a root a hand-over carried in keeps its take-the-phase-up instruction when a
+// decision it named leaves it. The root stands in the phase that came with it (implementing), its
+// architect's held task is the start task of that shape, naming two decisions, and only one of
+// them is still held by the delivery: a newer decision on the other's reference replaced it, so
+// the task names it no longer and is narrowed at the send (the daemon's rootTask).
+//
+// The narrowing reads whether the root was carried from the hand-over row of its generation, as
+// the sweep does (workflow.ArchitectCarried). The mark on the issue (record.Issue.HandedOverFrom)
+// is gone by then, since the promotion that opened the root's own tree cleared it, and a
+// narrowing that read the mark would take every carried root for one past admitted under its
+// own power, whose rewrite is the decisions' text alone.
+func TestTheHeldTaskOfARootAHandOverCarriedInKeepsItsPhaseWhenADecisionLeaves(t *testing.T) {
+	ctx := context.Background()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	const key = "LEGION-312"
+	steps := config.DesignGateRootIssues.Steps()
+	putOutboxIssue(t, pool, records, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main",
+		GitHubRepo: "acme/widgets", Project: heldTaskProject, Tree: key, Title: "Carried", Phase: phase.Implementing,
+		Generation: 2, Status: "in_progress", Rank: "A", LastDispatchSeq: 1})
+	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
+		return records.PutHandedOverRoot(ctx, tx, record.HandedOverRoot{Issue: key, Generation: 2})
+	}); err != nil {
+		t.Fatalf("record %s as a root a hand-over created at generation 2: %v", key, err)
+	}
+	root := readIssue(t, pool, key)
+	if root == nil || root.HandedOverFrom != "" {
+		t.Fatalf("the carried root = %+v, want it recorded with the hand-over mark cleared, as its promotion leaves it", root)
+	}
+
+	token := mustClaimToken(t, key, claim.RoleArchitect)
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	kept := record.DecisionMark{Issue: key, Ref: "dispatch://" + key + "/ask/ask-0001", Decision: record.DecisionAskAnswered,
+		Actor: "user:alice", At: at}
+	replaced := record.DecisionMark{Issue: key, Ref: "dispatch://" + key + "/ask/ask-0002", Decision: record.DecisionAskAnswered,
+		Actor: "user:alice", At: at.Add(time.Minute)}
+	named := record.KeptDecisions{Decisions: []record.DecisionMark{kept, replaced}}
+	if _, err := pool.Exec(ctx, `insert into parked_decisions (issue, ref, decision, actor, at, held_by_claim, held_by_delivery)
+		values ($1, $2, $3, $4, $5, $6, 'outbox:7'), ($1, $7, $3, $4, $8, null, null)`,
+		key, kept.Ref, string(kept.Decision), kept.Actor, kept.At, string(token), replaced.Ref, at.Add(time.Hour)); err != nil {
+		t.Fatalf("keep the decisions of %s, the first held by the architect's task: %v", key, err)
+	}
+	held := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
+		Decided: workflow.KeptDecisionsTask(key, named)})
+	if !strings.Contains(held, workflow.ArchitectCarriedPhaseLabel) {
+		t.Fatalf("the held task = %q, want the carried shape: the case's premise", held)
+	}
+	encoded, err := json.Marshal(named)
+	if err != nil {
+		t.Fatalf("encode what the held task names: %v", err)
+	}
+
+	w := &workflowRuntime{pool: pool, records: records, gatedSteps: steps}
+	task, _, err := w.rootTask(ctx, supervise.Claim{Token: token, Project: "legion", Tree: key, Issue: key, Role: claim.RoleArchitect},
+		supervise.Delivery{ID: "outbox:7", Task: held, Kept: encoded})
+	if err != nil {
+		t.Fatalf("narrow the held task of %s: %v", key, err)
+	}
+	want := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: *root, Carried: true, Gate: record.TreeGate{Steps: steps},
+		Decided: workflow.KeptDecisionsTask(key, record.KeptDecisions{Decisions: []record.DecisionMark{kept}})})
+	if task != want {
+		t.Fatalf("the narrowed task of the carried root = %q, want %q: the take-the-phase-up instruction, naming the one decision the task still holds", task, want)
+	}
+	if strings.Contains(task, replaced.Ref) {
+		t.Fatalf("the narrowed task %q still names %s, which a newer decision replaced", task, replaced.Ref)
+	}
+}
+
 // heldTaskRig is one root whose architect is up, with a child of its tree, over the real parts the
 // daemon wires: the record store on a database of its own, the workflow engine, admission, the
 // outbox runner, and a claim supervisor whose Deps.RootHears and Deps.RootTask are the production

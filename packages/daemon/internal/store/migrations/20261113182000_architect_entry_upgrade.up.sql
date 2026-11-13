@@ -136,7 +136,7 @@ from issues i
 where i.key = c.issue and i.key = i.tree and c.role = 'architect' and c.given_entry = 0;
 
 -- The two arms this release will not wake anybody for, marked told at the run each root stands at,
--- as record.Store.TellArchitectStalled writes them.
+-- as record.Store.TellArchitectsStalled writes them.
 insert into architect_stalled_notices (issue, tree, generation, arm, told_at)
 select i.key, i.tree, i.generation, arm, now()
 from issues i

@@ -66,7 +66,7 @@ func upgradedRoot(key string, state supervise.ClaimState) architectWakeFixture {
 
 // sweepAt applies one entry sweep with the pass reading the clock at at, which is how these cases
 // cover the gate arm's ninety minutes without waiting them out: the bound is read from the
-// admission's own now (wakeStalledArchitect).
+// admission's own now (architectStalls).
 func sweepAt(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID string, at time.Time) {
 	t.Helper()
 	admission.now = func() time.Time { return at }
@@ -90,8 +90,10 @@ func upgradeClaims(t *testing.T, pool *pgxpool.Pool) []supervise.Claim {
 	return claims
 }
 
-// setClaimState records state on the claim of root's architect, as a launch that failed and an
-// operator's `legion claims stop` each leave it.
+// setClaimState records state on the claim of root's architect: failed, as a launch that failed
+// leaves it, or retired, as a close of its tree or of its issue leaves it (supervise's table). No
+// operator command leaves a root claim retired: `legion claims stop` refuses a tree's root claim
+// (supervise.ErrRootStop).
 func setClaimState(t *testing.T, pool *pgxpool.Pool, root string, state supervise.ClaimState) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(), `update claims set state = $2 where token = $1`,
@@ -110,7 +112,7 @@ func setClaimState(t *testing.T, pool *pgxpool.Pool, root string, state supervis
 // up again.
 //
 // The passes cover ninety minutes of simulated time, which is the gate arm's own bound
-// (architectGateWake): the arm reads a root standing at admitted with no design-gate step
+// (workflow.ArchitectGateWake): the arm reads a root standing at admitted with no design-gate step
 // registered, which is what two of these three roots are, and the mark the fill wrote is what
 // keeps that reading from waking anybody.
 func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testing.T) {
@@ -185,7 +187,7 @@ func TestTheArchitectUpgradeSendsNoTaskAndRaisesNoWakeOnTheFirstPasses(t *testin
 	}
 }
 
-// A claim the fill settled that then fails, and one an operator retires, each wake the project's
+// A claim the fill settled that then fails, and one that is retired, each wake the project's
 // controller once. The fill marks the first and the third arm and leaves the second unmarked,
 // because the second reports a claim that is failed or retired: the record states that plainly,
 // no send of the daemon's cures it, and the reason the fill stands on does not cover it.
@@ -197,8 +199,8 @@ func TestTheArchitectUpgradeStillWakesForAClaimThatFailsOrIsRetired(t *testing.T
 	}{
 		{name: "a claim that failed", state: supervise.StateFailed,
 			why: "a failed architect claim of a running tree is the claim workflow.Stranded has always named"},
-		{name: "a claim an operator retired", state: supervise.StateRetired,
-			why: "`legion claims stop` stopped that architect, and nothing the daemon sends starts it again"},
+		{name: "a claim that is retired", state: supervise.StateRetired,
+			why: "the sweep sends a retired claim nothing, and only a start that relaunches it, such as the controller's fresh_session, starts it again"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)

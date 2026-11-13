@@ -1455,14 +1455,15 @@ package api
 // rounds; the sixteen compose, and every reader from 111 on takes both times as optional. The
 // two entry numbers move no further: a plugin at 94 parses them already, and a root carrying
 // them is the same shape the issue beside it carries.
-// `legion state`'s plain line changes with them: it names a root only where a wake of
-// INFRA-2614's third requirement of the daemon would name it — its architect took nothing, its
-// claim is failed or retired, or it stands at `admitted` with no registered design gate 90
-// minutes after the later of its admission and the queueing of its architect's task — and no
-// longer for the mere difference of its two numbers, which every root reads as between a
-// transition and its delivery. The rest of the change moves no shape a caller reads: the
-// architect's row of the `phases` record, the derivation that fills its entry and the sweep
-// that sends that entry's task are the daemon's own lanes and no route.
+// `legion state`'s plain line changes with them: it names a tree's own root wherever an arm of
+// INFRA-2614's third requirement of the daemon holds for it, whether or not the controller was
+// told of that arm — its architect took nothing, its claim is failed or retired, or it stands at
+// `admitted` with no step of its design gate registered (no `designGate`, and no `gatedSteps`
+// entry other than `unregistered`) 90 minutes after the later of its admission and the queueing
+// of its architect's task — and no longer for the mere difference of its two numbers, which
+// every root reads as between a transition and its delivery. The rest of the change moves no
+// shape a caller reads: the architect's row of the `phases` record, the derivation that fills its
+// entry and the sweep that sends that entry's task are the daemon's own lanes and no route.
 // (This entry took 94 on cybermonklabs/legion#3677's head 643be0c4ae84, whose own entry stood
 // at 93 then. #3677 merged at 94, and this change is now built on main at 7810d00ef1c3, which
 // declares 104, cybermonklabs/legion#3830's entry right above this one. A reading of

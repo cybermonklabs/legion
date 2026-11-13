@@ -719,9 +719,13 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	}
 	stays := record.KeptDecisions{KeptApproval: named.KeptApproval}
 	// The record the rewrite reads where the task carries the first-task instruction
-	// (workflow.NarrowRootTask): the tree's root as the record holds it at the narrowing, the
-	// design gate rows it holds and the generation its architect claim stands at. The two reads
-	// below are made only where a decision was dropped, since nothing else rewrites the task.
+	// (workflow.NarrowRootTask): the tree's root as the record holds it at the narrowing, whether a
+	// hand-over carried it in at its generation, the design gate rows it holds and the generation
+	// its architect claim stands at. The four reads are made only where a decision was dropped,
+	// since nothing else rewrites the task. Whether the root was carried is the hand-over row's
+	// answer, as the sweep reads it (workflow.ArchitectCarried), and not the mark on the issue:
+	// the promotion that opens a carried root's tree clears that mark, and a held task is
+	// narrowed only after the root runs again.
 	var root *record.Issue
 	start := workflow.ArchitectStart{Gate: record.TreeGate{Steps: w.gatedSteps}}
 	var left []record.DecisionMark
@@ -734,10 +738,7 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 		if err != nil {
 			return err
 		}
-		if root, err = w.records.Issue(scoped, tx, c.Tree); err != nil {
-			return err
-		}
-		stays.Decisions, left = nil, nil
+		stays.Decisions, left, root = nil, nil, nil
 		for _, mark := range named.Decisions {
 			if !slices.Contains(holds, mark.Ref) {
 				// The row this mark named is not this delivery's any more, and only these take a
@@ -762,15 +763,23 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 			}
 			stays.Decisions = append(stays.Decisions, mark)
 		}
-		if root != nil && len(stays.Decisions) != len(named.Decisions) {
-			if start.Gate.Rows, err = w.records.GatesOf(scoped, tx, root.Key); err != nil {
+		if len(stays.Decisions) != len(named.Decisions) {
+			if root, err = w.records.Issue(scoped, tx, c.Tree); err != nil {
 				return err
 			}
-			launches, err := w.records.ArchitectLaunches(scoped, tx, []string{c.Tree})
-			if err != nil {
-				return err
+			if root != nil {
+				if start.Carried, err = workflow.ArchitectCarried(scoped, tx, w.records, *root); err != nil {
+					return err
+				}
+				if start.Gate.Rows, err = w.records.GatesOf(scoped, tx, root.Key); err != nil {
+					return err
+				}
+				launches, err := w.records.ArchitectLaunches(scoped, tx, []string{c.Tree})
+				if err != nil {
+					return err
+				}
+				start.Launch = launches[c.Tree]
 			}
-			start.Launch = launches[c.Tree]
 		}
 		if len(left) == 0 {
 			return nil
@@ -794,10 +803,12 @@ func (w *workflowRuntime) rootTask(ctx context.Context, c supervise.Claim, d sup
 	// served no first task, so its rewrite is the decisions' own; with no root recorded there is
 	// nothing to write one from either, so the rewrite is the decisions' own there too, as it
 	// always was.
-	task := workflow.KeptDecisionsTask(c.Tree, stays)
+	var task string
 	if root != nil {
-		start.Root, start.Carried = *root, root.HandedOverFrom != ""
+		start.Root = *root
 		task = workflow.NarrowRootTask(start, d.Task, stays)
+	} else {
+		task = workflow.KeptDecisionsTask(c.Tree, stays)
 	}
 	if task == "" {
 		return "", nil, nil
@@ -1647,11 +1658,11 @@ func entrySweepPeriod(override time.Duration) time.Duration {
 
 // tickEntrySweep applies an intake.EntrySweep fact every entrySweepPeriod (entrySweepInterval,
 // or the runtime's own entrySweep, which a test shortens), so a role behind the entry its phases
-// row names is sent that entry's work even where nothing else happens in the project: an
-// admission pass runs on a fact, and a quiet project raises none. Each run's event id is its own
-// — the word, the project, this boot and the run's time — since processed_events is shared by
-// every project's daemon. A failed apply is logged, and the next run tries again, as
-// applyControllerTick does.
+// row names is sent that entry's work, and the controller is woken for a stalled root architect,
+// even where nothing else happens in the project: an admission pass runs on a fact, and a quiet
+// project raises none. Each run's event id is its own — the word, the project, this boot and the
+// run's time — since processed_events is shared by every project's daemon. A failed apply is
+// logged, and the next run tries again, as applyControllerTick does.
 func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 	ticker := time.NewTicker(entrySweepPeriod(w.entrySweep))
 	defer ticker.Stop()
@@ -1667,15 +1678,18 @@ func (w *workflowRuntime) tickEntrySweep(ctx context.Context) {
 
 // applyEntrySweep applies one sweep, when one is owed. The fact itself reads nothing before it:
 // every handler decides inside the fact's own transaction, and what the sweep judges is the
-// daemon's own record. What runs before it is the gate — the very selection the sweep's pass
-// makes, asked as the one question this package has of it (admit's OwesEntryWork, over the
-// selection admit's resumeSlottedWorkers sends the work of), in a read-only transaction of its
-// own and outside the fact lock, asking whether any role of this project is owed the work of
-// the entry its phases row names. The fact takes the one lock every fact takes and writes a row
-// of processed_events, which nothing prunes, so the daemon asks before it applies one; and it
-// asks the question only one piece of code answers, so no gate of its own can disagree with the
-// pass and apply a fact a minute for work that pass would never do. A read that fails applies
-// nothing and is logged: the next run asks again.
+// daemon's own record. What runs before it is the gate — the very selections the sweep's pass
+// acts on, asked as the one question this package has of them (admit's OwesEntryWork), in a
+// read-only transaction of its own and outside the fact lock: whether any role of this project is
+// owed the work of the entry its phases row names (the selection admit's resumeSlottedWorkers
+// sends the work of), or, where none is, whether an arm of the stall reading holds for a slotted
+// root's architect that no wake has told the controller yet (the wakes that pass sends after its
+// sends). So a stall alone runs a sweep within a period of the arm holding, in a project where no
+// other fact arrives, and once its wake is told the gate is shut again. The fact takes the one
+// lock every fact takes and writes a row of processed_events, which nothing prunes, so the daemon
+// asks before it applies one; and it asks the question only one piece of code answers, so no gate
+// of its own can disagree with the pass and apply a fact a minute for work that pass would never
+// do. A read that fails applies nothing and is logged: the next run asks again.
 func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
 	owed, err := w.owesEntryWork(ctx)
 	if err != nil {
@@ -1692,8 +1706,9 @@ func (w *workflowRuntime) applyEntrySweep(ctx context.Context, at time.Time) {
 }
 
 // owesEntryWork is the sweep's gate read, in one short read-only transaction: admission's own
-// answer to whether any role of the project is owed the work of the entry its phases row names,
-// decided over the project exactly as the pass the fact would make decides it.
+// answer to whether the pass the fact would make has anything to do — a role of the project owed
+// the work of the entry its phases row names, or a stalled root architect no wake has told —
+// decided over the project exactly as that pass decides it.
 func (w *workflowRuntime) owesEntryWork(ctx context.Context) (bool, error) {
 	tx, err := w.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
 	if err != nil {

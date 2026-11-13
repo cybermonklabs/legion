@@ -947,23 +947,80 @@ func (s *Postgres) TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree
 	return tag.RowsAffected() == 1, nil
 }
 
-// TellArchitectStalled records that the controller has been told, for the run generation of
-// tree, that arm reads issue's own architect as stalled, and reports whether this call is the
-// telling: a second call for the same tree, generation and arm changes nothing and answers
-// false, so the one row decides who tells. The arm is part of the key because each arm is a
-// fact of its own and a root that two of them read must wake the controller twice. The tree is
-// part of it for the reason TellChildrenFirst states, and at is the moment the pass ran, kept
-// for a reader of the table alone.
-func (s *Postgres) TellArchitectStalled(ctx context.Context, tx pgx.Tx, issue, tree string, generation uint64,
-	arm ArchitectStallArm, at time.Time,
-) (bool, error) {
-	tag, err := tx.Exec(ctx, `insert into architect_stalled_notices (issue, tree, generation, arm, told_at)
-		values ($1, $2, $3, $4, $5) on conflict (issue, tree, generation, arm) do nothing`,
-		issue, tree, int64(generation), string(arm), at)
-	if err != nil {
-		return false, fmt.Errorf("mark the controller told that the architect of %s %s: %w", issue, arm, err)
+// TellArchitectsStalled records, in one statement, that the controller has been told each of
+// stalls, and answers at each index whether this call is the telling of that one: a mark that
+// already stands, or one an earlier index of this call wrote, answers false, so the one row
+// decides who tells. The arm is part of the key because each arm is a fact of its own and a root
+// that two of them read must wake the controller twice. The tree is part of it for the reason
+// TellChildrenFirst states, and each stall's At is the moment its pass read it, kept for a reader
+// of the table alone.
+func (s *Postgres) TellArchitectsStalled(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) ([]bool, error) {
+	told := make([]bool, len(stalls))
+	if len(stalls) == 0 {
+		return told, nil
 	}
-	return tag.RowsAffected() == 1, nil
+	issues, trees, generations, arms := architectStallKeys(stalls)
+	at := make([]time.Time, len(stalls))
+	for i, stall := range stalls {
+		at[i] = stall.At
+	}
+	rows, err := tx.Query(ctx, `insert into architect_stalled_notices (issue, tree, generation, arm, told_at)
+		select * from unnest($1::text[], $2::text[], $3::bigint[], $4::text[], $5::timestamptz[])
+		on conflict (issue, tree, generation, arm) do nothing
+		returning issue, tree, generation, arm`, issues, trees, generations, arms, at)
+	if err != nil {
+		return nil, fmt.Errorf("mark the controller told of %d architect stalls: %w", len(stalls), err)
+	}
+	defer rows.Close()
+	written := make(map[ArchitectStall]bool, len(stalls))
+	for rows.Next() {
+		var mark ArchitectStall
+		var generation int64
+		var arm string
+		if err := rows.Scan(&mark.Issue, &mark.Tree, &generation, &arm); err != nil {
+			return nil, fmt.Errorf("scan an architect stall marked told: %w", err)
+		}
+		mark.Generation, mark.Arm = uint64(generation), ArchitectStallArm(arm)
+		written[mark] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mark the controller told of %d architect stalls: %w", len(stalls), err)
+	}
+	for i, stall := range stalls {
+		key := ArchitectStall{Issue: stall.Issue, Tree: stall.Tree, Generation: stall.Generation, Arm: stall.Arm}
+		told[i] = written[key]
+		delete(written, key)
+	}
+	return told, nil
+}
+
+// ArchitectStallsUntold says, in one statement, whether any of stalls holds no mark yet.
+func (s *Postgres) ArchitectStallsUntold(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) (bool, error) {
+	if len(stalls) == 0 {
+		return false, nil
+	}
+	issues, trees, generations, arms := architectStallKeys(stalls)
+	var untold bool
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from unnest($1::text[], $2::text[], $3::bigint[], $4::text[]) as w (issue, tree, generation, arm)
+		where not exists (select 1 from architect_stalled_notices n
+			where n.issue = w.issue and n.tree = w.tree and n.generation = w.generation and n.arm = w.arm))`,
+		issues, trees, generations, arms).Scan(&untold); err != nil {
+		return false, fmt.Errorf("read whether any of %d architect stalls is untold: %w", len(stalls), err)
+	}
+	return untold, nil
+}
+
+// architectStallKeys is the key of each of stalls' marks as four parallel arrays, for unnest.
+func architectStallKeys(stalls []ArchitectStall) (issues, trees []string, generations []int64, arms []string) {
+	issues = make([]string, len(stalls))
+	trees = make([]string, len(stalls))
+	generations = make([]int64, len(stalls))
+	arms = make([]string, len(stalls))
+	for i, stall := range stalls {
+		issues[i], trees[i], generations[i], arms[i] = stall.Issue, stall.Tree, int64(stall.Generation), string(stall.Arm)
+	}
+	return issues, trees, generations, arms
 }
 
 func (s *Postgres) ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error) {
@@ -2670,7 +2727,7 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // The task is read as the entry it is of and the two moments of its handshake: queued when the
 // delivery was written, confirmed when a turn of the claim's worker took it. Those are what say
 // an architect took nothing — a task of the entry its claim was given, standing unconfirmed —
-// which the admission pass reads of every root it weighs (admit's wakeStalledArchitect).
+// which the admission pass reads of every root it weighs (admit's architectStalls).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.update_round, c.step_at, c.turn_started_at,

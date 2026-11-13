@@ -114,3 +114,52 @@ func TestStatePlainNamesTheRolesBehindTheirEntryAndTheRootsAWakeNames(t *testing
 		})
 	}
 }
+
+// The plain line reads the gate arm as the daemon does: a root has registered its gate once any
+// step the deployment gates holds a document, which is any gate row of the root (admit's
+// architectSlowBeforeGate), and not only once its spec step does. `designGate` carries the spec
+// step alone, so a deployment that gates the decisions step without the spec serves every root
+// with no `designGate`, and a line that read that key alone would name every root at admitted
+// after 90 minutes, a root whose decisions document is registered and waiting on a person among
+// them. `gatedSteps` says which step is registered.
+//
+// The line reads the arms over a tree's own root alone, as the daemon does: a child at admitted
+// with a slot taken two hours ago is the architect's phase by phase.RoleFor, and no wake of the
+// daemon names it.
+func TestStatePlainReadsAGateOfTheDecisionsStepAloneAsTheDaemonDoes(t *testing.T) {
+	now := time.Now().UTC()
+	at := func(d time.Duration) string { return now.Add(d).Format(time.RFC3339Nano) }
+	root := func(key, status string) string {
+		gate := `{"step":"decisions","approvedVersion":null,"status":"unregistered"}`
+		if status != "unregistered" {
+			gate = `{"step":"decisions","artifactId":"d-` + key + `","currentVersion":1,"approvedVersion":null,"status":"` + status + `"}`
+		}
+		return fmt.Sprintf(`"%s":{"key":"%s","generation":1,"phase":"admitted","status":"in_progress","tree":"%s",`+
+			`"workers":{},"architect":{"session":"ses_%s","state":"working","pluginContract":81},`+
+			`"phaseEntry":1,"givenEntry":1,"entryQueuedAt":%q,"entryConfirmedAt":%q,"slot":{"index":0,"admittedAt":%q},`+
+			`"gatedSteps":[%s]}`, key, key, key, key, at(-115*time.Minute), at(-114*time.Minute), at(-2*time.Hour), gate)
+	}
+	child := fmt.Sprintf(`"LEGION-502":{"key":"LEGION-502","generation":1,"phase":"admitted","status":"in_progress","tree":"LEGION-500",`+
+		`"workers":{},"phaseEntry":1,"givenEntry":0,"slot":{"index":2,"admittedAt":%q}}`, at(-2*time.Hour))
+	issues := `{"issues":{` + root("LEGION-500", "waiting") + "," + root("LEGION-501", "unregistered") + "," + child + `}}`
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":3,"active":[],"waiting":[]},"pendingStatusWrites":[],"strandedClaims":[]`
+	served := "{" + daemon + "," + strings.TrimSuffix(strings.TrimPrefix(issues, "{"), "}") + "}"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_ISSUE", "")
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	want := "roles not given their phase entry, and roots a wake names: 1 — LEGION-501 architect: entry 1, given 1, slow before its gate\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q: LEGION-500 registered its decisions step, and LEGION-502 is no tree's root", out.String(), want)
+	}
+}

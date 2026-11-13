@@ -74,7 +74,7 @@ Wake details: `skill://legion-controller/references/wakes.md`.
 | `tick on <PROJECT>` | The every-turn steps, then the parked-root walk (`skill://legion-controller/references/parked-decisions.md#the-walk`) |
 | `unslotted on <KEY>` | Re-admit nothing; name it in your summary |
 | `awaiting-person on <KEY>` | Nothing: do not park or re-admit it, and take nothing for its slot, which it keeps while it waits |
-| `architect-stalled on <KEY>` | Read the root's handshake; take nothing for the first arm, read the claim for the second, and decide what the time means for the third |
+| `architect-stalled on <KEY>` | Read the root's architect claim in `read_state`, then for the first arm take nothing while it is `working`, since the task reaches it when that turn ends, and name it in the day's report, or else `compact` that claim and use `fresh_session` only when it still does not take its task; for the second, `fresh_session` on a failed or retired claim; for the third, decide what the time means (`skill://legion-controller/references/wakes.md`) |
 | `parked-decision on <KEY>` | `skill://legion-controller/references/parked-decisions.md#deciding` |
 | `held on <KEY>` | Nothing, unless `reason: "escalated"`: then an escalation, decided from the failed claim's `failure` in `read_state` and the limits in `settings` (`skill://legion-controller/references/escalation.md#an-escalated-hold`) |
 | `worker-died on <KEY>` (`role: "architect"`) | Nothing when the root's `phase` is `done`: the tree is parked already. Otherwise restart the tree when you find no cause or its cause is gone, and ask whether to park it when the cause stays (`skill://legion-controller/references/wakes.md#ask-whether-to-park-a-tree`) |
