@@ -53,8 +53,8 @@ as the fingerprint decides (*The reviewer*, below, and
   (`gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --paginate --jq '.check_runs[] | [.name, .status, .conclusion] | @tsv'`):
   every required name present, `completed` and `success` (GitHub counts `neutral` and `skipped`
   as passing for a required check). A required check
-  `queued` or `in_progress`: wait. One `completed` as `cancelled`, or absent: on a `pull_request`
-  run, re-run that run's
+  `queued`, `requested`, `waiting`, `pending` or `in_progress`: wait. One `completed` as `cancelled`, or absent from a run at the
+  head that holds its job: on a `pull_request` run, re-run that run's
   failed and cancelled jobs, once, then wait — never the whole run, which runs again every job that
   succeeded too. A merge-group run is never re-run: the implementer finishes its round instead,
   and the pull request is tested again when it is queued again.
@@ -67,20 +67,26 @@ as the fingerprint decides (*The reviewer*, below, and
   cancelled jobs and the jobs that depend on them, and to nothing that succeeded. Never
   `--job <job-id>` alone: under a routing workflow, re-running only the final job reads the
   cancelled results again and stays red. GitHub refuses a re-run while an attempt of that run is
-  still in progress: wait for it. A required item with no run at the head at all is sorted
-  below, with the reads that tell its cases apart.
+  still in progress: wait for it. When no run at the head holds the job, or nothing here will run
+  it (a check run another App made or a workflow posted, a workflow another repository defines, a
+  commit status), tell the architect, do not approve, and wait with a `WAITING` line naming what
+  you wait on.
+  A required item with no run at the head at all is sorted below, with the reads that tell its
+  cases apart, and in every case but the remedy's own you tell the architect, do not approve, and
+  wait with a `WAITING` line naming what you wait on: never approve a head while a required item
+  has no run, since the daemon then waits on GitHub's merge state with no notice to anyone.
   For such an item, what the base requires is more than its status checks: a `code_scanning` rule, which the read above prints under `code_scanning:`, requires an analysis no status-check list names, which is what held the six heads of dispatch://INFRA-3027 while every required status check was green.
   Count the head's runs: `gh api repos/<o>/<r>/commits/<headRefOid>/check-runs --jq .total_count`.
   Read the merge state first where that count is zero (`gh pr view <n> --repo <o>/<r> --json mergeable,mergeStateStatus`), because over the 100 open pull requests of cybermonklabs/legion, read on 2026-11-11, all 11 heads with no check run were heads GitHub computes no merge for.
   A head GitHub computes no merge for (`DIRTY`) takes a merge of its base forward, which is the implementer's push, and never the remedy below; the daemon itself sends such a head back to implementing, so it never waits in the issue's `mergeWait` once a read has answered for it.
   A second reading, of 60 open pull requests at 2026-11-12T22:16Z, found 12 heads with no check run: 10 `DIRTY`, and 2 `BLOCKED` fork pull requests whose workflow runs waited for a maintainer's approval (`action_required`, #2051 and #2646).
   A commit status is no check run, so read the head's commit statuses as well as the check-runs list above, every page: `gh api --paginate 'repos/<o>/<r>/commits/<headRefOid>/status?per_page=100' --jq '.statuses[] | [.context, .state] | @tsv'`.
-  A required item in either list is reported: `queued`, `in_progress`, `waiting` or a status's `pending` means it is running, not that it is missing, and `failure` or `error` means it is red; read the status list, never that endpoint's top-level `state`, which reads `pending` for a head with no status at all.
+  A required item in either list is reported: a check run whose status is `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a commit status whose state is `pending`, is running, not missing, and a check run concluded `failure`, `timed_out`, `cancelled` or `startup_failure`, or a commit status in state `failure` or `error`, is red; read the status list, never that endpoint's top-level `state`, which reads `pending` for a head with no status at all.
   Only a required item in neither list has no run, and it falls in one of the named cases below.
-  A fork head whose workflow runs wait for a maintainer's approval (`action_required`) takes the maintainer's approval of its runs, which is a person's: tell the architect, and never close and reopen it.
-  A check only a commit status would report, or a workflow another repository defines, is one nothing in this repository will start: tell the architect, and never close and reopen it.
+  A fork head whose workflow runs wait for a maintainer's approval (`action_required`) takes the maintainer's approval of its runs, which is a person's: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on, and never close and reopen it.
+  A check only a commit status would report, or a workflow another repository defines, is one nothing in this repository will start: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on, and never close and reopen it.
   A required workflow whose own `paths` or `paths-ignore` filter skips every file of the change gets no run from GitHub at all, and a close and a reopen send the same event.
-  So while the base still carries that filter the reopen does nothing, and the head takes a change to the workflow or to the head: tell the architect.
+  So while the base still carries that filter the reopen does nothing, and the head takes a change to the workflow or to the head: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on.
   When the base dropped that filter after the pull request opened, the head is the remedy's own case below: that was the cause in dispatch://INFRA-3027, `codeql.yaml`'s `paths-ignore`, where the reopen worked once cybermonklabs/legion#3279 had removed the filter from main.
   The remedy's own case is a `BLOCKED` head, whatever its count, whose required workflow no event started on a pull request that was already open, and its test has three parts.
   First, the pull request is not from a fork (`gh pr view <n> --repo <o>/<r> --json isCrossRepository`) and no workflow run of the head stands `action_required` (`gh api --paginate 'repos/<o>/<r>/actions/runs?head_sha=<headRefOid>&per_page=100' --jq '.workflow_runs[] | select(.conclusion == "action_required") | .id'` prints nothing).
@@ -88,16 +94,17 @@ as the fingerprint decides (*The reviewer*, below, and
   A job reports its `name:`, an expression there evaluated for each matrix entry, or else its key, with ` (<matrix values>)` after it for a matrix job; a job of a reusable workflow reports `<calling job> / <job>` and runs on the calling file's `on:`; and for a `code_scanning` rule the jobs that run the tool's analysis report under their own names, while the tool's own check run (`CodeQL`) is the code-scanning App's, made when an analysis uploads, so a head whose analysis jobs ran with no `CodeQL` run is no head this test matches.
   Third, neither list holds a run of it.
   That head takes the remedy, which took one such head from zero check runs to four (dispatch://INFRA-2831).
-  A head that matches none of these cases takes no remedy: tell the architect, who takes it to a person, since these cases are the ones measured on this deployment and GitHub has more, so an unknown case costs a person's look rather than a wrong action.
-  So does a head whose required item still has no run once every run the reopen started has concluded (before then the item is missing only because its run has not started): tell the architect, and never reopen it a second time.
+  A head that matches none of these cases takes no remedy: tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on; the architect takes it to a person, since these cases are the ones measured on this deployment and GitHub has more, so an unknown case costs a person's look rather than a wrong action.
+  So does a head whose required item still has no run once every run the reopen started has concluded (before then the item is missing only because its run has not started): tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on, and never reopen it a second time.
   Close the pull request, wait a minute, and reopen it at the same head: in cybermonklabs/legion a reopen within about a minute of the close can have its new CI run cancelled by the close's own run, which leaves a failing `ci-ok` (`.github/workflows/tests-closed.yaml`).
   The reopen delivers the event the workflow needs, and the head and any approval already given stand.
   It costs two things: the close writes a `pr-closed-unmerged` notice to the architect, and the reopen starts the head's other checks again.
   So tell the architect before you close, and say why.
+  Do not approve until the required item's run at the head has concluded green: the remedy is how it gets a run, not a reason to approve without one.
   It is for no other state: not a check that is running, not a check that is red, and not a head GitHub holds for a review the repository requires.
-  A head whose checks are still running is waited for: its runs stand `queued`, `in_progress` or `waiting`, or its statuses `pending`, in the two lists above.
+  A head whose checks are still running is waited for, unapproved: in the two lists above, a check run whose status is `queued`, `requested`, `waiting`, `pending` or `in_progress`, or a commit status whose state is `pending`, is running, not missing.
   For a GitHub Actions job, GitHub ends that wait itself: a job still queued for a self-hosted runner after 24 hours is cancelled, a running job ends at its own `timeout-minutes` or at GitHub's execution limit, 6 hours on a GitHub-hosted runner and 5 days on a self-hosted one, which fails it, and every workflow run ends at 35 days, its waiting included (GitHub's Actions limits page, read 2026-11-13); the settlement of that conclusion moves the round.
-  A run `waiting` on an environment's approval waits on a person, up to 30 days, and a check run no Actions job owns, another GitHub App's or one a workflow created through the API, or a commit status left `pending`, has no such bound and ends only when whoever made it ends it: one that stands longer than its CI usually takes is the architect's to raise with a person, so tell the architect, naming it.
+  A run `waiting` on an environment's approval waits on a person, up to 30 days, and a check run no Actions job owns, another GitHub App's or one a workflow created through the API, or a commit status left `pending`, has no such bound and ends only when whoever made it ends it: one that stands longer than its CI usually takes is the architect's to raise with a person, so tell the architect, do not approve, and wait with a `WAITING` line naming what you wait on, naming the run.
   The daemon's own count in the issue's `mergeWait`, `checkRuns`, is only the runs a CI settlement applied, so a zero there is no evidence of what GitHub holds: read the two lists on GitHub before you act.
   Approval is refused while any `before_merge` check of the issue's own Verification document has no pass standing at the head being reviewed: `REQUEST_CHANGES` naming each such check by its block id, and `dispatch results --issue <issue>` is the read that decides it, under the check's own line saying whether a pass stands and from which roles. That answer leaves out a pass at another commit, a pass recorded under an older wording of the check and a retracted pass, each of which the command still prints; a fail recorded after a pass leaves that pass standing until someone retracts it.
   An issue with no Verification document, or whose Verification document holds no `before_merge` check, is a gap you name in the review body, never a review that asks for changes: say which of the two it is, and tell the architect, who writes the checks. Your own findings and the checks that do exist still decide the review, and on an issue that has none the architect's acceptance is the gate.
