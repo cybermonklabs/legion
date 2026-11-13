@@ -578,11 +578,18 @@ github_budget() {
 # IOC_ENV_PY_PINS are pinned. An option of a runner the reader does not know, a package
 # written as any other variable, and a command it cannot open are refused.
 #
-# A command handed to a shell as a string (sh, bash, zsh, dash or ksh with -c, and eval)
-# is read with this same reader; a command xargs, env, timeout, nice or nohup runs stands
-# among the words of the row, where the reader reads it as it reads any other. Python code
-# given to python -c that starts a process is a command this reader cannot open, and is
-# refused.
+# Every word in command position is read, and one this reader cannot resolve fails the
+# row and is named. Command position is the first word of a command after its assignments
+# and its keywords, the command a wrapper runs (env, nohup, nice, timeout, command, exec,
+# sudo, stdbuf, time and xargs) and the command find runs after -exec. A command handed to
+# a shell as a string (sh, bash, zsh, dash or ksh with -c, and eval) and the code of every
+# substitution are read with this same reader, and the output of a substitution is no
+# command word it can resolve. A command word is a literal, or one of a closed list of
+# variables: $IOC_PY, which resolves to python, and $IOC_MASLAB_VENV,
+# $IOC_MASLAB_WHEEL_VENV and $IOC_TC_WORK, each followed by a path whose last element is
+# the program. A resolved word is held to every rule a literal is, so python code given
+# to $IOC_PY -c that starts a process is refused as python -c is. Any other variable, a
+# word built of several, and a command this reader cannot split are refused.
 unpinned_installs() {
     claims | python3 -c '
 import json, re, shlex, sys
@@ -618,8 +625,19 @@ def commands(text):
         tokens = list(lexer)
     except ValueError:
         return None
-    out, current = [], []
+    out, current, target = [], [], False
     for token in tokens:
+        if target:
+            # The word after a redirection is its target, a file and no command.
+            target = False
+            continue
+        if (token in OPERATORS or set(token) <= set(";&|()<>")) and set(token) & set("<>"):
+            # A redirection belongs to the command it stands in; a file descriptor
+            # written before it, as in 2>, is part of it too.
+            if current and current[-1].isdigit():
+                current.pop()
+            target = True
+            continue
         if token in OPERATORS or set(token) <= set(";&|()<>"):
             if current:
                 out.append(current)
@@ -632,7 +650,78 @@ def commands(text):
 
 # A command substitution, $(...) or a pair of backticks, that no backslash escapes; an
 # escaped backtick is a literal one, as a quoted document holds.
-SUBSTITUTION = re.compile(r"(?<!\\)\$\(((?:[^()]|\([^()]*\))*)\)|(?<!\\)`((?:[^`\\]|\\.)*)`")
+SUBSTITUTION = re.compile(r"(?<!\\)[$<>]\(((?:[^()]|\([^()]*\))*)\)|(?<!\\)`((?:[^`\\]|\\.)*)`")
+# Each substitution, once its code is read, stands in the line as this marker, inside the
+# word it was written in, so an assignment from one stays an assignment and a
+# command word that is the output of a substitution is refused as unresolved.
+SUBST_WORD = "IOCSUBSTITUTION"
+
+# The closed allow-list of variables a command word may be written with: the
+# interpreters and environments env.sh builds and pins. Each is resolved to what env.sh
+# makes it, and the word is then held to every rule a literal word is held to. A
+# variable with no path after it resolves to the program named here; one with a path
+# resolves to the last element of that path. No other variable may stand in command position.
+RESOLVABLE = {
+    "IOC_PY": "python",
+    "IOC_MASLAB_VENV": None,
+    "IOC_MASLAB_WHEEL_VENV": None,
+    "IOC_TC_WORK": None,
+}
+KEYWORDS = {"do", "then", "else", "elif", "if", "while", "until", "!", "{", "}", "time", "done", "fi", "esac"}
+CONTROL = {"for", "case", "select", "function", "in"}
+ASSIGNMENT = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\[[^]]*\])?\+?=")
+WRAPPERS = {"env", "nohup", "nice", "timeout", "command", "exec", "sudo", "stdbuf", "xargs", "time"}
+WRAPPER_VALUE = {"nice": {"-n"}, "timeout": {"-s", "-k", "--signal", "--kill-after"},
+                 "xargs": {"-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--replace",
+                           "--max-procs", "--delimiter", "--arg-file"},
+                 "sudo": {"-u", "-g", "-C"}, "stdbuf": {"-i", "-o", "-e"}, "env": {"-u", "-C", "-S"}}
+
+def resolve(word):
+    # The program a command word names, or None when this reader cannot resolve it.
+    if SUBST_WORD in word or "`" in word:
+        return None
+    if "$" not in word:
+        return word.rsplit("/", 1)[-1]
+    m = re.match(r"^\$(\{)?([A-Z_]+)(?(1)\})(/[A-Za-z0-9._/-]*[A-Za-z0-9._-])?$", word)
+    if not m or m.group(2) not in RESOLVABLE:
+        return None
+    if m.group(3):
+        return m.group(3).rsplit("/", 1)[-1]
+    return RESOLVABLE[m.group(2)]
+
+def command_words(w):
+    # The indexes of the words of w that stand in command position: the first word of the
+    # command after its assignments and keywords, and the command each wrapper runs.
+    i, out = 0, []
+    while i < len(w):
+        word = w[i]
+        if ASSIGNMENT.match(word) or word in KEYWORDS:
+            i += 1
+            continue
+        if word in CONTROL:
+            return out
+        break
+    while i < len(w):
+        out.append(i)
+        base = resolve(w[i])
+        if base not in WRAPPERS:
+            # find runs the command after -exec or -execdir as well.
+            if base == "find":
+                for j in range(i + 1, len(w) - 1):
+                    if w[j] in ("-exec", "-execdir", "-ok", "-okdir"):
+                        out.append(j + 1)
+            return out
+        values = WRAPPER_VALUE.get(base, set())
+        i += 1
+        if base == "timeout" and i < len(w) and not w[i].startswith("-"):
+            i += 1
+        while i < len(w) and (w[i].startswith("-") or (base == "env" and ASSIGNMENT.match(w[i]))):
+            if w[i].split("=", 1)[0] in values and "=" not in w[i]:
+                i += 1
+            i += 1
+            if base == "timeout" and i < len(w) and not w[i].startswith("-") and re.match(r"^[0-9.]+[smhd]?$", w[i]):
+                i += 1
+    return out
 
 # The options of each runner that take a value, and those that take none; any other
 # option before the package is a form this reader does not know.
@@ -697,15 +786,20 @@ def read_command(command, depth=0):
     # backtick pair may span two words, so it is read in the text before the split.
     for m in SUBSTITUTION.finditer(command):
         found += read_command(m.group(1) or m.group(2) or "", depth + 1)
+    command = SUBSTITUTION.sub(SUBST_WORD, command)
     parts = commands(command)
     if parts is None:
         return found + ["a command this reader cannot split into words"]
     for w in parts:
         part = " ".join(w)
+        for i in command_words(w):
+            if resolve(w[i]) is None:
+                what = "the output of a substitution" if SUBST_WORD in w[i] else w[i]
+                found.append(what + " (a command word this reader cannot resolve)")
         for i, word in enumerate(w):
             nxt = w[i + 1] if i + 1 < len(w) else ""
             after = w[i + 1:]
-            base = word.rsplit("/", 1)[-1]
+            base = resolve(word) or word.rsplit("/", 1)[-1]
             if base in SHELLS:
                 j = i + 1
                 while j < len(w) and w[j].startswith("-") and "c" not in w[j].lstrip("-"):

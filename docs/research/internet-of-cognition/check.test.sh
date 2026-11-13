@@ -243,6 +243,20 @@ for form in 'sh -c \\"$CMD\\"' "\$IOC_PY -c 'import os; os.system(0)'" '{ R=uvx;
     case_result "a command the reader cannot resolve is refused: $(printf '%s' "$form" | tr -d '\\')" install-pinned "$(fixture_run "$dir" --replay)"
 done
 
+# 19. The class, not three spellings of it: a word in command position that the reader
+# cannot resolve fails the row, however it is written. A word built of two variables, a
+# substitution's output standing as the command, and a variable after a wrapper each
+# name a program the reader never sees, and none of them is a form cases 16 to 18 plant.
+for form in '${A}${B} pyshacl' '$(printf uvx) pyshacl' 'env $RUNNER pyshacl'; do
+    dir="$(fresh "class-$(printf '%s' "$form" | tr -c 'a-z0-9' '-' | cut -c1-24)")"
+    sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || $form; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+    grep -qF "$(printf '%s' "$form" | cut -c1-6)" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+        printf 'FAIL the form %s could not be planted\n' "$form"
+        exit 1
+    }
+    case_result "a command word the reader cannot resolve is refused: $form" install-pinned "$(fixture_run "$dir" --replay)"
+done
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
