@@ -516,9 +516,14 @@ type PhaseRow struct {
 	EntryRaisedAt time.Time
 	// EntryMovedBack is whether the start that raised that entry was a move back to an earlier
 	// phase, written beside the three fields above in the same transaction from the move the
-	// transition already reads for its pass (workflow's transition, start and enter). False on a
-	// row no entry has been raised on, on every row a daemon upgraded in place found, and on the
-	// promotion's start of a mid-phase worker, which moves no phase back.
+	// transition already reads for its pass (workflow's transition, start and enter). True on
+	// every row a daemon upgraded in place found, a row no entry has been raised on among them:
+	// no row before the column said which move raised its entry, and true refuses a behind
+	// completion as the release before did (store migration
+	// 20261113090512_phase_entry_moved_back.up.sql), until the role's next entry writes what its
+	// own move was. A row PutPhase writes reads what it was given: false on one this release
+	// inserted before raising any entry on it, and after the promotion's start of a mid-phase
+	// worker, which moves no phase back.
 	//
 	// One rule of the daemon reads it and no other: the completion route's entry fence, which
 	// takes a completion of an earlier entry when the commit it names is the head the record

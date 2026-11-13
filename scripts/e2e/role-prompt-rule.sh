@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # The live proof that a role process is launched with the rules its own system prompt carries: the
 # pod memory rule, which every phase worker and every architect is given, and the planner's own
-# rule that its completion reports work already done, at the `head` its handoff names. The whole
-# daemon is booted by the function `legion start` calls, over a real PostgreSQL
-# and a real nats-server, and two real `omp --mode rpc` panes run under it — the real `legion
-# worker-shim`, this checkout's `legion`, and this checkout's @sjawhar/pi-envoy and
+# rule that its completion reports work already done, at the `head` its handoff names, once that
+# handoff is recorded. The whole daemon is booted by the function `legion start` calls, over a
+# real PostgreSQL and a real nats-server, and two real `omp --mode rpc` panes run under it — the
+# real `legion worker-shim`, this checkout's `legion`, and this checkout's @sjawhar/pi-envoy and
 # @sjawhar/pi-legion in an Oh My Pi profile of the run's own — each answered by an HTTP model
 # stand-in of the driver's own. The two panes are the two roles of one tree: its root architect,
 # and the planner of the same issue, which stands in planning.
@@ -14,12 +14,13 @@
 # the claim's locator carries is the `legion worker-shim`'s, which starts Oh My Pi as a child, so
 # the driver walks /proc for that shim's child whose argv[0] is LEGION_OMP_PATH and reads it. It
 # holds the phase worker's eight sentences of the pod memory rule and the root architect's six in
-# that word, and the planner's two parts of the completion-after-work rule — the `head` its
-# handoff body names, and the clause that carries that head to the daemon — in the planner's, and
-# names the role, the pid and the text for any it cannot find. That command line is the
-# only place it reads: the composer, the role prompt files below the state directory and the
-# recorded launch specification all hold that text before a process took it, and the unit tests
-# already read it there (packages/daemon/internal/prompts/prompts_test.go and
+# that word, and the planner's three parts of the completion-after-work rule — the `head` its
+# handoff body names, the clause that carries that head to the daemon, and the sentence that
+# records the `plan` handoff with `dispatch handoff-write` and then reports completion — in the
+# planner's, and names the role, the pid and the text for any it cannot find. That command line
+# is the only place it reads: the composer, the role prompt files below the state directory and
+# the recorded launch specification all hold that text before a process took it, and the unit
+# tests already read it there (packages/daemon/internal/prompts/prompts_test.go and
 # packages/daemon/internal/prompts/roles_test.go). The driver is
 # packages/daemon/internal/daemon/role_prompt_rule_live_test.go, which this script builds with
 # `-tags e2e`, over packages/daemon/internal/daemon/localruntime_live_test.go, the runtime that

@@ -919,13 +919,16 @@ const RECORD = {
   body: JSON.stringify({ schemaVersion: 1, issue: "LEGION-208", head: TIP }),
 };
 
-/** A jj whose `legion/LEGION-208@origin` carries the record's head, whose tip is `TIP`, unless
- * `pushed` is false. */
+/** A jj whose `legion/LEGION-208@origin`, whose tip is `TIP`, carries the record's head and the
+ * commit the workspace stands on, unless `pushed` is false. */
 function paneJj(pushed = true): JjRunner {
   return async (args) => {
     const revision = args[2] ?? "";
     if (revision === "@-") return STANDING;
-    if (revision.startsWith("remote_bookmarks(") && revision.endsWith(` & present(${TIP})::`)) {
+    if (
+      revision.startsWith("remote_bookmarks(") &&
+      (revision.endsWith(` & present(${TIP})::`) || revision.endsWith(` & ${STANDING}::`))
+    ) {
       return pushed ? TIP : "";
     }
     throw new Error(`unexpected jj ${args.join(" ")}`);

@@ -6,7 +6,8 @@
 // the paragraph every architect is given
 // (packages/daemon/internal/prompts/go/architect-common.md); and the planner's own rule that its
 // completion reports work already done, in the paragraph that names the `head` its handoff
-// carries and what the daemon does with it
+// carries, what the daemon does with it, and the order that records the handoff before the
+// completion is reported
 // (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff").
 // scripts/e2e/role-prompt-rule.sh builds this driver with `-tags e2e` and owns the nats-server
 // and the PostgreSQL it runs against.
@@ -133,17 +134,22 @@ var podRuleForRootArchitect = []string{
 
 // completionAfterWorkForPlanner is the rule the planner's own part carries about its completion
 // (packages/daemon/internal/prompts/roles/planner.md, "Plan handoff"): the completion reports
-// work already done, at a named head. Two needles hold it, the pair the unit test pins
-// (packages/daemon/internal/prompts/roles_test.go's
+// work already done, at a named head. Three needles hold it. The first two are the pair the unit
+// test pins (packages/daemon/internal/prompts/roles_test.go's
 // TestEveryFileBackedRoleHandoffNamesTheHeadItWasDoneAgainst): the `head` field as the handoff
 // body names it, with the one thing its value is, and the clause that carries that head to the
-// daemon, which names the planner's own phase word. Both are short and sit inside the paragraph,
-// so a rewording of the prose around them stands and the field's removal is what fails them. A
-// planner's composed prompt carries no other role's part (prompts_test.go's composition table),
+// daemon, which names the planner's own phase word. The third is the paragraph's order sentence,
+// copied from planner.md byte for byte: the record written with `dispatch handoff-write` under
+// the planner's own phase word `plan`, then the completion, which is what makes the completion a
+// report of work already recorded rather than of work still to come. The three are short and sit
+// inside the paragraph, so a rewording of the prose around them stands, and the field's removal
+// or an order sentence that no longer puts the record before the completion is what fails them.
+// A planner's composed prompt carries no other role's part (prompts_test.go's composition table),
 // so the first needle is this role's own field and no other's.
 var completionAfterWorkForPlanner = []string{
 	"`head` (the 40-character lower-case commit",
 	"to the daemon, which takes a completion of an earlier `plan` entry only at the head the record holds",
+	"record it with `dispatch handoff-write --issue <issue> --phase plan --body-file \"$TMPDIR/<issue>-plan.json\"`, then report completion",
 }
 
 // rolePromptRuleLive is one run of the proof: the booted daemon, the one tree it seeds, and the
@@ -182,8 +188,10 @@ type launchedPrompt struct {
 // TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive boots the daemon over two real
 // panes, reads the command line each of those two processes was launched with, and holds in each
 // the rules that role's own prompt carries: the pod memory rule, the phase worker's eight
-// sentences and the root architect's six, and, in the planner's, the two needles of the rule that
-// its completion reports work already done at a named head.
+// sentences and the root architect's six, and, in the planner's, the three needles of the rule
+// that its completion reports work already done at a named head: the `head` field, the clause
+// that carries it to the daemon, and the order sentence that records the `plan` handoff before
+// the completion is reported.
 func TestEveryRoleIsLaunchedWithTheRulesItsOwnPromptCarriesLive(t *testing.T) {
 	fixtureenv.Live(t)
 	r := newRolePromptRuleLive(t)
@@ -361,10 +369,11 @@ func (r *rolePromptRuleLive) rootArchitectCarriesTheRule() {
 	r.carriesTheRule("root architect", "pod memory rule", r.token(claim.RoleArchitect), podRuleForRootArchitect)
 }
 
-// plannerCarriesTheCompletionRule holds the two parts of the rule the planner's own part carries
-// about its completion — the `head` the handoff body names, and the clause that carries that head
-// to the daemon — in the planner's own command line. The root architect is held to no part of it:
-// an architect writes no handoff record, and its prompt carries no such paragraph.
+// plannerCarriesTheCompletionRule holds the three parts of the rule the planner's own part carries
+// about its completion — the `head` the handoff body names, the clause that carries that head to
+// the daemon, and the sentence that records the `plan` handoff with `dispatch handoff-write` and
+// then reports completion — in the planner's own command line. The root architect is held to no
+// part of it: an architect writes no handoff record, and its prompt carries no such paragraph.
 func (r *rolePromptRuleLive) plannerCarriesTheCompletionRule() {
 	r.carriesTheRule("planner", "completion-after-work rule", r.token(claim.RolePlanner), completionAfterWorkForPlanner)
 }

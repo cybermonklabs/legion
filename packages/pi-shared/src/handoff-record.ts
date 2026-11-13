@@ -29,15 +29,18 @@ import { staleGitLockNote } from "./git-lock";
  * whose body does not parse, holds no `head`, or holds one of another shape reports no commit for
  * the planner, the tester and the reviewer, whose completion still goes; the daemon refuses it
  * `HANDOFF_STALE_ENTRY` when it is of an earlier phase entry, since a completion naming no commit
- * says nothing about a head. The implementer's implementing round holds that head to its branch:
- * the head its record names must be on `legion/<issue>@origin` in the pane's jj, at the branch's
- * tip or behind it. A record naming no readable head is refused naming what to write, and one
- * naming a head the branch does not carry is refused naming both ways out: the push, when that
- * head is new work of the worker's own, and otherwise a record naming the head the branch
- * carries. Every other completion — retro, the merger's, a role reporting a phase it does not run
- * (which the daemon refuses naming whose phase it is) — reports the commit the workspace stands
- * on, `@-`, and no record. The implementer's report on its closed issue's production check
- * resolves neither: `legion-phase-ops.ts` never asks this module for one.
+ * says nothing about a head. The implementer's implementing round holds that head and its
+ * workspace to its branch: the head its record names must be on `legion/<issue>@origin` in the
+ * pane's jj, at the branch's tip or behind it, and so must the commit the workspace stands on,
+ * `@-`. A record naming no readable head is refused naming what to write; one naming a head the
+ * branch does not carry is refused naming both ways out: the push, when that head is new work of
+ * the worker's own, and otherwise a record naming the head the branch carries. A workspace whose
+ * `@-` the branch does not carry is refused naming the push, since a round that forgot its push
+ * and wrote its record against the branch's tip at origin names a head the branch carries while
+ * its own commits are not pushed. Every other completion — retro, the merger's, a role reporting
+ * a phase it does not run (which the daemon refuses naming whose phase it is) — reports the commit
+ * the workspace stands on, `@-`, and no record. The implementer's report on its closed issue's
+ * production check resolves neither: `legion-phase-ops.ts` never asks this module for one.
  *
  * The module also reads the head of `legion/<issue>@origin` that a `ready_for_update` signal
  * reports (`findPushedBranchHead`), with the same jj and the same revset the completion's push
@@ -263,9 +266,12 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   const head = recordHead(record.body);
   if (role !== "implementer") return head === undefined ? report : { commit: head, ...report };
 
-  // The implementer's round is of the head its record names, and all that is held of that head
-  // here is that `legion/<issue>@origin` carries it, at the branch's tip or behind it. A head the
-  // branch does not carry is work not pushed, or a record naming a commit that is not the round's.
+  // The implementer's round is of the head its record names, and `legion/<issue>@origin` must
+  // carry that head, at the branch's tip or behind it: a head the branch does not carry is work
+  // not pushed, or a record naming a commit that is not the round's. The branch must carry the
+  // commit the workspace stands on as well, since a round that forgot its push and wrote its
+  // record against the branch's tip at origin names a head the branch carries while its own
+  // commits are under `@-` alone.
   if (head === undefined) {
     throw new Error(
       `the newest ${handoff.word} handoff of ${issue} (version ${record.version}) names no head: write the handoff again with \`head\` set to the 40-character lower-case commit you pushed as ${bookmark}@origin's tip (\`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`), then complete again`
@@ -289,6 +295,17 @@ export async function findHandoffReport(input: HandoffReportInput): Promise<Hand
   if (carried === "") {
     throw new Error(
       `the head the newest ${handoff.word} handoff of ${issue} names, ${head}, is not on ${bookmark}@origin: when it is new work of yours, push it with \`jj bookmark set ${bookmark} -r ${head} && jj git push --bookmark ${bookmark}\`; otherwise write the handoff again with \`head\` set to the commit ${bookmark}@origin carries (\`jj log -r ${bookmark}@origin --no-graph -T commit_id\` prints it) and \`dispatch handoff-write --issue ${issue} --phase ${handoff.word} --body-file <file>\`; then complete again`
+    );
+  }
+  const stands = await jj(STANDING, workspace);
+  // The branch's tip at origin when `@-` is on it, and nothing when it is not.
+  const tip = await jj(
+    ["log", "-r", `${pushedBranch(bookmark)} & ${stands}::`, "--no-graph", "-T", "commit_id"],
+    workspace
+  );
+  if (tip === "") {
+    throw new Error(
+      `the commit this workspace stands on, ${stands}, is not on ${bookmark}@origin: push it with \`jj bookmark set ${bookmark} -r @- && jj git push --bookmark ${bookmark}\`, then complete again`
     );
   }
   return { commit: head, ...report };

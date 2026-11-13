@@ -308,7 +308,7 @@ export function createLegionTool(deps: {
    * head its body names under `head`, which the implementer's round is held to on
    * `legion/<issue>@origin`; otherwise the commit the workspace stands on. Throws naming the
    * remedy when the phase has no record, Dispatch does not answer, the implementer's record names
-   * no head, or that head is not pushed. */
+   * no head, or that head or the commit its workspace stands on is not pushed. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` an update signal reports, read with the pane's jj
    * (`findPushedBranchHead`), and `""` when the branch is not on the remote. */

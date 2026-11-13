@@ -33,8 +33,9 @@ import (
 // leak-check cause (20261112180548), which came after, is above main's newest too, and above the
 // phase entry's as well, so a database main migrated takes it in the same upgrade, after the
 // phase entry, and it is named here with the rest; and so is dispatch://INFRA-3146's
-// `phases.entry_moved_back` (20261113090512), the newest of all, which adds one column with a
-// false default beside the phase entry's and so needs no row of its own here.
+// `phases.entry_moved_back` (20261113090512), the newest of all, which adds one column beside
+// the phase entry's, true on every row it finds and false by default after, and so needs no row
+// of its own here (migration_20261113090512_test.go reads both).
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

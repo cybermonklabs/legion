@@ -26,24 +26,32 @@
 -- production check's look. The promotion of a mid-phase worker a re-admitted tree brings back
 -- raises an entry and writes false, since a promotion moves no phase back.
 --
--- false is what every row this migration finds reads, and that is a loosening rather than a
--- preservation. The column says what the start that raised the row's current entry was, which no
--- row written before this release recorded, and there is nothing in the record to derive it from:
--- the counts beside it say how many moves back the issue has made, never which move raised the
--- entry standing now. The release before this one refused every completion of an entry the issue
--- had moved past, whatever head it named, so nothing was ever taken at the recorded head and no
--- answer of the old route is kept by writing false. What false does is give this release's new
--- reading to entries raised before the column existed, and that leaves one window: an entry a
--- move back raised shortly before the upgrade reads false, so the first behind completion at the
--- recorded head is taken — the case the column exists to refuse — until the next start raises
--- that role's entry and writes what its own move was. The window is no longer than the turn that
--- outlived the phase, and an operator who will not have it closes it in one statement, with the
--- new daemon migrated and not yet serving: `update phases set entry_moved_back = true;`, which
--- reads every row the upgrade found as a move back's and refuses a behind completion on all of
--- them, as the release before this one did, until each row's next entry writes the truth.
+-- true is what every row this migration finds reads, and that keeps the answer the release
+-- before this one gave. The column says what the start that raised the row's current entry was,
+-- which no row written before this release recorded, and there is nothing in the record to
+-- derive it from: the counts beside it say how many moves back the issue has made, never which
+-- move raised the entry standing now. The release before this one refused every completion of an
+-- entry the issue had moved past, whatever head it named, and true is the reading under which
+-- this release does the same: the route refuses a behind completion whatever head it names when
+-- the entry was raised by a move back (internal/api/handoff.go). So a row the upgrade found
+-- refuses a behind completion as it did before the upgrade, until the next start raises that
+-- role's entry and writes what its own move was. A found row whose entry a forward move raised
+-- is refused that way too, in the refusal's words for a move back, where this release would
+-- otherwise take a completion at the recorded head; that asks a turn that outlived its phase to
+-- do the work again, as the release before asked it. No completion that release refused is
+-- taken, so there is no window to close and no statement for an operator to run.
+--
+-- The column is added with the default true, which every row it finds takes, and its default is
+-- then set to false, which only an insert that does not name the column reads. This release's
+-- one insert into phases names it (record.Postgres.PutPhase, whose upsert writes it on every
+-- write), so no row this release writes reads either default: true reaches only the rows this
+-- migration finds, and false only the inserts of a release that does not know the column.
 --
 -- Rolling the image back needs nothing: the release before this one neither selects nor writes
 -- this column, and the column is not null with a default, so its own insert into phases still
--- succeeds. This directory keeps no down migrations, and dropping the column by hand is
+-- succeeds, and the row it inserts reads false, as a forward move's. A row it raises an entry on
+-- keeps what the column held, since its write names no such column. This directory keeps no
+-- down migrations, and dropping the column by hand is
 -- `alter table phases drop column entry_moved_back;` with the daemon stopped.
-alter table phases add column entry_moved_back boolean not null default false;
+alter table phases add column entry_moved_back boolean not null default true;
+alter table phases alter column entry_moved_back set default false;
