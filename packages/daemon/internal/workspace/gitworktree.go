@@ -218,9 +218,13 @@ const gitdirLimit = 4096 + 1
 // the roles container, where a read that never ends stalls every pass behind the sweep's lock and
 // a read that runs away ends the process. So it is opened without following a link, blocking on a
 // special file or taking a terminal for PID 1's own, held to a regular file by the descriptor it
-// opened, and read only up to gitdirLimit, as Created reads the workspace's creation record. A
-// workspace's own .git, the pointer to its entry, is on the same volume and is read here too
-// (whyNoOwnEntry).
+// opened, and read only up to gitdirLimit, as Created reads the workspace's creation record. Two
+// more pointers a role can write, each a path that fits the same bound, are read here too: a
+// workspace's own .git, the pointer to its entry (whyNoOwnEntry, and restoreGitWorktree, which a
+// provision of an existing workspace runs), and its .jj/repo, the pointer to its repository
+// (config.go's workspaceRepository, which the runner reads before each jj command). Every one of
+// these reads also runs in the tmux daemon's outbox, under the repository's store lock, which
+// every later provision and removal of the repository waits on (Provision, Remove).
 //
 // Anything git does not write there is refused in words, naming the file: a symlink (which
 // O_NOFOLLOW answers with ELOOP, a link to /dev/zero among them), a socket (which open answers
@@ -356,11 +360,25 @@ func removeGitWorktree(cloneDir, dir string) error {
 		return unread
 	}
 	for _, entry := range own {
-		if err := os.RemoveAll(entry); err != nil {
+		if err := removeTree(entry); err != nil {
 			return fmt.Errorf("remove git worktree %s: %w", entry, err)
 		}
 	}
 	return nil
+}
+
+// removeTree removes path and everything under it, as os.RemoveAll does, without ever waiting on
+// the directory path is in. Every path it is handed is under the shared clone's .git/worktrees,
+// which a role can swap for a fifo: os.RemoveAll, when path is no file it can unlink outright,
+// opens path's parent with a plain open(2) to remove what is under path (os/removeall_at.go), and
+// a plain open of a fifo waits for a writer for as long as none comes, under whatever its caller
+// holds (the tmux daemon's store lock among them). So path is named through its parent's own "."
+// entry: os.RemoveAll opens `<parent>/.` instead, which the kernel resolves only through a
+// directory, and a parent that is no directory is ENOTDIR at once. Below path os.RemoveAll opens
+// every directory with O_DIRECTORY and O_NOFOLLOW already, so nothing it walks there can hold it.
+func removeTree(path string) error {
+	parent, name := filepath.Split(filepath.Clean(path))
+	return os.RemoveAll(parent + "." + string(filepath.Separator) + name)
 }
 
 // lockGitWorktree locks the shared clone's git worktree entry for dir, as `git worktree lock` does,
@@ -405,15 +423,24 @@ func lockGitWorktree(cloneDir, dir string) error {
 // across a kill (a SIGKILL, an OOM, a pod eviction, a daemon restart) that runs no Go defer. A
 // workspace with no .git (jj 0.44), or whose entry exists, is left alone; a pointer outside the
 // clone's git worktrees is refused, since a tree agent can write the workspace's .git.
+//
+// That .git, the pointer to the entry, is read through readGitdir, the bounded read with no link
+// followed and no wait that the sweeps make of the same file: every process working the
+// workspace can write it, and this read runs under whatever its caller holds — the tmux daemon's
+// outbox calls Provision, and so this, with the repository's store lock held, which every later
+// provision of the repository waits on, and a pod's `workspace-init provision` runs it before any
+// container of the pod starts. A .git readGitdir answers as no file git wrote (a fifo, a symlink,
+// a socket, a device, a directory, larger than 4096 bytes) is an error naming the cause:
+// provisioning restores no entry whose pointer it never read, and does not report one restored.
 func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, log func(string)) error {
-	pointer, err := os.ReadFile(filepath.Join(workspace.Dir, ".git"))
+	pointer, err := readGitdir(filepath.Join(workspace.Dir, ".git"))
 	if errors.Is(err, fs.ErrNotExist) {
 		return nil
 	}
 	if err != nil {
-		return fmt.Errorf("read the workspace's git pointer: %w", err)
+		return fmt.Errorf("read the workspace's git pointer, which a tree agent can write: %w", err)
 	}
-	target, dir, err := gitPointerTarget(workspace.Dir, pointer)
+	target, dir, err := gitPointerTarget(workspace.Dir, []byte(pointer))
 	if err != nil {
 		return err
 	}
@@ -457,7 +484,7 @@ func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, lo
 	if err != nil {
 		return fmt.Errorf("restore git worktree %s: %w", target, err)
 	}
-	defer func() { _ = os.RemoveAll(tmp) }()
+	defer func() { _ = removeTree(tmp) }()
 	// MkdirTemp creates tmp at 0700; git's own worktree entries land at 0755 (a plain mkdir under
 	// the ordinary 022 umask), and this restore's doc comment says it writes what `git worktree add`
 	// would, so the mode matches too.
@@ -469,8 +496,21 @@ func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, lo
 		headContent, readTreeArg, where = rootHeadRef, "--empty", "fresh, with no real commit yet"
 	}
 	readTree := []string{"git", "--git-dir=" + tmp, "--work-tree=" + dir, "read-tree", readTreeArg}
+	// Each file is created with O_EXCL, never opened if something is already there: tmp is under
+	// .git/worktrees, which a role can write, and a fifo it planted at tmp/<name> would hold a plain
+	// O_WRONLY open for as long as no reader came, with the store lock held. O_EXCL answers EEXIST
+	// instead. No row covers it: the window is a swap between two syscalls (MkdirTemp and this
+	// open), which no test can land in deterministically.
 	write := func(name, content string) error {
-		return os.WriteFile(filepath.Join(tmp, name), []byte(content+"\n"), 0o644)
+		file, err := os.OpenFile(filepath.Join(tmp, name), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o644)
+		if err != nil {
+			return err
+		}
+		_, err = file.WriteString(content + "\n")
+		if closeErr := file.Close(); err == nil {
+			err = closeErr
+		}
+		return err
 	}
 	if err := write("gitdir", filepath.Join(dir, ".git")); err != nil {
 		return fmt.Errorf("restore git worktree %s: %w", target, err)
@@ -497,11 +537,23 @@ func restoreGitWorktree(ctx context.Context, run Runner, workspace Workspace, lo
 	// naming this workspace is provably not still in use by us -- a still-racing concurrent
 	// restore's own eventual rename onto target can now only fail, never corrupt what this one
 	// just wrote, so sweeping it costs that race nothing this restore did not already win.
-	if stale, globErr := filepath.Glob(filepath.Join(worktrees, "."+filepath.Base(target)+".restore-*")); globErr != nil {
-		log(fmt.Sprintf("Workspace %s: could not list stale restore entries under %s: %v", workspace.Dir, worktrees, globErr))
+	//
+	// The stale entries are listed with os.ReadDir, which opens worktrees with O_DIRECTORY, rather
+	// than filepath.Glob, which stats it and then opens it with a plain open: a role that swapped
+	// .git/worktrees for a fifo between Glob's two syscalls would hold that open with the store
+	// lock held. No row covers it, for the same reason: the window is a swap between two
+	// syscalls. The name is matched as a literal prefix, so a workspace name holding a glob
+	// metacharacter matches its own entries alone.
+	if listed, listErr := os.ReadDir(worktrees); listErr != nil {
+		log(fmt.Sprintf("Workspace %s: could not list stale restore entries under %s: %v", workspace.Dir, worktrees, listErr))
 	} else {
-		for _, entry := range stale {
-			if err := os.RemoveAll(entry); err != nil {
+		prefix := "." + filepath.Base(target) + ".restore-"
+		for _, listedEntry := range listed {
+			if !strings.HasPrefix(listedEntry.Name(), prefix) {
+				continue
+			}
+			entry := filepath.Join(worktrees, listedEntry.Name())
+			if err := removeTree(entry); err != nil {
 				log(fmt.Sprintf("Workspace %s: could not remove the stale restore entry %s: %v", workspace.Dir, entry, err))
 			}
 		}

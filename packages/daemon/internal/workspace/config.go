@@ -539,6 +539,14 @@ func sharedRepository(jjDir, clone string) (string, error) {
 // a different directory than the one jj opens. A `.jj/repo` that is neither a directory nor a
 // regular file (a FIFO, a socket, a device) is refused before anything reads it: reading a FIFO
 // blocks, and nothing here runs under the command's deadline.
+//
+// The pointer file is read through readGitdir, the bounded read with no link followed and no wait
+// that the sweeps make of a worktree's gitdir: a tree agent can write it, and this read runs under
+// whatever the runner's caller holds — the tmux daemon's outbox provisions with the repository's
+// store lock held, which every later provision of the repository waits on. A file swapped for a
+// FIFO after the stat above is answered rather than waited on, one larger than any path jj writes
+// (4096 bytes) is refused rather than read whole into memory, and a symlink to a regular file,
+// which jj never writes there, is refused rather than followed.
 func workspaceRepository(jjDir string) (string, error) {
 	repo := filepath.Join(jjDir, "repo")
 	info, err := os.Stat(repo)
@@ -551,14 +559,14 @@ func workspaceRepository(jjDir string) (string, error) {
 	if !info.Mode().IsRegular() {
 		return "", fmt.Errorf("%s is neither a directory nor a regular file (mode %s)", repo, info.Mode().Type())
 	}
-	pointer, err := os.ReadFile(repo)
+	pointer, err := readGitdir(repo)
 	if err != nil {
 		return "", err
 	}
-	if target := string(pointer); filepath.IsAbs(target) {
-		return target, nil
+	if filepath.IsAbs(pointer) {
+		return pointer, nil
 	}
-	return jjDir + string(filepath.Separator) + string(pointer), nil
+	return jjDir + string(filepath.Separator) + pointer, nil
 }
 
 // describeEntry says what a path that should be a directory is instead.
