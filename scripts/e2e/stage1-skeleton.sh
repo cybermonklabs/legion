@@ -110,13 +110,16 @@ held_by_daemon_and_keeper() {
     fail "the socket the daemon serves on port $port is not held by exactly the daemon ($pid) and its keeper ($daemon_keeper_pid)${1:-}"
 }
 # readyz_200 [SUFFIX] reads GET /readyz on the daemon ($pid) on $port and requires 200, the answer
-# the daemon's one-way serving latch gives only from the moment the boot built its runtime,
-# installed its launcher acceptor and began serving (the daemon's servingLatch): 503 `starting`
-# until then, 503 `stopping` from the stop, and nothing read out of the database on the way.
+# the daemon's one-way serving latch gives from the moment it serves: the boot built its runtime,
+# installed its launcher acceptor and began serving (the daemon's servingLatch). While the boot
+# runs the daemon answers nothing, because the API is served only once the boot is done; from the
+# stop on, a connection the server still holds through its drain gets 503 `stopping`; and nothing
+# is read out of the database on the way.
 # It polls for 5 s rather than reading once, because the daemon sets the latch on a goroutine of
 # its own that starts when the serving goroutine does: /healthz can be answered in the instant
-# before that goroutine runs, and a single read would fail a daemon that is about to say so. A
-# daemon that answers /healthz and never latches still fails here, which is what this proves.
+# before that goroutine runs, when /readyz still answers 503 `starting`, and a single read would
+# fail a daemon that is about to say so. A daemon that answers /healthz and never latches still
+# fails here, which is what this proves.
 # The status is read off curl's stdout rather than asserted by curl's -f, so the failure names what
 # it got, and the body with it, which says whether the daemon called itself starting or stopping; a
 # connection curl never made writes no body and exits non-zero, which the run names 000 and fails
