@@ -1058,7 +1058,7 @@ Closing the terminal leaves the project without one, and the daemon logs
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
-  admission.held: 4 issues — tree_parked 1, ancestry 1, design_gate 1, at_work 1
+  admission.held: 4 issues — tree_parked 1, label_off 1, ancestry 1, design_gate 1
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
@@ -1100,11 +1100,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   `tree_closed`, `tree_parked`, `label_off`, `ancestry`, `root_awaiting_person`, `design_gate`,
   `dispatch_blocker`, `children_first`, `accepted_ancestor`, `at_work` and `unclassified`. The
   daemon reads them in that order and takes the first that is true of the issue, so one issue is
-  counted once, and the line lists the words in that same order. An issue in `admission.held`
-  holds no slot, so this count never moves the
-  `admission` line's count against the cap, and `at_work`, the word for a phase that holds no slot
-  and that the line does not carry, says nothing about the workers of that phase, which run as
-  before. The `held lifecycle rows` line further down the block is a different thing: one issue's
+  counted once, and the line lists the words in that same order. No issue reads `at_work`
+  today (`record.HeldAtWork` says why). An issue in `admission.held` holds no slot, so this
+  count never moves the `admission` line's count against the cap. The `held lifecycle rows` line
+  further down the block is a different thing: one issue's
   own start or stop waiting behind another row of that same issue
   ([An issue's stop or start waits behind its own launch](/legion/legion/troubleshooting/#an-issues-stop-or-start-waits-behind-its-own-launch)).
   [An issue does not start](/legion/legion/troubleshooting/#an-issue-does-not-start) says what to
@@ -1218,7 +1217,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   it holds; `unlisted`, an issue the record holds in the workflow that stands in none of
   `admission.active`, `admission.waiting` and `admission.blocked`, and so in `admission.held` —
   and a `reason` sentence, which for an issue of `admission.held` is its held word's sentence,
-  under `blocked` as well where the word is one the daemon reads before `dispatch_blocker`; an
+  under `blocked` as well where the word is one the daemon reads before `dispatch_blocker`,
+  except that under `blocked` a child whose own `blocked_by` link holds it under an ancestor in
+  its tree (a children-first cycle) reads the cycle sentence, whatever its held word; an
   issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
   or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
   whose open children hold its own first phase reads `blocked`, and an issue at work whose

@@ -183,7 +183,10 @@ holds it) and `unlisted` (the record holds it in the workflow and it stands in n
 `admission.held`), with a `reason` sentence. For an issue of `admission.held` that sentence is
 the one of its held word, under `blocked` as well where the word is one of the six the daemon
 reads before `dispatch_blocker`, because closing the links would not start the issue while that
-word stands. An issue holding an admission slot carries no `why` unless it
+word stands. One child reads otherwise: under `blocked`, a child whose own `blocked_by` link
+holds it under an ancestor in its tree (a children-first cycle) reads the cycle sentence,
+whatever its held word, and `admission.held` still names that word. An issue holding an
+admission slot carries no `why` unless it
 also stands in `admission.waiting` or `admission.blocked`, or a stranded claim names it: an
 answered root reads `waiting`, a root whose open children hold its own first phase reads
 `blocked`, and an issue at work whose worker runs, one `held` and a root whose ask a person has

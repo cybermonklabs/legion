@@ -261,8 +261,11 @@ in the workflow that stands in none of `admission.active`, `admission.waiting` a
 `admission.blocked`, and so in `admission.held`; `why.reason` is the sentence. For an issue of
 `admission.held` the sentence is its held word's, under `blocked` as well where the word is one
 of the six the daemon reads before `dispatch_blocker`, since closing the links would not start
-it while that word stands. An issue holding an admission
-slot carries no `why` unless it also stands in `admission.waiting` or `admission.blocked`, or a
+it while that word stands. One child reads otherwise: under `blocked`, a child whose own
+`blocked_by` link holds it under an ancestor in its tree (a children-first cycle) reads the cycle
+sentence, whatever its held word, and `admission.held` still names that word. An issue
+holding an admission slot carries no `why` unless it also stands in `admission.waiting` or
+`admission.blocked`, or a
 stranded claim names it: an answered root reads `waiting`, a root whose open children hold its
 own first phase reads `blocked`, and an issue at work whose worker runs, one `held` and a root
 whose ask a person has not answered yet, which `waitingOn` answers for, read nothing. Neither
@@ -297,8 +300,8 @@ Check, in order:
    `active` lists the issues holding a slot, roots and children alike, `waiting` the issues in
    line, `trees` the roots of the trees that run, and `cap` the slots (`admission_cap`, which
    counts the issues the daemon has started, not trees). A parent whose own first phase waits for its open children
-   is in `blocked`, with each child it waits for. An issue in neither `active` nor `waiting` is in
-   `held`, with the word for what holds it (below).
+   is in `blocked`, with each child it waits for. An issue the record holds in the workflow that
+   stands in neither `active` nor `waiting` is in `held`, with the word for what holds it (below).
 
    Each waiting issue's own `waitingLine` says where it stands and why: `part`, `returned` for
    an issue whose work came back or `starting` for one that has not started; `kind`;
@@ -332,41 +335,48 @@ Check, in order:
    person or another session already holds the claim, the architect starts nothing and asks the
    holder, on the issue, to release it or take the issue back; the tree keeps its slot meanwhile.
 
-**The held list names the cause directly, the six causes above included.** Every issue the
-daemon's record holds in the workflow stands in `admission.active`, in `admission.waiting` or in
-`admission.held`. The third list is the issues that hold no slot and stand in no line, one row
-each for why the daemon left this one where it is:
+**The held list names the cause for every issue the daemon holds in the workflow that neither
+holds a slot nor waits in the line.** None of the six checks above gives a held row: checks 1 to 3
+leave the issue unrecorded or out of the workflow, check 4 puts it in `waiting`, and checks 5
+and 6 hold a slot. Every issue the daemon's record holds in the workflow stands in
+`admission.active`, in `admission.waiting` or in `admission.held`. The third list is the issues
+that hold no slot and stand in no line, one row each for why the daemon left this one where it
+is:
 
 ```sh
 legion state --config legion.yaml --json | jq '.admission.held'
 ```
 
 Find the row whose `issue` is the key. No row, and the key in neither other list, means the
-daemon holds no record of the issue at all: that is one of checks 1 to 3 above, not a hold. Its
+daemon's record does not hold the issue in the workflow: it has no record of the issue, or a
+status or phase takes the issue out (`done`, `backlog`, `icebox` or `triage`, or the phase
+`done`). That is one of checks 1 to 3 above, not a hold. Its
 `reason` is one word of eleven, the first of them the
 daemon found true of the issue, and `heldBy` names the issues that hold it, absent where no other
 issue holds the one that waits. An issue in this list holds no slot, so it counts for nothing
-against `admission_cap`: a slot falling free is not what starts it. The word says what does, and
-the table reads in the order the daemon reads the words:
+against `admission_cap`, and a slot falling free does not start it. The word says what holds
+it. Once no word holds the issue, it goes into the waiting line and waits there for a slot. The
+table reads in the order the daemon reads the words:
 
 | `reason` | `heldBy` | What ends the hold |
 | --- | --- | --- |
-| `tree_closed` | the tree root | The root carries the Dispatch status `done`, or its tree lingers. While it lingers, the linger's own expiry hands every member it leaves at `todo` or `admitted` to Legion as a root of its own, which starts it, so wait for that. Past the linger, **no pass of the daemon ends this hold:** an architect of a live tree takes the issue, by writing its Dispatch parent to an issue of that tree and then releasing it, which adopts it into that tree at the phase `admitted`, with its repository unchanged and its generation one higher. |
-| `tree_parked` | the tree root | The root left the workflow to `backlog` or `icebox`. **No pass of the daemon ends this hold:** a person's `todo` on that root moves it, and so does the controller where the park was its own hold and a person's decision gives the work a next step ([A parked tree did not come back after a decision](#a-parked-tree-did-not-come-back-after-a-decision)). The one member the daemon moves itself is a child at `awaiting_merge` whose pull request is still open, which a parked root's linger hands over as a tree of its own so its merge can close it. |
+| `tree_closed` | the tree root | The daemon's record of the root says `done`, or the root's linger is still running after it left the workflow. A parked root lingers too, so a member of a parked tree reads this word until that linger runs out. At the linger's expiry, a root that stayed `done` hands every member it leaves in the workflow, whatever its phase, to Legion as a root of its own, and a parked root hands over only a member at `merging` whose pull request is still open. A handed-over issue queues for a slot of its own; the daemon does not start it at once. Once a `done` root's linger has ended, **no pass of the daemon ends this hold:** an architect of a live tree takes the issue, by writing its Dispatch parent to an issue of that tree and then releasing it. That release adopts only a member at the phase `admitted` that holds no admission slot. The member joins that tree with its repository unchanged and its generation one higher: at `admitted` when its status is `todo`, and otherwise as a parked child at `done`, which a `todo` runs again. The release refuses a member of a tree still in its linger, a member of a parked tree and a member past `admitted` (`CHILD_IN_OTHER_TREE`), and a member that holds a slot (`CHILD_NOT_ADOPTABLE`). |
+| `tree_parked` | the tree root | The root left the workflow to `backlog` or `icebox`, and its linger has run out; while that linger runs, the member reads `tree_closed`. **No pass of the daemon ends this hold,** no linger moves a member that reads it, and no release takes it. Only a `todo` on the root re-admits the tree: a person's, or the controller's where the park was its own hold and a person's decision gives the work a next step ([A parked tree did not come back after a decision](#a-parked-tree-did-not-come-back-after-a-decision)). |
 | `label_off` | absent | The record says the `legion` label on this root is off. **No pass of the daemon ends this hold:** a person took the issue out of Legion, and a person putting the label back is what moves it. |
 | `ancestry` | the live root its chain reaches | The issue is that tree's unreleased work. That root's architect releases the issue, or the unreleased child above it on the Dispatch chain, or no live tree is left on that chain. |
 | `root_awaiting_person` | the tree root | A person answers the root, which resumes it ([A tree waits on a person](#a-tree-waits-on-a-person)). |
-| `design_gate` | the tree root | A person approves that root's spec, which opens the gate. |
+| `design_gate` | the tree root | A person approves the document of each step the deployment gates, at its current version, which opens the gate. |
 | `dispatch_blocker` | the unfinished blockers | The last issue a Dispatch `blocked_by` link names reaches `done`, or that link is taken off, by a person or by the tree's architect. A blocker parked in `backlog` or `icebox` counts as unfinished, so for that one the link is the only way out. |
-| `children_first` | the open children | Each open child Dispatch shows under the issue is done or leaves the workflow. |
-| `accepted_ancestor` | the accepted ancestor | That ancestor closes, and the issue starts at its close. |
-| `at_work` | absent | Nothing, and nothing is wrong: the issue stands in a phase that holds no admission slot and that the line does not carry, such as `awaiting_merge`. The workers of such a phase run as they did before, and the word says nothing about them. |
-| `unclassified` | absent | No act on the issue: the word is the daemon's own reading falling short, not a state of the issue. |
+| `children_first` | the open children | The last open child Dispatch shows under the issue leaves the workflow, which is the tree architect's work. |
+| `accepted_ancestor` | the accepted ancestor | That ancestor closes, which the merge of its pull request writes. |
+| `at_work` | absent | None today: no issue reads this word (`record.HeldAtWork` says why). |
+| `unclassified` | absent | No word above names the hold. Read the tree root's status first: a root a person moved to `triage` gives its members this word, and a `todo` on that root ends it. Otherwise report the issue (below). |
 
-`unclassified` is the one row to report. It means no word above was true of the issue, which is a
-defect of the daemon rather than anything wrong with the issue; the daemon carries the issue all
-the same and logs the word once for that issue and run. Report it with the issue's key and its
-phase, so the daemon's reading can be corrected.
+`unclassified` means that no rule of the held list names what the issue waits for. It is a known
+state as well as a possible gap: a member whose tree root a person moved to `triage` reads it, and
+a `todo` on that root ends it. Otherwise report the issue with its key, its `phase` and its
+`status`, so a person can read what the daemon could not say. The daemon carries the issue all
+the same and logs the word once for that issue and run.
 
 ## A tree waits on a person
 

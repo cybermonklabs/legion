@@ -41,7 +41,8 @@ which can be an earlier one — a child under a shut gate that a link also holds
 `design_gate`. A blocked root the line carries stands in `admission.waiting` and has no held row
 at all.
 
-The daemon starts none of these issues by itself. Name them in the day's report and take nothing
+The daemon starts no issue of this list while its word stands, and a row ends when the act or
+event in the table's last column happens. Name them in the day's report and take nothing
 for them, except where the row's last column names an act of yours.
 
 | Word | What it means | What ends the hold |
