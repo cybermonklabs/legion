@@ -29,10 +29,10 @@
 // still `working` on a delivery it confirmed — rather than the absence of one frame type.
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is conflictGitHub, a REST stand-in for the
-// one pull request the proof drives, whose base branch requires the check `ci`. Dispatch is the
-// board the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go, the
-// harness this driver shares with child_adoption_live_test.go). Envoy's listener is
+// script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
+// one pull request the proof drives (liveGitHub, in live_proof_test.go), whose base branch
+// requires the check `ci` (conflictBranchRules). Dispatch is the board the package's whole-daemon
+// live proofs share (liveDispatch, in live_proof_test.go). Envoy's listener is
 // conflictListener, the package's noticeListener with the listener's own "no live session holds the
 // role" refusal (notify.ErrNoHolder) added for the topics step 5 names, which noticeListener never
 // gives. The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim
@@ -47,30 +47,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // conflictBase is the pull request's base branch, the repository's default, and ciRedCheck the one
@@ -109,23 +101,14 @@ const (
 // stand-ins the steps read the daemon's own writes back from, and the two roles the driver acts
 // as over the worker stream.
 type conflictNoTakeoverLive struct {
-	liveProof
-	rt       *fake.Runtime
-	built    *built
-	github   *conflictGitHub
+	liveIssueProof
+	github   *liveGitHub
 	listener *conflictListener
-	// key is the issue, its own tree, and number its pull request's — the run's own, since the
-	// store a pod re-runs the proof against holds every earlier run's pull requests and a fact
-	// names a pull request by its repository and number.
-	key    string
-	number int
 	// imp and test are the implementer and the tester as their agents reach the daemon; reviewer
 	// is the claim the tester's pass starts, which nothing registers, so its role topic is the one
 	// with no live holder in step 5.
-	imp, test *conflictClaimant
+	imp, test *liveClaimant
 	reviewer  claim.Token
-	// seq numbers each settlement, so no two are the same report (classify.sameSettlement).
-	seq int64
 }
 
 // TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive drives the five steps of the proof
@@ -150,213 +133,32 @@ func TestAConflictStartsTheNextRoleAtOnceAndTakesNoTurnOverLive(t *testing.T) {
 // session, serving run 1, without an operator's spawn.
 func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/conflict-no-takeover.sh")
-	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &conflictNoTakeoverLive{
-		liveProof: proof, rt: fake.NewRuntime(), built: &built{},
-		key: proof.cfg.Project + "-1", number: int(number) + 1,
-	}
-	r.github = newConflictGitHub(t, r.key, r.number)
+	r := &conflictNoTakeoverLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/conflict-no-takeover.sh",
+		conflictBase, "the issue whose CI goes red")}
+	r.github = r.serveGitHub(&liveGitHub{sha: conflictFirstHead, also: conflictBranchRules()})
 	r.listener = newConflictListener(t, &r.liveProof)
 	r.reviewer = r.token(claim.RoleReviewer)
 	r.seed()
-	// The runtime provisions each claim's workspace itself (fake.Runtime's InPod), so a start
-	// reaches the fake's launch without the daemon cloning acme/widgets from github.com, which the
-	// tmux answer would have it try.
-	r.rt.InPod = true
-	o := fakeRuntime(r.rt, r.built)
-	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.boot(r.github.url, nil)
 	return r
 }
 
-// seed records the issue as the daemon would hold it at the moment its implementer began work: a
-// root handed to Legion, implementing, holding its tree's admission slot, its lifecycle open under
-// the workflow, on an open pull request at its first head whose base requires ci, and its
-// implementer's claim mid-launch, serving run 1. The implementer's phases row is left unwritten,
-// as a daemon that minted no assignment for that phase would leave it, which is why its own
-// completions are not held to one (api/handoff.go: either side empty is nothing to compare); every
-// assignment the proof turns on is minted live, by the starts the two completions make.
+// seed records the issue as seedImplementing does, on an open pull request at its first head
+// whose base requires ci. The implementer's phases row is left unwritten, as a daemon that minted
+// no assignment for that phase would leave it, which is why its own completions are not held to
+// one (api/handoff.go: either side empty is nothing to compare); every assignment the proof turns
+// on is minted live, by the starts the two completions make.
 func (r *conflictNoTakeoverLive) seed() {
-	t := r.t
-	t.Helper()
-	ctx := context.Background()
-	r.board.show(r.key, "in_progress")
-	r.write("the issue, its pull request and its slot", func(tx pgx.Tx) error {
-		if err := r.records.PutIssue(ctx, tx, record.Issue{
-			Key: r.key, Repo: liveRepo, DefaultBranch: conflictBase, GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
-			Title: "the issue whose CI goes red", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1, HandedOver: true,
-		}); err != nil {
-			return err
-		}
-		if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: r.key, Repo: liveRepo, Number: r.number, Branch: "legion/" + r.key,
-			HeadSHA: conflictFirstHead, Base: conflictBase, Failing: []string{},
-		}); err != nil {
-			return err
-		}
-		return r.admit(ctx, tx, r.key)
-	})
-	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
-	}
-	implementer := r.token(claim.RoleImplementer)
-	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
-		Token: implementer, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
-		ServingGeneration: 1,
-	}); err != nil {
-		t.Fatalf("record the implementer's unfinished launch: %v", err)
-	}
-	// Every role the proof launches needs its prompt on disk, as the daemon's own launch writes it.
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
-		writePrompt(t, r.cfg, r.token(role))
-	}
+	r.t.Helper()
+	r.seedImplementing(conflictFirstHead)
 	r.note("seeded: %s implementing on pull request #%d at %s, base %s requiring [%s], its implementer mid-launch serving run 1",
 		r.key, r.number, conflictFirstHead, conflictBase, ciRedCheck)
 }
 
-// write runs body in one transaction against the daemon's own database, failing the test with what
-// it was seeding on an error.
-func (r *conflictNoTakeoverLive) write(what string, body func(tx pgx.Tx) error) {
-	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
-		r.t.Fatalf("seed %s: %v", what, err)
-	}
-}
-
-// token is the claim token of role on the proof's issue, as the daemon spells it.
-func (r *conflictNoTakeoverLive) token(role claim.Role) claim.Token {
-	r.t.Helper()
-	token, err := claim.NewToken(r.project, r.key, role)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	return token
-}
-
-// awaitLaunch waits for the running daemon to launch token's claim and returns that launch.
-func (r *conflictNoTakeoverLive) awaitLaunch(token claim.Token) runtime.SpawnSpec {
-	r.t.Helper()
-	testwait.Eventually(r.t, "the launch of "+string(token), func() bool {
-		for _, call := range r.rt.Calls() {
-			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
-				return true
-			}
-		}
-		return false
-	})
-	return lastLaunch(r.t, r.rt, token)
-}
-
-// waitFor polls the state until want is true of the issue, failing with what it last saw.
-func (r *conflictNoTakeoverLive) waitFor(what string, want func(api.Issue) bool) api.Issue {
-	r.t.Helper()
-	var last api.Issue
-	testwait.Eventually(r.t, what, func() bool {
-		last = r.issue(r.key)
-		return want(last)
-	})
-	return last
-}
-
-// conflictClaimant is one role's claim as its agent reaches it: the shim that dialled the worker
-// stream with the boot token of the launch the fake runtime recorded, the registration that
-// exchanged it for the session's capability secret, and the prompt whose turn is running.
-type conflictClaimant struct {
-	r       *conflictNoTakeoverLive
-	token   claim.Token
-	role    claim.Role
-	session string
-	secret  string
-	sh      *shim
-	// turn is the id of the prompt the running turn answers, "" for a turn of the agent's own.
-	turn string
-}
-
-// claimant brings the launched claim of role to ready, as its pane's shim and its agent do: it
-// waits for the launch, dials the worker stream with the launch's boot token, registers the
-// session and reports it ready.
-func (r *conflictNoTakeoverLive) claimant(role claim.Role, session string) *conflictClaimant {
-	t := r.t
-	t.Helper()
-	token := r.token(role)
-	launch := r.awaitLaunch(token)
-	r.built.mu.Lock()
-	address := r.built.address
-	r.built.mu.Unlock()
-	sh := dialShim(t, address, launch.BootToken)
-	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register %s = %d %s, want 200", token, status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the registration of %s: %v", token, err)
-	}
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready %s = %d %s, want 204", token, status, body)
-	}
-	return &conflictClaimant{r: r, token: token, role: role, session: session, secret: registered.Secret, sh: sh}
-}
-
-// takeTask is the agent taking the daemon's next task: it reads the prompt the daemon sends,
-// acknowledges it as Oh My Pi does and starts the turn that works it, and returns once the daemon
-// has recorded the claim working on that delivery.
-func (c *conflictClaimant) takeTask(want string) shimwire.Prompt {
-	t := c.r.t
-	t.Helper()
-	prompt := c.sh.prompt()
-	if !strings.Contains(prompt.Message, want) {
-		t.Fatalf("the %s was prompted %q, want a task saying %q", c.role, prompt.Message, want)
-	}
-	c.sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true})
-	c.startTurn(prompt.ID)
-	return prompt
-}
-
-// startTurn is the agent beginning a turn, on the prompt id when the daemon sent one and on
-// nothing when the turn is its own. It returns once the daemon has recorded the claim working.
-func (c *conflictClaimant) startTurn(prompt string) {
-	t := c.r.t
-	t.Helper()
-	c.sh.send(shimwire.AgentStart{})
-	c.turn = prompt
-	testwait.Eventually(t, fmt.Sprintf("the %s's turn running", c.role), func() bool {
-		return c.r.d.claim(c.token).State == string(supervise.StateWorking)
-	})
-}
-
-// endTurn is the agent finishing its turn: the agent_end, and behind it the prompt's own result,
-// which is what names the prompt the turn belonged to (shimwire.PromptResult) and retires the
-// task. It returns once the daemon has recorded the claim out of its turn.
-func (c *conflictClaimant) endTurn() {
-	t := c.r.t
-	t.Helper()
-	c.sh.send(shimwire.AgentEnd{})
-	if c.turn != "" {
-		c.sh.send(shimwire.PromptResult{ID: c.turn, AgentInvoked: true})
-	}
-	c.turn = ""
-	testwait.Eventually(t, fmt.Sprintf("the %s out of its turn", c.role), func() bool {
-		return c.r.d.claim(c.token).State == string(supervise.StateIdle)
-	})
-}
-
 // silent holds that the daemon sends this role's connection nothing at all for within: the RPC
 // carries no abort frame, and nothing else it could send would end that role's turn either.
-func (c *conflictClaimant) silent(within time.Duration) {
-	t := c.r.t
+func (c *liveClaimant) silent(within time.Duration) {
+	t := c.p.t
 	t.Helper()
 	if err := c.sh.conn.SetReadDeadline(time.Now().Add(within)); err != nil {
 		t.Fatalf("set the read deadline on the %s's connection: %v", c.role, err)
@@ -373,40 +175,6 @@ func (c *conflictClaimant) silent(within time.Duration) {
 	}
 }
 
-// grant is a capability grant minted for this session now, as its `legion` tool mints one per
-// operation.
-func (c *conflictClaimant) grant() string {
-	t := c.r.t
-	t.Helper()
-	status, body := c.r.d.request(http.MethodPost, "/legion/v1/grants",
-		api.GrantRequest{SessionID: c.session, Secret: c.secret, Tree: c.r.key, Issue: c.r.key}, false)
-	if status != http.StatusOK {
-		t.Fatalf("the grant of %s = %d %s, want 200", c.token, status, body)
-	}
-	var granted api.GrantResponse
-	if err := json.Unmarshal(body, &granted); err != nil {
-		t.Fatalf("decode the grant of %s: %v", c.token, err)
-	}
-	return granted.GrantID
-}
-
-// complete reports this role's completion of the phase it works, from the turn it is in, and
-// returns the status and the refusal the daemon answered.
-func (c *conflictClaimant) complete(summary, commit, verdict string) (int, api.Failure) {
-	t := c.r.t
-	t.Helper()
-	status, body := c.r.d.request(http.MethodPost, "/legion/v1/handoff/complete",
-		api.HandoffCompleteRequest{GrantID: c.grant(), Summary: summary, Commit: commit, Verdict: verdict}, false)
-	if status == http.StatusOK {
-		return status, api.Failure{}
-	}
-	var failure api.Failure
-	if err := json.Unmarshal(body, &failure); err != nil {
-		t.Fatalf("decode the %s's refused completion %s: %v", c.role, body, err)
-	}
-	return status, failure
-}
-
 // Step 1. The seeded implementer completes implementing, which hands the testing phase to the
 // tester with an assignment of its own and starts it. The tester registers, takes that task and
 // works it: a claim working a delivery it confirmed, which is the turn the red of step 2 must
@@ -416,7 +184,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
 	r.imp.startTurn("")
-	if status, failure := r.imp.complete("implemented it", conflictFirstHead, ""); status != http.StatusOK {
+	if status, failure := r.imp.complete("implemented it", conflictFirstHead, "", ""); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
@@ -522,13 +290,13 @@ func (r *conflictNoTakeoverLive) testerIsToldItsPhaseEnded() {
 func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	t := r.t
 	r.github.head(conflictSecondHead)
-	r.publishPush(conflictFirstHead, conflictSecondHead)
+	r.publishPush(conflictFirstHead, conflictSecondHead, "fix the red")
 	r.publishSynchronize(conflictSecondHead)
 	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", conflictSecondHead, conflictFirstHead, r.number)
 	r.waitFor("the pull request at the pushed head", func(got api.Issue) bool {
 		return got.PullRequest != nil && got.PullRequest.Head == conflictSecondHead
 	})
-	if status, failure := r.imp.complete("fixed the red", conflictSecondHead, ""); status != http.StatusOK {
+	if status, failure := r.imp.complete("fixed the red", conflictSecondHead, "", ""); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
@@ -542,7 +310,7 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	if stale.State != string(supervise.StateWorking) {
 		t.Fatalf("the tester is %s, want it still working the turn it began in step 1", stale.State)
 	}
-	status, failure := r.test.complete("tested it", conflictFirstTesterHandoff, "pass")
+	status, failure := r.test.complete("tested it", conflictFirstTesterHandoff, "pass", "")
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
 		t.Fatalf("the completion from the tester's old turn = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
 	}
@@ -558,7 +326,7 @@ func (r *conflictNoTakeoverLive) staleEntryRefused() {
 	r.test.endTurn()
 	prompt := r.test.takeTask("Phase: testing")
 	r.note("read back: the tester's first turn ended and the second assignment's task reached it (%s)", firstLine(prompt.Message))
-	if status, failure := r.test.complete("tested the fix", conflictSecondTesterHandoff, "pass"); status != http.StatusOK {
+	if status, failure := r.test.complete("tested the fix", conflictSecondTesterHandoff, "pass", ""); status != http.StatusOK {
 		t.Fatalf("the completion from the tester's new turn = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.test.endTurn()
@@ -580,7 +348,7 @@ func (r *conflictNoTakeoverLive) noHolderFinishesTheRow() {
 	r.note("the reviewer's claim was launched by the tester's pass and never registered; its topic %s now answers 404 unclaimed, as the listener answers for a role no live session holds", topic)
 
 	r.github.head(conflictThirdHead)
-	r.publishPush(conflictSecondHead, conflictThirdHead)
+	r.publishPush(conflictSecondHead, conflictThirdHead, "fix the red")
 	r.publishSynchronize(conflictThirdHead)
 	r.waitFor("the pull request at the third head", func(got api.Issue) bool {
 		return got.PullRequest != nil && got.PullRequest.Head == conflictThirdHead
@@ -636,60 +404,7 @@ func (r *conflictNoTakeoverLive) outboxRows(kind string) int {
 func (r *conflictNoTakeoverLive) driveConflict() {
 	r.t.Helper()
 	r.github.conflicts(true)
-	r.seq++
-	payload, err := json.Marshal(map[string]string{
-		"kind": "push", "repo": liveRepo, "ref": "refs/heads/" + conflictBase,
-		"before": fmt.Sprintf("base-%d", r.seq-1), "after": fmt.Sprintf("base-%d", r.seq),
-		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
-		"pusher": "someone-else", "commit_count": "1", "head_subject": "another pull request merged",
-	})
-	if err != nil {
-		r.t.Fatalf("encode the base push payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.push.branch.%s", r.subjectRepo(), conflictBase)
-	r.publish(subject, "github", fmt.Sprintf("base-push-%d-%d", r.number, r.seq), string(payload))
-}
-
-// publishPush publishes the implementer's push of to onto from on the issue's branch, changing
-// code, as Envoy relays a GitHub push (intake's decodePush reads it).
-func (r *conflictNoTakeoverLive) publishPush(from, to string) {
-	r.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"kind": "push", "repo": liveRepo, "ref": "refs/heads/legion/" + r.key, "before": from, "after": to,
-		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
-		"pusher": "legion-implement[bot]", "commit_count": "1", "head_subject": "fix the red",
-	})
-	if err != nil {
-		r.t.Fatalf("encode the push payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.push.branch.legion/%s", r.subjectRepo(), r.key)
-	r.publish(subject, "github", fmt.Sprintf("push-%d-%s", r.number, to), string(payload))
-}
-
-// publishSynchronize publishes GitHub's synchronize of the pull request to head, as Envoy relays a
-// GitHub pull-request event (intake's decodePullRequest reads it).
-func (r *conflictNoTakeoverLive) publishSynchronize(head string) {
-	r.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(r.number),
-		"head_sha": head, "base_ref": conflictBase, "head_ref": "legion/" + r.key, "title": "the issue whose CI goes red",
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(r.number),
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		r.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", r.number, head), string(payload))
-}
-
-// firstLine is the first line of a task, for a note that should not carry a whole prompt.
-func firstLine(task string) string {
-	line, _, _ := strings.Cut(task, "\n")
-	if len(line) > 120 {
-		line = line[:120] + "…"
-	}
-	return line
+	r.publishBasePush()
 }
 
 // conflictListener is the Envoy listener as this proof's daemon reaches it: the package's
@@ -770,109 +485,18 @@ func (l *conflictListener) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	}
 }
 
-// conflictGitHub is GitHub's REST API for acme/widgets as this proof's daemon reads it: the one pull
-// request at the head the driver last pushed, with its base and the `mergeable` the driver last
-// set (conflicts)
-// (readPullRequest), its reviews as none (readReviews), the base branch's rulesets requiring ci
-// (requiredchecks.Required's /rules/branches/<base>) and the branch itself as unprotected (its
-// /branches/<base>, which a 404 would make an error that keeps the set last read). It also answers
-// what a launch and a disarm read: any repository, with default branch main, and a GraphQL root
-// that knows no pull request. Anything else is answered 404, so a read this proof did not foresee
-// fails the step that waited on it rather than reaching github.com.
-type conflictGitHub struct {
-	t      *testing.T
-	url    string
-	key    string
-	number int
-	mu     sync.Mutex
-	// sha is the pull request's head on GitHub, which a push moves.
-	sha string
-	// conflicting is what GitHub's lazily computed `mergeable` answers: false once the base has
-	// moved under the head, which is what sends the issue back to implementing.
-	conflicting bool
-}
-
-func newConflictGitHub(t *testing.T, key string, number int) *conflictGitHub {
-	t.Helper()
-	g := &conflictGitHub{t: t, key: key, number: number, sha: conflictFirstHead}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
-	return g
-}
-
-// head moves the pull request to sha, as a push does on GitHub.
-func (g *conflictGitHub) head(sha string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.sha = sha
-}
-
-// conflicts makes GitHub answer `mergeable: false` for the head, as it does once the base has
-// moved under it and the merge would not apply; clean puts it back.
-func (g *conflictGitHub) conflicts(yes bool) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.conflicting = yes
-}
-
-func (g *conflictGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
-	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
-		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
-		return
-	}
-	if req.Method == http.MethodGet && g.answer(w, req.URL.Path) {
-		return
-	}
-
-	w.WriteHeader(http.StatusNotFound)
-	_, _ = io.WriteString(w, `{"message":"Not Found"}`)
-}
-
-// answer writes the stand-in's answer to a GET of path, and says whether it had one.
-func (g *conflictGitHub) answer(w http.ResponseWriter, path string) bool {
-	rest, ours := strings.CutPrefix(path, "/repos/"+liveRepo)
-	if !ours {
-		// Any other repository is answered as the launch reads it: a name and its default branch.
-		other, isRepository := strings.CutPrefix(path, "/repos/")
-		if parts := strings.Split(other, "/"); isRepository && len(parts) == 2 {
-			g.write(w, map[string]any{"full_name": other, "default_branch": conflictBase})
-			return true
-		}
-		return false
-	}
-	switch {
-	case rest == "":
-		g.write(w, map[string]any{"full_name": liveRepo, "default_branch": conflictBase})
-	case rest == "/rules/branches/"+conflictBase:
-		g.write(w, []map[string]any{
+// conflictBranchRules is what this proof's GitHub answers beyond the harness's stand-in
+// (liveGitHub's also): the base branch's rulesets requiring ci (requiredchecks.Required's
+// /rules/branches/<base>) and the branch itself as unprotected (its /branches/<base>, which a 404
+// would make an error that keeps the set last read).
+func conflictBranchRules() map[string]any {
+	return map[string]any{
+		"/rules/branches/" + conflictBase: []map[string]any{
 			{"type": "pull_request"},
 			{"type": "required_status_checks", "parameters": map[string]any{
 				"required_status_checks": []map[string]string{{"context": ciRedCheck}},
 			}},
-		})
-	case rest == "/branches/"+conflictBase:
-		g.write(w, map[string]any{"name": conflictBase, "protected": false})
-	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
-		g.write(w, []any{})
-	case rest == fmt.Sprintf("/pulls/%d", g.number):
-		g.write(w, map[string]any{
-			"number": g.number, "state": "open", "mergeable": !g.conflicting,
-			"base": map[string]string{"ref": conflictBase},
-			"head": map[string]string{"ref": "legion/" + g.key, "sha": g.sha},
-		})
-	default:
-		return false
-	}
-	return true
-}
-
-// write encodes value as the answer.
-func (g *conflictGitHub) write(w http.ResponseWriter, value any) {
-	if err := json.NewEncoder(w).Encode(value); err != nil {
-		g.t.Errorf("write the GitHub stand-in's answer: %v", err)
+		},
+		"/branches/" + conflictBase: map[string]any{"name": conflictBase, "protected": false},
 	}
 }

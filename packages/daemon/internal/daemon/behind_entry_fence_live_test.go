@@ -60,43 +60,32 @@
 // (processed_events), which a refusal before the fact adds none to.
 //
 // What the proof stands in for lies outside the rule. The broker is a native nats-server the
-// script starts and names in LEGION_E2E_NATS_URL. GitHub is behindFenceGitHub, a REST stand-in for
-// the one pull request the proof drives, at the head the implementer last pushed. Dispatch is the
-// board the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go), which
-// holds the handoff record each completion names, and Envoy's listener is that harness's
-// noticeListener. The two Apps' tokens are workflowTokenRecorder's placeholders. No agent runs:
-// every claim is launched by the package's fake runtime, which says it provisions each workspace
-// in the claim's own pod, as the Agent Sandbox runtime does, so the daemon clones nothing from
-// GitHub, and each role the proof acts as is driven over the daemon's own worker stream and HTTP
-// routes. The issue, its pull request, its slot and the implementer's claim are seeded through the
-// store, as every daemon test seeds its fixture; what is driven is the change.
+// script starts and names in LEGION_E2E_NATS_URL. GitHub is the harness's REST stand-in for the
+// one pull request the proof drives (liveGitHub, in live_proof_test.go), at the head the
+// implementer last pushed. Dispatch is the board the package's whole-daemon live proofs share
+// (liveDispatch, in live_proof_test.go), which holds the handoff record each completion names, and
+// Envoy's listener is that harness's noticeListener. The two Apps' tokens are
+// workflowTokenRecorder's placeholders. No agent runs: every claim is launched by the package's
+// fake runtime, which says it provisions each workspace in the claim's own pod, as the Agent
+// Sandbox runtime does, so the daemon clones nothing from GitHub, and each role the proof acts as
+// is driven over the daemon's own worker stream and HTTP routes. The issue, its pull request, its
+// slot and the implementer's claim are seeded through the store, as every daemon test seeds its
+// fixture; what is driven is the change.
 package daemon
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strconv"
 	"strings"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
-	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime"
-	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
-	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
 // behindFenceBase is the pull request's base branch, the repository's default.
@@ -119,18 +108,11 @@ const behindFenceTakenSummary = "tested it at " + behindFenceSecondHead
 // GitHub stand-in its facts are read against, and the three roles the driver acts as over the
 // worker stream.
 type behindEntryFenceLive struct {
-	liveProof
-	rt     *fake.Runtime
-	built  *built
-	github *behindFenceGitHub
-	// key is the issue, its own tree, and number its pull request's — the run's own, since the
-	// store a pod re-runs the proof against holds every earlier run's pull requests and a fact
-	// names a pull request by its repository and number.
-	key    string
-	number int
+	liveIssueProof
+	github *liveGitHub
 	// imp, test and review are the implementer, the tester and the reviewer as their agents reach
 	// the daemon. The reviewer is registered and holds a grant, because the move back is its own.
-	imp, test, review *behindFenceClaimant
+	imp, test, review *liveClaimant
 	// served is the entry whose task the tester's one turn took, and entry the entry the tester's
 	// phases row stands on as the last step left it, so the step after it reads what the one
 	// before recorded rather than a number of its own.
@@ -168,249 +150,22 @@ func TestABehindCompletionIsDecidedByItsHeadAndTheMoveThatRaisedTheEntryLive(t *
 // without an operator's spawn.
 func newBehindEntryFenceLive(t *testing.T) *behindEntryFenceLive {
 	t.Helper()
-	proof := newLiveProof(t, "scripts/e2e/behind-entry-fence.sh")
-	number, err := strconv.ParseInt(randomSuffix(t)[:6], 16, 64)
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := &behindEntryFenceLive{
-		liveProof: proof, rt: fake.NewRuntime(), built: &built{},
-		key: proof.cfg.Project + "-1", number: int(number) + 1,
-	}
-	r.github = newBehindFenceGitHub(t, r.key, r.number)
+	r := &behindEntryFenceLive{liveIssueProof: newLiveIssueProof(t, "scripts/e2e/behind-entry-fence.sh",
+		behindFenceBase, "the issue whose tester reports behind its entry")}
+	r.github = r.serveGitHub(&liveGitHub{sha: behindFenceFirstHead})
 	r.seed()
-	// The runtime provisions each claim's workspace itself (fake.Runtime's InPod), so a start
-	// reaches the fake's launch without the daemon cloning acme/widgets from github.com, which the
-	// tmux answer would have it try.
-	r.rt.InPod = true
-	o := fakeRuntime(r.rt, r.built)
-	o.workflowTokens = &workflowTokenRecorder{}
-	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.boot(r.github.url, nil)
 	return r
 }
 
-// seed records the issue as the daemon would hold it at the moment its implementer began work: a
-// root handed to Legion, implementing, holding its tree's admission slot, its lifecycle open under
-// the workflow, on an open pull request at the first head, and its implementer's claim mid-launch,
-// serving run 1. No phases row is seeded: every entry the fence reads here is raised live, by the
-// starts the completions and the moves back make.
+// seed records the issue as seedImplementing does, on an open pull request at the first head. No
+// phases row is seeded: every entry the fence reads here is raised live, by the starts the
+// completions and the moves back make.
 func (r *behindEntryFenceLive) seed() {
-	t := r.t
-	t.Helper()
-	ctx := context.Background()
-	r.board.show(r.key, "in_progress")
-	r.write("the issue, its pull request and its slot", func(tx pgx.Tx) error {
-		if err := r.records.PutIssue(ctx, tx, record.Issue{
-			Key: r.key, Repo: liveRepo, DefaultBranch: behindFenceBase, GitHubRepo: liveRepo, Tree: r.key, Project: r.cfg.Project,
-			Title: "the issue whose tester reports behind its entry", Phase: phase.Implementing, Generation: 1, Status: "in_progress",
-			DispatchStatus: "in_progress", Rank: "U", LastDispatchSeq: 1, HandedOver: true,
-		}); err != nil {
-			return err
-		}
-		if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
-			State: record.PullRequestOpen, Issue: r.key, Repo: liveRepo, Number: r.number, Branch: "legion/" + r.key,
-			HeadSHA: behindFenceFirstHead, Base: behindFenceBase, Failing: []string{},
-		}); err != nil {
-			return err
-		}
-		return r.admit(ctx, tx, r.key)
-	})
-	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.key, treelifecycle.AuthorityWorkflow); err != nil {
-		t.Fatalf("open the lifecycle of %s: %v", r.key, err)
-	}
-	implementer := r.token(claim.RoleImplementer)
-	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
-		Token: implementer, Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleImplementer,
-		Generation: 1, State: supervise.StateLaunching, BootTokenHash: supervise.HashBootToken("interrupted-" + randomSuffix(t)),
-		ServingGeneration: 1,
-	}); err != nil {
-		t.Fatalf("record the implementer's unfinished launch: %v", err)
-	}
-	// Every role the proof launches needs its prompt on disk, as the daemon's own launch writes it.
-	for _, role := range []claim.Role{claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer} {
-		writePrompt(t, r.cfg, r.token(role))
-	}
+	r.t.Helper()
+	r.seedImplementing(behindFenceFirstHead)
 	r.note("seeded: %s implementing on pull request #%d at %s, base %s, its implementer mid-launch serving run 1",
 		r.key, r.number, behindFenceFirstHead, behindFenceBase)
-}
-
-// write runs body in one transaction against the daemon's own database, failing the test with what
-// it was seeding on an error.
-func (r *behindEntryFenceLive) write(what string, body func(tx pgx.Tx) error) {
-	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
-		r.t.Fatalf("seed %s: %v", what, err)
-	}
-}
-
-// token is the claim token of role on the proof's issue, as the daemon spells it.
-func (r *behindEntryFenceLive) token(role claim.Role) claim.Token {
-	r.t.Helper()
-	token, err := claim.NewToken(r.project, r.key, role)
-	if err != nil {
-		r.t.Fatal(err)
-	}
-	return token
-}
-
-// awaitLaunch waits for the running daemon to launch token's claim and returns that launch.
-func (r *behindEntryFenceLive) awaitLaunch(token claim.Token) runtime.SpawnSpec {
-	r.t.Helper()
-	testwait.Eventually(r.t, "the launch of "+string(token), func() bool {
-		for _, call := range r.rt.Calls() {
-			if (call.Method == "Spawn" || call.Method == "Resume") && call.Spec.Claim == token {
-				return true
-			}
-		}
-		return false
-	})
-	return lastLaunch(r.t, r.rt, token)
-}
-
-// waitFor polls the state until want is true of the issue, failing with what it last saw.
-func (r *behindEntryFenceLive) waitFor(what string, want func(api.Issue) bool) api.Issue {
-	r.t.Helper()
-	var last api.Issue
-	testwait.Eventually(r.t, what, func() bool {
-		last = r.issue(r.key)
-		return want(last)
-	})
-	return last
-}
-
-// behindFenceClaimant is one role's claim as its agent reaches it: the shim that dialled the
-// worker stream with the boot token of the launch the fake runtime recorded, the registration that
-// exchanged it for the session's capability secret, and the prompt whose turn is running.
-type behindFenceClaimant struct {
-	r       *behindEntryFenceLive
-	token   claim.Token
-	role    claim.Role
-	session string
-	secret  string
-	sh      *shim
-	// turn is the id of the prompt the running turn answers, "" for a turn of the agent's own.
-	turn string
-}
-
-// claimant brings the launched claim of role to ready, as its pane's shim and its agent do: it
-// waits for the launch, dials the worker stream with the launch's boot token, registers the
-// session and reports it ready.
-func (r *behindEntryFenceLive) claimant(role claim.Role, session string) *behindFenceClaimant {
-	t := r.t
-	t.Helper()
-	token := r.token(role)
-	launch := r.awaitLaunch(token)
-	r.built.mu.Lock()
-	address := r.built.address
-	r.built.mu.Unlock()
-	sh := dialShim(t, address, launch.BootToken)
-	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: session, OmpSessionFile: "/sessions/" + session + ".jsonl",
-		AgentID: session, PluginContract: api.DaemonAPIVersion,
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register %s = %d %s, want 200", token, status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the registration of %s: %v", token, err)
-	}
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: session, Secret: registered.Secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready %s = %d %s, want 204", token, status, body)
-	}
-	return &behindFenceClaimant{r: r, token: token, role: role, session: session, secret: registered.Secret, sh: sh}
-}
-
-// takeTask is the agent taking the daemon's next task: it reads the prompt the daemon sends,
-// acknowledges it as Oh My Pi does and starts the turn that works it, and returns once the daemon
-// has recorded the claim working on that delivery.
-func (c *behindFenceClaimant) takeTask(want string) shimwire.Prompt {
-	t := c.r.t
-	t.Helper()
-	prompt := c.sh.prompt()
-	if !strings.Contains(prompt.Message, want) {
-		t.Fatalf("the %s was prompted %q, want a task saying %q", c.role, prompt.Message, want)
-	}
-	c.sh.send(shimwire.Response{ID: prompt.ID, Command: shimwire.TypePrompt, Success: true})
-	c.startTurn(prompt.ID)
-	return prompt
-}
-
-// startTurn is the agent beginning a turn, on the prompt id when the daemon sent one and on
-// nothing when the turn is its own. It returns once the daemon has recorded the claim working.
-func (c *behindFenceClaimant) startTurn(prompt string) {
-	t := c.r.t
-	t.Helper()
-	c.sh.send(shimwire.AgentStart{})
-	c.turn = prompt
-	testwait.Eventually(t, fmt.Sprintf("the %s's turn running", c.role), func() bool {
-		return c.r.d.claim(c.token).State == string(supervise.StateWorking)
-	})
-}
-
-// endTurn is the agent finishing its turn: the agent_end, and behind it the prompt's own result,
-// which is what names the prompt the turn belonged to (shimwire.PromptResult) and retires the
-// task. It returns once the daemon has recorded the claim out of its turn.
-func (c *behindFenceClaimant) endTurn() {
-	t := c.r.t
-	t.Helper()
-	c.sh.send(shimwire.AgentEnd{})
-	if c.turn != "" {
-		c.sh.send(shimwire.PromptResult{ID: c.turn, AgentInvoked: true})
-	}
-	c.turn = ""
-	testwait.Eventually(t, fmt.Sprintf("the %s out of its turn", c.role), func() bool {
-		return c.r.d.claim(c.token).State == string(supervise.StateIdle)
-	})
-}
-
-// grant is a capability grant minted for this session now, as its `legion` tool mints one per
-// operation.
-func (c *behindFenceClaimant) grant() string {
-	t := c.r.t
-	t.Helper()
-	status, body := c.r.d.request(http.MethodPost, "/legion/v1/grants",
-		api.GrantRequest{SessionID: c.session, Secret: c.secret, Tree: c.r.key, Issue: c.r.key}, false)
-	if status != http.StatusOK {
-		t.Fatalf("the grant of %s = %d %s, want 200", c.token, status, body)
-	}
-	var granted api.GrantResponse
-	if err := json.Unmarshal(body, &granted); err != nil {
-		t.Fatalf("decode the grant of %s: %v", c.token, err)
-	}
-	return granted.GrantID
-}
-
-// handoff seeds on the run's Dispatch board version 1 of this claim's record of phase word,
-// written by this claim's own registered session, as `dispatch handoff-write` leaves it, and
-// answers its id. A completion of a file-backed phase names a record, and the daemon reads it
-// back from Dispatch and refuses one another session wrote (api/handoff.go's handoffRecord), so
-// every completion below writes its own first, as a worker does.
-func (c *behindFenceClaimant) handoff(word string) string {
-	return c.r.board.handoff(c.r.key, word, c.session)
-}
-
-// complete reports this role's completion of the phase it works, from the turn it is in, naming
-// the handoff record of that phase this claim wrote, and returns the status and the refusal the
-// daemon answered. Every record the board seeds is version 1 of its own id, so each completion
-// names a record of its own and no two are the same one.
-func (c *behindFenceClaimant) complete(summary, commit, verdict, handoffID string) (int, api.Failure) {
-	t := c.r.t
-	t.Helper()
-	status, body := c.r.d.request(http.MethodPost, "/legion/v1/handoff/complete",
-		api.HandoffCompleteRequest{GrantID: c.grant(), Summary: summary, Commit: commit, Verdict: verdict,
-			HandoffID: handoffID, HandoffVersion: 1}, false)
-	if status == http.StatusOK {
-		return status, api.Failure{}
-	}
-	var failure api.Failure
-	if err := json.Unmarshal(body, &failure); err != nil {
-		t.Fatalf("decode the %s's refused completion %s: %v", c.role, body, err)
-	}
-	return status, failure
 }
 
 // moveBack is this role requesting the issue's move back to an earlier phase, from the turn it is
@@ -418,10 +173,10 @@ func (c *behindFenceClaimant) complete(summary, commit, verdict, handoffID strin
 // takes it from the role running the issue's phase and from no other (workflow's Engine.backward,
 // BACKWARD_REFUSED), which is why the tester asks for it in testing and the registered reviewer in
 // reviewing.
-func (c *behindFenceClaimant) moveBack(to phase.Phase, reason string) (int, api.Failure) {
-	t := c.r.t
+func (c *liveSession) moveBack(to phase.Phase, reason string) (int, api.Failure) {
+	t := c.p.t
 	t.Helper()
-	status, body := c.r.d.request(http.MethodPost, "/legion/v1/phase/backward",
+	status, body := c.p.d.request(http.MethodPost, "/legion/v1/phase/backward",
 		api.PhaseBackwardRequest{GrantID: c.grant(), To: to, Reason: reason}, false)
 	if status == http.StatusOK {
 		return status, api.Failure{}
@@ -732,124 +487,10 @@ func (r *behindEntryFenceLive) heldOn() {
 func (r *behindEntryFenceLive) pushes(from, to string) {
 	r.t.Helper()
 	r.github.head(to)
-	r.publishPush(from, to)
+	r.publishPush(from, to, "fix the fault the tests showed")
 	r.publishSynchronize(to)
 	r.note("drove the implementer's push of %s onto %s and GitHub's synchronize of #%d to it", to, from, r.number)
 	r.waitFor("the pull request at the pushed head "+to, func(got api.Issue) bool {
 		return got.PullRequest != nil && got.PullRequest.Head == to
 	})
-}
-
-// publishPush publishes the implementer's push of to onto from on the issue's branch, changing
-// code, as Envoy relays a GitHub push (intake's decodePush reads it).
-func (r *behindEntryFenceLive) publishPush(from, to string) {
-	r.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"kind": "push", "repo": liveRepo, "ref": "refs/heads/legion/" + r.key, "before": from, "after": to,
-		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
-		"pusher": "legion-implement[bot]", "commit_count": "1", "head_subject": "fix the fault the tests showed",
-	})
-	if err != nil {
-		r.t.Fatalf("encode the push payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.push.branch.legion/%s", r.subjectRepo(), r.key)
-	r.publish(subject, "github", fmt.Sprintf("push-%d-%s", r.number, to), string(payload))
-}
-
-// publishSynchronize publishes GitHub's synchronize of the pull request to head, as Envoy relays a
-// GitHub pull-request event (intake's decodePullRequest reads it).
-func (r *behindEntryFenceLive) publishSynchronize(head string) {
-	r.t.Helper()
-	payload, err := json.Marshal(map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(r.number),
-		"head_sha": head, "base_ref": behindFenceBase, "head_ref": "legion/" + r.key, "title": "the issue whose tester reports behind its entry",
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(r.number),
-		"updated_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		r.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), r.number)
-	r.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", r.number, head), string(payload))
-}
-
-// behindFenceGitHub is GitHub's REST API for acme/widgets as this proof's daemon reads it: the one
-// pull request at the head the driver last pushed, with its base and `mergeable: true`
-// (readPullRequest), and its reviews as none (readReviews). It also answers what a launch reads:
-// any repository, with default branch main, and a GraphQL root that knows no pull request.
-// Anything else is answered 404, so a read this proof did not foresee fails the step that waited
-// on it rather than reaching github.com.
-type behindFenceGitHub struct {
-	t      *testing.T
-	url    string
-	key    string
-	number int
-	mu     sync.Mutex
-	// sha is the pull request's head on GitHub, which a push moves.
-	sha string
-}
-
-func newBehindFenceGitHub(t *testing.T, key string, number int) *behindFenceGitHub {
-	t.Helper()
-	g := &behindFenceGitHub{t: t, key: key, number: number, sha: behindFenceFirstHead}
-	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
-	return g
-}
-
-// head moves the pull request to sha, as a push does on GitHub.
-func (g *behindFenceGitHub) head(sha string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.sha = sha
-}
-
-func (g *behindFenceGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
-		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
-		return
-	}
-	if req.Method == http.MethodGet && g.answer(w, req.URL.Path) {
-		return
-	}
-
-	w.WriteHeader(http.StatusNotFound)
-	_, _ = io.WriteString(w, `{"message":"Not Found"}`)
-}
-
-// answer writes the stand-in's answer to a GET of path, and says whether it had one.
-func (g *behindFenceGitHub) answer(w http.ResponseWriter, path string) bool {
-	rest, ours := strings.CutPrefix(path, "/repos/"+liveRepo)
-	if !ours {
-		// Any other repository is answered as the launch reads it: a name and its default branch.
-		other, isRepository := strings.CutPrefix(path, "/repos/")
-		if parts := strings.Split(other, "/"); isRepository && len(parts) == 2 {
-			g.write(w, map[string]any{"full_name": other, "default_branch": behindFenceBase})
-			return true
-		}
-		return false
-	}
-	switch {
-	case rest == "":
-		g.write(w, map[string]any{"full_name": liveRepo, "default_branch": behindFenceBase})
-	case rest == fmt.Sprintf("/pulls/%d/reviews", g.number):
-		g.write(w, []any{})
-	case rest == fmt.Sprintf("/pulls/%d", g.number):
-		g.write(w, map[string]any{
-			"number": g.number, "state": "open", "mergeable": true,
-			"base": map[string]string{"ref": behindFenceBase},
-			"head": map[string]string{"ref": "legion/" + g.key, "sha": g.sha},
-		})
-	default:
-		return false
-	}
-	return true
-}
-
-// write encodes value as the answer.
-func (g *behindFenceGitHub) write(w http.ResponseWriter, value any) {
-	if err := json.NewEncoder(w).Encode(value); err != nil {
-		g.t.Errorf("write the GitHub stand-in's answer: %v", err)
-	}
 }
