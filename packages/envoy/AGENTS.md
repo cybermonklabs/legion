@@ -1992,7 +1992,7 @@ a replace's `with`, an insert's markdown whether it becomes blocks or table rows
 in a suggestion's `replace_with` when it is created and when it is accepted;
 in the attributes written onto a typed block (`SetBlockAttributes`, `pmdoc.LineFeedAttrs`), and in an answer's text, which its ask block carries;
 and in a block ask's edited question and options.
-A message's body and a comment's body are written the same way where they are stored (`validateCreateMessage` in `api/messages.go`, `createCommentFor` in `api/comment_create.go`, `editComment` in `api/comment_actions.go`), so a body stored since sjawhar/legion#2712 holds no carriage return;
+A message's body and a comment's body are written the same way where they are stored (`validateCreateMessage` in `api/messages.go`, `createCommentFor` in `api/comment_create.go`, `editComment` in `api/comment_actions.go`, `editMessage` in `api/message_corrections.go`), so a body stored since sjawhar/legion#2712 holds no carriage return;
 the block ids an edit carries are the browser editor's own offsets, and a ProseMirror document holds no carriage return, so that normalisation shortens no offset a caller sent.
 The browser editor's own updates cannot carry a carriage return.
 No stored document holds one.

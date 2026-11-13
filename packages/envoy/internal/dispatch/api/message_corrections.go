@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
@@ -100,6 +101,10 @@ func (s *server) editMessage(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// An edit stores line feeds alone, as a message's creation does (validateCreateMessage) and as
+	// the comment edit does: a body that holds a carriage return draws differently in every reader
+	// of the stored text, the message.edited event and its deliveries among them.
+	input.Body = pmdoc.LineFeeds(input.Body)
 	if strings.TrimSpace(input.Body) == "" {
 		writeError(w, "INVALID_MESSAGE", http.StatusBadRequest, "message body is required")
 		return
