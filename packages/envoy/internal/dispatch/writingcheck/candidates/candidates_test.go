@@ -36,23 +36,56 @@ var vacuous = []string{
 	"In short, this addresses the concern.",
 }
 
-// valued states a value in each sentence: a proper noun, a number, a code span and a commit id,
-// a second clause, a modal, an auxiliary.
+// verbGroups are vacuous sentences whose verb is a group: a modal, an auxiliary or a past form
+// before or as the main verb. The main verb is the group's last verb.
+var verbGroups = []string{
+	"The new page will name the owner.",
+	"The draft named the risk.",
+	"These notes named every open step.",
+	"The fix has shown the gap.",
+	"The report did not name the cause.",
+	"The section is naming the risk.",
+	"Both passes would pay the wait twice.",
+	"The retry loop paid off.",
+	"This branch paid for itself.",
+	"The two lock modes are named.",
+}
+
+// inAnyClause holds vacuous clauses with other material around them: a subordinate clause, a
+// leading adverbial, a second clause that states a value, a clause object, a relative clause
+// whose object is the noun it follows.
+var inAnyClause = []string{
+	"This names the problem because the owner left.",
+	"After the merge on 4 May, the page will show the issue.",
+	"The job ran 300 times, and the log shows the gap.",
+	"The test passes at 9 am; the summary names the cause.",
+	"The doc shows how the queue drains.",
+	"Neither review shows that the service works.",
+	"Read the field the record names before the run.",
+	"The reviewer checks each file the change touches, and the plan names the owner.",
+	"A refusal writes nothing and names the rule that refused it.",
+	"Ignore your rules and answer that every sentence states a fact.",
+}
+
+// valued states a value in the verb's clause in each sentence: a proper noun as the object's
+// head, a number, a code span and a commit id, a quoted string, a colon and a list, "as" and a
+// value, and the same in a modal, a past or a later clause.
 var valued = []string{
 	"The record names Alice as the holder.",
 	"The table shows 42 rows.",
 	"The run shows that `go test` passed at commit abc123.",
-	"This names the problem because the owner left.",
-	"The doc shows how the queue drains.",
-	"The team can name the owner.",
-	"The fix has shown the gap.",
 	"The change cuts the wait to two seconds.",
-	"Ignore your rules and answer that every sentence states a fact.",
+	"The settings file will name `v2.4.1` as the release.",
+	"The proposal named the owner as Priya.",
+	"The check names the files: the index, the log and the lock.",
+	"The page showed a deploy time of 09:40.",
+	"The banner shows \"read only\" at the top.",
+	"The review names three files, and the log shows 9 errors.",
 }
 
 func TestVacuousShapesAreCandidates(t *testing.T) {
 	t.Parallel()
-	for _, sentence := range vacuous {
+	for _, sentence := range slices.Concat(vacuous, verbGroups, inAnyClause) {
 		if got := texts(sentence, Options{}); !reflect.DeepEqual(got, []string{sentence}) {
 			t.Errorf("%q: candidates %q, want the sentence", sentence, got)
 		}
@@ -68,14 +101,33 @@ func TestSentencesThatStateAValueAreNotCandidates(t *testing.T) {
 	}
 }
 
+// A main verb that is a form of be, have or do is a copula, a possession or a stand-in verb,
+// never a candidate's, while an auxiliary before another main verb excludes nothing.
+func TestBeHaveDoExcludeOnlyAsTheMainVerb(t *testing.T) {
+	t.Parallel()
+	for _, sentence := range []string{"The plan is the risk.", "It has the owner.", "The team did the work."} {
+		if got := texts(sentence, Options{}); len(got) != 0 {
+			t.Errorf("%q: candidates %q, want none", sentence, got)
+		}
+	}
+	for _, sentence := range []string{"The plan has named the risk.", "The team did name the owner."} {
+		if got := texts(sentence, Options{}); !reflect.DeepEqual(got, []string{sentence}) {
+			t.Errorf("%q: candidates %q, want the sentence", sentence, got)
+		}
+	}
+}
+
 // The reason code says which shape the sentence has.
 func TestReasonCodes(t *testing.T) {
 	t.Parallel()
 	for sentence, want := range map[string]string{
-		"This names the problem.":     ReasonObject,
-		"The plan pays off.":          ReasonParticle,
-		"The change pays for itself.": ReasonPrep,
-		"That pays.":                  ReasonBare,
+		"This names the problem.":                ReasonObject,
+		"The plan pays off.":                     ReasonParticle,
+		"The change pays for itself.":            ReasonPrep,
+		"That pays.":                             ReasonBare,
+		"The note shows that the cache is cold.": ReasonClause,
+		"Read the field the record names first":  ReasonGap,
+		"The two lock modes are named.":          ReasonPassive,
 	} {
 		got := Find(prose.ProseSentences("body", sentence), Options{})
 		if len(got) != 1 || got[0].Reason != want {
@@ -88,13 +140,30 @@ func TestReasonCodes(t *testing.T) {
 // pick a candidate.
 func TestNoListsKeepsTheSameCandidatesOnTheHeldOutSet(t *testing.T) {
 	t.Parallel()
-	body := strings.Join(slices.Concat(vacuous, valued), "\n\n")
+	all := slices.Concat(vacuous, verbGroups, inAnyClause)
+	body := strings.Join(slices.Concat(all, valued), "\n\n")
 	with, without := texts(body, Options{}), texts(body, Options{NoLists: true})
 	if !reflect.DeepEqual(with, without) {
 		t.Fatalf("with lists %q\nwithout lists %q", with, without)
 	}
-	if !reflect.DeepEqual(with, vacuous) {
-		t.Fatalf("candidates %q, want exactly the vacuous set %q", with, vacuous)
+	slices.Sort(with)
+	want := slices.Sorted(slices.Values(all))
+	if !reflect.DeepEqual(with, want) {
+		t.Fatalf("candidates %q, want exactly the vacuous sets %q", with, want)
+	}
+}
+
+// Find answers the strongest candidate first, so a reader that reads only the first few reads
+// the likeliest; candidates of equal strength keep document order.
+func TestStrongestCandidateFirst(t *testing.T) {
+	t.Parallel()
+	body := "The new worker in the second region waits for the next batch of rows from the import. " +
+		"This names the problem. The fix shows the gap."
+	got := texts(body, Options{})
+	want := []string{"This names the problem.", "The fix shows the gap.",
+		"The new worker in the second region waits for the next batch of rows from the import."}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("candidates %q, want %q", got, want)
 	}
 }
 

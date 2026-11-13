@@ -5,24 +5,28 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/writingcheck/prose"
 )
 
 // The sentences of the measurement fixture, written for these tests. The code stage keeps
-// sentences A, C, D, F, G, H and K as candidates (each a subject, a finite verb and an empty
-// object), and not B, E, I, J, L or M; the baseline matches A, C, E, F and G.
+// sentences A, C, D, F, G, H and K as candidates (each a subject, a verb and an object with no
+// value), and not B, E, I, J, L or M (each states a value in the verb's clause); the baseline
+// matches A, C, E, F and G.
 const (
 	sentA = "The new section names the risk."               // vacuous, names; candidate; baseline
 	sentB = "The tide table lists 14 tides for May."        // a fact; no candidate
 	sentC = "The fix shows the gap."                        // vacuous, shows; candidate; baseline
 	sentD = "The proposal frames the risk."                 // vacuous, other verb; candidate
-	sentE = "The note shows that the cache is cold."        // a fact; baseline only
+	sentE = "The note shows that the cache holds 3 rows."   // a fact; baseline only
 	sentF = "The draft names the gap."                      // planted fault, names; candidate; baseline
 	sentG = "The branch pays off."                          // vacuous, pays; candidate; baseline
 	sentH = "The patch lists the steps."                    // a fact the stub calls vacuous; candidate
-	sentI = "The new wording will name the issue."          // vacuous, names; a modal, so no candidate
-	sentJ = "The rewrite will shape the work."              // vacuous, other verb; no candidate
+	sentI = "The new wording will name two issues."         // vacuous, names; a count, so no candidate
+	sentJ = "The rewrite will shape 3 parts of the work."   // vacuous, other verb; a count, so no candidate
 	sentK = "The plan carries the weight."                  // planted fault, other verb; candidate
 	sentL = "The config file names us-west1 as the region." // planted control; no candidate
 	sentM = "The kettle boils in 40 seconds."               // a fact; no candidate
@@ -195,6 +199,31 @@ func containsUnit(t *testing.T, path, unit string) bool {
 		}
 	}
 	return false
+}
+
+// Find answers its candidates strongest first, so candidateSentences maps each one to its
+// sentence in any order; a sentence that appears twice is taken once per candidate, and a
+// candidate with no sentence left is an error.
+func TestCandidateSentencesMatchInAnyOrder(t *testing.T) {
+	ps := []prose.Sentence{
+		{Field: "body", Text: "The plan pays off."},
+		{Field: "body", Text: "This names the problem."},
+		{Field: "title", Text: "This names the problem."},
+		{Field: "body", Text: "This names the problem."},
+	}
+	cands := []candidateRef{
+		{ID: "c1", Field: "body", Text: "This names the problem."},
+		{ID: "c2", Field: "title", Text: "This names the problem."},
+		{ID: "c3", Field: "body", Text: "The plan pays off."},
+		{ID: "c4", Field: "body", Text: "This names the problem."},
+	}
+	got, err := candidateSentences(ps, cands)
+	if err != nil || !reflect.DeepEqual(got, []int{1, 2, 0, 3}) {
+		t.Fatalf("candidateSentences = %v, %v; want [1 2 0 3]", got, err)
+	}
+	if _, err := candidateSentences(ps, append(cands, candidateRef{ID: "c5", Field: "body", Text: "The plan pays off."})); err == nil {
+		t.Fatal("a candidate with no sentence left gave no error")
+	}
 }
 
 // scoreFixture scores the fixture's stratum against the stub and answers the run's directory.

@@ -473,7 +473,8 @@ x = n or n = 0), and the lower bound is the Beta(x, n âˆ’ x + 1) quantile at 1 â
 is it a candidate? It runs `candidates.Find` once over each write's sentences (the labels hold
 each sentence's field and text in order, which is all the code stage reads), once with the
 bundle's lists and once with `Options{NoLists: true}`, and matches each candidate to its sentence
-in order by field and text.
+by field and text. Find answers its candidates strongest first, not in document order, so each
+candidate takes the first sentence not yet taken that has its field and text.
 
 | Flag | Meaning |
 | --- | --- |

@@ -205,20 +205,24 @@ func recallSentence(w refWrite, s refSentence) bool {
 	return w.usable() && s.Verdict == verdictVacuous
 }
 
-// candidateSentences maps each candidate's sentence to its index among sentences, which Find
-// read in order: the next sentence at or after the last one matched that has its field and text.
+// candidateSentences maps each candidate's sentence to its index among sentences. Find answers
+// its candidates strongest first, not in document order, so each candidate takes the first
+// sentence not yet taken that has its field and text.
 func candidateSentences(sentences []prose.Sentence, cands []candidateRef) ([]int, error) {
+	type key struct{ field, text string }
+	free := map[key][]int{}
+	for i, s := range sentences {
+		k := key{s.Field, s.Text}
+		free[k] = append(free[k], i)
+	}
 	out := make([]int, len(cands))
-	next := 0
-	for k, c := range cands {
-		for next < len(sentences) && (sentences[next].Field != c.Field || sentences[next].Text != c.Text) {
-			next++
-		}
-		if next == len(sentences) {
+	for n, c := range cands {
+		k := key{c.Field, c.Text}
+		idx := free[k]
+		if len(idx) == 0 {
 			return nil, fmt.Errorf("candidate %s (%q) is no sentence of the write", c.ID, c.Text)
 		}
-		out[k] = next
-		next++
+		out[n], free[k] = idx[0], idx[1:]
 	}
 	return out, nil
 }
