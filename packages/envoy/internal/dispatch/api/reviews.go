@@ -464,7 +464,11 @@ type approvalRequestInput struct {
 
 // approvalRequestResponse is the body POST /api/v1/artifacts/{id}/approval-requests answers.
 type approvalRequestResponse struct {
-	Ask        *shapedAsk           `json:"ask"`
+	Ask *shapedAsk `json:"ask"`
+	// Opened is whether this request opened the ask it answers: false where it renewed an ask
+	// already open over one of its documents, and where the documents stood approved and no ask
+	// was needed. A caller undoing the request retracts only an ask it opened.
+	Opened     bool                 `json:"opened"`
 	ArtifactID string               `json:"artifact_id"`
 	Version    int                  `json:"version"`
 	Approval   artifactApprovalRead `json:"approval"`
@@ -649,7 +653,7 @@ func (s *server) requestArtifactApproval(w http.ResponseWriter, r *http.Request)
 	}
 	// The reason, like the question above, is read where it stands: the write beside it stored
 	// its tree.
-	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, ArtifactID: artifact.ID, Version: version,
+	WriteJSON(w, status, approvalRequestResponse{Ask: askAnswer, Opened: open == nil, ArtifactID: artifact.ID, Version: version,
 		Approval:       newArtifactApprovalRead(*artifact.Approval, trees),
 		Coverage:       coverage,
 		CoverageUnread: coverageUnread})

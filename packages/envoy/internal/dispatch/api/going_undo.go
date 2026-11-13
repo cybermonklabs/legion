@@ -68,6 +68,11 @@ const (
 	// codeGoingUndoInProgress is a run another undo of is under way: 429 with a Retry-After, so
 	// the retry reads what that undo recorded.
 	codeGoingUndoInProgress = "GOING_UNDO_IN_PROGRESS"
+	// codeGoingUndoUnsettled is a write whose undo was claimed longer ago than any request making
+	// it can still run (goingClaimBound) and never recorded: it may have been undone, so it is not
+	// undone again, and the person reads the item to see, as codeGoingWriteUnsettled answers a
+	// write.
+	codeGoingUndoUnsettled = "GOING_UNDO_UNSETTLED"
 	// codeClaimContended is the claim routes' refusal of a claim whose holder changed twice while
 	// the request ran (issue_claim.go), which asks the caller to read the issue and try again.
 	codeClaimContended = "CLAIM_CONTENDED"
@@ -104,7 +109,9 @@ type goingUndoAnswer struct {
 // again. The undo claims every write it is about to undo on the run in one statement
 // (claimGoingRunUndos) before it undoes any, holding no lock and no connection while it works, so
 // a second undo of the run while the first is under way is 429 GOING_UNDO_IN_PROGRESS with a
-// Retry-After, and its retry reads what the first recorded and undoes nothing twice.
+// Retry-After, and its retry reads what the first recorded and undoes nothing twice. A write whose
+// undo was claimed and never recorded, once no request can still be making it, is answered
+// unsettled, 409 GOING_UNDO_UNSETTLED, and never undone again: that undo may have been made.
 func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -127,6 +134,7 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	claimedAt := time.Now().UTC().Truncate(time.Microsecond)
 	var run goingRun
 	var writes []goingRunWrite
+	var unsettled map[string]time.Time
 	for tries := 0; ; tries++ {
 		if run, ok = s.readCallersGoingRun(w, r, caller.ID); !ok {
 			return
@@ -139,14 +147,10 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 				"another undo of this run is under way: ask again shortly, and this undo reads what it did")
 			return
 		}
-		writes = goingUndoable(run)
-		if len(writes) == 0 {
-			WriteJSON(w, http.StatusOK, goingUndoAnswer{Lines: []goingUndoLine{}})
-			return
-		}
-		ids := make([]string, 0, len(writes))
-		for _, write := range writes {
-			ids = append(ids, write.ID)
+		writes, unsettled = goingUndoable(run)
+		ids := goingUndoIDs(writes, unsettled)
+		if len(ids) == 0 {
+			break
 		}
 		err := s.claimGoingRunUndos(ctx, run.ID, caller.ID, ids, claimedAt)
 		if err == nil {
@@ -162,19 +166,16 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	at := goingUndoClaimedAt(claimedAt)
 	// The writes the loop below has not reached yet, whose claims are given up when the handler
 	// returns. An undo that was made and whose record failed keeps its claim, as a write whose
-	// record failed does, so the next undo of the run does not make it a second time.
-	unreached := writes
+	// record failed does, so no undo of the run makes it a second time: past the bound it is
+	// answered unsettled.
+	unreached := goingUndoIDs(writes, unsettled)
 	defer func() {
 		if len(unreached) == 0 {
 			return
 		}
-		ids := make([]string, 0, len(unreached))
-		for _, write := range unreached {
-			ids = append(ids, write.ID)
-		}
 		bookkeeping, done := goingBookkeeping(ctx)
 		defer done()
-		if err := s.releaseGoingRunUndos(bookkeeping, run.ID, caller.ID, at, ids); err != nil {
+		if err := s.releaseGoingRunUndos(bookkeeping, run.ID, caller.ID, at, unreached); err != nil {
 			slog.Error("dispatch: give up the claims of a going undo that recorded no line", "error", err)
 		}
 	}()
@@ -184,8 +185,12 @@ func (s *server) undoGoingRun(w http.ResponseWriter, r *http.Request) {
 	}
 	undoer.observer = goingObserver{read: goingReader{doer: undoer.doer}, s: s}
 	lines := []goingUndoLine{}
-	for index, write := range writes {
-		unreached = writes[index+1:]
+	for _, write := range writes {
+		if claimed, pending := unsettled[write.ID]; pending {
+			lines = append(lines, goingUndoUnsettledLine(write, claimed))
+			continue
+		}
+		unreached = unreached[1:]
 		line := undoer.undo(ctx, write)
 		bookkeeping, done := goingBookkeeping(ctx)
 		err := s.recordGoingRunUndo(bookkeeping, run.ID, caller.ID, goingRunUndo{
@@ -210,22 +215,56 @@ func (s *server) goingUndoUnderWay(run goingRun) bool {
 	})
 }
 
-// goingUndoable is every write of the run an undo makes, newest first: each that went through and
-// that no undo has undone or settled.
-func goingUndoable(run goingRun) []goingRunWrite {
+// goingUndoable is every write of the run an undo answers for, newest first: each that went
+// through and that no undo has undone or settled. unsettled holds, by write, when the undo of
+// each among them that an undo claimed and never recorded was claimed: such a write is answered
+// unsettled rather than undone, since that undo may have been made.
+func goingUndoable(run goingRun) (writes []goingRunWrite, unsettled map[string]time.Time) {
 	settled := map[string]bool{}
+	unsettled = map[string]time.Time{}
 	for _, undo := range run.Undos {
-		if undo.Outcome.OK || undo.Settled {
+		switch {
+		case undo.Outcome.OK || undo.Settled:
 			settled[undo.WriteID] = true
+		case undo.Pending:
+			unsettled[undo.WriteID] = undo.At
 		}
 	}
-	var writes []goingRunWrite
 	for _, write := range slices.Backward(run.Writes) {
 		if write.Outcome.OK && !settled[write.ID] {
 			writes = append(writes, write)
 		}
 	}
-	return writes
+	return writes, unsettled
+}
+
+// goingUndoIDs is the id of each of writes an undo makes, in order: every one but those unsettled.
+func goingUndoIDs(writes []goingRunWrite, unsettled map[string]time.Time) []string {
+	ids := make([]string, 0, len(writes))
+	for _, write := range writes {
+		if _, pending := unsettled[write.ID]; !pending {
+			ids = append(ids, write.ID)
+		}
+	}
+	return ids
+}
+
+// goingUndoUnsettledLine is the line of a write whose undo was claimed at claimed and never
+// recorded: 409 GOING_UNDO_UNSETTLED for it and for each field it changed, with nothing undone.
+func goingUndoUnsettledLine(write goingRunWrite, claimed time.Time) goingUndoLine {
+	outcome := goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoUnsettled, Message: fmt.Sprintf(
+		"this write's undo was made at %s and its outcome was never recorded, so it may have been undone: it is not undone again; read the item to see what it holds",
+		claimed.Format(time.RFC3339))}
+	names := write.Fields
+	if len(names) == 0 {
+		names = []string{""}
+	}
+	fields := make([]goingUndoField, 0, len(names))
+	for _, field := range names {
+		fields = append(fields, goingUndoField{Field: field, Message: outcome.Message})
+	}
+	return goingUndoLine{WriteID: write.ID, Action: write.Action, Item: write.Target, Undo: write.Undo,
+		Now: json.RawMessage("null"), Outcome: outcome, Fields: fields}
 }
 
 // goingUndoSettles reports whether an undo's outcome settles its write: ok, or a refusal a retry
@@ -655,8 +694,10 @@ func goingHolderText(holder *goingHolder) string {
 
 // claim undoes a claim by releasing it, while the holder the claim left still holds it, and a
 // release by taking the claim back, only where the caller held it before the release and nobody
-// has taken it since. A claim of an issue its holder already held changed nothing - the claim
-// route answers it and leaves the claim as it was - so its undo releases nothing.
+// has taken it since. A claim or a release its route answered changed nothing
+// (goingRunWrite.Unchanged) - a claim of an issue its caller already held, a release of one
+// nobody held - is undone by nothing, whoever the read before the write saw: the claim may have
+// moved between that read and the route.
 func (u goingUndoer) claim(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var before, after *goingHolder
 	if json.Unmarshal(write.Before, &before) != nil || json.Unmarshal(write.After, &after) != nil {
@@ -667,9 +708,9 @@ func (u goingUndoer) claim(ctx context.Context, write goingRunWrite) (any, going
 		return nil, goingFailed(err)
 	}
 	switch {
-	case after != nil && before != nil && *before == *after:
+	case write.Unchanged:
 		return current, goingWriteOutcome{OK: true, Status: http.StatusOK,
-			Message: "the claim was already held by " + goingHolderText(before) + " before this write, which changed nothing, so there is nothing to release"}
+			Message: "the claim route answered that this write changed nothing - the claim already stood as it asked - so there is nothing to undo"}
 	case after != nil:
 		if current == nil || *current != *after {
 			return current, goingChanged([]string{"the claim is held by " + goingHolderText(current) + " now, not by the holder this claim left"}, nil)
@@ -748,15 +789,16 @@ func (u goingUndoer) comment(ctx context.Context, write goingRunWrite) (any, goi
 }
 
 // retract undoes an ask the turn opened, an approval request's among them, by retracting it while
-// it is still open. An approval request that renewed an ask open before it - one the record's
-// value before names (goingApprovalBefore) - opened none, so its undo retracts nothing. A record
-// whose value after, or whose list of asks open before an approval request, does not decode is
-// the server's own failure, as claim answers one, and retracts nothing: it leaves the write
-// undoable.
+// it is still open. An approval request its route answered opened no ask (opened false in the
+// record's value after) - it renewed one already open, or the documents stood approved - is
+// undone by nothing. A record whose value after does not decode, or does not say whether an
+// approval request opened its ask, is the server's own failure, as claim answers one, and
+// retracts nothing: it leaves the write undoable.
 func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goingWriteOutcome) {
 	var after struct {
-		ID  string `json:"id"`
-		Ask any    `json:"ask"`
+		ID     string `json:"id"`
+		Ask    any    `json:"ask"`
+		Opened *bool  `json:"opened"`
 	}
 	if err := json.Unmarshal(write.After, &after); err != nil {
 		return nil, goingFailed(fmt.Errorf("the write's record holds no ask to retract: %w", err))
@@ -764,16 +806,12 @@ func (u goingUndoer) retract(ctx context.Context, write goingRunWrite) (any, goi
 	ask := after.ID
 	if write.Action == "dispatch_request_approval" {
 		ask, _ = after.Ask.(string)
-		var before goingApprovalBefore
-		if err := json.Unmarshal(write.Before, &before); err != nil {
-			return nil, goingFailed(fmt.Errorf("the write's record holds no list of the approval asks open before it: %w", err))
+		if after.Opened == nil {
+			return nil, goingFailed(errors.New("the write's record does not say whether the approval request opened its ask"))
 		}
-		if before.OpenAsks == nil {
-			return nil, goingFailed(errors.New("the write's record holds no list of the approval asks open before it"))
-		}
-		if ask != "" && slices.Contains(before.OpenAsks, ask) {
+		if !*after.Opened {
 			return nil, goingWriteOutcome{OK: true, Status: http.StatusOK,
-				Message: "this write renewed an approval ask that was open before it, so it opened none to retract"}
+				Message: "the approval route answered that this write opened no ask - it renewed one already open - so there is none to retract"}
 		}
 	}
 	if ask == "" {

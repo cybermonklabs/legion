@@ -100,13 +100,17 @@ type goingDocumentHeld func(owner artifactTarget, name string) (held, read bool)
 // goingHolds is what the store holds now that a proposal's invocations are marked automatic
 // against: what each issue holds of its hand-overs (issue), and whether an upload's owner holds
 // a document of its name (document). A nil read reads nothing, so what it would have answered has
-// to be named in the words.
+// to be named in the words. What the document read answers is the proposal's hint alone: the
+// write reads the document again, under the owner its route writes to, when it runs at once
+// (goingUploadsOver).
 type goingHolds struct {
 	issue    goingHeld
 	document goingDocumentHeld
 }
 
-// goingHoldsBy is the store's reads of goingHolds, each made once for each thing asked about.
+// goingHoldsBy is the store's reads of goingHolds: what an issue holds of its hand-overs read
+// once for each issue asked about, and whether an owner holds a document of a name read each time
+// it is asked.
 func (s *server) goingHoldsBy(ctx context.Context) goingHolds {
 	return goingHolds{issue: s.goingHeldBy(ctx), document: s.goingDocumentHeldBy(ctx)}
 }
@@ -137,8 +141,9 @@ func (s *server) goingHeldBy(ctx context.Context) goingHeld {
 }
 
 // goingDocumentHeldBy reads from the store whether an owner holds a document of a name, by the
-// lookup the upload itself makes (lookupArtifactByNameOrSlug). A read that fails is logged and
-// answered false, so the upload runs at once only where the words write its name.
+// lookup the upload itself makes (lookupArtifactByNameOrSlug), each time it is asked. A read that
+// fails is logged and answered false, so the upload runs at once only where the words write its
+// name.
 func (s *server) goingDocumentHeldBy(ctx context.Context) goingDocumentHeld {
 	return func(owner artifactTarget, name string) (bool, bool) {
 		_, err := lookupArtifactByNameOrSlug(ctx, s.deps.Store.Pool, owner, name)
@@ -337,7 +342,9 @@ func (n goingNamed) holds(argument string, value any, arguments map[string]any, 
 // (goingWordsName), so the person asked for that document whether its owner holds one or not, or
 // the owner the upload reaches (goingUploadOwner) holds no document whose name or slug it is, so
 // the upload makes one. A name the owner already holds that only stored text wrote would write
-// that document's next version, so it is an offer; so is one whose owner could not be read.
+// that document's next version, so it is an offer; so is one whose owner could not be read. This
+// is the proposal's mark; the write holds an upload sent at once to it again when it runs
+// (goingUploadsOver), since a document of the name may be made between the two.
 func (n goingNamed) uploads(name string, arguments map[string]any, session string, document goingDocumentHeld) bool {
 	name = strings.TrimSpace(name)
 	if goingWordsName(n.words, name) {
@@ -352,16 +359,46 @@ func (n goingNamed) uploads(name string, arguments map[string]any, session strin
 }
 
 // goingUploadOwner is the owner an upload's arguments reach, as its rows are tried in order: the
-// issue it names, else the project, else the caller's own session, each key in the upper case
-// every key is spelled in; false where it names none and the caller proved no session.
+// issue it names, else the project, else the caller's own session, each value as written, since
+// the route matches it exactly; false where it names none and the caller proved no session.
 func goingUploadOwner(arguments map[string]any, session string) (artifactTarget, bool) {
-	if issue := strings.ToUpper(goingText(arguments, "issue")); issue != "" {
+	if issue := goingText(arguments, "issue"); issue != "" {
 		return artifactTarget{IssueKey: &issue}, true
 	}
-	if project := strings.ToUpper(goingText(arguments, "project")); project != "" {
+	if project := goingText(arguments, "project"); project != "" {
 		return artifactTarget{Project: project}, true
 	}
 	return artifactTarget{Session: session}, session != ""
+}
+
+// goingRouteUploadOwner is the owner an upload's route writes to, resolved from the values of its
+// path as that route resolves them: the issue (uploadArtifact), the project
+// (uploadProjectArtifact) or the session (uploadAgentArtifact), each value exactly as the route
+// reads it; false for a route that is no upload, or a value it lacks.
+func goingRouteUploadOwner(route GoingRoute, values map[string]string) (artifactTarget, bool) {
+	switch route.Method + " " + route.Pattern {
+	case goingIssueUploadRoute:
+		issue := values["key"]
+		return artifactTarget{IssueKey: &issue}, issue != ""
+	case goingProjectUploadRoute:
+		return artifactTarget{Project: values["key"]}, values["key"] != ""
+	case goingAgentUploadRoute:
+		return artifactTarget{Session: values["session_id"]}, values["session_id"] != ""
+	}
+	return artifactTarget{}, false
+}
+
+// goingUploadsOver reports whether an upload the write is about to send would write the next
+// version of a document only stored text named: the read before it (uploadedOver), made under
+// the owner its route writes to as the store stands when the write runs, found a document of its
+// name, and the person's typed words do not write that name (goingNamed.uploads, read again).
+func goingUploadsOver(prepared goingPrepared, before goingObservation, words string) bool {
+	argument, uploads := goingUploadNames[prepared.action]
+	if !uploads {
+		return false
+	}
+	_, held := before.value.(goingUploadBefore)
+	return held && !goingWordsName(words, goingText(prepared.arguments, argument))
 }
 
 // goingIDOf is an item's id as the words and an argument are compared by, and whether value is an
@@ -389,8 +426,11 @@ func goingIsUUID(value string) bool {
 
 // goingWordsName reports whether the typed words write a document's name as a word: name occurs
 // in them, with case ignored, and neither end runs on into a letter, a digit, a hyphen or an
-// underscore, so "the notes" writes notes and not notes-old, and "spec." writes spec. It is read
-// only beside the document's owner (goingNamed.names): a name alone is no reference.
+// underscore, so "the notes" writes notes and not notes-old, and "spec." writes spec. To name a
+// document an argument points at (goingNamed.names) it is read only beside the document's owner,
+// since a name alone is no reference; an upload's name (goingNamed.uploads, goingUploadsOver) it
+// reads alone, since the words writing the name a document is made or written under is the
+// person asking for that document by it.
 func goingWordsName(words, name string) bool {
 	haystack, needle := strings.ToLower(words), strings.ToLower(strings.TrimSpace(name))
 	if needle == "" {

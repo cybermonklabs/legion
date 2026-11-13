@@ -912,12 +912,12 @@ func TestGoingWriteOfARefusedReasonedCloseRecordsTheReasonItPosted(t *testing.T)
 		t.Fatalf("the close naming no parent there is: status=%d body=%s, want the issue route's 400 PARENT_INPUT", response.Code, response.Body.String())
 	}
 	writes := rig.record(t, "alice", run).Writes
-	if len(writes) != 1 || writes[0].Outcome.OK || len(writes[0].Landed) != 1 {
+	if len(writes) != 1 || writes[0].Outcome.OK || len(writes[0].Requests) != 2 || !writes[0].Requests[0].Outcome.OK || writes[0].Requests[0].Made == "" {
 		t.Fatalf("the refused close was recorded as %+v, want one refused write naming the one message it posted", writes)
 	}
 	var body string
 	if err := rig.database.Pool.QueryRow(context.Background(),
-		`select body from messages where id::text = $1 and issue_key = $2`, writes[0].Landed[0], issue).Scan(&body); err != nil || body != "Shipped in the last release." {
+		`select body from messages where id::text = $1 and issue_key = $2`, writes[0].Requests[0].Made, issue).Scan(&body); err != nil || body != "Shipped in the last release." {
 		t.Errorf("the message the record names is %q (%v), want the close's reason posted on %s", body, err, issue)
 	}
 }
@@ -1265,6 +1265,36 @@ func TestGoingWriteOfAnUploadOverADocumentOnlyStoredTextNamedIsOffered(t *testin
 	}
 }
 
+// TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns (review round 3, finding 3):
+// an upload the proposal marked automatic, since the page's issue then held no document of its
+// name, is refused 409 GOING_NOT_AUTOMATIC when sent at once after a document of that name was
+// made on the issue, since it would now write that document's next version: the check is made at
+// the write, against the owner the upload's route writes to, and nothing is written.
+func TestGoingWriteOfAnUploadIsHeldToTheDocumentsItsRouteHoldsWhenItRuns(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Notes made meanwhile", "The spec.\n").Key
+	start := goingBrowserStart(t)
+	start.words = "save this as a doc"
+	start.chip = &goingContext{Path: "/issues/" + issue, Project: "DEMO", Issue: issue}
+	written, err := json.Marshal(map[string][]map[string]any{"dispatch_artifact": {{"issue": issue, "name": "notes", "content": "# Notes\n\nWritten by the model.\n"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	proposal := goingPropose(goingDecision{Context: going.ContextPage, offered: []string{"dispatch_artifact"}},
+		&going.Final{Answer: "Saved.", Arguments: string(written)}, start, rig.served.goingHoldsBy(context.Background()))
+	if len(proposal.Offers) != 1 || len(proposal.Offers[0].Invocations) != 1 || !proposal.Offers[0].Invocations[0].Automatic {
+		t.Fatalf("the run proposed %+v, want the one upload, automatic, as the issue holds no notes yet", proposal)
+	}
+	run := rig.recorded(t, "alice", true, "dispatch_artifact", start.words, proposal)
+	// Between the proposal and the write, a person makes notes on the issue.
+	rig.fixture(t, "bob", http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{"name": "notes", "content": "# Notes\n\nBob's.\n"})
+
+	rig.goingWriteRefusedNotAutomatic(t, run, "dispatch_artifact", nil)
+	if versions := rig.goingDocumentVersions(t, issue, "notes"); versions != 1 {
+		t.Fatalf("the notes hold %d versions after the upload sent at once, want bob's one alone", versions)
+	}
+}
+
 // TestGoingWritesOfAnInvocationRefusedForACauseThatClearsRunAgainUnderTheSameKey (review round 2,
 // finding B): a write whose route answered a status the keyed layer keeps no answer for - a 503 or
 // a 429 - made nothing, so its refusal's record does not mark the request's Idempotency-Key
@@ -1308,6 +1338,182 @@ func TestGoingWritesOfAnInvocationRefusedForACauseThatClearsRunAgainUnderTheSame
 			writes := rig.record(t, "alice", run).Writes
 			if len(writes) != 2 || writes[0].Outcome.OK || writes[0].Outcome.Status != tc.status || !writes[1].Outcome.OK || writes[1].ID != line.WriteID {
 				t.Fatalf("the run keeps %+v, want the refusal and then the write", writes)
+			}
+		})
+	}
+}
+
+// goingRequestsRecorded is each write of the run as the record keeps it, with how each request
+// the write sent went, read off the stored record itself.
+type goingRequestsRecorded struct {
+	ID       string            `json:"id"`
+	Pending  bool              `json:"pending"`
+	Outcome  goingWriteOutcome `json:"outcome"`
+	Requests []struct {
+		Method  string            `json:"method"`
+		Path    string            `json:"path"`
+		Outcome goingWriteOutcome `json:"outcome"`
+		Made    string            `json:"made"`
+	} `json:"requests"`
+}
+
+func (rig goingWritesRig) requestsRecorded(t *testing.T, run string) []goingRequestsRecorded {
+	t.Helper()
+	var writes []goingRequestsRecorded
+	if err := rig.database.Pool.QueryRow(context.Background(), `select writes from going_runs where id = $1::uuid`, run).Scan(&writes); err != nil {
+		t.Fatalf("read the run's writes: %v", err)
+	}
+	return writes
+}
+
+// goingMultiRequestRows is every row of the catalogue whose write sends a request before the
+// row's own (goingCall.first), with arguments that make it send one: a close with its reason,
+// which posts the reason as a message first. first is the request sent first and own the row's.
+var goingMultiRequestRows = []struct {
+	action    string
+	arguments func(issue string) map[string]any
+	first     func(issue string) string
+	own       func(issue string) string
+}{{
+	action: "dispatch_issue_update",
+	arguments: func(issue string) map[string]any {
+		return map[string]any{"issue": issue, "status": "done", "reason": "Shipped in the release."}
+	},
+	first: func(issue string) string { return http.MethodPost + " /api/v1/issues/" + issue + "/messages" },
+	own:   func(issue string) string { return http.MethodPatch + " /api/v1/issues/" + issue },
+}}
+
+// TestGoingWriteOfSeveralRequestsRecordsEachAndResumesUnderItsKey (review round 3, finding 1;
+// check c21): for every row whose write sends a request before its own, the first request lands
+// and the row's own is refused. Its line is the refusal, naming the request that landed, never
+// done; the run records each request's outcome; a refusal that says only this attempt was not
+// heard (5xx, 408, 429) leaves the write's key open, and the retry under it resumes at the row's
+// own request, sending the first no second time, and lands; a refusal the keyed layer keeps
+// (403, 409) is the write's final word, and the retry under the key replays it.
+func TestGoingWriteOfSeveralRequestsRecordsEachAndResumesUnderItsKey(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range goingMultiRequestRows {
+		for _, tc := range []struct {
+			status  int
+			code    string
+			resumes bool
+		}{
+			{http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", true},
+			{http.StatusRequestTimeout, "REQUEST_TIMEOUT", true},
+			{http.StatusTooManyRequests, "RATE_LIMITED", true},
+			{http.StatusForbidden, "OAUTH_SCOPE_REQUIRED", false},
+			{http.StatusConflict, "ISSUE_CONFLICT", false},
+		} {
+			t.Run(row.action+" "+tc.code, func(t *testing.T) {
+				issue := rig.issue(t, "Half written "+tc.code)
+				arguments := row.arguments(issue)
+				run := rig.proposed(t, "alice", false, row.action, arguments)
+				first, own := row.first(issue), row.own(issue)
+				sent := map[string]int{}
+				refused := false
+				rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					request := r.Method + " " + r.URL.Path
+					if request == first || request == own {
+						sent[request]++
+					}
+					if request == own && !refused {
+						refused = true
+						w.Header().Set("Retry-After", "1")
+						writeError(w, tc.code, tc.status, "the row's own request was refused")
+						return
+					}
+					inner.ServeHTTP(w, r)
+				})
+				write := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+				key := "press-" + row.action + "-" + tc.code
+
+				line := rig.keyedWrite(t, run, key, write)
+				if line.Code != tc.status || !strings.Contains(line.Body.String(), `"code":"`+tc.code+`"`) {
+					t.Fatalf("the half-made write answered %d %s, want the row's %d %s", line.Code, line.Body.String(), tc.status, tc.code)
+				}
+				retry := rig.keyedWrite(t, run, key, write)
+				if sent[first] != 1 {
+					t.Fatalf("%s was sent %d times, want once: a retry resends no request that landed", first, sent[first])
+				}
+				if tc.resumes {
+					resumed := goingLineOf(t, retry)
+					if !resumed.Outcome.OK || rig.issueRead(t, issue).Status != "done" || sent[own] != 2 {
+						t.Fatalf("the retry answered %+v with %s sent %d times, want it resumed at %s and landed", resumed, own, sent[own], own)
+					}
+				} else {
+					if retry.Code != line.Code || retry.Body.String() != line.Body.String() ||
+						retry.Header().Get(contracts.IdempotencyReplayedHeader) != "?1" {
+						t.Fatalf("the retry of a final refusal answered %d %s, want the first answer replayed", retry.Code, retry.Body.String())
+					}
+					if rig.issueRead(t, issue).Status == "done" || sent[own] != 1 {
+						t.Fatalf("the retry of a final refusal sent %s %d times, want once and the issue left open", own, sent[own])
+					}
+				}
+
+				// The line of the refused write names the request that landed before it.
+				if !strings.Contains(line.Body.String(), first) {
+					t.Fatalf("the half-made write's line says %s, want it naming %s, which landed", line.Body.String(), first)
+				}
+				recorded := rig.requestsRecorded(t, run)
+				if want := map[bool]int{true: 2, false: 1}[tc.resumes]; len(recorded) != want || recorded[0].Outcome.OK || recorded[0].Pending ||
+					recorded[0].Outcome.Status != tc.status || len(recorded[0].Requests) != 2 {
+					t.Fatalf("the run keeps %+v, want %d writes, the first refused and recording its two requests", recorded, want)
+				}
+				landed, refusal := recorded[0].Requests[0], recorded[0].Requests[1]
+				if landed.Method+" "+landed.Path != first || !landed.Outcome.OK || landed.Made == "" ||
+					refusal.Method+" "+refusal.Path != own || refusal.Outcome.OK || refusal.Outcome.Status != tc.status || refusal.Outcome.Code != tc.code {
+					t.Fatalf("the write's requests are recorded %+v, want %s landed and %s refused %d", recorded[0].Requests, first, own, tc.status)
+				}
+				if tc.resumes {
+					resumed := recorded[1]
+					if !resumed.Outcome.OK || len(resumed.Requests) != 2 || resumed.Requests[0].Made != landed.Made || !resumed.Requests[1].Outcome.OK {
+						t.Fatalf("the retry is recorded %+v, want it keeping %s's landing and landing %s", resumed, first, own)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestGoingWriteOfSeveralRequestsResumesUnderANewKey: the person's next submit, the bar's own
+// retry or another tab sends the same invocation under a key of its own, so a write whose first
+// request landed and whose row's own request was refused 503 resumes at the row's request whatever
+// key the next request for it arrives under: the reason is posted once, and the write lands.
+func TestGoingWriteOfSeveralRequestsResumesUnderANewKey(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	createInteractionIssue(t, rig.mux, "DEMO", "The project's first", "The spec.\n")
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range goingMultiRequestRows {
+		t.Run(row.action, func(t *testing.T) {
+			issue := rig.issue(t, "Half written, pressed again")
+			run := rig.proposed(t, "alice", false, row.action, row.arguments(issue))
+			first, own := row.first(issue), row.own(issue)
+			sent := map[string]int{}
+			refused := false
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				request := r.Method + " " + r.URL.Path
+				if request == first || request == own {
+					sent[request]++
+				}
+				if request == own && !refused {
+					refused = true
+					writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "the row's own request was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			write := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			if refusal := rig.keyedWrite(t, run, "press-first", write); refusal.Code != http.StatusServiceUnavailable {
+				t.Fatalf("the half-made write answered %d %s, want the row's 503", refusal.Code, refusal.Body.String())
+			}
+			again := goingLineOf(t, rig.keyedWrite(t, run, "press-again", write))
+			if !again.Outcome.OK || rig.issueRead(t, issue).Status != "done" || sent[first] != 1 || sent[own] != 2 {
+				t.Fatalf("the press under a new key answered %+v with %s sent %d times and %s %d, want it resumed at %s and landed, %s sent once",
+					again, first, sent[first], own, sent[own], own, first)
 			}
 		})
 	}

@@ -16,3 +16,5 @@ body: |-
   routes: the capability read's new shape, the writes and undo routes, the person's command-bar
   setting, `GET /api/v1/me/going-runs` (whose decision and proposal are typed as
   `GoingRunDecision` and `GoingRunProposal`) and `GET /api/v1/projects/{key}/activity`.
+  A run's write carries `requests` (`GoingWriteRequest`), how each request it sent went;
+  `ClaimedIssue` carries `claim_changed` and `ApprovalRequestResponse` carries `opened`.

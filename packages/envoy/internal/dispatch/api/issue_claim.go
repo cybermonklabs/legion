@@ -456,20 +456,26 @@ type claimApplied struct {
 }
 
 // claimAnswer is what both claim routes write: the issue, flat, with whether the Legion daemon
-// owns its status beside it. The field is resolved on read from the issue's labels and its
-// parents', stored nowhere, and never part of an event payload, which is why it sits beside
-// Issue in the response rather than in it — model.Issue is embedded in model.IssueEventPayload,
-// the payload of every issue.* event. The JSON stays flat because a caller merges the body
-// straight into the issue it already holds.
+// owns its status and whether this request changed the claim beside it. The first is resolved on
+// read from the issue's labels and its parents', stored nowhere, and never part of an event
+// payload, which is why it sits beside Issue in the response rather than in it — model.Issue is
+// embedded in model.IssueEventPayload, the payload of every issue.* event. The JSON stays flat
+// because a caller merges the body straight into the issue it already holds.
 //
 // The field is omitted when the walk failed (claimWrite logs that and keeps the claim), exactly
 // as writeAdvice.LegionManagedStatus is omitted when it was not asked (write_advice.go). A
 // client reads an absent field as "not Legion-managed", the wording every client had before
 // this field existed and the safe direction: it prints the status guidance rather than
 // suppressing it.
+//
+// ClaimChanged is false where the request changed nothing: a claim of an issue its caller
+// already held, which keeps the time work started, and a release of an issue nobody held. A
+// caller that undoes the request reads it here, since what it read of the claim before the
+// request may have moved before the request's own transaction.
 type claimAnswer struct {
 	model.Issue
 	LegionManagedStatus *bool `json:"legion_managed_status,omitempty"`
+	ClaimChanged        bool  `json:"claim_changed"`
 }
 
 // claimLegionManagedStatus answers whether Legion owns key's status for a claim answer, or nil
@@ -625,10 +631,12 @@ func (s *server) claimCycle(
 		s.writeClaimError(w, err)
 		return
 	}
-	if applied.event.ID != 0 {
+	// The zero event is a request that wrote nothing (claimApplied).
+	changed := applied.event.ID != 0
+	if changed {
 		s.publish(r.Context(), applied.event)
 	}
-	WriteJSON(w, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus})
+	WriteJSON(w, http.StatusOK, claimAnswer{Issue: applied.issue, LegionManagedStatus: applied.legionManagedStatus, ClaimChanged: changed})
 }
 
 // claimIssueInput is the body of POST /api/v1/issues/{key}/claim.

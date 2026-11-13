@@ -82,7 +82,8 @@ type goingToolRoute struct {
 	Undo GoingUndo
 }
 
-// The routes the undos write through beside the catalogue's own rows, named once each.
+// The routes the undos write through beside the catalogue's own rows, named once each, and the
+// three an upload writes through, whose owner a write reads before it (goingRouteUploadOwner).
 const (
 	goingIssueMessageRoute  = http.MethodPost + " /api/v1/issues/{key}/messages"
 	goingIssuePatchRoute    = http.MethodPatch + " /api/v1/issues/{key}"
@@ -95,6 +96,7 @@ const (
 	goingUnfollowRoute      = http.MethodDelete + " /api/v1/asks/{id}/followers/{session_id}"
 	goingIssueUploadRoute   = http.MethodPost + " /api/v1/issues/{key}/artifacts"
 	goingProjectUploadRoute = http.MethodPost + " /api/v1/projects/{key}/artifacts"
+	goingAgentUploadRoute   = http.MethodPost + " /api/v1/agents/{session_id}/artifacts"
 )
 
 // goingUndoKind is one of the four ways R4 undoes a write.
@@ -700,7 +702,7 @@ func (c GoingCaller) Do(ctx context.Context, action string, arguments map[string
 	if err != nil {
 		return nil, err
 	}
-	response, _, err := c.send(ctx, prepared)
+	response, _, err := c.send(ctx, prepared, nil)
 	return response, err
 }
 
@@ -730,33 +732,45 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 }
 
 // send sends a prepared call: each write that must land first, then the row's own, and answers
-// the row's answer with the id of each item a write sent first made (goingMadeID). A write
-// refused before the row's is the answer.
-func (c GoingCaller) send(ctx context.Context, prepared goingPrepared) (*http.Response, []string, error) {
+// the answer of the request that ended it - the row's own, or one sent first that was refused -
+// beside how each request it sent went (goingWriteRequest). landed is the requests an earlier
+// write of the same invocation already landed (goingLandedBefore): each the call still starts
+// with, by method and path, is not sent again and stands in the record as it was, and the call
+// resumes at the first after them; the row's own request is always sent. A request that could
+// not be built or sent ends the call with its error and the requests before it.
+func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []goingWriteRequest) (*http.Response, []goingWriteRequest, error) {
 	requests, err := prepared.call.requests(prepared.route)
 	if err != nil {
 		return nil, nil, fmt.Errorf("encode %s: %w", prepared.action, err)
 	}
-	var landed []string
+	sent := make([]goingWriteRequest, 0, len(requests))
+	resuming := true
 	for index, spec := range requests {
+		resuming = resuming && index < len(requests)-1 && index < len(landed) &&
+			landed[index].Method == spec.method && landed[index].Path == spec.path
+		if resuming {
+			sent = append(sent, landed[index])
+			continue
+		}
 		request, err := spec.build(ctx, c.BaseURL)
 		if err != nil {
-			return nil, landed, err
+			return nil, sent, err
 		}
 		response, err := c.Doer.Do(request)
 		if err != nil {
-			return nil, landed, err
+			return nil, sent, err
 		}
-		if index == len(requests)-1 || response.StatusCode >= http.StatusMultipleChoices {
-			return response, landed, nil
+		record := goingWriteRequest{Method: spec.method, Path: spec.path,
+			Outcome: goingWriteOutcome{OK: response.StatusCode < http.StatusMultipleChoices, Status: response.StatusCode}}
+		if index == len(requests)-1 || !record.Outcome.OK {
+			return response, append(sent, record), nil
 		}
 		answer, _ := io.ReadAll(response.Body)
 		_ = response.Body.Close()
-		if made := goingMadeID(answer); made != "" {
-			landed = append(landed, made)
-		}
+		record.Made = goingMadeID(answer)
+		sent = append(sent, record)
 	}
-	return nil, landed, fmt.Errorf("%s: its translation made no request", prepared.action)
+	return nil, sent, fmt.Errorf("%s: its translation made no request", prepared.action)
 }
 
 // reader is the reads a translation makes, through the caller's own Doer.

@@ -140,7 +140,11 @@ test("a claimed issue names its holder and releases the claim from the header", 
   const agents = spyOn(api, "listAgents").mockResolvedValue([
     running("session-one", "Implementer"),
   ]);
-  const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({ ...base, claim: null });
+  const release = spyOn(api, "releaseIssueClaim").mockResolvedValue({
+    ...base,
+    claim: null,
+    claim_changed: true,
+  });
   const view = header({ ...base, claim });
   try {
     expect(await screen.findByTitle(/Claimed by Implementer/)).toBeDefined();

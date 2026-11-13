@@ -20,7 +20,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -59,20 +58,43 @@ func goingRefusalOf(response *http.Response, body []byte) goingRefusal {
 var goingRefusalHeaders = []string{"WWW-Authenticate", "Retry-After"}
 
 // write answers the refusal: the route's own answer, byte for byte, where a route wrote one, and
-// the shared error shape for one of the going writes' own.
+// the shared error shape for one of the going writes' own; either carries the headers of the
+// route's answer that say more than its body.
 func (e goingRefusal) write(w http.ResponseWriter) {
-	if e.body == nil {
-		writeError(w, e.Code, e.Status, e.Message)
-		return
-	}
 	for _, name := range goingRefusalHeaders {
 		if value := e.header.Get(name); value != "" {
 			w.Header().Set(name, value)
 		}
 	}
+	if e.body == nil {
+		writeError(w, e.Code, e.Status, e.Message)
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(e.Status)
 	_, _ = w.Write(e.body)
+}
+
+// after is the refusal of a request a write sent once the requests before it had landed: the
+// route's status, code and headers, in the shared error shape, its words followed by each request
+// that landed and the item it made, since those stand. A line that shows the refusal so says what
+// of the write is done.
+func (e goingRefusal) after(landed []goingWriteRequest) goingRefusal {
+	if len(landed) == 0 {
+		return e
+	}
+	stands := make([]string, 0, len(landed))
+	for _, request := range landed {
+		sent := request.Method + " " + request.Path
+		if request.Made != "" {
+			sent += ", which made " + request.Made
+		}
+		stands = append(stands, sent)
+	}
+	e.Message = fmt.Sprintf("%s (refused after this write's earlier request landed, which stands and is not sent again: %s)",
+		e.Message, strings.Join(stands, "; "))
+	e.body = nil
+	return e
 }
 
 // goingReader makes the reads a translation, a before or an after, or an undo needs, through the
@@ -110,14 +132,16 @@ func (r goingReader) get(ctx context.Context, path string, into any) error {
 }
 
 // goingObservation is what a read before or after a write saw: the item, the fields of it the
-// write changes, the value, the issue the item is or belongs to, where it is one, and for a send
-// to an agent the message's last delivery.
+// write changes, the value, the issue the item is or belongs to, where it is one, for a send to
+// an agent the message's last delivery, and after a claim or a release whether its route
+// answered that it changed nothing (goingRunWrite.Unchanged).
 type goingObservation struct {
-	target   string
-	fields   []string
-	value    any
-	issue    string
-	delivery *goingDelivery
+	target    string
+	fields    []string
+	value     any
+	issue     string
+	delivery  *goingDelivery
+	unchanged bool
 }
 
 // goingFields is the one field a write changes as an observation lists it, none for "".
@@ -182,7 +206,18 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 	case "dispatch_issue_update":
 		return o.issueFields(ctx, path["key"], goingIssueFieldsOf(arguments))
 	case "dispatch_claim":
-		return o.claim(ctx, path["key"])
+		observed, err := o.claim(ctx, path["key"])
+		if answer != nil {
+			// The claim route says whether it changed the claim (claimAnswer.ClaimChanged), which
+			// the reads on either side of it cannot: the claim may move between them and it.
+			var claimed struct {
+				ClaimChanged *bool `json:"claim_changed"`
+			}
+			if json.Unmarshal(answer, &claimed) == nil && claimed.ClaimChanged != nil {
+				observed.unchanged = !*claimed.ClaimChanged
+			}
+		}
+		return observed, err
 	case "dispatch_edit_ask":
 		return o.askFields(ctx, path["id"], goingAskFieldsOf(arguments))
 	case "dispatch_resolve_ask":
@@ -210,19 +245,15 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		return o.document(ctx, resolved)
 	}
 	if answer == nil {
-		if prepared.action == "dispatch_request_approval" {
-			// A request renews an approval ask already open rather than opening one, so the
-			// asks open before it are what tells the undo whether this write opened its ask.
-			open, err := o.openApprovalAsks(ctx, path["id"])
-			return goingObservation{target: path["id"], fields: fields, issue: issue,
-				value: goingApprovalBefore{OpenAsks: open}}, err
-		}
 		if prepared.action == "dispatch_artifact" {
 			// An upload under a name its owner already holds writes that document's next
 			// version: the version it writes over is the value before it.
 			return o.uploadedOver(ctx, prepared, fields, issue)
 		}
-		// A write that makes an item: nothing of it is there before it.
+		// A write that makes an item: nothing of it is there before it. An approval request is
+		// one too: whether it opened its ask is what its route answers
+		// (approvalRequestResponse.Opened), not a read before it, which another request may
+		// overtake.
 		return goingObservation{target: goingTargetOfPath(path), fields: fields, issue: issue}, nil
 	}
 	switch prepared.action {
@@ -254,13 +285,14 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 			Ask *struct {
 				ID string `json:"id"`
 			} `json:"ask"`
+			Opened     bool   `json:"opened"`
 			ArtifactID string `json:"artifact_id"`
 			Version    int    `json:"version"`
 		}
 		if err := json.Unmarshal(answer, &requested); err != nil {
 			return goingObservation{}, fmt.Errorf("read the approval request: %w", err)
 		}
-		value := map[string]any{"ask": nil, "artifact": requested.ArtifactID, "version": requested.Version}
+		value := map[string]any{"ask": nil, "opened": requested.Opened, "artifact": requested.ArtifactID, "version": requested.Version}
 		target := requested.ArtifactID
 		if requested.Ask != nil {
 			value["ask"], target = requested.Ask.ID, requested.Ask.ID
@@ -404,31 +436,6 @@ func (o goingObserver) rankPlace(ctx context.Context, key string) (goingRankPlac
 	return place, nil
 }
 
-// goingApprovalBefore is an approval request's value before it: the id of every approval ask open
-// where the request could renew one rather than open its own (openApprovalAsks).
-type goingApprovalBefore struct {
-	OpenAsks []string `json:"open_asks"`
-}
-
-// openApprovalAsks is the id of every approval ask open that an approval request of the document
-// could renew instead of opening one: each naming the document, and each of the document's issue,
-// since a request renews one open over any document it names - an issue's Verification document
-// beside its spec (requestArtifactApproval). It is read from the store, as rankPlace is, since no
-// route lists a document's open approval asks.
-func (o goingObserver) openApprovalAsks(ctx context.Context, artifact string) ([]string, error) {
-	open := []string{}
-	if err := o.s.deps.Store.Pool.QueryRow(ctx, `
-		select coalesce(array_agg(a.id::text order by a.id), '{}')
-		from asks a
-		where a.kind = 'approval' and a.state = 'open'
-		  and (`+docs.ApprovalDocumentsJSONPath+` ? $1
-		       or a.issue_key = (select d.issue_key from artifacts d where d.id = $2::uuid))
-	`, artifact, artifact).Scan(&open); err != nil {
-		return nil, fmt.Errorf("read the approval asks open on %s: %w", artifact, err)
-	}
-	return open, nil
-}
-
 // goingUploadBefore is an upload's value before it where its name finds a document its owner
 // already holds: that document, and the version the upload writes its next version over.
 type goingUploadBefore struct {
@@ -438,13 +445,13 @@ type goingUploadBefore struct {
 }
 
 // uploadedOver is what an upload finds under its name before it: the document of the owner its
-// row reaches whose name or slug the name is, as the upload's own lookup finds it
-// (findArtifactByNameOrSlug), at its latest version, and no value where the owner holds none, so
-// the upload makes one. It is read from the store, as rankPlace is, since no route answers a
-// document by the name an upload gives it.
+// route writes to (goingRouteUploadOwner) whose name or slug the name is, as the upload's own
+// lookup finds it (findArtifactByNameOrSlug), at its latest version, and no value where the owner
+// holds none, so the upload makes one. It is read from the store, as rankPlace is, since no route
+// answers a document by the name an upload gives it.
 func (o goingObserver) uploadedOver(ctx context.Context, prepared goingPrepared, fields []string, issue string) (goingObservation, error) {
 	observed := goingObservation{target: goingTargetOfPath(prepared.call.path), fields: fields, issue: issue}
-	owner, known := goingUploadOwner(prepared.arguments, prepared.call.path["session_id"])
+	owner, known := goingRouteUploadOwner(prepared.route, prepared.call.path)
 	if !known {
 		return observed, nil
 	}
