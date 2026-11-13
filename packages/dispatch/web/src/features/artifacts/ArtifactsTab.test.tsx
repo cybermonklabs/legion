@@ -3,7 +3,6 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the dropped file below is a drop, which user-event has no form for
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactNode } from "react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
@@ -52,14 +51,15 @@ const artifact = {
 
 const noReferences: IssueReferences = { members: [], truncated: false };
 
-/** The tab's own address, which is where its filter lives. */
-function CurrentSearch(): ReactNode {
-  const { search } = useLocation();
-  return <output data-testid="location-search">{search}</output>;
-}
-
+/** The tab's own address: its path, and its query, which is where its filter lives. */
 function Location() {
-  return <output data-testid="location">{useLocation().pathname}</output>;
+  const { pathname, search } = useLocation();
+  return (
+    <>
+      <output data-testid="location">{pathname}</output>
+      <output data-testid="location-search">{search}</output>
+    </>
+  );
 }
 
 function renderTab(
@@ -79,7 +79,6 @@ function renderTab(
       initialEntries={[`${buildIssuePath({ key: "CORE-1", kind: "artifacts" })}${search}`]}
     >
       <QueryClientProvider client={queryClient}>
-        <CurrentSearch />
         <ArtifactsTab isClosed={isClosed} />
         <Location />
       </QueryClientProvider>

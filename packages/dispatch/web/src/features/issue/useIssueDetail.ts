@@ -15,7 +15,11 @@ export function useIssueDetail(route: IssueRoute) {
   const queryItem = itemFromSearch(search);
   const commentId = queryItem?.kind === "comment" ? queryItem.id : undefined;
   const askId = queryItem?.kind === "ask" ? queryItem.id : undefined;
-  const highlightTerm = firstHighlightTerm(query.get("q") ?? "");
+  // On the Artifacts list `?q=` is that tab's own filter, not a search term to mark: the spec
+  // panel is hidden there, and marking every match of each typed letter in it is work no reader
+  // sees. Every route a search result opens - a spec, a document - keeps its term.
+  const highlightTerm =
+    route.kind === "artifacts" ? undefined : firstHighlightTerm(query.get("q") ?? "");
   const issue = useQuery(issueQuery(route.key));
   const state = useQuery(userStateQuery());
   const planArtifact = roleDocument(issue.data, "plan");
