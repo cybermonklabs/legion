@@ -2,7 +2,9 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -110,5 +112,59 @@ func TestProvisioningSnapshotsTheSharedCloneOnlyInWorkspaceAdd(t *testing.T) {
 	}
 	if snapshots := cloneSnapshots(t, location.Clone); snapshots != adds {
 		t.Errorf("the shared clone's log holds %d working-copy snapshots over %d workspace adds, want one each", snapshots, adds)
+	}
+}
+
+// Provisioning from a feed, as `workspace-init provision` does in a pod, turns git's ambiguous-ref
+// warning off in the shared clone (configureCloneReads): the clone and the issue's workspace both
+// read core.warnAmbiguousRefs as false. The feed is left as Fetch wrote it: it reads no such key,
+// and the next Fetch keeps it, since its configuration still holds only feedConfigKeys.
+func TestProvisionTurnsOffTheClonesAmbiguousRefWarningAndLeavesTheFeedAlone(t *testing.T) {
+	run := newLocalRunner(t)
+	fetch := fetchRequest(t)
+	first, err := Fetch(context.Background(), run, fetch)
+	if err != nil {
+		t.Fatalf("Fetch: %v", err)
+	}
+	request := provisionRequest(t)
+	request.Source = FromFeed(fetch.Feed)
+	working, err := Provision(context.Background(), run, request)
+	if err != nil {
+		t.Fatalf("provision from the feed: %v", err)
+	}
+	// read runs `git <args> config --get core.warnAmbiguousRefs` in dir under the fixtures'
+	// environment and returns what it printed and its exit code. git exits 1, printing nothing,
+	// for a key no configuration sets.
+	read := func(dir string, args ...string) (string, int) {
+		t.Helper()
+		command := exec.Command("git", append(args, "config", "--get", "core.warnAmbiguousRefs")...)
+		command.Dir = dir
+		command.Env = setupEnvironment()
+		output, err := command.CombinedOutput()
+		var exit *exec.ExitError
+		if err != nil && !errors.As(err, &exit) {
+			t.Fatalf("git config --get core.warnAmbiguousRefs in %s: %v", dir, err)
+		}
+		return string(output), command.ProcessState.ExitCode()
+	}
+	for _, place := range []struct{ name, dir string }{
+		{"the shared clone", working.Clone},
+		{"the issue's workspace", working.Dir},
+	} {
+		if output, code := read(place.dir); output != "false\n" || code != 0 {
+			t.Errorf("%s %s reads core.warnAmbiguousRefs as %q (exit %d), want false", place.name, place.dir, output, code)
+		}
+	}
+	if output, code := read(first.Feed, "--git-dir="+first.Feed); output != "" || code != 1 {
+		t.Errorf("the feed %s reads core.warnAmbiguousRefs as %q (exit %d), want nothing and exit 1", first.Feed, output, code)
+	}
+	// Fetch removes a feed whose configuration holds a key outside feedConfigKeys and clones it
+	// again whole, so a kept feed is one that passed the check.
+	again, err := Fetch(context.Background(), run, fetch)
+	if err != nil {
+		t.Fatalf("Fetch after provisioning: %v", err)
+	}
+	if again.Cloned {
+		t.Errorf("Fetch after provisioning reported %+v: it cloned the feed again whole, want the feed kept", again)
 	}
 }

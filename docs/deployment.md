@@ -797,6 +797,7 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `settings_route.oidc_issuer` | rebuild | `api-server` |
 | `settings_route.service_accounts` | rebuild | `api-server` |
 | `slow_command_timeout_seconds` | rebuild | `runtime` |
+| `stalled_tree_notice_hours` | fixed | — |
 | `state_dir` | fixed | — |
 | `tree_stop_timeout_seconds` | decision | — |
 | `worker_backends` | launch | `launch-specs` |
@@ -842,5 +843,7 @@ Each line below is the reason the route answers with, for the keys it names.
 - `worker_stall_backstop_hours` — the stall backstop reads the role's bound off the configuration the daemon booted on (internal/daemon's supervision.cfg, backstopStalledTurns), and nothing builds that reader again: a change of it reaches the next boot and no sweep before it.
 
 - `worker_silence_minutes`, `worker_background_hours` — the silence sweep reads both bounds off the configuration the daemon booted on (internal/daemon's supervision.cfg, tellSilentPhaseWorkers), and admission is handed the same two at boot for the tick's silent list (admit's UseWorkerSilence, internal/daemon's openWorkflow), and nothing builds either reader again: a change of either reaches the next boot and no sweep or tick before it.
+
+- `stalled_tree_notice_hours` — the stalled-tree notice's bound is handed to admission once, at boot (admit's UseStalledTreeNotice, internal/daemon's openWorkflow), and nothing builds admission again: a change of it reaches the next boot and no admission pass before it.
 
 - `hooks` and every key under it — the hook list the engine fires is built once, at boot, from the file's hooks and the words read then for every hook that names a `prompt_file` (internal/daemon's readBoot, engineHooks and openWorkflow), and the daemon builds it again at no later moment: a change of it reaches the next boot and no firing before it.

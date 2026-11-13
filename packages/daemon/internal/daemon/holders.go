@@ -171,6 +171,14 @@ func (h *dispatchHolder) MessageBodiesSince(ctx context.Context, key string, sin
 	return h.get().MessageBodiesSince(ctx, key, since)
 }
 
+func (h *dispatchHolder) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
+	return h.get().ArtifactSlugs(ctx, key)
+}
+
+func (h *dispatchHolder) UploadArtifact(ctx context.Context, key, name, content string) (string, error) {
+	return h.get().UploadArtifact(ctx, key, name, content)
+}
+
 func (h *dispatchHolder) EventsAfter(ctx context.Context, key string, after int64) ([]json.RawMessage, error) {
 	return h.get().EventsAfter(ctx, key, after)
 }
