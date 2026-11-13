@@ -383,9 +383,10 @@ func configureProber(opts Options) (*Runtime, error) {
 	if r.log == nil {
 		r.log = slog.Default()
 	}
-	// The launchers carry one pod's saved workspace bundle to it before any of its roles start,
-	// and log what they could not carry, so they are built once the runtime's log is settled.
-	r.launchers = newLaunchers(opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
+	// The launchers carry the shared public leak check and one pod's saved workspace bundle to it
+	// before any of its roles start, and log what they could not carry, so they are built once the
+	// runtime's log is settled.
+	r.launchers = newLaunchers(opts.LeakCheck, opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored, r.log)
 	// Last, after the logger a failed encoding is reported through: every input is settled above
 	// and none is written again, so each kind's shape is encoded here and only read afterwards.
 	r.podShapes = map[podKind]string{issuePod{}: podShape(r, issuePod{}), controllerPod{}: podShape(r, controllerPod{})}

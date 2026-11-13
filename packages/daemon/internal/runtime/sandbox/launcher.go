@@ -17,6 +17,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
@@ -29,10 +30,21 @@ const (
 	annotationIssue          = "legion.dev/issue"
 )
 
+// LeakCheckReader reads the shared public leak check at a tag, packed for a pod's launcher:
+// *leakguard.Source, whose every error is one cause sentence (leakguard.Cause).
+type LeakCheckReader interface {
+	Get(ctx context.Context, tag string) (leakguard.Served, error)
+}
+
 type launchers struct {
 	mu       sync.Mutex
 	sessions map[claim.Token]*launcherSession
 
+	// leakCheck reads the shared public leak check a launcher's hello names (Options.LeakCheck);
+	// nil is a daemon that runs with no GitHub App to read it with. leakCheckHop bounds one push
+	// of it to a launcher, leakCheckHopBound outside the tests.
+	leakCheck    LeakCheckReader
+	leakCheckHop time.Duration
 	// saved is the bundle an issue's last release left and restored the confirmation that drops
 	// it, the daemon's store behind both (Options.SavedWorkspaceBundle, WorkspaceBundleRestored).
 	// A launchers built without the pair restores nothing.
@@ -67,10 +79,17 @@ type launcherSession struct {
 	ready   chan struct{}
 	waiters map[string]chan shimwire.Frame
 	closed  bool
+	// leakCheckTag is the tag of the shared public leak check this launcher's hello named, its
+	// own pin ("" for a launcher that takes no check from the daemon), and leakCheckInstalled
+	// whether this launcher process holds that tag installed: as its hello said, or as its answer
+	// to the push on this connection did (serveLeakCheck).
+	leakCheckTag       string
+	leakCheckInstalled bool
 }
 
-func newLaunchers(saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored, log *slog.Logger) *launchers {
-	return &launchers{sessions: map[claim.Token]*launcherSession{}, saved: saved, restored: restored, log: log}
+func newLaunchers(leakCheck LeakCheckReader, saved runtime.SavedWorkspaceBundle, restored runtime.WorkspaceBundleRestored, log *slog.Logger) *launchers {
+	return &launchers{sessions: map[claim.Token]*launcherSession{}, leakCheck: leakCheck, leakCheckHop: leakCheckHopBound,
+		saved: saved, restored: restored, log: log}
 }
 
 // accept registers a launcher connection of the pod of issue, created at podCreated. The newest
@@ -78,7 +97,8 @@ func newLaunchers(saved runtime.SavedWorkspaceBundle, restored runtime.Workspace
 // requests fail instead of waiting forever.
 func (d *launchers) accept(token claim.Token, issue string, podCreated time.Time, hello shimwire.LauncherHello) *launcherSession {
 	s := &launcherSession{owner: d, token: token, issue: issue, podCreated: podCreated, id: hello.LauncherID, podUID: hello.PodUID,
-		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{}}
+		ready: make(chan struct{}), waiters: map[string]chan shimwire.Frame{},
+		leakCheckTag: hello.LeakCheckTag, leakCheckInstalled: hello.LeakCheckInstalled}
 	d.mu.Lock()
 	old := d.sessions[token]
 	d.sessions[token] = s
@@ -129,6 +149,8 @@ func (s *launcherSession) ServeLauncher(conn net.Conn, reader *bufio.Reader, wri
 		case shimwire.LauncherStopResult:
 			s.deliver(value.ID, value)
 		case shimwire.LauncherBundleResult:
+			s.deliver(bundleWaiter(value.ID, value.Index), value)
+		case shimwire.LauncherLeakCheckResult:
 			s.deliver(bundleWaiter(value.ID, value.Index), value)
 		case shimwire.LauncherRestored:
 			s.owner.restoreReported(s, value)
@@ -301,7 +323,16 @@ func (e startRefusal) Unwrap() error {
 }
 
 func (d *launchers) start(ctx context.Context, token claim.Token, podUID string, command shimwire.LauncherStart) error {
-	// The work the release took off the pod this one replaces goes over first: the launcher holds
+	// The shared public leak check goes over before anything else, and a launcher that could not
+	// install it starts nothing: every write of the role resolves the check first and its shim
+	// refuses to start the agent without the install (leakguard.Installed), so a start sent
+	// anyway would be a role that fails at once. The refusal leaves the saved workspace bundle
+	// in the store, since a bundle taken here would spend its one restore attempt on a pod no role
+	// of which ran.
+	if err := d.serveLeakCheck(ctx, token, podUID); err != nil {
+		return err
+	}
+	// The work the release took off the pod this one replaces goes over next: the launcher holds
 	// the bundle and restores it into the workspace before it runs the role's command, so the
 	// restore has to be in its hands before any generation of the pod is started, this one
 	// included (internal/launcher's bundleRestore). It never stops the start.
@@ -323,6 +354,89 @@ func (d *launchers) start(ctx context.Context, token claim.Token, podUID string,
 		return fmt.Errorf("launcher %s start generation %d: answered OK naming generation %d", token, command.Generation, result.RunningGeneration)
 	}
 	return nil
+}
+
+// leakCheckHopBound is how long the push of the shared public leak check to one launcher may take:
+// its slices and the launcher's answer to the last, which it gives once it has unpacked, verified
+// and installed the check. The daemon already holds the check when the hop begins, so the hop is
+// a few slices of shimwire.LauncherBundlePayloadBytes, the launcher's unpack, its one `--help`
+// run and its rename, and this is a slow connection's room. It runs under the start's own
+// context, as the bundle's hop does, so the launch's own bound needs no term for it. A hop that
+// outruns it refuses the start; the launcher's install goes on under its own bound, and the next
+// start is answered Installed at once.
+const leakCheckHopBound = 2 * time.Minute
+
+// serveLeakCheck pushes the shared public leak check to token's launcher in podUID and waits for
+// the launcher to install it, before any start frame or bundle slice reaches that launcher
+// (start). The tag is the launcher's own pin, which its hello named; the daemon reads the check
+// at that tag (Options.LeakCheck) and the launcher installs it once for its pod, for every role's
+// shim to read.
+//
+// Nothing is sent to a launcher whose hello named no tag: it takes no check from the daemon,
+// and its roles start as they always have. Nothing is sent either to one that holds the tag
+// installed, as its hello said or as its answer on this connection did, so a later start of the
+// role and a daemon that restarts push nothing to a running pod.
+//
+// Every other outcome but an install is a runtime.LeakCheckRefusal, whose cause sentence
+// (leakguard.Cause) says why: the daemon holds no credential to read the check, its read was
+// refused, the launcher refused a slice or the install, the connection failed, or the hop ran
+// past leakCheckHopBound. No start frame has been sent when it refuses.
+func (d *launchers) serveLeakCheck(ctx context.Context, token claim.Token, podUID string) error {
+	// A launcher that never arrives is the start's own error to report, not this hop's.
+	session, err := d.await(ctx, token, podUID)
+	if err != nil {
+		return nil
+	}
+	tag := session.leakCheckTag
+	session.mu.Lock()
+	installed := session.leakCheckInstalled
+	session.mu.Unlock()
+	if tag == "" || installed {
+		return nil
+	}
+	refuse := func(what string, err error) error {
+		return runtime.LeakCheckRefusal{Cause: leakguard.Cause(what, err)}
+	}
+	if d.leakCheck == nil {
+		return refuse("the daemon runs with no GitHub App, so it cannot read "+leakguard.CheckSlug, nil)
+	}
+	served, err := d.leakCheck.Get(ctx, tag)
+	if err != nil {
+		return refuse(err.Error(), nil)
+	}
+	hop, cancel := context.WithTimeout(ctx, d.leakCheckHop)
+	defer cancel()
+	for _, frame := range served.Frames {
+		answer, confirmed, err := d.request(hop, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
+		if err != nil {
+			if hop.Err() != nil && ctx.Err() == nil {
+				return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s within %s", tag, d.leakCheckHop), nil)
+			}
+			return refuse(fmt.Sprintf("the pod's launcher did not answer the install of %s", tag), err)
+		}
+		result, ok := answer.(shimwire.LauncherLeakCheckResult)
+		if !ok {
+			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a %s frame", frame.Index, tag, answer.FrameType()), nil)
+		}
+		if err := result.Validate(); err != nil {
+			return refuse(fmt.Sprintf("the pod's launcher answered slice %d of %s with a malformed result", frame.Index, tag), err)
+		}
+		if !result.OK {
+			return refuse(result.Error, nil)
+		}
+		if !result.Installed {
+			continue
+		}
+		// Installed ends the sequence: the launcher holds the whole, digest-checked check at its
+		// pin, installed for every role of its pod, so this connection is sent it no more.
+		confirmed.mu.Lock()
+		confirmed.leakCheckInstalled = true
+		confirmed.mu.Unlock()
+		d.log.Info("launcher leak check: the pod's launcher installed the shared public leak check the daemon read",
+			"launcher", token, "pod", podUID, "tag", tag, "bytes", len(served.Body), "slices", len(served.Frames))
+		return nil
+	}
+	return refuse(fmt.Sprintf("the pod's launcher took every slice of %s without installing it", tag), nil)
 }
 
 // bundleRestoreBound is how long the hop of one pod's saved bundle may take. The 40 MiB a release
@@ -488,9 +602,9 @@ func bundleFrames(issue string, b runtime.WorkspaceBundle) ([]shimwire.LauncherB
 	})
 }
 
-// bundleWaiter names the request one slice's answer belongs to. A sequence is answered slice by
-// slice, so its id alone would name as many answers as it has slices; the launcher keys its own
-// results by the same pair.
+// bundleWaiter names the request one slice's answer belongs to, of a launcher_bundle sequence or
+// a launcher_leak_check one. A sequence is answered slice by slice, so its id alone would name as
+// many answers as it has slices; the launcher keys its own results by the same pair.
 func bundleWaiter(sequence string, index int) string { return sequence + "/" + strconv.Itoa(index) }
 
 func (d *launchers) stop(ctx context.Context, token claim.Token, podUID string, command shimwire.LauncherStop) error {

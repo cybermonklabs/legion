@@ -298,6 +298,15 @@ const legionClaimView = z.object({
    * `died` here, which is what an architect deciding a retry or an escalation acts on while
    * `failure` is still empty. It is stripped with `failure` below the same contract. */
   pendingCause: legionFailureCause.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod, beginning `the shared public leak check could
+   * not be installed: `; absent once a try starts its process or fails for another reason. It
+   * stands beside `failure` rather than in it: a claim that runs out of launches on it fails with
+   * the cause and the sentence it would have failed with anyway, and this key says which check
+   * refused it. A caller in a pod whose plugin declares a contract below 87 is served the state
+   * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
+   * optional. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -1079,7 +1088,7 @@ export const LegionActivityRequest = z.strictObject({
 
 export type LegionActivityRequestBody = z.output<typeof LegionActivityRequest>;
 
-/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 91): a live role's
+/** `api.OwedRequest`, the body of `POST /legion/v1/claims/owed` (contract 95): a live role's
  * session asking, at the end of its turn, what its claim owes now. It carries what
  * `claims/activity` carries — the claim, the session the claim records, and the registration's
  * secret — and no generation, since the question changes nothing. A token the daemon does not
@@ -1350,6 +1359,11 @@ export const LegionOperatorClaimResponse = z.object({
    * record. It stands on a claim an operator retired after it failed, which is what lets the seat
    * reading the listing say why that worker is gone. */
   failure: legionClaimFailureView.optional(),
+  /** The sentence the claim's latest launch try was refused with because the shared public leak
+   * check could not be installed in the role's pod; absent once a try starts its process or fails
+   * for another reason. These routes are the only surface the controller's claim reaches, so the
+   * controller's cause is read here alone. */
+  leakCheckCause: nonEmptyString.optional(),
 });
 
 export type LegionOperatorClaim = z.output<typeof LegionOperatorClaimResponse>;

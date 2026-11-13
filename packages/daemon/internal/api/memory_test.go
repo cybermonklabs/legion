@@ -17,15 +17,17 @@ var memoryDrawnAt = time.Date(2026, 9, 20, 11, 4, 5, 0, time.UTC)
 // The state the fixture builds carries one drawn tree (populatedState): the root LEGION-208 and
 // LEGION-209, a child of it, both showing the root's draw as internal/projection fills them,
 // beside the issues no draw has reached. Its claim views carry the pod's update round, the
-// record of what each claim's agent last did and the six keys the decided claim record added,
-// and its issues the three that record added to an issue; its admission block names the live
-// trees, its stranded claims hold a retired one, it carries the wakes the pacing holds and the
-// count of claims the refresh lane has left, an implementer of it carries its issue's counts of
-// the moves back, every root of it carries the deployment's gated step, the two issues of its
-// admission line carry their place in it with the line's own fields beside that place, every
-// issue of it that is not working now carries its answer under `why`, one issue carries the
-// correction of its repository and one the change Dispatch has named that the daemon has not
-// applied, so one state proves all thirteen downgrades and that they compose.
+// record of what each claim's agent last did, the six keys the decided claim record added and,
+// on LEGION-210's failed implementer, the sentence a launch try was refused with because the
+// shared public leak check could not be installed, and its issues the three that record added
+// to an issue; its admission block names the live trees, its stranded claims hold a retired one,
+// it carries the wakes the pacing holds and the count of claims the refresh lane has left, an
+// implementer of it carries its issue's counts of the moves back, every root of it carries the
+// deployment's gated step, the two issues of its admission line carry their place in it with the
+// line's own fields beside that place, every issue of it that is not working now carries its
+// answer under `why`, one issue carries the correction of its repository and one the change
+// Dispatch has named that the daemon has not applied, so one state proves all fourteen
+// downgrades and that they compose.
 
 // issueViews is every issue of a state body, decoded as the plugin's reader sees it, by key.
 func issueViews(t *testing.T, body []byte) map[string]map[string]any {
@@ -97,29 +99,30 @@ var (
 
 // The route authenticates nobody, so it knows a plugin by the pod the request came from: a pod
 // whose claims record a contract below memoryContract is served issues with only the keys the
-// last strict reader before it knows, and the rest of the body as it is. The thirteen downgrades
+// last strict reader before it knows, and the rest of the body as it is. The fourteen downgrades
 // compose, band by band: a pod at 46 to 48 is served the update rounds it reads and none of the
 // memory draws, the trees, the wakes the pacing holds, the gated steps, the retired stranded
 // entries, the step records, the places in the admission line, the counts of the moves back, the
-// count of claims the refresh lane has left, the failure record, the issues' answers and the
-// repository corrections; a pod at 49 or 50 the memory draws as well, and still none of the
-// rest; a pod at 51 or 52 the trees too; a pod at 53 or 54 the wakes too; a pod at 55 the steps
-// too, and still none of the retired entries, the step records, the places, the counts of the
-// moves back, the refresh count, the failure record, the answers and the repository
-// corrections; a pod at 56 the retired entries too; a pod at 57 the step records too; a pod at
-// 58 to 61 the places too, and neither count nor the record nor the answers nor a repository
-// correction; a pod from 62 to 72 the counts of the moves back too, and still no refresh count;
-// a pod at 73 or 74 the refresh count too, and none of the nine keys the decided record added; a
-// pod from 75 to 84 those nine too, and no issue's answer and no field of the line beside its
-// place and its length; a pod from 85 to 90 the answers and the line's own fields too, and still
-// nothing of a repository correction; a pod below 46 none of the thirteen; and a pod at 91, this
+// count of claims the refresh lane has left, the failure record, the issues' answers, the leak
+// check's cause and the repository corrections; a pod at 49 or 50 the memory draws as well, and
+// still none of the rest; a pod at 51 or 52 the trees too; a pod at 53 or 54 the wakes too; a
+// pod at 55 the steps too, and still none of the retired entries, the step records, the places,
+// the counts of the moves back, the refresh count, the failure record, the answers, the cause
+// and the repository corrections; a pod at 56 the retired entries too; a pod at 57 the step
+// records too; a pod at 58 to 61 the places too, and neither count nor the record nor the
+// answers nor a repository correction; a pod from 62 to 72 the counts of the moves back too, and
+// still no refresh count; a pod at 73 or 74 the refresh count too, and none of the nine keys the
+// decided record added; a pod from 75 to 84 those nine too, and no issue's answer and no field
+// of the line beside its place and its length; a pod at 85 or 86 the answers and the line's
+// fields too, and no claim view's `leakCheckCause`; a pod from 87 to 94 the cause too, and still
+// nothing of a repository correction; a pod below 46 none of the fourteen; and a pod at 95, this
 // daemon's declared contract, a pod whose claims record no contract and a caller in no pod — the
 // operator's `legion state`, whose memory line reads the draws, whose queue line reads the wakes
 // and whose tool-call line reads the step records — are served all of them.
 func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 	full := stateFrom(t, populatedState(t), "192.0.2.1:41000", podClaims(memoryContract-1))
 	fullWakes, fullCarried := wakesServed(t, full)
-	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine"}
+	fields := []string{"memoryGroup", "updateRound", "gatedSteps", "waitingLine", "leakCheckCause"}
 	for _, field := range append(fields, recordFieldKeys...) {
 		field := `"` + field + `"`
 		if !strings.Contains(string(full), field) {
@@ -144,18 +147,18 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		wakes   bool
 		retired bool
 		// stall is whether the caller is served the claim views' `step` (stallRecordContract),
-		// the contract thirty-four below this daemon's own, so a pod at 57 is served the record
+		// the contract thirty-eight below this daemon's own, so a pod at 57 is served the record
 		// and a pod still running an older plugin is not.
 		stall bool
 		// line is whether the caller is served each waiting issue's place in the admission line
-		// (waitingLineContract), thirty-three contracts below this daemon's own, so a pod at it is
+		// (waitingLineContract), thirty-seven contracts below this daemon's own, so a pod at it is
 		// served the places and a pod still running an older plugin is not.
 		line bool
 		// moves is whether the caller is served each worker's counts of the moves back its issue
-		// has made (backwardMovesContract), the contract twenty-nine below this daemon's own.
+		// has made (backwardMovesContract), the contract thirty-three below this daemon's own.
 		moves bool
 		// refresh is whether the caller is served `claimsToRefresh`, the count of claims the
-		// stale-plugin lane has left (claimsToRefreshContract), the contract eighteen below this
+		// stale-plugin lane has left (claimsToRefreshContract), the contract twenty-two below this
 		// daemon's own, so a pod at 73 or 74 is served the count and every older pod is not.
 		refresh bool
 		// failure is whether the caller is served the nine keys recordFieldsContract added
@@ -171,12 +174,16 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// strip takes both, so a pod below it reads every member with its `place` and its
 		// `length` alone and no issue with a `why`.
 		answers bool
+		// leak is whether the caller is served a claim view's `leakCheckCause`
+		// (leakCheckCauseContract), the sentence a launch try was refused with because the shared
+		// public leak check could not be installed.
+		leak bool
 		// correction is whether the caller is served what a correction of an issue's repository
 		// left on its record (repositoryCorrectionContract), this daemon's own contract.
 		correction bool
 	}{
 		{name: "a pod whose plugin is a contract behind", remote: statePodAddr + ":41000", claims: podClaims(memoryContract - 1), rounds: true},
-		{name: "a pod below PodUpdateContract, below all thirteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
+		{name: "a pod below PodUpdateContract, below all fourteen", remote: statePodAddr + ":41000", claims: podClaims(supervise.PodUpdateContract - 1)},
 		{name: "the same pod asking over IPv6", remote: "[::ffff:" + statePodAddr + "]:41000", claims: podClaims(memoryContract - 1), rounds: true},
 		// The band at 49 and 50, above memoryContract and below treeContract: the memory group
 		// is served and the two tree keys, `wakesWaiting`, the gated steps, the retired stranded
@@ -216,16 +223,20 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// decided record, the issues' answers and the four repository keys are held back.
 		{name: "a pod at claimsToRefreshContract", remote: statePodAddr + ":41000", claims: podClaims(claimsToRefreshContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true},
 		// The band from recordFieldsContract to below whyAndLineFieldsContract: the nine keys of
-		// the decided record are served too, and each issue's answer with the line's own fields
-		// and the four repository keys are held back.
+		// the decided record are served too, and each issue's answer with the line's own fields,
+		// the leak check's cause and the four repository keys are held back.
 		{name: "a pod at recordFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(recordFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true},
-		// The band from whyAndLineFieldsContract to below repositoryCorrectionContract, the last
-		// band under the declared contract: each issue's answer and the line's own fields are
-		// served too, and the four repository keys are the ones held back.
+		// The band at 85 and 86, from whyAndLineFieldsContract to below leakCheckCauseContract:
+		// the answers and the line's fields are served too, and the claim views' `leakCheckCause`
+		// and the four repository keys are held back.
 		{name: "a pod at whyAndLineFieldsContract", remote: statePodAddr + ":41000", claims: podClaims(whyAndLineFieldsContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true},
-		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, correction: true},
-		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, correction: true},
-		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, correction: true},
+		// The band from leakCheckCauseContract to below repositoryCorrectionContract, the last
+		// band under the declared contract: the leak check's cause is served too, and the four
+		// repository keys are the ones held back.
+		{name: "a pod at leakCheckCauseContract", remote: statePodAddr + ":41000", claims: podClaims(leakCheckCauseContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true},
+		{name: "a pod at this contract", remote: statePodAddr + ":41000", claims: podClaims(DaemonAPIVersion), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, correction: true},
+		{name: "a pod whose claims record no contract", remote: statePodAddr + ":41000", claims: podClaims(0), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, correction: true},
+		{name: "a caller in no pod", remote: "192.0.2.1:41000", claims: podClaims(memoryContract - 1), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, correction: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			body := stateFrom(t, populatedState(t), tc.remote, tc.claims)
@@ -264,6 +275,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 			}
 			if moves := strings.Contains(string(body), `"`+backwardMovesField+`"`); moves != tc.moves {
 				t.Errorf("the state %s carries a worker's counts of the moves back = %v, want %v", body, moves, tc.moves)
+			}
+			if leak := strings.Contains(string(body), `"leakCheckCause"`); leak != tc.leak {
+				t.Errorf("the state %s carries a claim view's leakCheckCause = %v, want %v", body, leak, tc.leak)
 			}
 			for _, key := range recordFieldKeys {
 				if carries := strings.Contains(string(body), `"`+key+`"`); carries != tc.failure {
@@ -382,6 +396,9 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 						for _, key := range recordFieldClaimKeys {
 							delete(view, key)
 						}
+					}
+					if !tc.leak {
+						delete(view, "leakCheckCause")
 					}
 				}
 			}

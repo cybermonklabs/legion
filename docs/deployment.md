@@ -175,9 +175,11 @@ configuration home — and tells the pane where it is
 (`resolveLeakCheck` and `panePairs`, `packages/daemon/internal/runtime/tmux`).
 An operator who points one pane at another copy still wins: `runtime.tmux.pane_env` and a spec's
 own `Env` are told after the resolved one, and the last value of a name is what the pane holds.
-Legion installs no check on a shared box — the pinned install is the pod's, from a tag the worker
-image carries — so a box that writes to public repositories carries it through the check's own
-installer, run on the machine the daemon runs on.
+Legion installs no check on a shared box.
+The pinned install is a pod's: the daemon reads the check at the tag the worker image carries and
+pushes it to the pod's launcher, which installs it ([Worker image](kubernetes.md#worker-image)).
+So a box that writes to public repositories carries the check through the check's own installer,
+run on the machine the daemon runs on.
 A daemon that resolves none logs one line per launch naming the pane, tells that pane no
 `PUBLIC_LEAK_CHECK`, and every write from it to a public repository is then refused with a setup
 error naming the missing check.

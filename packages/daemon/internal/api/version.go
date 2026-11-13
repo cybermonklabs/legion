@@ -1242,7 +1242,34 @@ package api
 // retired: the route starts the worker's phase again — restoring a held one, as the architect's
 // retry_or_escalate does — so the session it starts, new or kept, is given that phase's task.
 //
-// 91: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
+// 87: INFRA-3219 (cybermonklabs/legion) -- a claim whose launch the runtime refused because the
+// shared public leak check could not be installed in the role's pod says so in a field of its
+// own: `leakCheckCause` on `api.ClaimView` (every claim view of `GET /legion/v1/state`, and so
+// `read_state` and `read_record`) and on `api.OperatorClaim` (`GET /legion/v1/operator/claims`
+// and every operator route answering a claim, which is where the controller's claim is read),
+// the one-line sentence the refusal carries, beginning `the shared public leak check could not be
+// installed: ` (`leakguard.RefusalPrefix`). It is the outcome of the claim's latest launch try
+// (`supervise.Claim.LeakCheckCause`): present from the first try the check refused and across the
+// backoff after it, absent once a try starts its process or fails for another reason, and
+// cleared with the failure record by the retry that revives a failed claim. It sits beside
+// `failure` rather than in it: a claim that runs out of launches on it fails as before, with
+// `failure.cause` `launch_refused` (or `died` where a death's relaunch was refused) and
+// `failure.detail` `launch failures ran out: <the error>`, so the closed set of cause words and
+// `failure-causes.json` do not change. The daemon ships store migration
+// `20261112180548_claim_leak_check_cause.up.sql` with it, which adds `claims.leak_check_cause`
+// with the empty default and backfills nothing. `GET /legion/v1/state` authenticates nobody, so a
+// caller from a pod whose claims record a contract below 87 is served every claim view without
+// the key (api's stateFor, withoutLeakCheckCause), composed with the twelve narrowings 85
+// describes; a plugin from 85 on refuses none of it, since every answer-side schema of
+// `packages/contracts` strips a key it does not name, and the strip is what keeps it from a
+// caller that did not ask for it. The operator routes are not narrowed: their reader is the
+// `legion` built with this daemon, whose `legion claims list` line ends with the sentence quoted,
+// or `-` where there is none. Read the base's own number and every open pull request again at
+// every forward merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.
+//
+// 95: INFRA-3136 -- an issue's repository follows the one Dispatch resolves it to, and
 // `GET /legion/v1/state` says so: an issue takes four keys, `repoBefore` and `repoCorrectedAt`,
 // the repository the issue left and the moment the daemon applied the correction, and
 // `repoChangePending` and `repoChangeReason`, a repository Dispatch has named that the daemon has
@@ -1260,7 +1287,7 @@ package api
 // record — its phase, the role's own row of it and its production check — and what that work is
 // called, "the testing phase of LEGION-208" or "the production check of LEGION-208", empty when
 // nothing is owed. The end-of-turn reminder renders that answer in both harnesses and keeps no
-// model of the phase of its own (dispatch://INFRA-2746). A plugin below 91 calls no such route,
+// model of the phase of its own (dispatch://INFRA-2746). A plugin below 95 calls no such route,
 // and nothing else of the claim wire changes; `packages/contracts/src/legion-api.ts` mirrors the
 // two bodies as `LegionOwedRequest` and `LegionOwedResponse`, and
 // `packages/contracts/fixtures/daemon-api/owed.json` is the answer's golden.
@@ -1274,15 +1301,16 @@ package api
 // `20261112215432_delivery_resume.up.sql` adds `pending_task_deliveries.resume`, the wait a held
 // task that resumes an answered root carries, so the task's text is written at each send. An
 // older daemon neither reads nor writes that column: it sends the task text a row holds, which is
-// empty for a resume task this release queued and never sent. (This
-// entry takes 91. Read at the third forward merge of 2026-11-12, which
-// brought main in at c95e698a9a5f: main declares 86, the entry right above this one, and the
-// open heads above it declare 87 (#3939), 88 (#3730), 89 (#3519, #3659) and 90 (#3575, #3830,
-// #3937), so 91 is the lowest number above the base that no open head declares. That reading is
-// of this file at refs/pull/<n>/head for every open pull request, not of a file list: GitHub
+// empty for a resume task this release queued and never sent. (This entry takes 95. Read at
+// 2026-11-13T06:29:55Z, after the fifth forward merge of 2026-11-13, which brought main in at
+// 12ba4e6afa71: main declares 87, the entry right above this one; open heads declare 37 (#2213),
+// 61 (#2230), 71 (#3577) and 86 (#3534) below it, and above it 88 (#3730), 89 (#3659), 90
+// (#3830), 91 (#3519), 92 (#3715), 93 (#3937), 94 (#3677), 96 (#2731, #3573), 98 (#3708) and 99
+// (#3575), so 95 is the lowest number above the base that no open head declares. That reading
+// is of this file at refs/pull/<n>/head for every open pull request, not of a file list: GitHub
 // cuts a pull request's file list short, so one that changes more files than the page holds
 // answers without this path. Read the base's own number and every open pull request again at
 // the next merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 91
+const DaemonAPIVersion = 95

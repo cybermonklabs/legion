@@ -286,10 +286,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// the mark of that same contract gone with them, with each issue's one rendered
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
-			// (withoutWhyAndLineFields), and with the four keys of a repository correction gone,
-			// which a pod below repositoryCorrectionContract is served without
-			// (withoutRepositoryCorrection). Every row that reaches here is below all of them, so
-			// those sixteen keys go whatever the row is.
+			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
+			// sentence contract 87 added (withoutLeakCheckCause), and with the four keys of a
+			// repository correction gone, which a pod below repositoryCorrectionContract is served
+			// without (withoutRepositoryCorrection). Every row that reaches here is below all of
+			// them, so those seventeen keys go whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -330,7 +331,7 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 					if !tc.stall {
 						delete(view, "step")
 					}
-					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause"} {
+					for _, key := range []string{"servingGeneration", "updateReasons", "providerErrorRun", "pendingTask", "failure", "pendingCause", "leakCheckCause"} {
 						delete(view, key)
 					}
 				}

@@ -26,8 +26,15 @@ var _ supervise.Store = (*Store)(nil)
 // (INFRA-80). The column stays unread rather than dropped — migrations here are forward-only, and
 // the previous release's daemon still reads its own claims table, so dropping it would make
 // rolling the image back need a database restore.
+//
+// The four activity columns are read here beside the eight step columns and under the same rule
+// (putClaim's own comment): PutClaimActivity and PutClaimStep own them, and a machine's write
+// leaves them alone, but for a launch's, which clears the four activity columns. Reading them is
+// what lets the daemon's minute sweep see what a quiet worker's own session says it is waiting
+// on (supervise.Claim's ActivityAt and the three beside it, internal/daemon's
+// tellSilentPhaseWorkers).
 const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.generation, c.tree_epoch, c.session,
-	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause,
+	c.session_file, c.locator, c.state, c.failure, c.failure_cause, c.failed_at, c.pending_cause, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
 	c.boot_token_hash, c.capability_hash, c.uncertain_streak, c.last_start_row, c.serving_generation,
 	c.serving_assignment, c.serving_check_look, c.serving_check_opened_at,
@@ -40,6 +47,7 @@ const claimSelect = `select c.token, c.project, c.tree, c.issue, c.role, c.gener
 	c.update_left_round, c.provider_error_run, c.death_charged,
 	c.step_at, c.turn_started_at, c.step_tool, c.step_call_id, c.step_args_bytes,
 	c.step_args_hash, c.step_started_at, c.step_ended_at,
+	c.activity_at, c.activity_background, c.activity_kinds, c.activity_next_reminder_at,
 	d.delivery_id, d.task, d.phase, d.generation, d.assignment, d.check_look, d.check_opened_at,
 	d.queued_at, d.delivered_at, d.marked_by, d.confirmed_at, d.interrupted, d.prompted, d.out_of_memory,
 	d.send_failures, d.last_send_failure_at, d.last_send_error,
@@ -57,21 +65,31 @@ func (s *Store) PutClaim(ctx context.Context, c supervise.Claim) error {
 // that claim's session last reported of what it is doing (INFRA-945). The report is no part of
 // the claim's machine state — it arrives between a machine's writes, and the machine's in-memory
 // claim does not carry it — so one write of the whole row would erase every report sent since
-// that machine read its claim; the claim's own writes leave these columns alone, and the idle
-// rule reads them through its own view (IdleClaim).
+// that machine read its claim; the claim's own writes carry no report and leave these columns
+// alone but for a launch's, which clears them (putClaim), and the idle rule reads them through
+// its own view (IdleClaim).
+//
+// It writes only onto the launch the report belongs to, generation: a report of the claim's
+// earlier launch — a dead process's, authenticated just before the relaunch and written just
+// after the launch's clear — is refused rather than written over the new process's empty report,
+// and answered as unknown, as the route answers a secret of a launch that is gone.
 //
 // A report older than the one recorded is dropped rather than written: a session fires its
 // reports without an in-flight guard, so an earlier reading can land after a later one, and the
 // pod would then be released on a reading the session has already replaced. It answers whether
-// the store holds the claim at all, which a later report of a claim the daemon has forgotten
-// does not.
+// the store holds the claim at generation at all, which a later report of a claim the daemon has
+// forgotten or relaunched does not.
 //
 // The report's own clock is bounded to the daemon's, as the listener's is (decodeListenerWake):
 // the session chooses every field of what it sends, and one reading dated ahead of the daemon's
 // clock — a session whose host stepped its clock forward, corrected back afterwards — would
 // drop every honest report after it under that same ordering guard, while the stale reading it
 // left behind went on counting as current, background work and all.
-func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, a claim.SessionActivity) (bool, error) {
+func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, generation uint64, a claim.SessionActivity) (bool, error) {
+	if generation > math.MaxInt64 {
+		// No row holds it (putClaim refuses one), so no launch of the claim is this.
+		return false, nil
+	}
 	var reminder *time.Time
 	if a.Phase.NextReminderAt != nil && !a.Phase.NextReminderAt.IsZero() {
 		at := a.Phase.NextReminderAt.UTC()
@@ -85,10 +103,12 @@ func (s *Store) PutClaimActivity(ctx context.Context, token claim.Token, a claim
 	err := s.pool.QueryRow(ctx, `with reported as (
 		update claims set activity_at = $2, activity_background = $3, activity_kinds = $4,
 			activity_next_reminder_at = $5, updated_at = now()
-		where token = $1 and (activity_at is null or activity_at <= $2) returning token)
-		select exists (select 1 from claims where token = $1)`,
+		where token = $1 and generation = $6 and (activity_at is null or activity_at <= $2) returning token)
+		select exists (select 1 from claims where token = $1 and generation = $6)`,
+		// Only the three known kinds are kept (claim.BackgroundWork.KnownKinds): they reach the
+		// architect's worker-background-stalled notice and the daemon's log.
 		string(token), at, a.BackgroundWork.Running,
-		strings.Join(a.BackgroundWork.Kinds, ","), reminder,
+		strings.Join(a.BackgroundWork.KnownKinds(), ","), reminder, int64(generation),
 	).Scan(&known)
 	if err != nil {
 		return false, fmt.Errorf("put the activity of claim %s: %w", token, err)
@@ -268,10 +288,10 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		update_round, update_reasons, update_opened_at, update_tasked_at, update_signalled_at,
 		update_head, update_told_at, update_answered_by_turn_end, update_reasked_for_push_check,
 		update_left_round, provider_error_run, serving_check_look, serving_check_opened_at, death_charged,
-		failure_cause, failed_at, pending_cause,
+		failure_cause, failed_at, pending_cause, leak_check_cause,
 		retired_at_write_mark)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
-		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52,
+		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
@@ -313,6 +333,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		failure_cause = excluded.failure_cause,
 		failed_at = excluded.failed_at,
 		pending_cause = excluded.pending_cause,
+		leak_check_cause = excluded.leak_check_cause,
 		-- The four activity columns (activity_at, activity_background, activity_kinds,
 		-- activity_next_reminder_at) and the eight step columns (step_at, turn_started_at,
 		-- step_tool, step_call_id, step_args_bytes, step_args_hash, step_started_at,
@@ -320,6 +341,20 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		-- them, and a machine's write carries whatever its in-memory claim last read, so a
 		-- report the session sent, or a step the stream reported, since that read would be
 		-- erased by the next state it persists.
+		--
+		-- The one exception: a write that moves the generation is a launch (supervise's
+		-- launchNow), and it clears the report. The report describes the process that made it,
+		-- and the launch replaces that process; a Claude Code worker reports only at its Stop
+		-- hook, so its dead process's report would otherwise stand, background work and all.
+		-- This is the one place the rule lives: no reader of the columns checks anything.
+		activity_at = case when claims.generation <> excluded.generation
+			then null else claims.activity_at end,
+		activity_background = case when claims.generation <> excluded.generation
+			then false else claims.activity_background end,
+		activity_kinds = case when claims.generation <> excluded.generation
+			then '' else claims.activity_kinds end,
+		activity_next_reminder_at = case when claims.generation <> excluded.generation
+			then null else claims.activity_next_reminder_at end,
 		updated_at = now()`,
 		string(c.Token), c.Project, c.Tree, c.Issue, string(c.Role), int64(c.Generation), int64(c.TreeEpoch),
 		c.Session, c.SessionFile, locator, string(c.State), c.Failure,
@@ -332,7 +367,7 @@ func putClaim(ctx context.Context, db execer, c supervise.Claim) error {
 		c.UpdateRound, c.UpdateReasons, c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt,
 		c.UpdateHead, c.UpdateToldAt, c.UpdateAnsweredByTurnEnd, c.UpdateReaskedForPushCheck,
 		c.UpdateLeftRound, c.ProviderErrorRun, c.ServingCheckLook.Look, instant(c.ServingCheckLook.OpenedAt), c.DeathCharged,
-		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause),
+		string(c.FailureCause), instant(c.FailedAt), string(c.PendingCause), c.LeakCheckCause,
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -657,9 +692,11 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		resume                      []byte
 		stepAt, turnStarted         *time.Time
 		stepStarted, stepEnded      *time.Time
+		reportedAt, reminderAt      *time.Time
+		kinds                       string
 	)
 	err := row.Scan(&token, &c.Project, &c.Tree, &c.Issue, &role, &generation, &treeEpoch, &c.Session,
-		&c.SessionFile, &locator, &state, &c.Failure, &cause, &failedAt, &pendingCause,
+		&c.SessionFile, &locator, &state, &c.Failure, &cause, &failedAt, &pendingCause, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
 		&c.Budgets.PromptRetires, &c.BootTokenHash, &c.CapabilityHash, &c.UncertainStreak,
 		&c.LastStartRow, &servingGeneration, &c.ServingAssignmentID, &servingCheckLook, &servingCheckOpened,
@@ -672,6 +709,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		&c.UpdateLeftRound, &c.ProviderErrorRun, &c.DeathCharged,
 		&stepAt, &turnStarted, &c.Step.Tool, &c.Step.CallID, &c.Step.ArgsBytes,
 		&c.Step.ArgsHash, &stepStarted, &stepEnded,
+		&reportedAt, &c.ActivityBackground, &kinds, &reminderAt,
 		&deliveryID, &task, &deliveryPhase, &deliveryGeneration, &deliveryAssignment, &deliveryCheckLook, &deliveryCheckOpened,
 		&queuedAt, &delivered, &markedBy, &confirmed, &interrupted, &prompted, &outOfMemory,
 		&sendFailures, &lastSendFailure, &lastSendError, &kept, &retries, &note, &resume)
@@ -711,6 +749,14 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	c.UpdateOpenedAt, c.UpdateTaskedAt, c.UpdateSignalledAt, c.UpdateToldAt = updateOpened, updateTasked, updateSignalled, updateTold
 	c.Step.At, c.Step.TurnStartedAt = orZero(stepAt), orZero(turnStarted)
 	c.Step.StartedAt, c.Step.EndedAt = orZero(stepStarted), orZero(stepEnded)
+	// Both activity moments are nullable (migration 20261101214123_claim_session_activity): a
+	// session that has reported nothing has no activity_at, and one that armed no reminder no
+	// activity_next_reminder_at. The kinds are stored comma-joined in the order the session sent
+	// them, and a claim that named none keeps the nil slice rather than one empty kind.
+	c.ActivityAt, c.ActivityNextReminderAt = orZero(reportedAt), orZero(reminderAt)
+	if kinds != "" {
+		c.ActivityKinds = strings.Split(kinds, ",")
+	}
 	if locator != nil {
 		var loc runtime.Locator
 		if err := json.Unmarshal(locator, &loc); err != nil {

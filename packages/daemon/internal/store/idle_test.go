@@ -48,7 +48,7 @@ func TestTheIdleViewReadsTheStoredActivityReportAndTheQueuedRows(t *testing.T) {
 		BackgroundWork: claim.BackgroundWork{Running: true, Kinds: []string{"async-job", "subagent"}},
 		Phase:          claim.PhaseActivity{NextReminderAt: &reminder},
 	}
-	if wrote, err := st.PutClaimActivity(ctx, token, reported); err != nil || !wrote {
+	if wrote, err := st.PutClaimActivity(ctx, token, c.Generation, reported); err != nil || !wrote {
 		t.Fatalf("PutClaimActivity = %t, %v", wrote, err)
 	}
 	if _, err := st.Pool().Exec(ctx, `insert into outbox (id, kind, issue, payload, attempts, next_at, last_error) values
@@ -171,7 +171,7 @@ func TestAClaimWriteAfterAReportLeavesTheReportStanding(t *testing.T) {
 		t.Fatal(err)
 	}
 	reported := claim.SessionActivity{At: time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)}
-	if _, err := st.PutClaimActivity(ctx, token, reported); err != nil {
+	if _, err := st.PutClaimActivity(ctx, token, c.Generation, reported); err != nil {
 		t.Fatal(err)
 	}
 	// The machine, which never read the report, persists its next state.
