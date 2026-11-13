@@ -160,6 +160,36 @@ dir="$(fresh unpinned-runner)"
 sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv run --no-project --with rdflib python -c 1; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 case_result "a recorded command that runs a package with no version is refused" install-pinned "$(fixture_run "$dir" --replay)"
 
+# 10. `@latest` is no version. install-pinned takes any `@` after a uvx or go run package
+# for a version, so `uvx pyshacl@latest` and `go run <module>@latest`, the two spellings
+# that ask for the newest release by name, passed it at 77b8e9234f.
+dir="$(fresh latest-is-no-version)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uvx pyshacl@latest --version; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "uvx <package>@latest is refused as a package with no version" install-pinned "$(fixture_run "$dir" --replay)"
+dir="$(fresh go-latest-is-no-version)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || go run golang.org\\/x\\/tools\\/cmd\\/stringer@latest; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "go run <module>@latest is refused as a package with no version" install-pinned "$(fixture_run "$dir" --replay)"
+
+# 11. `uv tool run` is the command uvx is an alias of, and install-pinned does not read it,
+# so `uv tool run pyshacl` passed it at 77b8e9234f.
+dir="$(fresh uv-tool-run)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv tool run pyshacl --version; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "uv tool run <package> with no version is refused" install-pinned "$(fixture_run "$dir" --replay)"
+
+# 12. A pinned uvx with an option before its package is no fault. install-pinned reads the
+# word after uvx as the package, so `uvx --python 3.12 pyshacl==0.40.2` was refused at
+# 77b8e9234f as `uvx --python`, which would stop a pinned command from being recorded.
+dir="$(fresh uvx-option-pinned)"
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uvx --python 3.12 pyshacl==0.40.2 --version; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+out="$(fixture_run "$dir" --replay)"
+if printf '%s\n' "$out" | grep -q '^FAIL install-pinned'; then
+    CASES_FAILED=$((CASES_FAILED + 1))
+    printf 'FAIL %s: %s\n' "a pinned uvx with an option before its package passes install-pinned" "$(printf '%s\n' "$out" | grep '^FAIL install-pinned' | head -1)"
+else
+    CASES_PASSED=$((CASES_PASSED + 1))
+    printf 'PASS %s\n' "a pinned uvx with an option before its package passes install-pinned"
+fi
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
