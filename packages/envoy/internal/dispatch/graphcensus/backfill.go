@@ -3,10 +3,14 @@ package graphcensus
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"sort"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -138,7 +142,9 @@ type blockRow struct {
 // backfillBlocks writes a node and an in_document tuple for every block row that names none,
 // and marks each document it touched owed a block index. A block whose address is past
 // refs.MaxBlockNodeBytes is no node of the store by design, so it is neither written nor
-// counted as skipped: the writers leave it unprojected too.
+// counted as skipped: the writers leave it unprojected too. A row a version write deleted after
+// its batch was read is not written either (writeBlockBatch), and is counted nowhere: it is no
+// row of the database any more.
 func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: refs.BlockNodeKind}
 	documents := map[string]struct{}{}
@@ -152,14 +158,14 @@ func backfillBlocks(ctx context.Context, database *store.Store) (KindBackfill, e
 			break
 		}
 		after = rows[len(rows)-1].address
-		written, err := writeBlockBatch(ctx, database, rows)
+		written, tuples, err := writeBlockBatch(ctx, database, rows)
 		if err != nil {
 			return done, err
 		}
-		done.Rows += int64(len(rows))
-		done.Nodes += int64(len(rows))
-		done.Tuples += written
-		for _, row := range rows {
+		done.Rows += int64(len(written))
+		done.Nodes += int64(len(written))
+		done.Tuples += tuples
+		for _, row := range written {
 			documents[row.artifactID] = struct{}{}
 		}
 		if len(rows) < backfillBatch {
@@ -239,26 +245,46 @@ func readBlockRows(ctx context.Context, database *store.Store, after string) ([]
 	return batch, rows.Err()
 }
 
-// writeBlockBatch writes one batch's nodes and in_document tuples and names them on the rows,
-// in one transaction, and answers how many tuples that wrote. The nodes go in before the
+// writeBlockBatch writes the nodes and in_document tuples of the rows of one batch that are
+// still there and still name no node, and names those nodes on the rows, in one transaction. It
+// answers the rows it wrote and how many tuples that wrote. The nodes go in before the
 // projection columns: the foreign key on (node_kind, node_address) is checked inside the
 // statement that writes them.
 //
+// The batch was read outside this transaction, so a version write may have changed or deleted
+// one of its blocks since, and a version write that deletes a block states its node gone
+// (refs.IndexBlocks). The backfill is one of the three writers R23 holds to the revision
+// fence's locks, so before it writes anything it takes the locks a version write holds while it
+// writes a document's blocks (lockBlockDocuments), and then reads the batch's rows again under
+// them (heldBlockRows). A row a version write reached in between is either gone or names its
+// node already, and only the rows left are written: a node written for a deleted row would bring
+// the block back as a live node with an in_document tuple and no projection row.
+//
 // The count is this batch's own tuples and the two base attributes graphstore.Write states
 // for each node its insert makes, which this batch does not state itself: every node here is
-// new, since a row that already names one is never read.
-func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRow) (int64, error) {
+// new, since a row that already names one is never written.
+func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRow) ([]blockRow, int64, error) {
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		return 0, fmt.Errorf("begin the block batch: %w", err)
+		return nil, 0, fmt.Errorf("begin the block batch: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	nodes := make([]graphstore.Node, 0, len(batch))
-	tuples := make([]graphstore.Tuple, 0, len(batch))
-	addresses := make([]string, 0, len(batch))
-	blockIDs := make([]string, 0, len(batch))
-	artifacts := make([]string, 0, len(batch))
-	for _, row := range batch {
+	if err := lockBlockDocuments(ctx, tx, batch); err != nil {
+		return nil, 0, err
+	}
+	held, err := heldBlockRows(ctx, tx, batch)
+	if err != nil {
+		return nil, 0, err
+	}
+	if len(held) == 0 {
+		return nil, 0, nil
+	}
+	nodes := make([]graphstore.Node, 0, len(held))
+	tuples := make([]graphstore.Tuple, 0, len(held))
+	addresses := make([]string, 0, len(held))
+	blockIDs := make([]string, 0, len(held))
+	artifacts := make([]string, 0, len(held))
+	for _, row := range held {
 		nodes = append(nodes, graphstore.Node{
 			Kind: refs.BlockNodeKind, ID: row.address, Supertag: refs.BlockSupertag,
 			Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
@@ -274,7 +300,7 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 		artifacts = append(artifacts, row.artifactID)
 	}
 	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
-		return 0, fmt.Errorf("write the nodes of a block batch: %w", err)
+		return nil, 0, fmt.Errorf("write the nodes of a block batch: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `
 		update document_blocks d
@@ -282,12 +308,113 @@ func writeBlockBatch(ctx context.Context, database *store.Store, batch []blockRo
 		from unnest($1::text[], $2::text[], $3::text[]) as b (artifact_id, block_id, address)
 		where d.artifact_id = b.artifact_id::uuid and d.block_id = b.block_id
 	`, artifacts, blockIDs, addresses, refs.BlockNodeKind); err != nil {
-		return 0, fmt.Errorf("name the nodes of a block batch on their rows: %w", err)
+		return nil, 0, fmt.Errorf("name the nodes of a block batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("commit a block batch: %w", err)
+		return nil, 0, fmt.Errorf("commit a block batch: %w", err)
 	}
-	return int64(len(tuples)) + 2*int64(len(nodes)), nil
+	return held, int64(len(tuples)) + 2*int64(len(nodes)), nil
+}
+
+// lockBlockDocuments takes, for each document of the batch, the two rows the fence's writers
+// hold while they write a document's blocks, in the order R23 gives and docs' indexOwedDocument
+// takes them: the document's owner row (lockDocumentOwner), then its document_block_versions row
+// `for no key update`. The documents go in id order, the order the erase takes the locks of
+// several documents in (Erasure.readDocuments), so two writers that each hold more than one
+// document cannot each hold a row the other waits for.
+func lockBlockDocuments(ctx context.Context, tx pgx.Tx, batch []blockRow) error {
+	documents := make([]string, 0, len(batch))
+	for _, row := range batch {
+		documents = append(documents, row.artifactID)
+	}
+	slices.Sort(documents)
+	for _, document := range slices.Compact(documents) {
+		if err := lockDocumentOwner(ctx, tx, document); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `
+			select 1 from document_block_versions where artifact_id = $1 for no key update
+		`, document); err != nil {
+			return fmt.Errorf("lock the block index row of document %s: %w", document, err)
+		}
+	}
+	return nil
+}
+
+// lockDocumentOwner takes a document's owner row with the statements docs' lockArtifactOwner
+// runs, which the version write and the reconciliation tick take it with: its issue's row, or a
+// project document's own artifact row, `for no key update`. This package cannot import docs
+// (Stores says why), so the statements are written here again, and a change to how that
+// function locks is a change to make here too. A document deleted since its batch was read has
+// no owner row left to take, and its block rows went with it (document_blocks cascades from
+// artifacts), so there is nothing of it to lock.
+func lockDocumentOwner(ctx context.Context, tx pgx.Tx, artifactID string) error {
+	var issueKey *string
+	switch err := tx.QueryRow(ctx, `select issue_key from artifacts where id = $1`, artifactID).Scan(&issueKey); {
+	case errors.Is(err, pgx.ErrNoRows):
+		return nil
+	case err != nil:
+		return fmt.Errorf("load the owner of document %s: %w", artifactID, err)
+	}
+	if issueKey == nil {
+		if _, err := tx.Exec(ctx, `
+			select true from artifacts where id = $1 and issue_key is null for no key update
+		`, artifactID); err != nil {
+			return fmt.Errorf("lock document %s: %w", artifactID, err)
+		}
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `
+		select closed_at is null from issues where key = $1 for no key update
+	`, *issueKey); err != nil {
+		return fmt.Errorf("lock the issue of document %s: %w", artifactID, err)
+	}
+	return nil
+}
+
+// heldBlockRows reads again, under the locks lockBlockDocuments took, which rows of the batch
+// are still there and still name no node, locks each of them `for update` in key order, and
+// answers them in the batch's own order. The rest of a row is what the batch read: a row that
+// still names no node has been written by no version since, because a version names the node
+// of every block it indexes (refs.IndexBlocks).
+func heldBlockRows(ctx context.Context, tx pgx.Tx, batch []blockRow) ([]blockRow, error) {
+	artifacts := make([]string, 0, len(batch))
+	blockIDs := make([]string, 0, len(batch))
+	for _, row := range batch {
+		artifacts = append(artifacts, row.artifactID)
+		blockIDs = append(blockIDs, row.blockID)
+	}
+	rows, err := tx.Query(ctx, `
+		select d.artifact_id::text, d.block_id
+		from document_blocks d
+		join unnest($1::text[], $2::text[]) as b (artifact_id, block_id)
+			on d.artifact_id = b.artifact_id::uuid and d.block_id = b.block_id
+		where d.node_kind is null
+		order by d.artifact_id, d.block_id
+		for update of d
+	`, artifacts, blockIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read the blocks of a batch again under their documents' locks: %w", err)
+	}
+	keys, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
+		var key [2]string
+		err := row.Scan(&key[0], &key[1])
+		return key, err
+	})
+	if err != nil {
+		return nil, fmt.Errorf("scan the blocks of a batch read again: %w", err)
+	}
+	still := make(map[[2]string]struct{}, len(keys))
+	for _, key := range keys {
+		still[key] = struct{}{}
+	}
+	held := make([]blockRow, 0, len(keys))
+	for _, row := range batch {
+		if _, ok := still[[2]string{row.artifactID, row.blockID}]; ok {
+			held = append(held, row)
+		}
+	}
+	return held, nil
 }
 
 // markDocumentsOwed marks every document the run gave blocks nodes owed a block index, which
