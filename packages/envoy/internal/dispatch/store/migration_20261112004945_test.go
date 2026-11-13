@@ -22,7 +22,7 @@ func TestMigrationLetsAnIssueNameAnyRepository(t *testing.T) {
 		t.Fatalf("migrate through %d: %v", issueRepoNeedsNoMappingVersion-1, err)
 	}
 	if _, err := store.Pool.Exec(ctx, `
-		insert into projects (key, name) values ('CORE', 'Core'), ('OTHER', 'Other');
+		insert into projects (key, name, default_assignee) values ('CORE', 'Core', 'alice'), ('OTHER', 'Other', 'alice');
 		insert into repo_projects (repo, project, created_by) values
 			('acme/widgets', 'CORE', '{"kind":"user","id":"alice"}'),
 			('other/tools', 'OTHER', '{"kind":"user","id":"alice"}');
