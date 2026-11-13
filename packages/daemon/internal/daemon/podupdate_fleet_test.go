@@ -400,6 +400,7 @@ func (r *fleetRig) prompts(issue string, role claim.Role) []fake.Prompt {
 // records the rig's workers wrote with `dispatch handoff-write`, by id. Nothing else of Dispatch
 // is reached in a round, so every other read answers nothing.
 type fleetHandoffs struct {
+	noArtifacts
 	mu       sync.Mutex
 	handoffs map[string]dispatch.Handoff
 }

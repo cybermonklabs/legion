@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1176,6 +1177,9 @@ func (r *outbox) dropHandover(ctx context.Context, issue string, payload record.
 	})
 }
 
+// message posts a message row once: a retried row that finds its own marker on the issue posts
+// nothing more. A row whose message links an artifact puts that document on the issue first
+// (messageArtifact), so the link never names a document that is not there yet.
 func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload record.MessagePost) error {
 	if r.dispatch == nil {
 		return errors.New("dispatch message executor has no Dispatch client")
@@ -1190,10 +1194,50 @@ func (r *outbox) message(ctx context.Context, row record.OutboxRow, payload reco
 			return nil
 		}
 	}
+	if payload.Artifact != nil {
+		refusal, err := r.messageArtifact(ctx, row, *payload.Artifact)
+		if err != nil {
+			return err
+		}
+		if refusal != nil {
+			payload.Body += fmt.Sprintf("\n\nDispatch refused the full list that this message links, with status %d and code %s.", refusal.Status, refusal.Code)
+		}
+	}
 	if err := r.dispatch.PostMessage(ctx, row.Issue, payload.Posted(row.ID)); err != nil {
 		return fmt.Errorf("post Dispatch message for %s: %w", row.Issue, err)
 	}
 	return nil
+}
+
+// messageArtifact puts on the issue the document a message links. It reads the issue's artifacts
+// and uploads only when none has the document's name, so a row that runs again after its upload
+// writes no second version. A read or an upload Dispatch refuses the same way on every run
+// (dispatch.PermanentRefusal) is logged and answered, and the message is posted all the same with
+// a sentence that says so: the message is the issue's one word on what it carries, and a document
+// it could not hold must not cost it that (dispatch://INFRA-2704). Any other failure fails the
+// run, and the row runs again. So does an upload Dispatch filed under a slug other than the
+// name, since the link names the document by that name.
+func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, artifact record.MessageArtifact) (*dispatch.Error, error) {
+	slugs, err := r.dispatch.ArtifactSlugs(ctx, row.Issue)
+	if err == nil && slices.Contains(slugs, artifact.Name) {
+		return nil, nil
+	}
+	slug := ""
+	if err == nil {
+		slug, err = r.dispatch.UploadArtifact(ctx, row.Issue, artifact.Name, artifact.Content)
+	}
+	if refusal, permanent := dispatch.PermanentRefusal(err); permanent {
+		r.log.Error("outbox Dispatch message's document refused by Dispatch; the message is posted and says so",
+			"row", row.ID, "issue", row.Issue, "artifact", artifact.Name, "status", refusal.Status, "code", refusal.Code, "error", err)
+		return refusal, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("put the document %s of a Dispatch message on %s: %w", artifact.Name, row.Issue, err)
+	}
+	if slug != artifact.Name {
+		return nil, fmt.Errorf("put the document %s of a Dispatch message on %s: Dispatch filed it under %s, so the message's link would name no document", artifact.Name, row.Issue, slug)
+	}
+	return nil, nil
 }
 
 // notice publishes a notice row to the architect that owns its issue, on that architect's own role

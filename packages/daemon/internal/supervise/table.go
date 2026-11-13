@@ -251,8 +251,8 @@ type PodUpdateOpen struct {
 // UpdateTask is the text a pod's update round asks each role with. round is the round, which the
 // role answers with. reasons is what the daemon found, as Claim.UpdateReasons holds it. endsAt is
 // the moment the round ends at the latest: the round's recorded opening (Claim.UpdateOpenedAt)
-// plus pod_update_grace_minutes. rescue is the prefix of every rescue branch of the pod's
-// replacement (internal/daemon's rescueBranch). The sweep (internal/daemon) builds the text from
+// plus pod_update_grace_minutes. rescue is the issue's one rescue branch (internal/rescue's
+// Target), the branch the push check pushes to. The sweep (internal/daemon) builds the text from
 // the round's record, so the text names one moment for every role of the round, and the text
 // rides record.UpdateAsk to the role's own Envoy topic. That message can arrive in the middle of
 // a turn, so the text tells the role to act now rather than after the turn.
@@ -272,19 +272,23 @@ type PodUpdateOpen struct {
 // endsAt whatever it does.
 //
 // The text also says what the daemon's push check saves before the pod goes, and to which
-// rescue branch: the name starts with rescue, which is the prefix the push check is given
-// (rescue.Request.Branch), so the name the text gives is the name the check pushes to. It says
-// too that a pod whose shim predates the check is not checked. A rescue branch is named for the
-// pod rather than for a session, so it can hold another session's commits: the text tells the
-// role to read a branch's commits before it takes any, and names the daemon's own commit ("Edits
-// left in the workspace", internal/rescue), whose files say whose work it holds and whose author
-// does not (RescueBranchWarning, which the daemon's rescueMessage gives the issue too).
+// branch: the issue's own line and the workspace's files, to rescue, which is the branch the push
+// check is given (rescue.Request.Target), so the name the text gives is the name the check pushes
+// to. A commit off that line is not saved, so the text tells the role to push it itself. A pod
+// whose shim predates rescue.Request.Target pushes to branches of its own pod instead, named
+// `<rescue>-<pod>-<n>`, and a pod whose shim predates the check is not checked; the text says
+// both. Such an older shim's branch is named for the pod rather than for the issue, so it can hold
+// another session's commits: the text tells the role to read such a branch's commits before it
+// takes any, and names the daemon's own commit there ("Edits left in the workspace",
+// internal/rescue), whose files say whose work it holds and whose author does not
+// (RescueBranchWarning, which the daemon's message after an older shim's rescue gives the issue
+// too).
 //
 // The text is built in pieces, and reasons and rescue each go in a piece of their own. A reason
 // is the JSON the daemon read of a pod (internal/runtime/sandbox's shapeValue), so a reason can
 // hold a quote character. A value put between two constant pieces that both hold that same quote
 // reads as the end of a quoted word of the text around it (CodeQL go/unsafe-quoting). The
-// sentence that holds reasons and the sentence that holds rescue have no quote character in
+// sentence that holds reasons and each sentence that holds rescue have no quote character in
 // them, and the sentences on each side of each are pieces of their own.
 //
 // Another agent reads it, so it follows ASD-STE100: one instruction per sentence, active voice,
@@ -318,30 +322,36 @@ These things go with the pod when the round ends:
 
 When the round ends, the daemon runs a push check on each workspace of the pod. The push check saves two things:
 
-- Each commit that the workspace holds and the remote does not have.
+- Each commit on the line of this issue that the remote does not have. This line is the working copy of the workspace and its ancestors, this issue's branch, and the git HEAD of the workspace.
 - One commit of the workspace's files as they are at that moment. This commit does not hold the files that .gitignore ignores.
 
-The push check pushes them to a rescue branch. `,
-			round, ends, ends, round, ends) +
-		fmt.Sprintf("The name of each rescue branch starts with %s.", rescue) +
-		` Then "-" and a number end the name. After the replacement, the daemon writes the name of each rescue branch on this issue.
+The push check does not save a commit that is not on the line of this issue. If you want to keep such a commit, push it in step 1.
 
-The daemon does not run the push check on a pod whose shim is older than the push check. On such a pod, work that you do not push is lost.
+`,
+			round, ends, ends, round, ends) +
+		fmt.Sprintf("The push check pushes the work that it saves to the branch %s.", rescue) +
+		` This branch only moves forward. It keeps the work of each earlier rescue of this issue. After the replacement, the daemon writes on this issue the name of each branch that holds rescued work.
+
+If the shim of the pod is older than this daemon, the push check pushes to branches of the pod. ` +
+		fmt.Sprintf("The name of each such branch is %s, a dash, the first 8 characters of the uid of the pod, a dash and a number.", rescue) +
+		` If the shim of the pod is older than the push check, the daemon does not run the push check. On such a pod, work that you do not push is lost.
 
 ` + RescueBranchWarning + `
 
 The daemon starts your process again on the new pod, in this same session. The daemon holds your next task until your process runs again. Do not start new work now.`
 }
 
-// RescueBranchWarning is the two paragraphs that tell a role how to read a rescue branch before
-// it takes a commit from it. A rescue branch is named for the pod rather than for a session, so it
-// can hold another session's commits, and one of its commits can be the push check's own. The
-// round's ask (UpdateTask) and the daemon's message after a rescue (internal/daemon's
-// rescueMessage) both end with it, so the two say the same thing. Another agent reads it, so it
-// follows ASD-STE100.
-const RescueBranchWarning = `A rescue branch has the name of the pod, not of a session. A rescue branch can hold commits of another session. Before you take a commit from a rescue branch, read each commit on it. Read the subject of each commit. For a commit that an agent made, read its Omp-Session trailer. The trailer names the session that made the commit.
+// RescueBranchWarning is the two paragraphs that tell a role how to read a rescue branch of an
+// older shim before it takes a commit from it. Such a shim predates the issue's one rescue branch
+// (internal/rescue's Target): it pushed every local branch, visible head, tag, stash entry and
+// other worktree of the pod that the remote lacked, to branches named for the pod, so such a
+// branch can hold another session's commits and another issue's, and one of its commits can be
+// the push check's own. The round's ask (UpdateTask) and the daemon's message after an older
+// shim's rescue (internal/daemon's rescueSummary) both give it, so the two say the same thing.
+// Another agent reads it, so it follows ASD-STE100.
+const RescueBranchWarning = `A rescue branch of an older shim has the name of the pod, not of the issue. Such a branch can hold commits of another session and of another issue. Before you take a commit from such a branch, read each commit on it. Read the subject of each commit. For a commit that an agent made, read its Omp-Session trailer. The trailer names the session that made the commit.
 
-One commit on a rescue branch can be the daemon's own commit. Its subject starts with "Edits left in the workspace". It has no Omp-Session trailer. Read its files to know whose work it holds. Its author does not tell you that.`
+One commit on such a branch can be the daemon's own commit. Its subject starts with "Edits left in the workspace". It has no Omp-Session trailer. Read its files to know whose work it holds. Its author does not tell you that.`
 
 // PodUpdateEnded is the update round over for this claim: every update_* field goes, the task the
 // round held back is released, and nothing is relaunched for it. A pod's round: the pod it was

@@ -16,10 +16,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
-// podUpdateRescue is the prefix of every rescue branch of the rig's pod, as the ask names it:
-// the issue's branch, "-rescue-" and the first 8 characters of the pod's uid (rescueBranch). It
-// is written out here, so an ask that names any other prefix fails the comparison of its text.
-const podUpdateRescue = "legion/LEGION-484-rescue-9d3f0c7a"
+// podUpdateRescue is the issue's one rescue branch, as the ask names it: the issue's branch and
+// "-rescue" (rescue.Target). It is written out here, so an ask that names any other branch fails
+// the comparison of its text.
+const podUpdateRescue = "legion/LEGION-484-rescue"
 
 // asks is every update-ask row the sweep enqueued, decoded, oldest first, each on the rig's issue.
 func (r *podUpdateRig) asks() []record.UpdateAsk {

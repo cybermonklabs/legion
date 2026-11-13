@@ -48,10 +48,9 @@ const (
 	testRound = PodRoundPrefix + testRoundPod
 	// testReasons is what the daemon found, as Claim.UpdateReasons holds it.
 	testReasons = "image"
-	// testRescue is the prefix of every rescue branch of testRoundPod's replacement, as the
-	// daemon's rescueBranch names it for an issue: the issue's branch, "-rescue-" and the first 8
-	// characters of the pod's uid.
-	testRescue = "legion/LEGION-7-rescue-9d3f0c7a"
+	// testRescue is the issue's one rescue branch, as internal/rescue's Target names it for an
+	// issue: the issue's branch and "-rescue".
+	testRescue = "legion/LEGION-7-rescue"
 )
 
 // updateHarness is a machine whose daemon speaks contract. The register() walk records that same
@@ -597,10 +596,11 @@ func TestPodUpdateARestartLeavesTheHeldTaskToNoTurnButItsOwn(t *testing.T) {
 // The ask says when the pod goes and what that costs. It keeps the round's id, the drift and the
 // push instruction, names the moment the round ends in RFC 3339 UTC, says that every answer
 // brings that moment forward and that no answer delays it, and names what goes with the pod
-// then. It says what the push check saves, the rescue branch it saves to by the prefix the daemon
-// gives the push check, and the pod whose shim cannot run the check. A role whose tool has no
-// ready_for_update is told to push, because the round ends at that moment whatever it does: the
-// end of its turn is no answer.
+// then. It says what the push check saves, which is the issue's own line and nothing else, the
+// issue's one rescue branch it saves to by the name the daemon gives the push check, the per-pod
+// branches of an older shim, and the pod whose shim cannot run the check. A role whose tool has
+// no ready_for_update is told to push, because the round ends at that moment whatever it does:
+// the end of its turn is no answer.
 func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 	endsAt := time.Date(2026, 11, 13, 14, 30, 0, 0, time.FixedZone("UTC+2", 2*60*60))
 	text := UpdateTask(testRound, `image "sha256:1"`, endsAt, testRescue)
@@ -620,34 +620,35 @@ func TestUpdateTaskNamesTheMomentThePodGoesAndWhatGoesWithIt(t *testing.T) {
 		"- The pod's test database.",
 		"- The pod's caches.",
 		"the daemon runs a push check on each workspace of the pod.",
-		"- Each commit that the workspace holds and the remote does not have.",
+		"- Each commit on the line of this issue that the remote does not have. This line is the working copy of the workspace and its ancestors, this issue's branch, and the git HEAD of the workspace.",
 		"- One commit of the workspace's files as they are at that moment. This commit does not hold the files that .gitignore ignores.",
-		"The push check pushes them to a rescue branch.",
-		"The name of each rescue branch starts with " + testRescue + ". Then \"-\" and a number end the name.",
-		"The daemon does not run the push check on a pod whose shim is older than the push check. On such a pod, work that you do not push is lost.",
+		"The push check does not save a commit that is not on the line of this issue. If you want to keep such a commit, push it in step 1.",
+		"The push check pushes the work that it saves to the branch " + testRescue + ". This branch only moves forward. It keeps the work of each earlier rescue of this issue.",
+		"If the shim of the pod is older than this daemon, the push check pushes to branches of the pod. The name of each such branch is " + testRescue + ", a dash, the first 8 characters of the uid of the pod, a dash and a number.",
+		"If the shim of the pod is older than the push check, the daemon does not run the push check. On such a pod, work that you do not push is lost.",
 		"The daemon holds your next task until your process runs again.",
 	} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the ask does not say %q:\n%s", want, text)
 		}
 	}
-	for _, gone := range []string{"reads the end of this turn as your answer", "WAITING"} {
+	for _, gone := range []string{"reads the end of this turn as your answer", "WAITING", "Each commit that the workspace holds and the remote does not have."} {
 		if strings.Contains(text, gone) {
-			t.Errorf("the ask still says %q, which no answer of this round rests on:\n%s", gone, text)
+			t.Errorf("the ask still says %q, which this round does not do:\n%s", gone, text)
 		}
 	}
 }
 
-// A rescue branch is named for the pod rather than for a session, so it can hold another
-// session's commits. The ask tells a role to read a branch's commits before it takes any, by
-// subject and Omp-Session trailer, and names the daemon's own commit, whose files are read
-// rather than its authorship.
-func TestUpdateTaskWarnsToReadARescueBranchsCommitsFirst(t *testing.T) {
+// A rescue branch of an older shim is named for the pod rather than for the issue, so it can hold
+// another session's commits and another issue's. The ask tells a role to read such a branch's
+// commits before it takes any, by subject and Omp-Session trailer, and names the daemon's own
+// commit, whose files are read rather than its authorship.
+func TestUpdateTaskWarnsToReadAnOlderShimsRescueBranchsCommitsFirst(t *testing.T) {
 	text := UpdateTask(testRound, testReasons, epoch, testRescue)
 	for _, want := range []string{
-		"A rescue branch has the name of the pod, not of a session.",
-		"A rescue branch can hold commits of another session.",
-		"Before you take a commit from a rescue branch, read each commit on it.",
+		"A rescue branch of an older shim has the name of the pod, not of the issue.",
+		"Such a branch can hold commits of another session and of another issue.",
+		"Before you take a commit from such a branch, read each commit on it.",
 		"Read the subject of each commit.",
 		"For a commit that an agent made, read its Omp-Session trailer.",
 		`Its subject starts with "Edits left in the workspace".`,

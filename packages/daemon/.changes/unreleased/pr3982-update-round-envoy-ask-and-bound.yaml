@@ -5,8 +5,12 @@ body: |-
   An update round of an issue pod no longer waits without end for its roles. The daemon publishes
   the round's ask once to each role's own Envoy topic, the architect's included, so a role reads it
   inside a running turn. A role is asked once its agent is ready: a queued, launching or suspended
-  claim is asked at the first sweep after its agent is ready. The ask names the prefix of the
-  rescue branches the push check pushes to. The round ends `pod_update_grace_minutes` after it
+  claim is asked at the first sweep after its agent is ready. The ask says that the push check
+  saves only the issue's own line and the workspace's files, and names the issue's rescue branch
+  `legion/<KEY>-rescue` that it pushes to. It names the per-pod branches that an older shim
+  pushes to as well, and tells the role to read each commit on such a branch before it takes
+  any, since such a branch can hold another issue's commits; the daemon's message after an older
+  shim's rescue says the same. The round ends `pod_update_grace_minutes` after it
   opened (30 by default), or earlier when every asked role has answered `ready_for_update` and no
   turn runs. An operator's suspension still holds the round past that bound. The push check still
   runs before every replacement, and a pod whose shim is older than the check is replaced

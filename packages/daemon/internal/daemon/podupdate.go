@@ -651,8 +651,8 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 			"issue", issue, "round", round, "pod", pod,
 			"answered", namesOf(ended.answered), "unanswered", namesOf(ended.unanswered), "working", ended.working)
 	}
-	if message := rescueMessage(round, checked); message != "" {
-		if err := s.writeOnIssue(ctx, issue, message); err != nil && ctx.Err() == nil {
+	if post := rescueMessage(issue, round, checked); post.Body != "" {
+		if err := s.writeOnIssue(ctx, issue, post); err != nil && ctx.Err() == nil {
 			s.log.Error("supervise: write on the issue what the push check before its pod's replacement found",
 				"issue", issue, "round", round, "rescued", checked.rescued(), "unchecked", checked.unchecked, "error", err)
 		}
@@ -839,39 +839,25 @@ type pushCheck struct {
 	unchecked  string
 }
 
-// rescued is every rescue branch the check reports, as `<branch>@<commit>`, each once: a branch an
-// earlier check of the same pod pushed is reported by every workspace whose remote holds it.
+// rescued is every rescue branch the check reports, as `<branch>@<commit> in <owner>/<repo>`, each
+// once for each repository (branches).
 func (p pushCheck) rescued() []string {
 	var named []string
 	for _, b := range p.branches() {
-		named = append(named, b.name+"@"+b.commit)
+		named = append(named, b.Name+"@"+b.Commit+" in "+b.repository)
 	}
 	return named
 }
 
-// rescuedBranch is one rescue branch of the check, and the workspace that first reports it.
-type rescuedBranch struct{ name, commit, dir string }
-
-// branches is every rescue branch the check reports, each once, in the order reported.
-func (p pushCheck) branches() []rescuedBranch {
-	var branches []rescuedBranch
-	seen := map[string]bool{}
-	for _, w := range p.workspaces {
-		for _, b := range w.Branches {
-			if !seen[b.Name] {
-				seen[b.Name] = true
-				branches = append(branches, rescuedBranch{name: b.Name, commit: b.Commit, dir: w.Dir})
-			}
-		}
-	}
-	return branches
-}
-
 // rescueBranch is the prefix of every rescue branch of a pod's replacement:
-// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which the check numbers from 1. It is no
-// issue's branch (claim.BranchIssue), so nothing the daemon keeps follows it.
+// `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which a shim that predates the issue's one
+// rescue branch (rescue.Target) numbers from 1. It is no issue's branch (claim.BranchIssue), so
+// nothing the daemon keeps follows it. The request names the issue's one branch in a field of its
+// own, beside this prefix rather than in its place: an older shim reports every remote branch that
+// starts with `<branch>-` as its own, so the one branch's name there would have it report every
+// earlier pod's rescue branches (shimwire.RescueUnpushed).
 func rescueBranch(issue, pod string) string {
-	return claim.IssueBranch(issue) + "-rescue-" + pod[:min(8, len(pod))]
+	return rescue.Target(issue) + "-" + pod[:min(8, len(pod))]
 }
 
 // checkUnpushed runs the push check of the round's pod (runtime.Runtime.RescueUnpushed) through a
@@ -898,7 +884,8 @@ func (s *supervision) checkUnpushed(ctx context.Context, issue, round, pod strin
 	if timeout <= 0 {
 		return fmt.Errorf("%w: the replacement has no time left to run it in", errPushCheckFailed)
 	}
-	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
+	request := runtime.RescueRequest{Branch: rescueBranch(issue, pod), Target: rescue.Target(issue),
+		WorkspaceTimeout: min(rescueWorkspaceTimeout, timeout), Timeout: timeout}
 	var refused []string
 	for _, c := range rescuers(group, round) {
 		report, err := s.runtime.RescueUnpushed(ctx, runtime.Known{Claim: c.Token, Locator: c.Locator}, request)
@@ -959,36 +946,6 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 		}
 	}
 	return append(implement, review...)
-}
-
-// rescueMessage is what the issue is told after its pod's replacement when the push check pushed
-// rescue branches or could not check the pod, and "" when it found nothing. The issue's branch
-// does not hold rescued work, and the next pod provisions from that branch, so somebody must bring
-// it in. A rescue branch is named for the pod rather than for a session (rescueBranch), so it can
-// hold another session's commits, and a role that takes such a branch whole can merge another
-// tree's work into its own pull request. The message therefore tells the reader to read each
-// commit before it takes any, and names the push check's own commit (internal/rescue's "Edits
-// left in the workspace"), which carries no session trailer: supervise.RescueBranchWarning, the
-// warning supervise.UpdateTask gives the ask too. Another agent reads it, so it follows
-// ASD-STE100.
-func rescueMessage(round string, checked pushCheck) string {
-	if checked.unchecked != "" {
-		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)
-	}
-	var lines []string
-	for _, b := range checked.branches() {
-		lines = append(lines, fmt.Sprintf("- `%s` (commit %s), from %s", b.name, b.commit, b.dir))
-	}
-	if len(lines) == 0 {
-		return ""
-	}
-	return fmt.Sprintf(`Before the daemon replaced the pod of this issue (update round %s), it found work in the pod's workspaces that the remote did not have. It pushed that work to these branches:
-
-%s
-
-The issue branch does not have this work, and the new pod starts from the issue branch. Take the commits that you need from each branch into the issue branch, or delete the branch if its work is not necessary.
-
-`, round, strings.Join(lines, "\n")) + supervise.RescueBranchWarning
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -1154,7 +1111,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 	reasons := roundReasons(group, round)
 	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
-	if err := s.writeOnIssue(ctx, issue, podWentMessage(round, reasons, lost)); err != nil {
+	if err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
 			"issue", issue, "round", round, "error", err)
 	}
@@ -1325,8 +1282,8 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 // The text is the round's own terms, as its claims recorded them: the reasons the round opened
 // with (roundReasons), never the drift this tick read, and the moment the round ends at the
 // latest, its recorded opening plus pod_update_grace_minutes (supervise.UpdateTask). It names
-// the prefix of the rescue branches the push check pushes to as well (rescueBranch), which is
-// the prefix the check is given. So every role of one round reads one text, and the record an
+// the issue's one rescue branch as well (rescue.Target), which is the branch the push check is
+// told to push to (checkUnpushed). So every role of one round reads one text, and the record an
 // operator reads names the same reasons (dispatch://INFRA-2981 R9).
 //
 // Every row of the round goes in one enqueue, so the round's asks land together or not at all
@@ -1387,7 +1344,7 @@ func (s *supervision) askRound(ctx context.Context, issue string, group []superv
 			"issue", issue, "round", round, "roles", namesOf(asking))
 		return
 	}
-	text := supervise.UpdateTask(round, roundReasons(group, round), *bound, rescueBranch(issue, pod))
+	text := supervise.UpdateTask(round, roundReasons(group, round), *bound, rescue.Target(issue))
 	rows := make([]record.OutboxPayload, len(asking))
 	for i, c := range asking {
 		rows[i] = record.UpdateAsk{Role: c.Role, Round: round, Pod: pod, Text: text}
@@ -1424,12 +1381,13 @@ func unaskedClaims(group []supervise.Claim, round string) []supervise.Claim {
 	return asking
 }
 
-// writeOnIssue posts one message on the issue, through the outbox's Dispatch message row.
-func (s *supervision) writeOnIssue(ctx context.Context, issue, body string) error {
+// writeOnIssue posts one message on the issue, with the document it links when it links one,
+// through the outbox's Dispatch message row.
+func (s *supervision) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) error {
 	if s.enqueue == nil {
 		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
 	}
-	return s.enqueue(ctx, issue, record.MessagePost{Body: body})
+	return s.enqueue(ctx, issue, post)
 }
 
 // endPodUpdates ends the round on every claim of the group that is in one. A round ends only

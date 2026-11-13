@@ -565,8 +565,9 @@ func TestPodUpdateSuspensionInTheLaunchTurnRefusesTheReplacement(t *testing.T) {
 }
 
 // At the bound, over a pod whose workspace holds a commit the remote lacks and whose claims never
-// answered: the push check runs before the replacement the bound makes, pushes the commit to a
-// rescue branch, and the issue is told the branch and its commit (R3).
+// answered: the push check runs before the replacement the bound makes, pushes the commit to the
+// issue's one rescue branch under the check's own rescue commit, and the issue is told the branch,
+// its tip and the commit (R3).
 func TestPodUpdateBoundRunsThePushCheckBeforeItReplacesThePod(t *testing.T) {
 	d := rescuetest.New(t, podUpdateIssue)
 	d.Write(d.Workspace, "feature.txt", "work nobody pushed before the bound\n")
@@ -594,12 +595,15 @@ func TestPodUpdateBoundRunsThePushCheckBeforeItReplacesThePod(t *testing.T) {
 	if check < 0 || check > replace {
 		t.Fatalf("the runtime's calls ran the push check at %d and the replacement at %d, want the check first: %+v", check, replace, rig.rt.Calls())
 	}
-	branch := podUpdateRescueBranch + "-1"
-	if held := d.RemoteBranch(branch); held != commit {
-		t.Fatalf("the remote holds %s at %q, want the commit the disk held %s", branch, held, commit)
+	held, rescued := rescuedOver(t, d)
+	if rescued != commit {
+		t.Fatalf("the remote holds %s at %q over %q, want a rescue commit over the commit the disk held %s", podUpdateRescueTarget, held, rescued, commit)
 	}
-	if messages := rig.messages(); len(messages) != 1 || !strings.Contains(messages[0], "`"+branch+"` (commit "+commit+")") {
-		t.Fatalf("the issue was told %q, want one message naming %s at %s", messages, branch, commit)
+	post := rig.rescuePost()
+	for _, want := range []string{"`" + podUpdateRescueTarget + "`", "`" + held + "`", "`" + commit + "`"} {
+		if !strings.Contains(post.Body, want) {
+			t.Errorf("the issue's message does not name %q:\n%s", want, post.Body)
+		}
 	}
 	if bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine); len(bounded) != 1 {
 		t.Fatalf("the bounded end was logged %d times, want once: %+v", len(bounded), bounded)

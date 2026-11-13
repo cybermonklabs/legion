@@ -103,14 +103,19 @@ on the pod, so the round does not wait for it. Its retry is the architect's or t
 for any failed role, and yours once the architect escalates the hold
 ([An escalated hold](#an-escalated-hold)). A retried claim is asked like any other.
 
-Before it replaces the pod, the daemon checks every workspace on the pod's disk for work the
-remote lacks, a failed claim's included, and pushes what it finds to a rescue branch of its own,
-`legion/<KEY>-rescue-<pod>-<n>`. When it pushed one, it writes the issue a message naming each
-rescue branch and its commit. The issue's roles read each commit on the rescue branch and take
-only the commits they need into the issue branch. That message asks nothing of you. A pod whose
-shim is older than the check is replaced unchecked, and the daemon writes that on the issue.
-Everything else of the pod's disk goes with the pod: the round's message tells each role to put
-any scratch evidence it still needs on Dispatch before it answers.
+Before it replaces the pod, the daemon checks every workspace on the pod's disk for the issue's
+own work the remote lacks, a failed claim's included, and pushes it to the issue's one rescue
+branch, `legion/<KEY>-rescue`, which only moves forward. When it found work the issue branch
+does not have, it writes the issue a message: a short summary of each branch and its commits,
+and a link to an artifact of the issue with the full list, for the issue's roles to merge into
+the issue branch. A pod of an older image pushes to branches of its own,
+`legion/<KEY>-rescue-<pod>-<n>`, which can hold commits of another session and of another
+issue. Its message says so in the same shape, and tells the issue's roles to read each commit
+on such a branch and take only the commits they need into the issue branch. That message asks
+nothing of you. A pod whose shim is older than the check is replaced unchecked, and the daemon
+writes that on the issue. Everything else of the pod's disk goes with the pod: the round's
+message tells each role to put any scratch evidence it still needs on Dispatch before it
+answers.
 One round wakes you once, however many sweeps find it open, so handle it when it arrives.
 Read `read_state` and the issue first, as for every wake: a round that finished since needs
 nothing.
