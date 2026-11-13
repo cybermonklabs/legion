@@ -571,6 +571,54 @@ func TestSearchKeepsAPostEditedAfterTheDateItNarrowsBy(t *testing.T) {
 	}
 }
 
+// A hit of a comment or a message its author edited carries the time of the edit, so the page
+// printing its snippet can say the post was corrected, and a hit of one never edited carries
+// none: on a request for keywords only and on one that asks for no such thing, each of which
+// runSearch answers through the one stamp of the page (stampSearchEdits).
+func TestSearchCarriesTheEditTimeOfAnEditedPost(t *testing.T) {
+	handler, database := newTestHandlerWithStore(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "SRCH", "Instrument survey", "")
+	editedComment := searchComment(t, handler, issue.Key, "alice", "A quadrant, to be reworded.")
+	keptComment := searchComment(t, handler, issue.Key, "alice", "An astrolabe nobody rewords.")
+	editedMessage := searchIssueMessage(t, handler, issue.Key, "alice", "A sextant, to be reworded.")
+	keptMessage := searchIssueMessage(t, handler, issue.Key, "alice", "An astrolabe message nobody rewords.")
+	requireEdit(t, "reword the comment", editCommentAs(t, handler, editedComment,
+		"The astrolabe of the comment, reworded.", nil, nil))
+	requireEdit(t, "reword the message", dispatchRequest(t, handler, http.MethodPatch,
+		"/api/v1/messages/"+editedMessage,
+		map[string]any{"body": "The astrolabe of the message, reworded."}, "alice"))
+	editedAt := func(table, id string) time.Time {
+		t.Helper()
+		var at time.Time
+		if err := database.Pool.QueryRow(ctx, `select edited_at from `+table+` where id = $1`, id).Scan(&at); err != nil {
+			t.Fatalf("read the edit of %s %s: %v", table, id, err)
+		}
+		return at
+	}
+	want := map[[2]string]*time.Time{
+		{"comment", editedComment}: new(editedAt("comments", editedComment)),
+		{"comment", keptComment}:   nil,
+		{"message", editedMessage}: new(editedAt("messages", editedMessage)),
+		{"message", keptMessage}:   nil,
+	}
+	for _, query := range []string{"q=astrolabe&keywords_only=true", "q=astrolabe"} {
+		page := searchResponse(t, handler, query)
+		for key, at := range want {
+			hit := searchResultOf(page, key[0], key[1])
+			if hit == nil {
+				t.Fatalf("%s: results = %#v, want the %s %s", query, page.Results, key[0], key[1])
+			}
+			switch {
+			case at == nil && hit.EditedAt != nil:
+				t.Fatalf("%s: the %s %s edited_at = %v on a post never edited", query, key[0], key[1], hit.EditedAt)
+			case at != nil && (hit.EditedAt == nil || !hit.EditedAt.Equal(*at)):
+				t.Fatalf("%s: the %s %s edited_at = %v, want the edit's time %v", query, key[0], key[1], hit.EditedAt, *at)
+			}
+		}
+	}
+}
+
 // A filter narrows every leg of the search, not the page it is cut to: bob's comment is the
 // weakest match of its kind, behind every one of the contracts.SearchKindDepth comments the kind
 // is read to, so a filter applied to the rows the search had already chosen could never reach it.

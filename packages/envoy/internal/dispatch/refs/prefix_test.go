@@ -6,9 +6,11 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -405,4 +407,65 @@ func TestResolvePrefixNamesADocument(t *testing.T) {
 		t.Fatalf("the document of CORE-1 = %#v, want %#v", got, want)
 	}
 	requireNoPrefixMatch(t, tx, "artifact", Scope{IssueKey: "CORE-2"}, "8a000000", Viewer{Human: true})
+}
+
+// markPrefixPost stamps a comment's or a message's row with an edit, at edited, and with a delete
+// by alice, at deleted, each where it is set, the delete clearing the body as the route does.
+func markPrefixPost(t *testing.T, tx pgx.Tx, table, id string, edited, deleted *time.Time) {
+	t.Helper()
+	if _, err := tx.Exec(context.Background(), `
+		update `+table+` set edited_at = $2,
+		       deleted_at = $3,
+		       deleted_by = case when $3::timestamptz is not null then '{"kind":"user","id":"alice"}'::jsonb end,
+		       body = case when $3::timestamptz is not null then '' else body end
+		where id = $1::uuid
+	`, id, edited, deleted); err != nil {
+		t.Fatalf("mark %s %s: %v", table, id, err)
+	}
+}
+
+// A candidate that is a comment or a message carries its post's marks as the post's own reads do:
+// the time an edit was made, and the mark of a delete beside the empty first line the cleared
+// body leaves, so the list a person chooses from says which match is corrected or withdrawn. A
+// post that stands unedited carries neither, in the one match and in a refusal's list alike.
+func TestResolvePrefixCarriesAPostsEditAndDeleteMarks(t *testing.T) {
+	tx := prefixFixture(t)
+	const edited = "7a110000-0000-4000-8000-000000000001"
+	const deleted = "7a110000-0000-4000-8000-000000000002"
+	const standing = "7b220000-0000-4000-8000-000000000003"
+	const message = "7c330000-0000-4000-8000-000000000004"
+	issueKey := "CORE-1"
+	insertPrefixComment(t, tx, edited, "CORE-1", "The first wording.")
+	insertPrefixComment(t, tx, deleted, "CORE-1", "Withdrawn later.")
+	insertPrefixComment(t, tx, standing, "CORE-1", "Never touched.")
+	insertPrefixMessage(t, tx, message, &issueKey, `{"kind":"user","id":"alice"}`, "Status?", nil, nil)
+	editedAt := time.Date(2026, 11, 1, 9, 30, 0, 0, time.UTC)
+	deletedAt := time.Date(2026, 11, 2, 10, 45, 0, 0, time.UTC)
+	markPrefixPost(t, tx, "comments", edited, &editedAt, nil)
+	markPrefixPost(t, tx, "comments", deleted, nil, &deletedAt)
+	markPrefixPost(t, tx, "messages", message, &editedAt, &deletedAt)
+
+	_, err := ResolvePrefix(context.Background(), tx, "comment", Scope{}, "7a110000", Viewer{Human: true})
+	var ambiguous *ErrPrefixAmbiguous
+	if !errors.As(err, &ambiguous) || len(ambiguous.Candidates) != 2 {
+		t.Fatalf("two comments under one prefix = %v, want both listed", err)
+	}
+	if got := ambiguous.Candidates[0]; got.ID != edited || got.FirstLine != "The first wording." ||
+		got.EditedAt == nil || !got.EditedAt.Equal(editedAt) || got.DeletedAt != nil || got.DeletedBy != nil {
+		t.Fatalf("the edited comment = %#v, want its first line and the edit at %s alone", got, editedAt)
+	}
+	byAlice := func(actor *model.Actor) bool { return actor != nil && actor.Kind == "user" && actor.ID == "alice" }
+	if got := ambiguous.Candidates[1]; got.ID != deleted || got.FirstLine != "" || got.EditedAt != nil ||
+		got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || !byAlice(got.DeletedBy) {
+		t.Fatalf("the deleted comment = %#v, want no first line and alice's delete at %s", got, deletedAt)
+	}
+
+	if got := resolvedPrefix(t, tx, "comment", Scope{}, "7b220000", Viewer{Human: true}); got.EditedAt != nil || got.DeletedAt != nil || got.DeletedBy != nil {
+		t.Fatalf("the standing comment = %#v, want no mark", got)
+	}
+	got := resolvedPrefix(t, tx, "message", Scope{}, "7c330000", Viewer{Human: true})
+	if got.ID != message || got.FirstLine != "" || got.EditedAt == nil || !got.EditedAt.Equal(editedAt) ||
+		got.DeletedAt == nil || !got.DeletedAt.Equal(deletedAt) || !byAlice(got.DeletedBy) {
+		t.Fatalf("the edited and deleted message = %#v, want both marks and no first line", got)
+	}
 }

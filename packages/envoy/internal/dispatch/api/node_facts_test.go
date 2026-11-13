@@ -583,6 +583,70 @@ func TestAChangeMovesOnlyTheChangedNode(t *testing.T) {
 	requireSameNode(t, "the block bob did not edit", readNode(t, handler, otherRef), other)
 }
 
+// A comment's and an issue message's node carry the time their author last edited them
+// (edited_at), and so does each node of their current blocks, so a reference to a corrected post
+// or to a block of one says it was edited, and so does the edge that names it where it cites
+// something: the citing node of a Referenced by list. A post never edited, and its blocks, carry
+// none.
+func TestAnEditedPostsNodeAndItsBlocksCarryTheEditTime(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, handler, "TEST", "Edited posts as nodes", "A spec")
+	cited := createReferenceAPIIssue(t, handler, "TEST")
+	issueRef, citedRef := "dispatch://"+issue.Key, "dispatch://"+cited.Key
+	body := "One.\n\nSee " + citedRef + "."
+	comment := createThreadComment(t, handler, issue.Key, map[string]any{"body": body}, "alice")
+	message := createIssueMessage(t, handler, issue.Key, map[string]any{"body": body}, "alice")
+	posts := []struct{ kind, id, table string }{
+		{"comment", comment.ID, "comments"}, {"message", message.ID, "messages"},
+	}
+	requireEdited := func(step string, node model.GraphNode, want *time.Time) {
+		t.Helper()
+		if !sameInstant(node.EditedAt, want) {
+			t.Fatalf("%s: %s %s edited_at = %v, want %v", step, node.Kind, node.ID, node.EditedAt, want)
+		}
+	}
+	// requirePost checks the post's own node, each of its current blocks' nodes and the edge at
+	// the issue it cites, each against want.
+	requirePost := func(step, kind, id string, want *time.Time) {
+		t.Helper()
+		requireEdited(step+": the post", readNode(t, handler, issueRef+"/"+kind+"/"+id), want)
+		response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/"+kind+"s/"+id+"/blocks", nil, "alice")
+		succeeded(t, step+": read the blocks", response)
+		blocks := decodeBody[model.ItemBlocks](t, response)
+		requireEdited(step+": the blocks read's item", blocks.Item, want)
+		if len(blocks.Blocks) != 2 {
+			t.Fatalf("%s: the %s's blocks = %#v, want its two", step, kind, blocks.Blocks)
+		}
+		for _, block := range blocks.Blocks {
+			requireEdited(step+": its block "+block.ID, readNode(t, handler, block.Ref), want)
+		}
+		var citing *model.GraphNode
+		for _, edge := range readGraph(t, handler, url.Values{"to": {citedRef}}).Edges {
+			if edge.Node.ID == id || edge.Node.Parent != nil && edge.Node.Parent.ID == id {
+				citing = &edge.Node
+			}
+		}
+		if citing == nil {
+			t.Fatalf("%s: no edge at %s names the %s %s", step, citedRef, kind, id)
+		}
+		requireEdited(step+": the node citing "+citedRef, *citing, want)
+	}
+	for _, post := range posts {
+		requirePost("as written", post.kind, post.id, nil)
+	}
+
+	editThreadComment(t, handler, comment.ID, "One, reworded.\n\nSee "+citedRef+".", "alice")
+	editIssueMessage(t, handler, message.ID, "One, reworded.\n\nSee "+citedRef+".", "alice")
+	for _, post := range posts {
+		var editedAt time.Time
+		if err := database.Pool.QueryRow(ctx, `select edited_at from `+post.table+` where id = $1`, post.id).Scan(&editedAt); err != nil {
+			t.Fatalf("read the edit of %s %s: %v", post.kind, post.id, err)
+		}
+		requirePost("after the edit", post.kind, post.id, &editedAt)
+	}
+}
+
 // R12: a block Dispatch first saw when it indexed its document, as the owed pass indexes a
 // document written before blocks shipped, has no maker on record: version 3, where it first
 // appears, need not be where it was made. Its last change is that version. A block a later

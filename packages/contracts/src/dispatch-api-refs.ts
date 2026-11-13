@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { ActorSchema } from "./dispatch-api-core";
 
 /**
  * The shapes several payload families share: what a write moved in the reference graph, whose
@@ -102,12 +103,17 @@ export const replyBlockFields = {
   block_id: z.string(),
   text: z.string(),
   removed: z.boolean(),
+  deleted_at: z.string().optional(),
+  deleted_by: ActorSchema.optional(),
 };
 
 /** The block a reply answers: its node id (`comment/<uuid>#b2`, or `ask/<uuid>#b2` for a part of
  *  the ask the reply names), its reference (absent for a block of a direct message, which has no
  *  address), its id, its text cut to 480 characters (the last text it held once removed), and
- *  whether its item's current revision no longer holds it. */
+ *  whether its item's current revision no longer holds it. `deleted_at` and `deleted_by` are the
+ *  mark of the quoted comment or message once its author deleted it: the block then reads removed
+ *  with no text, and the mark says the post itself is gone. Absent while the post stands, on a
+ *  part of an ask, and from a Dispatch older than the fields. */
 export const WrittenReplyBlockSchema = z.strictObject(replyBlockFields).readonly();
 
 /** The block a reply answers, as a comment or message event payload carries it (`ReplyBlock`).

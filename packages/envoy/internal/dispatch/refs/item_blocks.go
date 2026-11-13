@@ -54,6 +54,36 @@ func (kind ItemKind) tables() (itemTables, error) {
 // body an edit replaced is kept in post_body_history, which serves it to the history read.
 func (tables itemTables) revisions() bool { return tables.texts != "" }
 
+// postMarkColumns is the three columns of alias, a row of the kind's items table, that a read
+// carries beside a comment's or a message's text: edited_at, deleted_at and deleted_by, in that
+// order, which postMarks reads. An ask is no post a correction marks - no author deletes one, and
+// its own edit (asks.edited_at) is its question's, which its own reads carry - so for an ask
+// they are three nulls.
+func (kind ItemKind) postMarkColumns(alias string) string {
+	if kind == ItemAsk {
+		return `null::timestamptz, null::timestamptz, null::jsonb`
+	}
+	return alias + `.edited_at, ` + alias + `.deleted_at, ` + alias + `.deleted_by`
+}
+
+// postMarks is the three columns postMarkColumns selects as a read carries them: the time of the
+// last edit as it stands, and the delete mark as model.DeletedPostMark decodes it, the one
+// decoder of that mark.
+type postMarks struct {
+	editedAt, deletedAt *time.Time
+	deletedBy           []byte
+}
+
+// targets are the scan targets of postMarkColumns' three columns, in its order.
+func (marks *postMarks) targets() []any {
+	return []any{&marks.editedAt, &marks.deletedAt, &marks.deletedBy}
+}
+
+// deleted is the delete mark the columns hold, nil and nil for a post that stands.
+func (marks postMarks) deleted() (*time.Time, *model.Actor, error) {
+	return model.DeletedPostMark(marks.deletedAt, marks.deletedBy)
+}
+
 // ItemTable is where the items of this kind are stored: the table holding the items themselves
 // ("comments"), and the column naming one of them, which every table keyed by an item carries
 // ("comment_id"). It is the one map of a kind to its storage, which a caller outside this

@@ -1146,12 +1146,13 @@ func (s *server) search(w http.ResponseWriter, r *http.Request) {
 // keystroke is the cost it exists to avoid.
 //
 // The query as typed is what it runs, however many words that query holds: one statement, and
-// for every query matching anything the only statement a search runs, so the common path costs
-// what it cost before there was a fallback at all. A query that matches nothing - no row of any
-// kind, which is what the answer's own total says - is run a second time over its rarest words
-// (searchRarestWords, searchBroadenWords), and that second answer alone is stamped broadened.
-// The query's embedding is taken once and both runs share it, so a broadened search still costs
-// one model-service call.
+// for every query matching anything the only search statement a search runs, so the common path
+// costs what it cost before there was a fallback at all. A query that matches nothing - no row of
+// any kind, which is what the answer's own total says - is run a second time over its rarest
+// words (searchRarestWords, searchBroadenWords), and that second answer alone is stamped
+// broadened. The query's embedding is taken once and both runs share it, so a broadened search
+// still costs one model-service call. The page answered is then stamped with the edit times of
+// its comments and messages (stampSearchEdits), one read by id of the page's own posts.
 func (s *server) runSearch(ctx context.Context, parameters searchParameters) (model.SearchResponse, error) {
 	keys, err := s.searchOwnIssueKeys(ctx, parameters.text, parameters.numberScope())
 	if err != nil {
@@ -1183,27 +1184,81 @@ func (s *server) runSearch(ctx context.Context, parameters searchParameters) (mo
 	}
 	started := time.Now()
 	response, err := run(ctx, parameters)
-	if err != nil || response.Total > 0 {
-		return response, err
-	}
-	words, err := s.searchRarestWords(ctx, parameters)
 	if err != nil {
 		return model.SearchResponse{}, err
 	}
-	if len(words) == 0 {
-		return response, nil
+	if response.Total == 0 {
+		words, err := s.searchRarestWords(ctx, parameters)
+		if err != nil {
+			return model.SearchResponse{}, err
+		}
+		if len(words) > 0 {
+			parameters.broaden = words
+			parameters.excluded = parameters.queryReading().excludedWords()
+			if response, err = run(ctx, parameters); err != nil {
+				return model.SearchResponse{}, err
+			}
+			response.Query.Broadened = true
+			// What the caller waited for is all three reads: the query as typed, its words' df,
+			// and the fallback itself.
+			response.TookMS = time.Since(started).Milliseconds()
+		}
 	}
-	parameters.broaden = words
-	parameters.excluded = parameters.queryReading().excludedWords()
-	broadened, err := run(ctx, parameters)
-	if err != nil {
+	if err := s.stampSearchEdits(ctx, response.Results); err != nil {
 		return model.SearchResponse{}, err
 	}
-	broadened.Query.Broadened = true
-	// What the caller waited for is all three reads: the query as typed, its words' df, and the
-	// fallback itself.
-	broadened.TookMS = time.Since(started).Milliseconds()
-	return broadened, nil
+	return response, nil
+}
+
+// stampSearchEdits sets EditedAt on each comment and message hit of results whose author edited
+// it since it was written, so the page that prints a hit's snippet can say the post was edited.
+// It is one read by id of the page's own posts, made after the search statement rather than
+// inside it: the search and meaning statements end in one column shape that the oracles of their
+// arms compare row for row with earlier releases' (document_search_oracle_test.go), and the page
+// is at most searchMaxLimit rows. A page with no comment or message reads nothing. A deleted post
+// no longer matches a search, its body and its windows being gone, so a hit carries no delete
+// mark.
+func (s *server) stampSearchEdits(ctx context.Context, results []model.SearchResult) error {
+	var comments, messages []string
+	for _, result := range results {
+		switch result.Kind {
+		case "comment":
+			comments = append(comments, result.ID)
+		case "message":
+			messages = append(messages, result.ID)
+		}
+	}
+	if len(comments) == 0 && len(messages) == 0 {
+		return nil
+	}
+	rows, err := s.deps.Store.Pool.Query(ctx, `
+		select 'comment', c.id::text, c.edited_at from comments c
+		where c.id = any($1::uuid[]) and c.edited_at is not null
+		union all
+		select 'message', m.id::text, m.edited_at from messages m
+		where m.id = any($2::uuid[]) and m.edited_at is not null`, comments, messages)
+	if err != nil {
+		return fmt.Errorf("read the edit times of the search's posts: %w", err)
+	}
+	defer rows.Close()
+	edited := make(map[[2]string]time.Time)
+	for rows.Next() {
+		var kind, id string
+		var at time.Time
+		if err := rows.Scan(&kind, &id, &at); err != nil {
+			return fmt.Errorf("scan the edit time of a search's post: %w", err)
+		}
+		edited[[2]string{kind, id}] = at
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read the edit times of the search's posts: %w", err)
+	}
+	for index := range results {
+		if at, found := edited[[2]string{results[index].Kind, results[index].ID}]; found {
+			results[index].EditedAt = &at
+		}
+	}
+	return nil
 }
 
 // runKeywordOnlyDegraded runs the keyword-only fallback and stamps the response Degraded on

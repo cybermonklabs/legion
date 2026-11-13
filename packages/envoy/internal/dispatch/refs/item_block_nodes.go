@@ -51,7 +51,8 @@ type itemBlockNode struct {
 // changed by that one, and every other part of an ask by the ask's author. A block is made at the
 // time of the revision that first held it (null for one found at the first indexing of an item
 // edited before blocks were recorded) and changed at its changed revision's time. It belongs to
-// its item at that revision.
+// its item at that revision. A block of a comment carries its comment's EditedAt and delete mark
+// (ItemKind.postMarkColumns), as the comment's own node does; a part of an ask carries neither.
 //
 // Only a kind that records its revisions is read here: a message records none, since it keeps no
 // per-revision block text and has no document of its own, and its blocks are resolved by
@@ -70,7 +71,8 @@ func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string,
 	}
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_revision, b.changed_at, b.removed_at,
-		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`
+		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`,
+		       `+kind.postMarkColumns("t")+`
 		from `+tables.blocks+` b
 		join `+tables.items+` t on t.id = b.`+tables.item+`
 		left join issues i on i.key = t.issue_key
@@ -89,8 +91,9 @@ func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string,
 		var changedAt time.Time
 		var changedRevision int
 		var author []byte
-		if err := rows.Scan(&nodeID, &blockID, &block.excerpt, &madeAt, &changedRevision, &changedAt, &block.removedAt,
-			&itemID, &issueKey, &project, &slug, &author); err != nil {
+		var marks postMarks
+		if err := rows.Scan(append([]any{&nodeID, &blockID, &block.excerpt, &madeAt, &changedRevision, &changedAt, &block.removedAt,
+			&itemID, &issueKey, &project, &slug, &author}, marks.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan %s block node: %w", string(kind), err)
 		}
 		authors, err := storedActor(author)
@@ -111,6 +114,10 @@ func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string,
 			ChangedAt:      &changedAt,
 			Parent:         itemParent(string(kind), issueKey, project, slug, itemID),
 			ParentVersion:  &changedRevision,
+			EditedAt:       marks.editedAt,
+		}
+		if block.node.DeletedAt, block.node.DeletedBy, err = marks.deleted(); err != nil {
+			return nil, fmt.Errorf("block node %s: %w", nodeID, err)
 		}
 		blocks = append(blocks, block)
 	}
@@ -128,14 +135,15 @@ func itemBlockNodes(ctx context.Context, q Queryer, kind ItemKind, ids []string,
 // indexes it (`ReplaceCountedItemEdit`, run by `editMessage` at `edited_at`), so every block of
 // that first index is made at the edit, where a comment's are made at no time at all. A message
 // records no revisions, so a block has no changed revision; it belongs to its message, which has
-// no versions, and carries no Text (CurrentItemBlockText). A direct message has no address, so its
+// no versions, and carries no Text (CurrentItemBlockText). It carries its message's EditedAt and
+// delete mark, as the message's own node does. A direct message has no address, so its
 // blocks resolve to no node: no reference names one, and an edge at one is omitted as at any
 // node that does not exist;
 // GET /api/v1/messages/{id}/blocks reads them under the conversation's read rule.
 func loadMessageBlockNodes(ctx context.Context, q Queryer, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_at,
-		       m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author
+		       m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author, `+ItemMessage.postMarkColumns("m")+`
 		from message_blocks b
 		join messages m on m.id = b.message_id
 		left join issues i on i.key = m.issue_key
@@ -149,7 +157,8 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, kind string, _ bool, 
 		var issueKey *string
 		var author []byte
 		var madeAt, changedAt time.Time
-		if err := rows.Scan(&nodeID, &blockID, &excerpt, &madeAt, &changedAt, &messageID, &issueKey, &project, &author); err != nil {
+		var marks postMarks
+		if err := rows.Scan(append([]any{&nodeID, &blockID, &excerpt, &madeAt, &changedAt, &messageID, &issueKey, &project, &author}, marks.targets()...)...); err != nil {
 			return fmt.Errorf("scan message block node: %w", err)
 		}
 		authors, err := storedActor(author)
@@ -168,6 +177,10 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, kind string, _ bool, 
 			ChangedBy: authors,
 			ChangedAt: &changedAt,
 			Parent:    itemParent("message", issueKey, project, "", messageID),
+			EditedAt:  marks.editedAt,
+		}
+		if node.DeletedAt, node.DeletedBy, err = marks.deleted(); err != nil {
+			return fmt.Errorf("message block node %s: %w", nodeID, err)
 		}
 		nodes[[2]string{kind, nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
 	}

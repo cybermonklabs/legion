@@ -740,7 +740,7 @@ func loadCommentNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []st
 		if err := rows.Scan(append(targets, &version)...); err != nil {
 			return fmt.Errorf("scan comment node: %w", err)
 		}
-		node := model.GraphNode{Kind: "comment", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("comment", issueKey, project, slug, id)}
+		node := model.GraphNode{Kind: "comment", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("comment", issueKey, project, slug, id), EditedAt: editedAt}
 		if err := setMadeAndChanged(&node, author, createdAt, author, editedAt, storedActor); err != nil {
 			return err
 		}
@@ -790,7 +790,7 @@ func loadMessageNodes(ctx context.Context, q Queryer, _ string, _ bool, ids []st
 		if err := rows.Scan(&id, &issueKey, &project, &body, &author, &createdAt, &editedAt, &deletedAt, &deletedBy, &inReplyTo, &replyBlock); err != nil {
 			return fmt.Errorf("scan message node: %w", err)
 		}
-		node := model.GraphNode{Kind: "message", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("message", issueKey, project, "", id)}
+		node := model.GraphNode{Kind: "message", ID: id, IssueKey: issueKey, Project: project, Ref: itemRef("message", issueKey, project, "", id), EditedAt: editedAt}
 		if err := setMadeAndChanged(&node, author, createdAt, author, editedAt, storedActor); err != nil {
 			return err
 		}

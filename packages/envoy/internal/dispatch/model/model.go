@@ -230,12 +230,14 @@ func DecodeAnchor(data []byte, anchor *Anchor) error {
 
 // DeletedPostMark reads a post's deleted_at and deleted_by columns into the mark every read of
 // a deleted comment or message carries - the comment and message rows themselves, the event
-// log's payloads, the Inbox's reply rows, a session's answers, the body history and the
-// reference graph's comment and message nodes (refs/graph.go) - so that one decode stands
-// behind all of them and no read of a deleted post can answer a mark of another shape. Both are
-// nil for a post that stands, the time is answered in UTC as every other time a read answers is,
-// and an author that deleted the post is read as the actor it was stored as. A mark with no
-// actor stored (a row an older build wrote) is the time alone.
+// log's payloads, the Inbox's reply rows, a session's answers, the body history, the reference
+// graph's comment and message nodes and their blocks' nodes (refs/graph.go,
+// refs/item_block_nodes.go), the block a reply quotes (refs.ReplyBlocks) and an id prefix's
+// candidates (refs/prefix.go) - so that one decode stands behind all of them and no read of a
+// deleted post can answer a mark of another shape. Both are nil for a post that stands, the time
+// is answered in UTC as every other time a read answers is, and an author that deleted the post
+// is read as the actor it was stored as. A mark with no actor stored (a row an older build wrote)
+// is the time alone.
 func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
 	if at == nil {
 		return nil, nil, nil
@@ -614,6 +616,10 @@ type SearchResult struct {
 	SnippetTree DisplayTree `json:"snippet_tree,omitempty"`
 	Rank        float64     `json:"rank"`
 	Href        string      `json:"href"`
+	// EditedAt is the time a comment's or a message's author last edited it, absent on a hit of
+	// another kind and on a post never edited. A deleted post no longer matches a search, so a hit
+	// carries no delete mark.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
 	// Ask is set on ask hits and nil on every other kind; an ask removed between the search and
 	// the read of its state keeps it nil too.
 	Ask *SearchAsk `json:"ask,omitempty"`
@@ -1838,15 +1844,17 @@ type OpenAskDocument struct {
 	Name    string `json:"name"`
 }
 
-// MyAnswerReply is the reply carried by a row in a person's answer history. DeletedAt and
-// DeletedBy mark a reply its author deleted: Body is then empty, and the row says that the post
-// is deleted rather than showing an empty line.
+// MyAnswerReply is the reply carried by a row in a person's answer history. EditedAt is the time
+// its author last edited it, absent on a reply never edited. DeletedAt and DeletedBy mark a reply
+// its author deleted: Body is then empty, and the row says that the post is deleted rather than
+// showing an empty line.
 type MyAnswerReply struct {
 	ID   string `json:"id"`
 	Body string `json:"body"`
 	// BodyTree is the ProseMirror tree Body is shown as, present only for a caller that sent
 	// `Dispatch-Trees: 1`.
 	BodyTree  DisplayTree `json:"body_tree,omitempty"`
+	EditedAt  *time.Time  `json:"edited_at,omitempty"`
 	DeletedAt *time.Time  `json:"deleted_at,omitempty"`
 	DeletedBy *Actor      `json:"deleted_by,omitempty"`
 }
@@ -1917,6 +1925,9 @@ type MyReplyRow struct {
 	// Project is the thread owner's project key, absent on an Agent row, which has no owner.
 	Project *string `json:"project,omitempty"`
 	Subject string  `json:"subject"`
+	// EditedAt is the time the author of the thread's root post last edited it, absent on a root
+	// never edited. An ask's thread has no such root and never carries it.
+	EditedAt *time.Time `json:"edited_at,omitempty"`
 	// DeletedAt and DeletedBy mark a thread whose root post its author deleted: Subject is then
 	// empty, and the row says that the post is deleted rather than showing an empty line. An
 	// ask's thread has no such root and never carries them.
@@ -2387,12 +2398,19 @@ type Comment struct {
 // reference (none for a block of a direct message, which has no address), its id, its stored
 // excerpt (its text cut to refs.BlockExcerptRunes, the last text it held once removed), and
 // whether its item's current revision no longer holds it.
+//
+// DeletedAt and DeletedBy are the mark of the quoted post, a comment or a message its author
+// deleted: the delete clears every excerpt its blocks stored (refs.TombstoneItem), so the block
+// reads removed with no text, and the mark is what says the post itself is gone rather than the
+// one block. Nil while the post stands and on a part of an ask, which no delete marks.
 type ReplyBlock struct {
-	Node    string `json:"node"`
-	Ref     string `json:"ref,omitempty"`
-	BlockID string `json:"block_id"`
-	Text    string `json:"text"`
-	Removed bool   `json:"removed"`
+	Node      string     `json:"node"`
+	Ref       string     `json:"ref,omitempty"`
+	BlockID   string     `json:"block_id"`
+	Text      string     `json:"text"`
+	Removed   bool       `json:"removed"`
+	DeletedAt *time.Time `json:"deleted_at,omitempty"`
+	DeletedBy *Actor     `json:"deleted_by,omitempty"`
 }
 
 // ItemBlocks is the answer of GET /api/v1/comments/{id}/blocks and GET
@@ -2852,7 +2870,10 @@ type ArtifactReferences struct {
 // DeletedAt and DeletedBy mark a comment or a message its author deleted, as the reads of the
 // post itself carry them (Comment, Message): the body is cleared, so the node carries no text and
 // the edge naming it no excerpt at all, and the mark is what tells a reader why. Nil on a post
-// that stands and on every node of another kind, none of which a delete marks.
+// that stands and on every node of another kind, none of which a delete marks. EditedAt is the
+// time the author of a comment or a message last edited it, nil on a post never edited and on
+// every node of another kind. A block of a comment or a message carries its post's EditedAt and
+// mark too, so a block quoted from a corrected post says so.
 type GraphNode struct {
 	Kind           string      `json:"kind"`
 	ID             string      `json:"id"`
@@ -2866,6 +2887,7 @@ type GraphNode struct {
 	MadeAt         *time.Time  `json:"made_at"`
 	ChangedBy      []Actor     `json:"changed_by"`
 	ChangedAt      *time.Time  `json:"changed_at"`
+	EditedAt       *time.Time  `json:"edited_at,omitempty"`
 	DeletedAt      *time.Time  `json:"deleted_at,omitempty"`
 	DeletedBy      *Actor      `json:"deleted_by,omitempty"`
 	Parent         *NodeParent `json:"parent"`

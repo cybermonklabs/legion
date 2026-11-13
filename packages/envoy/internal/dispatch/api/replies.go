@@ -196,6 +196,7 @@ const myRepliesPageRest = `
 	       end,
 	       i.key, i.title, ar.project_key, ar.slug, ar.name,
 	       coalesce(a.question, root.body, mroot.body, ''),
+	       coalesce(root.edited_at, mroot.edited_at),
 	       coalesce(root.deleted_at, mroot.deleted_at), coalesce(root.deleted_by, mroot.deleted_by),
 	       p.last_reply_id::text, answered.id is not null,
 	       coalesce(rc.author, rm.author,
@@ -218,12 +219,12 @@ const myRepliesPageRest = `
 		offset 0
 	) a on true
 	left join lateral (
-		select root.body, root.anchor, root.deleted_at, root.deleted_by
+		select root.body, root.anchor, root.edited_at, root.deleted_at, root.deleted_by
 		from comments root where p.kind = 'comment' and root.id = p.thread_id
 		offset 0
 	) root on true
 	left join lateral (
-		select mroot.body, mroot.deleted_at, mroot.deleted_by
+		select mroot.body, mroot.edited_at, mroot.deleted_at, mroot.deleted_by
 		from messages mroot where p.kind = 'message' and mroot.id = p.thread_id
 		offset 0
 	) mroot on true
@@ -674,7 +675,7 @@ func (s *server) readMyReplyRows(
 		var issueKey, issueTitle, project, slug, name, replyID *string
 		var subject, body string
 		var author, anchor, subjectDeletedBy, replyDeletedBy []byte
-		var subjectDeletedAt, replyDeletedAt *time.Time
+		var subjectEditedAt, subjectDeletedAt, replyDeletedAt *time.Time
 		var isAnswer bool
 		var readThrough time.Time
 		var projectKey string
@@ -684,15 +685,17 @@ func (s *server) readMyReplyRows(
 		if err := rows.Scan(
 			&row.ThreadID, &row.Kind, &row.Ref,
 			&issueKey, &issueTitle, &project, &slug, &name,
-			&subject, &subjectDeletedAt, &subjectDeletedBy,
+			&subject, &subjectEditedAt, &subjectDeletedAt, &subjectDeletedBy,
 			&replyID, &isAnswer, &author, &body, &replyDeletedAt, &replyDeletedBy, &row.Reply.CreatedAt,
 			&row.Priority, &projectKey, &readThrough, &row.Unread, &row.UnreadCount, &anchor,
 			&row.DismissedAt, &version,
 		); err != nil {
 			return nil, fmt.Errorf("scan my reply: %w", err)
 		}
-		// The thread's root post and the reply the row shows each carry the mark of a delete, so
-		// a row whose text a delete cleared says that the post is deleted and not an empty line.
+		// The thread's root post carries the time its author last edited it, and the root and the
+		// reply the row shows each carry the mark of a delete, so a row whose text a delete cleared
+		// says that the post is deleted and not an empty line.
+		row.EditedAt = subjectEditedAt
 		var err error
 		if row.DeletedAt, row.DeletedBy, err = model.DeletedPostMark(subjectDeletedAt, subjectDeletedBy); err != nil {
 			return nil, err

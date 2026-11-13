@@ -19480,6 +19480,10 @@
           "document": {
             "type": "string"
           },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "id": {
             "type": "string"
           },
@@ -19596,6 +19600,10 @@
             "$ref": "#/components/schemas/Actor"
           },
           "document": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
             "type": "string"
           },
           "id": {
@@ -22644,6 +22652,10 @@
           "deleted_by": {
             "$ref": "#/components/schemas/Actor"
           },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
+          },
           "id": {
             "type": "string"
           }
@@ -22843,6 +22855,10 @@
           },
           "document": {
             "$ref": "#/components/schemas/OpenAskDocument"
+          },
+          "edited_at": {
+            "format": "date-time",
+            "type": "string"
           },
           "issue": {
             "$ref": "#/components/schemas/OpenAskIssue"
@@ -24067,6 +24083,13 @@
           "block_id": {
             "type": "string"
           },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
+          },
           "node": {
             "type": "string"
           },
@@ -24092,6 +24115,13 @@
         "properties": {
           "block_id": {
             "type": "string"
+          },
+          "deleted_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "deleted_by": {
+            "$ref": "#/components/schemas/Actor"
           },
           "node": {
             "type": "string"
@@ -24665,6 +24695,10 @@
             "$ref": "#/components/schemas/SearchAsk"
           },
           "block_id": {
+            "type": "string"
+          },
+          "edited_at": {
+            "format": "date-time",
             "type": "string"
           },
           "href": {
