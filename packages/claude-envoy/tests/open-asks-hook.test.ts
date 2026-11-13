@@ -918,14 +918,17 @@ test("keeps the session's own export when a later run of the same id has no jj t
     await rm(scratch, { recursive: true, force: true })
   }
   // A hang guard, not a bound on the work: the only thing that reaches this limit is a hook that
-  // waits for a jj that never answers, which costs the full 300 s above. The row itself costs
-  // 3.5 s idle (3.55 / 3.58 / 3.62 s min / median / max over 5 runs) and 75.7 s at its worst
-  // over 20 runs on this 2-CPU host carrying 160 busy loops, 80 per CPU (20.9 / 41.8 / 75.7 s);
-  // a second 20 runs under that same load cost 82.3 s of wall at their worst, file load included.
-  // Six times the row's own worst, 75.7 s, would be 454 s, which does not fit: 180 s is the
-  // ceiling, the value the row above carries, and the gap is that this limit is a little over
-  // twice the worst load has cost, not six times. It still sits well inside the `claude-envoy`
-  // job's `timeout-minutes: 10`, so a hang reddens with this test named instead of cancelling
-  // the job, and is written here rather than left to the package's `bun test --timeout=60000`,
-  // so a run of this file without that flag gets the same guard.
+  // waits for a jj that never answers, which costs the full 300 s above. The row's own cost,
+  // read from bun's junit reporter on this two-CPU pod: 3.5 s idle (3.55 / 3.58 / 3.62 s
+  // min / median / max over 5 runs), and 11195.06 / 26057.49 / 38409.39 ms over 20 runs under
+  // 80 busy loops, 40 per CPU, this row's acceptance rung, so this 180_000 is 4.7 times that
+  // worst. The rung is 80 and not the 160 the row above takes: there the same 20 runs cost
+  // 15480.51 to 147320.91 ms under a 600_000 provisional, 20 of 20 green, so the row is correct
+  // at that load and merely slow, and 180_000 is 1.2 times that worst — at that load it failed
+  // a correct run twice in 20 at the limit itself, charged 180003.42 ms and 180001.83 ms, and
+  // twice more on the hook's own 3 s `JJ_BASE_CHAIN_TIMEOUT_MS`, which left the env file without
+  // its `export JJ_CONFIG=` line, a production budget no per-test limit guards. It sits well
+  // inside the `claude-envoy` job's `timeout-minutes: 10`, so a hang reddens with this test
+  // named instead of cancelling the job, and is written here rather than left to the package's
+  // `bun test --timeout=60000`, so a run of this file without that flag gets the same guard.
 }, 180_000)

@@ -375,12 +375,16 @@ describe("userConfigChain", () => {
   }, 60_000);
   // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
   // are external OS state, which Bun's fake timers cannot advance. The helper's own 30 s is a
-  // hang guard and no bound on the work: what it waits for costs 14 ms unloaded and up to 3.1 s
-  // at 240 busy loops on this two-CPU pod (the wrapper writing its pid; a reaped child answers
-  // at once), so 30 s is about ten times the loaded worst. It sits inside each row's own 60 s
-  // limit on purpose, so that the row's `finally` runs and kills the fake jj's `sleep 300`
-  // rather than leaving it for five minutes: a `killGroup` that misses the child, or a pidfile
-  // that is never written, ends the row here, named, with nothing left behind. The old 3 s
+  // hang guard and no bound on the work: what it waits for costs 14 ms unloaded, and at the rung
+  // the rows that call it declare — 96 busy loops, 48 per CPU — the whole of such a row costs
+  // 10285.47 / 10724.39 / 12515.71 ms (min/median/max over 20 runs on this two-CPU pod), of
+  // which this wait is a part, so 30 s is above twice the whole row. It sits inside each row's
+  // own 60 s limit on purpose, so that the row's `finally` runs and kills the fake jj's
+  // `sleep 300` rather than leaving it for five minutes: a `killGroup` that misses the child, or
+  // a pidfile that is never written, ends the row here, named, with nothing left behind. At 240
+  // busy loops it is the wrong size, which is why those rows' rung is 96: the wrapper's fork
+  // alone took 33478 ms there and this guard fired on a correct run, and under a 240_000
+  // provisional the same 20 runs were 20 of 20, charged 10317.06 to 43011.52 ms. The old 3 s
   // deadlines were removed because they sat below the file's 5 s per-test limit and two of them
   // ran in series in one row.
   const POLL_GUARD_MS = 30_000;
@@ -475,7 +479,13 @@ describe("userConfigChain", () => {
       }
     }
     // A hang guard, not a measurement: an unbounded wait on the wrapper, a pidfile that is never
-    // written, or a forked child the kill misses each hangs the row rather than passing it.
+    // written, or a forked child the kill misses each hangs the row rather than passing it. Its
+    // own cost, read from bun's junit reporter on this two-CPU pod: 10285.47 / 10724.39 /
+    // 12515.71 ms (min/median/max over 20 runs under 96 busy loops, 48 per CPU, this row's
+    // acceptance rung), so this 60_000 is 4.8 times that worst. The rung is 96 and not the 240
+    // the file's lighter rows take: there the same 20 runs cost 10317.06 to 43011.52 ms under a
+    // 300_000 provisional, 20 of 20 green, so the row is correct at that load and merely slow,
+    // and this 60_000 is 1.4 times that worst, which is no margin at all.
   }, 60_000);
 
   it("kills a wrapper's detached child after jj returns a config path", async () => {
