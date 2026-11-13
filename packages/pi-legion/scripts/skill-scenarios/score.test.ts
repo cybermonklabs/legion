@@ -3222,6 +3222,21 @@ test("a tool call reading the other label's checkout is a rig error wherever the
   );
 });
 
+// Catches the head arm passing on knowledge of its fixture: the label rule above refuses a read
+// of the other label's checkout only, and the rig runs from the head checkout, so a head run
+// reading the stand-in or its own world.json went scored. Measured on 2026-11-12 in
+// red-at-the-head-g-head-2, which did both before its record and its re-run and scored a pass.
+test("a run that reads the rig or its own record of the world is a rig error, whatever its label", () => {
+  expect(out).toContain(
+    `red-at-the-head-a-head-91\trig error: a read call reads the rig itself: ${path.join(import.meta.dir, "gh-standin.ts")}`
+  );
+  expect(out).toContain(
+    "red-at-the-head-a-head-92\trig error: a bash call reads its run's record of the world: world.json"
+  );
+  // The run's own working copy is its own: scored as the whole rule followed.
+  expect(rowOf("red-at-the-head-a-head-93").split("\n")[0]).toContain("pass=true");
+});
+
 test("a skill file outside the label's own is a rig error when read, and a flag when only named", () => {
   // Named in a check's pasted spec, and in a heredoc plan: scored, and flagged where it sits.
   expect(scoresOf("spec-writing-head-105")).toEqual(allPass);
@@ -4292,6 +4307,33 @@ function redRun(name: string, files: Record<string, string> = {}, transcript?: o
 // The rule followed whole, in world `a`: the record first, one re-run, the subscription, the
 // accepted completion, and the occurrence told.
 redRun("red-at-the-head-a-head-1");
+// The same run three more times, each reaching for the fixture before it acts: a `read` of the
+// stand-in answering its world, a `cd` into its own run directory and a relative `cat` of the
+// world.json there, and, as the boundary, a `cat` of a file in its own working copy.
+redRun("red-at-the-head-a-head-91", {}, [
+  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(
+    0,
+    header.length + 1
+  ),
+  toolCall("call-f1", "read", { path: path.join(import.meta.dir, "gh-standin.ts") }),
+  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(header.length + 1),
+]);
+redRun("red-at-the-head-a-head-92", {}, [
+  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(
+    0,
+    header.length + 1
+  ),
+  bash(`cd ${path.join(runs, "red-at-the-head-a-head-92")} && cat world.json`, "call-f2"),
+  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(header.length + 1),
+]);
+redRun("red-at-the-head-a-head-93", {}, [
+  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(
+    0,
+    header.length + 1
+  ),
+  bash(`cat ${path.join(runs, "red-at-the-head-a-head-93", "cwd", "greet.ts")}`, "call-f3"),
+  ...redTurn(redComplete("pass", "The re-run of test (notify) passed.")).slice(header.length + 1),
+]);
 // The label is read past the world, and this run read the worker skill but not the page the rule
 // is on: `ref` is false.
 redRun("red-at-the-head-a-base-1", {}, [

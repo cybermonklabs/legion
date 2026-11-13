@@ -3507,6 +3507,30 @@ function median(values: number[]): number {
     : ((sorted[middle - 1] ?? 0) + (sorted[middle] ?? 0)) / 2;
 }
 
+/** The rig's own directory, where the stand-ins, the seed, this scorer and rig.sh live. */
+const RIG_DIR = path.join(RIG_ROOT, "packages/pi-legion/scripts/skill-scenarios");
+/** The directories of a run that are the agent's own (rig.sh's base_env and worker_fixture): its
+ * working copies, the bare remote it pushes to, its HOME, its TMPDIR, its transcripts and the
+ * state its pane's prompt parts are staged in. Every other path under the run directory is the
+ * rig's record of the world, which a run may not read and still be scored. */
+const RUN_DIRS_THE_AGENT_OWNS = [
+  "cwd",
+  "ws",
+  "src",
+  "remote.git",
+  "home",
+  "tmp",
+  "sessions",
+  "state",
+];
+/** The files that hold the rig's record of a run's world, read by name: a `cd` into the run
+ * directory and a relative `cat world.json` names no absolute path at all. */
+const RECORD_FILES: Record<string, true> = Object.fromEntries(
+  "world.json world.txt fixture.json fixtures.json calls.jsonl handoffs.json implement.json daemon.log"
+    .split(" ")
+    .map((file) => [file, true])
+);
+
 /** Why the rig cannot score a run, or undefined when it can:
  *   - it did not have a Dispatch of its own: it records none (`dispatch` undefined: no
  *     dispatch.json) and is no spec run (BATCH_DISPATCH), or another run names the same database
@@ -3525,7 +3549,13 @@ function median(values: number[]): number {
  *     of such an absolute path, a command of READERS in a `bash` call or an eval cell that names
  *     one (here-document bodies left out), or a file an eval cell opens in its own language
  *     (OPENED). An agent reads the whole filesystem, and `legion` on its PATH resolves into the
- *     checkout rig.sh runs from.
+ *     checkout rig.sh runs from;
+ *   - it learned the fixture: a read, in that same sense, of the rig's own directory (RIG_DIR: the
+ *     stand-ins, the seed, this scorer, rig.sh), whatever the run's label; of a path under its
+ *     run directory outside the ones the agent owns (RUN_DIRS_THE_AGENT_OWNS), which hold the rig's
+ *     record of the world, the wrappers under bin/ among them; or of one of the record's files by
+ *     a relative name (RECORD_FILES), as a `cd` into the run directory and a `cat world.json` do.
+ *     The label rule above cannot see this for the head arm, whose checkout the rig runs from.
  * A run whose tool calls only name such a file or checkout (in a check's pasted spec, a plan, a
  * command's text) is scored, and flagged (skillReaches), as is one that names a path outside its
  * sandbox (outsideReaches). A record missing or malformed is a rig error too, thrown by the
@@ -3554,16 +3584,24 @@ function unscored(
   const entries = session(runDir);
   if (!entries.some((entry) => entry.message?.role === "assistant"))
     return "the agent got no model turn: no transcript, or one with no assistant message";
+  const own = path.posix.normalize(runDir);
   for (const call of calls) {
     const named: string[] = [];
+    // A record file a READERS command names by a relative path, as `cd <run dir> && cat
+    // world.json` does: no absolute path carries it, so its name is what gives it away.
+    const relative: string[] = [];
     if (call.tool === "read") named.push(strings(field(call.args, "path")).join(""));
     if (call.tool === "bash" || call.tool === "eval") {
       const source = strings(call.tool === "bash" ? field(call.args, "command") : call.args).join(
         "\n"
       );
       for (const hit of withoutBodies(source).code.matchAll(SHELL_COMMAND))
-        if (READERS[hit[1] ?? ""] === true)
+        if (READERS[hit[1] ?? ""] === true) {
           named.push(...[...(hit[2] ?? "").matchAll(ABSOLUTE_PATH)].map(([found]) => found));
+          relative.push(
+            ...(hit[2] ?? "").split(/\s+/).filter((word) => RECORD_FILES[word.replace(/^\.\//, "")])
+          );
+        }
       if (call.tool === "eval")
         named.push(...[...source.matchAll(OPENED)].map((hit) => hit[2] ?? ""));
     }
@@ -3573,9 +3611,22 @@ function unscored(
       for (const [other, checkout] of labels)
         if (other !== label && (read === checkout || read.startsWith(`${checkout}/`)))
           return `a ${call.tool} call reads ${other}'s checkout: ${read}`;
+      // The rig and the record of the run's own world, whatever the label: a run that reads the
+      // stand-in answering it, the seed, this scorer or its own world.json could pass on what it
+      // learned of the fixture rather than on the page. The label rule above cannot see it for
+      // the head arm, whose checkout the rig runs from. Measured on 2026-11-12:
+      // red-at-the-head-g-head-2 read its world.json, fixture.json, fixtures.json and the
+      // stand-in's source before its record and its re-run, and scored a pass.
+      if (read === RIG_DIR || read.startsWith(`${RIG_DIR}/`))
+        return `a ${call.tool} call reads the rig itself: ${read}`;
+      const inRun = read.startsWith(`${own}/`) ? read.slice(own.length + 1) : undefined;
+      if (inRun !== undefined && !RUN_DIRS_THE_AGENT_OWNS.includes(inRun.split("/")[0] ?? ""))
+        return `a ${call.tool} call reads its run's record of the world: ${read}`;
       if (new RegExp(SKILL_NAMED.source).test(read) && !allowed.some((dir) => read.startsWith(dir)))
         return `a ${call.tool} call reads a skill outside ${label}'s own: ${read}`;
     }
+    if (relative.length > 0)
+      return `a ${call.tool} call reads its run's record of the world: ${relative.join(", ")}`;
   }
   return undefined;
 }
