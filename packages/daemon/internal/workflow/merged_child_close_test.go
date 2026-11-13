@@ -31,7 +31,7 @@ func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 	seedSlot(t, pool, record.Slot{Issue: root, Index: 0})
 	rootKey, childKey := root, child
 	seedIssue(t, pool, record.Issue{Key: child, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
-		Tree: root, Parent: &rootKey, Project: "LEGION", Title: "child", Phase: phase.AwaitingMerge, Generation: 3,
+		Tree: root, Parent: &rootKey, Project: "LEGION", Title: "child", Phase: phase.Merging, Generation: 3,
 		Status: "retro", Rank: "V1", LastDispatchSeq: 1})
 	seedIssue(t, pool, record.Issue{Key: grandchild, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
 		Tree: root, Parent: &childKey, Project: "LEGION", Title: "grandchild", Phase: phase.Implementing, Generation: 3,
@@ -41,8 +41,8 @@ func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 
 	apply := applyFacts(t, pool, engine)
 	apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge"})
-	if at := issueAt(t, pool, child); at != phase.AwaitingMerge {
-		t.Fatalf("%s stands at %s after its merge, want awaiting_merge while %s is still in the workflow", child, at, grandchild)
+	if at := issueAt(t, pool, child); at != phase.Merging {
+		t.Fatalf("%s stands at %s after its merge, want merging while %s is still in the workflow", child, at, grandchild)
 	}
 
 	// The grandchild leaves, as a person's move of it to done does.
@@ -52,6 +52,6 @@ func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 		t.Fatalf("%s stands at %s, want done: the fixture's own premise", grandchild, at)
 	}
 	if at := issueAt(t, pool, child); at != phase.Done {
-		t.Fatalf("%s stands at %s after the last issue beneath it left, want done: a merged issue closes when the last issue beneath it leaves, and while it stands in awaiting_merge its root can be neither accepted nor closed", child, at)
+		t.Fatalf("%s stands at %s after the last issue beneath it left, want done: a merged issue closes when the last issue beneath it leaves, and while it stands in merging its root can be neither accepted nor closed", child, at)
 	}
 }
