@@ -6,6 +6,8 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/capabilities"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/config"
+	"github.com/sjawhar/legion/daemon/internal/memorygroup"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
@@ -460,11 +462,13 @@ var gatedStepStatuses = valuesFrom(gatedStepsContract,
 
 // memoryGroups is every group a tree's memory draw can give it, and memoryDrawModes every mode
 // it can be drawn under. Both are recorded at memoryContract, the contract the draw arrived at.
-var memoryGroups = valuesFrom(memoryContract, "memory", "none")
-var memoryDrawModes = valuesFrom(memoryContract, "off", "on", "random")
+var memoryGroups = valuesFrom(memoryContract, memorygroup.GroupMemory, memorygroup.GroupNone)
+var memoryDrawModes = valuesFrom(memoryContract, config.MemoryOff, config.MemoryOn, config.MemoryRandom)
 
 // controllerRuntimes is every runtime the registered controller's locator names. The field is
-// older than the floor and the list has not moved since.
+// older than the floor and the list has not moved since. It stays a literal: the runtime
+// package's constants name a locator's backend (`tmux`, `sandbox`), and this field's second
+// word is `kubernetes`, which no constant spells with this meaning.
 var controllerRuntimes = valuesFrom(ServingFloor, "tmux", "kubernetes")
 
 // capabilityStatuses is every status one row of the deployment's capability report can be in,
@@ -479,5 +483,6 @@ var capabilityStatuses = valuesFrom(ServingFloor,
 var capabilitySources = valuesFrom(ServingFloor, capabilities.SourceConfiguration, capabilities.SourceBoot)
 
 // cacheStates is every state a repository cache under the Kubernetes runtime can be in. The
-// field is older than the floor (version.go's 32) and the list has not moved since.
+// field is older than the floor (version.go's 32) and the list has not moved since. It stays a
+// literal: the words are spelled only by unexported constants of the sandbox runtime package.
 var cacheStates = valuesFrom(ServingFloor, "starting", "cloning", "ready", "failing", "refused")
