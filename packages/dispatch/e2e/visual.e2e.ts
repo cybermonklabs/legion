@@ -57,8 +57,9 @@
  *    scrolled to, so a scroll position is in no baseline either, and a change below the fold is
  *    reviewed like one above it. Each project pins its viewport, so the width and every layout
  *    breakpoint are fixed and only the page's own height follows its content.
- *  - Lazy chunks, a pending query, a document still connecting, a reference still resolving. One
- *    wait covers them all: `waitForRouteSettled` (e2e/review-routes.ts), which the accessibility
+ *  - Lazy chunks, a pending query, a document still connecting, a reference still resolving, and
+ *    the rail's Inbox number while a read mark the page wrote is still reaching it. One wait
+ *    covers them all: `waitForRouteSettled` (e2e/review-routes.ts), which the accessibility
  *    layer calls too, so no baseline is of a skeleton, of a route whose chunk is still coming or
  *    of a page that is still filling itself in.
  */
