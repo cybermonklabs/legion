@@ -425,7 +425,7 @@ func (u goingUndoer) send(ctx context.Context, index int, route string, values m
 		}
 		spec = encoded
 	}
-	request, err := spec.build(u.landings.on(ctx, index, method, path), "")
+	request, err := spec.build(u.landings.on(ctx, index, spec), "")
 	if err != nil {
 		return goingFailed(err)
 	}
@@ -437,7 +437,7 @@ func (u goingUndoer) send(ctx context.Context, index int, route string, values m
 	answer, _ := io.ReadAll(response.Body)
 	landed := response.StatusCode < http.StatusMultipleChoices
 	if !landed && u.landings != nil {
-		if landed, err = u.landings.landed(ctx, index, method, path); err != nil {
+		if landed, err = u.landings.landed(ctx, index, spec); err != nil {
 			slog.Error("dispatch: read whether a going undo's request landed", "error", err)
 			return goingWriteOutcome{Status: http.StatusInternalServerError, Code: codeGoingLandingUnread, Message: "internal server error"}
 		}

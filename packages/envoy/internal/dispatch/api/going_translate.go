@@ -17,6 +17,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -38,13 +40,23 @@ import (
 
 // goingCallInput is one call as its row's translation reads it: the arguments the action's
 // schema accepted, the value of each placeholder of the row's path as chooseGoingRoute filled
-// it, the session the caller acts as ("" for none), and whether the call resumes a write after
-// requests an earlier attempt of it landed (GoingCaller.resumes).
+// it, the session the caller acts as ("" for none), and resumed (GoingCaller.resumeAfter), which
+// says what of the requests the call would send first an earlier write of the invocation landed,
+// those the call resumes after: a translation's own refusal words what was not sent by it.
 type goingCallInput struct {
 	arguments map[string]any
 	path      map[string]string
 	session   string
-	resumes   bool
+	resumed   func(specs []goingSend) []goingWriteRequest
+}
+
+// resumes is what of specs, the requests the call sends first, an earlier write of its invocation
+// landed, which the call resumes after; none for a call that resumes after nothing.
+func (c goingCallInput) resumes(specs ...goingSend) []goingWriteRequest {
+	if c.resumed == nil {
+		return nil
+	}
+	return c.resumed(specs)
 }
 
 // goingTranslator is one row's translation: what the row's route takes of a call, read against
@@ -70,13 +82,28 @@ type goingUpload struct {
 	content     []byte
 }
 
-// goingSend is one request a call sends, whole.
+// goingSend is one request a call sends, whole. stable is what its digest is taken of where the
+// body itself differs between two sends of the same request - a multipart upload, whose boundary
+// is drawn at random - nil where the body is its own (digest).
 type goingSend struct {
 	method      string
 	path        string
 	query       url.Values
 	contentType string
 	body        []byte
+	stable      []byte
+}
+
+// digest is the hex SHA-256 of what the request sends, which a landing records
+// (goingWriteRequest.BodySHA256) so a later attempt resumes only after the very request it sends:
+// a close's reason of other words is another request.
+func (s goingSend) digest() string {
+	content := s.body
+	if s.stable != nil {
+		content = s.stable
+	}
+	sum := sha256.Sum256(content)
+	return hex.EncodeToString(sum[:])
 }
 
 // goingUntranslatable is a call a row's route cannot be sent, named by why: GoingCaller answers
@@ -251,7 +278,17 @@ func (c goingCall) requests(route GoingRoute) ([]goingSend, error) {
 		if err != nil {
 			return nil, err
 		}
-		own.body, own.contentType = body, contentType
+		// Its fields, file name, type and bytes, which every encoding of it carries alike.
+		stable, err := json.Marshal(struct {
+			Fields      map[string]string `json:"fields"`
+			Filename    string            `json:"filename"`
+			ContentType string            `json:"content_type"`
+			Content     []byte            `json:"content"`
+		}{c.form.fields, c.form.filename, c.form.contentType, c.form.content})
+		if err != nil {
+			return nil, err
+		}
+		own.body, own.contentType, own.stable = body, contentType, stable
 	case c.body != nil:
 		encoded, err := json.Marshal(c.body)
 		if err != nil {
@@ -381,8 +418,9 @@ func goingTranslateClaim(_ context.Context, _ goingReader, call goingCallInput) 
 // and a `reason`, which the schema takes only beside a close, is posted on the issue as a message
 // before the close, as `dispatch issue-update --reason` posts it (updateIssueInput has no reason
 // field). An issue already closed is refused before its reason is posted, so no reason lands as
-// a stray message; a write that resumes after its reason landed is refused for the close alone,
-// and the refusal names the reason that stands (goingRefusal.after).
+// a stray message; a write that resumes after its own reason, landed by an earlier write of the
+// invocation (goingCallInput.resumes), is refused for the close alone, and the refusal names the
+// reason that stands (goingRefusal.after).
 func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call goingCallInput) (goingCall, error) {
 	arguments, key := call.arguments, call.path["key"]
 	body := goingPick(arguments, "status", "title", "labels", "priority", "assignee", "route", "blocked_by", "components")
@@ -417,12 +455,19 @@ func goingTranslateIssueUpdate(ctx context.Context, read goingReader, call going
 		return goingCall{}, err
 	}
 	if reasoned && issue.ClosedAt != nil {
-		unsent := "the reason was not posted and the close was not sent"
-		if call.resumes {
-			unsent = "the close was not sent"
+		refusal := goingRefusal{Status: http.StatusConflict, Code: "ISSUE_CLOSED",
+			Message: fmt.Sprintf("%s closed at %s, so the reason was not posted and the close was not sent", key, *issue.ClosedAt)}
+		message, err := goingJSONRequest(http.MethodPost, goingIssuePath(key, "messages"), map[string]any{"body": reason})
+		if err != nil {
+			return goingCall{}, err
 		}
-		return goingCall{}, goingRefusal{Status: http.StatusConflict, Code: "ISSUE_CLOSED",
-			Message: fmt.Sprintf("%s closed at %s, so %s", key, *issue.ClosedAt, unsent)}
+		if landed := call.resumes(message); len(landed) > 0 {
+			// The call resumes after its own reason: what stands is named, and only the close
+			// was not sent.
+			refusal.Message = fmt.Sprintf("%s closed at %s, so the close was not sent", key, *issue.ClosedAt)
+			refusal = refusal.after(landed)
+		}
+		return goingCall{}, refusal
 	}
 	if linking && len(links) > 0 {
 		merged := slices.Clone(issue.ExternalLinks)

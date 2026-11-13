@@ -690,3 +690,168 @@ func TestGoingWritePressedBackToItsFirstArgumentsResumesAfterWhatTheyLanded(t *t
 		})
 	}
 }
+
+// goingReasonsOn is how many messages of issue say body.
+func (rig goingWritesRig) goingReasonsOn(t *testing.T, issue string, body any) int {
+	t.Helper()
+	var count int
+	if err := rig.database.Pool.QueryRow(context.Background(),
+		`select count(*) from messages where issue_key = $1 and body = $2`, issue, body).Scan(&count); err != nil {
+		t.Fatalf("count %s's messages saying %v: %v", issue, body, err)
+	}
+	return count
+}
+
+// TestGoingWriteTakenOverWithOtherArgumentsKeepsTheDeadWritesRecord (review round 8, finding 1;
+// check c21): a write whose process ended is taken over by a press whose arguments name another
+// issue. The taken-over write's landings are never rewritten: it is recorded as it stands, naming
+// what it landed. Where all of it landed, it went through: the press is answered that write's line
+// and sends nothing for B, and, the value it left never read, the turn's undo leaves A as it is,
+// as for every write taken over after all of it landed. Where only A's reason landed, it is
+// recorded refused naming the reason, the press runs as a write of its own, and a later press back
+// to A resumes after A's reason and posts it once.
+func TestGoingWriteTakenOverWithOtherArgumentsKeepsTheDeadWritesRecord(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		t.Run(row.action+" every request landed", func(t *testing.T) {
+			a, b := rig.issue(t, "Closed as the process ended"), rig.issue(t, "Pressed after")
+			argumentsA, firstA, ownA := row.on(t, rig, a)
+			argumentsB, _, _ := row.on(t, rig, b)
+			run := rig.proposed(t, "alice", false, row.action, argumentsA)
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			rig.served.inProcess = goingDiesAfter(inner, ownA)
+			rig.dieWriting(t, run, press)
+			rig.served.inProcess = inner
+			rig.ageGoingWrites(t, run)
+			press["arguments"] = argumentsB
+			line := goingLineOf(t, rig.write(t, "alice", run, press))
+			if line.Item != a || rig.issueRead(t, b).Status == "done" {
+				t.Fatalf("the press on %s answered %+v and left %s %s, want the line of the write that closed %s and %s left open",
+					b, line, b, rig.issueRead(t, b).Status, a, b)
+			}
+			recorded := rig.requestsRecorded(t, run)
+			if len(recorded) != 1 || recorded[0].Pending || !recorded[0].Outcome.OK || len(recorded[0].Requests) != 2 ||
+				recorded[0].Requests[0].Method+" "+recorded[0].Requests[0].Path != firstA || recorded[0].Requests[1].Method+" "+recorded[0].Requests[1].Path != ownA {
+				t.Fatalf("the run keeps %+v, want the one write, through, naming %s and %s", recorded, firstA, ownA)
+			}
+			undone := oneLine(t, rig.undo(t, "alice", run, nil), false)
+			if undone.Outcome.Code != codeGoingUndoAfterUnread || rig.issueRead(t, a).Status != "done" {
+				t.Fatalf("the turn's undo answered %+v and left %s %s, want %s and %s done", undone.Outcome, a, rig.issueRead(t, a).Status, codeGoingUndoAfterUnread, a)
+			}
+		})
+		t.Run(row.action+" its reason landed", func(t *testing.T) {
+			a, b := rig.issue(t, "Reasoned as the process ended"), rig.issue(t, "Refused after")
+			argumentsA, firstA, ownA := row.on(t, rig, a)
+			argumentsB, firstB, _ := row.on(t, rig, b)
+			run := rig.proposed(t, "alice", false, row.action, argumentsA)
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			rig.served.inProcess = goingDiesAfter(inner, firstA)
+			rig.dieWriting(t, run, press)
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method+" "+r.URL.Path == firstB {
+					writeError(w, codeScopeRequired, http.StatusForbidden, "B's reason was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			rig.ageGoingWrites(t, run)
+			press["arguments"] = argumentsB
+			if refused := rig.write(t, "alice", run, press); refused.Code != http.StatusForbidden {
+				t.Fatalf("the press on %s answered %d %s, want its reason's 403", b, refused.Code, refused.Body.String())
+			}
+			recorded := rig.requestsRecorded(t, run)
+			if len(recorded) != 2 || recorded[0].Pending || recorded[0].Outcome.OK || len(recorded[0].Requests) != 1 ||
+				recorded[0].Requests[0].Method+" "+recorded[0].Requests[0].Path != firstA || !recorded[0].Requests[0].Outcome.OK ||
+				recorded[1].Outcome.OK || len(recorded[1].Requests) == 0 || recorded[1].Requests[0].Method+" "+recorded[1].Requests[0].Path != firstB {
+				t.Fatalf("the run keeps %+v, want the taken-over write refused naming %s, which landed, and a write of its own for %s", recorded, firstA, b)
+			}
+			rig.served.inProcess = inner
+			press["arguments"] = argumentsA
+			line := goingLineOf(t, rig.write(t, "alice", run, press))
+			if !line.Outcome.OK || rig.goingReasonsOn(t, a, argumentsA["reason"]) != 1 || rig.issueRead(t, a).Status != "done" {
+				t.Fatalf("the press back on %s answered %+v with %d reasons on it and %s %s, want %s resumed after its one reason and done",
+					a, line.Outcome, rig.goingReasonsOn(t, a, argumentsA["reason"]), a, rig.issueRead(t, a).Status, ownA)
+			}
+		})
+	}
+}
+
+// TestGoingWriteRefusedOnAnotherIssueSaysNothingOfItWasSent (review round 8, finding 2): A's
+// reason landed and its close was refused 503; a press with arguments for B, which someone closed,
+// is refused before anything of it is sent, and says that neither B's reason nor its close was
+// sent, and names nothing of A's as its own.
+func TestGoingWriteRefusedOnAnotherIssueSaysNothingOfItWasSent(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		t.Run(row.action, func(t *testing.T) {
+			a, b := rig.issue(t, "Half closed"), rig.issue(t, "Closed by bob")
+			argumentsA, firstA, ownA := row.on(t, rig, a)
+			argumentsB, _, _ := row.on(t, rig, b)
+			run := rig.proposed(t, "alice", false, row.action, argumentsA)
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method+" "+r.URL.Path == ownA {
+					writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "A's close was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			rig.write(t, "alice", run, press)
+			rig.fixture(t, "bob", http.MethodPatch, "/api/v1/issues/"+b, map[string]any{"status": "done"})
+			press["arguments"] = argumentsB
+			refused := rig.write(t, "alice", run, press)
+			refusal := goingRefusalSeenOf(t, refused)
+			_, pathA, _ := strings.Cut(firstA, " ")
+			if refused.Code != http.StatusConflict || !strings.Contains(refusal.Error, "the reason was not posted") || strings.Contains(refusal.Error, pathA) {
+				t.Fatalf("the press on %s answered %d %+v, want it refused saying its reason was not posted, naming nothing of %s", b, refused.Code, refusal, a)
+			}
+		})
+	}
+}
+
+// TestGoingWriteWithAnotherReasonPostsItsOwn (review round 8, finding 3): A's reason landed and its
+// close was refused 503; a press that changes only the reason resumes after nothing, since a
+// landing counts only for the request of its own body: it posts its own reason and closes, and the
+// first reason stays posted, named on the first write's record.
+func TestGoingWriteWithAnotherReasonPostsItsOwn(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	rows := goingSeveralRequestRows(t, rig)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	for _, row := range rows {
+		t.Run(row.action, func(t *testing.T) {
+			a := rig.issue(t, "Reasoned twice")
+			argumentsA, firstA, ownA := row.on(t, rig, a)
+			run := rig.proposed(t, "alice", false, row.action, argumentsA)
+			refusedA := false
+			rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method+" "+r.URL.Path == ownA && !refusedA {
+					refusedA = true
+					writeError(w, "SERVICE_UNAVAILABLE", http.StatusServiceUnavailable, "A's close was refused")
+					return
+				}
+				inner.ServeHTTP(w, r)
+			})
+			press := map[string]any{"offer": row.action, "invocation": 0, "approved": goingApprovedPerson}
+			rig.write(t, "alice", run, press)
+			other := maps.Clone(argumentsA)
+			other["reason"] = "Shipped in the release after all."
+			press["arguments"] = other
+			line := goingLineOf(t, rig.write(t, "alice", run, press))
+			if !line.Outcome.OK || rig.goingReasonsOn(t, a, other["reason"]) != 1 || rig.goingReasonsOn(t, a, argumentsA["reason"]) != 1 || rig.issueRead(t, a).Status != "done" {
+				t.Fatalf("the press with another reason answered %+v with %d of its reasons and %d of the first on %s, want each once and %s done",
+					line.Outcome, rig.goingReasonsOn(t, a, other["reason"]), rig.goingReasonsOn(t, a, argumentsA["reason"]), a, a)
+			}
+			if recorded := rig.requestsRecorded(t, run); len(recorded) != 2 || len(recorded[0].Requests) == 0 ||
+				recorded[0].Requests[0].Method+" "+recorded[0].Requests[0].Path != firstA || !recorded[0].Requests[0].Outcome.OK {
+				t.Fatalf("the run keeps %+v, want the first write naming its reason landed", recorded)
+			}
+		})
+	}
+}

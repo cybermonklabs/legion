@@ -664,9 +664,10 @@ type GoingCaller struct {
 	// another server's table (goingLandings); with it, a write has landed when its route's
 	// transaction committed, whatever its answer said (send).
 	landings *goingLandings
-	// resumes is a call that resumes a write after requests an earlier attempt of it landed,
-	// which a translation's own refusal words for what of the write already stands.
-	resumes bool
+	// resumeAfter says what of a call's first requests an earlier write of the invocation
+	// landed (goingResumeAfter), which a translation's own refusal words for what of the write
+	// already stands (goingCallInput.resumes); nil for none.
+	resumeAfter func(specs []goingSend) []goingWriteRequest
 }
 
 // GoingUnknownActionError is the refusal of an action the catalogue does not hold. It is the
@@ -728,7 +729,7 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 	if !chosen {
 		return goingPrepared{}, GoingArgumentError{Action: action, Reason: goingNoRouteReason(entry)}
 	}
-	call, err := route.translate(ctx, c.reader(), goingCallInput{arguments: arguments, path: values, session: c.Session, resumes: c.resumes})
+	call, err := route.translate(ctx, c.reader(), goingCallInput{arguments: arguments, path: values, session: c.Session, resumed: c.resumeAfter})
 	if err != nil {
 		var untranslatable goingUntranslatable
 		if errors.As(err, &untranslatable) {
@@ -745,11 +746,12 @@ func (c GoingCaller) prepare(ctx context.Context, action string, arguments map[s
 // answered below 300, or, for a call to the server's own table, where its route's transaction
 // committed, as the record it wrote in that transaction says (goingLandings.landed), whatever its
 // answer's status. landed is the requests an earlier write of the same invocation already landed
-// (claimGoingWrite): each the call still starts with, by method and path, is not sent again and
-// stands in the record as it was, and the call resumes at the first after them. A call every one
-// of whose requests landed before sends nothing and answers no response. A request that could not
-// be built or sent ends the call with its error and the requests before it, and one whose landing
-// could not be read back with goingLandingUnread.
+// that the call starts with (goingResumeAfter): each the call still starts with, by method, path
+// and body (goingSameSend), is not sent again and stands in the record as it was, and the call
+// resumes at the first after them. A call every one of whose requests landed before sends nothing
+// and answers no response. A request that could not be built or sent ends the call with its error
+// and the requests before it, and one whose landing could not be read back with
+// goingLandingUnread.
 func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []goingWriteRequest) (*http.Response, []goingWriteRequest, error) {
 	requests, err := prepared.call.requests(prepared.route)
 	if err != nil {
@@ -758,21 +760,12 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 	sent := make([]goingWriteRequest, 0, len(requests))
 	resuming := true
 	for index, spec := range requests {
-		stillResuming := resuming && index < len(landed) && landed[index].Method == spec.method && landed[index].Path == spec.path
-		if stillResuming {
+		resuming = resuming && index < len(landed) && goingSameSend(landed[index], spec)
+		if resuming {
 			sent = append(sent, landed[index])
 			continue
 		}
-		if resuming && index < len(landed) && c.landings != nil {
-			// The call stops resuming here, sending another request than the earlier attempt
-			// sent at this index (its arguments changed): none of that attempt's landings from
-			// here on is this call's, so the claim drops them before anything is sent.
-			if err := c.landings.from(ctx, index); err != nil {
-				return nil, sent, fmt.Errorf("drop the landings of an earlier attempt of %s: %w", prepared.action, err)
-			}
-		}
-		resuming = false
-		request, err := spec.build(c.landings.on(ctx, index, spec.method, spec.path), c.BaseURL)
+		request, err := spec.build(c.landings.on(ctx, index, spec), c.BaseURL)
 		if err != nil {
 			return nil, sent, err
 		}
@@ -780,10 +773,10 @@ func (c GoingCaller) send(ctx context.Context, prepared goingPrepared, landed []
 		if err != nil {
 			return nil, sent, err
 		}
-		record := goingWriteRequest{Method: spec.method, Path: spec.path,
+		record := goingWriteRequest{Method: spec.method, Path: spec.path, BodySHA256: spec.digest(),
 			Outcome: goingWriteOutcome{OK: response.StatusCode < http.StatusMultipleChoices, Status: response.StatusCode}}
 		if !record.Outcome.OK && c.landings != nil {
-			if record.Outcome.OK, err = c.landings.landed(ctx, index, spec.method, spec.path); err != nil {
+			if record.Outcome.OK, err = c.landings.landed(ctx, index, spec); err != nil {
 				_ = response.Body.Close()
 				return nil, append(sent, record), err
 			}

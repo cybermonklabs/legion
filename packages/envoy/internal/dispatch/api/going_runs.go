@@ -96,10 +96,13 @@ type goingRunWrite struct {
 	// Requests is how each request the write sent went, in the order sent: a reasoned close's
 	// reason, then the row's own request. One that landed stands whether the requests after it
 	// went through or were refused, so a refused close still names the reason it left posted,
-	// and the next write of the invocation, under whatever key, resumes after it
-	// (goingLandedBefore). A write refused before it sent anything has none, but those an
-	// earlier write of the invocation landed.
+	// and the next write of the invocation, under whatever key, resumes after it where it sends
+	// that very request (goingResumeAfter). A write refused before it sent anything has none.
 	Requests []goingWriteRequest `json:"requests,omitempty"`
+	// Sends is how many requests the write's call sends, recorded on its claim before any is sent
+	// (goingLandings.plan), so a write taken over after its process ended tells whether every
+	// request of it landed; 0 for a write whose call was never planned.
+	Sends int `json:"sends,omitempty"`
 	// Delivery is the last delivery of the message a send to an agent wrote, absent for every
 	// other write and for a message that has none: the route answers a send 201 even where its
 	// delivery failed, so this is what tells a failed send.
@@ -118,13 +121,24 @@ type goingRunWrite struct {
 	Unchanged bool `json:"unchanged,omitempty"`
 }
 
-// goingWriteRequest is one request a write sent, by method and path, how it went, and the id of
-// the item it made where it made one (goingMadeID).
+// goingWriteRequest is one request a write sent, by method, path and the hex SHA-256 of its body
+// (goingSend.digest), how it went, and the id of the item it made where it made one
+// (goingMadeID). A request is the same request as another only where all three match
+// (goingSameSend); one recorded before the body's digest was, with none, is matched by its method
+// and path alone.
 type goingWriteRequest struct {
-	Method  string            `json:"method"`
-	Path    string            `json:"path"`
-	Outcome goingWriteOutcome `json:"outcome"`
-	Made    string            `json:"made,omitempty"`
+	Method     string            `json:"method"`
+	Path       string            `json:"path"`
+	BodySHA256 string            `json:"body_sha256,omitempty"`
+	Outcome    goingWriteOutcome `json:"outcome"`
+	Made       string            `json:"made,omitempty"`
+}
+
+// goingSameSend reports whether the recorded request is the request spec sends: the same method
+// and path, and the same body where the record names its body's digest.
+func goingSameSend(recorded goingWriteRequest, spec goingSend) bool {
+	return recorded.Method == spec.method && recorded.Path == spec.path &&
+		(recorded.BodySHA256 == "" || recorded.BodySHA256 == spec.digest())
 }
 
 // goingDelivery is one delivery of a message as a send to an agent records it: its state
