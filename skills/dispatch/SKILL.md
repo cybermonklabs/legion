@@ -5,6 +5,8 @@ description: "Use before your first dispatch command in a session: a message, co
 
 # Dispatch
 
+Dispatch is a record for the people who decide, never a log of your work.
+
 - Use the `dispatch` command; the HTTP API only for what no command does. `dispatch <command> --help` gives its rules and an example.
 - Put long text on stdin: `--<field>-file -` with a quoted here-document (`<<'EOF'`); give object and list fields as JSON.
 - Exit 1 is a refusal, 2 a usage error. A refusal lists every problem: fix all, call once.
@@ -28,7 +30,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - A decision block in a comment, message or close reason is refused: ask in the issue's document, or `dispatch ask`.
 - Never repeat an open ask in a message.
 - Change an open ask's block with `dispatch edit-ask` (its ask id), or `doc-edit`'s `replace` or `move` (its block id). An answered ask is fixed: ask anew. `dispatch read --ref` takes either id.
-- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` needs it. An approval request a newer version moved needs `request-approval` again.
+- Reply on an open ask with `dispatch comment --reply-to-ask`; `--turn agent` (a progress note) needs it. An approval request a newer version moved needs `request-approval` again.
 - When an answer's option and text disagree, the text wins.
 
 ## Choosing what to work on
@@ -37,7 +39,7 @@ The question and the recommendation (`skill://dispatch-writing-specs`).
 - `todo` means specced and waiting on nothing; one that waits goes in `backlog`, saying on what.
 - Hold at most three issues in flight; move the rest to `backlog`, saying where each is.
 - Never reorder the board: one agent keeps each project's order (`issue-update --before`/`--after`). If the top looks wrong, tell `notifications.role.legion-<project>-controller`.
-- Name each priority an issue advances (`--advance <id>` from `dispatch priorities`, listing work that advances no priority).
+- Name an issue's priority: `--advance <id>`; `dispatch priorities` lists what advances no priority.
 
 ## Issue status is yours to move
 

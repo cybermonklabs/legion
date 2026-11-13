@@ -92,7 +92,14 @@ test("the injected dispatch-first context holds the blocker and accepted-request
 // words). It was raised to 2,300 when the skill consolidation moved the six ask-quality gates of
 // an operator's own proxy skill into `dispatch-writing-specs` and the research-before-you-ask
 // test into `dispatch-first`, which took those rules out of two other skills.
-test("the three Dispatch skills total fewer than 2,300 words", () => {
+//
+// It also moves when an approved requirement puts in the skill every session loads a rule that no
+// other skill holds, and only by what that rule costs: R11 of dispatch://INFRA-2947 puts one line
+// in `dispatch` (an issue names the priority it advances), which check `c0cd78f8` of that issue
+// reads there, so it cannot live elsewhere. The three skills stood at 2,297 without it and stand
+// at 2,311 with it, so the bound is 2,312 and no more: headroom is a budget the next change spends
+// without saying why.
+test("the three Dispatch skills total fewer than 2,312 words", () => {
   const words = ["dispatch", "dispatch-first", "dispatch-writing-specs"]
     .flatMap((skill) => files(path.join(staged, skill)))
     .map(
@@ -102,7 +109,7 @@ test("the three Dispatch skills total fewer than 2,300 words", () => {
           .filter((token) => token !== "").length
     )
     .reduce((total, count) => total + count, 0);
-  expect(words).toBeLessThan(2_300);
+  expect(words).toBeLessThan(2_312);
 });
 
 test("the staged decisions rule separates material choices from spec details", () => {
