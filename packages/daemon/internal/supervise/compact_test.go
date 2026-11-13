@@ -157,17 +157,20 @@ func TestAClaimBeingCompactedIsBusyUntilTheCompactionEnds(t *testing.T) {
 	}
 }
 
-// waitForCompacting waits until the machine reports the claim being compacted.
+// waitForCompacting waits until the machine reports the claim being compacted and the compaction
+// has reached the connection held: the machine reports the claim compacting as it takes it,
+// before it asks Oh My Pi (Machine.Compact), so a test that moves the claim at that report alone
+// can move it before the ask and read the answer of a compaction that never began.
 func waitForCompacting(t *testing.T, h *harness) {
 	t.Helper()
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if c := h.m.View().Claim; c.Compacting && c.State == StateWorking {
+		if c := h.m.View().Claim; c.Compacting && c.State == StateWorking && h.conn.CompactsHeld() > 0 {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatal("the claim never reported itself being compacted")
+	t.Fatal("the claim never reported itself being compacted with the compaction held at its connection")
 }
 
 // A turn that ends while the session is being compacted leaves the claim exactly where it is: a

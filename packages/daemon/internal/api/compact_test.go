@@ -252,18 +252,26 @@ func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused
 }
 
 // waitForCompacting waits until the machine reports the claim being compacted, which is what
-// makes it busy for every other request.
+// makes it busy for every other request, and the compaction has reached the claim's connection
+// held: the machine reports the claim compacting as it takes it, before it asks Oh My Pi, so a
+// test that loses the process at that report alone can lose it before the ask and read the
+// answer of a compaction that never began.
 func waitForCompacting(t *testing.T, h *harness, token claim.Token) {
 	t.Helper()
 	m, _ := h.supervisor.Machine(token)
+	registered, _ := h.conns.Conn(token)
+	conn, ok := registered.(*fake.Conn)
+	if !ok {
+		t.Fatalf("%s has no fake connection to hold a compaction at", token)
+	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if c := m.View().Claim; c.Compacting && c.State == supervise.StateWorking {
+		if c := m.View().Claim; c.Compacting && c.State == supervise.StateWorking && conn.CompactsHeld() > 0 {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("%s never reported itself being compacted", token)
+	t.Fatalf("%s never reported itself being compacted with the compaction held at its connection", token)
 }
 
 // A second compaction of a claim already being compacted is refused, and the refusal says what
