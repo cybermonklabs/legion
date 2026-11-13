@@ -22,14 +22,22 @@ import { asUser } from "./users";
  * (`web/src/features/refs/PostBody.tsx`).
  *
  * Three rows over the four pages chk-pages names: the issue's Conversation and the margin of
- * its spec in one row, which read one deleted comment two ways; the Inbox thread of a reply to
- * such a comment; and a session's own conversation page. Each row seeds through the API and
- * then reads the page, because the mark is the server's record drawn by the component rather
- * than anything the browser can make on its own. Every other surface that prints a body is
- * covered by a test of its component in `web/src`, which CI runs.
+ * its spec in one row, which read one deleted comment two ways from one seeding; the Inbox
+ * thread of a reply to such a comment; and a session's own conversation page. Each row seeds
+ * through the API and then reads the page, because the mark is the server's record drawn by
+ * the component rather than anything the browser can make on its own, and each pays a Go
+ * server, a Postgres, a sign-in and a database reset for that, which is why the two pages that
+ * read one comment are read by one row. Every other surface that prints a body is covered by a
+ * test of its component in `web/src`, which CI runs.
  *
- * The rows are three rather than four because the pull-request lane takes at most 150
- * real-stack rows (`e2e/__tests__/pull-request-lane.test.ts`), and a fourth would be the 151st.
+ * No row here carries the ` @pr` tag, so the suite that answers a pull request schedules none
+ * of them and the full lane, which the merge queue and the nightly run, holds all three:
+ * `main` is gated exactly as it would be with the tag. The lane's real-stack share is full at
+ * its 150 (`e2e/__tests__/pull-request-lane.test.ts`), and the stubbed layer cannot take these
+ * rows, because each writes to the server — a `PATCH` of a message, a `DELETE` of a comment —
+ * and then reads the page that write produced, which is the shape a recording answers with the
+ * state it recorded before the write (`AGENTS.md`, "The stubbed layer"). The spec is run on the
+ * pull request itself by the role driving the issue, which is what `chk-pages` asks for.
  *
  * Everything here is made up: this repository is public, so nothing names a real person, host
  * or project.
@@ -57,9 +65,9 @@ function deletedLine(within: Locator): Locator {
   return within.locator("[data-post-deleted]");
 }
 
-// @pr: The two marks on the pages a reader opens first. A build that prints a deleted comment's
-// body, or leaves an edited message unmarked, has to fail before the pull request merges.
-test("the issue page and the document margin mark an edited message and a deleted comment @pr", async ({
+// The two marks on the pages a reader opens first: a build that prints a deleted comment's
+// body, or leaves an edited message unmarked, fails here.
+test("the issue page and the document margin mark an edited message and a deleted comment", async ({
   browser,
 }) => {
   await setLiveSessions([planner]);
@@ -120,9 +128,9 @@ test("the issue page and the document margin mark an edited message and a delete
   }
 });
 
-// @pr: The Inbox draws a thread from its own flattened view model, which drops a field it does
-// not name, so a deleted root reaches it only while that model carries the mark.
-test("the Inbox thread of a reply to a deleted comment reads that comment as deleted @pr", async ({
+// The Inbox draws a thread from its own flattened view model, which drops a field it does not
+// name, so a deleted root reaches it only while that model carries the mark.
+test("the Inbox thread of a reply to a deleted comment reads that comment as deleted", async ({
   browser,
 }) => {
   await setLiveSessions([THREAD_SESSION]);
@@ -159,9 +167,9 @@ test("the Inbox thread of a reply to a deleted comment reads that comment as del
   }
 });
 
-// @pr: The session's own page reads its stored messages through a transcript of its live
+// The session's own page reads its stored messages through a transcript of its live
 // conversation, which carries the two marks as metadata rather than as fields of the row.
-test("the agent conversation page marks an edited issue message @pr", async ({ browser }) => {
+test("the agent conversation page marks an edited issue message", async ({ browser }) => {
   await setLiveSessions([planner]);
   await createProject({ key: "CORE", name: "Core" });
   const issue = await createIssue({ project: "CORE", title: "The nightly export" });

@@ -94,6 +94,20 @@ export const ActorSchema = z.union([
 ]);
 
 /**
+ * The actor and the act exactly as Dispatch writes them: what `ActorSchema` and `ActorActSchema`
+ * parse, which is what every `DispatchEvent` payload of this package carries.
+ *
+ * They are deliberately not the contract's `Actor` and `ActorAct`, which are the OpenAPI
+ * document's reading and keep the plain names: that reading's `kind` is a `string` and its
+ * optional fields do not carry `undefined`, so neither type is assignable to the other
+ * (`dispatch-api-spellings.test.ts`). A renderer handed an actor from a payload names these, as
+ * one handed an actor from a served row names `Actor`.
+ */
+export type WrittenActorAct = z.output<typeof ActorActSchema>;
+
+export type WrittenActor = z.output<typeof ActorSchema>;
+
+/**
  * An actor as a bus frame carries it, in the three readings the inbound parsers need.
  *
  * `kind` is an open string in each: JetStream retains a frame for 72 hours, so a reader may still

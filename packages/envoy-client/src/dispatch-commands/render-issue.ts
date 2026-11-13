@@ -1,7 +1,7 @@
 import type {
-  Actor,
   Agent,
   ClaimHolderLiveness,
+  CommentEventPayload,
   DispatchEvent,
   Issue,
   IssueClaim,
@@ -11,6 +11,7 @@ import type {
   IssueProgress,
   IssueReferences,
   IssueRouteStatus,
+  MessageEventPayload,
 } from "@legion/contracts";
 import { actorLabel, claimHolds, claimTakeableAt, ISSUE_ROUTE_STATUSES } from "@legion/contracts";
 import { actorText, deletedMark } from "../actor-text";
@@ -348,13 +349,15 @@ export function logSummary(issue: IssueDetails, events: readonly DispatchEvent[]
  * The head an event of a comment or an issue message reads with: the head of the body it
  * carries, or, on a post its author deleted, the mark the read of the event carries in place of
  * every body. A `comment.deleted` or `message.deleted` event carries no body at all, and so does
- * every earlier event of a post once it is deleted.
+ * every earlier event of a post once it is deleted, which is why the body is read for absence
+ * though the payload declares one.
+ *
+ * The payload is named in the reading a `DispatchEvent` carries, the one Dispatch writes, so
+ * its `deleted_by` is a `WrittenActor` and not the served row's `Actor`: a build with
+ * `exactOptionalPropertyTypes` takes neither reading for the other
+ * (`dispatch-api-spellings.test.ts`).
  */
-function postEventHead(payload: {
-  readonly body?: string | undefined;
-  readonly deleted_at?: string | null | undefined;
-  readonly deleted_by?: Actor | null | undefined;
-}): string | undefined {
+function postEventHead(payload: CommentEventPayload | MessageEventPayload): string | undefined {
   if (payload.deleted_at != null) return deletedMark(payload.deleted_at, payload.deleted_by);
   return payload.body === undefined ? undefined : textHead(payload.body);
 }

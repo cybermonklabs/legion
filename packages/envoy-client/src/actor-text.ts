@@ -1,12 +1,21 @@
-import { type Actor, actorActText, serviceSubjectLabel } from "@legion/contracts";
+import {
+  type Actor,
+  actorActText,
+  serviceSubjectLabel,
+  type WrittenActor,
+} from "@legion/contracts";
 
 /** How an event, comment, message or ask author reads in the tools: `<kind> <id>`, plus
  *  ` (as <namespace>/<name>)` — the verified service token's subject through
  *  `serviceSubjectLabel`, which keeps the namespace because every namespace has a `default`
  *  service account — when a service token authenticated the write, or `actorActText`'s act when
  *  an agent made the write for the person it acts for. A claim's holder is named by `claimText`
- *  instead, which follows the dashboard's session label. */
-export function actorText(actor: Actor): string {
+ *  instead, which follows the dashboard's session label.
+ *
+ *  The actor is taken in either reading: the served row's (`Actor`), and the one a
+ *  `DispatchEvent` payload carries (`WrittenActor`), which no build takes for the other
+ *  (`dispatch-api-spellings.test.ts`). */
+export function actorText(actor: Actor | WrittenActor): string {
   if (actor.kind === "user") {
     return actorActText(`user ${actor.id}`, actor.act);
   }
@@ -26,6 +35,6 @@ export function actorText(actor: Actor): string {
  * One wording for every surface: the post reads a tool prints (`dispatch-execute.ts`) and the
  * answers list a session is handed (`session-answers.ts`) both say this sentence.
  */
-export function deletedMark(at: string, by: Actor | null | undefined): string {
+export function deletedMark(at: string, by: Actor | WrittenActor | null | undefined): string {
   return `Deleted by ${by == null ? "its author" : actorText(by)} at ${at}`;
 }
