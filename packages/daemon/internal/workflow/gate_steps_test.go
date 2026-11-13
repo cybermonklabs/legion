@@ -175,10 +175,16 @@ func admissionPass(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 // it holds, so the pass after the catch-up's release decides that tree on the record as it
 // stands then. A nil predicate holds none.
 //
-// It is the engine's half of admit's promoteHolds, read through the same two statements that
-// pass reads: record.Waiting over record.ReadLineFacts says which issues' first phase starts,
-// and Engine.StartFirstPhase starts each of them — a root a shorter step list left at admitted
-// among them. internal/admit's own tests run the real pass with its cap.
+// It is the engine's half of admit's promoteHolds, read through the statements that pass reads,
+// in its order: every issue that no longer needs its slot gives it back (releaseSlots, judged by
+// record.NeedsSlot); blockers.JudgeLine then judges what each started issue waits on, and every
+// one that waits gives its row back too (releaseSlotsForWaits, record.Store.ReleaseSlotForWait);
+// and the line judged again after both releases (record.Waiting) says which issues' first phase
+// starts, which Engine.StartFirstPhase starts — a root a shorter step list left at admitted
+// among them. It leaves out what the cap decides: it promotes every candidate it reaches,
+// grants no slot, starts no architect and resumes no returning issue, so an issue that gave its
+// row back for a wait stands in the line (record.LineWaitingOnIssue) and is started by nothing
+// here. internal/admit's own tests run the real pass with its cap.
 func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held func(string) bool) {
 	t.Helper()
 	scoped, committed := intake.WithCommitHooks(context.Background())
@@ -188,14 +194,22 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 	}
 	defer tx.Rollback(scoped)
 	store := record.NewStore()
-	issues, err := store.Issues(scoped, tx)
-	if err != nil {
-		t.Fatalf("list issues: %v", err)
+	read := func() ([]record.Issue, []record.Slot, record.LineFacts) {
+		issues, err := store.Issues(scoped, tx)
+		if err != nil {
+			t.Fatalf("list issues: %v", err)
+		}
+		facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.cfg.Steps)
+		if err != nil {
+			t.Fatalf("read the line facts: %v", err)
+		}
+		slots, err := store.Slots(scoped, tx)
+		if err != nil {
+			t.Fatalf("list slots: %v", err)
+		}
+		return issues, slots, facts
 	}
-	facts, err := record.ReadLineFacts(scoped, tx, store, "LEGION", issues, engine.cfg.Steps)
-	if err != nil {
-		t.Fatalf("read the line facts: %v", err)
-	}
+	issues, slots, facts := read()
 	// Every issue that no longer needs its slot gives it back before the line is read, as the
 	// real pass does (admit's releaseSlots): a root whose gate has opened holds the slot its
 	// architect wrote the design in, and the line offers a slot to no issue already holding one.
@@ -204,10 +218,6 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		byKey[issue.Key] = issue
 	}
 	live := record.LiveRoots(issues, facts)
-	slots, err := store.Slots(scoped, tx)
-	if err != nil {
-		t.Fatalf("list slots: %v", err)
-	}
 	for _, slot := range slots {
 		issue, recorded := byKey[slot.Issue]
 		_, running := live[issue.Tree]
@@ -218,15 +228,33 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 			t.Fatalf("release the slot of %s: %v", slot.Issue, err)
 		}
 	}
-	if slots, err = store.Slots(scoped, tx); err != nil {
-		t.Fatalf("list slots again: %v", err)
-	}
+	issues, slots, facts = read()
 	mirrored, err := store.DispatchIssues(scoped, tx, "LEGION")
 	if err != nil {
 		t.Fatalf("list the mirror: %v", err)
 	}
 	rows := blockers.Rows(mirrored)
-	for _, entry := range record.Waiting(issues, slots, facts) {
+	// Every started issue that waits on another issue gives its row back, as the real pass does
+	// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
+	// state that release leaves.
+	rows, facts, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
+	if err != nil {
+		t.Fatalf("judge the line: %v", err)
+	}
+	for _, slot := range slots {
+		if _, waits := facts.Waits[slot.Issue]; !waits {
+			continue
+		}
+		if err := store.ReleaseSlotForWait(scoped, tx, slot.Issue, time.Date(2026, 11, 13, 8, 0, 0, 0, time.UTC)); err != nil {
+			t.Fatalf("release the slot of %s for what it waits on: %v", slot.Issue, err)
+		}
+	}
+	issues, slots, facts = read()
+	rows, _, line, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
+	if err != nil {
+		t.Fatalf("judge the line again: %v", err)
+	}
+	for _, entry := range line {
 		// The real pass stops at the first candidate a hold holds, because the cap counts
 		// issues and everything behind it competes for the same slots.
 		if held != nil && held(entry.Issue.Key) {
@@ -248,7 +276,8 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 // Under two gated steps every one of them holds the tree's work. With the Verification document
 // and the primary document both registered and only one approved, the root starts no phase and a
 // child released into its tree is recorded and left where it stands. The approval of that step
-// starts the root's first phase and starts the child the gate held. Both approval orders are
+// starts the child the gate held, and the root's own first phase then waits for that open child
+// (children-first), its row given back for the wait. Both approval orders are
 // driven, because the step the work stands on is the first of the configured list that is closed,
 // whichever a person approved first.
 func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
@@ -290,14 +319,15 @@ func TestGatedStepsHoldEveryPhaseUntilEveryStepIsApproved(t *testing.T) {
 
 			apply("approve-the-closed-step", stepApproval(gatedRoot, tc.closedDoc, tc.closedVersion, record.EventMark{Seq: 8}))
 			// The opening starts no phase itself: admission's pass gives each issue whose first
-			// phase can start the slot it needs (record.Waiting's LineFirstPhase).
+			// phase can start the slot it needs (record.Waiting's LineFirstPhase). The child
+			// starts. The root's own first phase waits for that open child (children-first,
+			// record.LineFacts.ChildWaits), so it stays at admitted and gives its row back for the
+			// wait (blockers.waitsOf): the gate's opening is what lets the wait take the row.
 			admissionPass(t, pool, engine)
-			if got := phaseOf(t, pool, gatedRoot); got != phase.Planning {
-				t.Fatalf("the root = %s once every step is approved, want planning", got)
-			}
 			if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
 				t.Fatalf("the released child = %s once every step is approved, want planning", got)
 			}
+			assertRootWaitsOnItsChild(t, pool, gatedRoot)
 		})
 	}
 
@@ -583,7 +613,8 @@ func TestUnregisteredStepDoesNotHideTheWaitARegisteredStepRaises(t *testing.T) {
 // The step list is read at every boot and nothing of it is stored for a tree, so a tree admitted
 // under one list is held by a step a longer list adds: the approval that would have started it
 // leaves its root and the child released into it where they stand. The boot that drops that step
-// releases both, and nothing else could: no fact about a gate is coming, since an approval of a
+// starts the child, whose open run then holds the root's own first phase (children-first), and
+// nothing else could: no fact about a gate is coming, since an approval of a
 // document the deployment no longer gates is ignored. Both directions are driven from the one
 // stored tree.
 func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
@@ -617,12 +648,32 @@ func TestChangedStepListTakesHoldAtTheNextBoot(t *testing.T) {
 	}
 
 	// The pass after the catch-up's release decides the tree on the record as it stands: the spec
-	// row it holds is open, so it starts the root and the child the added step held.
+	// row it holds is open, so it starts the child the added step held, and the root's own first
+	// phase waits for that open child (children-first), with its row given back for the wait.
 	admissionPass(t, pool, off)
-	for _, released := range []string{gatedRoot, "LEGION-209"} {
-		if got := phaseOf(t, pool, released); got != phase.Planning {
-			t.Fatalf("%s after a boot that gates no step = %s, want planning", released, got)
-		}
+	if got := phaseOf(t, pool, "LEGION-209"); got != phase.Planning {
+		t.Fatalf("LEGION-209 after a boot that gates no step = %s, want planning", got)
+	}
+	assertRootWaitsOnItsChild(t, pool, gatedRoot)
+}
+
+// assertRootWaitsOnItsChild is the state the release for a wait leaves a root in once its gate
+// is open and an open child under it holds its first phase: the root stays at admitted, holds no
+// slot row and carries the mark of that release (record.Issue.ReleasedForWaitAt).
+func assertRootWaitsOnItsChild(t *testing.T, pool *pgxpool.Pool, root string) {
+	t.Helper()
+	if got := phaseOf(t, pool, root); got != phase.Admitted {
+		t.Fatalf("the root = %s, want admitted: its first phase waits for its open child", got)
+	}
+	var slotted int
+	if err := pool.QueryRow(t.Context(), "select count(*) from slots where issue = $1", root).Scan(&slotted); err != nil {
+		t.Fatalf("count the slot rows of %s: %v", root, err)
+	}
+	if slotted != 0 {
+		t.Fatalf("%s holds %d slot rows, want none: it gave its row back for the wait on its child", root, slotted)
+	}
+	if got := issueRecord(t, pool, root); got == nil || got.ReleasedForWaitAt == nil {
+		t.Fatalf("%s = %+v, want it marked released for a wait", root, got)
 	}
 }
 

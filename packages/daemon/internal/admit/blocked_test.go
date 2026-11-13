@@ -310,8 +310,12 @@ func TestASlotIsFreeWhenEveryRootInTheQueueIsBlocked(t *testing.T) {
 		payload: record.ControllerNotice{Kind: record.SlotFreeNotice}}})
 }
 
-// Work already under way is never stopped and never re-checked: a blocker put on the issue of a
-// tree that already runs leaves its slot and its record alone.
+// Work already under way is never stopped: a blocker put on the issue of a tree that already runs
+// stops no worker and moves no phase. Whether it keeps its slot is the release for a wait's to
+// say (blockers.waitsOf), and this root keeps it only because it is one of the three that do: it
+// stands at admitted with no design gate ever opened, its architect writing the design
+// (record.AtWork). A started issue that waits on another issue in any other state gives its
+// slot back (TestNoIssueIsBothUnstartedAndUnreported below, waiting_slot_test.go).
 func TestATreeAlreadyRunningIsUntouchedWhenABlockerIsAddedToItsIssue(t *testing.T) {
 	pool := migratedPool(t)
 	admission := quiet(t, 1)

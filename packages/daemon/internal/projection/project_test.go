@@ -797,9 +797,11 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 
 // admission.active is every issue holding one of the cap's rows, which an issue now keeps from
 // the moment the daemon starts it until it is done or Dispatch takes it out of the workflow
-// (record.KeepsSlot). So a root waiting on a person, an issue in accepting and one in merging are
-// all named there, though no worker of any of them is running this second, and an issue whose
-// phase has left the workflow stands in neither list.
+// (record.KeepsSlot), except while it waits on another issue, when it gives the row back and is
+// not named here (admit's releaseSlotsForWaits). So a root waiting on a person, an issue in
+// accepting and one in merging that wait on no other issue are all named there, though no
+// worker of any of them is running this second, and an issue whose phase has left the workflow
+// stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}

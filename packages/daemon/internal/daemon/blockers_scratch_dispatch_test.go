@@ -753,8 +753,9 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 			state.Issues[child].Phase, state.Admission.Blocked, phase.Admitted, elsewhere, body)
 	}
 	// Dispatch refuses an edit of a closed issue, so the links the closed child of step 7 and the root
-	// of step 9 come back with are made while each still runs, which stops neither: a child already
-	// started and a root already in its slot are never re-checked (step 3).
+	// of step 9 come back with are made while each still runs, which stops neither: a link stops no
+	// work already under way and moves no phase (step 3), though an issue that holds a slot and now
+	// waits on it gives that slot back until the link's issue is done.
 	for _, key := range []string{unlinked, free} {
 		dispatchCall(t, baseURL, http.MethodPatch, "/api/v1/issues/"+key, map[string]any{"blocked_by": []string{elsewhere}}, &relinked)
 		if !slices.Equal(relinked.BlockedBy, []string{elsewhere}) {
