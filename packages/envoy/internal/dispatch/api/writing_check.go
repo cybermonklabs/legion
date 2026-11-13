@@ -70,6 +70,10 @@ type WritingCheckConfig struct {
 	RulesOff []string
 	// Detector is whether DISPATCH_WRITING_CHECK_DETECTOR leaves the bundle's detector on.
 	Detector bool
+	// DetectorTestHook is DISPATCH_TEST_WRITING_CHECK_DETECTOR=on, which a test process sets
+	// under DISPATCH_TEST_HOOKS=1 alone: the detector runs although the bundle ships it off, so
+	// an end-to-end test reads the detector's refusals. Detector off still turns it off.
+	DetectorTestHook bool
 	// Reader is the model reader the detector calls; nil where no model is configured, and the
 	// structure rules then run alone.
 	Reader writingcheck.Reader
@@ -86,13 +90,13 @@ type WritingCheck struct {
 
 // NewWritingCheck builds the check cfg describes, over the bundle: its rules
 // (writingcheck.EnabledRules), and its detector (writingcheck.DetectorEnabled), which cfg can
-// turn off and never on.
+// turn off and, outside a test process's DetectorTestHook, never on.
 func NewWritingCheck(cfg WritingCheckConfig) *WritingCheck {
 	return &WritingCheck{config: cfg, checker: writingcheck.New(writingcheck.Config{
 		Enabled:  cfg.Enabled,
 		Rules:    writingcheck.EnabledRules,
 		RulesOff: cfg.RulesOff,
-		Detector: cfg.Detector && writingcheck.DetectorEnabled,
+		Detector: cfg.Detector && (writingcheck.DetectorEnabled || cfg.DetectorTestHook),
 		Reader:   cfg.Reader,
 	})}
 }
@@ -388,7 +392,7 @@ func (c *WritingCheck) state() writingCheckState {
 	switch {
 	case !cfg.Enabled:
 		state.Detector.Reason = "the check is off (DISPATCH_WRITING_CHECK)"
-	case !writingcheck.DetectorEnabled:
+	case !writingcheck.DetectorEnabled && !cfg.DetectorTestHook:
 		state.Detector.Reason = "the bundle ships the detector off: it ships on only once its final test bounds 1 - precision at 5% or below"
 	case !cfg.Detector:
 		state.Detector.Reason = "DISPATCH_WRITING_CHECK_DETECTOR is off"
@@ -396,6 +400,8 @@ func (c *WritingCheck) state() writingCheckState {
 		state.Detector.Reason = "DISPATCH_WRITING_CHECK_RULES_OFF names " + writingcheck.DetectorRule
 	case cfg.Reader == nil:
 		state.Detector = writingCheckDetector{On: true, Reason: "no model is configured: the structure rules run alone, and each check records no_model"}
+	case !writingcheck.DetectorEnabled:
+		state.Detector = writingCheckDetector{On: true, Reason: "DISPATCH_TEST_WRITING_CHECK_DETECTOR turns on the detector the bundle ships off, for this test process alone"}
 	default:
 		state.Detector.On = true
 	}

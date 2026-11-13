@@ -2675,6 +2675,18 @@ It is off unless `DISPATCH_WRITING_CHECK=on`.
 
 - `DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT`: test processes only, under `DISPATCH_TEST_HOOKS=1`: a Go duration that replaces the reader's two-second bound.
 
+- `DISPATCH_TEST_WRITING_CHECK_DETECTOR`: test processes only, under `DISPATCH_TEST_HOOKS=1`: `on` runs the detector although the bundle ships it off, so an end-to-end test reads the detector's refusals.
+  `DISPATCH_WRITING_CHECK_DETECTOR=off` still turns it off, and any other value refuses the boot.
+  `GET /api/v1/writing-check` then says in `detector.reason` that this setting turned it on.
+
+- `DISPATCH_TEST_WRITING_CHECK_READER_URL`: test processes only, under `DISPATCH_TEST_HOOKS=1`: the base URL of a stand-in reader, an http or https URL that `/chat/completions` is appended to.
+  The stand-in answers the reader's Chat Completions call, with its verdict schema, as the Azure deployment does; the reader calls it with no Azure sign-in and no token, and sets no tokens-per-minute budget.
+  It takes the place of the `DISPATCH_WRITING_CHECK_AZURE_*` group: with the check and the detector on, a group set beside it refuses the boot.
+  With the check or the detector off, it is accepted and ignored.
+  The plugins' live suites start the server with both of these and a stand-in of their own (`packages/envoy-client/test/dispatch-stack.ts`).
+
+Without `DISPATCH_TEST_HOOKS=1`, each of the three test-only settings above refuses the boot, so no deployment can turn the detector on or point its reader anywhere but its Azure deployment.
+
 ### What the check reads
 
 The check reads a write by an agent session that is not a project's Legion daemon (`legion-daemon:<PROJECT>`), and a write a person's credential makes for such a session (the actor's `act.session`).

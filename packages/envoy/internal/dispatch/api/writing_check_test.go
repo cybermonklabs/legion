@@ -789,6 +789,45 @@ func TestTheWritingCheckLetsAWriteThroughWhenTheReaderTimesOut(t *testing.T) {
 	}
 }
 
+// namingReader is a reader that calls every candidate it is sent vacuous.
+type namingReader struct{ calls int64 }
+
+func (r *namingReader) Read(_ context.Context, cands []candidates.Candidate) ([]reader.Verdict, string) {
+	r.calls++
+	verdicts := make([]reader.Verdict, len(cands))
+	for i, c := range cands {
+		verdicts[i] = reader.Verdict{ID: c.ID, Vacuous: true, Rewrite: "Say what the problem is."}
+	}
+	return verdicts, reader.OutcomeRead
+}
+
+func (r *namingReader) Calls() int64 { return r.calls }
+
+// TestTheWritingCheckTestHookRunsTheDetector: a test process's DetectorTestHook
+// (DISPATCH_TEST_WRITING_CHECK_DETECTOR=on) runs the detector although the bundle ships it off,
+// so its reader's verdict refuses the write, and the state route says what turned it on.
+// DISPATCH_WRITING_CHECK_DETECTOR=off still turns it off.
+func TestTheWritingCheckTestHookRunsTheDetector(t *testing.T) {
+	stub := &namingReader{}
+	check := NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: true, DetectorTestHook: true, Reader: stub})
+	rig := newWritingCheckRig(t, check)
+	rig.clearEvents()
+	response := rig.asSession(http.MethodPost, "/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": "This names the problem."})
+	if response.Code != http.StatusUnprocessableEntity || !strings.Contains(response.Body.String(), writingcheck.DetectorRule) {
+		t.Fatalf("a write the reader calls vacuous: %d %s, want 422 naming %s", response.Code, response.Body.String(), writingcheck.DetectorRule)
+	}
+	if event := rig.lastEvent("detector test hook"); event.Outcome != "refused" || stub.calls != 1 {
+		t.Errorf("event = %+v, %d calls, want refused after one call", event, stub.calls)
+	}
+	state := check.state()
+	if !state.Detector.On || (!writingcheck.DetectorEnabled && !strings.Contains(state.Detector.Reason, "DISPATCH_TEST_WRITING_CHECK_DETECTOR")) {
+		t.Errorf("state detector = %+v, want on and the test hook named", state.Detector)
+	}
+	if off := NewWritingCheck(WritingCheckConfig{Enabled: true, Detector: false, DetectorTestHook: true, Reader: stub}).state(); off.Detector.On {
+		t.Errorf("detector off beside the test hook: state detector = %+v, want off", off.Detector)
+	}
+}
+
 // TestTheWritingCheckRefusalTextPassesTheCheck: the refusal of each rule the bundle enables,
 // posted as an agent's own body, is written.
 func TestTheWritingCheckRefusalTextPassesTheCheck(t *testing.T) {

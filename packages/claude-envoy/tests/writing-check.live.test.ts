@@ -1,12 +1,15 @@
 /**
  * The plugin's own writes under Dispatch's writing check (INFRA-3231, R14; check 4370789f), in a
  * Claude Code session: the router of a person's messages (`../src/user-turn-router`) against a
- * real Dispatch server of this checkout with the check on. No model is configured, so the check
- * runs its structure rules alone: a sentence holding `spin up` breaks the `phrasal-verb` rule,
- * which the bundle enables, and that sentence is what each row writes. The check reads a write
- * only when a person reads it: every row writes a reply to a direct message alice sent, which
- * she reads, and each row reads that reader on the check's own records. Text the plugin
- * generates is sent with no override first, and a second time with
+ * real Dispatch server of this checkout with the check on and its detector on. The bundle ships
+ * the detector off, so the server runs under the test-only
+ * `DISPATCH_TEST_WRITING_CHECK_DETECTOR=on`, and its reader is a stand-in this file starts
+ * (`DISPATCH_TEST_WRITING_CHECK_READER_URL`) that calls vacuous every sentence holding "names the
+ * problem" and nothing else. "This names the problem." is the sentence each row writes, and the
+ * detector's `vacuous-verb-phrase` is the rule that refuses it. The check reads a write only when
+ * a person reads it: every row writes a reply to a direct message alice sent, which she reads, and
+ * each row reads that reader on the check's own records. Text the plugin generates is sent with no
+ * override first, and a second time with
  * `override_writing_check: "generated"` only where the check refused the first. The Claude Code
  * side is a fake mod link; every Dispatch request is the real server's. The server runs no Envoy
  * listener, so a delivery attempt it records names no session: each row binds its attempt to
@@ -26,8 +29,11 @@ import {
 import { DispatchClient } from "@legion/envoy-client/dispatch-http"
 import {
   type DispatchStack,
+  detectorOnWith,
   dispatchStackEnabled,
+  type StandInReader,
   startDispatchStack,
+  startStandInReader,
   useDispatchStackDirectory,
 } from "@legion/envoy-client/test/dispatch-stack"
 import { SQL } from "bun"
@@ -39,8 +45,9 @@ import { readUserTurnState, userTurnState, userTurnStateFile } from "../src/user
 const SESSION = "ses_claude_check"
 const DIRECT = `notifications.agent.${SESSION}`
 const PERSON = "alice"
-const SENTENCE = "We will spin up the server and read the logs."
-const REWRITTEN = "We will start the server and read the logs."
+const SENTENCE = "This names the problem."
+const REWRITTEN = "The first read was slow because the cache was cold."
+const RULE = "Rule vacuous-verb-phrase"
 
 const stackDirectory = useDispatchStackDirectory()
 
@@ -77,6 +84,7 @@ function personSends(id: string, body: string, mode: "steer" | "btw"): string {
 }
 
 describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own writes", () => {
+  let reader: StandInReader | undefined
   let stack: DispatchStack | undefined
   let database: SQL | undefined
   const server = (): DispatchStack => {
@@ -215,15 +223,14 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
   }
 
   beforeAll(async () => {
-    stack = await startDispatchStack({
-      work: stackDirectory,
-      env: { DISPATCH_WRITING_CHECK: "on", DISPATCH_TEST_HOOKS: "1" },
-    })
+    reader = startStandInReader("names the problem")
+    stack = await startDispatchStack({ work: stackDirectory, env: detectorOnWith(reader) })
     database = new SQL(stack.databaseUrl)
   }, 600_000)
   afterAll(async () => {
     await database?.close()
     await stack?.stop()
+    reader?.stop()
   }, 60_000)
 
   // A fork's answer is the agent's words: refused, it goes back to a fork of its own holding the
@@ -268,7 +275,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       expect(read.message.deliveries?.at(-1)?.error).toBe(WRITING_CHECK_ANSWER_WITHHELD)
       expect(JSON.stringify(read)).not.toContain(SENTENCE)
       expect(session.notices).toHaveLength(1)
-      expect(session.notices[0]).toContain("Rule phrasal-verb")
+      expect(session.notices[0]).toContain(RULE)
       expect(session.notices[0]).toContain(`--in-reply-to ${id}`)
       expect(await eventsSince(mark)).toEqual([
         { outcome: "refused", override_value: null, reader: PERSON },
@@ -331,6 +338,10 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     }
     const outcome = await postDeliveryReply(config(), SESSION, delivery, { error: SENTENCE })
     expect(outcome.posted).toBe(false)
+    if (outcome.posted) return
+    expect(outcome.refusal.findings).toEqual([
+      expect.objectContaining({ field: "error", rule: "vacuous-verb-phrase", text: SENTENCE }),
+    ])
     await new DispatchClient(server().url, bearerCredential(server().token)).deliveryReply(
       "message",
       id,
@@ -360,5 +371,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     // The fork's first answer, both answers of the fork refused twice, the first send of each
     // generated text and the agent's error reply.
     expect(counts.outcomes["refused"] ?? 0).toBeGreaterThanOrEqual(6)
+    // Each refusal above is the detector's, so the server called the stand-in reader.
+    expect(reader?.calls() ?? 0).toBeGreaterThan(0)
   }, 60_000)
 })

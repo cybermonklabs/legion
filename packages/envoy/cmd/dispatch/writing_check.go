@@ -2,6 +2,7 @@ package main
 
 import (
 	"cmp"
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -42,7 +43,19 @@ type writingCheckConfig struct {
 	// ReaderTimeout is DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT, read only under the test
 	// hooks; zero keeps the reader's own two seconds.
 	ReaderTimeout time.Duration
+	// DetectorTestHook is DISPATCH_TEST_WRITING_CHECK_DETECTOR=on, read only under the test
+	// hooks: the detector runs although the bundle ships it off.
+	DetectorTestHook bool
+	// ReaderURL is DISPATCH_TEST_WRITING_CHECK_READER_URL, read only under the test hooks: the
+	// base URL of a stand-in reader that speaks the Azure deployment's Chat Completions
+	// protocol over plain HTTP, called with no sign-in and no token. Where it is set and the
+	// detector runs, Model is true and the Azure fields above are empty.
+	ReaderURL string
 }
+
+// standInReaderModel is the model id the reader names in its calls to a stand-in reader
+// (DISPATCH_TEST_WRITING_CHECK_READER_URL), which has no deployment.
+const standInReaderModel = "stand-in"
 
 // writingCheckReadsSignIn reports whether the writing check's model group is set at all, which
 // makes the check a reader of the shared Azure sign-in: the group is accepted and ignored while
@@ -56,8 +69,11 @@ func writingCheckReadsSignIn(env settingValues) bool {
 // off, a rule id the check does not carry, and, with the check and its detector on, a model
 // group set in part. With the check or its detector off the model group is accepted and
 // ignored. The detector runs only where the bundle ships it on (writingcheck.DetectorEnabled):
-// DISPATCH_WRITING_CHECK_DETECTOR can turn it off and never on. It calls nothing and reads no
-// file, so a model service that is down never refuses boot.
+// DISPATCH_WRITING_CHECK_DETECTOR can turn it off and never on. Under DISPATCH_TEST_HOOKS=1
+// alone, DISPATCH_TEST_WRITING_CHECK_DETECTOR=on turns it on, and
+// DISPATCH_TEST_WRITING_CHECK_READER_URL gives it a stand-in reader in place of the model group;
+// without the hooks either is refused. It calls nothing and reads no file, so a model service
+// that is down never refuses boot.
 func resolveWritingCheck(env settingValues, testHooksEnabled bool) (writingCheckConfig, error) {
 	return resolveWritingCheckUnder(env, testHooksEnabled, writingcheck.DetectorEnabled)
 }
@@ -74,7 +90,16 @@ func resolveWritingCheckUnder(env settingValues, testHooksEnabled, bundleDetecto
 	if cfg.Detector, err = onOffSetting(env, "DISPATCH_WRITING_CHECK_DETECTOR", true); err != nil {
 		return writingCheckConfig{}, err
 	}
-	cfg.Detector = cfg.Detector && bundleDetector
+	switch raw := strings.TrimSpace(env.get("DISPATCH_TEST_WRITING_CHECK_DETECTOR")); {
+	case raw == "":
+	case !testHooksEnabled:
+		return writingCheckConfig{}, errors.New("DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_WRITING_CHECK_DETECTOR")
+	case raw != "on":
+		return writingCheckConfig{}, fmt.Errorf("DISPATCH_TEST_WRITING_CHECK_DETECTOR=%q (expected on)", raw)
+	default:
+		cfg.DetectorTestHook = true
+	}
+	cfg.Detector = cfg.Detector && (bundleDetector || cfg.DetectorTestHook)
 	known := []string{writingcheck.DetectorRule}
 	for _, rule := range rules.All() {
 		known = append(known, rule.ID)
@@ -94,8 +119,29 @@ func resolveWritingCheckUnder(env settingValues, testHooksEnabled, bundleDetecto
 	if err := testHookDuration(env, "DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT", testHooksEnabled, &cfg.ReaderTimeout); err != nil {
 		return writingCheckConfig{}, err
 	}
+	if cfg.ReaderURL = strings.TrimSpace(env.get("DISPATCH_TEST_WRITING_CHECK_READER_URL")); cfg.ReaderURL != "" {
+		if !testHooksEnabled {
+			return writingCheckConfig{}, errors.New("DISPATCH_TEST_HOOKS=1 required with DISPATCH_TEST_WRITING_CHECK_READER_URL")
+		}
+		parsed, err := url.Parse(cfg.ReaderURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" || strings.ContainsAny(cfg.ReaderURL, "?#") {
+			return writingCheckConfig{}, fmt.Errorf("DISPATCH_TEST_WRITING_CHECK_READER_URL=%q (expected an absolute http or https URL with a host and no query or fragment, the base URL the chat completions route is appended to)", cfg.ReaderURL)
+		}
+	}
 	detectorRuns := cfg.Enabled && cfg.Detector && !slices.Contains(cfg.RulesOff, writingcheck.DetectorRule)
-	if !detectorRuns || !writingCheckReadsSignIn(env) {
+	if !detectorRuns {
+		// The stand-in, like the model group, is accepted and ignored.
+		cfg.ReaderURL = ""
+		return cfg, nil
+	}
+	if cfg.ReaderURL != "" {
+		if set := settingsSet(env, writingCheckModelPrefix); len(set) > 0 {
+			return writingCheckConfig{}, fmt.Errorf("DISPATCH_TEST_WRITING_CHECK_READER_URL set beside %s: the stand-in reader takes the place of the reader's model, so set one or the other", strings.Join(set, ", "))
+		}
+		cfg.Model = true
+		return cfg, nil
+	}
+	if !writingCheckReadsSignIn(env) {
 		return cfg, nil
 	}
 	cfg.Model = true
@@ -158,13 +204,23 @@ func onOffSetting(env settingValues, name string, fallback bool) (bool, error) {
 // calls nothing and reads no token file, so a model service or a sign-in being down fails a
 // reader call later, which lets the write through, never the boot.
 func newWritingCheck(cfg writingCheckConfig) (*api.WritingCheck, error) {
-	config := api.WritingCheckConfig{Enabled: cfg.Enabled, RulesOff: cfg.RulesOff, Detector: cfg.Detector}
+	config := api.WritingCheckConfig{Enabled: cfg.Enabled, RulesOff: cfg.RulesOff, Detector: cfg.Detector,
+		DetectorTestHook: cfg.DetectorTestHook}
 	if !cfg.Enabled {
 		return api.NewWritingCheck(config), nil
 	}
 	if !cfg.Model {
 		slog.Info("dispatch: the writing check is on with no model for its detector, so it runs its structure rules alone",
 			"rules_off", cfg.RulesOff, "detector", cfg.Detector)
+		return api.NewWritingCheck(config), nil
+	}
+	if cfg.ReaderURL != "" {
+		var err error
+		if config.Reader, config.Model, err = standInReader(cfg); err != nil {
+			return nil, err
+		}
+		slog.Info("dispatch: the writing check is on with a stand-in reader for its detector (test hooks)",
+			"endpoint_host", config.Model.EndpointHost, "rules_off", cfg.RulesOff)
 		return api.NewWritingCheck(config), nil
 	}
 	tokens, err := embed.NewEntraTokenSource(embed.EntraConfig{
@@ -194,4 +250,22 @@ func newWritingCheck(cfg writingCheckConfig) (*api.WritingCheck, error) {
 	slog.Info("dispatch: the writing check is on with a model for its detector",
 		"endpoint_host", endpoint.Host, "deployment", cfg.Deployment, "rules_off", cfg.RulesOff)
 	return api.NewWritingCheck(config), nil
+}
+
+// standInReader is the reader of a test process's stand-in (DISPATCH_TEST_WRITING_CHECK_READER_URL),
+// and the model the state route shows for it. The stand-in speaks the protocol of the Azure
+// deployment the reader calls, so it is that model at the stand-in's URL, with no api-version and
+// an empty token: no sign-in is read, and no budget is set.
+func standInReader(cfg writingCheckConfig) (*reader.Reader, *api.WritingCheckModel, error) {
+	endpoint, err := url.Parse(cfg.ReaderURL)
+	if err != nil {
+		return nil, nil, errors.New("DISPATCH_TEST_WRITING_CHECK_READER_URL is not a URL")
+	}
+	noToken := func(context.Context) (string, error) { return "", nil }
+	return reader.New(reader.Config{
+		Model:         reader.AzureModel(cfg.ReaderURL, standInReaderModel, "", noToken),
+		NoEffort:      writingcheck.ReaderNoEffort,
+		BundleModelID: writingcheck.BundleModelID,
+		Timeout:       cfg.ReaderTimeout,
+	}), &api.WritingCheckModel{EndpointHost: endpoint.Host, Deployment: standInReaderModel}, nil
 }

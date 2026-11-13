@@ -226,6 +226,10 @@ var settings = []setting{
 		Description: "How often a test process stamps its row in the registry of live server processes, in place of the five seconds a deployment runs it at; the live window a heartbeat is judged by stays three of it, so no run can set a window shorter than its own heartbeat, and a process refused at boot waits that window and one heartbeat for its refuser to lapse. A positive Go duration, for an end-to-end test only and never a real deployment. Set only with `DISPATCH_TEST_HOOKS=1`."},
 	{Name: "DISPATCH_TEST_WRITING_CHECK_READER_TIMEOUT", Default: "`2s`", Required: "no",
 		Description: "How long a test process's writing check reader waits for its model before the write goes through on the structure rules alone (`reader_timeout`), in place of the two seconds a deployment waits; a positive Go duration, for an end-to-end test only. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_WRITING_CHECK_DETECTOR", Required: "no",
+		Description: "Set to `on` so a test process's writing check runs its detector although the bundle ships it off (`writingcheck.DetectorEnabled`), for an end-to-end test that reads the detector's refusals; `DISPATCH_WRITING_CHECK_DETECTOR=off` still turns it off. Any other value refuses startup. Set only with `DISPATCH_TEST_HOOKS=1`."},
+	{Name: "DISPATCH_TEST_WRITING_CHECK_READER_URL", Required: "no",
+		Description: "The base URL `/chat/completions` is appended to for a stand-in of the writing check's reader, for an end-to-end test process: an absolute http or https URL with a host and no query or fragment, answering the reader's Chat Completions call as the Azure deployment does. It is called with no Azure sign-in and no token, and takes the place of the `DISPATCH_WRITING_CHECK_AZURE_*` settings, which refuse startup beside it while the detector runs. With the check or the detector off it is accepted and ignored. Set only with `DISPATCH_TEST_HOOKS=1`."},
 }
 
 // removedSettings are the variables a release stopped reading, each with what replaced it. None is

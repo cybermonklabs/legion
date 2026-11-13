@@ -10,3 +10,7 @@ body: |-
   and `GET /api/v1/writing-check` and `GET /api/v1/writing-check/counts?day=` read its state and a
   day's counts. The vacuous-verb-phrase detector and its model settings
   (`DISPATCH_WRITING_CHECK_AZURE_*`) ship off until their final test passes.
+  Two test-only settings, each refused without `DISPATCH_TEST_HOOKS=1`, let an end-to-end test
+  read the detector's refusals: `DISPATCH_TEST_WRITING_CHECK_DETECTOR=on` runs the detector, and
+  `DISPATCH_TEST_WRITING_CHECK_READER_URL` points its reader at a plain HTTP stand-in called with
+  no Azure sign-in.

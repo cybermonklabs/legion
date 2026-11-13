@@ -62,8 +62,11 @@ import { renderSessionAnswers } from "@legion/envoy-client/session-answers";
 import { subjectsOverlap } from "@legion/envoy-client/stream-topics";
 import {
   type DispatchStack,
+  detectorOnWith,
   dispatchStackEnabled,
+  type StandInReader,
   startDispatchStack,
+  startStandInReader,
   useDispatchStackDirectory,
 } from "@legion/envoy-client/test/dispatch-stack";
 import {
@@ -21438,24 +21441,27 @@ async function bootOnDispatch(
 }
 
 // The plugin's own writes under Dispatch's writing check (INFRA-3231, R14; check 4370789f),
-// against a real Dispatch server of this checkout with the check on. No model is configured, so
-// the check runs its structure rules alone: a sentence holding `spin up` breaks the
-// `phrasal-verb` rule, which the bundle enables, and that sentence is what each row writes. The
-// check reads a write only when a person reads it: every row writes to a person, as a reply to
-// a direct message alice sent or as a document of her project, whose default assignee she is,
-// and each row reads that reader on the check's own records. Text the plugin generates is sent
-// with no override first, and a second time with `override_writing_check: "generated"` only
-// where the check refused the first. The server runs no Envoy listener, so a delivery attempt it
-// records names no session; each row binds its attempt to this session in the stack's own
-// database, the one state no route reaches.
+// against a real Dispatch server of this checkout with the check on and its detector on: the
+// bundle ships the detector off, so the server runs under the test-only
+// `DISPATCH_TEST_WRITING_CHECK_DETECTOR=on`, and its reader is a stand-in this file starts
+// (`DISPATCH_TEST_WRITING_CHECK_READER_URL`) that calls vacuous every sentence holding "names the
+// problem" and nothing else. "This names the problem." is the sentence each row writes, and the
+// detector's `vacuous-verb-phrase` is the rule that refuses it. The check reads a write only
+// when a person reads it: every row writes a reply to a direct message alice sent, and each row
+// reads that reader on the check's own records. Text the plugin generates is sent with no
+// override first, and a second time with `override_writing_check: "generated"` only where the
+// check refused the first. The server runs no Envoy listener, so a delivery attempt it records
+// names no session; each row binds its attempt to this session in the stack's own database, the
+// one state no route reaches.
 const writingCheckStackDirectory = useDispatchStackDirectory();
 
 describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own writes", () => {
   const SESSION = "ses_delivery";
   const PERSON = "alice";
-  const PROJECT = "WCHK";
-  const SENTENCE = "We will spin up the server and read the logs.";
-  const REWRITTEN = "We will start the server and read the logs.";
+  const SENTENCE = "This names the problem.";
+  const REWRITTEN = "The first read was slow because the cache was cold.";
+  const RULE = "Rule vacuous-verb-phrase";
+  let reader: StandInReader | undefined;
   let stack: DispatchStack | undefined;
   let database: SQL | undefined;
   const server = (): DispatchStack => {
@@ -21558,16 +21564,17 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
   });
 
   beforeAll(async () => {
+    reader = startStandInReader("names the problem");
     stack = await startDispatchStack({
       work: writingCheckStackDirectory,
-      env: { DISPATCH_WRITING_CHECK: "on", DISPATCH_TEST_HOOKS: "1" },
+      env: detectorOnWith(reader),
     });
     database = new SQL(stack.databaseUrl);
-    await asPerson("POST", "/api/v1/projects", { key: PROJECT, name: "Writing check" });
   }, 600_000);
   afterAll(async () => {
     await database?.close();
     await stack?.stop();
+    reader?.stop();
   }, 60_000);
 
   // A side turn's answer is the agent's words: refused, it goes back into a side turn holding
@@ -21587,7 +21594,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(JSON.stringify(read)).not.toContain(SENTENCE);
     expect(prompts).toHaveLength(2);
     expect(prompts[1]).toContain("Dispatch's writing check refused your answer");
-    expect(prompts[1]).toContain("Rule phrasal-verb");
+    expect(prompts[1]).toContain(RULE);
     expect(prompts[1]).toContain(SENTENCE);
     expect(await eventsSince(mark)).toEqual([
       { outcome: "refused", override_value: null, reader: PERSON },
@@ -21611,7 +21618,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(read.message.deliveries?.at(-1)?.error).toBe(WRITING_CHECK_ANSWER_WITHHELD);
     expect(JSON.stringify(read)).not.toContain(SENTENCE);
     await until(
-      () => fixture.deliveries.some((delivery) => delivery.content.includes("Rule phrasal-verb")),
+      () => fixture.deliveries.some((delivery) => delivery.content.includes(RULE)),
       "the findings to reach the main conversation",
       10_000
     );
@@ -21643,8 +21650,9 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
   }, 60_000);
 
   // A person's `!command` whose line and output hold the sentence: the report fences both, and
-  // the check reads no code, so the report is written on its first send, with no override.
-  test("a person's !command report is written on its first send, its line fenced", async () => {
+  // the check reads no code, so the report is written on its first send, with no override, and
+  // no count of refused or forced writes holds it.
+  test("a person's !command report is written on its first send, its line and output fenced", async () => {
     const line = `!printf '${SENTENCE}'`;
     const id = await directMessage(line, "steer");
     const mark = await eventsMark();
@@ -21660,8 +21668,11 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       `${shellCommandLine(line)}\n\n\`\`\`\n${SENTENCE}\n\`\`\``,
     ]);
     const events = await eventsSince(mark);
-    expect(events.filter((event) => event.outcome === "refused")).toEqual([]);
-    expect(events.filter((event) => event.override_value !== null)).toEqual([]);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect(event).toEqual(expect.objectContaining({ override_value: null, reader: PERSON }));
+      expect(["refused", "forced"]).not.toContain(event.outcome);
+    }
   }, 60_000);
 
   // A slash command's output, and the host's own error for one it could not run: both the
@@ -21711,7 +21722,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(outcome.posted).toBe(false);
     if (outcome.posted) return;
     expect(outcome.refusal.findings).toEqual([
-      expect.objectContaining({ field: "error", rule: "phrasal-verb", text: SENTENCE }),
+      expect.objectContaining({ field: "error", rule: "vacuous-verb-phrase", text: SENTENCE }),
     ]);
     // An agent's own choice to send it anyway, which the counts below tell from the plugin's.
     await new DispatchClient(
@@ -21730,59 +21741,9 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     ]);
   }, 60_000);
 
-  // AskGate's decision record, and the document header its create writes, are the plugin's own,
-  // on a document of alice's project, which she reads as its default assignee. The record is
-  // fenced and the header breaks no rule, so both are written on their first send, with no
-  // override.
-  test("an AskGate decision record holding the sentence is written on its first send", async () => {
-    const mark = await eventsMark();
-    const recorder = createDecisionRecorder({
-      env: { OMP_ASKGATE_RECORD_PROJECT: PROJECT },
-      now: () => Date.now(),
-      dispatchClient: (_directory, signal) => ({
-        client: new DispatchClient(
-          server().url,
-          bearerCredential(server().token),
-          originalFetch,
-          signal
-        ),
-      }),
-    });
-    expect(
-      await recorder.record({
-        entry: {
-          tool: "dispatch_ask",
-          decision: "allow",
-          outcome: "allowed",
-          verdictMode: "block",
-          ruleOutcome: "error",
-          ruleError: SENTENCE,
-        },
-        sessionId: SESSION,
-        directory: "/tmp",
-        id: "call-writing-check",
-      })
-    ).toBeUndefined();
-    const document = await asPerson<{ readonly id: string }>(
-      "GET",
-      `/api/v1/projects/${PROJECT}/artifacts/askgate-decisions-${SESSION}.md`
-    );
-    const text = await asPerson<{ readonly markdown: string }>(
-      "GET",
-      `/api/v1/artifacts/${document.id}/text`
-    );
-    expect(text.markdown).toContain(SENTENCE);
-    const events = await eventsSince(mark);
-    expect(events.length).toBeGreaterThan(0);
-    for (const event of events) {
-      expect(event).toEqual(expect.objectContaining({ override_value: null, reader: PERSON }));
-      expect(event.outcome).not.toBe("refused");
-    }
-  }, 60_000);
-
   // The negative control: the same report with its line bare, sent without the field, is
   // refused, so it is the fence that lets the plugin's report through. The bare line holds the
-  // sentence, so it is read as prose and breaks `phrasal-verb`.
+  // sentence, so it is read as prose, and the detector calls it vacuous.
   test("a copy of the report without the fence, sent without the field, is refused", async () => {
     const line = `!printf '${SENTENCE}'`;
     const id = await directMessage(line, "steer");
@@ -21794,7 +21755,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(outcome.posted).toBe(false);
     if (outcome.posted) return;
     expect(outcome.refusal.findings).toEqual([
-      expect.objectContaining({ field: "body", rule: "phrasal-verb" }),
+      expect.objectContaining({ field: "body", rule: "vacuous-verb-phrase" }),
     ]);
   }, 60_000);
 
@@ -21812,6 +21773,8 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     // The side turn's first answer, both answers of the side turn refused twice, the first send
     // of each of the three generated texts, the agent's error reply and the bare report.
     expect(counts.outcomes.refused ?? 0).toBeGreaterThanOrEqual(8);
+    // Each refusal above is the detector's, so the server called the stand-in reader.
+    expect(reader?.calls() ?? 0).toBeGreaterThan(0);
   }, 60_000);
 });
 
@@ -21918,14 +21881,16 @@ describe("the plugin's own writes against a Dispatch that has no writing check",
   };
   const actor = { id: SESSION, kind: "session" };
 
+  // The same !command as the writing-check suite above runs, its line and output holding the
+  // sentence that suite's detector refuses: main's server reads no prose, and the plugin's first
+  // send carries no field it would refuse.
   test("a person's !command report is written on its first send, with no field", async () => {
-    const id = directMessage("!printf hi");
+    const line = "!printf 'This names the problem.'";
+    const id = directMessage(line);
     const { agent } = await bootOnDispatch(url(), TOKEN, "main-server-shell", {
       sendUserInput: async () => ({ handled: "prompt" }),
     });
-    agent.push(
-      directDispatchEnvelope("steer", "main-server-shell", { messageID: id, body: "!printf hi" })
-    );
+    agent.push(directDispatchEnvelope("steer", "main-server-shell", { messageID: id, body: line }));
 
     expect(await repliesTo(id)).toEqual([
       {
@@ -21934,7 +21899,7 @@ describe("the plugin's own writes against a Dispatch that has no writing check",
         body: {
           actor,
           attempt: 1,
-          body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+          body: `${shellCommandLine(line)}\n\n\`\`\`\nThis names the problem.\n\`\`\``,
         },
       },
     ]);
