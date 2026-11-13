@@ -6284,8 +6284,15 @@ until [ -n "$planner_killed" ]; do
   if hold_end_charged "$(claim_token "$tree4" planner)"; then planner_killed=$ended_incarnation; fi
 done
 note "killed $tree4's planner mid-turn (process $planner_killed in pod $ended_pod_uid)"
-interrupted_needle="Your previous turn on this task was interrupted when your process died."
-planner_resent() { session_contains "$tree4" planner "$interrupted_needle"; }
+# The task goes again behind the sentence the claim's record of the kill composes
+# (packages/daemon/internal/supervise/relaunch.go, relaunchSentence): its first statement says the
+# turn was interrupted, and the next names the death as its cause. Both are read, each as a fixed
+# string of the planner's session, because neither alone says the kill was what it told.
+interrupted_needle="Your previous turn on this task was interrupted."
+death_needle="ended because the process died: "
+planner_resent() {
+  session_contains "$tree4" planner "$interrupted_needle" && session_contains "$tree4" planner "$death_needle"
+}
 on_tree "$tree4" until_true 600 "$tree4's planner to be sent its task again, told its turn was interrupted" planner_resent
 send_agent "$tree4" planner "Stage 4b proof planning operation: write the required plan handoff for the one-file smoke change, then call the legion tool's handoff_complete with a concise summary. Do not start another role."
 on_tree "$tree4" wait_for_phase "$tree4" implementing "$plan_seconds"

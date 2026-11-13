@@ -17,7 +17,7 @@
 # NAME is the environment variable the caller read DSN from, and it starts that line. WHAT is
 # what the run does on that server, in a few words.
 #
-# Nine call sites read a DSN with this guard before they start anything, because the server must
+# Ten call sites read a DSN with this guard before they start anything, because the server must
 # be this machine's. Seven are proofs of their own: plan-pointer-drive.sh,
 # verification-results.sh, dispatch-claimant-delivery.sh, clean-session-stop-tmux.sh,
 # envoy-session-states.sh, envoy-session-delivery.sh and dispatch-session-settings.sh. The
@@ -27,7 +27,9 @@
 # reads LEGION_TEST_PG_DSN for each of the eight proofs that make that run:
 # busy-relaunch-delivery.sh, child-adoption.sh, claim-compaction.sh, conflict-no-takeover.sh,
 # handoff-records.sh, phase-entry-converge.sh, provider-error-retry.sh and role-prompt-rule.sh.
-# Seven of the nine call this function.
+# The tenth is busy-relaunch-delivery.sh's negative control, which reads LEGION_TEST_PG_DSN with
+# this guard before it builds the base commit's tree, through the copy lib/live-daemon-proof.sh
+# sources. Eight of the ten call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
