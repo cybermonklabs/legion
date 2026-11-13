@@ -182,8 +182,9 @@ func unmarked(t *testing.T, body []byte) string {
 // whose claims record a contract below supervise.PodUpdateContract is served claim views with
 // only the keys contract 45 knows, and the rest of the body as it is — the trees, the wakes the
 // pacing holds, the count of claims the refresh lane has left, the gated steps, the claim views'
-// step record, the places in the admission line, the workers' counts of the moves back and the
-// issues the record holds in the workflow among the keys it is served without, since such a pod
+// step record, the places in the admission line, the workers' counts of the moves back, each
+// issue's two entry numbers and the issues the record holds in the workflow among the keys it is
+// served without, since such a pod
 // is below every row of stateNarrowings. A pod at the newest contract the route narrows by, and
 // a caller in no
 // pod — the operator's `legion state`, whose open-rounds line reads both fields, whose queue
@@ -287,10 +288,11 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 			// answer gone, the `why` contract 85 added beside the line's own fields, which go
 			// with the `waitingLine` key itself for a caller this far back
 			// (withoutWhyAndLineFields), with each claim view's `leakCheckCause` gone, the
-			// sentence contract 87 added (withoutLeakCheckCause), and with `admission.held` gone,
-			// the list contract 98 added (withoutHeld, held_test.go holds that half). Every row
-			// that reaches here is below all of them, so those fourteen strips take their keys
-			// whatever the row is.
+			// sentence contract 87 added (withoutLeakCheckCause), with each issue's `phaseEntry`
+			// and `givenEntry` gone, the two keys contract 94 added (withoutPhaseEntries), and
+			// with `admission.held` gone, the list contract 98 added (withoutHeld, held_test.go
+			// holds that half). Every row that reaches here is below all of them, so those
+			// fifteen strips take their keys whatever the row is.
 			var want, got map[string]any
 			if err := json.Unmarshal(full, &want); err != nil {
 				t.Fatal(err)
@@ -314,6 +316,10 @@ func TestTheStateRouteServesAPodItsPluginContractsClaimViews(t *testing.T) {
 				for _, key := range []string{"heldFrom", "lingerUntil", "ancestry"} {
 					delete(issue, key)
 				}
+				// Every row that reaches here is below phaseEntriesContract too, so the two
+				// entry numbers go whatever the row is, as the decided record's keys above do.
+				delete(issue, "phaseEntry")
+				delete(issue, "givenEntry")
 				views := []any{issue["architect"]}
 				for _, worker := range issue["workers"].(map[string]any) {
 					worker := worker.(map[string]any)
