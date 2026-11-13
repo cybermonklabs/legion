@@ -2073,6 +2073,50 @@ func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) 
 	}
 }
 
+// R5 holds the memory experiment's line to the count the memory line made before any experiment
+// was declared, and that line counted only issues whose tree a draw had reached. A unit a
+// hand-over settled at no arm (a carried child whose old tree held no draw) was in no count:
+// the earlier daemon served it none of the three memory fields, and legion state left it out.
+// The back-fill turns every such carried child into a settled row (variant, mode and instant all
+// empty), so on a deployment that ran the earlier release those rows exist from the upgrade on,
+// and the memory line must not start counting them. The want is the line the merge base's own
+// binary (045ee0762538, legion-v20.8.1) printed for the same issues, measured by INFRA-2566's
+// tester on 2026-11-13.
+func TestPlainStateLeavesAMemoryUnitSettledAtNoArmOutOfTheMemoryLine(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	drawn := func(key, variant, mode string) string {
+		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
+			`,"assignments":[{"experiment":"memory","variant":"` + variant + `","mode":"` + mode + `","drawnAt":"2026-10-25T10:00:00Z"}]}`
+	}
+	// The settled row as the daemon serves it: no arm, no mode, no instant.
+	settled := `"LEGION-500":{"key":"LEGION-500","generation":1,"phase":"implementing","status":"in_progress"` +
+		`,"assignments":[{"experiment":"memory","variant":"","mode":""}]}`
+	issues := `{` + drawn("LEGION-208", "memory", "on") + `,` + drawn("LEGION-209", "memory", "random") + `,` +
+		drawn("LEGION-210", "memory", "random") + `,` + drawn("LEGION-300", "", "off") + `,` +
+		drawn("LEGION-301", "none", "random") + `,` + settled + `}`
+	settings := `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random",` +
+		`"config_files":["/etc/legion-operator/memory.yml"]},"experiments":[]}}}`
+	served := "{" + daemon + `,"issues":` + issues + settings + "}"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(served))
+	}))
+	defer server.Close()
+	t.Chdir(t.TempDir())
+	t.Setenv("LEGION_DAEMON_URL", server.URL)
+	t.Setenv("LEGION_ISSUE", "")
+
+	var out, errb bytes.Buffer
+	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+	}
+	const want = "memory: 5 issues — 1 memory (on), 2 memory (random), 1 none (off), 1 none (random)\n"
+	if !strings.Contains(out.String(), want) {
+		t.Fatalf("legion state printed %q, want the line %q, which the memory line printed before any experiment was declared", out.String(), want)
+	}
+}
+
 // An operator reading plain `legion state` is told which claims nothing will wake, each by issue
 // and role under the move that brings it back (api.StrandedClaim.Move), on one line however many
 // there are; with none the line says so.
