@@ -741,11 +741,12 @@ test("the Conversation tab downloads no editor transport; the Spec tab loads it 
   }
 });
 
-// SLOW(>=2s): the row waits out the shell's hold on purpose. A document whose transport never
+// SLOW(>=2s): the row passes the shell's hold on purpose. A document whose transport never
 // connects neither draws nor fails, so nothing but `HOLD_LIMIT_MS` ends the hold on the margin,
-// the search bar, the preview layer and the event map (`web/src/features/shell/content-drawn.ts`);
-// the row proves the page gets its margin and its live refresh all the same, with no key or
-// click from the reader, since either would end the hold by itself.
+// the preview layer and the event map (`web/src/features/shell/content-drawn.ts`); the row
+// proves the page gets its margin and its live refresh all the same, with no key or click from
+// the reader, since either would end the hold by itself. The page's clock carries it past the
+// limit, so no wait of the row is longer than the suite's own expect timeout.
 test("a document that never connects still gets the page its margin and its live refresh", async ({
   browser,
 }) => {
@@ -759,6 +760,7 @@ test("a document that never connects still gets the page its margin and its live
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    await page.clock.install();
     // Holding every document socket: the editor never syncs, so it is never built.
     await documentTransport(page, { holding: true });
     await page.goto(`/issues/${issue.key}`);
@@ -766,13 +768,9 @@ test("a document that never connects still gets the page its margin and its live
 
     // An event the feed takes while the hold is on: kept, and refreshed once the hold ends.
     await patchIssue(issue.key, { title: "After the event" });
-    const pastTheLimit = { timeout: HOLD_LIMIT_MS + 10_000 };
-    await expect(page.getByRole("heading", { level: 1, name: "After the event" })).toBeVisible(
-      pastTheLimit
-    );
-    await expect(page.getByRole("complementary", { name: "Review margin" })).toBeVisible(
-      pastTheLimit
-    );
+    await page.clock.runFor(HOLD_LIMIT_MS);
+    await expect(page.getByRole("heading", { level: 1, name: "After the event" })).toBeVisible();
+    await expect(page.getByRole("complementary", { name: "Review margin" })).toBeVisible();
     await expect(documentEditor(page).locator("[data-block-id]")).toHaveCount(0);
   } finally {
     await alice.close();
@@ -1081,8 +1079,9 @@ test("a document drawn before the margin keeps its width when the margin arrives
   }
 });
 
-// SLOW(>=2s): the row waits out the shell's hold, as the row about a document that never
-// connects does, so that it reads the ring over the whole hold and not for two seconds of it.
+// SLOW(>=2s): the row passes the shell's hold, as the row about a document that never connects
+// does, so that it reads the ring over the whole hold and not for two seconds of it. The page's
+// clock carries it through both waits, so no wait of the row is longer than the suite's own.
 test("the ring on a landed artifact's header lasts two seconds from the moment its content draws", async ({
   browser,
 }) => {
@@ -1096,6 +1095,7 @@ test("the ring on a landed artifact's header lasts two seconds from the moment i
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
+    await page.clock.install();
     // Holding every document socket: the document never draws, so only `HOLD_LIMIT_MS` ends
     // the shell's hold (`web/src/features/shell/content-drawn.ts`).
     await documentTransport(page, { holding: true });
@@ -1104,15 +1104,15 @@ test("the ring on a landed artifact's header lasts two seconds from the moment i
     const ringed = page.locator('[data-testid="artifact-header"].ring-2');
     await expect(ringed).toBeVisible();
     // Longer than two seconds from the header's mount: a ring counted from there is gone now.
-    await sleep(3_000);
+    await page.clock.runFor(3_000);
     await expect(ringed).toBeVisible();
 
     // The hold ends at its limit, and the margin comes in; the two seconds start then.
-    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible({
-      timeout: HOLD_LIMIT_MS + 10_000,
-    });
+    await page.clock.runFor(HOLD_LIMIT_MS);
+    await expect(page.getByRole("tab", { name: "Comments" })).toBeVisible();
     await expect(header).toBeVisible();
-    await expect(ringed).toHaveCount(0, { timeout: 5_000 });
+    await page.clock.runFor(2_500);
+    await expect(ringed).toHaveCount(0);
   } finally {
     await alice.close();
   }
