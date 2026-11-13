@@ -82,20 +82,12 @@ export function newAsks(toolName: string, input: Readonly<Record<string, unknown
     case "dispatch_artifact":
       return typeof input.content === "string" ? askBlocks(input.content) : [];
     case "dispatch_doc_edit":
-      return (Array.isArray(input.ops) ? input.ops : []).flatMap((op: unknown): NewAsk[] => {
-        if (typeof op !== "object" || op === null) return [];
-        const {
-          op: kind,
-          markdown,
-          with: replacement,
-          type,
-          block,
-        } = op as Record<string, unknown>;
+      return editOps(input).flatMap((op): NewAsk[] => {
+        const { op: kind, markdown, with: replacement, type, block } = op;
         // Inserted text reads a closed front-matter block as front matter only where it lands at
         // the document's start (pmdoc.ParseFragment's opensDocument); a "start" anchor is that.
         if (kind === "insert" && typeof markdown === "string") {
-          const { before, after } = op as Record<string, unknown>;
-          return scanAsks(markdown, before === "start" || after === "start");
+          return scanAsks(markdown, op.before === "start" || op.after === "start");
         }
         // A `with` is read as an `insert`'s markdown is, over each string the server might parse
         // it as: the module comment says why the scan reads it that way and what that
@@ -114,21 +106,33 @@ export function newAsks(toolName: string, input: Readonly<Record<string, unknown
 }
 
 /**
- * How many asks the new asks of a call carry, which is what a record of the call reports: the
- * asks grouped by `id` where they have one and by `opening` where they do not, and the groups
- * counted. `newAsks` reports one entry for each reading of a `replace`'s `with` the server might
- * parse (`replacementAsks`), so two readings of one ask block are two entries; they carry the
- * block's own id, which joins them where their `opening`s differ because the readings end the
- * block at different lines. Two readings of one ask block that carries no id and whose text
- * differs have nothing to join them on and count two, and two ask blocks carrying no id whose
- * openings are the same count one.
+ * How many asks a call opens for a person, which is what a record of the call reports. Each entry
+ * `newAsks` reports counts one, except a `replace`'s: `newAsks` reports the asks of every string
+ * the server might parse one `with` as (`replacementReadings`), and those readings are
+ * alternatives of one text, of which the server parses exactly one. A `replace` therefore counts
+ * as the most asks any one of its readings opens (`scanAsks` over each reading). The gate reads
+ * the call before it goes out and cannot know which reading the server takes; the largest reading
+ * can only over-count the asks the write carries, where any smaller one could hide some of them.
+ * Nothing is grouped by `id` or by `opening`: two asks the call writes count two, whatever they
+ * share.
  */
-export function askCount(asks: readonly NewAsk[]): number {
-  const groups = new Set<string>();
-  for (const ask of asks) {
-    groups.add(JSON.stringify(ask.id === undefined ? ["opening", ask.opening] : ["id", ask.id]));
+export function newAskCount(toolName: string, input: Readonly<Record<string, unknown>>): number {
+  if (toolName !== "dispatch_doc_edit") return newAsks(toolName, input).length;
+  let count = 0;
+  for (const op of editOps(input)) {
+    count +=
+      op.op === "replace" && typeof op.with === "string"
+        ? Math.max(...replacementReadings(op.with).map((text) => scanAsks(text, false).length))
+        : newAsks(toolName, { ops: [op] }).length;
   }
-  return groups.size;
+  return count;
+}
+
+/** A `dispatch doc-edit`'s operations, each an object; anything else in `ops` is no operation. */
+function editOps(input: Readonly<Record<string, unknown>>): Record<string, unknown>[] {
+  return (Array.isArray(input.ops) ? input.ops : []).filter(
+    (op: unknown): op is Record<string, unknown> => typeof op === "object" && op !== null
+  );
 }
 
 /** A `dispatch ask`: its question, then its options as the bullet list an ask block holds them in. */

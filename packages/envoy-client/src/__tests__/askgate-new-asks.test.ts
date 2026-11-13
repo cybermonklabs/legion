@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { askBlocks, askCount, type NewAsk, newAsks } from "../askgate-new-asks";
+import { askBlocks, type NewAsk, newAskCount, newAsks, openingOf } from "../askgate-new-asks";
 
 /** A row of the Dispatch server's own table of inserted markdown and the ask blocks it adds. */
 interface DecisionBlockInsert {
@@ -455,18 +455,6 @@ describe("newAsks", () => {
     ]);
   });
 
-  // The two readings of that one block are two entries, and the count a record of the write
-  // carries is of asks and not of readings: they name one id, so they are one ask (`askCount`).
-  test("two readings of one ask block count as the one ask they are of", () => {
-    const variants = newAsks("dispatch_doc_edit", {
-      issue: "DSP-1",
-      artifact: "spec",
-      ops: [{ op: "replace", find: "a", with: "- :::ask{#q}\n  Benign?\n    :::\n  Evil?\n  :::" }],
-    });
-    expect(variants).toHaveLength(2);
-    expect(askCount(variants)).toBe(1);
-  });
-
   // An ask block with no id has nothing but its text to pair its readings on, so the reading
   // that opens it empty inside the list item is dropped beside the one that holds the question,
   // rather than counted as a second ask.
@@ -572,4 +560,70 @@ describe("newAsks", () => {
       expect(newAsks(tool, input)).toEqual([]);
     });
   }
+});
+
+describe("newAskCount", () => {
+  // Two questions whose first 60 code points match, so their `opening`s are the same.
+  const shared = "Which deployment window should the billing service release take";
+  const friday = `${shared}, the Friday one?`;
+  const monday = `${shared}, the Monday one?`;
+
+  test("two distinct id-less asks in one insert whose openings match count two", () => {
+    const input = {
+      issue: "DSP-1",
+      artifact: "spec",
+      ops: [
+        {
+          op: "insert",
+          after: "end",
+          markdown: `:::ask{}\n${friday}\n:::\n\n:::ask{}\n${monday}\n:::`,
+        },
+      ],
+    };
+    const asked = newAsks("dispatch_doc_edit", input);
+    expect(asked.map((ask) => ask.text)).toEqual([friday, monday]);
+    expect(asked.map((ask) => ask.opening)).toEqual([openingOf(shared), openingOf(shared)]);
+    expect(newAskCount("dispatch_doc_edit", input)).toBe(2);
+  });
+
+  // `newAsks` reports two entries for this `with`, one for each reading the server might parse,
+  // and the server parses one of them: each reading opens one ask, so the write carries one.
+  test("a replace's with whose two readings each open one ask counts one", () => {
+    const input = {
+      issue: "DSP-1",
+      artifact: "spec",
+      ops: [
+        {
+          op: "replace",
+          find: "- item",
+          with: "- :::ask{#q}\n  Benign?\n    :::\n  Evil?\n  :::",
+        },
+      ],
+    };
+    expect(newAsks("dispatch_doc_edit", input)).toHaveLength(2);
+    expect(newAskCount("dispatch_doc_edit", input)).toBe(1);
+  });
+
+  test("a replace's with holding an id-less ask block counts one", () => {
+    expect(
+      newAskCount("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [{ op: "replace", find: "a", with: "- :::ask{}\nQ?\n:::" }],
+      })
+    ).toBe(1);
+  });
+
+  test("two replaces each opening one ask count two", () => {
+    expect(
+      newAskCount("dispatch_doc_edit", {
+        issue: "DSP-1",
+        artifact: "spec",
+        ops: [
+          { op: "replace", find: "- a", with: `- :::ask{}\n${friday}\n:::` },
+          { op: "replace", find: "- b", with: `- :::ask{}\n${monday}\n:::` },
+        ],
+      })
+    ).toBe(2);
+  });
 });

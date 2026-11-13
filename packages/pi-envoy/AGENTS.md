@@ -795,7 +795,7 @@ checks' mode into the session's own record for the CLI (`checkMode`: block only 
 chose it; `setRecordMode` keys it per session, so a switch never changes another session's mode),
 apart from the verdict's mode (`sessionMode`, block by default); `envoy.ts` turns each write the
 CLI logged as unmarked into an `unmarked` entry, and, where the CLI's own line says the write
-carried asks for a person (`asksCarried`, counted with `newAsks` in
+carried asks for a person (`asksCarried`, counted with `newAskCount` in
 `@legion/envoy-client/askgate-new-asks`), publishes one decision record for it through the
 recorder `registerAskGate` returns, which runs until Dispatch answers it or the shutdown cut ends it.
 The entry is appended before that record starts and the tool result awaits none of it — a session's

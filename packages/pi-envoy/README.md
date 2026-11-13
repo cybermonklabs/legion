@@ -495,12 +495,12 @@ gated write only when it consumes one, so a write sent any other way is refused 
   help only: the gate refuses nothing for it.
 - **The unmarked write that carries an ask.** The `unmarked` entry reaches only this machine's
   disk. Where such a write carries at least one ask for a person, the CLI counts those asks from
-  the write's own text (`newAsks` in `@legion/envoy-client/askgate-new-asks`) and writes the count
-  into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record for it on
-  Dispatch (below), with the tool, the mode and that count and no ask text. The count is of the
-  asks the write carries, so a re-upload of ask blocks the stored version already holds counts
-  them as carried: in `warn` mode the write has already posted when the ledger is read, so a read
-  of the stored version would see the new text and count nothing.
+  the write's own text (`newAskCount` in `@legion/envoy-client/askgate-new-asks`) and writes the
+  count into the session's ledger as `asksCarried`, and pi-envoy publishes one decision record
+  for it on Dispatch (below), with the tool, the mode and that count and no ask text.
+  The count is of the asks the write carries, so a re-upload of ask blocks the stored version
+  already holds counts them as carried: in `warn` mode the write has already posted when the
+  ledger is read, so a read of the stored version would see the new text and count nothing.
 
 The gated writes are the same list for the gate and the CLI (`gatedWrite` in
 `@legion/envoy-client/askgate-marker`): the six commands above, an `issue` with a spec and an
@@ -838,13 +838,16 @@ documents and prints the day's refusals by rule, the refusals the agent overrode
 judged on part of their asks and those that judged none, the unmarked writes by mode with the asks
 they carried, and the rules-call error rate, each split by `source`, with the documents and lines
 it could not read, and the records it read twice, counted beside them. An unmarked write is in no
-rules-call count and in no override count: no check judged it. Its `asksCarried` counts the asks
-and ask blocks the write carries, once each: the gate reads a `doc-edit` `replace`'s `with` as
-every string the server might parse it as, and the readings of one ask block are counted as the
-one ask they are of, by the block's id. The corner that leaves is an ask block carrying no id
-whose readings differ in their text, which has nothing to be counted by and counts twice. A
-re-upload of blocks a stored version already holds counts them as carried. The same script's
-`--sessions <dir>` mode still reports the entries on disk, the
+rules-call count and in no override count: no check judged it.
+Its `asksCarried` counts each ask and ask block the write carries as one, and groups none of them
+by id or by text, so two ask blocks that open with the same words count two.
+`newAskCount` reads a `doc-edit` `replace`'s `with` as every string the server might parse it as,
+and the server parses one of them, so a `replace` counts as the most asks any one of those
+readings opens.
+The count is taken before the write goes out, so it cannot know which reading the server takes,
+and the largest can only over-count.
+A re-upload of blocks a stored version already holds counts them as carried.
+The same script's `--sessions <dir>` mode still reports the entries on disk, the
 decision records not confirmed among them. Each flag is given once: the
 script refuses a flag given twice by name, rather than reading only its last value.
 
