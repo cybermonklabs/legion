@@ -912,7 +912,8 @@ and the open children for `children_first`.
 It is absent for `label_off`, `at_work` and `unclassified`.
 An issue in `admission.held` holds no admission slot, so the list changes no count against `admission_cap`.
 An issue in the phase `held` keeps its slot while its tree runs, and then `admission.active` names it and no held row does.
-Under a tree root that lingers or has closed, it holds no slot, and its held row reads `tree_closed`, or `tree_parked` once a parked root's linger has run out.
+Under a tree root whose linger was ever armed — a root that closed, was parked or was moved to `triage` — it holds no slot from the next admission pass on (`record.NeedsSlot`), and its held row reads the first word of the ladder that is true of it:
+`tree_closed` while that linger runs and after it for a `done` root, `tree_parked` after it for a root in `backlog` or `icebox`, and after it for a root in any other status, such as `triage`, the first later word that is true, `unclassified` where none is.
 The daemon starts no held issue while its word stands.
 The end of one hold starts nothing where a later word is true of the issue, since that word then holds it;
 once no word holds the issue, it goes into the waiting line, where it waits for a slot.
