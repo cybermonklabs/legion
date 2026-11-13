@@ -2942,13 +2942,15 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   neither prints a count line.
   Each entry `notes.IsNote` rejects is a warning on stderr, `architecture-check: warning: <path>: not a note (<kind>); the importer passes over it`, and changes no exit status:
   the importer passes over such an entry in silence, and its author expects it to count.
+  It escapes every control character in a path, an error or a problem it prints as a Go string literal writes it (`\n`, `\r`, `\x1b`), so text in the directory cannot end its line or start a line of its own in the log, where a GitHub runner reads a line starting `::` as a workflow command.
   `--allow-empty` reads a directory that holds no note, and one that does not exist, as the empty set, exit 0 with a count of 0, as the server reads a missing directory as the empty model;
   git keeps no empty directory, so a repository with no note yet has no directory at all.
   It opens no database and reaches no network.
   The composite action `.github/actions/architecture-check` is how another repository runs it (`README.md` there is that caller's guide):
   it builds the command from this repository at the commit the caller pins, with the Go that `packages/envoy/go.mod` names, runs it over its `path` input (default `.dispatch/architecture`, resolved against the caller's checkout) with `--allow-empty` when `allow-empty` is `true`, exits with the command's status, and hands the count line's number to the caller as its `count` output, on exit 0 and on exit 1.
   `ci.yaml`'s `envoy-go-checks` runs the notes package's and the command's tests and then the action over this repository's own notes, and fails unless `count` is a positive whole number;
-  `ci-caches.yaml`'s `envoy` job runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>` cache entry in main's scope, since the action saves only on a miss outside a pull request or a merge group.
+  `ci-caches.yaml`'s `envoy` job runs the action on every push to main, which fills its `architecture-check-<os>-<arch>-go<version>` cache entry in main's scope, since the action saves only on a miss in a `push`, `schedule` or `workflow_dispatch` run;
+  a run of any other event (`pull_request`, `pull_request_target`, `merge_group`, `issue_comment`, `workflow_run` and the rest) may hold another person's code, so it restores and never saves.
 
 - Every sync runs under a two-minute deadline of its own, counted from when its flight began rather than from when a caller arrived.
   A flight runs on a context detached from whichever caller started it (`context.WithoutCancel`), so one caller hanging up fails none of the others.

@@ -64,6 +64,7 @@ A caller sets `allow-empty: true` only while it has no note, and reads `count`.
 The check step exits with the status of the command.
 A status other than 0 fails the step and the job.
 Each line names the directory by its absolute path.
+The command escapes every control character in a path or a problem that it prints, as `\n`, `\r` or `\x1b`, so text in the directory cannot end its line or start a line of its own in the log, where a runner reads a line that starts with `::` as a workflow command.
 
 - **Exit 0: the set is valid.**
   The log holds the line `architecture-check: <directory>: <n> notes, the set is valid`, with `note` for one note.
@@ -89,6 +90,7 @@ The warning tells the author that the server does not read the entry.
 The action installs the Go version that `packages/envoy/go.mod` of this repository names, with `actions/setup-go`.
 That action puts this Go first on `PATH` and sets `GOTOOLCHAIN=local` for the rest of the caller's job.
 So put the action in a job of its own, or before the Go setup of the job.
+That job must have no `container:`, as [Runners](#runners) says.
 
 The build ignores the user environment file of the go command (`GOENV=off`).
 A caller that needs `GOPROXY`, `GOPRIVATE` or `GONOSUMDB` sets them as environment variables of the job.
@@ -100,14 +102,23 @@ So a Go flag or a target platform of the caller's job does not change the build.
 
 The action keeps the module cache and the build cache of the command under the key `architecture-check-<os>-<arch>-go<version>`.
 It restores the cache on every run.
-It saves the cache only on a miss, and only outside pull requests and merge groups.
+It saves the cache only on a miss, and only in a `push`, `schedule` or `workflow_dispatch` run.
+A run of any other event can hold the code of another person, for example a `pull_request`, `pull_request_target`, `merge_group`, `issue_comment` or `workflow_run` run.
+Go trusts the module cache and the build cache that it reads, so such a run restores the cache and never saves it.
+
+A pull request of a caller reads the cache only from a run on the default branch of the caller, or on its own base branch when that is another branch.
+A `push`, `schedule` or `workflow_dispatch` run on the default branch saves into the scope of that branch, and every pull request reads that scope.
+A save on another branch reaches only the later runs on that branch and the pull requests whose base is that branch.
 So a caller also runs the job on pushes to its default branch.
 If it does not, each pull-request run downloads and builds the command again.
 That is two small modules, `gopkg.in/yaml.v3` and `github.com/pmezard/go-difflib`, and a build of the Go standard library.
 
 ## Runners
 
-This repository tests the action on `ubuntu-24.04` runners.
+The action runs in a job without `container:`, on a runner such as `ubuntu-24.04`, which is what this repository tests.
+In a job with `container:`, `github.action_path` and `runner.temp` are paths on the host and not paths in the container.
+Two open issues of the runner record this: [actions/runner#2185](https://github.com/actions/runner/issues/2185) and [actions/runner#2498](https://github.com/actions/runner/issues/2498).
+The action gives both paths to `actions/setup-go` and to its cache steps, so do not use it in a job with `container:`.
 
 ## A job to copy
 

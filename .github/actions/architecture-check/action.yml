@@ -5,8 +5,8 @@ description: >-
   valid. It builds packages/envoy's architecture-check command from this repository, with the Go
   that packages/envoy/go.mod names, and runs it over a directory of the caller's checkout.
 
-  It is meant to be called from other repositories, pinned by a full commit SHA. README.md beside
-  this file gives the inputs, the output, the exit statuses and a job to copy.
+  Other repositories call it, pinned by a full commit SHA, in a job without `container:`. Its
+  README.md says why, and gives the inputs, the output, the exit statuses and a job to copy.
 
 inputs:
   path:
@@ -56,12 +56,12 @@ runs:
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/check.sh" build
 
-    # Saves on a miss only, and never in a pull request or a merge group: their entry lands in
-    # their own cache scope, which no other pull request reads, and pull_request_target runs in
-    # the base branch's scope, where a build of a pull request's code must not write. A step runs
-    # only after every step above it succeeded, so this one also follows a successful build.
+    # Saves on a miss only, and only in a push, schedule or workflow_dispatch run. Any other run,
+    # pull_request, pull_request_target, merge_group, issue_comment and workflow_run among them,
+    # may hold another person's code, so it restores and never saves. A step runs only after every
+    # step above it succeeded, so this one also follows a successful build.
     - name: Save the command's module and build caches
-      if: steps.cache.outputs.cache-hit != 'true' && github.event_name != 'pull_request' && github.event_name != 'pull_request_target' && github.event_name != 'merge_group'
+      if: steps.cache.outputs.cache-hit != 'true' && (github.event_name == 'push' || github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |

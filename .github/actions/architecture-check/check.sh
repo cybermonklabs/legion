@@ -2,8 +2,8 @@
 # The script of the composite action beside it (action.yml): it builds packages/envoy's
 # architecture-check command from the checkout of this repository the runner fetched for the
 # action, and runs it over a notes directory of the caller's checkout. The action runs it as
-# `bash "$GITHUB_ACTION_PATH/check.sh" <mode>`, so its file mode does not matter, and a test runs
-# it the same way with GITHUB_WORKSPACE pointed at any tree.
+# `bash "$GITHUB_ACTION_PATH/check.sh" <mode>`, so its file mode does not matter, and a person can
+# run it by hand the same way, with GITHUB_WORKSPACE pointed at any tree.
 #
 # Usage: check.sh build | check.sh run
 #
@@ -84,7 +84,7 @@ run() {
   case "$ARCHITECTURE_CHECK_ALLOW_EMPTY" in
     true) set -- --allow-empty "$dir" ;;
     false) set -- "$dir" ;;
-    *) refuse "the input allow-empty is '$ARCHITECTURE_CHECK_ALLOW_EMPTY', and it must be 'true' or 'false'" ;;
+    *) refuse "the input allow-empty is ${ARCHITECTURE_CHECK_ALLOW_EMPTY@Q}, and it must be 'true' or 'false'" ;;
   esac
   [ -x "$binary" ] || refuse "no command at $binary: run check.sh build first"
 
