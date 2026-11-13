@@ -562,17 +562,18 @@ func (r *resolver) issueReader(key string, event int64) string {
 	return r.owner(key, "", event)
 }
 
-// artifactProject is the project_key of the artifact id, "" when none or not held.
-func (r *resolver) artifactProject(id string) string {
-	if id == "" {
-		return ""
+// textOwner is the server's textOwnerJoins: the reader of what a comment or an ask is on. A text
+// on a document names the document and no issue, and is read through the document's owner: an
+// issue's document by that issue's reader, a project's by its default, a direct conversation's
+// by the person in it.
+func (r *resolver) textOwner(issue, artifact string, event int64) string {
+	switch {
+	case issue != "":
+		return r.owner(issue, "", event)
+	case artifact != "":
+		return r.documentReader(artifact, event)
 	}
-	a := r.s.Artifacts[id]
-	if a == nil {
-		r.miss("artifact")
-		return ""
-	}
-	return a.Project
+	return ""
 }
 
 // documentReader is the server's documentReader: a session's document is read by the person in
@@ -608,7 +609,7 @@ func (r *resolver) ask(id string, event int64) (answered, string) {
 		r.miss("ask")
 		return answered{}, ""
 	}
-	owner := r.owner(a.Issue, r.artifactProject(a.Artifact), event)
+	owner := r.textOwner(a.Issue, a.Artifact, event)
 	waitsOn, _ := a.AskedOf.before(event)
 	return answered{author: a.Author, owner: owner}, cmp.Or(waitsOn, owner)
 }
@@ -620,7 +621,7 @@ func (r *resolver) comment(id string, event int64) (answered, *commentRecord) {
 		r.miss("comment")
 		return answered{}, &commentRecord{}
 	}
-	return answered{author: c.Author, owner: r.owner(c.Issue, r.artifactProject(c.Artifact), event)}, c
+	return answered{author: c.Author, owner: r.textOwner(c.Issue, c.Artifact, event)}, c
 }
 
 // message is the server's readAnsweredMessage: a message on no issue that no person wrote is

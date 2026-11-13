@@ -169,11 +169,11 @@ func TestTheReaderOfEachWriteIsTheServersRuleAtTheTimeOfTheWrite(t *testing.T) {
 }
 
 // TestTheReaderOfWritesOnAnIssuesDocumentAndOfNewIssues: an issue's primary document (which no
-// artifact.created announces), comments on an issue's document, an edit of one, a block ask, and
-// new issues created with nobody, each read as the server reads it. The server reads the owner
-// of a document's comment through its project alone (readAnsweredComment joins the comment's
-// own issue_key, which a document's comment leaves null), so an edit is read by the project's
-// default where a new comment is read by the issue's assignee.
+// artifact.created announces), comments and asks on an issue's document, an edit of a comment, a
+// block ask, and new issues created with nobody, each read as the server reads it. A comment or
+// an ask on an issue's document names the document and no issue, and the server reads it through
+// the document's issue (textOwnerJoins): the issue's assignee, alice, and not the project's
+// default, carol. A reply to a person's comment there is read by that person.
 func TestTheReaderOfWritesOnAnIssuesDocumentAndOfNewIssues(t *testing.T) {
 	owned := `{"kind": "session", "id": "session-f", "owner": "Frank@Example.com"}`
 	r := replayed(t, []event{
@@ -188,6 +188,12 @@ func TestTheReaderOfWritesOnAnIssuesDocumentAndOfNewIssues(t *testing.T) {
 		ev(9, "issue.created", owned, "P-2", issuePayload("P-2", "P", "")),
 		ev(10, "issue.created", agentA, "P-3", `{"key": "P-3", "project": "P", "parent": "P-1", "assignee": null}`),
 		ev(11, "artifact.version", agentA, "P-1", `{"artifact_id": "d-spec", "version": {"number": 2}}`),
+		ev(12, "comment.answered", agentA, "P-1", commentPayload("c-answer", agentA, "", "d-issue", "c-agent", "")),
+		ev(13, "comment.answered", agentA, "P-1", commentPayload("c-answer-dave", agentA, "", "d-issue", "c-dave", "")),
+		ev(14, "comment.edited", agentA, "P-1", commentPayload("c-reply", agentA, "", "d-issue", "c-dave", "")),
+		ev(15, "ask.opened", agentA, "P-1", askEventPayload("a-doc", agentA, "", "d-issue", "")),
+		ev(16, "ask.edited", agentA, "P-1", askEventPayload("a-doc", agentA, "", "d-issue", "")),
+		ev(17, "ask.answered", agentB, "P-1", askEventPayload("a-doc", agentA, "", "d-issue", "")),
 	})
 	for _, tt := range []struct {
 		c            Case
@@ -195,11 +201,16 @@ func TestTheReaderOfWritesOnAnIssuesDocumentAndOfNewIssues(t *testing.T) {
 	}{
 		{Case{EventID: 5, EventType: "comment.created", Surface: surfaceComment, SourceID: "c-reply", Document: "d-issue"}, dave, ruleComment},
 		{Case{EventID: 6, EventType: "comment.created", Surface: surfaceComment, SourceID: "c-agent", Document: "d-issue"}, alice, ruleComment},
-		{Case{EventID: 7, EventType: "comment.edited", Surface: surfaceCommentEdit, SourceID: "c-agent", Document: "d-issue"}, carol, ruleCommentEdit},
+		{Case{EventID: 7, EventType: "comment.edited", Surface: surfaceCommentEdit, SourceID: "c-agent", Document: "d-issue"}, alice, ruleCommentEdit},
 		{Case{EventID: 8, EventType: "ask.opened", Surface: surfaceAskQuestion, SourceID: "a-block", Issue: "P-1"}, alice, ruleDocument},
 		{Case{EventID: 9, EventType: "issue.created", Surface: surfaceIssueTitle, SourceID: "P-2", Issue: "P-2"}, "frank@example.com", ruleNewIssue},
 		{Case{EventID: 10, EventType: "issue.created", Surface: surfaceIssueTitle, SourceID: "P-3", Issue: "P-3"}, alice, ruleNewIssue},
 		{Case{EventID: 11, EventType: "artifact.version", Surface: surfaceDocument, SourceID: "d-spec@2", Document: "d-spec"}, alice, ruleDocument},
+		{Case{EventID: 12, EventType: "comment.answered", Surface: surfaceCommentDeliveryReply, SourceID: "c-answer", Document: "d-issue"}, alice, ruleCommentReply},
+		{Case{EventID: 13, EventType: "comment.answered", Surface: surfaceCommentDeliveryReply, SourceID: "c-answer-dave", Document: "d-issue"}, dave, ruleCommentReply},
+		{Case{EventID: 14, EventType: "comment.edited", Surface: surfaceCommentEdit, SourceID: "c-reply", Document: "d-issue"}, dave, ruleCommentEdit},
+		{Case{EventID: 16, EventType: "ask.edited", Surface: surfaceAskQuestion, SourceID: "a-doc", Document: "d-issue"}, alice, ruleAsk},
+		{Case{EventID: 17, EventType: "ask.answered", Surface: surfaceAskAnswer, SourceID: "a-doc", Document: "d-issue"}, alice, ruleAskReply},
 	} {
 		reader, rule, err := r.readerOf(tt.c)
 		if err != nil || reader != tt.reader || rule != tt.rule {

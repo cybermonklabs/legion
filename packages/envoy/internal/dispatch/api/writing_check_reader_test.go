@@ -178,6 +178,59 @@ func TestTheWritingCheckReaderOfACommentOnAnIssue(t *testing.T) {
 		rig.session(http.MethodPost, "/api/v1/issues/"+rig.fixture.issue+"/messages", map[string]any{"body": badProse}))
 }
 
+// insertID runs one insert that returns an id on the rig's database and answers the id: the
+// reader tests write a text on an issue's document as the store holds it, with the document's
+// id and no issue_key.
+func (rig *writingCheckRig) insertID(statement string, args ...any) string {
+	rig.t.Helper()
+	var id string
+	if err := rig.database.Pool.QueryRow(context.Background(), statement, args...).Scan(&id); err != nil {
+		rig.t.Fatalf("%s: %v", statement, err)
+	}
+	return id
+}
+
+// TestTheWritingCheckReaderOfTextOnAnIssuesDocument: a comment or an ask on an issue's document
+// names the document and no issue, and is read by that issue's assignee, not by the project's
+// default; a reply to a person's comment on the document is read by that person.
+func TestTheWritingCheckReaderOfTextOnAnIssuesDocument(t *testing.T) {
+	rig := newWritingCheckRig(t, writingCheckOn(nil))
+	rig.exec(`update projects set default_assignee = 'dana' where key = 'WCK'`)
+	onDocument := func(author string) string {
+		return rig.insertID(`insert into comments (artifact_id, author, body) values ($1::uuid, $2::jsonb, 'The cache is warm.') returning id::text`,
+			rig.fixture.notesID, author)
+	}
+	agentComment := onDocument(`{"kind":"session","id":"s-other"}`)
+	bobComment := onDocument(`{"kind":"user","id":"bob"}`)
+	agentReplyToBob := rig.insertID(`insert into comments (artifact_id, author, body, answers, reply_to) values ($1::uuid, $2::jsonb, 'The queue is empty.', $3::uuid, $3::uuid) returning id::text`,
+		rig.fixture.notesID, `{"kind":"session","id":"s-other"}`, bobComment)
+	ask := rig.insertID(`insert into asks (artifact_id, author, question) values ($1::uuid, $2::jsonb, 'Which port should the server use?') returning id::text`,
+		rig.fixture.notesID, `{"kind":"session","id":"s-other"}`)
+	handed := rig.insertID(`insert into asks (artifact_id, author, question, asked_of) values ($1::uuid, $2::jsonb, 'Which disk should the server use?', 'bob') returning id::text`,
+		rig.fixture.notesID, `{"kind":"session","id":"s-other"}`)
+	reply := map[string]any{"body": badProse, "attempt": 1}
+	question := map[string]any{"question": badProse}
+
+	rig.wantRead("a reply to a session's comment on the document", "alice", rig.session(http.MethodPost, "/api/v1/comments/"+agentComment+"/reply", reply))
+	rig.wantRead("an edit of a session's comment on the document", "alice", func() int {
+		return rig.asTokenFor(checkWriter, http.MethodPatch, "/api/v1/comments/"+agentComment, map[string]any{"body": badProse}).Code
+	})
+	rig.wantRead("a new comment answering a session's comment on the document", "alice", rig.session(http.MethodPost,
+		"/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": badProse, "reply_to": agentComment}))
+	rig.wantRead("an edit of an ask on the document", "alice", rig.session(http.MethodPatch, "/api/v1/asks/"+ask, question))
+	rig.wantRead("an answer to a session's ask on the document", "alice", func() int {
+		return rig.asTokenFor(checkWriter, http.MethodPost, "/api/v1/asks/"+ask+"/answer", map[string]any{"text": badProse, "expected_edited_at": nil}).Code
+	})
+	rig.wantRead("an edit of an ask on the document handed to bob", "bob", rig.session(http.MethodPatch, "/api/v1/asks/"+handed, question))
+
+	rig.wantRead("a reply to bob's comment on the document", "bob", rig.session(http.MethodPost, "/api/v1/comments/"+bobComment+"/reply", reply))
+	rig.wantRead("a new comment answering bob's comment on the document", "bob", rig.session(http.MethodPost,
+		"/api/v1/issues/"+rig.fixture.issue+"/comments", map[string]any{"body": badProse, "reply_to": bobComment}))
+	rig.wantRead("an edit of a session's reply to bob on the document", "bob", func() int {
+		return rig.asTokenFor(checkWriter, http.MethodPatch, "/api/v1/comments/"+agentReplyToBob, map[string]any{"body": badProse}).Code
+	})
+}
+
 // TestTheWritingCheckReaderOfADirectConversation: a session's reply in a person's direct
 // conversation, and a file it puts there, are read by that person; a reply in a conversation a
 // session opened to another session, and a file put where no person has a conversation, by
