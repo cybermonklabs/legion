@@ -94,8 +94,8 @@ func savedWorkspaceBundle() runtime.WorkspaceBundle {
 }
 
 // sentBookmarks is what a launcher is sent of the bookmarks of a copy made by one of the two
-// fixtures above: the one that is not the issue's own branch. No restore sets that branch
-// (bundleFrames), so it stays where the pod's own fetch put it, on what GitHub holds.
+// fixtures above: the one that is neither the issue's own branch nor its rescue branch. No restore
+// sets either (bundleFrames), so each stays where the pod's own fetch put it, on what GitHub holds.
 func sentBookmarks(b runtime.WorkspaceBundle) map[string]string {
 	return map[string]string{"side": b.Bookmarks["side"]}
 }
@@ -114,11 +114,16 @@ func frameTypes(frames []shimwire.Frame) []string {
 // drops its own copy when that launcher reports the restore it ran — all of the hop before the
 // launcher is told to start any role, since the launcher restores the bundle into the workspace
 // ahead of the role's command (internal/launcher). Every bookmark of the bundle crosses but the
-// issue's own branch, and the daemon logs the commit the bundle held that branch on.
+// issue's own branch and its rescue branch, and the daemon logs, in one line, the commit the
+// bundle held each of those two on.
 func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *testing.T) {
 	st := migratedStore(t)
 	logs := &logBuffer{}
 	saved := savedWorkspaceBundle()
+	// The copy holds a local bookmark of the issue's rescue branch on a commit of its own, as the
+	// shim's bundler keeps one that no remote branch holds.
+	branch, rescue := "legion/"+testTree, "legion/"+testTree+"-rescue"
+	saved.Bookmarks[rescue] = "0c4e5f6a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4"
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
@@ -166,12 +171,18 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 	if !read.At.Equal(saved.At) {
 		t.Fatalf("the bundle crossed as taken at %s, want %s", read.At, saved.At)
 	}
-	branch := "legion/" + testTree
 	line := restoreLine(t, logs, withheldBranchLine)
-	for _, want := range []string{"issue=" + testTree, `copy="release bundle"`, "branch=" + branch, "withheld=" + saved.Bookmarks[branch]} {
+	carries := []string{"issue=" + testTree, `copy="release bundle"`}
+	for _, name := range []string{branch, rescue} {
+		carries = append(carries, name+":"+saved.Bookmarks[name])
+	}
+	for _, want := range carries {
 		if !strings.Contains(line, want) {
-			t.Fatalf("the withheld branch logged %s, want it to carry %s", line, want)
+			t.Fatalf("the withheld bookmarks logged %s, want it to carry %s", line, want)
 		}
+	}
+	if strings.Contains(line, saved.Bookmarks["side"]) {
+		t.Fatalf("the withheld bookmarks logged %s, which names the side bookmark the launcher was sent", line)
 	}
 	// The launcher restored it and said so, so the daemon's copy has done its work.
 	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
@@ -350,7 +361,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 	d := newLaunchers(nil, st.TakeWorkspaceCopyForRestore, st.DeleteRestoredWorkspaceCopy, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	spec := workerSpec(t)
 	session := d.accept(spec.Claim, testTree, rigNow, shimwire.LauncherHello{LauncherID: "late", PodUID: "pod-uid"})
-	frames, _, _, err := bundleFrames(testTree, first)
+	frames, _, err := bundleFrames(testTree, first)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -365,7 +376,7 @@ func TestALateRestoreReportLeavesTheBundleOfANewerRelease(t *testing.T) {
 			kept.Bundle.Bundle, kept.Bundle.Release, kept.Take, second.Bundle, second.Release)
 	}
 	// The pod of the second release restores it, and that report drops it.
-	later, _, _, err := bundleFrames(testTree, second)
+	later, _, err := bundleFrames(testTree, second)
 	if err != nil {
 		t.Fatal(err)
 	}

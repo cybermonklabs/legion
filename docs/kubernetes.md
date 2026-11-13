@@ -4942,10 +4942,12 @@ A tie goes to the release bundle, which was taken while the roles were idle.
 A running copy off the pod a release bundle came off never supersedes that bundle, whatever their times: the bundle is that pod's last copy, so it is the copy offered and the running copy is closed unsent, which also answers any such row a daemon before this rule stored.
 The bytes of a closed copy stay in the database for an operator.
 
-No restore sets the issue's branch `legion/<KEY>`, so no restore can move that branch.
-The daemon sends every copy without the copy's own value of that bookmark, so the launcher's `jj bookmark set --allow-backwards` of each bookmark it is sent leaves the branch where the new pod's fetch from GitHub put it.
+No restore sets the issue's branch `legion/<KEY>` or its rescue branch `legion/<KEY>-rescue`, so no restore can move either branch.
+The daemon sends every copy without the copy's own values of those two bookmarks, so the launcher's `jj bookmark set --allow-backwards` of each bookmark it is sent leaves each of the two where the new pod's fetch from GitHub put it.
 The copy's work comes back as visible commits and as the working copy, which the launcher restores with `jj edit` back to the copy's head, and the role's own `jj bookmark set legion/<KEY> -r @-` then moves the branch forward onto that work, or jj refuses the move as backwards or sideways.
-The daemon logs, at Info, a line that begins `launcher bundle: the saved workspace copy's own value of the issue's branch is withheld` with the issue, the copy and the commit the copy held the branch on.
+The rescue branch is withheld because it only moves forward: a copy holds a local bookmark of it where that bookmark is on a commit no remote branch holds, and a rescue the pod pushes after the copy is taken moves GitHub's tip past that commit.
+Set back there, the bookmark would sit behind GitHub's tip: a `jj git push` of it moves the branch backwards and drops the later rescue, and the next rescue push leaves the bookmark conflicted, which jj then refuses to push.
+The daemon logs, at Info, one line that begins `launcher bundle: the saved workspace copy's own values of the issue's branch and its rescue branch are withheld` with the issue, the copy and, under `withheld`, each of the two bookmarks the copy held with the commit it held it on.
 
 The time rule is the second line, and it guards running copies only: a running copy is not sent when it was taken before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
 Such a copy would put the workspace back on work behind what GitHub holds, which the roles would then have to bring forward over the pushed commits.

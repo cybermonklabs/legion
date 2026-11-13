@@ -24,7 +24,8 @@ const MaxWorkspaceBundleBytes = 40 << 20
 // points into the saved set to its commit, and Tips names the heads the bundle carries, so the
 // restore can make each visible again: a bundle that only unbundles leaves every saved head out of
 // jj's view, since jj's visible heads live in .jj/repo, which dies with the pod. The restore sets
-// every bookmark the bundle holds but the issue's own branch (RestorableBookmarks).
+// every bookmark the bundle holds but the issue's own branch and its rescue branch
+// (RestorableBookmarks).
 type WorkspaceBundle struct {
 	// Bundle is the git bundle's bytes.
 	Bundle []byte
@@ -279,32 +280,49 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 }
 
 // RestorableBookmarks is the bookmarks a restore of a saved copy of issue's workspace sets: every
-// one of bookmarks, the copy's own, but the issue's branch `legion/<KEY>` (claim.IssueBranch). The
-// launcher sets each bookmark it is sent with `jj bookmark set --allow-backwards`, and the copy's
-// value of the issue's branch can sit behind GitHub's or beside it — a release bundle taken before
-// a push from outside the pod, a copy taken after such a push that the workspace never fetched, or
-// a copy taken before a push the daemon has not recorded — so a restore that set it would put the
-// branch where the role's next push removes the pushed commits from GitHub. Left out, the branch
-// stays where the new pod's own fetch put it, on what GitHub holds; the copy's work comes back as
-// visible heads (WorkspaceBundle.Tips) and as the working copy (WorkspaceBundle.Head), and the
-// role's own `jj bookmark set legion/<KEY> -r @-` then moves the branch forward onto that work or
-// is refused by jj as a move backwards or sideways.
+// one of bookmarks, the copy's own, but the issue's branch `legion/<KEY>` (claim.IssueBranch) and
+// its rescue branch `legion/<KEY>-rescue` (claim.RescueBranch). The launcher sets each bookmark it
+// is sent with `jj bookmark set --allow-backwards`, so a restore that set either would move it off
+// where the new pod's own fetch put it, on what GitHub holds, and onto the copy's commit.
 //
-// It also answers what it left out: the commit bookmarks held the issue's branch on, withheld, and
-// whether bookmarks held that branch at all, held. The line that tells an operator the branch was
-// withheld is written from this answer (internal/runtime/sandbox's bundleFrames and
-// restoreWorkspace), so it names exactly what the send left out.
+// The issue's branch is withheld for the commits GitHub holds on it. The copy's value of it can
+// sit behind GitHub's or beside it — a release bundle taken before a push from outside the pod, a
+// copy taken after such a push that the workspace never fetched, or a copy taken before a push the
+// daemon has not recorded — so a restore that set it would put the branch where the role's next
+// push removes the pushed commits from GitHub. Left out, the copy's work comes back as visible
+// heads (WorkspaceBundle.Tips) and as the working copy (WorkspaceBundle.Head), and the role's own
+// `jj bookmark set legion/<KEY> -r @-` then moves the branch forward onto that work or is refused
+// by jj as a move backwards or sideways.
 //
-// The map answered is bookmarks itself when it holds no such branch and a copy without it when it
-// does, so bookmarks is never written.
-func RestorableBookmarks(issue string, bookmarks map[string]string) (restorable map[string]string, withheld string, held bool) {
-	branch := claim.IssueBranch(issue)
-	if withheld, held = bookmarks[branch]; !held {
-		return bookmarks, "", false
+// The rescue branch is withheld because it only moves forward: each rescue is one commit on the
+// tip GitHub holds (rescue.Target). The shim's bundler keeps a local bookmark of it, like any
+// other, where it is on a commit no remote branch holds, and a rescue the pod pushes after the
+// copy was taken moves GitHub's tip past that commit. A restore that set the bookmark back there
+// would leave it behind GitHub's tip: a role's `jj git push` of it moves GitHub's branch backwards
+// and drops the later rescue, and the next rescue push leaves the bookmark conflicted, which jj
+// then refuses to push.
+//
+// It also answers what it left out, withheld: each of the two names that bookmarks holds, with
+// the commit it holds it on, and nil when bookmarks holds neither. The one line that tells an
+// operator what the send withheld is written from this answer (internal/runtime/sandbox's
+// bundleFrames and restoreWorkspace), so it names exactly what the send left out.
+//
+// The map answered is bookmarks itself when it holds neither name and a copy without them when it
+// holds either, so bookmarks is never written.
+func RestorableBookmarks(issue string, bookmarks map[string]string) (restorable, withheld map[string]string) {
+	restorable = bookmarks
+	for _, name := range [...]string{claim.IssueBranch(issue), claim.RescueBranch(issue)} {
+		commit, held := bookmarks[name]
+		if !held {
+			continue
+		}
+		if withheld == nil {
+			restorable, withheld = maps.Clone(bookmarks), make(map[string]string, 2)
+		}
+		delete(restorable, name)
+		withheld[name] = commit
 	}
-	restorable = maps.Clone(bookmarks)
-	delete(restorable, branch)
-	return restorable, withheld, true
+	return restorable, withheld
 }
 
 // WorkspaceRestore is what one pod's ask did to the copies of its issue's workspace

@@ -91,11 +91,11 @@ func jjString(name string) string {
 // the second run costs is time, and the budget holds both runs (GuardReserve).
 var gitPins = []string{"--no-replace-objects", "-c", "core.hooksPath=/dev/null", "-c", "core.fsmonitor=false"}
 
-// Target is the issue's one rescue branch, `legion/<KEY>-rescue`, which the check pushes each
-// workspace's own work to (Request.Target) and which only moves forward. It is no issue's branch
-// (claim.BranchIssue), so nothing the daemon keeps follows it.
+// Target is the issue's one rescue branch, `legion/<KEY>-rescue` (claim.RescueBranch), which the
+// check pushes each workspace's own work to (Request.Target) and which only moves forward. It is
+// no issue's branch (claim.BranchIssue), so nothing the daemon keeps follows it.
 func Target(issue string) string {
-	return claim.IssueBranch(issue) + "-rescue"
+	return claim.RescueBranch(issue)
 }
 
 // Request is one check of every workspace on a pod's disk.

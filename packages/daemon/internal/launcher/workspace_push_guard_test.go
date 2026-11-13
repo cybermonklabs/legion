@@ -302,11 +302,11 @@ func (f *bundleFixture) restoreSentCopy(taken shimwire.WorkspaceBundle, push run
 }
 
 // restoreAsSent restores sent into workspace as the sandbox sends a copy: without the copy's own
-// value of the issue's branch (runtime.RestorableBookmarks, which internal/runtime/sandbox's
-// bundleFrames applies to every copy it sends).
+// values of the issue's branch and its rescue branch (runtime.RestorableBookmarks, which
+// internal/runtime/sandbox's bundleFrames applies to every copy it sends).
 func (f *bundleFixture) restoreAsSent(workspace string, sent shimwire.WorkspaceBundle) {
 	f.t.Helper()
-	sent.Bookmarks, _, _ = runtime.RestorableBookmarks(bundleIssue, sent.Bookmarks)
+	sent.Bookmarks, _ = runtime.RestorableBookmarks(bundleIssue, sent.Bookmarks)
 	if notice := f.restoreInto(workspace, sent, 1); !strings.Contains(notice, "is restored") {
 		f.t.Fatalf("the restore's notice is %q", notice)
 	}
