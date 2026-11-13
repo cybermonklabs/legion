@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Subprocess } from "bun";
-import { bounds, rowLimit, runBounded } from "./bounded-subprocess";
+import { bounds, rowLimit, runBounded, whether } from "./bounded-subprocess";
 
 const boundedModule = fileURLToPath(new URL("./bounded-subprocess.ts", import.meta.url));
 
@@ -41,19 +41,6 @@ function holding(word: string): [number, string][] {
   return [...(commandLines() ?? new Map<number, string>())].filter(([, line]) =>
     line.includes(word)
   );
-}
-
-/** Calls `read` every 100 ms until it answers true, and answers true. Answers false when `ended`
- *  answers true first, or once the short bound of `bounds` has passed. A process another process
- *  starts or ends raises no event this row can await, so the row reads the process table until
- *  the state it waits for is there; the bound only ends a wait for a state that never comes. */
-async function until(read: () => boolean, ended: () => boolean = () => false): Promise<boolean> {
-  const deadline = performance.now() + bounds.short;
-  while (!read()) {
-    if (ended() || performance.now() > deadline) return false;
-    await Bun.sleep(100);
-  }
-  return true;
 }
 
 /** Sends `signal` to `pid`, a process or, when negative, a process group. A process that ended
@@ -100,7 +87,7 @@ test.skipIf(commandLines() === undefined)(
       const started = runner;
       const exited = () => started.exitCode !== null || started.signalCode !== null;
       expect(
-        await until(sleeping, exited),
+        await whether(sleeping, exited),
         exited()
           ? `the runner exited before both sleeps started:\n${runnerLog()}`
           : `both sleeps did not start inside the short bound of ${bounds.short} ms:\n${runnerLog()}`
@@ -108,7 +95,7 @@ test.skipIf(commandLines() === undefined)(
 
       kill(-runner.pid, "SIGINT");
       expect(
-        await until(exited),
+        await whether(exited),
         `the runner did not exit inside the short bound of ${bounds.short} ms after SIGINT:\n${runnerLog()}`
       ).toBe(true);
       // A worker's `runBounded` writes its cost line to the runner's log when its child ends,
@@ -119,7 +106,7 @@ test.skipIf(commandLines() === undefined)(
 
       // A killed process can take a moment to leave the process table; a survivor stays, since
       // its sleep outlasts every wait of this row.
-      await until(() => holding(seconds).length === 0);
+      await whether(() => holding(seconds).length === 0);
       const survivors = holding(seconds);
       for (const [pid] of survivors) kill(pid, "SIGKILL");
       expect(
@@ -160,7 +147,7 @@ test.skipIf(!existsSync("/proc/self/stat"))(
     });
     // A killed process can take a moment to leave the process table; a survivor stays, since
     // its sleep outlasts every wait of this row.
-    await until(() => holding(seconds).length === 0);
+    await whether(() => holding(seconds).length === 0);
     const survivors = holding(seconds);
     for (const [pid] of survivors) kill(pid, "SIGKILL");
     expect(

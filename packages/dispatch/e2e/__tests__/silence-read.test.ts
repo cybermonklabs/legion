@@ -105,28 +105,22 @@ test("the deadline starts over on the headers and on each piece, so a long read 
   const get = handGet();
   const read = startRead(get);
   const pieces = ['{"prs":', "[1,", "2,", "3]}"];
-  let moved = 0;
-  const advance = (ms: number) => {
-    jest.advanceTimersByTime(ms);
-    moved += ms;
-  };
 
   // Each wait stops one millisecond short of the deadline, and the read's whole length passes it.
-  advance(withinMs - 1);
+  jest.advanceTimersByTime(withinMs - 1);
   get.answer();
   for (const piece of pieces) {
     const give = await read.asked();
-    advance(withinMs - 1);
+    jest.advanceTimersByTime(withinMs - 1);
     give(piece);
   }
   const end = await read.asked();
-  advance(withinMs - 1);
+  jest.advanceTimersByTime(withinMs - 1);
   end(null);
 
   const { response, text } = await read.reading;
   expect(response.status).toBe(200);
   expect(text).toBe(pieces.join(""));
-  expect(moved).toBeGreaterThan(withinMs);
   expect(jest.getTimerCount()).toBe(0);
 });
 

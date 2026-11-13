@@ -1,10 +1,10 @@
 /** The module that starts every one-shot subprocess a row or hook of this directory waits for,
- *  but the psql of `e2e/psql.ts` (the rows and hooks of `psql-session.test.ts`):
- *  the argv, the working directory, the environment the caller chose, how the pipes are read, the
- *  bound that stops a child that is stuck, and the line the run that started a child prints on its
- *  own stderr when that child ends. It also holds the limit a row states for itself, which is read
- *  from the bounds of what that row waits for, and `eventually`, the wait a row makes for a state
- *  another process reaches, which the short bound ends.
+ *  but the two stated edges below: the argv, the working directory, the environment the caller
+ *  chose, how the pipes are read, the bound that stops a child that is stuck, and the line the
+ *  run that started a child prints on its own stderr when that child ends. It also holds the
+ *  limit a row states for itself, which is read from the bounds of what that row waits for, and
+ *  `whether` and `eventually`, the wait a row makes for a state another process reaches, which
+ *  the short bound ends.
  *
  * A process a row or hook drives rather than waits for starts outside it by design, since a bound
  * would kill a process its row is still using: the probe the six driven rows of
@@ -12,11 +12,12 @@
  * of `bounded-subprocess.test.ts` interrupts, the proxies the hooks of `round-robin-proxy.test.ts`
  * and `plain-http-proxy.test.ts` start, the fake Envoy of `fake-envoy.test.ts`, and the processes
  * `local-instance-support.test.ts` starts through its `Supervisor`. Two subprocesses a row can
- * wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts`, whose `sqlAt`
- * `e2e/harness-postgres.ts` and `e2e/local-instance.ts` call too, so bounding that psql would
- * reach past this directory. The other is the `ps` that reads the process table on a machine
- * with no `/proc`, here (`processTable`) and in `bounded-subprocess.test.ts`, which runs with no
- * bound. Linux lists its processes under `/proc` and never runs that `ps`.
+ * wait for run outside it, as stated edges. One is the psql of `e2e/psql.ts` (the rows and hooks
+ * of `psql-session.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts` and `e2e/local-instance.ts`
+ * call too, so bounding that psql would reach past `e2e/__tests__/`. The other is the `ps` that
+ * reads the process table on a machine with no `/proc`, here (`processTable`) and in
+ * `bounded-subprocess.test.ts`, which runs with no bound. Linux lists its processes under `/proc`
+ * and never runs that `ps`.
  *
  * `bun test` collects only a file whose name carries a `test` or `spec` token, `*.test.ts` and
  * its kin (`collectedTestFile` of `e2e/row-limits.ts` holds the measured set), so a plain `.ts`
@@ -120,24 +121,33 @@ export function rowLimit(...waits: readonly (BoundName | AtOnce)[]): number {
   return spent.reduce((total, ms) => total + ms, 0) + rowHeadroom;
 }
 
-/** Reads `holds` every 25 ms until it answers true. A state another process reaches - a write to
- *  a file, a process leaving the table, a log line - raises no event a row can await, so the row
- *  reads it until it is there. The short bound only ends a wait for a state that never comes: once
- *  it has passed, this throws naming `what`, the state the row waited for. A row that waits here
- *  names `"short"` in its `rowLimit` for each such wait, so the row's clock fires after this one.
- */
+/** Reads `holds` until it answers true, and answers true; answers false once `ended` answers true
+ *  first, or once the short bound has passed. A state another process reaches - a write to a
+ *  file, a process leaving the table, a log line - raises no event a row can await, so the row
+ *  reads it until it is there. The short bound only ends a wait for a state that never comes. A
+ *  row that waits here, or in `eventually` below, names `"short"` in its `rowLimit` for each such
+ *  wait, so the row's clock fires after this one. The reads are 25 ms apart, a gap no verdict
+ *  reads: it is only how soon after its coming a state is seen. */
+export async function whether(
+  holds: () => boolean | Promise<boolean>,
+  ended: () => boolean = () => false
+): Promise<boolean> {
+  const deadline = performance.now() + bounds.short;
+  while (!(await holds())) {
+    if (ended() || performance.now() > deadline) return false;
+    await Bun.sleep(25);
+  }
+  return true;
+}
+
+/** Waits as `whether` does, with no `ended`, and throws naming `what`, the state the row waited
+ *  for, where the short bound passed before it came. */
 export async function eventually(
   what: string,
   holds: () => boolean | Promise<boolean>
 ): Promise<void> {
-  const deadline = performance.now() + bounds.short;
-  while (!(await holds())) {
-    if (performance.now() > deadline) {
-      throw new Error(
-        `waited the short bound of ${bounds.short} ms for ${what}, and it never came`
-      );
-    }
-    await Bun.sleep(25);
+  if (!(await whether(holds))) {
+    throw new Error(`waited the short bound of ${bounds.short} ms for ${what}, and it never came`);
   }
 }
 

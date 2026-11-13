@@ -19,7 +19,7 @@ const realLimits = limitsOfFiles(e2eDirectory, scannedFiles);
 const realRefused = refusedLimits(realLimits);
 
 /** The planted controls, read by name rather than by pointing `testFiles` at their directory:
- *  they are no test of this directory, and all but six of them are written to be refused. */
+ *  they are no test of this directory, and all but seven of them are written to be refused. */
 const fixture = "__tests__/fixtures/row-limits.fixture.ts";
 const fixtureLimits = limitsOfFiles(e2eDirectory, [fixture]);
 
@@ -381,6 +381,42 @@ test("a row or hook that waits for a bounded child states its limit as a rowLimi
   for (const refusal of refused) {
     expect(refusal.why).toContain("state `rowLimit(...)` naming the bounded children");
   }
+});
+
+// `whether` and `eventually` read a state until the `short` bound has passed, so a row that calls
+// one and states no limit runs under the lane's `--timeout 60000`, which ties with that bound,
+// and the row's clock can fire first and the failure names no state. The fixture plants a row
+// that calls each and states no limit, both refused, and one under `rowLimit("short")`, which
+// passes. Every real row that polls is read as waiting under that bound, and none is refused.
+test("a row that polls with whether or eventually states a rowLimit of the short bound", () => {
+  expect(planted(171).waitsFor).toEqual(["`eventually`"]);
+  expect(planted(171).bound).toBe("short");
+  expect(planted(175).waitsFor).toEqual(["`whether`"]);
+  expect(planted(175).bound).toBe("short");
+  expect(planted(184).waitsFor).toEqual(["`eventually`"]);
+
+  const refused = refusedLimits([planted(171), planted(175), planted(184)]);
+  expect(refused.map((refusal) => refusal.limit.line)).toEqual([171, 175]);
+  expect(refused[0].why).toStartWith(
+    `${fixture}:171 the row "a row that polls with eventually and states no limit" waits for ` +
+      "`eventually` and states no limit"
+  );
+  expect(refused[1].why).toStartWith(
+    `${fixture}:175 the row "a row that polls with whether and states no limit" waits for ` +
+      "`whether` and states no limit"
+  );
+
+  const polling = realLimits.filter((limit) =>
+    limit.waitsFor.some((wait) => wait.includes("`eventually`") || wait.includes("`whether`"))
+  );
+  expect([...new Set(polling.map((limit) => limit.file))].sort()).toEqual([
+    "__tests__/bounded-subprocess.test.ts",
+    "__tests__/local-instance-support.test.ts",
+    "__tests__/psql-session.test.ts",
+    "__tests__/round-robin-proxy.test.ts",
+  ]);
+  for (const limit of polling) expect(limit.stated?.fromBounds).toBe(true);
+  expect(realRefused.filter((refusal) => polling.includes(refusal.limit))).toEqual([]);
 });
 
 // Bun applies a file's own `setDefaultTimeout` to every row and hook of the file, so a `rowLimit`

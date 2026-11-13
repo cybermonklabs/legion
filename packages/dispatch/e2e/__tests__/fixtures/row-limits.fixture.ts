@@ -6,7 +6,7 @@
  * Its name ends `.fixture.ts` because `bun test` collects `*.test.ts`, `*.spec.ts` and their kin:
  * this file runs nowhere, and the rows and hooks below are source for the scan to parse rather
  * than work for a runner to do. The name keeps it out of `testFiles` too, which keeps what the
- * lane collects and nothing else: every limit below but six is written to be refused.
+ * lane collects and nothing else: every limit below but seven is written to be refused.
  *
  * The shared `rowLimit` is imported under a name no test file uses, because the rule reads the
  * IMPORT and not the word: a call of `boundedBy` below is a limit read from the bounds, and this
@@ -29,7 +29,7 @@
 import { afterAll, afterEach, beforeAll, it, setDefaultTimeout, test } from "bun:test";
 
 import { minimumReasonWords } from "../../fixed-waits";
-import { rowLimit as boundedBy, runBounded } from "../bounded-subprocess";
+import { rowLimit as boundedBy, eventually, runBounded, whether } from "../bounded-subprocess";
 
 /** A `rowLimit` of this file's own, so the control below calls one the rule must refuse. */
 function rowLimit(milliseconds: number): number {
@@ -164,6 +164,22 @@ test(
   "a row that awaits an assigned listing under the short bound",
   async () => {
     await assigned;
+  },
+  boundedBy("short")
+);
+
+test("a row that polls with eventually and states no limit", async () => {
+  await eventually("a state that never comes", () => false);
+});
+
+test("a row that polls with whether and states no limit", async () => {
+  await whether(() => false);
+});
+
+test(
+  "a row that polls with eventually under rowLimit",
+  async () => {
+    await eventually("a state that never comes", () => false);
   },
   boundedBy("short")
 );

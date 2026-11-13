@@ -83,18 +83,21 @@
  * binding read wins, which reads a call as a row more often rather than less. The bare spellings
  * are read whatever a file binds, because `bun test` declares them as globals and a file that
  * imports nothing still writes them. This is the shape `waitNames` of `e2e/fixed-waits.ts` reads
- * `node:timers/promises` by. `importedNames` below reads `rowLimit`, `runBounded` and `listing`
- * the same two ways: from import declarations, and from a variable at any scope bound to an
- * `import()` or a `require` of their module, as a namespace or destructured -
- * `const { listing } = await import("./playwright-listing")`. Those modules are this
- * directory's own, so a bare spelling of their exports stands for nothing.
+ * `node:timers/promises` by. `importedNames` below reads `rowLimit`, `runBounded`, `whether`,
+ * `eventually` and `listing` the same two ways: from import declarations, and from a variable at
+ * any scope bound to an `import()` or a `require` of their module, as a namespace or
+ * destructured - `const { listing } = await import("./playwright-listing")`. Those modules are
+ * this directory's own, so a bare spelling of their exports stands for nothing.
  *
  * WHAT A ROW WAITS FOR. A row or hook waits for a bounded child when its body calls `runBounded`
  * of `e2e/__tests__/bounded-subprocess.ts` or `listing` of `e2e/__tests__/playwright-listing.ts`,
  * each read from the file's imports as `rowLimit` is, or calls a function of the file's own that
  * waits: a function declaration, or a variable bound to an arrow or a function expression, at any
- * scope, whose body calls one of those two or another such function. It waits as well when its
- * body refers to a name the file binds or assigns, at any scope, to such a call: the
+ * scope, whose body calls one of those two or another such function. A call of `whether` or
+ * `eventually` of `e2e/__tests__/bounded-subprocess.ts` is read the same way, as a wait under the
+ * `short` bound: each reads a state another process reaches until that bound has passed, so a
+ * row that makes one states `rowLimit("short")` or more, as for a `short` child. It waits as well
+ * when its body refers to a name the file binds or assigns, at any scope, to such a call: the
  * `const lane = retained(listing(...))` a listing file starts at module load and awaits in a row,
  * or the `lane = retained(listing(...))` a hook assigns to a `let lane` of the file's, referred to
  * in an `await lane`, a `lane.then(...)`, an argument or a destructuring alike; and a function
@@ -349,20 +352,23 @@ function larger(
   return bounds[second] > bounds[first] ? second : first;
 }
 
-/** An export a call of which waits for a bounded child: the module it is read from, and the
- *  bound a call of it stops its child at, where the scan can read it. */
+/** An export a call of which waits for a bounded child, or for a state until a bound has passed:
+ *  the module it is read from, and the bound a call of it stops at, where the scan can read it. */
 type BoundedCall = {
   readonly module: string;
   readonly exported: string;
   readonly boundOf: (call: ts.CallExpression) => BoundName | undefined;
 };
 
-/** The exports a call of which waits for a bounded child. `listing` runs its one child under the
- *  `listing` bound whatever its caller passes, and `runBounded` under the bound its options
- *  name. */
+/** The exports a call of which waits for a bounded child or ends at a bound. `listing` runs its
+ *  one child under the `listing` bound whatever its caller passes, `runBounded` under the bound
+ *  its options name, and `whether` and `eventually` read a state until the `short` bound has
+ *  passed. */
 const boundedCalls: readonly BoundedCall[] = [
   { module: boundsModule, exported: "runBounded", boundOf: boundOption },
   { module: listingModule, exported: "listing", boundOf: () => "listing" },
+  { module: boundsModule, exported: "whether", boundOf: () => "short" },
+  { module: boundsModule, exported: "eventually", boundOf: () => "short" },
 ];
 
 /** The names a file calls one export of this directory's own modules by, read from its imports:

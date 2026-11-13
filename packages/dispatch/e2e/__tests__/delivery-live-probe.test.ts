@@ -28,6 +28,7 @@ import type {
   ProbeCompareLine,
   ProbeHeld,
   ProbeLine,
+  ProbeOpenLine,
 } from "../delivery-live-probe";
 import { rowLimit, runBounded } from "./bounded-subprocess";
 
@@ -566,22 +567,57 @@ test(
   rowLimit("short")
 );
 
+/** A Dispatch on a loopback port of its own that holds each `/ws/live` upgrade for `holdMs`,
+ *  counted from the moment the probe asks for it, as a loaded pod can answer late, and then takes
+ *  it. It records the moment it let each upgrade go, and every frame the probe sent, parsed. */
+function heldDispatch(holdMs: number) {
+  const released: number[] = [];
+  const received: LiveClientFrame[] = [];
+  const server = Bun.serve({
+    async fetch(request, srv) {
+      if (new URL(request.url).pathname !== "/ws/live") {
+        return new Response("not found", { status: 404 });
+      }
+      // Real time, since the probe is a process of its own whose clock no fake timer here
+      // reaches; the row reads the order of this release and the probe's open, not this length.
+      await Bun.sleep(holdMs);
+      released.push(Date.now());
+      return srv.upgrade(request) ? undefined : new Response("upgrade failed", { status: 400 });
+    },
+    hostname: "127.0.0.1",
+    port: 0,
+    websocket: {
+      message(_socket, raw) {
+        received.push(JSON.parse(String(raw)) as LiveClientFrame);
+      },
+    },
+  });
+  kills.push(() => server.stop(true));
+  return { received, released, url: `http://127.0.0.1:${server.port}` };
+}
+
 // `--minutes` counts from the socket's first open, not from the dial, so a socket that opens late
-// still gets its whole watch. This row holds the worker that serves the fake Dispatch for 2.5 s,
-// as a loaded pod can, so the upgrade is answered only after that hold, and the 600 ms of
-// `--minutes 0.01` start then. It proves the watch still subscribes, and still ends on its own
-// with exit 0.
+// still gets its whole watch. The Dispatch here holds the upgrade for 2.5 s from the moment the
+// probe asks for it, so the open comes at least 2.5 s after the dial, well past the 600 ms of
+// `--minutes 0.01`, however fast the pod runs the probe. The row reads from the probe's own
+// `open` line that the open came after the hold was let go, and proves the watch still
+// subscribes, and still ends on its own with exit 0.
 test(
   "the watch subscribes and ends on its own when its socket opens late",
   async () => {
-    const dispatch = probeDispatch({ onSubscribe() {} });
-    const running = runProbeToEnd(args(dispatch, TOKEN, "0.01"));
-    const heldUntil = Date.now() + 2_500;
-    while (Date.now() < heldUntil) {
-      // Nothing: this worker's event loop is what the fake Dispatch answers the upgrade on.
-    }
-    const run = await running;
+    const dispatch = heldDispatch(2_500);
+    const argv = args(probeDispatch({ onSubscribe() {} }), TOKEN, "0.01");
+    argv[argv.indexOf("--url") + 1] = dispatch.url;
+    const run = await runProbeToEnd(argv);
     expect(run.code).toBe(0);
+    const opens = run.stdout
+      .split("\n")
+      .filter((line) => line !== "")
+      .map((line) => JSON.parse(line) as ProbeLine)
+      .filter((line): line is ProbeOpenLine => line.type === "open");
+    expect(dispatch.released).toHaveLength(1);
+    expect(opens).toHaveLength(1);
+    expect(Date.parse(opens[0].at)).toBeGreaterThanOrEqual(dispatch.released[0]);
     expect(dispatch.received).toEqual([{ sub: "probe", type: "subscribe", view }]);
   },
   rowLimit("short")
@@ -728,8 +764,9 @@ test(
   },
   {
     // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
-    // runs after that. `REQUEST_DEADLINE_MS` bounds each silence of the read, not the whole read,
-    // and this limit is two of those silence deadlines.
+    // runs after that. The 60 s, two `REQUEST_DEADLINE_MS`, covers the wait for the snapshot,
+    // which the Dispatch here sends at the subscribe, and a read of about 4 s of pieces, in
+    // which any silence fails the probe by name at 30 s, half this limit.
     timeout: 2 * REQUEST_DEADLINE_MS,
   }
 );

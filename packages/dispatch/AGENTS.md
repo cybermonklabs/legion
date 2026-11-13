@@ -2025,18 +2025,18 @@ INFRA-1554 moved the last four rows out: the CLI's nested-reply read, the
 agent API's duplicate gate, a spec write's invalid-markdown refusal, and the
 two-build rollout row.
 
-Every one-shot subprocess a row or hook waits for, but the psql of
-`e2e/psql.ts` (the rows and hooks of `e2e/__tests__/psql-session.test.ts`),
-starts through `runBounded`
+Every one-shot subprocess a row or hook waits for, but the two stated edges
+below, starts through `runBounded`
 (`e2e/__tests__/bounded-subprocess.ts`): it bounds the child, kills the child
 and every process it started when the bound passes (its descendants by parent
 pid, and on Linux every process whose environment carries the child's token),
 fails with a message naming the file that started the child, its command and
 how long it waited, and prints one line per child, with what that child cost,
 on the stderr of the run that started it. Two subprocesses are stated edges
-rather than bounded: that psql, whose `sqlAt` `e2e/harness-postgres.ts` and
-`e2e/local-instance.ts` call too, so a bound on it would reach past this
-directory; and, on a machine with no `/proc`, the `ps` with which
+rather than bounded: the psql of `e2e/psql.ts` (the rows and hooks of
+`e2e/__tests__/psql-session.test.ts`), whose `sqlAt` `e2e/harness-postgres.ts`
+and `e2e/local-instance.ts` call too, so a bound on it would reach past
+`e2e/__tests__/`; and, on a machine with no `/proc`, the `ps` with which
 `bounded-subprocess.ts` and its test read the process table, which runs with no
 bound. Linux lists its processes under `/proc` and never runs that `ps`.
 The child stays in the process group of the run that started it, so an
@@ -2049,9 +2049,10 @@ one `playwright test --list`), `generation` (330 000 ms,
 `twoStackBuild` (1 800 000 ms, the child that builds two stacks). One rule
 derives a row's limit from them: `rowLimit(...)` sums the bounds of what the
 row waits for one after another - each child, and each wait the row ends at a
-bound itself, such as `eventually` of `bounded-subprocess.ts`, which reads a
-state another process reaches until it holds and fails naming that state once
-the short bound has passed - counts a group written `{ atOnce: [...] }` as the
+bound itself, such as `whether` or `eventually` of `bounded-subprocess.ts`,
+which read a state another process reaches until it holds; once the short
+bound has passed, `whether` answers false and `eventually` fails naming that
+state - counts a group written `{ atOnce: [...] }` as the
 largest bound in it, and adds 30 000 ms for the row's own work. Each argument
 is a bound name and never a number, so a wrong value is a compiler error rather
 than a red run. A row or hook that drives a process rather than waiting for one
@@ -2076,17 +2077,19 @@ refuses every other limit: a limit is a call of that shared
 above it. It reads a limit in every spelling Bun honours: a row's second or
 third argument, a hook's second (`onTestFinished` included), `setDefaultTimeout`
 and `jest.setTimeout`, under any name a file imports, binds or destructures
-them to. It also refuses a row or hook that waits for `runBounded` or `listing`,
+them to. It also refuses a row or hook that waits for `runBounded`, `listing`,
+`whether` or `eventually`,
 itself, through a function of its own file, or by referring to a name the file
 binds or assigns to such a call (`const lane = retained(listing(...))` at module
 load, or `lane = retained(listing(...))` in a hook, then `await lane` in the
 row), unless it states its limit as a `rowLimit`
 call, its own or the file's `setDefaultTimeout`: without one the lane's
 `--timeout 60000` stops it, which ties with the `short` bound. It reads those
-two exports from an import declaration or from a name bound to an `import()`
+exports from an import declaration or from a name bound to an `import()`
 or `require` of their module. Where it reads the bound of what a row waits for
-(a `listing` call, a `runBounded` whose `bound:` is a string literal, a name
-bound to either), it refuses a `rowLimit` whose total, computed from its
+(a `listing` call, a `runBounded` whose `bound:` is a string literal, a
+`whether` or `eventually` call, which is the `short` bound, a name
+bound to any of those), it refuses a `rowLimit` whose total, computed from its
 arguments as written, falls below `rowLimit` of the largest such bound; a bound
 or a total it cannot read (a computed `bound:`, a spread argument) is not
 checked. What it does not read is read as waiting for nothing, and no refusal

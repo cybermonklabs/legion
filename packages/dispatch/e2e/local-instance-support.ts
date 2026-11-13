@@ -125,8 +125,7 @@ export class Supervisor {
   /** Aborts `signal`, sends SIGTERM to every process group started and not yet seen to stop,
    *  SIGKILL to whatever still runs `forceAfterMs` later, and returns the moment every leader has
    *  exited: the force-kill timer is cleared then, so a clean Ctrl-C does not keep the shell
-   *  prompt waiting on it. Answers whether the force-kill ran, which
-   *  `e2e/__tests__/local-instance-support.test.ts` reads to hold that SIGTERM ended the leaders. */
+   *  prompt waiting on it. Answers whether the force-kill ran. */
   async stop(forceAfterMs = 10_000): Promise<boolean> {
     this.#stopping.abort();
     const running = this.#children.splice(0);
@@ -209,9 +208,7 @@ const BunWebSocket = WebSocket as unknown as new (
  * socket as the page does, under `headers` (a signed-in person's cookie), and reads Dispatch's
  * first frame for it. A session id that is not a uuid is refused there (`SESSION_ID_INPUT`), which
  * is how a seed of named sessions passes every HTTP check and still has no live view. `waitMs` is
- * how long that first frame may take before its absence is the refusal:
- * `e2e/__tests__/local-instance-support.test.ts` gives its rows the short bound of its children,
- * so a stalled test process is not read as Dispatch's silence.
+ * how long that first frame may take before its absence is the refusal.
  */
 export async function agentViewRefusal(
   baseUrl: string,

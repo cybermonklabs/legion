@@ -173,17 +173,24 @@ test.skipIf(!live)(
     // The session's statement reaches the server in its own time, which raises no event here, so
     // the overlapping call is made until it sees that statement running. It reads this run's
     // database alone, since other runs' statements share the server's activity view.
-    await eventually(
-      "an overlapping call to see the session's held statement running",
-      async () => {
-        const running = await sql(
-          "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() " +
-            `AND state = 'active' AND query LIKE '${opening}%'`
-        );
-        return running === "1";
-      }
-    );
-    await sql("INSERT INTO overlap_release VALUES (1)");
+    try {
+      await eventually(
+        "an overlapping call to see the session's held statement running",
+        async () => {
+          const running = await sql(
+            "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() " +
+              `AND state = 'active' AND query LIKE '${opening}%'`
+          );
+          return running === "1";
+        }
+      );
+      await sql("INSERT INTO overlap_release VALUES (1)");
+    } catch (error) {
+      // The held statement gives up inside the same short bound. Settled here, its rejection
+      // lands in no later row, and this row reports its own failure.
+      await holding.catch(() => {});
+      throw error;
+    }
     await holding;
   },
   // The one wait this row ends at a bound itself: the overlapping call seeing the session's

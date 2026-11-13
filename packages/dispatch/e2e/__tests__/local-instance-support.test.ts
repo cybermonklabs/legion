@@ -51,6 +51,22 @@ function pidOf(running: { readonly child: { readonly pid?: number } }): number {
   return pid;
 }
 
+/** How long each `sleep` the `Supervisor.stop` rows start runs, in seconds: the limit of the
+ *  first of them, the largest of the three, so every such sleep outlasts its own row. A sleep no
+ *  stop ended is then still running at every read its row makes, and never meets a check that it
+ *  is gone by ending on its own. */
+const outlastsRow = rowLimit("short", "short", "short", "short") / 1000;
+
+/** Sends SIGKILL to `pid`, a process or, when negative, a process group, where it is still
+ *  alive: what a stop under test left behind, so a failed row leaves no sleep running. */
+function killLeft(pid: number): void {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    // ESRCH: the stop ended it, as it should.
+  }
+}
+
 /** One macrotask turn: the runtime reports an unhandled rejection only after the microtask queue
  *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
@@ -72,20 +88,35 @@ describe("Supervisor.stop", () => {
       const pidFile = join(makeDirectory(), "leader.pid");
       const made = supervisor();
       const leader = pidOf(
-        made.start("leader", ["bash", "-c", `sleep 60 & echo $! > ${pidFile}; wait`], "/")
+        made.start(
+          "leader",
+          ["bash", "-c", `sleep ${outlastsRow} & echo $! > ${pidFile}; wait`],
+          "/"
+        )
       );
-      const quiet = pidOf(made.start("quiet", ["sleep", "60"], "/"));
-      const grandchild = await pidFrom(pidFile);
-      expect(groupAlive(leader)).toBe(true);
-      expect(groupAlive(quiet)).toBe(true);
+      const quiet = pidOf(made.start("quiet", ["sleep", `${outlastsRow}`], "/"));
+      let grandchild: number | undefined;
+      try {
+        grandchild = await pidFrom(pidFile);
+        expect(groupAlive(leader)).toBe(true);
+        expect(groupAlive(quiet)).toBe(true);
 
-      await made.stop();
+        await made.stop();
 
-      // A killed process still answers `kill(pid, 0)` as a zombie until its parent or init
-      // reaps it, which raises no event here, so each is read until it is gone.
-      await eventually(`the group of the leader ${leader} to end`, () => !groupAlive(leader));
-      await eventually(`the group of the quiet process ${quiet} to end`, () => !groupAlive(quiet));
-      await eventually(`the grandchild ${grandchild} to end`, () => !processAlive(grandchild));
+        // A killed process still answers `kill(pid, 0)` as a zombie until its parent or init
+        // reaps it, which raises no event here, so each is read until it is gone.
+        await eventually(`the group of the leader ${leader} to end`, () => !groupAlive(leader));
+        await eventually(
+          `the group of the quiet process ${quiet} to end`,
+          () => !groupAlive(quiet)
+        );
+        const alone = grandchild;
+        await eventually(`the grandchild ${alone} to end`, () => !processAlive(alone));
+      } finally {
+        killLeft(-leader);
+        killLeft(-quiet);
+        if (grandchild !== undefined) killLeft(grandchild);
+      }
     },
     // Four waits this row ends at a bound itself, one after another: the grandchild's pid in its
     // file, then the two groups and the grandchild leaving the process table.
@@ -96,10 +127,14 @@ describe("Supervisor.stop", () => {
     "returns as soon as the leaders exit, not after the force-kill delay",
     async () => {
       const made = supervisor();
-      const quiet = made.start("quiet", ["sleep", "60"], "/");
-      const forced = await made.stop(30_000);
-      expect(forced, "the stop's force-kill ran: SIGTERM did not end the leader").toBe(false);
-      expect(groupAlive(pidOf(quiet)), "the leader's group outlived the stop").toBe(false);
+      const quiet = pidOf(made.start("quiet", ["sleep", `${outlastsRow}`], "/"));
+      try {
+        const forced = await made.stop(30_000);
+        expect(forced, "the stop's force-kill ran: SIGTERM did not end the leader").toBe(false);
+        expect(groupAlive(quiet), "the leader's group outlived the stop").toBe(false);
+      } finally {
+        killLeft(-quiet);
+      }
     },
     {
       // This row drives a supervisor's stop, whose force-kill fires at 30 s; the limit outlasts
@@ -113,13 +148,18 @@ describe("Supervisor.stop", () => {
     async () => {
       const pidFile = join(makeDirectory(), "step.pid");
       const made = supervisor();
-      const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep 60`], "/");
-      const pid = await pidFrom(pidFile);
-      made.interrupt();
-      await expect(step).rejects.toBeInstanceOf(Interrupted);
-      const forced = await made.stop();
-      expect(forced, "the stop's force-kill ran: SIGTERM did not end the step").toBe(false);
-      expect(groupAlive(pid), "the interrupted step's group outlived the stop").toBe(false);
+      const step = made.run(["bash", "-c", `echo $$ > ${pidFile}; exec sleep ${outlastsRow}`], "/");
+      let pid: number | undefined;
+      try {
+        pid = await pidFrom(pidFile);
+        made.interrupt();
+        await expect(step).rejects.toBeInstanceOf(Interrupted);
+        const forced = await made.stop();
+        expect(forced, "the stop's force-kill ran: SIGTERM did not end the step").toBe(false);
+        expect(groupAlive(pid), "the interrupted step's group outlived the stop").toBe(false);
+      } finally {
+        if (pid !== undefined) killLeft(-pid);
+      }
     },
     // The wait for the step's pid in its file, which the short bound of `eventually` ends; the
     // stop's force-kill, at 10 s, falls inside the headroom, so a stop that takes it fails on the
