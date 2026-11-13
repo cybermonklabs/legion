@@ -23,9 +23,10 @@ you set it to `todo` with a comment on the root that cites the park's mark and s
 checked.
 [The walk](#the-walk) makes that check at every start and on each `tick`.
 Every other park, a person's, another session's or an operator's `legion status`, stays parked
-until a person sets it to `todo`, the daemon queues a person's approval of its spec (the paragraph
-under **The notice**), or a person asks you to start it: that request is a person's move, as the
-list of moves to `todo` in [Free slots](skill://legion-controller/SKILL.md#free-slots) says.
+until a person sets it to `todo`, the daemon queues a person's approval of its spec (**The
+notice**, the paragraph that begins "A person's own approval"), or a person asks you to start it:
+that request is a person's move, as the list of moves to `todo` in
+[Free slots](skill://legion-controller/SKILL.md#free-slots) says.
 
 A held root is not a parked one. It stands at `phase: held` and is still in the workflow, and a
 `todo` on it releases the hold instead of starting a new run: the issue returns to the phase its
@@ -223,8 +224,9 @@ At every start (step 4 of the start procedure) and on each `tick`:
    `artifact.approved` or `artifact.changes_requested` event, with the approval request's
    `ask.answered` at the same time, is one decision whose `ref` is `dispatch://<KEY>/spec`, and
    the issue's `Spec approval:` line shows a request's reason. Skip an `artifact.approved` only
-   when it is the person's handover, which the daemon queues itself (the paragraph under **The
-   notice**), and with it the approval request's `ask.answered` at the same time. It is that
+   when it is the person's handover, which the daemon queues itself (**The notice**, the paragraph
+   that begins "A person's own approval"), and with it the approval request's `ask.answered` at the
+   same time. It is that
    handover when all three hold: the root's `parent` is `null`; the event's `payload.artifact_id`
    is the root's `primary_artifact_id`; and its `payload.reason` does not begin `Carried forward
    from the approval of version`. The events `curl` of

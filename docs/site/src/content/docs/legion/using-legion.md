@@ -43,7 +43,7 @@ so a wait of its own — on a blocker, on its children or on you — keeps the s
 stay live beside it.
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
 decides whether to admit it or leave it for you, and parks it only when a person asked for that or
-its work has ended.
+its work is done, folded into another issue or no longer needed.
 
 The controller never takes an issue on its own, whatever slots are free: Legion works what a person
 hands it, and the clear defects its own agents report. You can also ask the controller to hand an
@@ -188,9 +188,9 @@ you stop the work.
 
 | Status | Set by | What it means for a Legion issue |
 | --- | --- | --- |
-| `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work has ended. |
+| `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work is done, folded into another issue or no longer needed. |
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
-| `backlog` | a person or the controller | Should not run now: a person asked for that, for example while it waits on a decision or a deploy, or its work has ended. Legion does not run it. |
+| `backlog` | a person or the controller | Should not run now: a person asked for that, for example while it waits on a decision or a deploy, or its work is done, folded into another issue or no longer needed. Legion does not run it. |
 | `todo` | a person or the controller | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test, a review, or a head that conflicts with its base returns here. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |

@@ -67,8 +67,9 @@ Read this on a `triage` wake, at every start, and when a person hands you an iss
    holds it until a slot frees: admit it as step 3 says, and report the capacity to the person in
    the day's report.
 5. For a root you admitted or parked, comment on the issue (`dispatch comment`) what you decided
-   and why. For a root you parked, cite in that comment the person's request behind the park: the
-   deployment instructions as that file, or the request the plan's line names.
+   and why. For a root you parked, cite in that comment why: the person's request behind the park
+   (the deployment instructions as that file, or the request the plan's line names), or that the
+   work is done, folded into another issue (name it) or no longer needed.
    For a root you admitted, say in that comment who will be asked: `Assigned to <login>,
    who will get this tree's questions and its design approval`, or, when `Assignee:` says
    `unassigned`, `Unassigned — nobody's Inbox shows this tree's questions or its design approval

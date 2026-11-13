@@ -888,10 +888,10 @@ done_with question-stays-parked
 
 begin foreign-park-stays
 waited=$SECONDS
-# A park that is not Legion's own hold moves only when whoever made it sets it to todo, or a person
-# asks Legion to start it: the controller moves none of these trees and names who parked each, the
-# daemon's session with no hold mark for tree 2 (the operator's `legion status`) and the person for
-# tree 4.
+# A park that is not Legion's own hold moves only when a person sets it to todo, approves its spec
+# when it has no parent, or asks Legion to start it: the controller moves none of these trees and
+# names who parked each, the daemon's session with no hold mark for tree 2 (the operator's
+# `legion status`) and the person for tree 4.
 declare -A seq_of before_of told_of parker_of read_of
 parker_of[$tree2]="legion-daemon"
 parker_of[$tree4]="$proof_human_user parked the tree"

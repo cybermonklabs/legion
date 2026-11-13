@@ -459,10 +459,8 @@ or an operator's `legion status` (the comment names who, and the tree runs when 
 `todo`, approves its spec when it has no parent, or asks the controller to start it). It stays
 parked too when the decision is older than the park, when the root is `done` or `triage`, or when
 the decision only questions the work. When the controller was down, its next start walks the parked
-roots. That walk reads only the last 10 events of each issue. The walk, at each start and on each
-`tick`, also sets the root of the controller's own hold back to `todo` when its mark, the
-`Parked by Legion while it waits on:` comment, names a cause that is gone or an event that has
-happened, with a comment that cites the mark.
+roots. That walk reads only the last 10 events of each issue. The walk runs at each start and on
+each `tick`, and its `todo` on the controller's own hold comes with a comment that cites the mark.
 
 ## An issue is held
 
