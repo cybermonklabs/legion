@@ -233,18 +233,24 @@ func TestADelayedCompactionAnswersItsRealResultAndAFreshSessionDuringItIsRefused
 }
 
 // waitForCompacting waits until the machine reports the claim being compacted, which is what
-// makes it busy for every other request.
+// makes it busy for every other request, and until the store holds the take as well. The view
+// alone is read too early: putClaim publishes the claim before it writes it (supervise's
+// putClaim), so a view that already shows the compaction can stand over a take the store has
+// not written yet, and a test that then closes the pool fails the take rather than the end it
+// means to fail. Every caller starts from a claim the store holds ready or idle, so the stored
+// working is the take's own write.
 func waitForCompacting(t *testing.T, h *harness, token claim.Token) {
 	t.Helper()
 	m, _ := h.supervisor.Machine(token)
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if c := m.View().Claim; c.Compacting && c.State == supervise.StateWorking {
+		if c := m.View().Claim; c.Compacting && c.State == supervise.StateWorking &&
+			h.stored(token).State == supervise.StateWorking {
 			return
 		}
 		time.Sleep(time.Millisecond)
 	}
-	t.Fatalf("%s never reported itself being compacted", token)
+	t.Fatalf("%s never reported itself being compacted with its take written", token)
 }
 
 // A second compaction of a claim already being compacted is refused, and the refusal says what
