@@ -439,12 +439,17 @@ prepare_env() {
 #     shim, and both record the program's own status with its own arguments;
 #   - a non-zero status of any stage but the last of the command's final pipeline, read
 #     from PIPESTATUS and matched to the stage's words by the quote-aware reader, which
-#     catches a group or subshell whose status a builtin set;
+#     catches a group or subshell whose status a builtin set; text in single quotes is
+#     literal, so a backtick or $( in a quoted pattern runs nothing and is not read;
 #   - a search, grep, egrep, fgrep, rg, ag or git grep, that exits above 1. A search that
 #     exits exactly 1 found nothing, which is no failure, and that rule is applied to each
 #     program and each stage on its own;
 #   - a bound, at_least or at_most, whose output is not exactly one number; a row that
 #     counts lines says so in its command, with wc -l;
+#   - a program the evaluator cannot record, which the reader refuses by name: a word in
+#     command position that holds a / and is none of the five program variables, and a
+#     word after command, builtin or exec, each of which runs a program past the function
+#     that records it. A row that needs such a program names it by a program variable;
 #   - a predicate written as a sentence, a row with two predicates over its output, and
 #     a row with a command and no predicate.
 #
@@ -511,6 +516,10 @@ run_recorded() {
     local command="$1" out="$2" script name
     script="$out.sh"
     : >"$out.failed"
+    : >"$out.unread"
+    local names
+    names="$(printf '%s' "$command" | python3 -c "$(reader_py)" names)"
+    printf '%s\n' "$names" | sed -n 's/^UNREAD\t//p' >"$out.unread"
     {
         printf '__ioc_failed=%q\n' "$out.failed"
         printf '%s\n' '__ioc_record() { local __ioc_s="$1"; shift; [ "$__ioc_s" = "${IOC_EXPECT_STATUS:-}" ] && return 0; printf "%s\t%s\n" "$__ioc_s" "$(printf "%s " "$@" | tr "\n\t" "  ")" >>"$__ioc_failed"; }'
@@ -518,7 +527,7 @@ run_recorded() {
             [[ "$name" =~ ^[A-Za-z_][A-Za-z0-9_.+-]*$ ]] || continue
             case "$UNWRAPPED" in *" $name "*) continue ;; esac
             printf '%s() { command %s "$@"; local __ioc_s=$?; [ "$__ioc_s" -eq 0 ] || __ioc_record "$__ioc_s" %s "$@"; return "$__ioc_s"; }\n' "$name" "$name" "$name"
-        done < <(printf '%s' "$command" | python3 -c "$(reader_py)" names)
+        done < <(printf '%s\n' "$names" | grep -v '^UNREAD')
         program_shims
         printf '%s\n' "$command"
         # The statuses of the final pipeline's stages, which a stage the functions do not
@@ -746,6 +755,62 @@ SUBSTITUTION = re.compile(r"(?<!\\)[$<>]\(((?:[^()]|\([^()]*\))*)\)|(?<!\\)`((?:
 # command word that is the output of a substitution is refused as unresolved.
 SUBST_WORD = "IOCSUBSTITUTION"
 
+def substitutions(text):
+    # Each command substitution the shell runs in text, as (start, end, code): $(...) and a
+    # pair of backticks outside single quotes, inside double quotes too, and <(...) and
+    # >(...) outside any quotes. Text inside single quotes is literal, so a backtick in a
+    # quoted grep pattern is no substitution. A backslash escapes the next character
+    # outside single quotes.
+    out, i, single, double = [], 0, False, False
+    while i < len(text):
+        c = text[i]
+        if single:
+            if c == "\x27":
+                single = False
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c == "\x27" and not double:
+            single = True
+            i += 1
+            continue
+        if c == "\x22":
+            double = not double
+            i += 1
+            continue
+        if (c == "$" or (c in "<>" and not double)) and text[i + 1:i + 2] == "(":
+            depth, j = 1, i + 2
+            while j < len(text) and depth:
+                if text[j] == "(":
+                    depth += 1
+                elif text[j] == ")":
+                    depth -= 1
+                j += 1
+            out.append((i, j, text[i + 2:j - 1]))
+            i = j
+            continue
+        if c == "`":
+            j = i + 1
+            while j < len(text) and text[j] != "`":
+                j += 2 if text[j] == "\\" else 1
+            out.append((i, j + 1, text[i + 1:j]))
+            i = j + 1
+            continue
+        i += 1
+    return out
+
+def without_substitutions(text):
+    # The text with each substitution replaced by the marker, inside the word it stands in.
+    pieces, last = [], 0
+    for start, end, _ in substitutions(text):
+        pieces.append(text[last:start])
+        pieces.append(SUBST_WORD)
+        last = end
+    pieces.append(text[last:])
+    return "".join(pieces)
+
 # The closed allow-list of variables a command word may be written with: the programs
 # env.sh builds and pins, each naming one executable, which is the list PROGRAM_VARIABLES
 # of check.sh names too. Each resolves to the program named here, and the word is then
@@ -883,9 +948,9 @@ def read_command(command, depth=0):
         return ["a heredoc, whose body this reader does not read"]
     # A command substitution runs whether or not it stands inside double quotes, and a
     # backtick pair may span two words, so it is read in the text before the split.
-    for m in SUBSTITUTION.finditer(command):
-        found += read_command(m.group(1) or m.group(2) or "", depth + 1)
-    command = SUBSTITUTION.sub(SUBST_WORD, command)
+    for _, _, code in substitutions(command):
+        found += read_command(code, depth + 1)
+    command = without_substitutions(command)
     parts = commands(command)
     if parts is None:
         return found + ["a command this reader cannot split into words"]
@@ -973,17 +1038,28 @@ def read_command(command, depth=0):
     return found
 
 
+BYPASSES = {"command", "builtin", "exec"}
+
 def names_of(command, depth=0):
+    # The program names to wrap, and, as ("UNREAD", word), each program in command
+    # position the evaluator cannot record: a word that holds a / and is no program
+    # variable, which no function can be named for, and a word after command, builtin or
+    # exec, each of which runs the program without its function.
     out = []
     if depth > 4:
         return out
-    for m in SUBSTITUTION.finditer(command):
-        out += names_of(m.group(1) or m.group(2) or "", depth + 1)
-    parts = commands(SUBSTITUTION.sub(SUBST_WORD, command)) or []
+    for _, _, code in substitutions(command):
+        out += names_of(code, depth + 1)
+    parts = commands(without_substitutions(command)) or []
     for w in parts:
         for i in command_words(w):
-            if resolve(w[i]) is not None and "/" not in w[i] and "$" not in w[i]:
-                out.append(w[i])
+            word = w[i]
+            if word in BYPASSES:
+                out.append(("UNREAD", " ".join(w[i:i + 2]) + " (which runs a program past the function that records it)"))
+            elif "/" in word and "$" not in word:
+                out.append(("UNREAD", word + " (a program named by a path, which no function can be named for)"))
+            elif resolve(word) is not None and "$" not in word:
+                out.append(word)
         for i, word in enumerate(w):
             if runner_name(word) in SHELLS and i + 2 < len(w) and w[i + 1].startswith("-") and "c" in w[i + 1]:
                 out += names_of(w[i + 2], depth + 1)
@@ -1069,8 +1145,11 @@ if sys.argv[-1] == "stages":
         for stage in stages:
             print(stage)
 elif sys.argv[-1] == "names":
-    for name in sorted(set(names_of(sys.stdin.read()))):
+    found = names_of(sys.stdin.read())
+    for name in sorted({n for n in found if isinstance(n, str)}):
         print(name)
+    for _, what in sorted({n for n in found if not isinstance(n, str)}):
+        print("UNREAD\t" + what)
 else:
     for line in sys.stdin:
         row = json.loads(line)
@@ -1142,6 +1221,13 @@ mode_replay() {
         fi
         ran=$((ran + 1))
         run_recorded "$command" "$work/$id.out"
+        # A program the evaluator cannot record fails the row whatever its kind and its
+        # predicate, since no status of it would be read.
+        if [ -s "$work/$id.out.unread" ]; then
+            if [ "$kind" = absence ]; then absence_failures="$absence_failures $id"; else command_failures="$command_failures $id"; fi
+            fail replay-command "$id runs $(head -1 "$work/$id.out.unread"), so its status is no reading the evaluator can make"
+            continue
+        fi
         if [ "$kind" = absence ]; then
             if failed_read "$work/$id.out"; then
                 absence_failures="$absence_failures $id"

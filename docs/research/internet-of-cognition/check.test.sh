@@ -439,6 +439,20 @@ for form in '/bin/cat /nonexistent-ioc' '/usr/bin/python3 -c "import sys; sys.ex
     case_result "a program named by its path or after command records its failed read: $form" replay-command "$(fixture_run "$dir" --replay)"
 done
 
+# 31. A program the evaluator cannot record is a program the reader refuses, whatever
+# form names it. builtin command runs cat past its function, and neither builtin nor
+# command is wrapped, so the gate at c1052427bf passed the failed read; the row is now
+# refused by name rather than read. (exec, the form first chosen here, replaces the shell,
+# so the row never printed its output and failed its predicate at either gate.) The
+# honest form beside it, a search named by its bare word that finds nothing, is read and
+# passes.
+dir="$(fresh builtin-command-unread)"
+plant_behaviour "$dir" "builtin command cat /nonexistent-ioc 2>/dev/null || true; printf 'ran once\\n'" '{"contains":"ran once"}'
+case_result "a program run by builtin command is refused as unread" replay-command "$(fixture_run "$dir" --replay)"
+dir="$(fresh bare-search-misses)"
+plant_behaviour "$dir" "grep -q zzz /dev/null || true; printf 'ran once\\n'" '{"contains":"ran once"}'
+honest_result "a search named by its bare word that finds nothing passes" replay-command "$(fixture_run "$dir" --replay)"
+
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
     printf 'all %d cases passed\n' "$total"
