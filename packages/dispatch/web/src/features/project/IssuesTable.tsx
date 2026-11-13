@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
-import type { FilterFn, RowSelectionState } from "@tanstack/react-table";
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import type { FilterFn, OnChangeFn, RowSelectionState } from "@tanstack/react-table";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { userStateQuery } from "../../api/queries";
 import { DataTable, type DataTableNames, useDataTable } from "../../components/DataTable";
 import { LoadingSkeleton } from "../../components/LoadingSkeleton";
@@ -93,6 +93,17 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
   const flags = useIssueFilters();
   const userState = useQuery(userStateQuery());
   const [selection, setSelection] = useState<RowSelectionState>({});
+  // The issue the reader selected last, and the List's search box: where the focus goes when the
+  // bar goes with it (`IssueTableSelection`). One key added is one row the reader marked, by its
+  // checkbox or `x`; a select-all adds many and names no row of theirs.
+  const lastSelected = useRef<string | null>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
+  const select: OnChangeFn<RowSelectionState> = (change) => {
+    const next = typeof change === "function" ? change(selection) : change;
+    const added = Object.keys(next).filter((key) => next[key] === true && selection[key] !== true);
+    if (added.length === 1) lastSelected.current = added[0] ?? null;
+    setSelection(change);
+  };
   const [openFilter, setOpenFilter] = useState<string>();
 
   const statusPicked = (filters.find((filter) => filter.id === "status")?.value ?? []) as string[];
@@ -150,7 +161,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
     onGlobalFilterChange: setSearch,
     onPaginationChange: setPagination,
     viewKey: params.toString(),
-    selection: { state: selection, onChange: setSelection },
+    selection: { state: selection, onChange: select },
     search: { column: "title", filterFn: fuzzy },
     groupOrder: { compare: compareGroups, heading: groupValue },
   });
@@ -297,6 +308,7 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
         <IssueTableStatus table={table} items={allItems} epics={epics} />
 
         <IssueTableToolbar
+          searchRef={searchRef}
           table={table}
           unclaimedUnchecked={
             wantsFree && registry.isError
@@ -404,6 +416,8 @@ export function IssuesTable({ project }: { project: string }): ReactNode {
       />
 
       <IssueTableSelection
+        lastSelected={() => lastSelected.current}
+        searchRef={searchRef}
         table={table}
         epics={epics}
         busy={busy}

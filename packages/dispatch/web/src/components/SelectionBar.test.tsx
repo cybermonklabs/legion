@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
-import { render, screen } from "@testing-library/react";
+import { act, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { createRef } from "react";
+import { createRef, type ReactNode } from "react";
 
 import { SelectionBar } from "./SelectionBar";
 
@@ -101,6 +101,106 @@ test("the bar hands its own element back and takes focus, for a page whose keyma
     expect(barRef.current).toBe(screen.getByRole("toolbar", { name: "Selected rows" }));
     barRef.current?.focus();
     expect(screen.getByRole("toolbar", { name: "Selected rows" })).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+/** Three rows, a control of the page's own outside them, and the bar over them with one action:
+ *  the page a hand-off is read on. The bar is drawn while `count` is above zero. */
+function MarkedList({
+  count,
+  returnFocus,
+}: {
+  count: number;
+  returnFocus: () => HTMLElement | null;
+}): ReactNode {
+  return (
+    <>
+      <button type="button">Filter</button>
+      {["CORE-1", "CORE-2", "CORE-3"].map((key) => (
+        <input aria-label={`Select ${key}`} key={key} type="checkbox" />
+      ))}
+      <SelectionBar count={count} label="Selected rows" returnFocus={returnFocus}>
+        <button type="button">Clear selection</button>
+      </SelectionBar>
+    </>
+  );
+}
+
+function rowBox(key: string): HTMLElement {
+  return screen.getByRole("checkbox", { name: `Select ${key}` });
+}
+
+test("the bar going while a control inside it holds the focus hands the focus to what returnFocus names", () => {
+  // Whether the bar was still in the page when it was asked where the focus goes.
+  const asked: string[] = [];
+  const returnFocus = () => {
+    asked.push(screen.queryByRole("toolbar") === null ? "after the bar went" : "with the bar up");
+    return rowBox("CORE-2");
+  };
+  const view = render(<MarkedList count={2} returnFocus={returnFocus} />);
+  try {
+    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+    view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    // Not the page's body, from which a keyboard reader would start again at its first link.
+    expect(rowBox("CORE-2")).toHaveFocus();
+    expect(asked).toEqual(["after the bar went"]);
+  } finally {
+    view.unmount();
+  }
+});
+
+test("the bar going while the focus is outside it moves nothing", () => {
+  let asked = 0;
+  const returnFocus = () => {
+    asked += 1;
+    return rowBox("CORE-2");
+  };
+  const view = render(<MarkedList count={2} returnFocus={returnFocus} />);
+  try {
+    // On a control of the page's own, which stays: the focus stays with it.
+    const filter = screen.getByRole("button", { name: "Filter" });
+    act(() => filter.focus());
+    view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
+    expect(screen.queryByRole("toolbar")).not.toBeInTheDocument();
+    expect(filter).toHaveFocus();
+    // On the body, where the reader had left it before the bar went: the bar never held it, so
+    // it is not the bar's to hand on.
+    view.rerender(<MarkedList count={1} returnFocus={returnFocus} />);
+    act(() => filter.blur());
+    view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
+    expect(document.activeElement).toBe(document.body);
+    expect(asked).toBe(0);
+    // The same going with the focus inside the bar does hand it on: what kept it still above is
+    // that the bar did not hold it.
+    view.rerender(<MarkedList count={1} returnFocus={returnFocus} />);
+    act(() => screen.getByRole("button", { name: "Clear selection" }).focus());
+    view.rerender(<MarkedList count={0} returnFocus={returnFocus} />);
+    expect(rowBox("CORE-2")).toHaveFocus();
+  } finally {
+    view.unmount();
+  }
+});
+
+test("a new returnFocus on every render while the bar stays moves nothing, and the one the bar goes under is the one asked", () => {
+  const asked: string[] = [];
+  const naming = (key: string) => () => {
+    asked.push(key);
+    return rowBox(key);
+  };
+  const view = render(<MarkedList count={2} returnFocus={naming("CORE-1")} />);
+  try {
+    const clear = screen.getByRole("button", { name: "Clear selection" });
+    act(() => clear.focus());
+    view.rerender(<MarkedList count={2} returnFocus={naming("CORE-3")} />);
+    view.rerender(<MarkedList count={1} returnFocus={naming("CORE-1")} />);
+    expect(clear).toHaveFocus();
+    expect(asked).toEqual([]);
+    view.rerender(<MarkedList count={0} returnFocus={naming("CORE-2")} />);
+    expect(rowBox("CORE-2")).toHaveFocus();
+    expect(asked).toEqual(["CORE-2"]);
   } finally {
     view.unmount();
   }

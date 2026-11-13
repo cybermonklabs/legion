@@ -59,6 +59,9 @@ export interface InboxSelection {
   readonly dismissRows: (rows: readonly InboxDismissRow[]) => void;
   /** The one dismiss write this list shares, for what it is doing and what it was refused. */
   readonly dismissWrite: InboxDismiss;
+  /** The row the reader marked last, by `rowId`, or null before their first mark: the row whose
+   *  checkbox takes the focus when the bar goes with it (`SelectionBar`'s `returnFocus`). */
+  readonly lastMarked: () => string | null;
   /** Every row the reader has marked, by `rowId`, a folded one's included. */
   readonly marked: ReadonlySet<string>;
   readonly onMark: (id: string) => void;
@@ -150,8 +153,14 @@ export function useInboxSelection({
     setAllRows(false);
     setSnoozeRefusal(undefined);
   }, [setMarked]);
+  // The marks as this render drew them, so a mark tells a row being marked from one being
+  // unmarked while `onMark` stays as stable as `useMarkedKeys` makes it.
+  const markedNow = useRef(marked);
+  markedNow.current = marked;
+  const lastMarkedId = useRef<string | null>(null);
   const onMark = useCallback(
     (id: string) => {
+      if (!markedNow.current.has(id)) lastMarkedId.current = id;
       setAllRows(false);
       toggleMark(id);
     },
@@ -224,6 +233,7 @@ export function useInboxSelection({
     dismissPick,
     dismissRows,
     dismissWrite,
+    lastMarked: () => lastMarkedId.current,
     marked,
     onMark,
     selectAll: () => {

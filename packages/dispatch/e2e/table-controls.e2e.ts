@@ -765,6 +765,187 @@ test("a chip taken off from the keyboard hands the focus to the next chip, then 
   expect(wrong, wrong.join("; ")).toEqual([]);
 });
 
+// SLOW(>=2s): two pages at two widths, each page's selection bar taken away from the keyboard.
+test("the selection bar gone from the keyboard hands the focus to the row marked last, then the first row, never the body, on the Inbox and the project List", async ({
+  page,
+}) => {
+  await seedLongInbox();
+  const scene = await seedSurfaces();
+  const main = page.getByTestId("main-content");
+  const wrong: string[] = [];
+  /** Where the keyboard focus is - the focused element's name, or the tag of the body - and
+   *  whether the window and every box that clips it show the whole of it. */
+  const focusNow = () =>
+    page.evaluate(() => {
+      const focused = document.activeElement;
+      if (!(focused instanceof HTMLElement) || focused === document.body) {
+        return { label: focused?.tagName ?? "nothing", whole: false };
+      }
+      const own = focused.getBoundingClientRect();
+      let top = 0;
+      let bottom = window.innerHeight;
+      let left = 0;
+      let right = window.innerWidth;
+      for (let box = focused.parentElement; box !== null; box = box.parentElement) {
+        const style = getComputedStyle(box);
+        const clip = box.getBoundingClientRect();
+        if (style.overflowY !== "visible") {
+          top = Math.max(top, clip.top);
+          bottom = Math.min(bottom, clip.bottom);
+        }
+        if (style.overflowX !== "visible") {
+          left = Math.max(left, clip.left);
+          right = Math.min(right, clip.right);
+        }
+      }
+      const whole =
+        own.top >= top - 1 &&
+        own.bottom <= bottom + 1 &&
+        own.left >= left - 1 &&
+        own.right <= right + 1;
+      const label = focused.getAttribute("aria-label") ?? focused.textContent?.trim() ?? "";
+      return { label: label === "" ? focused.tagName : label, whole };
+    });
+  /** Records a focus that is not on `wanted`, or is on it out of the reader's sight. The bar
+   *  hands the focus on once the commit that took it away has settled, which for a write that
+   *  lands rather than a key pressed is a moment after the bar is seen gone. */
+  const focusOn = async (where: string, after: string, wanted: string) => {
+    const landed = await expect
+      .poll(async () => (await focusNow()).label, { timeout: 2_000 })
+      .toBe(wanted)
+      .then(() => true)
+      .catch(() => false);
+    const focus = await focusNow();
+    if (!landed) {
+      wrong.push(`${where}: after ${after} the focus is on ${focus.label}, not on "${wanted}"`);
+    } else if (!focus.whole) {
+      wrong.push(`${where}: after ${after} the focused "${wanted}" is not in view`);
+    }
+  };
+  /** Scrolls the list until `row` is above the window, so a focus handed back to it has to bring
+   *  it into view: the box around it that scrolls, or the window where none does. */
+  const scrollAbove = (row: Locator) =>
+    row.evaluate((node) => {
+      const by = node.getBoundingClientRect().bottom + 16;
+      for (let box = node.parentElement; box !== null; box = box.parentElement) {
+        const { overflowY } = getComputedStyle(box);
+        if (
+          (overflowY === "auto" || overflowY === "scroll") &&
+          box.scrollHeight > box.clientHeight
+        ) {
+          box.scrollTop += by;
+          return;
+        }
+      }
+      window.scrollBy(0, by);
+    });
+  /** Marks a row from the keyboard, by Space on its checkbox. */
+  const mark = async (box: Locator) => {
+    await box.focus();
+    await page.keyboard.press("Space");
+    await expect(box).toBeChecked();
+  };
+  for (const size of [
+    { height: 900, width: 1440 },
+    { height: 664, width: 390 },
+  ]) {
+    await page.setViewportSize(size);
+
+    // The Inbox, whose Escape is the keyboard's Clear while no row holds the focus.
+    let where = `Inbox at ${size.width}x${size.height}`;
+    await page.goto("/");
+    const rows = page.locator("[data-inbox-row]");
+    await expect(rows.nth(3), `${where}: fewer than four rows`).toBeVisible();
+    const inboxBar = page.getByRole("toolbar", { name: "Selected rows" });
+    const inboxBox = (index: number) => rows.nth(index).getByRole("checkbox").first();
+    const inboxClear = inboxBar.getByRole("button", { exact: true, name: "Clear selection" });
+    // The third row and then the second: the row marked last, which is neither the list's first
+    // nor the last marked in the list's order.
+    await mark(inboxBox(2));
+    await mark(inboxBox(1));
+    await expect(inboxBar).toContainText("2 selected");
+    await scrollAbove(rows.nth(1));
+    await inboxClear.focus();
+    await page.keyboard.press("Enter");
+    await expect(inboxBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Enter on Clear selection",
+      (await inboxBox(1).getAttribute("aria-label")) ?? ""
+    );
+    await mark(inboxBox(0));
+    await mark(inboxBox(3));
+    await scrollAbove(rows.nth(3));
+    await inboxClear.focus();
+    await page.keyboard.press("Escape");
+    await expect(inboxBar, `${where}: Escape from the bar left the bar up`).toHaveCount(0);
+    await focusOn(
+      where,
+      "Escape from the bar's Clear selection",
+      (await inboxBox(3).getAttribute("aria-label")) ?? ""
+    );
+    // A snooze picked in the bar folds every marked row into Later, the row marked last with
+    // them, and the bar goes once the write lands: the focus goes to the first row.
+    await mark(inboxBox(2));
+    await mark(inboxBox(1));
+    const picker = inboxBar.getByRole("combobox", { name: "Snooze selected asks" });
+    await picker.focus();
+    await picker.selectOption("later-today");
+    await expect(inboxBar, `${where}: the snooze left the bar up`).toHaveCount(0);
+    await focusOn(
+      where,
+      "a snooze took the marked rows away",
+      (await inboxBox(0).getAttribute("aria-label")) ?? ""
+    );
+    // The bar never held the focus, so it is not the bar's to move: on a control of the page's
+    // own, Escape clears the selection and leaves the focus there.
+    const trigger = control(controlRow(main), CONTROL.panelTrigger).first();
+    await mark(inboxBox(1));
+    await trigger.focus();
+    await page.keyboard.press("Escape");
+    await expect(inboxBar, `${where}: Escape on the filter trigger left the bar up`).toHaveCount(0);
+    if (!(await trigger.evaluate((node) => node === document.activeElement))) {
+      const focus = await focusNow();
+      wrong.push(
+        `${where}: Escape on the filter trigger moved the focus to ${focus.label}, off the trigger`
+      );
+    }
+    // And on a row: `x` takes the one mark off the row in hand, the bar goes, and the focus stays
+    // on the row. Escape is not this case: on a row it steps off the row first.
+    await rows.nth(0).focus();
+    await page.keyboard.press("x");
+    await expect(inboxBox(0), `${where}: x marked another row than the focused one`).toBeChecked();
+    await expect(inboxBar).toContainText("1 selected");
+    await page.keyboard.press("x");
+    await expect(inboxBar, `${where}: x on the only marked row left the bar up`).toHaveCount(0);
+    if (!(await rows.nth(0).evaluate((node) => node === document.activeElement))) {
+      const focus = await focusNow();
+      wrong.push(`${where}: x on the focused row moved the focus to ${focus.label}, off the row`);
+    }
+
+    // The project List binds no Escape to clearing its selection (`issues-table-page.tsx`,
+    // `IssuesTable.tsx`, `components/table-keys.ts`), so its bar goes by its button alone.
+    where = `project List at ${size.width}x${size.height}`;
+    await openSurface(page, "project List", scene);
+    const issueRows = page.locator("[data-issue-row]");
+    await expect(issueRows.nth(2), `${where}: fewer than three rows`).toBeVisible();
+    const listBar = page.getByRole("toolbar", { name: "Selected issues" });
+    const second = await issueRows.nth(1).getAttribute("data-issue-row");
+    const third = await issueRows.nth(2).getAttribute("data-issue-row");
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${third}` }));
+    await mark(page.getByRole("checkbox", { exact: true, name: `Select ${second}` }));
+    await expect(listBar).toContainText("2 selected");
+    await scrollAbove(issueRows.nth(1));
+    await listBar.getByRole("button", { exact: true, name: "Clear selection" }).focus();
+    await page.keyboard.press("Enter");
+    await expect(listBar, `${where}: Clear selection left the bar up`).toHaveCount(0);
+    await focusOn(where, "Enter on Clear selection", `Select ${second}`);
+  }
+  // A bar that drops the focus onto the page sends a keyboard reader back to its first link, from
+  // which the rows they were marking are a walk through every control above them.
+  expect(wrong, wrong.join("; ")).toEqual([]);
+});
+
 /** The project List's narrowable columns and what shape each one's panel takes. No column of
  *  either table is a date or a number that narrows by two ends: Created and Updated narrow by
  *  the age bands they are grouped into, and Open asks by its own counts, so both are columns of

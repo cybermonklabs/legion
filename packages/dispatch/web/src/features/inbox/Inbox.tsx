@@ -307,6 +307,9 @@ function MarkCheckbox({
   );
 }
 
+/** The checkbox a row draws for its mark (`MarkCheckbox`), the one checkbox every row has. */
+const MARK_SELECTOR = 'input[type="checkbox"]';
+
 /** The `<li>` both layouts sit in: where the row is, what the reader's hand does to it, and the
  *  marks the selected row carries. Only the short row is selectable, so only it is ever drawn
  *  as the selected one. */
@@ -1047,6 +1050,7 @@ export function Inbox({
     dismissPick,
     dismissRows,
     dismissWrite,
+    lastMarked,
     marked,
     onMark,
     selectAll,
@@ -1090,7 +1094,7 @@ export function Inbox({
   const focusInPane = () => paneRef.current?.contains(document.activeElement) === true;
   const focusInList = () => listRef.current?.contains(document.activeElement) === true;
   /** The row a recorded origin names: null where nothing was recorded, and null where the row
-   *  it names has since left the list. One lookup, for the two ways back into the list below. */
+   *  it names has since left the list. One lookup, for the ways back into the list below. */
   const originRow = (origin: string | null): HTMLElement | null =>
     origin === null
       ? null
@@ -1914,24 +1918,35 @@ export function Inbox({
 
   // The bar outlives an empty list: a pick that empties this view leaves its write in the air,
   // and the refusal that comes back has to land somewhere the reader can see. It is drawn over
-  // the list rather than in it, so marking a row moves no row (INFRA-3135, R4).
+  // the list rather than in it, so marking a row moves no row (INFRA-3135, R4). It is drawn
+  // always, and given no count and no state while it is not shown, so its going is the bar's
+  // own to see and the focus it held is handed on (`SelectionBar`).
   const dismissLabel = showDismissed ? "Move to Inbox" : "Dismiss";
-  const selectionBar = bulkBarShown ? (
+  const selectionBar = (
     <SelectionBar
       barRef={bulkBarRef}
-      count={selectedAsks.length + selectedThreads.length}
+      count={bulkBarShown ? selectedAsks.length + selectedThreads.length : 0}
       label="Selected rows"
       notice={snoozeRefusal}
+      // The bar gone with the focus: the checkbox of the row the reader marked last, else the
+      // first row's, else the search box.
+      returnFocus={() =>
+        originRow(lastMarked())?.querySelector<HTMLElement>(MARK_SELECTOR) ??
+        rows()[0]?.querySelector<HTMLElement>(MARK_SELECTOR) ??
+        searchRef.current
+      }
       // In flight the count is the press's, since the rows it moved have already left this
       // view; settled, it is what a second press would act on - the rows still marked. Said
       // here rather than left to the bar's own count so the bar still stands over an emptied
       // selection, which is where a refusal of that press lands.
       state={
-        bulkSnoozing !== 0
-          ? `Snoozing ${bulkSnoozing}…`
-          : allRows
-            ? "Every row selected"
-            : `${selectedAsks.length + selectedThreads.length} selected`
+        bulkBarShown
+          ? bulkSnoozing !== 0
+            ? `Snoozing ${bulkSnoozing}…`
+            : allRows
+              ? "Every row selected"
+              : `${selectedAsks.length + selectedThreads.length} selected`
+          : undefined
       }
     >
       {/* The picker stays while its own write is out: the optimistic fold takes every marked ask
@@ -1998,7 +2013,7 @@ export function Inbox({
         Clear selection
       </button>
     </SelectionBar>
-  ) : null;
+  );
 
   // Everything above the list, the same whether or not any band has a row, and a sibling of the
   // scrolling list rather than an item in it: the controls stay put while the rows move.

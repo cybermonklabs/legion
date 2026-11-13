@@ -1,5 +1,5 @@
 import type { Table } from "@tanstack/react-table";
-import { type ReactNode, useState } from "react";
+import { type ReactNode, type RefObject, useState } from "react";
 import type { IssueSummary } from "../../api/types";
 import { Chip } from "../../components/Chip";
 import { ColumnsMenu } from "../../components/ColumnsMenu";
@@ -24,6 +24,7 @@ import { IssueFlagChips, UnclaimedUnchecked } from "./IssueFlags";
 import { useIssueFilters } from "./issue-filters";
 import {
   defaultView,
+  ISSUE_ROW_ATTRIBUTE,
   type Item,
   readUrl,
   runningIssueStatuses,
@@ -136,9 +137,12 @@ type ToolbarPanel = "flags" | "view";
  * `ColumnFilter` draws it.
  */
 export function IssueTableToolbar({
+  searchRef,
   table,
   unclaimedUnchecked,
 }: {
+  /** The search box, which the selection bar hands the focus to when no row is left for it. */
+  searchRef: RefObject<HTMLInputElement | null>;
   table: Table<Item>;
   /** Why the Claimed by filter cannot tell which claims have lapsed, while it is asked to. */
   unclaimedUnchecked: "refilling" | "unreachable" | undefined;
@@ -230,6 +234,7 @@ export function IssueTableToolbar({
             label="Search issues"
             onChange={(value) => setSearch(value)}
             placeholder="Search issues: key, title, epic, assignee, author, labels"
+            ref={searchRef}
             size="compact"
             value={search}
           />
@@ -266,6 +271,8 @@ export function IssueTableToolbar({
 }
 
 export function IssueTableSelection({
+  lastSelected,
+  searchRef,
   table,
   epics,
   busy,
@@ -274,6 +281,10 @@ export function IssueTableSelection({
   moveTo,
   newEpic,
 }: {
+  /** The key of the issue the reader selected last, or null before their first. */
+  lastSelected: () => string | null;
+  /** The List's search box. */
+  searchRef: RefObject<HTMLInputElement | null>;
   table: Table<Item>;
   epics: readonly IssueSummary[];
   busy: boolean;
@@ -289,7 +300,26 @@ export function IssueTableSelection({
   const [epic, setEpic] = useState("");
   return (
     // Over the list, not in it: selecting a row moves no row (INFRA-3135, R4).
-    <SelectionBar count={selectedKeys.length} label="Selected issues">
+    <SelectionBar
+      count={selectedKeys.length}
+      label="Selected issues"
+      // The bar gone with the focus: the checkbox of the issue the reader selected last, else the
+      // first row's, else the search box.
+      returnFocus={() => {
+        const key = lastSelected();
+        const last =
+          key === null
+            ? null
+            : document.querySelector<HTMLElement>(
+                `[${ISSUE_ROW_ATTRIBUTE}="${CSS.escape(key)}"] input[type="checkbox"]`
+              );
+        return (
+          last ??
+          document.querySelector<HTMLElement>(`[${ISSUE_ROW_ATTRIBUTE}] input[type="checkbox"]`) ??
+          searchRef.current
+        );
+      }}
+    >
       {selectedKeys.length < leafCount ? (
         <Action disabled={busy} onClick={() => table.toggleAllRowsSelected(true)}>
           Select all {leafCount} matching
