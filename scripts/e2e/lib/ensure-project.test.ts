@@ -258,6 +258,28 @@ describe("ensure_project", () => {
     ]);
   });
 
+  // Dispatch writes its error bodies with Go's encoding/json, which escapes `&`, `<` and `>` as
+  // `\u0026`, `\u003c` and `\u003e`: measured against a local Dispatch at 4198dff4, a create
+  // naming "a&b@example.com" answered `"\"a\u0026b@example.com\" has not signed in to Dispatch"`.
+  // An email may hold `&`, so the body spells it differently from the variable, and the FAIL line
+  // must still name the variable and never the email.
+  test("400 ASSIGNEE_NOT_ALLOWED for an email Dispatch's JSON escapes still names the variable, never the email", () => {
+    expect(stage4bScrub).toBeDefined();
+    const person = "Smoke&Owner@Example.com";
+    const r = run(
+      `${stage4bScrub}\nservice_hosts=(dispatch.example:443)\nwrite_dispatch_header\nensure_project`,
+      {
+        status: "400",
+        body: '{"code":"ASSIGNEE_NOT_ALLOWED","error":"\\"Smoke\\u0026Owner@Example.com\\" has not signed in to Dispatch"}',
+      },
+      proofActor,
+      person
+    );
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain("<LEGION_E2E_DISPATCH_DEFAULT_ASSIGNEE>");
+    expect(r.stderr).not.toContain("Owner@Example.com");
+  });
+
   // The email is matched in any case, as the hosts are, and literally: each character sed's regular
   // expression or its `#` delimiter reads as special stands for itself, so a line that differs only
   // where the email holds `.` keeps it, and a host still names its own variable.
