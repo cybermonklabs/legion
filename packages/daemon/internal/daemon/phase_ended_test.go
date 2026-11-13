@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -18,6 +17,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
@@ -186,7 +186,7 @@ func TestAPhaseEndedMessageRetriesEveryFailureButNoHolder(t *testing.T) {
 // pull request about to be read as conflicting and the phase rows of the roles that worked it, wired to
 // the workflow engine as production wires it: a fact applied against the pool queues its rows, and
 // one drain runs them.
-func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *pgxpool.Pool) {
+func conflictRunner(t *testing.T, from phase.Phase, status string, uncompleted bool, publisher notify.Publisher) (*outbox, *supervisor, *store.Pool) {
 	t.Helper()
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
@@ -246,7 +246,7 @@ func startedClaim(t *testing.T, sup *supervisor, role claim.Role) *supervise.Mac
 
 // applyTheConflict records GitHub's read of the head as conflicting with its base, the fact that
 // sends the work back to implementing.
-func applyTheConflict(t *testing.T, ctx context.Context, pool *pgxpool.Pool, runner *outbox) {
+func applyTheConflict(t *testing.T, ctx context.Context, pool *store.Pool, runner *outbox) {
 	t.Helper()
 	result, err := intake.ApplyFact(ctx, pool, "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 86,
 		HeadSHA: "sha-1", Base: "main", Mergeable: record.MergeabilityConflicting}, runner.handlers...)
