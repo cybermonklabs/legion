@@ -25,13 +25,17 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
+	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 )
 
 // Typed access-check failures. Handlers surface these verbatim to the human
-// configuring a source; anything else is a genuine upstream failure.
+// configuring a source; anything else is a genuine upstream failure. A file
+// larger than notes.MaxFileSize is DirFiles' notes.ErrFileTooLarge, which is
+// the notes package's: the bound, like the rule of which entries are notes,
+// is decided there.
 var (
 	// ErrNoAppKey is the "no app credentials yet" boot state: the server has no
 	// GitHub App private key, so no installation call can be signed.
@@ -55,9 +59,6 @@ var (
 	// directory exceeds the tree API caps (100k entries / 7 MB), so the
 	// listing is not trustworthy and the sync must fail whole.
 	ErrTreeTruncated = errors.New("the directory tree is too large for the GitHub tree API")
-	// ErrFileTooLarge is a directory entry whose recorded size exceeds
-	// MaxFileSize: it is refused before its blob is fetched.
-	ErrFileTooLarge = errors.New("file too large")
 	// ErrRepositoryUnreadable is GitHub's 403 or 404 on a repository read the installation may
 	// not make, or on a repository or commit it cannot see: the answer the results read takes
 	// as unknown rather than as a commit it placed elsewhere (CheckRepositoryResponse, which
@@ -66,13 +67,9 @@ var (
 	ErrRepositoryUnreadable = errors.New("the GitHub App cannot read the repository")
 )
 
-// MaxFileSize bounds one architecture file. The tree entry's size is checked
-// against it before the blob is read.
-const MaxFileSize = 1 << 20
-
 // responseLimit caps a GitHub API response body; a blob response is read
 // through blobResponseLimit instead, since base64 with GitHub's line wrapping
-// inflates MaxFileSize bytes past responseLimit.
+// inflates notes.MaxFileSize bytes past responseLimit.
 const (
 	responseLimit     = 1 << 20
 	blobResponseLimit = 2 << 20
@@ -999,11 +996,13 @@ type DirFile struct {
 // subtree read (`GET /repos/{owner}/{repo}/git/trees/{sha}:{dir}`): only the
 // directory's own entries come back, so a large repository elsewhere cannot
 // push the response past the read cap. GitHub's 404 for a commit without dir
-// is an empty Dir (a valid, empty model). Only regular blobs (mode 100644 /
-// 100755) count: symlinks (120000), submodules, and nested directories are
-// skipped. A listing GitHub answers truncated is ErrTreeTruncated — it cannot
-// be trusted, so the sync fails whole. dir is a plain repo-relative path, no
-// leading slash.
+// is an empty Dir (a valid, empty model). An entry counts when notes.IsNote
+// keeps it, read with notes.GitKind from its type and mode: the rule of which
+// entries are notes is the notes package's, which keeps the regular blobs
+// (mode 100644 / 100755) named *.md and skips symlinks (120000), submodules,
+// and nested directories. A listing GitHub answers truncated is
+// ErrTreeTruncated — it cannot be trusted, so the sync fails whole. dir is a
+// plain repo-relative path, no leading slash.
 func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (Dir, error) {
 	if c == nil {
 		return Dir{}, ErrNoAppKey
@@ -1043,8 +1042,7 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 	}
 	listing := Dir{SHA: tree.SHA}
 	for _, entry := range tree.Tree {
-		if entry.Type != "blob" || (entry.Mode != "100644" && entry.Mode != "100755") ||
-			strings.Contains(entry.Path, "/") || !strings.HasSuffix(entry.Path, ".md") {
+		if !notes.IsNote(entry.Path, notes.GitKind(entry.Type, entry.Mode)) {
 			continue
 		}
 		listing.Files = append(listing.Files, DirFile{
@@ -1055,16 +1053,17 @@ func (c *Client) Dir(ctx context.Context, token, owner, repo, sha, dir string) (
 }
 
 // DirFiles reads every file of a Dir listing (one blob read each, base64),
-// keyed by file name. A file whose listed size exceeds MaxFileSize is
-// ErrFileTooLarge before any blob is fetched; a blob that vanished between
-// the listing and the read fails the whole set.
+// keyed by file name. The bound is the notes package's: a file whose listed
+// size exceeds notes.MaxFileSize is notes.ErrFileTooLarge (notes.CheckSize)
+// before any blob is fetched, and so is a decoded blob over it; a blob that
+// vanished between the listing and the read fails the whole set.
 func (c *Client) DirFiles(ctx context.Context, token, owner, repo string, listing Dir) (map[string][]byte, error) {
 	if c == nil {
 		return nil, ErrNoAppKey
 	}
 	for _, file := range listing.Files {
-		if file.Size > MaxFileSize {
-			return nil, fmt.Errorf("%w: %s is %d bytes (limit %d)", ErrFileTooLarge, file.Path, file.Size, MaxFileSize)
+		if err := notes.CheckSize(file.Path, file.Size); err != nil {
+			return nil, err
 		}
 	}
 	repoBase := c.base + "/repos/" + url.PathEscape(owner) + "/" + url.PathEscape(repo)
@@ -1102,8 +1101,8 @@ func (c *Client) blob(ctx context.Context, token, repoBase, path, sha string) ([
 	if err != nil {
 		return nil, fmt.Errorf("decode blob %s (%s) content: %w", sha, path, err)
 	}
-	if len(content) > MaxFileSize {
-		return nil, fmt.Errorf("%w: %s is %d bytes (limit %d)", ErrFileTooLarge, path, len(content), MaxFileSize)
+	if err := notes.CheckSize(path, int64(len(content))); err != nil {
+		return nil, err
 	}
 	return content, nil
 }
