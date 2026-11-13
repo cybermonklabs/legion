@@ -2052,8 +2052,8 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "names the sum and says the key is under it" \
-  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which is above it")"
+check "names the sum and says the key does not strictly exceed it" \
+  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
 check "says what to write" "$(contains "$out" 'timeout-minutes: 38. or more')"
 
 # The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
@@ -2140,8 +2140,8 @@ jobs:
 YAML
 run_check "$root"
 check "exits 1" "$(is "$status" 1)"
-check "says the sum is above the key, not under it" \
-  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which is above it")"
+check "says the key does not strictly exceed the sum" \
+  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
 # 37 minutes is 2220 s, under the sum; 38 is 2280 s, above it. The case above and the case
 # below therefore fail together when `allowed <= total` becomes `allowed < total`, which is the
 # mutation that exposed this gap.

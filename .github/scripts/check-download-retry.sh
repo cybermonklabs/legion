@@ -3327,7 +3327,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
     if allowed <= total:
         problem(path, row["line"],
                 f"job '{job}' carries `timeout-minutes: {row['minutes']}`, {allowed} s, and its "
-                f"own comment derives {measured} + {term} = {total} s, which is above it. A job "
+                f"own comment derives {measured} + {term} = {total} s, which that key does not strictly exceed. A job "
                 "is its measured duration plus the arithmetic of its slowest retried step "
                 "(ci-budgets.md's Budgets note), so a key under the sum the comment itself "
                 "states reports GitHub's bare timeout line part way through a step that is still "
@@ -3341,7 +3341,7 @@ for (path, job), row in sorted(JOB_SLOWEST.items()):
                 f"own comment derives {measured} + {term} = {total} s, but the slowest retried "
                 f"step of this job is '{row['step']}', whose retries take {row['cost']} s to "
                 f"exhaust — more than the {term} s the comment adds. The sum is therefore "
-                f"{measured} + {row['cost']} = {recomputed} s, which this key is under. THE "
+                f"{measured} + {row['cost']} = {recomputed} s, which this key does not strictly exceed. THE "
                 "COMMENT IS SELF-CONSISTENT AND STILL WRONG: it names a step that stopped being "
                 "the slowest when a bound moved under it, which is how eight jobs of this "
                 "repository came to stand under their own derivation while every other clause of "
