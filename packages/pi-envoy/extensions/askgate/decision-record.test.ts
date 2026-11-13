@@ -761,6 +761,52 @@ describe("the AskGate decision record", () => {
     expect(recordsIn(dispatch.markdown()).map((record) => record.id)).toEqual(["t1", "t2"]);
   });
 
+  // The record and its document's header are this plugin's own text (INFRA-3231, R14): each is
+  // sent with no override first, which a Dispatch with no writing check takes, and only where the
+  // check refuses it, again with `generated` under a key of its own, since Dispatch keeps the
+  // refusal under the first send's key.
+  test("a write the writing check refuses is sent again as generated, under a key of its own", async () => {
+    const sends: { readonly call: string; readonly override?: string; readonly key: string }[] = [];
+    const refusedUnlessGenerated = (override: string | undefined) => {
+      if (override === undefined) {
+        throw new DispatchServiceError("WRITING_CHECK_REFUSED", 422, "refused");
+      }
+    };
+    const dispatch = fakeRecord({
+      projectArtifact: async (_project, input, key) => {
+        sends.push({ call: "create", override: input.override_writing_check, key });
+        refusedUnlessGenerated(input.override_writing_check);
+        return { artifact: { id: "doc-1" } };
+      },
+      docEdit: async (_id, input, key) => {
+        sends.push({ call: "append", override: input.override_writing_check, key });
+        refusedUnlessGenerated(input.override_writing_check);
+        return { applied: 1 };
+      },
+    });
+    expect(
+      await harness({ client: dispatch.client }).write(REFUSAL, SESSION, "t1")
+    ).toBeUndefined();
+
+    const generatedKey = (prefix: string, of: string) =>
+      `${prefix}.${createHash("sha256").update(`${of}\ngenerated`).digest("hex")}`;
+    expect(sends).toEqual([
+      { call: "create", override: undefined, key: CREATE_KEY },
+      {
+        call: "create",
+        override: "generated",
+        key: generatedKey("askgate-doc", `INFRA\n${DOCUMENT}`),
+      },
+      { call: "append", override: undefined, key: appendKey("t1") },
+      {
+        call: "append",
+        override: "generated",
+        key: generatedKey("askgate-rec", `${SESSION}\nt1`),
+      },
+    ]);
+    expect(sends[1]?.key).toMatch(IDEMPOTENCY_KEY_PATTERN);
+  });
+
   test("a read that fails for anything but a 404 is the record's failure, and uploads nothing", async () => {
     const dispatch = fakeRecord({
       getProjectArtifact: () =>

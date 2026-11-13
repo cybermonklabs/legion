@@ -73,7 +73,12 @@ import {
   type EditArtifactInput,
   IDEMPOTENCY_KEY_REUSED,
 } from "@legion/contracts";
-import { DispatchServiceError, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http";
+import {
+  DispatchServiceError,
+  DispatchWriteLandedError,
+  type GeneratedOverride,
+  writeGenerated,
+} from "@legion/envoy-client/dispatch-http";
 import pkg from "../../package.json";
 
 /**
@@ -97,10 +102,13 @@ export const DECISION_DOCUMENT_PREFIX = "askgate-decisions-";
  * What the `Idempotency-Key` of a session document's create starts with, and what one record's
  * append starts with: the sha256 of what each is of follows (`intentKey`). Both fit
  * `IDEMPOTENCY_KEY_PATTERN` — letters, digits, `.`, `_`, `:` and `-`, 128 at most — at 76
- * characters.
+ * characters. A write Dispatch's writing check refused is sent again under a key of its own,
+ * the same intent with `GENERATED_KEY_PART` added (`generatedWrite`), since Dispatch keeps the
+ * refusal under the first key.
  */
 const DOCUMENT_KEY_PREFIX = "askgate-doc";
 const RECORD_KEY_PREFIX = "askgate-rec";
+const GENERATED_KEY_PART = "generated";
 
 /** The plugin that wrote the record, as the record names it: the manifest's own name and version. */
 const PLUGIN = `${pkg.name}@${pkg.version}`;
@@ -369,17 +377,19 @@ export function createDecisionRecorder(deps: RecordDeps): DecisionRecorder {
       // once, by the create, so no write of this session can replace what another wrote. The key
       // is this record's own, so a late append is replayed rather than written twice, and the same
       // record sent again with another body is refused (`422 KEY_REUSED`), never written twice.
-      // The record is this plugin's own text, not an agent's words, so it goes
-      // `override_writing_check: "generated"` (INFRA-3231): Dispatch's writing check counts it as
-      // generated and never refuses it.
-      await client.docEdit(
-        held,
-        {
-          ops: [{ op: "insert", markdown: block, after: "end" }],
-          actor,
-          override_writing_check: "generated",
-        },
-        intentKey(RECORD_KEY_PREFIX, sessionId, id)
+      // The record is this plugin's own text, not an agent's words, so it is written as generated
+      // (INFRA-3231): sent with no override, and only where Dispatch's writing check refuses it,
+      // sent again `override_writing_check: "generated"` under a key of its own.
+      await generatedWrite(
+        (override, key) =>
+          client.docEdit(
+            held,
+            { ops: [{ op: "insert", markdown: block, after: "end" }], actor, ...override },
+            key
+          ),
+        RECORD_KEY_PREFIX,
+        sessionId,
+        id
       );
       return undefined;
     };
@@ -485,17 +495,18 @@ async function document(
   // The create's body, fixed for the session: the header alone, with no record, no time and no
   // plugin version in it, so two attempts of it — two processes', or one process's own, a day
   // apart — are the same request under the same key, which Dispatch replays rather than refusing
-  // as a key reused (`422 KEY_REUSED`). The header is this plugin's own text, sent `generated`
-  // as every record is; a document a build from before that mark created answers this create
-  // `422 KEY_REUSED`, which sends it back to the read by name below.
+  // as a key reused (`422 KEY_REUSED`). The header is this plugin's own text, written as generated
+  // as every record is (`generatedWrite`).
   const content =
     `AskGate rule decisions of session ${sessionId}. One fenced block per decision follows, ` +
     "each holding one JSON record.\n";
   try {
-    const created = await client.projectArtifact(
+    const created = await generatedWrite(
+      (override, key) =>
+        client.projectArtifact(project, { name, content, actor, ...override }, key),
+      DOCUMENT_KEY_PREFIX,
       project,
-      { name, content, actor, override_writing_check: "generated" },
-      intentKey(DOCUMENT_KEY_PREFIX, project, name)
+      name
     );
     return created.artifact.id;
   } catch (error) {
@@ -525,6 +536,28 @@ function mayHaveCreated(error: unknown): boolean {
     error.fromDispatch &&
     error.status === 422 &&
     error.code === IDEMPOTENCY_KEY_REUSED
+  );
+}
+
+/**
+ * One keyed write of this plugin's own text under Dispatch's writing check (`writeGenerated`):
+ * first with no override under the intent's key, and only where the check refused that, again
+ * with `override_writing_check: "generated"` under the same intent's key with
+ * `GENERATED_KEY_PART` added. That second key is fixed for the intent too, so a repeat of the
+ * second send is replayed as the first send's is.
+ */
+function generatedWrite<T>(
+  write: (override: GeneratedOverride, key: string) => Promise<T>,
+  prefix: string,
+  ...of: readonly string[]
+): Promise<T> {
+  return writeGenerated((override) =>
+    write(
+      override,
+      override.override_writing_check === undefined
+        ? intentKey(prefix, ...of)
+        : intentKey(prefix, ...of, GENERATED_KEY_PART)
+    )
   );
 }
 

@@ -455,9 +455,10 @@ class UnsupportedEnvoyToolError extends Error {
  * Answer a targeted Dispatch delivery, on the sender's behalf: the reply this session has for it,
  * or the error that stopped it, so the sender sees the attempt fail instead of waiting on a reply
  * that never comes. `followUp` asks Dispatch to post an answer to an attempt its first reply
- * already settled, which every answer after the first needs (`postDeliveryReply`). `override`
- * marks text this plugin generated itself (INFRA-3231); the outcome says whether Dispatch's
- * writing check refused the reply, which is returned rather than thrown.
+ * already settled, which every answer after the first needs (`postDeliveryReply`). `generated`
+ * marks text this plugin generated itself (INFRA-3231): posted with no override first, and again
+ * with `override_writing_check: "generated"` only where Dispatch's writing check refuses it. The
+ * outcome says whether the check refused the reply, which is returned rather than thrown.
  */
 export async function postDispatchReply(
   identity: SessionIdentity,
@@ -564,11 +565,12 @@ export function createChannelDelivery(input: {
         process.stderr.write(
           `envoy-channel: rejecting malformed Dispatch targeted delivery ${rejected.id}\n`,
         )
-        // This plugin's own error text, not an agent's words: sent `generated`, so Dispatch's
-        // writing check, which reads a reply's `error` as prose, records it and refuses nothing.
+        // This plugin's own error text, not an agent's words: posted as generated, so where
+        // Dispatch's writing check, which reads a reply's `error` as prose, refuses it, it is sent
+        // again with `override_writing_check: "generated"`, which Dispatch writes and counts.
         return postDispatchReply(input.identity, input.configFile, rejected, {
           error: "Invalid Dispatch targeted delivery frame",
-          override: "generated",
+          generated: true,
         }).then(
           () => false,
           (error: unknown) => {

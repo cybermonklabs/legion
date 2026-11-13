@@ -27,16 +27,19 @@ import {
   MessageDeliveryEventPayloadSchema as MessageDeliveryPayloadSchema,
   MessageEventPayloadSchema as MessagePayloadSchema,
   SubscriptionRemovedEventPayloadSchema as SubscriptionRemovedPayloadSchema,
-  WRITING_CHECK_REFUSED,
   type WritingCheckFinding,
-  type WritingCheckOverride,
 } from "@legion/contracts";
 import { encode } from "@toon-format/toon";
 import { z } from "zod";
 import { askAnswerText, dispatchWordsText, textHead } from "./ask-answer";
 import { commandLine } from "./dispatch-command";
 import type { ActiveDispatchConfig } from "./dispatch-config";
-import { DispatchClient, DispatchServiceError } from "./dispatch-http";
+import {
+  DispatchClient,
+  type GeneratedOverride,
+  isWritingCheckRefusal,
+  writeGenerated,
+} from "./dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "./dispatch-owner";
 import { pictureAddresses } from "./dispatch-pictures";
 import { humanEditDiffBlock, humanEditHead } from "./human-edit";
@@ -142,11 +145,13 @@ export interface DeliveryReply {
    *  (`?follow_up=true`). */
   readonly followUp?: boolean;
   /**
-   * The writing check's override (INFRA-3231). A plugin sends `generated` for text it generates
-   * itself - a `!command`'s report, a slash command's output, its own error reply - and never
-   * for words an agent wrote, which go unmarked, so the check reads them.
+   * Whether the text is the plugin's own rather than words an agent wrote - a `!command`'s
+   * report, a slash command's output, its own error reply (INFRA-3231, R14). Such a reply is
+   * posted with no override first and, only where Dispatch's writing check refuses it, posted
+   * again with `override_writing_check: "generated"` (`writeGenerated`). An agent's words never
+   * set it, so their refusal comes back to the caller.
    */
-  readonly override?: WritingCheckOverride;
+  readonly generated?: boolean;
 }
 
 /** A delivery reply Dispatch's writing check refused: nothing was posted. */
@@ -171,7 +176,9 @@ export type DeliveryReplyOutcome =
  * (`422 WRITING_CHECK_REFUSED`), which is answered as a refusal holding its findings: the words
  * were an agent's, and the caller hands the refusal back to that agent to answer again rather
  * than post anything that quotes the refused text (`answerDeliveryAside`). A reply's `error` is
- * prose the check reads too, so a plugin's own error text carries `override: "generated"`.
+ * prose the check reads too, so a plugin's own error text is `generated`: refused once, it is
+ * posted a second time with the override, and the first post carries none, so it still reaches
+ * a Dispatch that has no writing check.
  *
  * `followUp` is the ask that a second answer to an attempt already settled by the first is
  * posted rather than handed back (`?follow_up=true`). It travels as the route's query parameter,
@@ -183,10 +190,12 @@ export async function postDeliveryReply(
   delivery: DispatchDelivery,
   result: DeliveryReply
 ): Promise<DeliveryReplyOutcome> {
-  const { followUp, override, ...reply } = result;
+  const { followUp, generated, ...reply } = result;
   const client = new DispatchClient(config.url, config.credential);
-  try {
-    await client.deliveryReply(
+  // Each send is a request of its own, under a key of its own, since Dispatch keeps a refusal
+  // under the key that drew it.
+  const send = (override: GeneratedOverride) =>
+    client.deliveryReply(
       delivery.resource,
       delivery.id,
       {
@@ -194,16 +203,14 @@ export async function postDeliveryReply(
         attempt: delivery.attempt,
         ...delivery.replyFields,
         ...reply,
-        ...(override === undefined ? {} : { override_writing_check: override }),
+        ...override,
       },
       followUp === undefined ? {} : { followUp }
     );
+  try {
+    await (generated === true ? writeGenerated(send) : send({}));
   } catch (error) {
-    if (
-      error instanceof DispatchServiceError &&
-      error.fromDispatch &&
-      error.code === WRITING_CHECK_REFUSED
-    ) {
+    if (isWritingCheckRefusal(error)) {
       return { posted: false, refusal: { error: error.message, findings: error.findings ?? [] } };
     }
     throw error;
@@ -213,8 +220,8 @@ export async function postDeliveryReply(
 
 /**
  * The error reply that settles a delivery whose answer the writing check refused twice: it says
- * that no answer was posted and quotes none of the refused text. A plugin's own words, sent
- * `generated`.
+ * that no answer was posted and quotes none of the refused text. A plugin's own words, posted
+ * `generated` (sent again with the override only where the check refuses it).
  */
 export const WRITING_CHECK_ANSWER_WITHHELD =
   "Dispatch's writing check refused this session's answer twice, so no answer is posted here. " +
@@ -286,9 +293,9 @@ export function writingCheckMainTurnNotice(
  * - the main turn: where the second answer is refused too, `toMainTurn` hands the main
  *   conversation a turn of its own holding the findings and the command that answers the person
  *   (`writingCheckMainTurnNotice`), and the attempt is settled with an error reply that quotes
- *   none of the refused text (`WRITING_CHECK_ANSWER_WITHHELD`, sent `generated`). A main turn's
- *   own answers reach Dispatch through the `dispatch` command, whose refusal is that command's
- *   output in the same turn.
+ *   none of the refused text (`WRITING_CHECK_ANSWER_WITHHELD`, posted as `generated`). A main
+ *   turn's own answers reach Dispatch through the `dispatch` command, whose refusal is that
+ *   command's output in the same turn.
  *
  * Nothing posted to Dispatch quotes a refused answer.
  */
@@ -306,7 +313,7 @@ export async function answerDeliveryAside(input: {
   });
   if (again.posted) return;
   input.toMainTurn(writingCheckMainTurnNotice(delivery, again.refusal));
-  await input.post({ error: WRITING_CHECK_ANSWER_WITHHELD, override: "generated" });
+  await input.post({ error: WRITING_CHECK_ANSWER_WITHHELD, generated: true });
 }
 
 /** A message a subscription yielded, and when it arrived. */

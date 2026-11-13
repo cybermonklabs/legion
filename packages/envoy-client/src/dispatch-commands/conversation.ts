@@ -296,24 +296,17 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
 /** `dispatch send-to-agent`: one message into a session's own conversation, which stands on no
  *  issue, so the call names the session rather than an owner. */
 export async function sendToAgentCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, hostSession, writingOverride } = context;
+  const { args, client, writingOverride } = context;
   const session = stringArg(args, "session");
   const inReplyTo = optionalString(args, "in_reply_to");
   // The route answers once the first attempt has settled, so its state is what says whether
   // the session has the words or whether Dispatch is still trying.
-  // The send is the person's route, so it names this session (`?session=`), as every other
-  // write names it in its actor: the act Dispatch records, and its writing check reads, is
-  // this session's.
-  const message = await client.agentMessage(
-    session,
-    {
-      body: stringArg(args, "body"),
-      delivery: stringArg(args, "delivery") as MessageDeliveryMode,
-      ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
-      ...writingOverride,
-    },
-    hostSession
-  );
+  const message = await client.agentMessage(session, {
+    body: stringArg(args, "body"),
+    delivery: stringArg(args, "delivery") as MessageDeliveryMode,
+    ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
+    ...writingOverride,
+  });
   // Go marshals an empty delivery slice as `null`, so the route table's type is nullable;
   // either way there is no attempt to read, which the `undefined` branch below already says.
   const attempt = message.deliveries?.at(-1);

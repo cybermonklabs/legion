@@ -84,6 +84,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   retriesUnderKey,
+  WRITING_CHECK_REFUSED,
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
@@ -158,6 +159,44 @@ export class DispatchGatewayError extends DispatchServiceError {
     this.transient = transientStatus(status);
     this.mayHaveReachedDispatch = reachesDispatch(status);
   }
+}
+
+/** Whether Dispatch's writing check refused the write (`422 WRITING_CHECK_REFUSED`): nothing was
+ *  written, and the error's `findings` name each sentence, its rule and a rewrite. */
+export function isWritingCheckRefusal(error: unknown): error is DispatchServiceError {
+  return (
+    error instanceof DispatchServiceError &&
+    error.fromDispatch &&
+    error.code === WRITING_CHECK_REFUSED
+  );
+}
+
+/** The writing check's override a plugin's second send of its own text carries: none on the
+ *  first send, `generated` on the one after a refusal (`writeGenerated`). */
+export type GeneratedOverride = { readonly override_writing_check?: "generated" };
+
+/**
+ * Writes text a plugin generated rather than an agent wrote - a `!command`'s report, a slash
+ * command's output, a plugin's own error reply, AskGate's decision record - under Dispatch's
+ * writing check (INFRA-3231, R14). The first send carries no override, and only where the check
+ * refused it (`422 WRITING_CHECK_REFUSED`) is it sent again with
+ * `override_writing_check: "generated"`, which Dispatch writes and counts as generated. A first
+ * send never carries the field because a server that has no writing check decodes each request
+ * with `DisallowUnknownFields` and answers a field it does not know `400 INVALID_JSON`, and a
+ * plugin release can reach a host before that server does. `write` makes one send with the
+ * override it is given; each call is a request of its own, so a keyed write gives the second
+ * send a key of its own, since Dispatch keeps the refusal under the first send's key. Any other
+ * failure, of either send, is thrown as it came.
+ */
+export async function writeGenerated<T>(
+  write: (override: GeneratedOverride) => Promise<T>
+): Promise<T> {
+  try {
+    return await write({});
+  } catch (error) {
+    if (!isWritingCheckRefusal(error)) throw error;
+  }
+  return await write({ override_writing_check: "generated" });
 }
 
 /**
@@ -1406,22 +1445,10 @@ export class DispatchClient {
    * `POST /api/v1/agents/{session_id}/messages`: one message into a session's own conversation,
    * which belongs to no issue. The route is the person's, so the credential must hold the
    * `person` scope. It answers once the message's first delivery attempt has settled, with that
-   * attempt on the message. `actingSession` is the session the call is made from, sent as
-   * `?session=`: a credential that proved no session of its own (a personal token) names its
-   * agent nowhere else on this route, and Dispatch records the act, and its writing check reads
-   * the body, as that session's.
+   * attempt on the message.
    */
-  async agentMessage(
-    sessionId: string,
-    input: CreateAgentMessageInput,
-    actingSession?: string
-  ): Promise<Message> {
-    return this.#json(
-      "POST",
-      ["api", "v1", "agents", sessionId, "messages"],
-      input,
-      actingSession === undefined || actingSession === "" ? undefined : { session: actingSession }
-    );
+  async agentMessage(sessionId: string, input: CreateAgentMessageInput): Promise<Message> {
+    return this.#json("POST", ["api", "v1", "agents", sessionId, "messages"], input);
   }
 
   /**

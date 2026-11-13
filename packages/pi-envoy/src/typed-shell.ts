@@ -394,7 +394,8 @@ function fenced(output: string): string {
  * first paragraph and the separator follows it, which is the rule the Agents page reads this text
  * back by (`isShellCommandReport`, `@legion/contracts`). The line is code, not prose, so the
  * fence keeps Dispatch's writing check from reading `!a; b` as a sentence (INFRA-3231); the
- * report is the plugin's own text, and its reply is sent `override_writing_check: "generated"`
+ * report is the plugin's own text, and its reply is posted as generated: with no override
+ * first, and again with `override_writing_check: "generated"` only where the check refuses it
  * (`postTypedInputReply` in `extensions/envoy.ts`).
  *
  * `line` is that message as the person sent it and as Dispatch stored it, the mark and every

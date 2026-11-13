@@ -3,4 +3,6 @@ body: |-
   When Dispatch's writing check refuses a side turn's answer to a person, the refusal goes back
   to a new side turn with its findings, and then to the main turn, and no message quotes the
   refused text. Text the plugin writes itself (a `!command` report, a slash command's output, its
-  own error replies, AskGate's decision record) is sent with `override_writing_check: "generated"`.
+  own error replies, AskGate's decision record) is sent with no override first, and again with
+  `override_writing_check: "generated"` only when the check refuses it, so it still reaches a
+  Dispatch that has no writing check.

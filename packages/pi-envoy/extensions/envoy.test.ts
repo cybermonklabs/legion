@@ -99,7 +99,7 @@ import { captureEnvironment, restoreEnvironment } from "@legion/test-fixtures/en
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
-import { SQL } from "bun";
+import { type Server, SQL } from "bun";
 import { nkeys, connect as realConnect } from "nats";
 import { z } from "zod";
 import { version as packageVersion } from "../package.json" with { type: "json" };
@@ -959,9 +959,6 @@ function targetedCommentEnvelope(
 }
 
 const DIRECT_MESSAGE_ID = "44444444-4444-4444-8444-444444444444";
-/** The writing check's mark on every reply text the plugin generates itself - a `!command`'s
- *  report, a command's output, its own error - which Dispatch never refuses (INFRA-3231). */
-const GENERATED = { override_writing_check: "generated" } as const;
 const DIRECT_MESSAGE_BODY = "Where is the dashboard?";
 /** Another direct message from the same person: their next Send, not a retry of the first. */
 const NEXT_MESSAGE_ID = "55555555-5555-4555-8555-555555555555";
@@ -13445,7 +13442,6 @@ console.log(JSON.stringify(args));
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 1,
                 body: reply,
-                ...GENERATED,
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -13490,7 +13486,6 @@ console.log(JSON.stringify(args));
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 2,
                 body: "/new runs only in the session's own terminal; nothing was sent.",
-                ...GENERATED,
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -13587,7 +13582,6 @@ console.log(JSON.stringify(args));
             actor: { id: "ses_delivery", kind: "session" },
             attempt: 1,
             body: "/compact was not run: compaction is already running",
-            ...GENERATED,
           },
         ]);
       });
@@ -13611,7 +13605,6 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "/compact was not run: sync failure",
-          ...GENERATED,
         });
         expect(
           envoyPluginInterface()
@@ -13640,7 +13633,6 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "/new runs only in the session's own terminal; nothing was sent.",
-          ...GENERATED,
         });
       });
 
@@ -13689,7 +13681,6 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "The message was not sent: this session is no longer the one open here.",
-          ...GENERATED,
         });
         expect(inputs).toEqual([]);
       });
@@ -13728,7 +13719,6 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: "The message was not sent: this session is no longer the one open here.",
-          ...GENERATED,
         });
         expect(inputs).toEqual([]);
       });
@@ -13998,7 +13988,6 @@ console.log(JSON.stringify(args));
               actor: { id: "ses_delivery", kind: "session" },
               attempt: 1,
               body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
-              ...GENERATED,
             },
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
@@ -14024,7 +14013,6 @@ console.log(JSON.stringify(args));
 
         expect(replies[0]?.body).toMatchObject({
           body: `${shellCommandLine("!pwd -P")}\n\n\`\`\`\n${realpathSync(work)}\n\`\`\``,
-          ...GENERATED,
         });
       }, 20_000);
 
@@ -14042,7 +14030,6 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: `${shellCommandLine("!true")}\n\nThe command printed nothing.`,
-          ...GENERATED,
         });
       }, 20_000);
 
@@ -14073,7 +14060,6 @@ console.log(JSON.stringify(args));
 
         expect(replies[0]?.body).toMatchObject({
           body: `${shellCommandLine("!printf early; sleep 600")}\n\n\`\`\`\nearly\n\`\`\`\n\nThe command was stopped after 1000 ms.`,
-          ...GENERATED,
         });
       }, 20_000);
 
@@ -14155,7 +14141,6 @@ console.log(JSON.stringify(args));
 
         expect(replies[0]?.body).toMatchObject({
           body: `${shellCommandLine("!printf 'a\\0b'")}\n\n\`\`\`\nab\n\`\`\``,
-          ...GENERATED,
         });
         expect(JSON.stringify(replies[0]?.body)).not.toContain("\\u0000");
         expect(JSON.stringify(streamFrames()[0]?.message.parts)).not.toContain("\\u0000");
@@ -14687,7 +14672,6 @@ console.log(JSON.stringify(args));
               actor: { id: "ses_delivery", kind: "session" },
               attempt: 1,
               body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
-              ...GENERATED,
             },
             path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
           },
@@ -14813,7 +14797,6 @@ console.log(JSON.stringify(args));
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 1,
                 body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
-                ...GENERATED,
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -14900,7 +14883,6 @@ console.log(JSON.stringify(args));
                 actor: { id: "ses_delivery", kind: "session" },
                 attempt: 1,
                 body: `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is no longer the one open here.`,
-                ...GENERATED,
               },
               path: `/api/v1/messages/${DIRECT_MESSAGE_ID}/reply`,
             },
@@ -14970,7 +14952,6 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_after_shell", kind: "session" },
           attempt: 1,
           body: `${shellCommandLine("!touch ran; printf second")}\n\n\`\`\`\nsecond\n\`\`\``,
-          ...GENERATED,
         });
         expect(existsSync(join(other, "ran"))).toBe(true);
         expect(existsSync(join(work, "ran"))).toBe(false);
@@ -14984,7 +14965,6 @@ console.log(JSON.stringify(args));
           actor: { id: "ses_delivery", kind: "session" },
           attempt: 1,
           body: `${shellCommandLine("!touch running; until [ -f go ]; do sleep 0.05; done; printf first")}\n\n\`\`\`\nfirst\n\`\`\`\n\n${withheldOutput}`,
-          ...GENERATED,
         });
       }, 20_000);
 
@@ -15409,9 +15389,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(accepts.map((accept) => accept.body)).toEqual([{ actor }]);
-        expect(replies).toEqual([
-          { body: { actor, attempt: 1, body: notSent, ...GENERATED }, path: replyPath },
-        ]);
+        expect(replies).toEqual([{ body: { actor, attempt: 1, body: notSent }, path: replyPath }]);
         expect(inputs).toEqual([]);
         expect(fixture.userMessages).toEqual([]);
         expect(sends.filter((send) => String(send.content).includes(DIRECT_MESSAGE_BODY))).toEqual(
@@ -15460,7 +15438,7 @@ console.log(JSON.stringify(args));
             "envoy: a reply is signed as the session its message reached, which is closed"
           );
           expect(replies).toEqual([
-            { body: { actor, attempt: 1, body: notSent, ...GENERATED }, path: replyPath },
+            { body: { actor, attempt: 1, body: notSent }, path: replyPath },
           ]);
           // And signed as that session: the accept and the refusal both presented the token the
           // broker minted for ses_delivery, and the broker was asked for no other session.
@@ -15592,9 +15570,7 @@ console.log(JSON.stringify(args));
         await replied(1);
 
         expect(moved).toBe(true);
-        expect(replies).toEqual([
-          { body: { actor, attempt: 1, error: notSent, ...GENERATED }, path: replyPath },
-        ]);
+        expect(replies).toEqual([{ body: { actor, attempt: 1, error: notSent }, path: replyPath }]);
         expect(prompts).toEqual([]);
       });
 
@@ -15672,7 +15648,6 @@ console.log(JSON.stringify(args));
           body: expect.stringMatching(
             /^\/compact was not run: this session's agent, version \S+, cannot run commands sent from Dispatch; nothing was sent\.$/
           ),
-          ...GENERATED,
         },
       ]);
     });
@@ -15716,7 +15691,6 @@ console.log(JSON.stringify(args));
         actor: { id: "ses_delivery", kind: "session" },
         attempt: 1,
         body: "The message was not sent: this session is no longer the one open here.",
-        ...GENERATED,
       });
       expect(fixture.userMessages).toEqual([]);
       const message = { content: [{ text: body, type: "text" }], role: "user", timestamp: 10 };
@@ -17320,7 +17294,6 @@ console.log(JSON.stringify(args));
         actor: { id: "ses_delivery", kind: "session" },
         attempt: 1,
         error: "No active model on session",
-        ...GENERATED,
       },
     ]);
     expect(fixture.deliveries).toEqual([]);
@@ -17383,7 +17356,7 @@ console.log(JSON.stringify(args));
     expect(sideTurns).toBe(3);
     const actor = { id: "ses_delivery", kind: "session" };
     expect(replies).toEqual([
-      { actor, attempt: 1, error: "No API key for provider: openai", ...GENERATED },
+      { actor, attempt: 1, error: "No API key for provider: openai" },
       { actor, attempt: 1, body: "Answer 2" },
       { actor, attempt: 1, body: "Answer 3" },
     ]);
@@ -17484,7 +17457,6 @@ console.log(JSON.stringify(args));
         actor: { id: "ses_delivery", kind: "session" },
         attempt: 1,
         error: "Invalid Dispatch targeted delivery frame",
-        ...GENERATED,
       },
     ]);
   });
@@ -21412,14 +21384,70 @@ describe("consumer delivery", () => {
   });
 });
 
+/**
+ * Boots ses_delivery against the Dispatch HTTP server at `url`, its host answering as `host`
+ * says: every request to that server goes to it, and every other one (the Envoy listener's) to
+ * this file's stand-in. The frames reach the extension over this file's NATS stand-in. `prompts`
+ * holds each side turn's prompt, and `work` is the session's working directory, which a
+ * person's `!command` runs in.
+ */
+async function bootOnDispatch(
+  url: string,
+  token: string,
+  query: string,
+  host: {
+    readonly sideTurn?: (prompt: string) => Promise<string>;
+    readonly sendUserInput?: () => Promise<UserInputResult>;
+  }
+) {
+  process.env.DISPATCH_URL = url;
+  process.env.DISPATCH_TOKEN = token;
+  const origin = new URL(url).origin;
+  globalThis.fetch = async (input, init) =>
+    new URL(input.toString()).origin === origin
+      ? originalFetch(input, init)
+      : responseWithRegistration(input, init, {});
+  // Query-string isolation gives each caller its own instance of this stateful extension; the
+  // specifier is the caller's, so it cannot be a static import.
+  const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
+  const fixture = createPi();
+  envoyExtension({
+    ...fixture.pi,
+    getCommands: () => [],
+    ...(host.sendUserInput !== undefined && { sendUserInput: host.sendUserInput }),
+  });
+  const work = mkdtempSync(join(tmpdir(), "envoy-writing-check-"));
+  const prompts: string[] = [];
+  const sideTurn = host.sideTurn;
+  await fixture.handlers.get("session_start")?.(
+    {},
+    {
+      ...sessionContext("ses_delivery"),
+      cwd: work,
+      ...(sideTurn !== undefined && {
+        runEphemeralTurn: async ({ promptText }: { readonly promptText: string }) => {
+          prompts.push(promptText);
+          return { replyText: await sideTurn(promptText) };
+        },
+      }),
+    }
+  );
+  const agent = natsState.controls.get("notifications.agent.ses_delivery");
+  if (agent === undefined) throw new Error("agent subject was not subscribed");
+  return { agent, fixture, prompts, work };
+}
+
 // The plugin's own writes under Dispatch's writing check (INFRA-3231, R14; check 4370789f),
 // against a real Dispatch server of this checkout with the check on. No model is configured, so
 // the check runs its structure rules alone: a sentence holding `spin up` breaks the
 // `phrasal-verb` rule, which the bundle enables, and that sentence is what each row writes. The
-// frames reach the extension over this file's NATS stand-in, and every Dispatch request it makes
-// goes to the real server. The server runs no Envoy listener, so a delivery attempt it records
-// names no session; each row binds its attempt to this session in the stack's own database, the
-// one state no route reaches.
+// check reads a write only when a person reads it: every row writes to a person, as a reply to
+// a direct message alice sent or as a document of her project, whose default assignee she is,
+// and each row reads that reader on the check's own records. Text the plugin generates is sent
+// with no override first, and a second time with `override_writing_check: "generated"` only
+// where the check refused the first. The server runs no Envoy listener, so a delivery attempt it
+// records names no session; each row binds its attempt to this session in the stack's own
+// database, the one state no route reaches.
 const writingCheckStackDirectory = useDispatchStackDirectory();
 
 describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own writes", () => {
@@ -21433,6 +21461,10 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
   const server = (): DispatchStack => {
     if (stack === undefined) throw new Error("the Dispatch stack did not start");
     return stack;
+  };
+  const db = (): SQL => {
+    if (database === undefined) throw new Error("the stack's database is not open");
+    return database;
   };
 
   /** A person's own request, which the server's header identity takes as that person. */
@@ -21454,8 +21486,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       `/api/v1/agents/${SESSION}/messages`,
       { body, delivery }
     );
-    if (database === undefined) throw new Error("the stack's database is not open");
-    await database`update message_deliveries set session_id = ${SESSION}, state = 'pending', error = null where message_id = ${sent.id}`;
+    await db()`update message_deliveries set session_id = ${SESSION}, state = 'pending', error = null where message_id = ${sent.id}`;
     return sent.id;
   };
 
@@ -21480,48 +21511,33 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     }
   };
 
-  /** This session booted against the real server, its host answering as each row says. */
-  const boot = async (
-    query: string,
-    host: {
-      readonly sideTurn?: (prompt: string) => Promise<string>;
-      readonly sendUserInput?: () => Promise<UserInputResult>;
-    }
-  ) => {
-    process.env.DISPATCH_URL = server().url;
-    process.env.DISPATCH_TOKEN = server().token;
-    const origin = new URL(server().url).origin;
-    globalThis.fetch = async (input, init) =>
-      new URL(input.toString()).origin === origin
-        ? originalFetch(input, init)
-        : responseWithRegistration(input, init, {});
-    const { default: envoyExtension } = await import(`./envoy.ts?${query}`);
-    const fixture = createPi();
-    envoyExtension({
-      ...fixture.pi,
-      getCommands: () => [],
-      ...(host.sendUserInput !== undefined && { sendUserInput: host.sendUserInput }),
-    });
-    const work = mkdtempSync(join(tmpdir(), "envoy-writing-check-"));
-    const prompts: string[] = [];
-    const sideTurn = host.sideTurn;
-    await fixture.handlers.get("session_start")?.(
-      {},
-      {
-        ...sessionContext(SESSION),
-        cwd: work,
-        ...(sideTurn !== undefined && {
-          runEphemeralTurn: async ({ promptText }: { readonly promptText: string }) => {
-            prompts.push(promptText);
-            return { replyText: await sideTurn(promptText) };
-          },
-        }),
-      }
-    );
-    const agent = natsState.controls.get(`notifications.agent.${SESSION}`);
-    if (agent === undefined) throw new Error("agent subject was not subscribed");
-    return { agent, fixture, prompts, work };
+  /** One decision the check recorded: what it decided, the override the write carried, and the
+   *  person it decided reads the write. */
+  interface CheckEvent {
+    readonly outcome: string;
+    readonly override_value: string | null;
+    readonly reader: string | null;
+  }
+  /** Where the check's records stand now: `eventsSince` reads the ones recorded after it. */
+  const eventsMark = async (): Promise<string> => {
+    const [row]: { readonly id: string }[] =
+      await db()`select coalesce(max(id), 0)::text as id from writing_check_events`;
+    return row?.id ?? "0";
   };
+  const eventsSince = async (mark: string): Promise<CheckEvent[]> => {
+    const rows: CheckEvent[] =
+      await db()`select outcome, override_value, reader from writing_check_events where id > ${mark}::bigint order by id`;
+    return [...rows];
+  };
+  /** What the check records for text a plugin generates and a person reads, where it breaks a
+   *  rule: the first send, which carries no override, refused; the second, `generated`, forced. */
+  const refusedThenForced: CheckEvent[] = [
+    { outcome: "refused", override_value: null, reader: PERSON },
+    { outcome: "forced", override_value: "generated", reader: PERSON },
+  ];
+
+  const boot = (query: string, host: Parameters<typeof bootOnDispatch>[3]) =>
+    bootOnDispatch(server().url, server().token, query, host);
 
   /** A delivery of message `id`'s first attempt, as the plugin posts its reply to it. */
   const deliveryOf = (id: string, body: string): DispatchDelivery => ({
@@ -21556,9 +21572,10 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
 
   // A side turn's answer is the agent's words: refused, it goes back into a side turn holding
   // the findings, and that answer is posted in its place. Nothing quoting the refused answer
-  // reaches Dispatch.
+  // reaches Dispatch, and no answer of the agent's carries an override.
   test("a side turn's refused answer goes back to a side turn, whose answer is posted", async () => {
     const id = await directMessage("Why was the first read slow?", "btw");
+    const mark = await eventsMark();
     const answers = [SENTENCE, REWRITTEN];
     const { agent, prompts } = await boot("writing-check-side-turn", {
       sideTurn: async () => answers.shift() ?? "",
@@ -21572,12 +21589,18 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(prompts[1]).toContain("Dispatch's writing check refused your answer");
     expect(prompts[1]).toContain("Rule phrasal-verb");
     expect(prompts[1]).toContain(SENTENCE);
+    expect(await eventsSince(mark)).toEqual([
+      { outcome: "refused", override_value: null, reader: PERSON },
+      expect.objectContaining({ override_value: null, reader: PERSON }),
+    ]);
   }, 60_000);
 
   // Refused twice, the findings reach the main conversation as a turn of its own, and the
-  // attempt is settled with an error that quotes none of the refused text.
+  // attempt is settled with an error that quotes none of the refused text. That error is the
+  // plugin's own and breaks no rule, so it is written on its first send, with no override.
   test("a side turn refused twice hands the main turn the findings, and posts no quote", async () => {
     const id = await directMessage("Why was the first read slow?", "btw");
+    const mark = await eventsMark();
     const { agent, fixture } = await boot("writing-check-main-turn", {
       sideTurn: async () => SENTENCE,
     });
@@ -21595,12 +21618,18 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     const notice = fixture.deliveries.find((delivery) => delivery.content.includes(SENTENCE));
     expect(notice?.options).toEqual({ deliverAs: "followUp", triggerTurn: true });
     expect(notice?.content).toContain(`--in-reply-to ${id}`);
+    expect(await eventsSince(mark)).toEqual([
+      { outcome: "refused", override_value: null, reader: PERSON },
+      { outcome: "refused", override_value: null, reader: PERSON },
+      expect.objectContaining({ override_value: null, reader: PERSON }),
+    ]);
   }, 60_000);
 
   // A side turn that fails is answered with the host's failure, the plugin's own error reply:
-  // generated, so written whatever it says.
-  test("a plugin's own error reply is written as generated", async () => {
+  // refused on its first send, and written on the second, as generated.
+  test("a plugin's own error reply is refused once, then written as generated", async () => {
     const id = await directMessage("Why was the first read slow?", "btw");
+    const mark = await eventsMark();
     const { agent } = await boot("writing-check-error-reply", {
       sideTurn: async () => {
         throw new Error(SENTENCE);
@@ -21610,13 +21639,15 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
 
     const read = await answered(id);
     expect(read.message.deliveries?.at(-1)?.error).toBe(SENTENCE);
+    expect(await eventsSince(mark)).toEqual(refusedThenForced);
   }, 60_000);
 
-  // A person's `!command` whose line holds the sentence: the report fences the line, and is sent
-  // generated, so it is written.
-  test("a person's !command report is written, its line fenced", async () => {
+  // A person's `!command` whose line and output hold the sentence: the report fences both, and
+  // the check reads no code, so the report is written on its first send, with no override.
+  test("a person's !command report is written on its first send, its line fenced", async () => {
     const line = `!printf '${SENTENCE}'`;
     const id = await directMessage(line, "steer");
+    const mark = await eventsMark();
     const { agent } = await boot("writing-check-shell", {
       sendUserInput: async () => ({ handled: "prompt" }),
     });
@@ -21628,12 +21659,16 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect(read.replies?.map((reply) => reply.body)).toEqual([
       `${shellCommandLine(line)}\n\n\`\`\`\n${SENTENCE}\n\`\`\``,
     ]);
+    const events = await eventsSince(mark);
+    expect(events.filter((event) => event.outcome === "refused")).toEqual([]);
+    expect(events.filter((event) => event.override_value !== null)).toEqual([]);
   }, 60_000);
 
   // A slash command's output, and the host's own error for one it could not run: both the
-  // plugin's text, sent generated.
-  test("a slash command's output and the host's error for one are written as generated", async () => {
+  // plugin's text, each refused on its first send and written on the second, as generated.
+  test("a slash command's output and the host's error for one are refused once, then written as generated", async () => {
     const printed = await directMessage("/status", "steer");
+    const beforeOutput = await eventsMark();
     const first = await boot("writing-check-slash-output", {
       sendUserInput: async () => ({ handled: "command", output: SENTENCE }),
     });
@@ -21644,8 +21679,10 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       })
     );
     expect((await answered(printed)).replies?.map((reply) => reply.body)).toEqual([SENTENCE]);
+    expect(await eventsSince(beforeOutput)).toEqual(refusedThenForced);
 
     const failed = await directMessage("/status", "steer");
+    const beforeError = await eventsMark();
     const second = await boot("writing-check-slash-error", {
       sendUserInput: async () => {
         throw new Error(SENTENCE);
@@ -21660,12 +21697,14 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     expect((await answered(failed)).replies?.map((reply) => reply.body)).toEqual([
       `/status was not run: ${SENTENCE}`,
     ]);
+    expect(await eventsSince(beforeError)).toEqual(refusedThenForced);
   }, 60_000);
 
   // A reply's `error` is prose the check reads: an agent's words there, sent without the field,
   // are refused like a body's.
   test("a delivery reply whose error holds the sentence, without the field, is refused", async () => {
     const id = await directMessage("Why was the first read slow?", "btw");
+    const mark = await eventsMark();
     const outcome = await postDeliveryReply(config(), SESSION, deliveryOf(id, "Why?"), {
       error: SENTENCE,
     });
@@ -21675,17 +21714,28 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       expect.objectContaining({ field: "error", rule: "phrasal-verb", text: SENTENCE }),
     ]);
     // An agent's own choice to send it anyway, which the counts below tell from the plugin's.
-    expect(
-      await postDeliveryReply(config(), SESSION, deliveryOf(id, "Why?"), {
-        body: SENTENCE,
-        override: "agent",
-      })
-    ).toEqual({ posted: true });
+    await new DispatchClient(
+      server().url,
+      bearerCredential(server().token),
+      originalFetch
+    ).deliveryReply("message", id, {
+      actor: { kind: "session", id: SESSION },
+      attempt: 1,
+      body: SENTENCE,
+      override_writing_check: "agent",
+    });
+    expect(await eventsSince(mark)).toEqual([
+      { outcome: "refused", override_value: null, reader: PERSON },
+      { outcome: "forced", override_value: "agent", reader: PERSON },
+    ]);
   }, 60_000);
 
-  // AskGate's decision record, and the document header its create writes, are the plugin's own:
-  // sent generated, so the record is written whatever it holds.
-  test("an AskGate decision record holding the sentence is written as generated", async () => {
+  // AskGate's decision record, and the document header its create writes, are the plugin's own,
+  // on a document of alice's project, which she reads as its default assignee. The record is
+  // fenced and the header breaks no rule, so both are written on their first send, with no
+  // override.
+  test("an AskGate decision record holding the sentence is written on its first send", async () => {
+    const mark = await eventsMark();
     const recorder = createDecisionRecorder({
       env: { OMP_ASKGATE_RECORD_PROJECT: PROJECT },
       now: () => Date.now(),
@@ -21722,11 +21772,17 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       `/api/v1/artifacts/${document.id}/text`
     );
     expect(text.markdown).toContain(SENTENCE);
+    const events = await eventsSince(mark);
+    expect(events.length).toBeGreaterThan(0);
+    for (const event of events) {
+      expect(event).toEqual(expect.objectContaining({ override_value: null, reader: PERSON }));
+      expect(event.outcome).not.toBe("refused");
+    }
   }, 60_000);
 
   // The negative control: the same report with its line bare, sent without the field, is
-  // refused, so it is the fence and the mark that let the plugin's report through. The bare line
-  // holds the sentence, so it is read as prose and breaks `phrasal-verb`.
+  // refused, so it is the fence that lets the plugin's report through. The bare line holds the
+  // sentence, so it is read as prose and breaks `phrasal-verb`.
   test("a copy of the report without the fence, sent without the field, is refused", async () => {
     const line = `!printf '${SENTENCE}'`;
     const id = await directMessage(line, "steer");
@@ -21749,12 +21805,244 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       readonly overrides: Readonly<Record<string, number>>;
     }>("GET", "/api/v1/writing-check/counts");
     expect(counts.overrides.agent).toBe(1);
-    // The shell report, the slash output, the host's error, the side turn's error, the withheld
-    // answer's error, and the decision record's create and append.
-    expect(counts.overrides.generated ?? 0).toBeGreaterThanOrEqual(7);
+    // The side turn's error, the slash command's output and the host's error for one: each the
+    // second send of a text the check refused once. No first send carried the field.
+    expect(counts.overrides.generated).toBe(3);
     expect(counts.outcomes.forced ?? 0).toBeGreaterThanOrEqual(4);
-    expect(counts.outcomes.refused ?? 0).toBeGreaterThanOrEqual(5);
+    // The side turn's first answer, both answers of the side turn refused twice, the first send
+    // of each of the three generated texts, the agent's error reply and the bare report.
+    expect(counts.outcomes.refused ?? 0).toBeGreaterThanOrEqual(8);
   }, 60_000);
+});
+
+// The plugin's own writes against a Dispatch from before the writing check (INFRA-3231, R14;
+// check 4370789f). Main's server decodes every JSON body with `DisallowUnknownFields` and answers
+// a member it does not declare `400 INVALID_JSON`, and a plugin release can reach a host before
+// the server that knows `override_writing_check` does. So a plugin sends the field only on a
+// second send, after the check refused the first, and against main every first send is written.
+// The server here stands in for main's rather than being main's own: building main's server
+// would need a second checkout of main and a Go build of it in every run of this file, while what
+// these rows read of main is its strict decode alone, which the stand-in keeps member for member
+// on the routes the plugin writes to (main's `messageReplyInput`, `jsonArtifactUpload` and
+// `editArtifactInput`). Its accept route answers as Dispatch's does, and every other route as
+// this file's fixture Dispatch does.
+describe("the plugin's own writes against a Dispatch that has no writing check", () => {
+  const SESSION = "ses_delivery";
+  const TOKEN = "main-dispatch-token";
+  /** The members main's server declares for each body the plugin writes; it refuses any other. */
+  const MAIN_MEMBERS: readonly (readonly [RegExp, readonly string[]])[] = [
+    [
+      /^\/api\/v1\/messages\/[^/]+\/reply$/,
+      ["actor", "attempt", "body", "error", "in_reply_to_block"],
+    ],
+    [/^\/api\/v1\/projects\/[^/]+\/artifacts$/, ["name", "content", "primary", "summary", "actor"]],
+    [/^\/api\/v1\/artifacts\/[^/]+\/edits$/, ["ops", "summary", "precondition", "actor"]],
+  ];
+  /** Each write the stand-in decoded, with the status it answered. */
+  const written: { readonly path: string; readonly status: number; readonly body: unknown }[] = [];
+  /** What each direct message's accept hands back: the line the person sent. */
+  const lines = new Map<string, string>();
+  let standIn: Server<undefined> | undefined;
+  const url = (): string => {
+    if (standIn === undefined) throw new Error("the stand-in Dispatch did not start");
+    return `http://127.0.0.1:${standIn.port}`;
+  };
+
+  beforeAll(() => {
+    standIn = Bun.serve({
+      port: 0,
+      fetch: async (request) => {
+        const path = new URL(request.url).pathname;
+        if (path === "/healthz") return Response.json({ status: "ok", idempotency_keys: true });
+        if (request.method === "POST" && path.endsWith("/accept")) {
+          const id = path.split("/").at(-4) ?? "";
+          return acceptResponse(
+            Number(path.split("/").at(-2)),
+            { accepted: true, body: lines.get(id) ?? null },
+            id,
+            request.headers.get("Idempotency-Key")
+          );
+        }
+        const members = MAIN_MEMBERS.find(([route]) => route.test(path))?.[1];
+        if (request.method === "POST" && members !== undefined) {
+          const body = (await request.json()) as Record<string, unknown>;
+          const unknown = Object.keys(body).find((member) => !members.includes(member));
+          if (unknown !== undefined) {
+            written.push({ path, status: 400, body });
+            return Response.json(
+              {
+                code: "INVALID_JSON",
+                error: `invalid JSON body: json: unknown field "${unknown}"`,
+              },
+              { status: 400 }
+            );
+          }
+          if (path.endsWith("/edits")) {
+            written.push({ path, status: 200, body });
+            return Response.json({ applied: 1, changed: true });
+          }
+          written.push({ path, status: 201, body });
+          if (path.endsWith("/artifacts")) {
+            return Response.json({ artifact: { id: "doc-main" } }, { status: 201 });
+          }
+          return Response.json({}, { status: 201 });
+        }
+        if (request.method === "GET" && path.includes("/artifacts/")) {
+          return Response.json({ code: "ARTIFACT_NOT_FOUND", error: "not found" }, { status: 404 });
+        }
+        if (path.startsWith("/api/v1/messages/")) {
+          return Response.json({ code: "NOT_FOUND" }, { status: 404 });
+        }
+        return Response.json({});
+      },
+    });
+  });
+  afterAll(() => {
+    standIn?.stop(true);
+  });
+  beforeEach(() => {
+    written.length = 0;
+  });
+
+  /** A person's direct message to this session, whose accept hands back `line`. */
+  const directMessage = (line: string): string => {
+    const id = crypto.randomUUID();
+    lines.set(id, line);
+    return id;
+  };
+  /** Every write the stand-in decoded for message `id`'s reply, once the first has arrived. */
+  const repliesTo = async (id: string) => {
+    const path = `/api/v1/messages/${id}/reply`;
+    await until(() => written.some((write) => write.path === path), `the reply to ${id}`, 20_000);
+    return written.filter((write) => write.path === path);
+  };
+  const actor = { id: SESSION, kind: "session" };
+
+  test("a person's !command report is written on its first send, with no field", async () => {
+    const id = directMessage("!printf hi");
+    const { agent } = await bootOnDispatch(url(), TOKEN, "main-server-shell", {
+      sendUserInput: async () => ({ handled: "prompt" }),
+    });
+    agent.push(
+      directDispatchEnvelope("steer", "main-server-shell", { messageID: id, body: "!printf hi" })
+    );
+
+    expect(await repliesTo(id)).toEqual([
+      {
+        path: `/api/v1/messages/${id}/reply`,
+        status: 201,
+        body: {
+          actor,
+          attempt: 1,
+          body: `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``,
+        },
+      },
+    ]);
+  }, 20_000);
+
+  test("a slash command's output and the host's error for one are written on their first send, with no field", async () => {
+    const printed = directMessage("/status");
+    const first = await bootOnDispatch(url(), TOKEN, "main-server-slash-output", {
+      sendUserInput: async () => ({ handled: "command", output: "Context: 12% used." }),
+    });
+    first.agent.push(
+      directDispatchEnvelope("steer", "main-server-slash-output", {
+        messageID: printed,
+        body: "/status",
+      })
+    );
+    expect(await repliesTo(printed)).toEqual([
+      {
+        path: `/api/v1/messages/${printed}/reply`,
+        status: 201,
+        body: { actor, attempt: 1, body: "Context: 12% used." },
+      },
+    ]);
+
+    const failed = directMessage("/status");
+    const second = await bootOnDispatch(url(), TOKEN, "main-server-slash-error", {
+      sendUserInput: async () => {
+        throw new Error("the host could not run it");
+      },
+    });
+    second.agent.push(
+      directDispatchEnvelope("steer", "main-server-slash-error", {
+        messageID: failed,
+        body: "/status",
+      })
+    );
+    expect(await repliesTo(failed)).toEqual([
+      {
+        path: `/api/v1/messages/${failed}/reply`,
+        status: 201,
+        body: { actor, attempt: 1, body: "/status was not run: the host could not run it" },
+      },
+    ]);
+  }, 20_000);
+
+  test("a plugin's own error reply is written on its first send, with no field", async () => {
+    const id = directMessage("Why was the first read slow?");
+    const { agent } = await bootOnDispatch(url(), TOKEN, "main-server-error-reply", {
+      sideTurn: async () => {
+        throw new Error("the side turn failed");
+      },
+    });
+    agent.push(directDispatchEnvelope("btw", "main-server-error-reply", { messageID: id }));
+
+    expect(await repliesTo(id)).toEqual([
+      {
+        path: `/api/v1/messages/${id}/reply`,
+        status: 201,
+        body: { actor, attempt: 1, error: "the side turn failed" },
+      },
+    ]);
+  }, 20_000);
+
+  test("an AskGate decision record and its document's create are written on their first send, with no field", async () => {
+    const recorder = createDecisionRecorder({
+      env: { OMP_ASKGATE_RECORD_PROJECT: "MAIN" },
+      now: () => Date.now(),
+      dispatchClient: (_directory, signal) => ({
+        client: new DispatchClient(url(), bearerCredential(TOKEN), originalFetch, signal),
+      }),
+    });
+    expect(
+      await recorder.record({
+        entry: {
+          tool: "dispatch_ask",
+          decision: "allow",
+          outcome: "allowed",
+          verdictMode: "block",
+          ruleOutcome: "error",
+          ruleError: "the rules call timed out",
+        },
+        sessionId: SESSION,
+        directory: "/tmp",
+        id: "call-main-server",
+      })
+    ).toBeUndefined();
+
+    expect(written.map(({ path, status }) => ({ path, status }))).toEqual([
+      { path: "/api/v1/projects/MAIN/artifacts", status: 201 },
+      { path: "/api/v1/artifacts/doc-main/edits", status: 200 },
+    ]);
+  }, 20_000);
+
+  // The negative control: the stand-in decodes as main does, so the same reply carrying the
+  // field is refused, which is what a first send carrying it would get from main's server.
+  test("a reply carrying override_writing_check is refused 400 INVALID_JSON", async () => {
+    const id = directMessage("Why was the first read slow?");
+    const refused = await new DispatchClient(url(), bearerCredential(TOKEN), originalFetch)
+      .deliveryReply("message", id, {
+        actor,
+        attempt: 1,
+        error: "the side turn failed",
+        override_writing_check: "generated",
+      })
+      .catch((error: unknown) => error);
+    expect(refused).toMatchObject({ code: "INVALID_JSON", status: 400 });
+    expect(written.map(({ status }) => status)).toEqual([400]);
+  }, 20_000);
 });
 
 // A real natsd and a real listener: the session registers for a consumer, and the listener

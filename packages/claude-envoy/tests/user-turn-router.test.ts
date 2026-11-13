@@ -130,8 +130,8 @@ interface Harness {
    *  order they happened. */
   readonly order: string[]
   readonly accepts: { readonly id: string; readonly attempt: number }[]
-  /** The writing check's mark each reply carried, in the order posted; "" for none. */
-  readonly overrides: readonly string[]
+  /** Whether each reply was posted as the plugin's own text (`generated`), in the order posted. */
+  readonly generated: readonly boolean[]
   readonly observe: (event: ModEvent) => void
 }
 
@@ -158,9 +158,9 @@ async function harness(input: {
   const stateFile = userTurnStateFile(directory, SESSION)
   const state = userTurnState(stateFile, await readUserTurnState(stateFile))
   const replies: { delivery: DispatchDelivery; body?: string }[] = []
-  // The writing check's mark each reply carried, in order ("" for none): kept apart from
-  // `replies`, whose rows the tests below pin whole.
-  const overrides: string[] = []
+  // Whether each reply was posted as the plugin's own text: kept apart from `replies`, whose rows
+  // the tests below pin whole.
+  const generated: boolean[] = []
   const order: string[] = []
   const accepts: { id: string; attempt: number }[] = []
   const session = modSession({
@@ -182,7 +182,7 @@ async function harness(input: {
     refreshSettings: () => order.push("refresh"),
     reply: async (delivery, result) => {
       order.push(`reply:${result.body ?? result.error ?? ""}`)
-      overrides.push(result.override ?? "")
+      generated.push(result.generated === true)
       // `followUp` is the field an answer after the first needs; until the router carries one
       // the read is simply absent, which is what the test below pins.
       const asked = "followUp" in result ? result.followUp : undefined
@@ -204,7 +204,7 @@ async function harness(input: {
   return {
     accepts,
     directory,
-    overrides,
+    generated,
     // As the live view taps the link (`startAgentStream`, `../src/agent-stream-runner`): the
     // Claude Code session sees each event first, then the router.
     observe: (event) => {
@@ -507,8 +507,8 @@ test("a slash message runs as the command it is and its output is the reply", as
 
     expect(mod.madeOf("command.run")).toEqual([{ command: "compact", args: "keep the plan" }])
     expect(session.replies.map((posted) => posted.body)).toEqual(["Compacted 42 messages."])
-    // A command's output is this plugin's own text: sent generated (INFRA-3231).
-    expect(session.overrides).toEqual(["generated"])
+    // A command's output is this plugin's own text: posted as generated (INFRA-3231).
+    expect(session.generated).toEqual([true])
   } finally {
     await rm(session.directory, { recursive: true, force: true })
   }
@@ -762,8 +762,9 @@ test("a BTW is answered from the model's fork and adds nothing to the conversati
     expect(mod.madeOf("model.fork")).toEqual([{ prompt: "what blocks it?" }])
     expect(mod.madeOf("session.message")).toEqual([])
     expect(session.replies.map((posted) => posted.body)).toEqual(["It is the migration guard."])
-    // The fork's answer is the agent's words: unmarked, so the writing check reads it.
-    expect(session.overrides).toEqual([""])
+    // The fork's answer is the agent's words: not generated, so the writing check's refusal of
+    // it goes back to the agent.
+    expect(session.generated).toEqual([false])
     // A BTW is no attempt of a person's own turn: nothing of it is spent.
     expect(session.accepts).toEqual([])
   } finally {

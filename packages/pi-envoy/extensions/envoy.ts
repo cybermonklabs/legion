@@ -1450,11 +1450,12 @@ export default function envoyExtension(pi: PiApi): void {
   //
   // Every text posted here is the plugin's own, not an agent's words: a `!command`'s report
   // (`shellCommandReport` and its refusals, `../src/typed-shell`), a slash command's output and
-  // this host's error for a line it did not run (`typedInputReply`). So each is sent
-  // `override_writing_check: "generated"` (INFRA-3231): Dispatch's writing check records it as
-  // generated and never refuses it, and the fallback below never carries a writing-check
-  // refusal. Were one to come back all the same, nothing is posted in its place, since the
-  // refusal's text quotes the output it refused.
+  // this host's error for a line it did not run (`typedInputReply`). So each is posted as
+  // generated (INFRA-3231, `postDeliveryReply`): with no override first, which a Dispatch with
+  // no writing check takes, and only where the check refuses it, again with
+  // `override_writing_check: "generated"`, which Dispatch writes and counts as generated. The
+  // fallback below never carries a writing-check refusal. Were one to come back all the same,
+  // nothing is posted in its place, since the refusal's text quotes the output it refused.
   const postTypedInputReply = async (
     delivery: DispatchDelivery,
     replySessionID: string,
@@ -1462,14 +1463,14 @@ export default function envoyExtension(pi: PiApi): void {
   ): Promise<void> => {
     let outcome: DeliveryReplyOutcome;
     try {
-      outcome = await postDispatchReply(delivery, { body, override: "generated" }, replySessionID);
+      outcome = await postDispatchReply(delivery, { body, generated: true }, replySessionID);
     } catch (error) {
       if (!(error instanceof DispatchServiceError) || !error.fromDispatch) throw error;
       await postDispatchReply(
         delivery,
         {
           body: `Your command ran, and Dispatch refused its output: ${error.message}`,
-          override: "generated",
+          generated: true,
         },
         replySessionID
       );
@@ -1942,11 +1943,12 @@ export default function envoyExtension(pi: PiApi): void {
     // released before the reply goes out. A BTW side turn adds nothing to the transcript, so
     // running it again for that re-send repeats no work the session kept. A relay frame is done
     // once the reply is posted: the re-send is a new frame. The error is this plugin's own text
-    // (or the host's failure it names), not an agent's words, so it goes `generated`: Dispatch's
-    // writing check reads a reply's `error` as prose and would otherwise judge it.
+    // (or the host's failure it names), not an agent's words, so it is posted as generated:
+    // Dispatch's writing check reads a reply's `error` as prose, and only where it refuses the
+    // error is it sent again with `override_writing_check: "generated"` (`postDeliveryReply`).
     const refuse = async (delivery: DispatchDelivery, error: string): Promise<void> => {
       held.release();
-      await postDispatchReply(delivery, { error, override: "generated" }, session);
+      await postDispatchReply(delivery, { error, generated: true }, session);
       relayed.done();
     };
     // Runs a side turn or a Dispatch reply off the caller (the relay's queue), so the next frame
@@ -2109,11 +2111,11 @@ export default function envoyExtension(pi: PiApi): void {
           // message delivered and refuses a re-send of it - and the reply is what tells the
           // person what became of their line.
           // Each text answered here is the plugin's own - the refusal of a line this host cannot
-          // run, or of one the session it was accepted for is no longer open to run - so it goes
-          // `generated`.
+          // run, or of one the session it was accepted for is no longer open to run - so it is
+          // posted as generated.
           const answerAndSettle = (body: string): void => {
             offWorker(async () => {
-              await postDispatchReply(accepted.delivery, { body, override: "generated" }, session);
+              await postDispatchReply(accepted.delivery, { body, generated: true }, session);
               await taken();
             });
           };

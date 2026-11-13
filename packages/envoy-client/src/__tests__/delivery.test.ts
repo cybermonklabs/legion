@@ -582,7 +582,8 @@ describe("renderInbound dispatch events", () => {
   });
 
   // The writing check (INFRA-3231, R14): a refused reply is answered as a refusal holding its
-  // findings, never thrown, and a plugin's own text carries the `generated` override.
+  // findings, never thrown, and a plugin's own text is posted with no override first and sent
+  // again with the `generated` override only where the check refuses it.
   describe("a reply the writing check reads", () => {
     const findings = [
       { field: "body", rule: "semicolon", text: "It works; ship it.", rewrite: "Split it." },
@@ -597,16 +598,18 @@ describe("renderInbound dispatch events", () => {
       issueKey: "CORE-1",
       body: "Does it work?",
     };
-    /** A Dispatch whose reply route refuses any body holding a semicolon, as the check does
-     *  where it is not overridden. */
+    /** A Dispatch whose reply route refuses any body or error holding a semicolon, as the check
+     *  does where it is not overridden, recording each request's body and key. */
     const checkingServer = () => {
       const bodies: Record<string, unknown>[] = [];
+      const keys: (string | null)[] = [];
       const server = Bun.serve({
         port: 0,
         fetch: async (request) => {
           const body = (await request.json()) as Record<string, unknown>;
           bodies.push(body);
-          const text = typeof body.body === "string" ? body.body : "";
+          keys.push(request.headers.get("Idempotency-Key"));
+          const text = [body.body, body.error].filter((part) => typeof part === "string").join();
           if (text.includes(";") && body.override_writing_check === undefined) {
             return Response.json(
               {
@@ -625,10 +628,10 @@ describe("renderInbound dispatch events", () => {
         url: `http://127.0.0.1:${server.port}`,
         credential: bearerCredential("reply-token"),
       };
-      return { bodies, config, stop: () => server.stop(true) };
+      return { bodies, config, keys, stop: () => server.stop(true) };
     };
 
-    test("answers a refusal with its findings, and sends the override it is given", async () => {
+    test("answers an agent's refused reply with its findings, and sends it once", async () => {
       const server = checkingServer();
       try {
         expect(
@@ -637,14 +640,49 @@ describe("renderInbound dispatch events", () => {
           posted: false,
           refusal: { error: "The writing check refused this write.", findings },
         });
+        expect(server.bodies).toHaveLength(1);
+        expect(server.bodies[0]).not.toHaveProperty("override_writing_check");
+      } finally {
+        server.stop();
+      }
+    });
+
+    // A Dispatch that has no writing check refuses a field it does not know, so the first send
+    // never carries it.
+    test("posts generated text with no override, and sends it again as generated only once refused", async () => {
+      const server = checkingServer();
+      try {
         expect(
           await postDeliveryReply(server.config, reader, delivery, {
-            body: "It works; ship it.",
-            override: "generated",
+            body: "It works.",
+            generated: true,
           })
         ).toEqual({ posted: true });
-        expect(server.bodies[1]).toMatchObject({ override_writing_check: "generated" });
-        expect(server.bodies[0]).not.toHaveProperty("override_writing_check");
+        expect(server.bodies).toEqual([
+          { actor: { kind: "session", id: reader }, attempt: 1, body: "It works." },
+        ]);
+
+        server.bodies.length = 0;
+        server.keys.length = 0;
+        expect(
+          await postDeliveryReply(server.config, reader, delivery, {
+            error: "It failed; try again.",
+            generated: true,
+          })
+        ).toEqual({ posted: true });
+        expect(server.bodies).toEqual([
+          { actor: { kind: "session", id: reader }, attempt: 1, error: "It failed; try again." },
+          {
+            actor: { kind: "session", id: reader },
+            attempt: 1,
+            error: "It failed; try again.",
+            override_writing_check: "generated",
+          },
+        ]);
+        // Dispatch keeps the refusal under the first send's key, so the second has its own.
+        expect(server.keys[0]).not.toBeNull();
+        expect(server.keys[1]).not.toBeNull();
+        expect(server.keys[1]).not.toBe(server.keys[0]);
       } finally {
         server.stop();
       }
@@ -691,11 +729,12 @@ describe("renderInbound dispatch events", () => {
           "`dispatch message --issue CORE-1 --body ... --in-reply-to message-1`"
         );
         expect(notices[0]).toContain('Rule semicolon: "It works; ship it." Split it.');
+        // The withheld answer's error is the plugin's own text, and the check passes it, so it is
+        // posted on its first send, with no override.
         expect(server.bodies.at(-1)).toEqual({
           actor: { kind: "session", id: reader },
           attempt: 1,
           error: WRITING_CHECK_ANSWER_WITHHELD,
-          override_writing_check: "generated",
         });
         expect(JSON.stringify(server.bodies.at(-1))).not.toContain("ship it");
       } finally {

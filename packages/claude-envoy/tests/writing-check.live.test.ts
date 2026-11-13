@@ -3,10 +3,14 @@
  * Claude Code session: the router of a person's messages (`../src/user-turn-router`) against a
  * real Dispatch server of this checkout with the check on. No model is configured, so the check
  * runs its structure rules alone: a sentence holding `spin up` breaks the `phrasal-verb` rule,
- * which the bundle enables, and that sentence is what each row writes. The Claude Code side is a
- * fake mod link; every Dispatch request is the real server's. The server runs no Envoy listener,
- * so a delivery attempt it records names no session: each row binds its attempt to this session
- * in the stack's own database, the one state no route reaches.
+ * which the bundle enables, and that sentence is what each row writes. The check reads a write
+ * only when a person reads it: every row writes a reply to a direct message alice sent, which
+ * she reads, and each row reads that reader on the check's own records. Text the plugin
+ * generates is sent with no override first, and a second time with
+ * `override_writing_check: "generated"` only where the check refused the first. The Claude Code
+ * side is a fake mod link; every Dispatch request is the real server's. The server runs no Envoy
+ * listener, so a delivery attempt it records names no session: each row binds its attempt to
+ * this session in the stack's own database, the one state no route reaches.
  */
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdtemp, rm } from "node:fs/promises"
@@ -93,6 +97,11 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     return JSON.parse(text) as T
   }
 
+  const db = (): SQL => {
+    if (database === undefined) throw new Error("the stack's database is not open")
+    return database
+  }
+
   /** A person's direct message to this session, its first attempt bound to this session. */
   const directMessage = async (body: string, delivery: "btw" | "steer"): Promise<string> => {
     const sent = await asPerson<{ readonly id: string }>(
@@ -100,10 +109,34 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       `/api/v1/agents/${SESSION}/messages`,
       { body, delivery },
     )
-    if (database === undefined) throw new Error("the stack's database is not open")
-    await database`update message_deliveries set session_id = ${SESSION}, state = 'pending', error = null where message_id = ${sent.id}`
+    await db()`update message_deliveries set session_id = ${SESSION}, state = 'pending', error = null where message_id = ${sent.id}`
     return sent.id
   }
+
+  /** One decision the check recorded: what it decided, the override the write carried, and the
+   *  person it decided reads the write. */
+  interface CheckEvent {
+    readonly outcome: string
+    readonly override_value: string | null
+    readonly reader: string | null
+  }
+  /** Where the check's records stand now: `eventsSince` reads the ones recorded after it. */
+  const eventsMark = async (): Promise<string> => {
+    const [row]: { readonly id: string }[] =
+      await db()`select coalesce(max(id), 0)::text as id from writing_check_events`
+    return row?.id ?? "0"
+  }
+  const eventsSince = async (mark: string): Promise<CheckEvent[]> => {
+    const rows: CheckEvent[] =
+      await db()`select outcome, override_value, reader from writing_check_events where id > ${mark}::bigint order by id`
+    return [...rows]
+  }
+  /** What the check records for text a plugin generates and a person reads, where it breaks a
+   *  rule: the first send, which carries no override, refused; the second, `generated`, forced. */
+  const refusedThenForced: CheckEvent[] = [
+    { outcome: "refused", override_value: null, reader: PERSON },
+    { outcome: "forced", override_value: "generated", reader: PERSON },
+  ]
 
   interface Thread {
     readonly message: {
@@ -195,9 +228,10 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
 
   // A fork's answer is the agent's words: refused, it goes back to a fork of its own holding the
   // findings, and that answer is posted in its place. Nothing quoting the refused answer reaches
-  // Dispatch.
+  // Dispatch, and no answer of the agent's carries an override.
   test("a fork's refused answer goes back to a fork, whose answer is posted", async () => {
     const id = await directMessage("Why was the first read slow?", "btw")
+    const mark = await eventsMark()
     const texts = [SENTENCE, REWRITTEN]
     const session = await router({
       fork: () => ({ isAnswered: true as const, text: texts.shift() ?? "" }),
@@ -211,15 +245,21 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       expect(session.prompts[1]).toContain("Dispatch's writing check refused your answer")
       expect(session.prompts[1]).toContain(SENTENCE)
       expect(session.notices).toEqual([])
+      expect(await eventsSince(mark)).toEqual([
+        { outcome: "refused", override_value: null, reader: PERSON },
+        expect.objectContaining({ override_value: null, reader: PERSON }),
+      ])
     } finally {
       await rm(session.directory, { recursive: true, force: true })
     }
   }, 60_000)
 
   // Refused twice, the findings reach the main conversation as a turn of its own, and the
-  // attempt is settled with an error that quotes none of the refused text.
+  // attempt is settled with an error that quotes none of the refused text. That error is the
+  // plugin's own and breaks no rule, so it is written on its first send, with no override.
   test("a fork refused twice hands the main turn the findings, and posts no quote", async () => {
     const id = await directMessage("Why was the first read slow?", "btw")
+    const mark = await eventsMark()
     const session = await router({ fork: () => ({ isAnswered: true as const, text: SENTENCE }) })
     try {
       await session.route(id, "Why was the first read slow?", "btw")
@@ -230,14 +270,21 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       expect(session.notices).toHaveLength(1)
       expect(session.notices[0]).toContain("Rule phrasal-verb")
       expect(session.notices[0]).toContain(`--in-reply-to ${id}`)
+      expect(await eventsSince(mark)).toEqual([
+        { outcome: "refused", override_value: null, reader: PERSON },
+        { outcome: "refused", override_value: null, reader: PERSON },
+        expect.objectContaining({ override_value: null, reader: PERSON }),
+      ])
     } finally {
       await rm(session.directory, { recursive: true, force: true })
     }
   }, 60_000)
 
-  // A fork that fails is answered with its failure: the plugin's own error reply, generated.
-  test("a plugin's own error reply is written as generated", async () => {
+  // A fork that fails is answered with its failure: the plugin's own error reply, refused on its
+  // first send and written on the second, as generated.
+  test("a plugin's own error reply is refused once, then written as generated", async () => {
     const id = await directMessage("Why was the first read slow?", "btw")
+    const mark = await eventsMark()
     const session = await router({
       fork: () => ({ isAnswered: false as const, reason: SENTENCE }),
     })
@@ -245,19 +292,23 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       await session.route(id, "Why was the first read slow?", "btw")
       const read = await answered(id)
       expect(read.message.deliveries?.at(-1)?.error).toBe(SENTENCE)
+      expect(await eventsSince(mark)).toEqual(refusedThenForced)
     } finally {
       await rm(session.directory, { recursive: true, force: true })
     }
   }, 60_000)
 
-  // A slash command's output is the plugin's own text: generated, so written.
-  test("a slash command's output is written as generated", async () => {
+  // A slash command's output is the plugin's own text: refused on its first send, and written on
+  // the second, as generated.
+  test("a slash command's output is refused once, then written as generated", async () => {
     const id = await directMessage("/status", "steer")
+    const mark = await eventsMark()
     const session = await router({ command: () => ({ text: SENTENCE }) })
     try {
       expect(await session.route(id, "/status", "steer")).toBe(true)
       const read = await answered(id)
       expect(read.replies?.map((reply) => reply.body)).toEqual([SENTENCE])
+      expect(await eventsSince(mark)).toEqual(refusedThenForced)
     } finally {
       await rm(session.directory, { recursive: true, force: true })
     }
@@ -267,6 +318,7 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
   // are refused like a body's. An agent's own forced write is counted apart below.
   test("a delivery reply whose error holds the sentence, without the field, is refused", async () => {
     const id = await directMessage("Why was the first read slow?", "btw")
+    const mark = await eventsMark()
     const delivery: DispatchDelivery = {
       resource: "message",
       id,
@@ -279,9 +331,20 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
     }
     const outcome = await postDeliveryReply(config(), SESSION, delivery, { error: SENTENCE })
     expect(outcome.posted).toBe(false)
-    expect(
-      await postDeliveryReply(config(), SESSION, delivery, { body: SENTENCE, override: "agent" }),
-    ).toEqual({ posted: true })
+    await new DispatchClient(server().url, bearerCredential(server().token)).deliveryReply(
+      "message",
+      id,
+      {
+        actor: { kind: "session", id: SESSION },
+        attempt: 1,
+        body: SENTENCE,
+        override_writing_check: "agent",
+      },
+    )
+    expect(await eventsSince(mark)).toEqual([
+      { outcome: "refused", override_value: null, reader: PERSON },
+      { outcome: "forced", override_value: "agent", reader: PERSON },
+    ])
   }, 60_000)
 
   test("the day's counts show the generated writes apart from the agent's", async () => {
@@ -290,9 +353,12 @@ describe.skipIf(!dispatchStackEnabled)("the writing check on the plugin's own wr
       readonly overrides: Readonly<Record<string, number>>
     }>("GET", "/api/v1/writing-check/counts")
     expect(counts.overrides["agent"]).toBe(1)
-    // The fork's error, the withheld answer's error and the slash command's output.
-    expect(counts.overrides["generated"] ?? 0).toBeGreaterThanOrEqual(3)
+    // The fork's error and the slash command's output: each the second send of a text the check
+    // refused once. No first send carried the field.
+    expect(counts.overrides["generated"]).toBe(2)
     expect(counts.outcomes["forced"] ?? 0).toBeGreaterThanOrEqual(3)
-    expect(counts.outcomes["refused"] ?? 0).toBeGreaterThanOrEqual(4)
+    // The fork's first answer, both answers of the fork refused twice, the first send of each
+    // generated text and the agent's error reply.
+    expect(counts.outcomes["refused"] ?? 0).toBeGreaterThanOrEqual(6)
   }, 60_000)
 })

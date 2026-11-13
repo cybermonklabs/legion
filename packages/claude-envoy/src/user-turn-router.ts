@@ -341,12 +341,14 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    * Posts one reply to a delivery, naming on stderr a reply that did not reach Dispatch. Every
    * text answered here is this plugin's own, never words the agent wrote: a command's output, a
    * pick's confirmation, the waiting reply, and the error for a message this host could not run
-   * (`typedInputReply`). So each goes `override_writing_check: "generated"` (INFRA-3231), which
-   * Dispatch records as generated and never refuses.
+   * (`typedInputReply`). So each is posted as generated (INFRA-3231, `postDeliveryReply`): with
+   * no override first, which a Dispatch with no writing check takes, and only where the check
+   * refuses it, again with `override_writing_check: "generated"`, which Dispatch writes and
+   * counts as generated.
    */
   const answer = async (delivery: DispatchDelivery, body: string | undefined): Promise<void> => {
     if (body === undefined) return
-    await post(delivery, { body, override: "generated" }).then(
+    await post(delivery, { body, generated: true }).then(
       (outcome) => {
         if (!outcome.posted) {
           warn(`Dispatch's writing check refused a generated reply to message ${delivery.id}`)
@@ -451,13 +453,14 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
    *  again - and its answer is posted in the first one's place. Where that one is refused too,
    *  the main conversation is handed a turn of its own holding the findings (`toMainTurn`), and
    *  the attempt is settled with an error that quotes none of the refused text
-   *  (`answerDeliveryAside`). The errors this host answers with itself go `generated`. */
+   *  (`answerDeliveryAside`). The errors this host answers with itself are posted as
+   *  generated. */
   const runBtw = (delivery: DispatchDelivery): void => {
     void (async () => {
       if (!session.connected()) {
         await reply(delivery, {
           error: "this session has no link to Claude Code",
-          override: "generated",
+          generated: true,
         })
         return
       }
@@ -469,7 +472,7 @@ export function createUserTurnRouter(options: UserTurnRouterOptions): UserTurnRo
           toMainTurn: options.toMainTurn,
         })
       } catch (error) {
-        await reply(delivery, { error: messageFor(error), override: "generated" })
+        await reply(delivery, { error: messageFor(error), generated: true })
       }
     })().catch((error: unknown) => {
       warn(`a BTW answer did not reach Dispatch — ${messageFor(error)}`)

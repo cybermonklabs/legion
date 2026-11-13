@@ -3647,11 +3647,11 @@ describe("executeDispatchTool", () => {
     expect(requests[0]?.body).not.toHaveProperty("override_writing_check");
   });
 
-  // `dispatch send-to-agent` is a person-scope write, so it names this session as `?session=`
-  // (INFRA-3231, R3), and the override rides on its body. Each call mints its own
-  // Idempotency-Key, so a resend under the override is never answered with the refusal Dispatch
-  // stored under the first call's key.
-  test("dispatch_send_to_agent names its own session, carries the override, and keys each call anew", async () => {
+  // `dispatch send-to-agent` names no issue and no acting session: a send-to-agent body has no
+  // person reader, so Dispatch's writing check does not read it (INFRA-3231). The override still
+  // rides on its body when the agent sets it. Each call mints its own Idempotency-Key, so a
+  // resend is never answered with what Dispatch stored under the first call's key.
+  test("dispatch_send_to_agent names no issue, carries the override, and keys each call anew", async () => {
     const requests: Array<{
       readonly url: URL;
       readonly key: string | null;
@@ -3694,8 +3694,8 @@ describe("executeDispatchTool", () => {
     await send({ override_writing_check: true });
 
     expect(requests.map(({ url }) => `${url.pathname}${url.search}`)).toEqual([
-      "/api/v1/agents/session-other/messages?session=session-42",
-      "/api/v1/agents/session-other/messages?session=session-42",
+      "/api/v1/agents/session-other/messages",
+      "/api/v1/agents/session-other/messages",
     ]);
     expect(requests[0]?.body).not.toHaveProperty("override_writing_check");
     expect(requests[1]?.body).toMatchObject({ override_writing_check: "agent" });

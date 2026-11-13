@@ -5,7 +5,10 @@ import {
   DISPATCH_WRITE_RETRY,
   DispatchClient,
   DispatchGatewayError,
+  DispatchServiceError,
+  type GeneratedOverride,
   type SearchOptions,
+  writeGenerated,
 } from "../dispatch-http";
 import { fakeSearchResponse } from "./fake-search-response";
 
@@ -609,6 +612,34 @@ describe("DispatchClient", () => {
       message: "The writing check refused this write.",
       findings,
     });
+  });
+
+  // A plugin's own text (INFRA-3231, R14): the first send carries no override, which a Dispatch
+  // with no writing check would refuse as an unknown field, and only the check's refusal sends it
+  // again with `generated`. Any other failure is the write's, and is never sent again.
+  test("writeGenerated sends again with the generated override only after the check's refusal", async () => {
+    const refusal = new DispatchServiceError("WRITING_CHECK_REFUSED", 422, "refused");
+    const sent: GeneratedOverride[] = [];
+    const answering =
+      (...answers: readonly (Error | string)[]) =>
+      async (override: GeneratedOverride): Promise<string> => {
+        sent.push(override);
+        const answer = answers[sent.length - 1];
+        if (answer instanceof Error) throw answer;
+        return answer ?? "unexpected send";
+      };
+
+    expect(await writeGenerated(answering("written"))).toBe("written");
+    expect(sent).toEqual([{}]);
+
+    sent.length = 0;
+    expect(await writeGenerated(answering(refusal, "forced"))).toBe("forced");
+    expect(sent).toEqual([{}, { override_writing_check: "generated" }]);
+
+    sent.length = 0;
+    const other = new DispatchServiceError("INVALID_JSON", 400, "unknown field");
+    expect(await writeGenerated(answering(other)).catch((error: unknown) => error)).toBe(other);
+    expect(sent).toEqual([{}]);
   });
 
   test("maps a structured conflict response into DispatchServiceError candidates", async () => {
