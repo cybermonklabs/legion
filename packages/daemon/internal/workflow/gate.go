@@ -1008,15 +1008,9 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	// The step and its own document, never "spec version": under more than one gated step the
 	// version this event carries is that step's document's, and a message naming the spec would
 	// send a reader to the wrong one (INFRA-1272).
-	var body string
+	body := gateClosedSentence(root.Tree, step, document, version)
 	if open {
-		body = fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
-			"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
-			"A merge the closed gate held is released.", root.Tree, version, step, document)
-	} else {
-		body = fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
-			"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
-			"stands open again.", root.Tree, version, step, document)
+		body = gateOpenedSentence(root.Tree, step, document, version)
 	}
 	for _, to := range told {
 		if err := e.enqueue(ctx, tx, to.issue, record.RoleMessage{Role: string(to.token), Body: body}); err != nil {
@@ -1026,6 +1020,28 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 	e.logOnCommit(ctx, "workflow: the design gate moved and every phase holder of the tree is told", "issue", key, "tree", root.Tree,
 		"step", string(step), "version", version, "open", open, "told", len(told))
 	return nil
+}
+
+// gateOpenedSentence is the sentence that tells a phase holder the design gate of tree opened at
+// the approval of version of step's document. It is written once, here, for the two senders of
+// it: the role message at the opening (tellGateMoved) and the news task that carries the opening
+// in its place (RenderNews). The merger's prompt quotes its opening words as what releases a
+// merge (prompts/roles/merger.md), so both must say them the same way.
+func gateOpenedSentence(tree string, step record.DesignStep, document string, version int) string {
+	return fmt.Sprintf("The design gate of %s opened: a person approved version %d of its %s document (%s), "+
+		"and every step the deployment gates now stands open, so the design you are working to is the approved one. "+
+		"A merge the closed gate held is released.", tree, version, step, document)
+}
+
+// gateClosedSentence is the sentence that tells a phase holder the design gate of tree closed at
+// version of step's document, now with its reviewer. Its two senders are gateOpenedSentence's: the
+// role message at the close, and a news task composed while the gate stood open and sent after a
+// later version closed it (RenderNews), which says closed rather than an opening that no longer
+// stands. The merger's prompt quotes its opening words as what holds a merge.
+func gateClosedSentence(tree string, step record.DesignStep, document string, version int) string {
+	return fmt.Sprintf("The design gate of %s closed: version %d of its %s document (%s) is with its reviewer, "+
+		"so the design you are working to may change. Your phase goes on; the merge waits until every gated step "+
+		"stands open again.", tree, version, step, document)
 }
 
 // putGateTold writes gate's row and, when that write moves the standing gate of its tree, tells

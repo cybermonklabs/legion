@@ -1225,6 +1225,23 @@ func ApprovalFollows(gate record.DesignGate, version int, mark record.EventMark)
 	return approved > version || approved == version && !mark.After(gate.ApprovedMark)
 }
 
+// DesignApprovalStands reports whether the approval a news item names, of version to, is still
+// the person's current word: the gate's approved version for the item's step is to. It is the
+// approval case of the question ApprovalFollows answers for a review — is this recorded decision
+// still the person's current word — asked when a task that names the decision is sent, not when
+// it was composed. Where a later approval has replaced the one the item names, or a changes
+// request has cleared it (ApplyDesignGateEvent), the item would tell the holder of a version that
+// is no longer the person's word. A new version that closed the gate since leaves it standing: the
+// gate keeps that approval as the version a person approved below the latest. It is named for the
+// design gate because ApprovalStands already answers the pull request's question of a review.
+//
+// An open pull request (cybermonklabs/legion#3712) renames ApprovalFollows to ReviewSuperseded
+// and gathers every sender of a task about a person's decision behind it; whichever of the two
+// lands second folds this one in as that function's approval case.
+func DesignApprovalStands(gate record.DesignGate, to int) bool {
+	return gate.ApprovedVersion != nil && *gate.ApprovedVersion == to
+}
+
 // DesignGateOpen reports whether a human approved the gate's current document version. It
 // answers one step's question; the deployment's whole list is DesignGatesOpen. It is
 // record.GateOpen, where the rule lives because the record package needs it too and may not read
