@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -56,14 +57,15 @@ const checkResultColumns = `id::text, issue_key, check_issue_key, check_artifact
 	failed, skipped, excluded, verdict, screenshots, session, actor, created_at, event_seq`
 
 // resolvedCheck is one `check` block a result names: where it lives, the version its words last
-// changed in and their digest as document_blocks holds them, and its `when`.
+// changed in and their digest as document_blocks holds them, and its attributes as the live
+// document holds them (its `when`, run, negative control and ci_check).
 type resolvedCheck struct {
 	IssueKey   string
 	ArtifactID string
 	BlockID    string
 	Version    int
 	SHA256     string
-	When       string
+	Block      model.CheckBlock
 }
 
 // checkResultInput is the body POST /api/v1/issues/{key}/results takes.
@@ -126,6 +128,12 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	// does protect, the block's indexed version and digest, is read again under it below.
 	check, err := s.resolveCheck(r.Context(), pool, issueKey, input.Check)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// A check CI proves takes no result from a role, refused here, before refuseUnknownCommit,
+	// so no GitHub read is spent on it.
+	if err := refuseCheckProvedByCI(r.Context(), pool, check); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -203,13 +211,21 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// Asked again under the locks: a document write can have given the block a ci_check since the
+	// resolve, and a result recorded since takes the block back from CI. Both are read in this
+	// transaction, so whichever of a racing result and a racing ci_check commits, every reader
+	// reads the block as one kind of check.
+	if err := refuseCheckProvedByCI(r.Context(), tx, check); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// A closed issue takes a result only for a check that runs after the merge or on the default
 	// branch: such a check can only be proved once the issue has closed, so refusing it would make
 	// the production check unrecordable. A result for a pre-merge check stays refused there, as a
 	// document version does; a comment and a message are the other writes a closed issue takes.
-	if (!recordingOpen || !checkOpen) && check.When != checkWhenAfterMerge && check.When != checkWhenDefaultBranch {
+	if (!recordingOpen || !checkOpen) && check.Block.When != checkWhenAfterMerge && check.Block.When != checkWhenDefaultBranch {
 		writeError(w, "ISSUE_CLOSED", http.StatusConflict,
-			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.When))
+			fmt.Sprintf("issue is closed: only a result for a check whose when is after_merge or default_branch is recorded there, and %s is %s", check.BlockID, check.Block.When))
 		return
 	}
 	if err := s.refuseResultScreenshots(r.Context(), tx, issueKey, check.IssueKey, input.Screenshots); err != nil {
@@ -230,7 +246,7 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	event, err := s.appendEvent(r.Context(), tx, issueOwner(check.IssueKey).event("result.recorded", actor, model.CheckResultEventPayload{
 		ResultID: result.ID, Issue: issueKey, CheckIssue: check.IssueKey,
 		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID, CheckVersion: check.Version,
-		When: check.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
+		When: check.Block.When, Verdict: result.Verdict, Role: result.Role, CommitSHA: result.CommitSHA,
 	}))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -515,7 +531,7 @@ func (s *server) resolveCheck(ctx context.Context, q queryer, issueKey, value st
 			blockID, strings.Join(issues, " and "), strings.Join(references, " or "))
 	}
 	check := found[0]
-	if check.When, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID); err != nil {
+	if check.Block, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID); err != nil {
 		return resolvedCheck{}, err
 	}
 	return check, nil
@@ -528,19 +544,20 @@ func unknownCheck(value string) error {
 
 // refreshResolvedCheck re-reads, under the locks the transaction holds, the indexed version and
 // digest of a check resolved before it opened (recordCheckResult), so the row records the block
-// as it stands at the commit, and its `when` with them when that block moved: the refusal a
-// closed issue earns turns on `when`, which was read before the lock, and a version landing in
-// between can have reworded it. A block the index no longer holds is no check any more.
+// as it stands at the commit, and its attributes with them when that block moved: the refusal a
+// closed issue earns turns on `when`, and the refusal of a check CI proves on ci_check, run,
+// `when` and negative control, all read before the lock, and a version landing in between can
+// have changed them. A block the index no longer holds is no check any more.
 //
 // The digest is document_blocks.text_sha256, the sha256 of the block's whole markdown as the
 // index writes it (refs.BlockTextSum over markdown[From:To]), its opening line and that line's
-// attributes included, so a check reworded from before_merge to after_merge carries a digest of
-// its own. A digest the resolve already read is therefore the same words under the same `when`,
-// and the live document is not read a second time for them. That read is the slow one to hold
-// two issue row locks across: a document version landing between the resolve and the lock is
-// exactly what leaves the read cache cold (docs/read_cache.go), so the one case the second read
-// would answer differently is the one it would answer slowest in. Only a digest that moved pays
-// for it.
+// attributes included, so a check reworded from before_merge to after_merge, or given a
+// ci_check, carries a digest of its own. A digest the resolve already read is therefore the same
+// words under the same attributes, and the live document is not read a second time for them.
+// That read is the slow one to hold two issue row locks across: a document version landing
+// between the resolve and the lock is exactly what leaves the read cache cold
+// (docs/read_cache.go), so the one case the second read would answer differently is the one it
+// would answer slowest in. Only a digest that moved pays for it.
 func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *resolvedCheck, named string) error {
 	resolved := check.SHA256
 	err := q.QueryRow(ctx, `
@@ -556,26 +573,54 @@ func (s *server) refreshResolvedCheck(ctx context.Context, q queryer, check *res
 	if check.SHA256 == resolved {
 		return nil
 	}
-	check.When, err = s.checkBlockWords(ctx, check.ArtifactID, check.BlockID)
+	check.Block, err = s.checkBlockAttributes(ctx, check.ArtifactID, check.BlockID)
 	return err
 }
 
-// checkBlockWords reads one check block's `when` out of the live document. The index holds a
-// block's type and digest but not its attributes, so the document itself is the one place
-// `when` is written.
-func (s *server) checkBlockWords(ctx context.Context, artifactID, blockID string) (string, error) {
+// checkBlockAttributes reads one check block out of the live document, with its attributes and
+// its words. The index holds a block's type and digest but not its attributes, so the document
+// itself is the one place they are written.
+func (s *server) checkBlockAttributes(ctx context.Context, artifactID, blockID string) (model.CheckBlock, error) {
 	blocks, err := s.checkBlocksIn(ctx, artifactID)
 	if err != nil {
-		return "", err
+		return model.CheckBlock{}, err
 	}
 	for _, block := range blocks {
 		if block.BlockID == blockID {
-			return block.When, nil
+			return block, nil
 		}
 	}
 	// The index holds the block, so the live document has it too unless a write landed between
-	// the two reads; the schema's default is what such a block's `when` would be.
-	return checkWhenBeforeMerge, nil
+	// the two reads; such a block carries the schema's defaults alone, `when` before_merge.
+	return model.CheckBlock{BlockID: blockID, ArtifactID: artifactID, When: checkWhenBeforeMerge}, nil
+}
+
+// validCICheck reports whether check is one CI proves: it carries ci_check and keeps the four
+// rules of such a check (docs.CICheckRule), the last of them that no result is recorded against
+// it, which holdsRecordedResult answers. Only such a check is CI's to the results routes; any
+// other is an ordinary check, whatever its ci_check says.
+func validCICheck(check model.CheckBlock, holdsRecordedResult bool) bool {
+	return docs.CarriesCICheck(check) && docs.CICheckRule(check, holdsRecordedResult) == ""
+}
+
+// refuseCheckProvedByCI refuses a result against a check CI proves (validCICheck): 409
+// CHECK_PROVED_BY_CI, naming the block and the check run that answers for it. Whether a result
+// is recorded against the block is read through q, the pool before the transaction opens and the
+// transaction itself under the locks, and only for a check that would otherwise be CI's.
+func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) error {
+	if !validCICheck(check.Block, false) {
+		return nil
+	}
+	held, err := docs.HoldsRecordedResult(ctx, q, check.ArtifactID, check.BlockID)
+	if err != nil {
+		return err
+	}
+	if !validCICheck(check.Block, held) {
+		return nil
+	}
+	return errorf(http.StatusConflict, "CHECK_PROVED_BY_CI",
+		"check %s is proved by CI run %q: dispatch results reads its result from that run, and no role records one",
+		check.BlockID, check.Block.CICheck)
 }
 
 // typedBlocksIn walks the live markdown of one document and hands visit each block of blockType
@@ -624,9 +669,11 @@ func (s *server) checkBlocksIn(ctx context.Context, artifactID string) ([]model.
 		surface, _ := node.Attrs["surface"].(string)
 		run, _ := node.Attrs["run"].(string)
 		negativeControl, _ := node.Attrs["negative_control"].(string)
+		ciCheck, _ := node.Attrs["ci_check"].(string)
 		checks = append(checks, model.CheckBlock{
 			BlockID: id, ArtifactID: artifactID, Text: blockWords(node), When: when,
-			Surface: surface, Run: run, NegativeControl: negativeControl, Results: []model.CheckResult{},
+			Surface: surface, Run: run, NegativeControl: negativeControl, CICheck: ciCheck,
+			Results: []model.CheckResult{},
 		})
 	})
 	if err != nil {
@@ -719,7 +766,7 @@ func blockWords(node *pmdoc.Node) string {
 // after the role would read as a reading nobody recorded.
 func checkResultLine(check resolvedCheck, result model.CheckResult) string {
 	line := fmt.Sprintf("- Check %s (%s): %s at %s, recorded by %s.",
-		check.BlockID, check.When, result.Verdict, result.CommitSHA, result.Role)
+		check.BlockID, check.Block.When, result.Verdict, result.CommitSHA, result.Role)
 	reading := strings.Join(strings.Fields(result.Observed), " ")
 	if reading == "" {
 		return line + " The role recorded no reading."

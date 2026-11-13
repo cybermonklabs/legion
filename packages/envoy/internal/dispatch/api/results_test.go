@@ -2636,3 +2636,66 @@ func TestARetractedPassDoesNotStand(t *testing.T) {
 		t.Fatalf("the check answers pass_stands %+v after the retraction, want no", stood)
 	}
 }
+
+// A check CI proves takes no result from any role: a tester's and an implementer's are both
+// refused, 409 CHECK_PROVED_BY_CI naming the block and the check run, and nothing is stored. The
+// refusal comes before the commit is asked of GitHub: the commit here is one the repository does
+// not hold, which would otherwise be refused as RESULT_COMMIT_UNKNOWN. The same call against an
+// ordinary check of the same document is recorded.
+func TestResultAgainstACheckCIProvesIsRefused(t *testing.T) {
+	handler, database := resultsGitHubHolding(t, map[string]bool{"acme/widgets": true},
+		map[string]bool{headCommit: true}, func(string, string) string { return "diverged" })
+	issue := issueInRepository(t, handler, "RESCI", "acme/widgets", "Proved by CI")
+	uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", ciCheckBlock("c1", ciCheckKept)+"\n"+twoChecks)
+
+	want := `check c1 is proved by CI run "` + ciCheckRun + `": dispatch results reads its result from that run, and no role records one`
+	for _, role := range []string{"tester", "implementer"} {
+		refused := recordResult(t, handler, issue.Key, resultBody("c1", "pass", nearHeadCommit, map[string]any{"role": role}))
+		if code, text := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" || text != want {
+			t.Fatalf("the %s's result against c1: status=%d body=%s, want 409 CHECK_PROVED_BY_CI %q", role, refused.Code, refused.Body.String(), want)
+		}
+	}
+	if results := checkOf(t, readResults(t, handler, issue.Key), "c1").Results; len(results) != 0 {
+		t.Fatalf("the check CI proves holds %+v, want no result", results)
+	}
+	if events := resultEventsOn(t, database, issue.Key); events != 0 {
+		t.Fatalf("the issue holds %d result.recorded events, want none", events)
+	}
+
+	if recorded := recordResult(t, handler, issue.Key, resultBody("k1", "pass", headCommit, map[string]any{"role": "tester"})); recorded.Code != http.StatusCreated {
+		t.Fatalf("the same call against an ordinary check: status=%d body=%s, want 201", recorded.Code, recorded.Body.String())
+	}
+}
+
+// A result and a ci_check written against one block at once can both commit, and the block then
+// holds a recorded result, so it is no check CI proves. Crafted here as a browser's write that
+// gives a ci_check to a check already holding a result, before any settlement: the results read
+// shows it as an ordinary check carrying its ci_check and its recorded result, and it takes a
+// further result. Its sibling, given the same ci_check and holding no result, is CI's.
+func TestResultAgainstACICheckHoldingAResultIsRecorded(t *testing.T) {
+	documents, handler, _ := browserDocumentService(t)
+	issue := createInteractionIssue(t, handler, "RESCR", "Raced", "A spec\n")
+	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md",
+		ciCheckBlock("c1", ciCheckOrdinary)+"\n"+ciCheckBlock("c2", ciCheckOrdinary))
+	first := recordResult(t, handler, issue.Key, resultBody("c1", "pass", headCommit, nil))
+	if first.Code != http.StatusCreated {
+		t.Fatalf("record a result against c1: status=%d body=%s", first.Code, first.Body.String())
+	}
+	writeBrowserDocument(t, documents, verification.Artifact.ID, ciCheckBlock("c1", ciCheckKept)+"\n"+ciCheckBlock("c2", ciCheckKept))
+
+	held := checkOf(t, readResults(t, handler, issue.Key), "c1")
+	if held.CICheck != ciCheckRun || len(held.Results) != 1 || held.Results[0].ID != decodeBody[recordedResult](t, first).Result.ID {
+		t.Fatalf("c1 reads %+v, want its ci_check and the result recorded against it", held)
+	}
+	if again := recordResult(t, handler, issue.Key, resultBody("c1", "fail", newHeadCommit, map[string]any{"role": "tester", "failed": 1})); again.Code != http.StatusCreated {
+		t.Fatalf("a further result against c1: status=%d body=%s, want 201", again.Code, again.Body.String())
+	}
+	if results := checkOf(t, readResults(t, handler, issue.Key), "c1").Results; len(results) != 2 {
+		t.Fatalf("c1 holds %+v, want both results", results)
+	}
+
+	refused := recordResult(t, handler, issue.Key, resultBody("c2", "pass", headCommit, nil))
+	if code, _ := refusalOf(t, refused); refused.Code != http.StatusConflict || code != "CHECK_PROVED_BY_CI" {
+		t.Fatalf("a result against c2: status=%d body=%s, want 409 CHECK_PROVED_BY_CI", refused.Code, refused.Body.String())
+	}
+}

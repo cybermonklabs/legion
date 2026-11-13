@@ -1192,7 +1192,8 @@ type CheckResultRetraction struct {
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
-// result recorded against it from any issue, newest first.
+// result recorded against it from any issue, newest first. CICheck is the GitHub check run its
+// `ci_check` names, "" when it names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
@@ -1203,6 +1204,7 @@ type CheckBlock struct {
 	Surface         string        `json:"surface"`
 	Run             string        `json:"run"`
 	NegativeControl string        `json:"negative_control"`
+	CICheck         string        `json:"ci_check,omitempty"`
 	Version         int           `json:"version"`
 	SHA256          string        `json:"sha256"`
 	Results         []CheckResult `json:"results"`
