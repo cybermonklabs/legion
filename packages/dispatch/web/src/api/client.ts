@@ -576,12 +576,14 @@ export function artifactVersionPath(owner: ArtifactOwner, slug: string, version:
 }
 
 /** What an upload carries: the JSON body the document gives the three artifact routes for text
- *  written in the browser, and a multipart form - the body those same routes take as
- *  `multipart/form-data` - for a file picked, pasted or dropped. */
+ *  written in the browser and for a title typed with nothing under it, and a multipart form - the
+ *  body those same routes take as `multipart/form-data` - for a file picked, pasted or dropped.
+ *  A create carrying neither a file nor content makes an empty document, so it goes as JSON with
+ *  the name alone. */
 function artifactUploadBody(
   input: CreateArtifactInput
 ): Body<"/api/v1/issues/{key}/artifacts", "post"> | FormData {
-  if ("content" in input) {
+  if (input.file === undefined) {
     return { actor: input.actor, content: input.content, name: input.name, summary: input.summary };
   }
   const form = new FormData();
@@ -903,9 +905,9 @@ export class DispatchApiClient {
    *  `200` body for that route, the display trees Dispatch adds to every stored text it answers
    *  this client with (`Dispatch-Trees`, in `answered`) included: the route table names each
    *  shaped read, so the trees are part of the body the document holds. A read states a response
-   *  shape of its own only where the document cannot hold it - `getBlockSchema`,
-   *  `getIssueEvents` and `listIssueAskThreads`, each saying beside it what that is - and those
-   *  three go through `json` with `routeUrl`. */
+   *  shape of its own only where the document cannot hold it - `getIssueEvents` and
+   *  `listIssueAskThreads`, each saying beside it what that is - and those two go through `json`
+   *  with `routeUrl`. */
   private async read<P extends PathsOf<"get">>(
     pattern: P,
     params: PathParams<Op<P, "get">>,
@@ -1427,6 +1429,18 @@ export class DispatchApiClient {
       body,
       bounds
     );
+  }
+
+  /** Corrects a document's title. The write carries the name alone: the slug, the reference key
+   *  and the role do not move, so every citation of the document holds. */
+  renameArtifact(id: string, input: Body<"/api/v1/artifacts/{id}", "patch">, bounds: WriteBounds) {
+    return this.patch("/api/v1/artifacts/{id}", { id }, input, bounds);
+  }
+
+  /** Removes a document of an issue that is still untouched. Dispatch refuses one that holds
+   *  anything, in a sentence that names which test it failed. */
+  async deleteArtifact(id: string, bounds: WriteBounds): Promise<void> {
+    await this.remove("/api/v1/artifacts/{id}", { id }, bounds);
   }
 
   getArtifact(id: string) {

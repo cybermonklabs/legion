@@ -101,16 +101,18 @@ export interface MarkdownEngine {
 type HeadlessModule = typeof import("@legion/proof-editor/headless");
 
 let headlessModule: Promise<HeadlessModule> | undefined;
-const engines = new Map<number, Promise<MarkdownEngine>>();
+/** The one engine this page builds, since the manifest it builds from is this build's own
+ *  (`compiledBlockSchema`) and cannot change under a page: main kept these by schema version,
+ *  when the page fetched a schema from whichever server answered and two versions could meet. */
+let loadingEngine: Promise<MarkdownEngine> | undefined;
 /** The engine the newest resolved load produced: what a body renders with synchronously. The
  *  engine serves every soft-break policy (the policy is a parse argument), and a parse that
  *  throws no longer evicts it - the headless editor drops only its own refused parser. */
 let readyEngine: MarkdownEngine | undefined;
 
 function loadEngine(): Promise<MarkdownEngine> {
-  const cached = engines.get(compiledBlockSchema.version);
-  if (cached !== undefined) {
-    return cached;
+  if (loadingEngine !== undefined) {
+    return loadingEngine;
   }
   headlessModule ??= import("@legion/proof-editor/headless");
   // The serializer travels with the headless editor rather than with this module: it is written
@@ -131,12 +133,13 @@ function loadEngine(): Promise<MarkdownEngine> {
       readyEngine = engine;
       return engine;
     });
-  engines.set(compiledBlockSchema.version, created);
+  loadingEngine = created;
   return created;
 }
 
-/** Loads the schema and headless Proof chunk before Markdown-bearing UI needs to render. The
- *  parse worker is not one of them: a page that draws no long body downloads none of it. */
+/** Loads the headless Proof chunk before Markdown-bearing UI needs to render; it reads no schema
+ *  from a server, since the manifest is this build's own. The parse worker is not loaded here: a
+ *  page that draws no long body downloads none of it. */
 export async function warmMarkdownRenderer(): Promise<void> {
   await loadEngine();
 }

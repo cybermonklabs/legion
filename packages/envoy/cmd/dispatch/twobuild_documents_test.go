@@ -464,37 +464,30 @@ var corpusSkipped = map[string]string{
 	"footnote-definition-ask-opening-with-a-list.md": "its ask writes its options and no question, which a whole write refuses, whichever build takes it (pmdoc.AskWrittenContentError)",
 }
 
-// corpusSkippedPrefix leaves out every corpus file whose name begins with it, for one reason
-// that covers a family rather than a file: the corpus gains documents of this kind as the
-// parsers gain fixtures, and a row that named each one would fail at the next fixture rather
-// than at a defect.
-var corpusSkippedPrefix = map[string]string{
-	"nul-": "these hold U+0000, which no route carries and no document stores (NUL_CHARACTER, decodeJSON)",
-}
-
-// corpusSkips reports whether this row leaves file out, by name or by family.
-func corpusSkips(file string) bool {
+// corpusSkips reports whether this row leaves a corpus document out: by name, for the three
+// above, or by what the document HOLDS, for the one class a name cannot be trusted for. A
+// document carrying U+0000 is refused by either build at the create (NUL_CHARACTER, decodeJSON),
+// and the corpus gains such documents as the parsers gain fixtures, so this reads the markdown
+// rather than its file name: a fixture added under any name is covered, and one named nul-
+// something that holds no NUL is written through both builds like any other.
+func corpusSkips(file string, markdown []byte) bool {
 	if _, skipped := corpusSkipped[file]; skipped {
 		return true
 	}
-	for prefix := range corpusSkippedPrefix {
-		if strings.HasPrefix(file, prefix) {
-			return true
-		}
-	}
-	return false
+	return bytes.ContainsRune(markdown, 0)
 }
 
 func requireCorpusCrossesBuilds(t *testing.T, builds *twoBuilds, writer, reader documentSide, project string) {
 	fleet := builds.fleet(t)
 	var sockets []*documentSocket
-	files := slices.DeleteFunc(corpusFiles(t, writer.corpus), func(file string) bool {
-		return corpusSkips(file)
-	})
+	files := corpusFiles(t, writer.corpus)
 	for _, file := range files {
 		markdown, err := os.ReadFile(filepath.Join(writer.corpus, file))
 		if err != nil {
 			t.Fatalf("read %s: %v", file, err)
+		}
+		if corpusSkips(file, markdown) {
+			continue
 		}
 		_, artifactID := createDocument(t, writer.process, project, "Corpus "+file, string(markdown))
 		first := writer.process.documentText(t, artifactID)

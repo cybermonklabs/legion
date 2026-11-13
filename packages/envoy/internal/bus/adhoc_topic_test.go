@@ -12,15 +12,15 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-const grantedTopic = "notifications.team.granted"
+const grantedTopic = "notifications.lxspec.granted"
 
 // Which transport each kind of topic takes for a client that has not read the deployed stream's
 // subjects, which decides by the subjects this build compiles: the role lanes and their exception
 // lanes, and every notification topic the stream does not capture, over core NATS; every topic the
 // stream captures, its exception lane included, and every subject outside notifications., through
 // JetStream. An exception lane follows the same rule as any other topic: the stream captures the
-// lane of an agent subject and no other lane, so the lane of a captured non-agent topic takes core
-// NATS.
+// lane of an agent subject and of a team topic and no other lane, so the lane of any other
+// captured topic takes core NATS.
 func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCapture(t *testing.T) {
 	for _, tc := range []struct {
 		topic string
@@ -28,12 +28,10 @@ func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCaptur
 	}{
 		{contracts.RoleTopicPrefix + "reviewer", true},
 		{ExceptionTopicPrefix + contracts.RoleTopicPrefix + "reviewer", true},
-		{"notifications.team.deploy-squad", true},
-		{"notifications.team.deploy-squad.all", true},
-		{ExceptionTopicPrefix + "notifications.team.deploy-squad", true},
-		{ExceptionTopicPrefix + "notifications.github.acme.widgets.pr.1.comment", true},
-		{"notifications.githubx.acme", true},
-		{"notifications.github", true},
+		{"notifications.team.deploy-squad", false},
+		{"notifications.team.deploy-squad.all", false},
+		{ExceptionTopicPrefix + "notifications.team.deploy-squad", false},
+		{"notifications.lxspec.probe.all", true},
 		// A `*` or `>` in a published topic is a character of it, not a wildcard: the stream's
 		// literal-prefix subjects capture none of these, so they take core NATS.
 		{"notifications.>", true},
@@ -109,7 +107,7 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 	subscriber := testnats.Connect(t, uri)
 	t.Cleanup(subscriber.Close)
 
-	const topic = "notifications.team.deploy-squad"
+	const topic = "notifications.lxspec.probe.all"
 	received, err := subscriber.SubscribeSync(topic)
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
@@ -179,7 +177,7 @@ func TestAnAdHocPublishNATSDeniesReturnsTheDenial(t *testing.T) {
 		EventID:        "evt-denied",
 		Source:         "agent",
 		SourceEventID:  "source-denied",
-		Topic:          "notifications.team.denied",
+		Topic:          "notifications.lxspec.denied",
 		DedupeKey:      "publish.denied",
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: "denied",

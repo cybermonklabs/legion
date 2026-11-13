@@ -90,11 +90,10 @@ func fillSchemaDefaults(tree *Node) {
 	})
 }
 
-// displayDefaultsFor is the defaults declared for one node type, a typed block's own among them.
+// displayDefaultsFor is the defaults the display encoding leaves out for one node type, which is
+// displayNodeDefaults' entry and nothing else: a typed block has none, so none of its attributes
+// is left out (display_encode.go's displayNodeAttrs, dispatch://INFRA-3404).
 func displayDefaultsFor(nodeType string) Attrs {
-	if defaults, typed := typedDefaults()[nodeType]; typed {
-		return defaults
-	}
 	return displayNodeDefaults[nodeType]
 }
 

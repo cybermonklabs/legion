@@ -556,8 +556,9 @@ const registryPoolSize = 1
 const listenerConnections = 5
 
 // ConnectionsPerProcess is the most connections one Dispatch server process opens to Postgres:
-// every pool's size - the shared, rooms, room-appends, health, lease, outbox and compaction pools,
-// the registry's own pool (processes.Register) and the event horizon's (Horizon) - and one
+// every pool's size - the shared, rooms, room-appends, health, lease, outbox, compaction and
+// display-tree-fill pools, the registry's own pool (processes.Register) and the event horizon's
+// (Horizon) - and one
 // connection per listener it may hold at once, which the listener pool dials and hands off rather
 // than holds.
 const ConnectionsPerProcess = sharedPoolSize + RoomsPoolSize + roomAppendsPoolSize + healthPoolSize + LeasePoolSize + outboxPoolSize + compactionPoolSize + textTreePoolSize + registryPoolSize + horizonPoolSize + listenerConnections
@@ -698,8 +699,8 @@ func (p *Pool) openSeparateLocked(field **pgxpool.Pool, size int32, name, applic
 }
 
 // Close releases every connection the pool holds, the separate pools' - the document rooms, their
-// appends, the compaction, the health probe, the listener, the leases, the outbox and the event
-// horizon - included, and returns once every connection in use has come back. It closes the health
+// appends, the compaction, the display tree fill, the health probe, the listener, the leases, the
+// outbox and the event horizon - included, and returns once every connection in use has come back. It closes the health
 // probe's pool last, after every other pool has closed: Healthy answers for as long as Close
 // waits, and Use keeps counting the closing pools' connections. No other separate pool opens or is
 // handed out once Close has begun.

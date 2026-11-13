@@ -10,11 +10,12 @@ import {
   messageStream,
   ompRoot,
   type Request,
+  sendRelayFrame,
   serveStandin,
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
-import { connect, ErrorCode, type NatsConnection, NatsError, StringCodec } from "nats";
+import { connect, ErrorCode, headers, type NatsConnection, NatsError, StringCodec } from "nats";
 import { z } from "zod";
 import { SHELL_OUTPUT_MAX } from "../src/typed-shell";
 
@@ -334,7 +335,8 @@ async function startSession(
     }
   };
 
-  let armed = false;
+  // One stream for the whole case: every frame of it carries the sequence after the last.
+  let streamSeq = 0;
   let taken = 0;
   const session: SurfaceSession = {
     home,
@@ -383,29 +385,24 @@ async function startSession(
         topic: subject,
         trace_id: label,
       });
-      // The session opens its agent subject after it registers. A request finds no responder until
-      // then, and nothing took the frame, so it is sent again; the frame owes no receipt, so a
-      // request that reaches the session times out, and that timeout is the delivery.
-      if (armed) {
-        connection.publish(subject, codec.encode(envelope));
-      } else {
-        await until(
-          `the session's agent subject for ${label}`,
-          async () => {
-            try {
-              await connection.request(subject, codec.encode(envelope), { timeout: 500 });
-              return true;
-            } catch (error) {
-              if (error instanceof NatsError && error.code === ErrorCode.Timeout) return true;
-              if (error instanceof NatsError && error.code === ErrorCode.NoResponders) {
-                return undefined;
-              }
-              throw error;
-            }
-          },
-          closed
-        );
-        armed = true;
+      // The one path a session receives on: a frame of its own consumer's relay, carrying the
+      // subject the stream stored the message on (INFRA-771). The session subscribes that
+      // subject after it registers, so until it does the server reports no responder and the
+      // frame goes again, as the one frame it is; the word it answers is what says it took it.
+      streamSeq += 1;
+      try {
+        await sendRelayFrame({
+          connection,
+          newHeaders: headers,
+          sessionID: sid,
+          subject,
+          payload: codec.encode(envelope),
+          seq: streamSeq,
+          withinMs: DEADLINE_MS,
+          stopped: closed,
+        });
+      } catch (error) {
+        throw new Error(`${label} was taken by no session: ${String(error)}`);
       }
       const sent = { eventID, messageID };
       if (accepted) {
@@ -624,6 +621,12 @@ test.skipIf(skip)(
   "a turn's messages inside one interval publish the turn's frame and the figure after its reply",
   async () => {
     const session = await contextSession();
+    // The turn must open the interval it is measured in. A session writes a message of its own
+    // while it starts - a card, or the line it writes when Envoy inbound is unavailable - and the
+    // reading that message is owed is published as the state the arming replay carries, which is
+    // inside the interval this turn starts in. Waiting for the publisher to owe nothing leaves
+    // the turn's own reading the first of the window.
+    await settledReading(session);
     const from = session.frames.length;
     await session.command({ type: "prompt", message: "What is the first case?" });
     const turn = await session.nextTurn("the first model request");
