@@ -122,8 +122,9 @@ type acceptedDelivery struct {
 // It may land while the attempt is still pending, since a session answers the frame before
 // Dispatch settles the send, so it writes neither state nor claimed_at, which the settle is
 // scoped to, and appends its own message.accepted rather than a second message.delivery receipt.
-// The event's owners are locked before the message and attempt rows, the order
-// settleDeliveryAttempt takes them in.
+// It takes no owner lock: the message it accepts is a direct message (acceptDirect), whose event
+// names no owner, and a message on an issue is refused 409 ACCEPT_NOT_DIRECT before any write, so
+// no append of this route takes an owner's lock either.
 //
 // The actor is a bearer's own claim of its session, as on every session write, so a bearer
 // naming another session can spend that session's one acceptance of a fresh attempt: the real
@@ -163,10 +164,6 @@ func (s *server) acceptDelivery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer tx.Rollback(ctx)
-	if err := s.deps.Events.LockOwners(ctx, tx, event); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
 	// Every attempt is opened, resumed and accepted under this lock, so what the checks below
 	// read cannot move before the update. It is FOR NO KEY UPDATE, which serialises it against
 	// the claim's, and not FOR UPDATE: the session's reply takes the attempt row first and then,
