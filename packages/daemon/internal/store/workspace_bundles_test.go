@@ -37,15 +37,16 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 		At:        at,
 		PodUID:    releasedPodUID,
 	}
-	if _, take, err := takeOf(ctx, s, runtime.WorkspaceCopyReleaseBundle, "INFRA-945", "pod-0", replacement); err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("an issue never released reads %v, %v; want no bundle", take, err)
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-0", replacement); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("an issue never released reads %v, %v; want no bundle", restore.ReleaseBundle.Take, err)
 	}
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 11, saved); err != nil {
 		t.Fatal(err)
 	}
-	read, take, err := takeOf(ctx, s, runtime.WorkspaceCopyReleaseBundle, "INFRA-945", "pod-1", replacement)
-	if err != nil || take != runtime.WorkspaceBundleSend {
-		t.Fatalf("read the saved bundle: %v, %v", take, err)
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-1", replacement)
+	read := restore.ReleaseBundle.Bundle
+	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("read the saved bundle: %v, %v", restore.ReleaseBundle.Take, err)
 	}
 	if !bytes.Equal(read.Bundle, saved.Bundle) || read.Size() != saved.Size() {
 		t.Fatalf("the bundle read back is %d bytes, want the %d saved", read.Size(), saved.Size())
@@ -70,9 +71,10 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	if err := s.PutWorkspaceBundle(ctx, "INFRA-945", 12, again); err != nil {
 		t.Fatal(err)
 	}
-	read, take, err = takeOf(ctx, s, runtime.WorkspaceCopyReleaseBundle, "INFRA-945", "pod-2", at.Add(time.Hour+time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(read.Bundle) != "PACK newer" || read.Head != again.Head || read.Release != 12 {
-		t.Fatalf("after a second release the bundle is %q at %s of release %d (%v, %v), want the newer one", read.Bundle, read.Head, read.Release, take, err)
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-2", at.Add(time.Hour+time.Minute))
+	read = restore.ReleaseBundle.Bundle
+	if err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleSend || string(read.Bundle) != "PACK newer" || read.Head != again.Head || read.Release != 12 {
+		t.Fatalf("after a second release the bundle is %q at %s of release %d (%v, %v), want the newer one", read.Bundle, read.Head, read.Release, restore.ReleaseBundle.Take, err)
 	}
 	if len(read.Tips) != 0 || len(read.Bookmarks) != 0 {
 		t.Fatalf("the newer bundle reads tips %v and bookmarks %v, want neither", read.Tips, read.Bookmarks)
@@ -81,8 +83,8 @@ func TestAWorkspaceBundleRoundTripsAndIsDeletedOnConfirmation(t *testing.T) {
 	if err := s.DeleteWorkspaceBundle(ctx, "INFRA-945"); err != nil {
 		t.Fatal(err)
 	}
-	if _, take, err := takeOf(ctx, s, runtime.WorkspaceCopyReleaseBundle, "INFRA-945", "pod-3", at.Add(time.Hour+time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("after the launcher confirmed the restore the bundle reads %v, %v; want none", take, err)
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-3", at.Add(time.Hour+time.Minute)); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("after the launcher confirmed the restore the bundle reads %v, %v; want none", restore.ReleaseBundle.Take, err)
 	}
 	// A confirmation that arrives twice finishes rather than failing.
 	if err := s.DeleteWorkspaceBundle(ctx, "INFRA-945"); err != nil {
@@ -125,18 +127,18 @@ func TestARestoreConfirmationDeletesOnlyTheBundleOfTheReleaseItNames(t *testing.
 	if err := s.DeleteRestoredWorkspaceBundle(ctx, "INFRA-945", 11); err != nil {
 		t.Fatal(err)
 	}
-	kept, take, err := takeOf(ctx, s, runtime.WorkspaceCopyReleaseBundle, "INFRA-945", "pod-2", at.Add(time.Hour+time.Minute))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(kept.Bundle) != "PACK second" || kept.Release != 12 {
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-2", at.Add(time.Hour+time.Minute))
+	if kept := restore.ReleaseBundle; err != nil || kept.Take != runtime.WorkspaceBundleSend || string(kept.Bundle.Bundle) != "PACK second" || kept.Bundle.Release != 12 {
 		t.Fatalf("a report of release 11 left %q of release %d (%v, %v), want the second release's bundle kept",
-			kept.Bundle, kept.Release, take, err)
+			kept.Bundle.Bundle, kept.Bundle.Release, kept.Take, err)
 	}
 	// The second release's own confirmation drops it, and a report the daemon reads twice
 	// finishes rather than failing.
 	if err := s.DeleteRestoredWorkspaceBundle(ctx, "INFRA-945", 12); err != nil {
 		t.Fatal(err)
 	}
-	if _, take, err := takeOf(ctx, s, runtime.WorkspaceCopyReleaseBundle, "INFRA-945", "pod-3", at.Add(time.Hour+time.Minute)); err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("after the report of release 12 the bundle reads %v, %v; want none", take, err)
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-945", "pod-3", at.Add(time.Hour+time.Minute)); err != nil || restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("after the report of release 12 the bundle reads %v, %v; want none", restore.ReleaseBundle.Take, err)
 	}
 	if err := s.DeleteRestoredWorkspaceBundle(ctx, "INFRA-945", 12); err != nil {
 		t.Fatalf("a repeated confirmation: %v", err)

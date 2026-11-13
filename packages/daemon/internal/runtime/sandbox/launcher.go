@@ -458,9 +458,10 @@ func refusedOlderLine(kind runtime.WorkspaceCopyKind) string {
 	return "launcher bundle: this pod was not created after the running copy was taken, so the copy is refused and no pod is sent it again; the work stays in the daemon's database and holds no pod, since the disk it was taken off still has it"
 }
 
-// refusedPushedLine is the warning a copy older than the issue's newest recorded push is logged
-// with (runtime.WorkspaceBundleRefusedPushed). It is the line an operator reads to know why a pod
-// started on what was pushed although the daemon held a copy, and what that copy would have done.
+// refusedPushedLine is the warning a running copy older than the issue's newest recorded push is
+// logged with (runtime.WorkspaceBundleRefusedPushed); a release bundle is never refused so. It is
+// the line an operator reads to know why a pod started on what was pushed although the daemon
+// held a copy, and what that copy would have done.
 const refusedPushedLine = "launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded, so it is refused and no pod is sent it: restoring it would put the workspace back on work behind the pushed commits, which the roles would have to bring forward over them; its bytes stay in the daemon's database"
 
 // supersededLine is the line the older of the issue's two copies is closed unsent with
@@ -473,7 +474,8 @@ const supersededLine = "launcher bundle: the older of the issue's two saved work
 // withheldBranchLine is the line a copy that holds the issue's own branch is sent with. The
 // restore sets every bookmark the copy holds but that one (bundleFrames,
 // runtime.RestorableBookmarks), so the branch stays where the pod's own fetch put it, on what
-// GitHub holds, and this line keeps for an operator the commit the copy held it on.
+// GitHub holds, and this line keeps for an operator the commit the copy held it on, as the very
+// call that left it out of the slices answered it.
 const withheldBranchLine = "launcher bundle: the saved workspace copy's own value of the issue's branch is withheld, so the restore leaves the branch where the pod's fetch from GitHub put it; the copy's commits come back as heads and as the working copy"
 
 // reachedLine is the line a copy the launcher holds whole is logged with, before the launcher
@@ -492,11 +494,11 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 //
 // Which copy, if either, the pod is sent is the store's one decision, made in the transaction
 // that spends the attempts (store.TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore):
-// a copy older than the newest push of the issue's branch the daemon recorded is refused, the
-// newer of the rest is offered, and the older is closed unsent. This hop only carries out what
-// that answer says and logs each copy it touched, so no state of the store depends on this hop
-// finishing. Whatever copy it sends goes without its own value of the issue's branch
-// (bundleFrames), so no restore moves `legion/<KEY>` off what GitHub holds.
+// the newer copy is offered and the older closed unsent, and a running copy older than the newest
+// push of the issue's branch the daemon recorded is refused, where a release bundle never is.
+// This hop only carries out what that answer says and logs each copy it touched, so no state of
+// the store depends on this hop finishing. Whatever copy it sends goes without its own value of
+// the issue's branch (bundleFrames), so no restore moves `legion/<KEY>` off what GitHub holds.
 //
 // Nothing here stops a role. A slice the launcher refuses, a body that did not arrive as it was
 // sent, a store that cannot be read and a connection that fails are each logged and left: a pod
@@ -519,8 +521,8 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // pod that is not newer than the copy (launcherSession.podCreated) spends it on a refusal:
 // nothing is sent to it, and nothing is sent to the pod after it either, since its roles go on
 // working and pushing from the workspace its own fetch provisioned. That refusal, and the refusal
-// of a copy older than a recorded push, are this hop's warnings an operator must read — the work
-// is in the database and no pod will put it back on its own.
+// of a running copy older than a recorded push, are this hop's warnings an operator must read —
+// the work is in the database and no pod will put it back on its own.
 func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, podUID string) {
 	if d.saved == nil || d.restored == nil {
 		return
@@ -541,51 +543,42 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 			"issue", issue, "launcher", token, "pod", podUID, "error", err)
 		return
 	}
-	// Each copy the take recorded an attempt on is logged, and the one being sent, if any, is
-	// the only one this hop goes on with. An issue that holds nothing, a copy already spent and
-	// the pod a copy came off asking are answered no entry at all, so the copy the decision
-	// offered has none when the ask recorded nothing on it.
-	var send *runtime.WorkspaceCopyTaken
-	offeredTake := runtime.WorkspaceBundleNone
-	for i, taken := range restore.Copies {
-		if taken.Kind == restore.Offered {
-			offeredTake = taken.Take
-		}
-		if taken.Take == runtime.WorkspaceBundleSend {
-			send = &restore.Copies[i]
-		}
-	}
-	for _, taken := range restore.Copies {
+	// Each copy the take recorded an attempt on is logged, and the offered one, when its take is
+	// a send, is the only one this hop goes on with: the decision sends no other. A copy the ask
+	// recorded nothing on — the issue holds none, its attempt is spent, or its work came off this
+	// very pod — is a take of WorkspaceBundleNone and logs nothing, the offered one included.
+	offered := restore.Of(restore.Offered)
+	for _, kind := range [...]runtime.WorkspaceCopyKind{runtime.WorkspaceCopyReleaseBundle, runtime.WorkspaceCopyRunning} {
+		taken := restore.Of(kind)
 		b := taken.Bundle
 		switch taken.Take {
 		case runtime.WorkspaceBundleRefusedOlder:
-			d.log.Warn(refusedOlderLine(taken.Kind), "issue", issue, "launcher", token, "pod", podUID,
-				"created", session.podCreated, "copy", taken.Kind, "taken", b.At,
+			d.log.Warn(refusedOlderLine(kind), "issue", issue, "launcher", token, "pod", podUID,
+				"created", session.podCreated, "copy", kind, "taken", b.At,
 				"bytes", taken.Size, "head", b.Head, "restore", b.Release)
 		case runtime.WorkspaceBundleRefusedPushed:
 			d.log.Warn(refusedPushedLine, "issue", issue, "launcher", token, "pod", podUID,
-				"copy", taken.Kind, "taken", b.At, "bytes", taken.Size, "head", b.Head, "restore", b.Release,
+				"copy", kind, "taken", b.At, "bytes", taken.Size, "head", b.Head, "restore", b.Release,
 				"pushed", restore.Push.At, "pushedHead", restore.Push.Head)
 		case runtime.WorkspaceBundleSuperseded:
 			d.log.Info(supersededLine,
-				"issue", issue, "launcher", token, "pod", podUID, "copy", taken.Kind, "taken", b.At,
-				"bytes", taken.Size, "newer", restore.Offered, "newerTake", offeredTake)
+				"issue", issue, "launcher", token, "pod", podUID, "copy", kind, "taken", b.At,
+				"bytes", taken.Size, "newer", restore.Offered, "newerTake", offered.Take)
 		}
 	}
-	if send == nil || len(send.Bundle.Bundle) == 0 {
+	if offered.Take != runtime.WorkspaceBundleSend || len(offered.Bundle.Bundle) == 0 {
 		return
 	}
-	kind, bundle := send.Kind, send.Bundle
-	branch := claim.IssueBranch(issue)
-	if withheld, held := bundle.Bookmarks[branch]; held {
-		d.log.Info(withheldBranchLine, "issue", issue, "launcher", token, "copy", kind,
-			"branch", branch, "withheld", withheld, "restore", bundle.Release)
-	}
-	frames, err := bundleFrames(issue, bundle)
+	kind, bundle := restore.Offered, offered.Bundle
+	frames, withheld, held, err := bundleFrames(issue, bundle)
 	if err != nil {
 		d.log.Warn("launcher bundle: the saved workspace copy could not be sliced, so the pod starts on what was pushed",
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At, "error", err)
 		return
+	}
+	if held {
+		d.log.Info(withheldBranchLine, "issue", issue, "launcher", token, "copy", kind,
+			"branch", claim.IssueBranch(issue), "withheld", withheld, "restore", bundle.Release)
 	}
 	for _, frame := range frames {
 		answer, _, err := d.request(restoring, token, podUID, frame, bundleWaiter(frame.ID, frame.Index))
@@ -664,19 +657,22 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 }
 
 // bundleFrames are the slices that carry one saved copy of issue's workspace, with every bookmark
-// of it but the issue's own branch (runtime.RestorableBookmarks). Every send of either kind of
-// copy passes here, so no restore sets `legion/<KEY>`, wherever the copy held it. The sequence's
-// id is the issue, the copy's own restore id and the digest of the body
-// (shimwire.SplitWorkspaceBundle), so it is the same every time the same copy is sent, which is
-// what a pod whose launcher reconnects needs: the launcher answers a slice it has already taken
-// under an id it knows with the answer it gave, Held included, and refuses only a payload that
-// differs from the one that id carried — which another copy of the same issue never is, since
-// every copy of either kind has a restore id of its own and so a sequence of its own
-// (internal/launcher's bundleRestore.receive).
-func bundleFrames(issue string, b runtime.WorkspaceBundle) ([]shimwire.LauncherBundle, error) {
-	return shimwire.SplitWorkspaceBundle("restore-"+issue, b.Release, shimwire.WorkspaceBundle{
-		Bundle: b.Bundle, Head: b.Head, Tips: b.Tips, Bookmarks: runtime.RestorableBookmarks(issue, b.Bookmarks), At: b.At,
+// of it but the issue's own branch (runtime.RestorableBookmarks), and what that left out: the
+// commit the copy held the branch on, withheld, and whether it held the branch at all, held, which
+// is what the restore's withheldBranchLine names. Every send of either kind of copy passes here,
+// so no restore sets `legion/<KEY>`, wherever the copy held it. The sequence's id is the issue,
+// the copy's own restore id and the digest of the body (shimwire.SplitWorkspaceBundle), so it is
+// the same every time the same copy is sent, which is what a pod whose launcher reconnects needs:
+// the launcher answers a slice it has already taken under an id it knows with the answer it gave,
+// Held included, and refuses only a payload that differs from the one that id carried — which
+// another copy of the same issue never is, since every copy of either kind has a restore id of its
+// own and so a sequence of its own (internal/launcher's bundleRestore.receive).
+func bundleFrames(issue string, b runtime.WorkspaceBundle) (frames []shimwire.LauncherBundle, withheld string, held bool, err error) {
+	bookmarks, withheld, held := runtime.RestorableBookmarks(issue, b.Bookmarks)
+	frames, err = shimwire.SplitWorkspaceBundle("restore-"+issue, b.Release, shimwire.WorkspaceBundle{
+		Bundle: b.Bundle, Head: b.Head, Tips: b.Tips, Bookmarks: bookmarks, At: b.At,
 	})
+	return frames, withheld, held, err
 }
 
 // bundleWaiter names the request one slice's answer belongs to, of a launcher_bundle sequence or

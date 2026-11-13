@@ -47,22 +47,6 @@ func heldCopyRow(t *testing.T, s *Store, copies copyTable, issue string) copyRow
 	return row
 }
 
-// takeOf is what one pod's ask did to issue's copy of kind, through the one take the runtime is
-// handed (TakeWorkspaceCopyForRestore): the entry it answered for that copy, or nothing to send
-// and nothing recorded when it answered none.
-func takeOf(ctx context.Context, s *Store, kind runtime.WorkspaceCopyKind, issue, pod string, created time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-	restore, err := s.TakeWorkspaceCopyForRestore(ctx, issue, pod, created)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
-	}
-	for _, taken := range restore.Copies {
-		if taken.Kind == kind {
-			return taken.Bundle, taken.Take, nil
-		}
-	}
-	return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
-}
-
 // storedCopy is the row behind an issue's running copy, read whole. The store answers its facts
 // without its bytes and its bytes only to a pod it is sent to, which is the point of both methods;
 // what the save rewrote and what it left is a question about the row itself, so these tests read
@@ -120,8 +104,8 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		At:        at,
 		PodUID:    runningPodUID,
 	}
-	if _, take, err := takeOf(ctx, s, runtime.WorkspaceCopyRunning, "INFRA-1117", "pod-0", replacement); err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("an issue whose cadence has taken nothing reads %v, %v; want no copy", take, err)
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-0", replacement); err != nil || restore.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("an issue whose cadence has taken nothing reads %v, %v; want no copy", restore.Running.Take, err)
 	}
 	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117"); row.held {
 		t.Fatalf("an issue whose cadence has taken nothing holds a copy: %+v", row)
@@ -133,9 +117,10 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		t.Fatalf("the copy reads %+v, want the %d bytes saved at %s", row, taken.Size(), at)
 	}
 	stored := storedRunningCopy(t, s, "INFRA-1117")
-	read, take, err := takeOf(ctx, s, runtime.WorkspaceCopyRunning, "INFRA-1117", "pod-1", replacement)
-	if err != nil || take != runtime.WorkspaceBundleSend {
-		t.Fatalf("read the running copy: %v, %v", take, err)
+	restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-1", replacement)
+	read := restore.Running.Bundle
+	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("read the running copy: %v, %v", restore.Running.Take, err)
 	}
 	if !bytes.Equal(read.Bundle, taken.Bundle) || read.Size() != taken.Size() {
 		t.Fatalf("the copy read back is %d bytes, want the %d taken", read.Size(), taken.Size())
@@ -170,9 +155,10 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	if rows := runningCopyRows(t, s); rows != 1 {
 		t.Fatalf("three copies of one issue left %d rows, want the one row the issue has", rows)
 	}
-	newest, take, err := takeOf(ctx, s, runtime.WorkspaceCopyRunning, "INFRA-1117", "pod-2", at.Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(newest.Bundle) != "PACK the five after that" {
-		t.Fatalf("the pod after the cadence was answered %q (%v, %v), want the newest copy", newest.Bundle, take, err)
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-2", at.Add(time.Hour))
+	newest := restore.Running.Bundle
+	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend || string(newest.Bundle) != "PACK the five after that" {
+		t.Fatalf("the pod after the cadence was answered %q (%v, %v), want the newest copy", newest.Bundle, restore.Running.Take, err)
 	}
 	if len(newest.Tips) != 0 || len(newest.Bookmarks) != 0 {
 		t.Fatalf("the newest copy reads tips %v and bookmarks %v, want neither", newest.Tips, newest.Bookmarks)

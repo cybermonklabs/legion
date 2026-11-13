@@ -4821,9 +4821,14 @@ The daemon sends every copy without the copy's own value of that bookmark, so th
 The copy's work comes back as visible commits and as the working copy, which the launcher restores with `jj edit` back to the copy's head, and the role's own `jj bookmark set legion/<KEY> -r @-` then moves the branch forward onto that work, or jj refuses the move as backwards or sideways.
 The daemon logs, at Info, a line that begins `launcher bundle: the saved workspace copy's own value of the issue's branch is withheld` with the issue, the copy and the commit the copy held the branch on.
 
-The time rule is the second line: neither copy is sent when it was taken before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
+The time rule is the second line, and it guards running copies only: a running copy is not sent when it was taken before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
 Such a copy would put the workspace back on work behind what GitHub holds, which the roles would then have to bring forward over the pushed commits.
 A running copy is taken while the roles work and push, so this is its common case: an update round replaces a pod just after its roles push.
+A refused running copy is still the newer of the issue's two copies, so a release bundle older than it is closed unsent rather than sent in its place.
+A release bundle is never refused by this rule.
+An idle release saves it after the issue's roles have stopped, so a push the daemon records after it is none of those roles' pushes: it is a push from outside the pod, such as GitHub's "Update branch" or a person's push, or one the daemon applied late, such as a push whose webhook was lost and that the daemon's read of the pull request rebuilt.
+The bundle is restored like any other, the withheld bookmark keeps that push on GitHub, and the role brings its work forward over it.
+Refusing the bundle would leave its work in the database alone and hold the issue's pod under `bundle_unrestored` from then on.
 The daemon keeps its own record of each issue's newest push in the `issue_pushes` table: one row per issue, holding `pushed_at`, the daemon's clock when it applied the push webhook for `legion/<KEY>` on the issue's recorded repository, and `head`, the commit that push left.
 The row is written in the push's own transaction whether or not the issue has a pull request, because a branch is pushed before its pull request opens.
 Beside it, the `issue_push_heads` table holds every commit the issue's recorded pushes replaced or left, the 256 the daemon saw last.
@@ -4835,7 +4840,7 @@ For an issue the daemon has recorded no push for, the rule refuses nothing, sinc
 The comparison is the copy's own time, by the clock of the node its pod ran on, against the daemon's clock, so a node clock running ahead of the daemon's by more than the webhook's delay could let a stale copy through.
 The time rule alone misses two copies whose `legion/<KEY>` is behind GitHub's branch or beside it, and in both it is the withheld bookmark that keeps the pushed commits on GitHub:
 a copy taken after a push from outside the pod that the workspace never fetched, which is newer than that push by the clock, and a copy taken before a push the daemon has not recorded, whose webhook is late or was lost.
-A refused copy has its one attempt spent and keeps its bytes for an operator, and the daemon logs, at Warn, a line that begins `launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded` with the issue, the copy's time, the push's time and the head the push left.
+A refused running copy has its one attempt spent and keeps its bytes for an operator, and the daemon logs, at Warn, a line that begins `launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded` with the issue, the copy, the copy's time, the push's time and the head the push left.
 Each time the daemon records a push it also takes a copy of that issue's workspace, through the same one copy in flight, so the issue's newest copy is normally one taken after its newest push and holds whatever came after it.
 A copy already being built when the push is recorded is not stored, because it read the workspace before the push; the copy the push asked for follows it.
 The release's own save takes the same one place in flight and waits out a copy being built, so no two bundlers ever run in one workspace.

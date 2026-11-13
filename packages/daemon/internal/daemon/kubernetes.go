@@ -511,9 +511,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// The restore of a new pod and the two copies of an issue workspace it chooses between:
 		// an idle release puts the issue's unpushed work in one (outbox's release) and the
 		// cadence of a running pod in the other. The take reads both and the newest push of the
-		// issue's branch the daemon recorded, refuses any copy older than that push, offers the
-		// newer of the rest to the launcher of the pod that replaces the one the work came off
-		// before any role of that pod starts, and closes the older unsent, all in one
+		// issue's branch the daemon recorded, offers the newer copy to the launcher of the pod
+		// that replaces the one the work came off before any role of that pod starts, refuses a
+		// running copy older than that push, and closes the older copy unsent, all in one
 		// transaction. Each copy's attempt is spent once: the first pod that is not the one the
 		// work came off spends it, whether the copy is sent or refused, and nothing is answered
 		// for that copy again.

@@ -223,11 +223,11 @@ type WorkspaceBundler interface {
 // is up, can carry the saved work back into the new workspace before any role of that pod starts.
 //
 // It is one call, and the store answers it in one transaction, because the choice between the two
-// copies is one decision (DecideWorkspaceRestore): which copy is the newer, whether either is older
-// than the newest push of the issue's branch the daemon recorded, whether either has had its one
-// attempt or came off the pod asking, and whether that pod is newer than the copy it is offered.
-// Made as several calls it could leave the store half-changed — the older copy closed, the newer
-// one's take failed, and the pod given neither.
+// copies is one decision (DecideWorkspaceRestore): which copy is the newer, whether the running
+// copy is older than the newest push of the issue's branch the daemon recorded, whether either has
+// had its one attempt or came off the pod asking, and whether that pod is newer than the copy it
+// is offered. Made as several calls it could leave the store half-changed — the older copy
+// closed, the newer one's take failed, and the pod given neither.
 //
 // WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
 // and whose cadence took nothing, one whose restore the launcher confirmed, one whose release a
@@ -252,8 +252,8 @@ type WorkspaceBundler interface {
 // bundle nothing restored also holds the issue's pod (workflow.IdleHoldBundleUnrestored), and a
 // running copy holds no pod, its work being on the disk it was taken off.
 //
-// WorkspaceBundleRefusedPushed and WorkspaceBundleSuperseded spend the attempt the same way and
-// send nothing, for the reasons DecideWorkspaceRestore gives.
+// WorkspaceBundleRefusedPushed, of a running copy alone, and WorkspaceBundleSuperseded spend the
+// attempt the same way and send nothing, for the reasons DecideWorkspaceRestore gives.
 type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceRestore, error)
 
 // WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one

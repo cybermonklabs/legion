@@ -165,8 +165,8 @@ func TestTheIdleViewHoldsNoPodForARunningWorkspaceCopy(t *testing.T) {
 
 	// The pod that replaced the one the copy came off was sent it and its restore failed: the
 	// attempt is spent and the row stays, which is the state a hold would be read from.
-	if _, take, err := takeOf(ctx, st, runtime.WorkspaceCopyRunning, rootIssue, "pod-that-replaced-it", now.Add(time.Minute)); err != nil || take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", take, err)
+	if restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-that-replaced-it", now.Add(time.Minute)); err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the replacement pod was answered %v (%v), want the running copy", restore.Running.Take, err)
 	}
 	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held {
 		t.Fatal("the failed restore took the running copy, want it kept")

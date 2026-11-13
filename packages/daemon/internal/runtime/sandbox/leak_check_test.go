@@ -247,13 +247,13 @@ func TestARefusedLeakCheckStartsNothingAndLeavesTheSavedBundle(t *testing.T) {
 			if pod == nil {
 				t.Fatal("the refused launch left no pod")
 			}
-			bundle, take, err := takeCopyOf(g.ctx, st, runtime.WorkspaceCopyReleaseBundle, testTree, string(pod.UID), pod.CreationTimestamp.Time)
+			restore, err := st.TakeWorkspaceCopyForRestore(g.ctx, testTree, string(pod.UID), pod.CreationTimestamp.Time)
 			if err != nil {
 				t.Fatal(err)
 			}
-			if take != runtime.WorkspaceBundleSend || !bytes.Equal(bundle.Bundle, saved.Bundle) {
+			if bundle := restore.ReleaseBundle; bundle.Take != runtime.WorkspaceBundleSend || !bytes.Equal(bundle.Bundle.Bundle, saved.Bundle) {
 				t.Fatalf("after the refusal the store answers the pod %d bytes (take %v), want the %d saved still to send",
-					len(bundle.Bundle), take, len(saved.Bundle))
+					len(bundle.Bundle.Bundle), bundle.Take, len(saved.Bundle))
 			}
 		})
 	}

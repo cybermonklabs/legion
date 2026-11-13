@@ -437,8 +437,9 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	engineCfg.Reserve = reserve
 	// Every push of an issue's branch is recorded in its fact's transaction, and once it commits
 	// the issue's workspace is copied (copyWorkspaceAtPush): the restore of a new pod refuses any
-	// copy older than that push (store.TakeWorkspaceCopyForRestore), and this copy is the one that
-	// takes its place. The cadence's store and bundler are attach's, read when the push arrives.
+	// running copy older than that push (store.TakeWorkspaceCopyForRestore), and this copy is the
+	// one that takes its place. The cadence's store and bundler are attach's, read when the push
+	// arrives.
 	engineCfg.Pushes, engineCfg.PushRecorded = st, w.copyWorkspaceAtPush
 	w.engine = workflow.New(w.records, engineCfg, log)
 	w.admission = admit.New(w.records, w.engine, cfg.AdmissionCap, cfg.Project, log)

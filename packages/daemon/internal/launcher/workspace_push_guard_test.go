@@ -25,9 +25,9 @@ import (
 // own value of the issue's branch (runtime.RestorableBookmarks, which the sandbox applies to every
 // copy it sends), so the branch stays on what the new pod's fetch brought from GitHub, and a
 // role's move of it onto work built on a stale copy is refused by jj as backwards or sideways. The
-// second is that the decision sends no copy older than the newest push of the issue's branch it
-// recorded (runtime.DecideWorkspaceRestore), and the daemon takes a copy of its own when it records
-// the push, which is the copy a replacement pod is then sent.
+// second is that the decision sends no running copy older than the newest push of the issue's
+// branch it recorded (runtime.DecideWorkspaceRestore), and the daemon takes a copy of its own when
+// it records the push, which is the copy a replacement pod is then sent.
 //
 // Every case takes its copies with the real shim's bundler, decides with the daemon's own
 // decision, restores with the real launcher what the sandbox would send, and has the replacement
@@ -36,12 +36,13 @@ import (
 //
 // The first two cases run the order the reviewer named — a running copy is taken, newer work is
 // committed and pushed, the daemon records the push, the pod is replaced — with an earlier
-// release's bundle, left unrestored and older than the push, held beside the running copy and
-// refused by the same rule. In the first the pod is replaced before the copy the push asked for has
-// landed, so the newest copy the store holds is the one taken before the push, which the time rule
-// refuses. The last two are copies the time rule sends, where the withheld branch alone keeps the
-// pushed commits on GitHub: a copy taken after a push from outside the pod that the workspace never
-// fetched, and a copy taken before a push the daemon has not recorded.
+// release's bundle, left unrestored and older than both, held beside the running copy and closed
+// unsent as the older of the two. In the first the pod is replaced before the copy the push asked
+// for has landed, so the newest copy the store holds is the one taken before the push, which the
+// time rule refuses. The last three are copies the time rule sends, where the withheld branch
+// alone keeps the pushed commits on GitHub: a copy taken after a push from outside the pod that the
+// workspace never fetched, a copy taken before a push the daemon has not recorded, and a release
+// bundle taken before a push from outside the pod, which the time rule never refuses.
 func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t *testing.T) {
 	testbin.RequireJJFilters(t)
 	branch := "legion/" + bundleIssue
@@ -100,15 +101,15 @@ func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t
 			before := f.remoteCommits(branch)
 			workspace, created := f.replacementPod("ws2")
 			bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeld(earlier), copyHeld(held), push, replacementPodUID, created)
-			// The decision that keeps them: the earlier release's bundle and any copy taken before
-			// the push are refused, and the copy taken at the push is the one sent. A wrong
-			// decision is reported and the case goes on, so it also says what that decision did
-			// to the branch.
-			if bundleTake != runtime.WorkspaceBundleRefusedPushed {
-				t.Errorf("the earlier release's bundle, taken at %s before the push at %s, was decided %v, want it refused", earlier.At, push.At, bundleTake)
+			// The decision that keeps them: the earlier release's bundle is the older copy and is
+			// closed unsent, a running copy taken before the push is refused, and the copy taken
+			// at the push is the one sent. A wrong decision is reported and the case goes on, so it
+			// also says what that decision did to the branch.
+			if bundleTake != runtime.WorkspaceBundleSuperseded {
+				t.Errorf("the earlier release's bundle, taken at %s before the running copy at %s, was decided %v, want it superseded", earlier.At, held.At, bundleTake)
 			}
-			if !c.pushCopyLanded && (runningTake != runtime.WorkspaceBundleRefusedPushed || offered != "") {
-				t.Errorf("the copy taken at %s before the push at %s was decided %v with %q offered, want it refused and nothing offered", running.At, push.At, runningTake, offered)
+			if !c.pushCopyLanded && (runningTake != runtime.WorkspaceBundleRefusedPushed || offered != runtime.WorkspaceCopyRunning) {
+				t.Errorf("the copy taken at %s before the push at %s was decided %v with %q offered, want it offered and refused", running.At, push.At, runningTake, offered)
 			}
 			if c.pushCopyLanded && (runningTake != runtime.WorkspaceBundleSend || offered != runtime.WorkspaceCopyRunning) {
 				t.Errorf("the copy taken at the push was decided %v with %q offered, want it offered and sent", runningTake, offered)
@@ -210,6 +211,45 @@ func TestAPushedIssueBranchKeepsEveryCommitWhenItsWorkspaceIsRestoredFromACopy(t
 		}
 		f.keepsEveryCommit(branch, before)
 	})
+
+	t.Run("a release bundle taken before a push from outside the pod", func(t *testing.T) {
+		f := newBundleFixture(t)
+		// The role pushes c1 and goes on with work it has not pushed, and the idle release saves
+		// the workspace once the role has stopped.
+		if err := f.rolePush(f.ws, "c1"); err != nil {
+			t.Fatalf("the push of c1: %v", err)
+		}
+		f.write(filepath.Join(f.ws, "wip.txt"), "work the role has not pushed\n")
+		saved := f.bundleWorkspaceOne()
+		// While the release runs, another clone — GitHub's "Update branch", a person's — pushes cX
+		// onto the issue's branch, and the daemon records that push after the save.
+		other := filepath.Join(f.root, "other")
+		f.run(f.root, "git", "clone", "--quiet", "--no-local", "--branch", branch, f.remote, other)
+		f.write(filepath.Join(other, "cx.txt"), "cX\n")
+		f.run(other, "git", "add", "-A")
+		f.run(other, "git", "commit", "--quiet", "-m", "cX")
+		f.run(other, "git", "push", "--quiet", "origin", "HEAD:refs/heads/"+branch)
+		push := runtime.WorkspacePush{At: time.Now().UTC(), Head: f.run(other, "git", "rev-parse", "HEAD")}
+		if !saved.At.Before(push.At) {
+			t.Fatalf("the release bundle was taken at %s, want it before the push recorded at %s", saved.At, push.At)
+		}
+
+		before := f.remoteCommits(branch)
+		workspace, created := f.replacementPod("ws2")
+		bundleTake, runningTake, offered := runtime.DecideWorkspaceRestore(copyHeld(saved), runtime.WorkspaceCopyHeld{}, push, replacementPodUID, created)
+		if bundleTake != runtime.WorkspaceBundleSend || runningTake != runtime.WorkspaceBundleNone || offered != runtime.WorkspaceCopyReleaseBundle {
+			t.Fatalf("the release bundle taken at %s, with the push at %s, was decided (%v, %v, %q), want it offered and sent: the time rule refuses running copies alone",
+				saved.At, push.At, bundleTake, runningTake, offered)
+		}
+		f.restoreAsSent(workspace, saved)
+		if !f.holdsCommit(workspace, saved.Head) {
+			t.Fatalf("the replacement pod's workspace holds no %s, the head of the release bundle it was sent", saved.Head)
+		}
+		if err := f.rolePush(workspace, "c3"); err != nil {
+			t.Logf("the replacement pod's role pushed nothing: %v", err)
+		}
+		f.keepsEveryCommit(branch, before)
+	})
 }
 
 // takenOffPodUID is the pod every copy of these cases was taken off, and replacementPodUID the pod
@@ -258,7 +298,7 @@ func (f *bundleFixture) restoreSentCopy(taken shimwire.WorkspaceBundle, push run
 // bundleFrames applies to every copy it sends).
 func (f *bundleFixture) restoreAsSent(workspace string, sent shimwire.WorkspaceBundle) {
 	f.t.Helper()
-	sent.Bookmarks = runtime.RestorableBookmarks(bundleIssue, sent.Bookmarks)
+	sent.Bookmarks, _, _ = runtime.RestorableBookmarks(bundleIssue, sent.Bookmarks)
 	if notice := f.restoreInto(workspace, sent, 1); !strings.Contains(notice, "is restored") {
 		f.t.Fatalf("the restore's notice is %q", notice)
 	}

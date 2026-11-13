@@ -1,16 +1,20 @@
 -- 20261113005308_issue_pushes.up.sql — the newest push of each issue's branch the daemon has
--- recorded, which no saved copy of the issue's workspace older than it is ever sent past
+-- recorded, which no running copy of the issue's workspace older than it is ever sent past
 -- (INFRA-1117).
 --
 -- A copy of a workspace is restored by `jj edit` back to its head and `jj bookmark set
--- --allow-backwards` of each bookmark it holds. A copy taken before the roles pushed is therefore
--- a copy that moves the issue's branch back behind what GitHub holds, and the role's next push
--- from that workspace removes the pushed commits from GitHub: the branch read `c2, c1, …` and
--- after the restore and the next push read `c3, c1, …`. A running copy is taken while the roles
--- work and push, and an update round replaces a pod just after its roles pushed, so the case is
--- common rather than rare. store.TakeWorkspaceCopyForRestore reads this row in the transaction
--- that chooses between the issue's two copies and refuses every copy whose `at` (when the shim
--- took it) is before pushed_at, whichever table it is in and whichever release or cadence left it.
+-- --allow-backwards` of each bookmark it holds but the issue's own branch `legion/<KEY>`, which no
+-- restore sets (runtime.RestorableBookmarks): the branch stays where the new pod's fetch from
+-- GitHub put it, so no restore can move it behind the pushed commits. This record is the second
+-- line. A running copy is taken while the roles work and push, and an update round replaces a pod
+-- just after its roles pushed, so a running copy taken before the push is common: restoring it
+-- would `jj edit` the workspace back behind the push and set its other bookmarks there, and the
+-- roles would have to bring their work forward over the pushed commits.
+-- store.TakeWorkspaceCopyForRestore reads this row in the transaction that chooses between the
+-- issue's two copies and refuses a running copy whose `at` (when the shim took it) is before
+-- pushed_at (runtime.DecideWorkspaceRestore). It guards running copies only: a release bundle is
+-- taken after the issue's roles stopped, so a push recorded after it is no push of the work it
+-- holds, and the bundle is restored as any other.
 --
 -- The record is the push webhook itself (intake.Push, the workflow engine's push handler), for
 -- every push of `legion/<KEY>` on the repository the issue is recorded on, whether or not the
@@ -37,13 +41,13 @@
 -- An issue the daemon has recorded no push for has no row, and nothing of it is refused by this
 -- rule, because nothing newer than its copies is known to be on GitHub. That is also what a
 -- deployment meets the first time it runs this release: its pushes before the upgrade were never
--- recorded, so the rows its earlier daemon saved are refused only once a push is recorded after
--- them. A row and its commits outlive the issue's close, since the pushes they record happened and
--- stay true; they are one small row and at most 256 commits per issue. For the same reason a
--- rollback to an earlier daemon deletes the rows of workspace_running_copies (docs/kubernetes.md,
--- "Rolling back the running copy"): that daemon records no push while it runs, so after a roll
--- forward the copies taken before the rollback would be older than pushes this table never saw,
--- and nothing here could refuse them.
+-- recorded, so the running copies its earlier daemon saved are refused only once a push is
+-- recorded after them. A row and its commits outlive the issue's close, since the pushes they
+-- record happened and stay true; they are one small row and at most 256 commits per issue. For the
+-- same reason a rollback to an earlier daemon deletes the rows of workspace_running_copies
+-- (docs/kubernetes.md, "Rolling back the running copy"): that daemon records no push while it
+-- runs, so after a roll forward the copies taken before the rollback would be older than pushes
+-- this table never saw, and nothing here could refuse them.
 create table issue_pushes (
     issue     text        primary key,
     pushed_at timestamptz not null,
@@ -57,9 +61,12 @@ create table issue_push_heads (
     primary key (issue, head)
 );
 
--- The two outcomes an attempt can now record beside `sent` and `refused_older`. `refused_pushed`
--- is the rule above: the copy is older than the issue's newest recorded push, so it is sent to no
--- pod and its bytes stay for an operator. `superseded` is the older of the issue's two copies when
+-- The outcomes an attempt can now record beside `sent` and `refused_older`. `refused_pushed` is
+-- the rule above: a running copy is older than the issue's newest recorded push, so it is sent to
+-- no pod and its bytes stay for an operator. It is a running copy's alone, and the release bundle's
+-- check does not admit it: a release bundle is taken after the roles stop, so no later push holds
+-- its work, and a refused bundle would hold the issue's pod from every later idle release
+-- (workflow.IdleHoldBundleUnrestored). `superseded` is the older of the issue's two copies when
 -- the newer one is offered to the pod: the pods after it hold that work's descendants, so the
 -- older copy is closed unsent. Both spend the copy's one attempt, as `refused_older` does. A
 -- daemon of an earlier release reads neither, since it never reads the outcome of a row whose
@@ -68,7 +75,7 @@ alter table workspace_bundles
   drop constraint workspace_bundles_attempt_outcome,
   add constraint workspace_bundles_attempt_outcome
     check (case when attempt_pod_uid is null then attempt_outcome is null
-                else attempt_outcome in ('sent', 'refused_older', 'refused_pushed', 'superseded') end);
+                else attempt_outcome in ('sent', 'refused_older', 'superseded') end);
 
 alter table workspace_running_copies
   drop constraint workspace_running_copies_attempt_outcome,

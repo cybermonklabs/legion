@@ -142,11 +142,13 @@ var (
 // created at podCreated, whose launcher it is about to be sent to, and records what that ask did
 // to each copy, all in one transaction: it reads the issue's release bundle, its running copy and
 // the newest push of its branch the daemon recorded, decides between them
-// (runtime.DecideWorkspaceRestore, where every rule of the choice is written), and spends the
-// attempt of every copy the decision answered anything but runtime.WorkspaceBundleNone. It is one
-// transaction because the choice is one decision: made as separate statements it could close the
-// older copy and then fail to take the newer, leaving the store half-changed and the pod given
-// neither. A failure anywhere in it leaves every row as it was.
+// (runtime.DecideWorkspaceRestore, where every rule of the choice is written: the push refuses a
+// running copy taken before it and never a release bundle), and spends the attempt of every copy
+// the decision answered anything but runtime.WorkspaceBundleNone, answering each copy's take in
+// that copy's own field (runtime.WorkspaceRestore). It is one transaction because the choice is
+// one decision: made as separate statements it could close the older copy and then fail to take
+// the newer, leaving the store half-changed and the pod given neither. A failure anywhere in it
+// leaves every row as it was.
 //
 // Both rows are read `for update`, so a save of either copy that lands while the decision is being
 // made waits for it, and the copy the decision read is the copy whose attempt is spent. A copy is
@@ -196,15 +198,14 @@ func (s *Store) TakeWorkspaceCopyForRestore(ctx context.Context, issue, podUID s
 		for _, decided := range []struct {
 			copies copyTable
 			take   runtime.WorkspaceBundleTake
-		}{{releaseBundleCopies, bundleTake}, {runningCopyCopies, runningTake}} {
+			taken  *runtime.WorkspaceCopyTaken
+		}{{releaseBundleCopies, bundleTake, &restore.ReleaseBundle}, {runningCopyCopies, runningTake, &restore.Running}} {
 			if decided.take == runtime.WorkspaceBundleNone {
 				continue
 			}
-			taken, err := takeCopy(ctx, tx, decided.copies, issue, podUID, decided.take)
-			if err != nil {
+			if *decided.taken, err = takeCopy(ctx, tx, decided.copies, issue, podUID, decided.take); err != nil {
 				return err
 			}
-			restore.Copies = append(restore.Copies, taken)
 		}
 		return nil
 	})
@@ -242,7 +243,7 @@ func takeCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue, podUID st
 	if !ok {
 		return runtime.WorkspaceCopyTaken{}, fmt.Errorf("take the %s: the decision answered %v, which records no outcome", copies.kind, take)
 	}
-	taken := runtime.WorkspaceCopyTaken{Kind: copies.kind, Take: take}
+	taken := runtime.WorkspaceCopyTaken{Take: take}
 	b := &taken.Bundle
 	var tips, bookmarks []byte
 	err := tx.QueryRow(ctx, fmt.Sprintf(`update %[1]s
@@ -337,7 +338,7 @@ func (s *Store) DeleteRestoredWorkspaceCopy(ctx context.Context, issue string, r
 
 // RecordIssuePush records the push of issue's branch from before to after, as the daemon applied
 // it at at, in the push fact's own transaction tx (workflow's push handler). It is the record the
-// restore of a new pod reads to refuse every saved copy of the issue's workspace older than the
+// restore of a new pod reads to refuse every running copy of the issue's workspace older than the
 // issue's newest push (TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore), and the
 // migration that made its two tables says which record it is (20261113005308_issue_pushes).
 //

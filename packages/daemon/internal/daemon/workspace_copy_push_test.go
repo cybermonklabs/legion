@@ -112,9 +112,9 @@ func TestAPushTheDaemonRecordsBundlesACopyAfterItsCommitThroughTheSingleFlight(t
 		t.Fatalf("the cadence stored %d copies, want only the one taken after the push: the copy read before it is not stored", len(lines))
 	}
 	// It is the copy the pod that replaces this one is sent: it is not older than the push.
-	sent, take, err := takeCopyOf(ctx, rig.st, runtime.WorkspaceCopyRunning, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(sent.Bundle) != string(atPush.Bundle) {
-		t.Fatalf("the pod that replaces this one was answered %q (%v, %v), want the copy taken after the push", sent.Bundle, take, err)
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
+	if sent := restore.Running; err != nil || sent.Take != runtime.WorkspaceBundleSend || string(sent.Bundle.Bundle) != string(atPush.Bundle) {
+		t.Fatalf("the pod that replaces this one was answered %q (%v, %v), want the copy taken after the push", sent.Bundle.Bundle, sent.Take, err)
 	}
 }
 
@@ -222,8 +222,7 @@ func TestTheWorkspaceCopyBundlerEndsWithTheDaemonsRun(t *testing.T) {
 // webhook that arrives after a newer push are each applied later than the push they repeat or that
 // replaced them. Neither moves the record of the issue's newest push back, in its head or its
 // time: a copy taken after the newest push holds it, and the pod that replaces this one is sent
-// that copy. Were the record's time moved on to the later application, the copy would be refused,
-// and a refused release bundle holds the issue's pod.
+// that copy. Were the record's time moved on to the later application, the copy would be refused.
 //
 // The pushes are driven through the workflow's push handler as the daemon wires it, with the
 // daemon's store as its record (openWorkflow), and the record is read back by the store's restore,
@@ -253,12 +252,7 @@ func TestAPushAppliedAgainOrLateNeverMovesTheNewestRecordedPushBack(t *testing.T
 		if err != nil {
 			t.Fatalf("restore the %s: %v", name, err)
 		}
-		for _, copied := range restore.Copies {
-			if copied.Kind == runtime.WorkspaceCopyRunning {
-				return copied.Take, restore.Push
-			}
-		}
-		return runtime.WorkspaceBundleNone, restore.Push
+		return restore.Running.Take, restore.Push
 	}
 
 	read := clock

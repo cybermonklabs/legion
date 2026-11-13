@@ -174,22 +174,6 @@ func runningCopyOf(t *testing.T, st *store.Store, issue string) (heldCopy, bool)
 	return held, true
 }
 
-// takeCopyOf is what one pod's ask did to issue's copy of kind, through the one take the daemon
-// hands the runtime (store.TakeWorkspaceCopyForRestore): the entry it answered for that copy, or
-// nothing to send when it answered none.
-func takeCopyOf(ctx context.Context, st *store.Store, kind runtime.WorkspaceCopyKind, issue, pod string, created time.Time) (runtime.WorkspaceBundle, runtime.WorkspaceBundleTake, error) {
-	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, pod, created)
-	if err != nil {
-		return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, err
-	}
-	for _, taken := range restore.Copies {
-		if taken.Kind == kind {
-			return taken.Bundle, taken.Take, nil
-		}
-	}
-	return runtime.WorkspaceBundle{}, runtime.WorkspaceBundleNone, nil
-}
-
 // facts is what the issue's running copy says of itself, and whether it holds one at all.
 func (r *copyRig) facts(t *testing.T) (heldCopy, bool) {
 	t.Helper()

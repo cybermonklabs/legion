@@ -707,12 +707,13 @@ func TestACancelWhoseBundleDeleteFailsStillLeavesNoBundleForALaterPod(t *testing
 
 	// The pod an eviction or an update round makes hours later, with the resumed roles' work
 	// pushed in between: it is sent nothing at all.
-	later, take, err := takeCopyOf(ctx, rig.st, runtime.WorkspaceCopyReleaseBundle, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleNone {
-		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle, take, err)
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-an-eviction", time.Now().UTC().Add(time.Hour))
+	later := restore.ReleaseBundle
+	if err != nil || later.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("a pod created after the cancelled release's save was answered %q (%v, %v), want nothing", later.Bundle.Bundle, later.Take, err)
 	}
-	if len(later.Bookmarks) != 0 {
-		t.Fatalf("that pod was answered the bookmarks %v, which a restore would move back over everything pushed since the cancel", later.Bookmarks)
+	if len(later.Bundle.Bookmarks) != 0 {
+		t.Fatalf("that pod was answered the bookmarks %v, which a restore would move back over everything pushed since the cancel", later.Bundle.Bookmarks)
 	}
 }
 
@@ -902,8 +903,9 @@ func TestAnIdleReleaseWithNothingUnpushedLeavesNoSavedWorkOfEitherKind(t *testin
 	}
 	// The pod the next wake makes is sent nothing of either kind.
 	later := time.Now().UTC().Add(time.Hour)
-	if restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-the-release", later); err != nil || len(restore.Copies) != 0 {
-		t.Fatalf("the next pod was answered %+v (%v), want nothing of either kind", restore.Copies, err)
+	if restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-after-the-release", later); err != nil ||
+		restore.ReleaseBundle.Take != runtime.WorkspaceBundleNone || restore.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the next pod was answered %+v (%v), want nothing of either kind", restore, err)
 	}
 }
 
@@ -928,12 +930,77 @@ func TestAnIdleReleaseThatSavesABundleLeavesNoRunningCopy(t *testing.T) {
 	}
 	// The pod that replaces the released one is sent the release's own bundle, and nothing of
 	// the copy that was taken before it.
-	saved, take, err := takeCopyOf(ctx, rig.st, runtime.WorkspaceCopyReleaseBundle, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleSend || string(saved.Bundle) != string(rig.rt.bundle.Bundle) {
-		t.Fatalf("the replacement pod was answered %q (%v, %v), want the %q the release saved", saved.Bundle, take, err, rig.rt.bundle.Bundle)
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", time.Now().UTC().Add(time.Hour))
+	saved := restore.ReleaseBundle
+	if err != nil || saved.Take != runtime.WorkspaceBundleSend || string(saved.Bundle.Bundle) != string(rig.rt.bundle.Bundle) {
+		t.Fatalf("the replacement pod was answered %q (%v, %v), want the %q the release saved", saved.Bundle.Bundle, saved.Take, err, rig.rt.bundle.Bundle)
 	}
-	if string(saved.Bundle) == string(taken.Bundle) {
-		t.Fatalf("the replacement pod was answered the running copy %q, want the release's own bundle", saved.Bundle)
+	if restore.Running.Take != runtime.WorkspaceBundleNone || string(saved.Bundle.Bundle) == string(taken.Bundle) {
+		t.Fatalf("the replacement pod was answered the running copy %q (%v), want the release's own bundle alone", saved.Bundle.Bundle, restore.Running.Take)
+	}
+}
+
+// A release bundle older than a push the daemon recorded after it is restored, so the issue's pod
+// is released when it next goes idle. Every idle release of a workspace with unpushed work saves a
+// bundle after its roles stop, and a push recorded while the release runs — GitHub's "Update
+// branch", a person's push, a webhook the per-issue read rebuilt late — is newer than it. Were the
+// bundle refused for that push, nothing would be sent, its row would stay, and the idle rule would
+// hold every later pod of the issue on it (workflow.IdleHoldBundleUnrestored), as the pass before
+// the restore shows. The push goes through the workflow's push handler as the daemon wires it,
+// with the daemon's store as its record, and the restore's confirmation is the delete the
+// launcher's report runs (store.DeleteRestoredWorkspaceCopy).
+func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhenIdle(t *testing.T) {
+	rig := newIdleRig(t)
+	ctx := context.Background()
+	// Whole seconds, which the store keeps exactly: it holds an instant to the microsecond.
+	released := time.Now().UTC().Truncate(time.Second).Add(-30 * time.Minute)
+	bundle := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "c1",
+		Tips: []string{"c1"}, At: released, PodUID: releasedPodUID}
+	if err := rig.st.PutWorkspaceBundle(ctx, rig.issue.Key, 1, bundle); err != nil {
+		t.Fatalf("save the release's bundle: %v", err)
+	}
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if holds := rig.records(t).Holds; len(holds) != 1 || holds[0].Reason != workflow.IdleHoldBundleUnrestored.String() {
+		t.Fatalf("holds while no pod has restored the bundle = %+v, want the one %s", holds, workflow.IdleHoldBundleUnrestored)
+	}
+
+	pushed := released.Add(10 * time.Minute)
+	engine := workflow.New(rig.issues, workflow.Config{Project: "LEGION", Clock: func() time.Time { return pushed }, Pushes: rig.st}, quietLogger())
+	push := intake.Push{Repo: rig.issue.GitHubRepo, Branch: "legion/" + rig.issue.Key, Before: "c0", After: "c2"}
+	if _, err := intake.ApplyFact(ctx, rig.pool, "github", "push-webhook:c0..c2", push, engine); err != nil {
+		t.Fatalf("apply the push of c0..c2: %v", err)
+	}
+
+	// The pod that replaces the released one is sent the bundle against the push it read, and
+	// its launcher's report of the restore drops the row.
+	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", released.Add(20*time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !restore.Push.At.Equal(pushed) || restore.Push.Head != "c2" {
+		t.Fatalf("the restore read the push %+v, want c2 at %s", restore.Push, pushed)
+	}
+	sent := restore.ReleaseBundle
+	if sent.Take != runtime.WorkspaceBundleSend || string(sent.Bundle.Bundle) != string(bundle.Bundle) {
+		t.Fatalf("the release bundle taken before the push was answered %v with %q, want it sent whole", sent.Take, sent.Bundle.Bundle)
+	}
+	if err := rig.st.DeleteRestoredWorkspaceCopy(ctx, rig.issue.Key, sent.Bundle.Release); err != nil {
+		t.Fatalf("confirm the restore: %v", err)
+	}
+	if rig.bundled(t) {
+		t.Fatal("the confirmed restore left the bundle standing")
+	}
+
+	rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	if got := rig.rows(t); len(got) != 3 || got[0] != "issue_bundle" || got[1] != "supervise:release" || got[2] != "issue_release" {
+		t.Fatalf("queued rows = %v, want the save, the role stop and the teardown: the restored bundle holds the pod no longer", got)
+	}
+	rig.drain(t)
+	if releases := rig.records(t).Releases; len(releases) != 1 {
+		t.Fatalf("releases = %+v, want the one this idle pass made", releases)
+	}
+	if _, suspended := rig.rt.reads(); suspended != 1 {
+		t.Fatalf("Sandbox teardowns = %d, want the one this release made", suspended)
 	}
 }
 
@@ -987,9 +1054,10 @@ func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	}
 	// The copy's own restore id, as the slices carry it to the launcher and the report brings it
 	// back: above every id a release holds, which is what the routing reads.
-	sent, take, err := takeCopyOf(ctx, st, runtime.WorkspaceCopyRunning, issue, "pod-that-replaced-it", time.Now().UTC().Add(time.Hour))
-	if err != nil || take != runtime.WorkspaceBundleSend {
-		t.Fatalf("the pod that replaced the one the copy came off was answered %v (%v), want the copy", take, err)
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, "pod-that-replaced-it", time.Now().UTC().Add(time.Hour))
+	sent := restore.Running.Bundle
+	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the pod that replaced the one the copy came off was answered %v (%v), want the copy", restore.Running.Take, err)
 	}
 	if sent.Release < store.MinRunningWorkspaceCopyRestoreID {
 		t.Fatalf("the running copy's restore id is %d, want it at or above %d", sent.Release, store.MinRunningWorkspaceCopyRestoreID)
