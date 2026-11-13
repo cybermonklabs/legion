@@ -1815,6 +1815,13 @@ func TestHandoffCompleteRefusesTheCompletionNoTaskOfTheIssuesOwnWorkBacks(t *tes
 			says: []string{"this claim holds no task at all, and LEGION-208 is on generation 1 in testing"},
 		},
 		{
+			// The relaunched tester holds only the daemon's own delivery of its relaunch's record
+			// (supervise's queueRelaunch), which carries no work of the issue's.
+			name: "the daemon's own delivery of a relaunch's record", at: phase.Testing, role: claim.RoleTester, generation: 1,
+			pending: &supervise.RequestDeliver{Task: "Your previous process ended because its pod was replaced.", ID: "relaunch:WORD"},
+			says:    []string{"this claim holds no task, only the daemon's own delivery of what its relaunch ended (relaunch:WORD), and LEGION-208 is on generation 1 in testing"},
+		},
+		{
 			// The tester's task of run 1 was never read; the child was re-admitted and the issue
 			// is on run 2, whose testing task has not reached this claim.
 			name: "a task of the run the issue has left", at: phase.Testing, role: claim.RoleTester, generation: 2,

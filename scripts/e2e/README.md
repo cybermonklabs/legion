@@ -4879,8 +4879,9 @@ Two more cases pin a refusal of that mode: a password of bytes libpq reads as no
 
 The two helpers a proof that writes a PostgreSQL server reads its caller's DSN with, and the one copy of why they ask libpq.
 Both answers come from [`lib/loopback-dsn.py`](#libloopback-dsnpy), which this file addresses beside itself, so it needs nothing of its caller's.
-[`lib/rig.sh`](#librigsh) sources it, which is how seven of the eight proofs have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
+[`lib/rig.sh`](#librigsh) sources it, which is how seven of the nine proofs that call its helpers themselves have it, and [`envoy-session-delivery.sh`](#envoy-session-deliverysh) sources it on its own, since that proof keeps an `await_port_file` and a `keep_port` of its own and sources no rig.
 [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh) sources it on its own too, and calls `require_loopback_dsn` in `prerequisites` for the eight proofs that make its run.
+The ninth, [`busy-relaunch-delivery.sh`](#busy-relaunch-deliverysh), has it through that file, and calls `require_loopback_dsn` itself once more, for its negative control.
 
 ```sh
 . "$root/scripts/e2e/lib/loopback-dsn.sh"     # sourced, never run
@@ -5502,8 +5503,9 @@ It does this through a `tee` that ignores the signals a driver traps and SIGPIPE
 
 The host-side helpers a stage proof sources for its rig: bounded waits, ports, the processes the run starts, and their teardown.
 Stage 1, Stage 3, Stage 4b, the 4b.13b acceptance and the controller, Dispatch user-turn and Claude Code backend proofs source it, as do the docs site's broker and operator-walkthrough recorders and pi-legion's skill-scenario rig.
-Seven of the eight proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
+Seven of the nine proofs that call [`lib/loopback-dsn.sh`](#libloopback-dsnsh)'s helpers themselves source it too, for those two helpers, which this file sources for them.
 `envoy-session-delivery.sh` is the eighth: it sources `lib/loopback-dsn.sh` and [`lib/port-file.sh`](#libport-filesh) on its own, and keeps an `await_port_file` and a `keep_port` of its own.
+`busy-relaunch-delivery.sh` is the ninth: it has those helpers through [`lib/live-daemon-proof.sh`](#liblive-daemon-proofsh), which it sources, and sources no rig.
 
 ```sh
 . "$root/scripts/e2e/lib/rig.sh"     # sourced, never run
