@@ -37,8 +37,9 @@
  *  That run names no project, which is the default selection, and the five wall-clock projects
  *  carry `default: false` (`clockProjectNames`, e2e/configurations.ts), so it runs neither
  *  `heavy-bodies.e2e.ts` nor `nested-directive.e2e.ts`, nor the five rows of
- *  `large-documents-measured.e2e.ts` that `chromium-alone`, `iphone-alone` and
- *  `iphone-measure-alone` take, and every
+ *  `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts` and
+ *  `large-documents-desktop-build.e2e.ts`, which `iphone-measure-alone`, `iphone-alone` and
+ *  `chromium-alone` take whole, and every
  *  marker those hold lands in "a file the report never ran" above. Their rows are a second
  *  report and a second reading:
  *

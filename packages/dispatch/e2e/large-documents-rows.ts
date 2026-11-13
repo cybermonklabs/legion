@@ -1,14 +1,22 @@
-// What the rows of the four `large-documents-*.e2e.ts` files share: the seed every one of them
+// What the rows of the seven `large-documents-*.e2e.ts` files share: the seed every one of them
 // writes, the readings the page leaves on `window` for them, the three surfaces a block of the
-// document can stand on, and the other person who writes into the document while a reader's
-// editor is built (`theOtherPersonsPen`). A helper here is one more than one of those files
-// needs; a helper one file needs stays in that file.
+// document can stand on, the other person who writes into the document while a reader's
+// editor is built (`theOtherPersonsPen`), and the probe a build is read through at the end of
+// this file (`whatTheBuildServes`). A helper here is one more than one of those files needs; a
+// helper one file needs stays in that file.
 //
 // They were one file until the `iphone` half of it cost a browser shard 610 s of a step that is
 // given 540 (dispatch://INFRA-341, run 42794865122's `shard (4)`), and Playwright hands a
-// file's rows to one shard, so a file larger than the budget fits in none of them. The four are
-// `large-documents-measured.e2e.ts` (the numbers R11's targets are read from, and the build
-// they are read over), `large-documents-build.e2e.ts` (what stands on the reader's screen while
+// file's rows to one shard, so a file larger than the budget fits in none of them. Three of
+// the seven are read from the wall clock, and each of those is one project's whole selection,
+// because a wall-clock project selects by file (`clockSpecNames`, e2e/configurations.ts):
+// `large-documents-measured.e2e.ts` (`iphone-measure-alone`: the two measurements R11's
+// targets are read from), `large-documents-build-serves.e2e.ts` (`iphone-alone`: what a build
+// serves the rest of the page while it runs) and `large-documents-desktop-build.e2e.ts`
+// (`chromium-alone`: the longest main-thread task of a build at a desktop width). The four the
+// parallel projects run are `large-documents-long-build.e2e.ts` (what a build of the larger
+// document costs the page, with no number read from the clock),
+// `large-documents-build.e2e.ts` (what stands on the reader's screen while
 // the editor is built), `large-documents-reader.e2e.ts` (what a reader does with a document
 // whose editor is still being built, and the rest of acceptance A7) and
 // `large-documents-first-screen.e2e.ts` (the draw the server sends, and the reads and the
@@ -55,9 +63,10 @@ export interface DrawnInATask {
 }
 
 /** What one task the page was given while the editor was being built cost it: when it was
- *  given, on the page's own clock, and how long it then waited before it ran. The two rows of
- *  `large-documents-measured.e2e.ts` that read a build's own window read these - one per timer
- *  `whatTheBuildServes` hands over, and one per word another person wrote, which that row
+ *  given, on the page's own clock, and how long it then waited before it ran. The timer row of
+ *  `large-documents-build-serves.e2e.ts` and the desktop guard of
+ *  `large-documents-desktop-build.e2e.ts` read these - one per timer
+ *  `whatTheBuildServes` hands over, and one per word another person wrote, which the timer row
  *  builds from the stamp the writer's page took as it sent the word and the stamp the
  *  reader's page took as it served the frame carrying it. */
 export interface ServedLate {
@@ -73,8 +82,9 @@ export interface ServedLate {
 }
 
 /** When the reader's page served the frame carrying one of another person's words: the wall
- *  clock it served it on, which `large-documents-measured.e2e.ts` prints, and the turn of the
- *  page's own loop it was served in, which is the whole of what that row reads. A turn is a
+ *  clock it served it on, which `large-documents-build-serves.e2e.ts`'s timer row prints, and
+ *  the turn of the page's own loop it was served in, which is the whole of what that row
+ *  reads. A turn is a
  *  number the page hands itself, one per task (`whatTheBuildServes` there): a word whose turn
  *  is the swap's own or an earlier one was served by the build, and one whose turn is later
  *  was served by a page that had already taken a fresh turn of work ahead of it. */
@@ -172,19 +182,18 @@ declare global {
      *  served in - with `Date.now()` as it served the frame carrying it, which is printed and
      *  nothing more - and the build's own window, which says which of them the build was
      *  given. The same wall clock is stamped on the other side by the writer himself, as the
-     *  frame carrying each word leaves him (`theOtherPersonsPen` in
-     *  `large-documents-measured.e2e.ts`), which is the half of a word's wait no reading
-     *  inside this page can take. */
+     *  frame carrying each word leaves him (`theOtherPersonsPen` below), which is the half of
+     *  a word's wait no reading inside this page can take. */
     __servedTimers?: ServedLate[];
     __theirWordsServed?: Record<string, ServedWord>;
     __theBuildRan?: TheBuildRan;
     /** How far the editor's build has got, as `whatTheBuildServes` says it: its own top-level
      *  block count each time that count crosses the next step the liveness row of
-     *  `large-documents-measured.e2e.ts` writes the other person's words by, and again - with
-     *  `itsStop` - when it reaches the blocks that row stops his writing at or when the editor
-     *  was named without ever reaching them. Said in the task the page read the count in. An
-     *  announcement and not a reading the run takes, for the reason `watchTheDocument` in
-     *  `large-documents-page.ts` gives - a page building the rest of a 406,000-character
+     *  `large-documents-build-serves.e2e.ts` writes the other person's words by, and again -
+     *  with `itsStop` - when it reaches the blocks that row stops his writing at or when the
+     *  editor was named without ever reaching them. Said in the task the page read the count
+     *  in. An announcement and not a reading the run takes, for the reason `watchTheDocument`
+     *  in `large-documents-page.ts` gives - a page building the rest of a 406,000-character
      *  document answers nothing the run asks it until that build is over, which is the whole
      *  of what the row is arranging its window against. */
     __theBuildReached?: (built: number, itsStop: boolean) => void;
@@ -205,7 +214,7 @@ export const agent = {
  * (`deferBlockIndexBlocks`, `docs/reference_excerpts.go`), and that work costs the same machine
  * the browser runs on, so a measurement taken while it runs measures the reconciliation too.
  * The wait runs against the one database this run holds (`sql`), and its callers are this
- * file's own `seedDocument`, `large-documents-measured.e2e.ts` and
+ * file's own `seedDocument`, `large-documents-long-build.e2e.ts` and
  * `large-documents-reader.e2e.ts`.
  */
 export async function everythingOwedFinished(what: string): Promise<void> {
@@ -357,7 +366,8 @@ export interface ThePenIsMadeOf {
  * inside that build than a browser peer could: a page that starves its socket fails harder.
  *
  * It is this module's, rather than one file's, because three rows write as the other person
- * now - the timed row of `large-documents-measured.e2e.ts`, its edit row and the edit row of
+ * now - the timer row of `large-documents-build-serves.e2e.ts`, the edit row of
+ * `large-documents-long-build.e2e.ts` and the edit row of
  * `large-documents-build.e2e.ts` - and a second browser page of the same document is the
  * expensive instrument for each of them. (`large-documents-reader.e2e.ts`'s two people need
  * the editor's own keymaps, Enter and Backspace, and keep their page.)
@@ -494,4 +504,335 @@ export async function theOtherPersonsPen(
       text.insert(text.length, ` ${word}`);
     },
   };
+}
+
+// The probe the wall-clock rows read a build through, and the selectors it carries. It is here
+// rather than in one spec file because three files read it: the timer row and the decision row
+// of `large-documents-build-serves.e2e.ts`, which `iphone-alone` runs, the desktop guard of
+// `large-documents-desktop-build.e2e.ts`, which `chromium-alone` runs, and the edit row of
+// `large-documents-long-build.e2e.ts`, which takes the two selectors alone. What the probe
+// writes is the three window readings declared above - `__servedTimers`, `__theBuildRan` and
+// `__theirWordsServed` - so the writer stands beside the declarations of what it writes.
+
+/** The editor a reader already has while the rest of its blocks are built, as a selector an
+ *  init script can carry (`editorBeingBuilt` is the same root as a locator). */
+export const liveEditorRoot = '.proof-editor[data-write-path="live"]';
+
+/** The finished editor's own name, which the host writes once the binding has answered
+ *  its handle - a task after the binding connected - so an editor wearing it is one whose
+ *  build is over (`web/src/features/doc/editor.ts`). */
+export const namedEditor = '[role="textbox"][aria-label="Document editor"]';
+
+/** How often the probe below hands the browser a timer. Often enough that a build of a few
+ *  seconds is covered by a dozen of them, rarely enough that the probe is not itself the thing
+ *  keeping the page busy. */
+export const timerEveryMs = 250;
+
+/** How large a frame the reader's page reads for the words another person writes into the
+ *  document (`theirWords` below). The document's own state frame is hundreds of kilobytes and
+ *  carries none of them; a frame of one write is a few hundred bytes. */
+export const theirWordsInFramesUnderBytes = 16_384;
+
+/** What the probe below answers the row that arranges its own window: her page's own word
+ *  about how far its build has got, said at each step of it, which is what that row writes
+ *  and stops by. */
+export interface TheBuildServed {
+  /** The editor's own top-level block count as her page last said it, and `undefined` before
+   *  it has said anything: what the row reads to know how many of his words her build has
+   *  asked for so far. */
+  readonly built: () => number | undefined;
+  /** Her next word about it, which is how the writer waits: for a step of her build rather
+   *  than for a span of anyone's clock. Settles with the count she says. */
+  readonly nextStep: () => Promise<number>;
+  /** The count she said when her build reached the blocks the caller named - that many or
+   *  more - or the count her editor was named holding, where the build never reached them,
+   *  which the row fails on rather than waiting for a word that will never come. Settles
+   *  once, and only where the caller named a stop. */
+  readonly reachedTheStop: Promise<number>;
+  /** That same count as soon as she has said it, and `undefined` until then: the writing loop
+   *  stops between two of its own keystrokes rather than waiting on a promise, so the word it
+   *  is in the middle of is the last one it sends. */
+  readonly stopped: () => number | undefined;
+}
+
+/**
+ * Records what the page's own posted tasks cost it while the editor is being built: every
+ * timer the page hands the browser, the build's own window, and - where `theirWords` names a
+ * pattern - the turn of its own loop the page served the socket frame carrying each word
+ * another person wrote in, so the row can read whether the build was still what served it.
+ *
+ * **A turn is the page's own number for the task it is in.** The page keeps a counter and
+ * hands it out lazily: the first thing recorded in a task takes `++turns` and queues a
+ * microtask that drops it again, so everything recorded in that task is given the same
+ * number and the next task takes a fresh one. That is exact rather than close, because the
+ * checkpoint that drops the number is the one the browser runs when the stack empties at the
+ * end of a callback, which no task spans: two records share a number only if one task served
+ * them both, and a larger number means a later task, whatever the machine's speed. Nothing
+ * the page already publishes can say that - `performance.now()` and the `longtask` entries
+ * are a clock, an animation frame is several tasks wide, and a `MessageChannel` message or a
+ * posted task has no identity to carry - so the counter is what the swap's own write and each
+ * served word are stamped with, and the row's liveness reading is those two numbers and
+ * nothing else.
+ *
+ * A timer is handed over from an animation frame, because a frame is the one thing that does
+ * run through a starved build and so the one place a probe can be handed over from.
+ *
+ * A word is read out of the frame's own bytes, which is what pairs it with the moment the
+ * other person sent it (`theOtherPersonsPen`): the two wall-clock stamps are the one
+ * machine's, so the difference is what the reader's thread made that edit wait, which the row
+ * prints and holds to nothing. Nothing of the frame's arrival is read here, because no clock
+ * inside the page holds it - a `MessageEvent` is stamped in the task that dispatches it, and
+ * the browser's own `Network.webSocketFrameReceived` is stamped in this renderer as Blink
+ * takes the frame off the pipe, which a thread the build owns delays as surely as it delays
+ * the event. Both read zero behind a page held for two seconds, measured
+ * (dispatch://INFRA-341).
+ *
+ * A frame larger than `theirWordsInFramesUnderBytes` is left unread: the document's own state
+ * frame is hundreds of kilobytes and carries no word of theirs, and decoding it would be this
+ * probe holding the thread it is measuring. Only the first document socket is recorded. The
+ * socket is wrapped as a `construct` proxy rather than a subclass for the reason
+ * `large-documents-page.ts` gives: the page's transport subclasses `globalThis.WebSocket` too.
+ *
+ * Where `stepBlocks` names a count, the page says how far its editor's build has got each
+ * time its own top-level block count crosses the next multiple of it, in the task it read
+ * that count in; and where `stopAfterBlocks` names one, it says so again the moment the count
+ * reaches that, and with the count it ended on where the editor was named without ever
+ * reaching it. Those are the announcements the row writes the other person's words by and
+ * stops his writing by, and they are announcements rather than readings for the reason
+ * `watchTheDocument` gives: a run that asked this page how far its build had got would be
+ * answered when the build was over.
+ *
+ * Install before the navigation; read once the editor has opened.
+ */
+export async function whatTheBuildServes(
+  page: Page,
+  {
+    stepBlocks = 0,
+    stopAfterBlocks = 0,
+    theirWords,
+  }: { stepBlocks?: number; stopAfterBlocks?: number; theirWords?: string } = {}
+): Promise<TheBuildServed> {
+  const reached = Promise.withResolvers<number>();
+  let built: number | undefined;
+  let stopped: number | undefined;
+  let step = Promise.withResolvers<number>();
+  await page.exposeFunction("__theBuildReached", (said: number, itsStop: boolean) => {
+    built = said;
+    if (itsStop) {
+      stopped ??= said;
+      reached.resolve(said);
+    }
+    step.resolve(said);
+    step = Promise.withResolvers<number>();
+  });
+  await page.addInitScript(
+    ({
+      every,
+      live,
+      named,
+      perStep,
+      stop,
+      under,
+      words,
+    }: {
+      every: number;
+      live: string;
+      named: string;
+      perStep: number;
+      stop: number;
+      under: number;
+      words: string | undefined;
+    }) => {
+      const timers: ServedLate[] = [];
+      const servedWords: Record<string, ServedWord> = {};
+      const ran: TheBuildRan = {};
+      window.__servedTimers = timers;
+      window.__theirWordsServed = servedWords;
+      window.__theBuildRan = ran;
+      /** The turn of the page's own loop this probe is recording in, handed out lazily: the
+       *  first record of a task takes the next number and queues the microtask that drops it,
+       *  which the browser runs when the stack empties at the end of that task, so every
+       *  record of one task carries one number and the next task's records carry a larger
+       *  one. This is the whole of the row's liveness reading and it holds no clock. */
+      let turns = 0;
+      let held: number | undefined;
+      const thisTurn = (): number => {
+        if (held === undefined) {
+          held = ++turns;
+          queueMicrotask(() => {
+            held = undefined;
+          });
+        }
+        return held;
+      };
+      let recording = false;
+      const theirs = words === undefined ? undefined : new RegExp(words, "g");
+      const read = new TextDecoder();
+      window.WebSocket = new Proxy(window.WebSocket, {
+        construct(made, args: [string | URL, (string | string[])?], asked) {
+          const socket = Reflect.construct(made, args, asked) as WebSocket;
+          if (recording || theirs === undefined || !String(args[0]).includes("/ws/doc/")) {
+            return socket;
+          }
+          recording = true;
+          socket.addEventListener("message", (event) => {
+            const servedAt = Date.now();
+            const data: unknown = event.data;
+            if (!(data instanceof ArrayBuffer) || data.byteLength > under) return;
+            const servedIn = thisTurn();
+            for (const [word] of read.decode(data).matchAll(theirs)) {
+              servedWords[word] ??= { atMs: servedAt, turn: servedIn };
+            }
+          });
+          return socket;
+        },
+      });
+      let handedLast = Number.NEGATIVE_INFINITY;
+      /** Whether a timer the probe handed over has still to run. One at a time, because what
+       *  this row is about is how long the page waits for a timer, not how deep a queue of
+       *  them grows: a frame of this page costs hundreds of milliseconds, so a probe handing
+       *  one over every frame outruns the browser and measures its own backlog. A reader's
+       *  page posts one and waits for it - React's scheduler, and the one-card-per-task timer
+       *  of `useAskCardsDrawnInTasks` - which is what this does too. */
+      let owed = false;
+      /** The next count of its own blocks the page has still to say it has reached, and
+       *  whether it has said the stop. The page says one thing per step rather than one per
+       *  frame: what the row writes by is how far this build has got, and a word per step is
+       *  what makes the number of them the build's own rather than the machine's. */
+      let nextStep = perStep;
+      let saidTheStop = false;
+      const look = () => {
+        const now = performance.now();
+        const root = document.querySelector(live);
+        if (ran.firstBatchMs === undefined && root !== null) {
+          ran.firstBatchMs = now;
+        }
+        // How far the build has got, read as the top-level child count of the editable host
+        // rather than a query over the whole document, so the probe costs the page nothing:
+        // the count is a property of a node the browser already holds, and reading it forces
+        // no layout. Read once a frame, because the stop below is read from it as well as the
+        // timer the probe hands over.
+        const built = root?.querySelector('[contenteditable="true"]')?.childElementCount ?? 0;
+        if (!owed && now - handedLast >= every) {
+          const handedAt = now;
+          handedLast = now;
+          owed = true;
+          setTimeout(() => {
+            owed = false;
+            timers.push({ builtThen: built, handedAt, waitedMs: performance.now() - handedAt });
+          }, 0);
+        }
+        // How far this build has got, said in the task this read the count in so the run is
+        // told rather than asking: once per step of its own blocks, and once more when it
+        // reaches the blocks the row stops the other person's writing at.
+        if (perStep > 0 && built >= nextStep) {
+          while (built >= nextStep) nextStep += perStep;
+          const itsStop = stop > 0 && built >= stop;
+          saidTheStop ||= itsStop;
+          window.__theBuildReached?.(built, itsStop);
+        } else if (!saidTheStop && stop > 0 && built >= stop) {
+          saidTheStop = true;
+          window.__theBuildReached?.(built, true);
+        }
+        if (document.querySelector(named) !== null) {
+          ran.openedMs = now;
+          // And the swap that ends the build runs in the tasks after this frame: the binding
+          // adopting the document, the editor being revealed, and the margin placing its cards
+          // over it for the first time. The page says when that is over rather than leaving it
+          // to be inferred from a run of `longtask` entries: a task handed over now runs after
+          // the work already queued, so the task it is served in is the page's own word that
+          // it is free again - and that task's own turn is the last one the build can still be
+          // what served something in. The page stamps the turn there, which is the number the
+          // row reads, and the clock beside it, which the row only prints.
+          //
+          // The end of that turn is stamped too, from a task handed over inside it, and it is
+          // printed and nothing more: it is served once the page has got through everything it
+          // was already holding, which on this pod is 1.5 to 21 s of the backlog a build
+          // leaves - a measurement of what the page carries out of a build, and no part of any
+          // reading. The reading is `swapTurn` against the turn each word was served in.
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              ran.swapTurn = thisTurn();
+              ran.swappedMs = performance.now();
+              setTimeout(() => {
+                ran.freeTurnEndedMs = performance.now();
+              }, 0);
+            }, 0);
+          });
+          // And where the editor was named without the build ever reaching that count, the
+          // page says so with the count it ended on: the run's wait ends in the row's own
+          // failure, which names what the build did, rather than in a timeout.
+          if (!saidTheStop && stop > 0) {
+            saidTheStop = true;
+            window.__theBuildReached?.(built, true);
+          }
+          return;
+        }
+        requestAnimationFrame(look);
+      };
+      requestAnimationFrame(look);
+    },
+    {
+      every: timerEveryMs,
+      live: liveEditorRoot,
+      named: namedEditor,
+      perStep: stepBlocks,
+      stop: stopAfterBlocks,
+      under: theirWordsInFramesUnderBytes,
+      words: theirWords,
+    }
+  );
+  return {
+    built: () => built,
+    nextStep: () => step.promise,
+    reachedTheStop: reached.promise,
+    stopped: () => stopped,
+  };
+}
+
+/** The tasks of `served` the browser was given while the build ran, which are the ones the
+ *  build could have starved. A task handed over inside the window and run after it is one of
+ *  them, which is why they are read by when each was handed over. */
+export function handedToTheBuild(served: readonly ServedLate[], ran: TheBuildRan): ServedLate[] {
+  const from = ran.firstBatchMs ?? Number.POSITIVE_INFINITY;
+  const to = ran.openedMs ?? Number.POSITIVE_INFINITY;
+  return served.filter((task) => task.handedAt >= from && task.handedAt <= to);
+}
+
+/** How far the build had got at the first and at the last of the tasks the page was handed
+ *  inside a window: the fewest and the most top-level blocks the editor's own host held at any
+ *  of them. `[0, 0]` where it was handed none. */
+export function builtAcross(served: readonly ServedLate[]): [number, number] {
+  const built = served.map((task) => task.builtThen ?? 0);
+  return built.length === 0 ? [0, 0] : [Math.min(...built), Math.max(...built)];
+}
+
+/**
+ * Fails unless the timers the page was handed inside a window show the document being built
+ * across it: two of them at least, and the editor holding more top-level blocks at the last of
+ * them than at the first, which is the build's own batches arriving while they were served.
+ *
+ * This is the one proof this suite has that a window a row measures held a build, and the
+ * three rows that read such a window use it: the timer row of
+ * `large-documents-build-serves.e2e.ts`, its decision row's own window and the desktop guard
+ * of `large-documents-desktop-build.e2e.ts`. It is a reading of the document rather than of
+ * the runner:
+ * the same batches carry the same blocks into the editor whatever the machine's speed, so the
+ * rise is there on a loaded runner and on an idle one. A window the document was not built in -
+ * one that ended before the first batch, or opened after the editor did - holds either no timer
+ * at all or timers that all read the same count, and fails here.
+ */
+export function theWindowHeldABuild(timers: readonly ServedLate[]): void {
+  const [least, most] = builtAcross(timers);
+  expect(
+    timers.length,
+    "the page served fewer than two of its own timers inside the window, so nothing here " +
+      "shows it held a build at all"
+  ).toBeGreaterThanOrEqual(2);
+  expect(
+    most - least,
+    `the editor held ${least} top-level blocks when the page served its first timer of the ` +
+      `window and ${most} when it served its last: the window did not cover the document ` +
+      "being built"
+  ).toBeGreaterThan(0);
 }

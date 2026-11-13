@@ -82,7 +82,8 @@ function table(header: readonly string[], rows: readonly (readonly string[])[]):
 // They carry `default: false` since dispatch://INFRA-1280, so a listing that names no project
 // holds no row of `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` or
 // `nested-directive.e2e.ts` - 54 rows of those three files in this head's wall-clock listing,
-// which holds 59 with the five wall-clock rows of `large-documents-measured.e2e.ts` - and with
+// which holds 59 with the five rows of the three `large-documents` files those projects run
+// whole - and with
 // the default listing alone this generation refused outright: "the listing names no real-stack
 // row in them: heavy-bodies.e2e.ts, nested-directive.e2e.ts", measured by running the tool
 // before the second listing was added, when those two were the whole of the set. Neither

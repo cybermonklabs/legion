@@ -136,7 +136,7 @@ It carries:
     — a declaration the capability report renders, not a network control this repository ships;
     the package's setuid `/usr/lib/openssh/ssh-keysign` and setgid `/usr/bin/ssh-agent` lose those bits in the `runtime-base` stage, and the build's final step refuses an image where any file under `/usr/lib/openssh` or `/usr/bin/ssh-agent` carries one)
 
-  - `psql` (from `postgresql-client`: the Dispatch browser suite, which a reader-facing Dispatch change must pass before it merges, is the pair `bun run e2e` and `bun run e2e:clock`, the second running the four wall-clock projects that are out of the first's selection, and both reach `psql` through `packages/dispatch/e2e/psql.ts` — `packages/dispatch/e2e/seed.ts` calls it for every spec's database reset
+  - `psql` (from `postgresql-client`: the Dispatch browser suite, which a reader-facing Dispatch change must pass before it merges, is the pair `bun run e2e` and `bun run e2e:clock`, the second running the five wall-clock projects that are out of the first's selection, and both reach `psql` through `packages/dispatch/e2e/psql.ts` — `packages/dispatch/e2e/seed.ts` calls it for every spec's database reset
     — and the local stack `bun run dispatch:local` (`packages/dispatch/e2e/local-instance.ts`) refuses to start without `go`, `psql`, `flock`, `openssl` and `python3` on `PATH`, and without `docker` too unless a `DATABASE_URL` is given;
     the image carries `go`, `flock`, `openssl` and `python3`, a `DATABASE_URL` stands in for `docker`, and `psql` was the one a role had no way to supply, so a role on a digest without it cannot run the suite its own change owes
     — Debian's `psql` is a Perl wrapper around the versioned client, and it resolves because `perl-base` is in the image)

@@ -9,9 +9,11 @@ name: Dispatch browser suite
 # rate.
 #
 # Two of those five legs are the phone, where there was one until dispatch://INFRA-341: the two
-# rows of large-documents-measured.e2e.ts that measure a first editable block take three
-# readings each and hold the median of them to R11's targets, so they are `iphone-measure-alone`
-# with a budget of their own, and the timer row and the decision row stay in `iphone-alone` with
+# rows that measure a first editable block take three
+# readings each and hold the median of them to R11's targets, so they are
+# `large-documents-measured.e2e.ts`, which `iphone-measure-alone` runs with a budget of its
+# own, and the timer row and the decision row are `large-documents-build-serves.e2e.ts`, which
+# `iphone-alone` runs with
 # the budget their own measurement earned. The one leg cost 184 s before the split, measured in
 # the shard legs its rows reached it from, 106.3 s of that the two measurements. After it, and
 # measured in this job at head f79cb07f (run 43098661012), the rows that stay in `iphone-alone`
@@ -347,27 +349,28 @@ jobs:
     # above the sum of the step budgets, as this file's head says a job budget is.
     #
     # The rows behind those seconds were the suite of the head those runs measured. Listed
-    # again at this branch's head, the suite holds 1,531 rows in 201 files, which is two
+    # again at this branch's head, the suite holds 1,535 rows in 204 files, which is two
     # listings rather than one: the five `-alone` projects are out of the default selection
-    # since dispatch://INFRA-1280, so a command that names no project lists 1,472 rows in 198
-    # files and one that names those five lists 59 more, in 4 files - three of which are theirs
-    # alone, while large-documents-measured.e2e.ts is in both listings, since the parallel
-    # projects run the rows of it that are not read from the clock. The ten projects this job's
-    # shard command names below hold 1,452 rows in 197 files; the four of those the
-    # pull-request lane names hold 1,351, of which that lane's `@pr` grep selects 282, 147 of
+    # since dispatch://INFRA-1280, so a command that names no project lists 1,476 rows in 198
+    # files and one that names those five lists 59 more, in 6 files, every one of them theirs
+    # alone - a wall-clock project selects whole files since sjawhar/legion#2697, so no file is
+    # in both listings any more. The ten projects this job's
+    # shard command names below hold 1,456 rows in 197 files; the four of those the
+    # pull-request lane names hold 1,355, of which that lane's `@pr` grep selects 283, 147 of
     # them on the real stack. The two `visual` projects hold 20, which the visual job runs one
     # row at a time, and the 59 wall-clock rows are the alone job's - 24, 14, 17, 2 and 2. The
     # 24 is `chromium-alone`'s 17 heavy-bodies rows, its two nested-directive rows, its four
-    # agent-workspace-timing rows and the one desktop row of large-documents-measured.e2e.ts;
+    # agent-workspace-timing rows and the one row of large-documents-desktop-build.e2e.ts;
     # the 14 and the 17 are heavy-bodies.e2e.ts
     # on `firefox-alone`, which inverts the three rows that read a reader's place, and whole on
-    # `webkit-alone`; the two 2s are the phone rows of large-documents-measured.e2e.ts, the
-    # timer row and the decision row on `iphone-alone` and the two measurements on
+    # `webkit-alone`; the two 2s are the two rows of large-documents-build-serves.e2e.ts, the
+    # timer row and the decision row, on `iphone-alone`, and the two measurements of
+    # large-documents-measured.e2e.ts on
     # `iphone-measure-alone` (dispatch://INFRA-341).
     #
-    # Those 1,452 cut five ways, each leg listed at this head with the ten projects named below
-    # and this job's own denominator (`--shard=<i>/5 --list`): 291, 291, 290, 290 and 290 rows,
-    # which sum to the 1,452. Equal row counts are all Playwright's cut promises, and the
+    # Those 1,456 cut five ways, each leg listed at this head with the ten projects named below
+    # and this job's own denominator (`--shard=<i>/5 --list`): 292, 291, 291, 291 and 291 rows,
+    # which sum to the 1,456. Equal row counts are all Playwright's cut promises, and the
     # seconds above are where what a leg costs is read instead.
     timeout-minutes: 13
     strategy:
@@ -780,12 +783,14 @@ jobs:
     #   Browser-test dispatch dashboard                    116            111           141
     #   every other step summed                             74             72            82
     #
-    # The `chromium-alone` figure is now short of a row: the desktop clock row of
-    # large-documents-measured.e2e.ts reached that leg after that run.
+    # The `chromium-alone` figure is now short of a row: the desktop guard of
+    # large-documents-desktop-build.e2e.ts reached that leg after that run.
     #
-    # `iphone-alone` ran four rows until this change and runs two: the row that times a page
+    # `iphone-alone` ran four rows until this change and runs two, which are
+    # large-documents-build-serves.e2e.ts whole: the row that times a page
     # timer and a socket message served inside the editor's build, and the row that times a
-    # decision answered inside one. Its two measuring rows are the `iphone-measure-alone` leg
+    # decision answered inside one. The two measuring rows are large-documents-measured.e2e.ts,
+    # which is the `iphone-measure-alone` leg
     # below (dispatch://INFRA-341). The 4 minutes were derived before that split and are kept
     # as they were: `iphone-alone` has no reading of this job of its own yet, because its rows
     # reached it from the shard legs, and what three of the four cost there, contended four
@@ -796,7 +801,7 @@ jobs:
     # measurements, so that figure is now an over-estimate of this leg twice over - once for
     # the contention and once for the rows that left - and nothing of what stayed was measured
     # by this change, which is why the two rows that stayed keep the budget they had.
-    # `chromium-alone` took the desktop clock row of that same file the same way, and
+    # `chromium-alone` took that desktop guard the same way, and
     # what it cost in a `chromium` shard leg, contended four lanes wide, is 38.0 s in run
     # 42628596511, 1.1 min in run 42682941869 and 1.3 min in run 42686241170 (job 129395267274,
     # where it failed its guard): 78 s at worst, which over the 116 s above puts that leg at
@@ -883,7 +888,7 @@ jobs:
     # The browser step's own 4 minutes above still holds: 69 s is the most it took over these
     # nine legs, webkit-alone's again, well under the 194 s that budget was derived from - none
     # of those nine is an `iphone-alone` leg, and none of the three `chromium-alone` legs among
-    # them ran the desktop clock row, so the pooled maximum the rule reads is still that 194 s.
+    # them ran the desktop guard, so the pooled maximum the rule reads is still that 194 s.
     # None of those nine is an `iphone-measure-alone` leg either, which is why that leg's
     # budget is derived above from its own rows rather than from this pool.
     #
@@ -963,17 +968,16 @@ jobs:
         # `env:`, for the reason the job's head gives.
         #
         # No file store on this machine, and no DISPATCH_E2E_FILE_STORE_* names: no row these
-        # legs run uploads or downloads anything. chromium-alone runs all three wall-clock
-        # specs (`clockSpecNames` in e2e/configurations.ts: agent-workspace-timing,
-        # heavy-bodies and nested-directive, the list `clockSpecPattern` is built from, which
-        # is in that project's `testMatch`) and the
-        # one row of large-documents-measured.e2e.ts read at a desktop width, which the same
-        # project takes with `clockRowSpecPattern` in that `testMatch` and `desktopClockRow` in
-        # its `grep`; firefox-alone and webkit-alone run heavy-bodies alone; iphone-alone runs
-        # the two rows of large-documents-measured.e2e.ts that `phoneClockRows` names, the
-        # timer row and the decision row; and iphone-measure-alone runs the two that
-        # `phoneMeasuringRows` names, the measurements of a first editable block, which take
-        # three readings each (dispatch://INFRA-341). Each large-documents row
+        # legs run uploads or downloads anything. Each project selects whole files, out of the
+        # one list of them (`clockSpecNames` in e2e/configurations.ts, named per project by
+        # `clockSpecsNamed` in that project's `testMatch`): chromium-alone runs
+        # agent-workspace-timing, heavy-bodies and nested-directive, and with them
+        # large-documents-desktop-build.e2e.ts, the one row read at a desktop width;
+        # firefox-alone and webkit-alone run heavy-bodies alone; iphone-alone runs
+        # large-documents-build-serves.e2e.ts, the
+        # timer row and the decision row; and iphone-measure-alone runs
+        # large-documents-measured.e2e.ts, the two measurements of a first editable block,
+        # which take three readings each (dispatch://INFRA-341). Each large-documents row
         # seeds its document through the API and reads it. And e2e/harness-pool.ts's
         # `stackBucket` (:183) makes no bucket at one stack: it answers `undefined` on
         # `count === 1` (:190). A store serving nothing would be charged to the very reading
@@ -993,10 +997,10 @@ jobs:
         #
         # The budget below is two numbers, one per leg, for the reason and with the arithmetic
         # the job's head gives. Four legs take the 4 minutes it derives from `chromium-alone`'s
-        # measured leg plus the desktop clock row as a shard leg ran it, which the
+        # measured leg plus the desktop guard as a shard leg ran it, which the
         # containerised reading taken on sha256:ba003193 does not move: the most this step took
         # over the nine legs the job's head lists is 69 s, well under that 194 s, and no leg of
-        # those nine ran the desktop clock row or any of the four phone rows. The fifth leg,
+        # those nine ran the desktop guard or any of the four phone rows. The fifth leg,
         # `iphone-measure-alone`, takes the 3 minutes derived from its own two rows as run
         # 43098661012 timed them, at three readings apiece.
         timeout-minutes: ${{ matrix.project == 'iphone-measure-alone' && 3 || 4 }}

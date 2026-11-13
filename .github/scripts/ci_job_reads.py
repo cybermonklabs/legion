@@ -1109,7 +1109,7 @@ GATES = [
         (TEST_FIXTURES_SRC, f"packages/dispatch's web and e2e/__tests__ suites import @legion/test-fixtures, and {at('dispatch-ui', 'Test dispatch dashboard')} runs them; packages/proof-editor/tests/build-upstream-tarball.test.ts imports its temporary-directories fixture, and {at('dispatch-ui', 'Test proof editor')} runs it"),
     ) + biome(at("dispatch-ui", "Lint dispatch dashboard")) + bun_job("dispatch-ui") + CI_SELF),
 
-    # The browser suite, every row of it: the binaries job, the shard legs, the four `-alone`
+    # The browser suite, every row of it: the binaries job, the shard legs, the five `-alone`
     # projects, the two-process job, the visual job and the merge job, all in
     # dispatch-browser.yaml, which ci.yaml's dispatch-browser job and the nightly both call
     # (at_browser cites their steps).

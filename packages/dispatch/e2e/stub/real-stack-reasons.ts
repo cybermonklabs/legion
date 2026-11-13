@@ -186,12 +186,18 @@ export const realStackReasons: Record<string, string> = {
     "the close commits a label write and the row waits for the server's answer to reach the header before it reads focus again",
   "labels.e2e.ts":
     "label writes and a server-filtered list; writes labels, then reloads and measures",
+  "large-documents-build-serves.e2e.ts":
+    "its two rows read what the page serves while its editor is built - the page's own clock beside another person's words over the document socket, and a decision answered against the ask the server records - and run one row at a time in `iphone-alone`",
   "large-documents-build.e2e.ts":
     "each row reads the document being built in its live editor, batch by batch, over the socket the server syncs it on",
+  "large-documents-desktop-build.e2e.ts":
+    "it reads the longest main-thread task of a build the server's sync begins, over the draw that server sent, one row at a time in `chromium-alone`",
   "large-documents-first-screen.e2e.ts":
     "the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server",
+  "large-documents-long-build.e2e.ts":
+    "its rows read a build the server's sync begins over the document it drew into the page it sent, and the edit row writes as another person on the document socket",
   "large-documents-measured.e2e.ts":
-    "its five rows read from the wall clock run one row at a time in the `chromium-alone`, `iphone-alone` and `iphone-measure-alone` projects and in no other; the rest read a build the server's sync begins",
+    "its two measurements are taken over a build the server's sync begins, in front of the draw that server sent, and run one row at a time in `iphone-measure-alone`",
   "large-documents-reader.e2e.ts":
     "the document is read in its live editor and the decisions in it are answered against the asks the server records",
   "layout.e2e.ts":

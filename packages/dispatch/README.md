@@ -531,7 +531,7 @@ the stubbed layer alone" to the rest of the run; set by hand it tells `globalSet
 stack at all, for the whole run and real-stack projects included, which then find no server to
 address.
 The suite has seventeen projects. `chromium` runs every spec except the two plain-HTTP specs,
-the three the `-alone` projects below take and the stubbed layer's own
+the six the `-alone` projects below take and the stubbed layer's own
 (`packages/dispatch/AGENTS.md`, "The stubbed layer", which the last two projects of the list
 run). `iphone` runs, from those
 same specs, only the tests tagged `@phone` (written at the end of the test's or its
@@ -544,7 +544,7 @@ engine, viewport, origin and server-process count. The iPhone project uses Chrom
 same projects but the two stubbed ones and the five `-alone` ones, so its `iphone` project also
 runs only the `@phone` tests, and it holds no wall-clock row: that command names no project, and
 the five wall-clock projects are out of the default selection. Listed at this head, a deployed
-run holds 1,337 rows in 167 files, and the other 59 are a wall-clock run of its own, under the
+run holds 1,340 rows in 167 files, and the other 59 are a wall-clock run of its own, under the
 same base URL:
 `bun run build:contracts && PLAYWRIGHT_BASE_URL=… bunx playwright test --config e2e/playwright.config.ts --project=chromium-alone --project=firefox-alone --project=webkit-alone --project=iphone-alone --project=iphone-measure-alone --workers=1`,
 which is `bun run e2e:clock` less the SPA build that script runs first and a deployed run has
@@ -582,21 +582,25 @@ themselves: `chromium-alone` runs `e2e/heavy-bodies.e2e.ts` and `e2e/nested-dire
 fastest of up to five fresh wakes, a sleeping view at the stream's worst case comes back inside
 1.2 seconds on the fastest of up to eight fresh wakes, and the Agents page paints six hundred
 sessions inside 100 milliseconds while holding the main thread under 150 ms, the first load
-inside both of those bounds of up to twenty taken) and the one row of
-`e2e/large-documents-measured.e2e.ts` read at a desktop width, `firefox-alone` and
-`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines, `iphone-alone` runs the
-timer row and the decision row of `e2e/large-documents-measured.e2e.ts`, and
-`iphone-measure-alone` runs that file's two measurements of a first editable block, which take
+inside both of those bounds of up to twenty taken) and
+`e2e/large-documents-desktop-build.e2e.ts`, the longest main-thread task of a build read at a
+desktop width, `firefox-alone` and
+`webkit-alone` run `e2e/heavy-bodies.e2e.ts` in the other two engines, `iphone-alone` runs
+`e2e/large-documents-build-serves.e2e.ts`, the timer row and the decision row, and
+`iphone-measure-alone` runs `e2e/large-documents-measured.e2e.ts`, the two measurements of a
+first editable block, which take
 three readings each and hold the median of them to R11's targets - a project of their own
 because three readings are three times the wall clock one is, and CI gives it a leg of its own
 for the same reason (`.github/workflows/dispatch-browser.yaml`, dispatch://INFRA-341). Each
+project selects whole files and no row by its title, so the file a wall-clock row is written
+in is the project that runs it (`clockSpecNames`, `e2e/configurations.ts`). Each
 sets `default: false`, so a run that names no project holds none of their 59 rows, and each
 caps its own workers at one. What holds a reading to a quiet machine is the run being one
-worker wide, and the four files reach that in two ways: `e2e/main-thread-hold.ts` fails a
+worker wide, and the six files reach that in two ways: `e2e/main-thread-hold.ts` fails a
 measuring row of `e2e/heavy-bodies.e2e.ts` or `e2e/nested-directive.e2e.ts` in a run of more
 than one worker, since four workers on one machine make a second of wall clock unmeasurable,
-and the rows of `e2e/agent-workspace-timing.e2e.ts` and the five rows of
-`e2e/large-documents-measured.e2e.ts`, which read a clock of their own, take that one worker
+and the rows of `e2e/agent-workspace-timing.e2e.ts` and the five rows of the three
+`e2e/large-documents-*` files above, which read a clock of their own, take that one worker
 from the command that runs them. `bun run e2e:clock` is the command that runs all five
 projects, and it names
 `--workers=1` beside them; one file in one engine is `bun run e2e -- --project=chromium-alone

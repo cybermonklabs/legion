@@ -249,7 +249,7 @@ export function tagged(tag: string): RegExp {
  *
  *  An empty list is a run that names no project, which is every DEFAULT project of its mode:
  *  the five wall-clock projects below carry `default: false` and are outside it, measured at
- *  this head as 1,472 rows in 198 files against the whole suite's 1,531 in 201. Every
+ *  this head as 1,476 rows in 198 files against the whole suite's 1,535 in 204. Every
  *  `--project` of the whole line is read, and the values of every OTHER option are skipped over
  *  (`e2e/playwright-argv.ts`), because a token that reads like a flag of this run may be some
  *  option's value: `--output --project=stub` hands Playwright `--project=stub` as the output
@@ -280,8 +280,8 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
 
 /** The projects whose rows are read from the wall clock: that a card's draw holds the main thread
  *  for less than a second, measured through `e2e/main-thread-hold.ts`, what the agent surfaces
- *  cost in time, measured by `agent-workspace-timing.e2e.ts` itself, and the five rows of
- *  `large-documents-measured.e2e.ts` that read a build's own cost from the page's clock. They
+ *  cost in time, measured by `agent-workspace-timing.e2e.ts` itself, and the five rows of the
+ *  three `large-documents-*` files below that read a build's own cost from the page's clock. They
  *  run one row at a time so that a reading is the page's own work rather than what three other
  *  lanes took. They are named here rather than in the config for the reason `stubProjectNames`
  *  above gives: the config selects its own projects with this list, a bun test holds each of
@@ -297,7 +297,7 @@ export function projectsOnCommandLine(argv: readonly string[]): string[] {
  *  cost when each took one, so they are a leg of their own in
  *  `.github/workflows/dispatch-browser.yaml` rather than three more minutes on every other row
  *  `iphone-alone` runs (dispatch://INFRA-341). It is the same device profile as `iphone-alone`
- *  and differs from it by its `grep` alone. */
+ *  and differs from it by the file it selects alone. */
 export const clockProjectNames: readonly string[] = [
   "chromium-alone",
   "firefox-alone",
@@ -306,41 +306,58 @@ export const clockProjectNames: readonly string[] = [
   "iphone-measure-alone",
 ];
 
-/** The three specs those projects run, each by the part of its file name that is its own:
- *  `agent-workspace-timing.e2e.ts`, `heavy-bodies.e2e.ts` and `nested-directive.e2e.ts`. A
- *  wall-clock file is spelled once here and read twice - by the pattern below, which is how the
- *  projects select their files, and by `clockFileOnCommandLine`, which is how a command that
- *  names one of those files with no project is refused - so a fourth such file is one edit of
- *  this list. */
+/** The specs the wall-clock projects run, each by the part of its file name that is its own.
+ *  Every row of these files is read from the wall clock, and every wall-clock row of the suite
+ *  is in one of them, because a wall-clock project selects whole files and never a row by its
+ *  title: the file a row is written in is what decides the project it runs in.
+ *
+ *  Three of them are one project's whole selection apiece - `large-documents-measured.e2e.ts`
+ *  is `iphone-measure-alone`'s, `large-documents-build-serves.e2e.ts` is `iphone-alone`'s and
+ *  `large-documents-desktop-build.e2e.ts` is `chromium-alone`'s, beside the three specs that
+ *  project runs whole - and `heavy-bodies.e2e.ts` runs in three engines. Those five
+ *  `large-documents` rows were picked out of one file by patterns over their titles until
+ *  sjawhar/legion#2697: renaming one moved it into a parallel project, four workers wide,
+ *  where a reading is of the other three lanes, with every suite green. The file is the
+ *  selector now, and `e2e/__tests__/row-configurations.test.ts` holds each project to the rows
+ *  it owns.
+ *
+ *  A wall-clock file is spelled once here and read four times - by the pattern below, which is
+ *  the `testIgnore` of every parallel project; by `clockSpecsNamed`, which is how each
+ *  wall-clock project names its own files; by `clockFileOnCommandLine`, which is how a command
+ *  that names one of these files with no project is refused; and by that test - so a seventh
+ *  such file is one edit of this list. */
 export const clockSpecNames: readonly string[] = [
   "agent-workspace-timing",
   "heavy-bodies",
   "nested-directive",
+  "large-documents-measured",
+  "large-documents-build-serves",
+  "large-documents-desktop-build",
 ];
 
-/** The files the wall-clock projects select, which is `chromium-alone`'s `testMatch` in
- *  `e2e/playwright.config.ts` and the `testIgnore` of the four parallel projects that would
+/** The files no parallel project may run, which is the `testIgnore` of the four that would
  *  otherwise see them - `chromium`, `iphone`, `webkit` and `firefox`: built from
  *  `clockSpecNames` rather than written a second time, so the two cannot drift apart. The
  *  `.e2e.ts` suffix is part of it, since `heavy-bodies.ts` and `heavy-bodies-page.ts` are
  *  modules those specs import and no project may select them as test files. */
 export const clockSpecPattern = new RegExp(`(${clockSpecNames.join("|")})\\.e2e\\.ts`);
 
-/** The spec that holds wall-clock rows among rows that are not, by the part of its file name
- *  that is its own: `large-documents-measured.e2e.ts`, whose five measured rows
- *  `chromium-alone`, `iphone-alone` and `iphone-measure-alone` take by title (`desktopClockRow`,
- *  `phoneClockRows` and `phoneMeasuringRows` in `e2e/playwright.config.ts`) while every other
- *  row of it runs in the parallel projects. It is
- *  no `clockSpecName`: the names above are the files a wall-clock project selects whole, which
- *  is what the parallel projects ignore and what `clockFileOnCommandLine` refuses a command for,
- *  and neither is true of this one. It is spelled here so that the three projects' `testMatch`
- *  and the reader that names the wall-clock projects of the config
- *  (`e2e/__tests__/row-configurations.test.ts`) read one list. */
-export const clockRowSpecNames: readonly string[] = ["large-documents-measured"];
-
-/** The files holding wall-clock rows that the `-alone` projects select by title, built from
- *  `clockRowSpecNames` as `clockSpecPattern` is built from `clockSpecNames`. */
-export const clockRowSpecPattern = new RegExp(`(${clockRowSpecNames.join("|")})\\.e2e\\.ts`);
+/** The `testMatch` of one wall-clock project: the files that project selects, each named in
+ *  `clockSpecNames` above. A name that list does not hold throws as the configuration
+ *  evaluates, rather than leaving a project whose selector matches no file - which is a
+ *  project that lists no row and measures nothing, under a run that reports green. */
+export function clockSpecsNamed(...names: readonly string[]): RegExp {
+  const unknown = names.filter((name) => !clockSpecNames.includes(name));
+  if (unknown.length > 0) {
+    throw new Error(
+      `${unknown.join(", ")}: no wall-clock spec of this suite is named that. A wall-clock ` +
+        "project selects whole files, and the files are `clockSpecNames` " +
+        `(e2e/configurations.ts): ${clockSpecNames.join(", ")}. Write the file's own name ` +
+        "there first."
+    );
+  }
+  return new RegExp(`(${names.join("|")})\\.e2e\\.ts`);
+}
 
 /** The wall-clock spec file a Playwright command names as a positional filter while naming no
  *  project, or `undefined` for every other command line. The configuration throws on an answer:
@@ -415,7 +432,7 @@ export const clockRowSpecPattern = new RegExp(`(${clockRowSpecNames.join("|")})\
  *  took that `--` as its value (`const dashDashIndex = process.argv.indexOf("--")`,
  *  `playwright/lib/program.js:51-53`). With one token after the `--` and one filter, as here,
  *  that keeps no filter. So `--list --output -- e2e/claim.e2e.ts` lists the whole default
- *  selection, 1,472 rows in 198 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
+ *  selection, 1,476 rows in 198 files, where `--list --output /tmp/o e2e/claim.e2e.ts` lists 1 -
  *  the filter is dropped although `--output` swallowed the `--`, which `--list --output --
  *  --not-a-flag` shows it did, that line exiting 1 with `error: unknown option '--not-a-flag'`
  *  rather than the `error: option '--output <dir>' argument missing` of `--list --output`. What
@@ -423,7 +440,7 @@ export const clockRowSpecPattern = new RegExp(`(${clockRowSpecNames.join("|")})\
  *  'e2e/heavy.bodies.e2e.ts'`, written as a regex this reader does not answer for, reached the
  *  runner with no filter and a grep of `--` and exited 1 with `Error: No tests found` above
  *  `Total: 0 tests in 0 files`, and `--list --output -- 'e2e/heavy.bodies.e2e.ts'` lists the
- *  1,472 rows of the default selection. Neither run reaches the wall-clock file the person
+ *  1,476 rows of the default selection. Neither run reaches the wall-clock file the person
  *  named, so the refusal, and the command it prints, is the useful answer to both.
  *
  *  A reader that took any `--ui` of the whole argv for the mode would answer `undefined` for

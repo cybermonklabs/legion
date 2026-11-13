@@ -13,11 +13,14 @@
 // much: what these rows read is an order, a place or a count, and 406,000 characters buy none
 // of them anything.
 //
-// The numbers R11's targets are read from, and every row that needs a build to last, are in
-// `large-documents-measured.e2e.ts`; what a reader does with a document whose editor is still
-// being built is in `large-documents-reader.e2e.ts`; the draw the server sends, and the reads
-// and the chrome the page holds until the first batch, are in
-// `large-documents-first-screen.e2e.ts`. What the four files share is `large-documents-rows.ts`.
+// The numbers R11's targets are read from are in `large-documents-measured.e2e.ts`, and the
+// rows beside them that need a build of the larger document to last are in
+// `large-documents-build-serves.e2e.ts`, `large-documents-desktop-build.e2e.ts` and
+// `large-documents-long-build.e2e.ts`; what a reader does with a document whose editor is
+// still being built is in `large-documents-reader.e2e.ts`; the draw the server sends, and the
+// reads and the chrome the page holds until the first batch, are in
+// `large-documents-first-screen.e2e.ts`. What the seven files share is
+// `large-documents-rows.ts`.
 import { setTimeout as sleep } from "node:timers/promises";
 
 import { expect, type Page, test } from "@playwright/test";
@@ -305,7 +308,8 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
 const noReconnectInMs = 1_000;
 
 // What the other person's pen leaves behind when the document's room will not have him as a
-// writer: nothing at all. The rows above and in `large-documents-measured.e2e.ts` hold him
+// writer: nothing at all. The rows above and the one of `large-documents-build-serves.e2e.ts`
+// that writes as him hold him
 // through a `close` he only returns once he is admitted, so the refusal is the one path where
 // nobody else can drop him - and a provider left on it reconnects to that room for the rest of
 // the worker's life, holding its socket and its copy of the document beside every row that

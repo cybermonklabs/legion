@@ -17,7 +17,7 @@ const dispatchPackage = fileURLToPath(new URL("../..", import.meta.url));
 const mapPath = fileURLToPath(new URL("../row-map.md", import.meta.url));
 
 /** The generation reads two `playwright test --list` subprocesses rather than one, since a
- *  listing that names no project holds no wall-clock row and a second names the four `-alone`
+ *  listing that names no project holds no wall-clock row and a second names the five `-alone`
  *  projects (`e2e/tools/row-map.ts`). The whole generation costs about four seconds on a
  *  two-core pod, measured at this head; a minute and a half is the ceiling at which something
  *  is wrong rather than slow, as the other listing tests of this directory take it. */

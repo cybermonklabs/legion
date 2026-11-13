@@ -17,10 +17,12 @@
 // `large-documents.ts`: a panel landing under a reader who has placed themselves needs a page
 // tall enough for them to have read their way into it.
 //
-// The numbers R11's targets are read from, and every row that needs a build to last, are in
-// `large-documents-measured.e2e.ts`; what stands on the reader's screen while the editor is
+// The numbers R11's targets are read from are in `large-documents-measured.e2e.ts`, and the
+// rows beside them that need a build of the larger document to last are in
+// `large-documents-build-serves.e2e.ts`, `large-documents-desktop-build.e2e.ts` and
+// `large-documents-long-build.e2e.ts`; what stands on the reader's screen while the editor is
 // built is in `large-documents-build.e2e.ts`; what a reader does with a document whose editor
-// is still being built is in `large-documents-reader.e2e.ts`. What the four files share is
+// is still being built is in `large-documents-reader.e2e.ts`. What the seven files share is
 // `large-documents-rows.ts`.
 import { expect, type Page, test } from "@playwright/test";
 
@@ -1063,9 +1065,17 @@ test("a reader who reaches for the chrome before the batch has it then @phone", 
 // ask for a tab at all.
 //
 // No `@phone`: what this reads is where a Tab leaves the focus, which is the same at either
-// width, and the reach it drives is the page's own chrome at both. Untagged is the `chromium`
-// project alone, which is the pass every pull request gets (`e2e/accessibility.e2e.ts` is
-// untagged for that reason).
+// width, and the reach it drives is the page's own chrome at both. Untagged, it runs in the
+// `chromium` project, and that is the full lane rather than every pull request: the
+// pull-request lane names `chromium`, `iphone` and the two stubbed projects and greps `@pr`
+// over them (`.github/workflows/dispatch-browser.yaml`'s shard job), so a row without that tag
+// is run by the merge queue and the nightly and by a pull request carrying `full-ci`. It stays
+// untagged deliberately. The tag is for a real-stack row whose failure a pull request has to
+// see first, and the lane's real-stack half is held to 150 rows
+// (`e2e/__tests__/pull-request-lane.test.ts`), of which 147 are taken at this head; this row
+// seeds a document of its own and walks the page's whole tab order twice over, which is one
+// of the three remaining slots spent on a focus order the merge queue catches
+// before it reaches `main`.
 
 /** The document's own draw, in every surface it can stand in: where a reader who tabbed past
  *  the chrome ends up, and the one place this row's second walk must not reach before the tab

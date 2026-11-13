@@ -283,7 +283,7 @@ export const largeDocument = syntheticDocument(largeSections);
  *  the first section, so a decision in the second section is still the draw's when that batch
  *  lands and the editor has not reached it. The row that answers a decision while the editor
  *  is built needs both of those, whatever the machine costs
- *  (`large-documents-measured.e2e.ts`). */
+ *  (`large-documents-build-serves.e2e.ts`). */
 export const largeDocumentDecidedEarly = syntheticDocument(largeSections, true, { first: 1 });
 
 /** What each document is called, in a row's title and in the numbers it prints. */

@@ -1,0 +1,6 @@
+kind: Removed
+body: |-
+    `ASK_URGENCIES` is no longer exported from `./dispatch-tools`. It is on `./dispatch-constants`, one of the subpaths this release adds, so an importer that named the old subpath names the new one.
+time: 2026-11-11T06:19:11.000000000Z
+custom:
+    Issue: pr2697
