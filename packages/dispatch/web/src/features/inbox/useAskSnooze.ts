@@ -33,8 +33,8 @@ export interface AskSnoozeWrite {
  * The moment is shown by the store (`WriteSpec.shows`), so it is shown again over each answer
  * that lands on an inbox cache while the write is live (R7 of dispatch://INFRA-299): an answer
  * composed before the snooze arrives whole - every other row of it with it - and leaves the
- * row where the reader put it. A refused snooze is the store's to put back: the lists as
- * Dispatch last gave them, every other live write's change over them (R10).
+ * row where the reader put it. A refused snooze stops being drawn: the lists are the store's
+ * copy of what Dispatch last gave them, every other live write's change over them (R10).
  */
 export function useAskSnooze(askId: string): AskSnoozeWrite {
   const queryClient = useQueryClient();

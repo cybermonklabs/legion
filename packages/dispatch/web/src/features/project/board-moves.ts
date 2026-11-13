@@ -87,9 +87,9 @@ export function useBoardMoves(
   const writes = useWrites();
   const [error, setError] = useState<string>();
   const queryKey = projectIssuesQueryKey(project, labels);
-  // The board says why a move was refused, over the card the store put back. A move is one
-  // write to its issue, so it goes in press order with every other write to that issue
-  // (`issue:<KEY>`) - the header's status, its fields, a components save.
+  // The board says why a move was refused, over the card the store no longer draws moved. A
+  // move is one write to its issue, so it goes in press order with every other write to that
+  // issue (`issue:<KEY>`) - the header's status, its fields, a components save.
   const patch = useKeyedWrite({
     inline: true,
     label: ({ key }: BoardMove) => `${key} moved on the board`,

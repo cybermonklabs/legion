@@ -44,9 +44,10 @@ function predictComponents(input: IssueComponentsInput): IssueComponents | undef
  * the issue header's editor: the new attachment lands in the issue detail (when that cache
  * exists) and in the project's architecture tree (the issue moves between lists and rows, the
  * counts with it — `predictTree`), the store shows it there again over each answer that lands
- * while the write is live (R7) and puts back what Dispatch last gave both caches if the write
- * leaves without landing (R10), and both refetch once the server has answered so descendants
- * that inherit the change appear too.
+ * while the write is live (R7) and stops drawing it if the write leaves without landing, so both
+ * caches are its copies of what Dispatch last gave them with every other live change over them
+ * (R10), and both refetch once the server has answered so descendants that inherit the change
+ * appear too.
  */
 export function useIssueComponents(
   issue: ArchitectureTreeIssueRef & { project: string }

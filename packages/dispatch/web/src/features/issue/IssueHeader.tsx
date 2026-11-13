@@ -62,7 +62,6 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { useWrites } from "../writes/write-store";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
@@ -73,6 +72,7 @@ import { IssueLabels } from "./IssueLabels";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
 import { ProgressChips } from "./ProgressChips";
+import { storeIssueState } from "./pin-write";
 import { withPinned } from "./pins";
 import { RepoControl } from "./RepoControl";
 import {
@@ -90,8 +90,8 @@ const routeHint =
 const titleRefusals = new Set(["CAP_EXCEEDED", "ISSUE_CLOSED"]);
 
 /** Whether `input` is the Status pill's pick alone: that control shows its write in the shell's
- *  indicator and rolls back on a refusal, where every other header field holds its draft and
- *  says why itself. */
+ *  indicator, and a refused pick stops being drawn, where every other header field holds its
+ *  draft and says why itself. */
 function statusPickOnly(input: IssueUpdateInput | undefined): boolean {
   return input !== undefined && Object.keys(input).length === 1 && input.status !== undefined;
 }
@@ -196,9 +196,9 @@ export function IssueHeader({
   });
   // A title, route, parent or close the header shows refused itself, beside its draft; a status
   // pick is a control, so its refusal is the shell's (`PendingWritesIndicator`), and the pick
-  // rolls back. Every field write goes in the issue's line (`issue:<key>`), so an older one still
-  // being tried never lands after a newer one, whatever left the page meanwhile. A landing with no
-  // answer to give is merged by reading the issue again.
+  // stops being drawn. Every field write goes in the issue's line (`issue:<key>`), so an older one
+  // still being tried never lands after a newer one, whatever left the page meanwhile. A landing
+  // with no answer to give is merged by reading the issue again.
   const updateIssue = useKeyedWrite({
     inline: (input) => !statusPickOnly(input),
     label: (input) => issueUpdateLabel(issue.key, input),
@@ -289,14 +289,13 @@ export function IssueHeader({
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
   const pinGuard = useSubmitGuard();
-  const writes = useWrites();
   // The header's pin writes the same row as the Conversation's and the Activity tab's pins, so it
   // goes in that row's line (`pin:<key>`, `features/issue/pin-write.ts`): one row, one line. Its
   // change is the issue's `pinned` alone, over the row as it stands (`shows`), so the store draws
   // it over each answer that lands there while it is live, draws a pin waiting behind it over the
   // row Dispatch answers it with, and leaves the row Dispatch last gave if it leaves without
   // landing (R7 and R10 of dispatch://INFRA-299). Its answer is merged into the store's copy of
-  // the state (`Writes.answer`), never over the state as it stands.
+  // the state (`storeIssueState`), never over the state as it stands.
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     request: (pinned: boolean) => issueStateRequest(issue.key, { pinned }),
@@ -316,11 +315,7 @@ export function IssueHeader({
     // A read already out was asked before this press.
     onMutate: () => queryClient.cancelQueries({ queryKey: userStateQuery().queryKey }),
     onSuccess: (next) => {
-      if (next === null) return;
-      writes.answer<UserState>(userStateQuery().queryKey, (current) => ({
-        ...current,
-        [issue.key]: next,
-      }));
+      if (next !== null) storeIssueState(queryClient, issue.key, next);
     },
   });
   const saveTitleOnEnter = (event: KeyboardEvent<HTMLInputElement>) => {

@@ -28,8 +28,8 @@ export interface AskHandOnWrite {
  * The person is shown by the store (`WriteSpec.shows`), so it is shown again over each answer
  * that lands on an inbox cache while the write is live (R7 of dispatch://INFRA-299): an answer
  * composed before the hand-on arrives whole - every other row of it with it - and still waits on
- * the person the reader named. A refused hand-on is the store's to put back: the lists as
- * Dispatch last gave them, every other live write's change over them (R10).
+ * the person the reader named. A refused hand-on stops being drawn: the lists are the store's
+ * copy of what Dispatch last gave them, every other live write's change over them (R10).
  *
  * What is patched is what the server will answer with: `waiting_on_person`, which is the person
  * named either way, and the three stored fields behind it - `asked_of`, empty when the ask was

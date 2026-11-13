@@ -2099,7 +2099,7 @@ test("a Retry refused again reads again the caches its change wrote", async () =
       expect(readAgain(client, ["user-state"])).toBe(true);
       expect(readAgain(client, ["inbox"])).toBe(false);
 
-      // Its change was read again at that refusal, and Discard has nothing left to put back.
+      // Its change stopped being drawn and was read again at that refusal: Discard reads nothing.
       client.setQueryData(["user-state"], { pinned: false });
       expect(writes.discard(row(writes)?.id ?? 0)).toBe(true);
       expect(readAgain(client, ["user-state"])).toBe(false);
@@ -2211,11 +2211,11 @@ async function retriedBesideAMark(retried: () => Promise<unknown>) {
   return { client, tab, writes };
 }
 
-// R10 of dispatch://INFRA-299. A Retry refused in its turn has no press to put its change back,
-// so the store puts back what Dispatch last gave the cache, with the live mark shown over it,
-// before it reads again: a read that fails - offline, a 5xx - leaves the page on that, never on
-// the pin Dispatch refused twice.
-test("a Retry refused again puts back Dispatch's last answer, live writes over it, before reading again", async () => {
+// R10 of dispatch://INFRA-299. A Retry refused in its turn has no press waiting on it, and its
+// change simply stops being drawn: the page is what Dispatch last gave the cache, with the live
+// mark shown over it, before the store reads again: a read that fails - offline, a 5xx - leaves
+// the page on that, never on the pin Dispatch refused twice.
+test("a Retry refused again leaves Dispatch's last answer, live writes over it, before reading again", async () => {
   await onFakeClock(async () => {
     const { client, tab, writes } = await retriedBesideAMark(() => Promise.reject(verdict));
     try {

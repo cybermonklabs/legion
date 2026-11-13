@@ -53,6 +53,7 @@ import { importWhenOnline } from "../shell/DeploymentResilience";
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { writesOf } from "../writes/write-store";
 import { AskBlockCard } from "./AskBlockCard";
 import type { AnchoredBlockHost } from "./ask-block";
 import { ChangeView } from "./ChangeView";
@@ -398,7 +399,7 @@ export function ProofDocument({
       // answer to give, the store has read the document again.
       setIsNameDialogOpen(false);
       if (created === null) return;
-      queryClient.setQueryData<Artifact>(["artifact", artifact.id], (current) => {
+      writesOf(queryClient).answer<Artifact>(["artifact", artifact.id], (current) => {
         const source = current ?? artifact;
         return {
           ...source,

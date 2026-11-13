@@ -101,9 +101,9 @@ function stillInLine(row: Write, issue: string, field: string): boolean {
  * of those caches while the write is live (R7 of dispatch://INFRA-299), so an answer composed
  * before the pick arrives whole - every other row of it with it - and leaves the person's own
  * change on screen. A pick that leaves without landing - refused, discarded in Pending changes,
- * taken by a sign-out - is the store's to put back, as every write's change is: it puts back
- * what Dispatch last gave each cache with every other live write's change over it, newer picks
- * of the field among them, and reads those caches again (R10), so a read that fails leaves the
+ * taken by a sign-out - stops being drawn, as every write's change does: each cache it wrote is
+ * the store's copy of what Dispatch last gave it with every other live write's change over it,
+ * newer picks of the field among them, and is read again (R10), so a read that fails leaves the
  * screen on the value the server last confirmed rather than on a pick nothing will send. The
  * engine keeps no snapshot of its own. It merges the server's answer and reads the issue again
  * once a save lands with no newer write of the field left in the line, where the screen is
@@ -179,8 +179,8 @@ export function useIssueFieldWrite<Value>(
       presentation: "indicator",
       request: issuePatchRequest(issueKey, field.patch(value)),
       // The pick is shown here, by the store, so it is shown again over each answer that lands
-      // on one of the caches it writes until this write settles (R7), and put back by the store
-      // if it leaves without landing (R10): this engine rolls nothing back itself.
+      // on one of the caches it writes until this write settles (R7), and stops being drawn if
+      // it leaves without landing (R10): this engine undoes nothing itself.
       shows: (shown) => field.show(value, shown),
       target: `issue:${issueKey}`,
     });
@@ -221,8 +221,8 @@ export function useIssueFieldWrite<Value>(
         if (error instanceof WriteDiscardedError) {
           return;
         }
-        // The store has put back the value the server last confirmed, with every live write's
-        // change over it - a newer pick of this field among them - and reads it again.
+        // The pick is drawn no longer: the screen is the value the server last confirmed, with
+        // every live write's change over it - a newer pick of this field among them - read again.
         const refusal = error instanceof Error ? error : new Error(String(error));
         stopped.current = stoppedPress(key, value, refusal) ?? stopped.current;
         setRefused({ message: refusal.message, retriable: !newer, value });

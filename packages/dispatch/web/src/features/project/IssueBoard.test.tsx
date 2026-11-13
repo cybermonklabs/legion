@@ -413,8 +413,8 @@ test("a second drop while the first is unanswered leaves both cards where they w
 // ahead of its write (`Writes.showAhead`), and the store keeps the board as Dispatch last gave it
 // - with the earlier drop written in once Dispatch made it - apart from the screen. With every
 // read of the board failing from then on, a refused drop simply stops being drawn: the earlier
-// card stays where it was dropped and the refused card goes back where Dispatch has it.
-test("a drop refused behind an earlier drop, with the board unreadable, puts back only the refused card", async () => {
+// card stays where it was dropped and the refused card is drawn where Dispatch has it.
+test("a drop refused behind an earlier drop, with the board unreadable, stops drawing only the refused card", async () => {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
@@ -1257,7 +1257,7 @@ test("a refused write shows nothing again: the list answer's own value stands", 
     await user.selectOptions(priorityIn(board, "CORE-1"), "0");
     await waitFor(() => expect(patchIssue).toHaveBeenCalledTimes(1));
     // The engine shows its own refusals, so the store lets the write go the moment Dispatch
-    // refuses it, and the pick it showed was rolled back with it.
+    // refuses it, and the pick it showed stopped being drawn with it.
     await waitFor(() => expect(writesOf(race.queryClient).rows()).toEqual([]));
 
     race.listIssues.mockResolvedValue(listSinceOtherBrowser);

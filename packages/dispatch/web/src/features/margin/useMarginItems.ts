@@ -531,8 +531,8 @@ export function useMarginItems(
     () => [...needsYou.map((ask) => ({ ask, kind: "ask" as const })), ...items],
     [items, needsYou]
   );
-  // A refused action is the store's to put back: the comments as Dispatch last gave them, every
-  // other live action over them, read again (R10 of dispatch://INFRA-299).
+  // A refused action stops being drawn: the comments are the store's copy of what Dispatch last
+  // gave them, every other live action over them, read again (R10 of dispatch://INFRA-299).
   const { actionFailure, mutateItem, pendingActionIds, retryItem } = useCommentActionQueue({
     // A read already out was asked before this action went out.
     onMutate: () => queryClient.cancelQueries({ queryKey: commentsKey }),

@@ -29,10 +29,15 @@ export function shippedSources(): readonly string[] {
   return shipped;
 }
 
-/** Whether each index of `source` is code: a name a doc comment or a string holds is no call. */
+/** Whether each index of `source` is code: a name a doc comment or a string holds is no call.
+ *  A template's `${…}` is code, read as any code is, up to the brace that closes it. */
 export function codeMask(source: string): readonly boolean[] {
   const mask: boolean[] = [];
   let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
+  // The brace depth each open `${…}` began at, innermost last: the `}` back at that depth takes
+  // the scan back into its template.
+  const substitutions: number[] = [];
+  let depth = 0;
   for (let index = 0; index < source.length; index += 1) {
     const ch = source[index] ?? "";
     const next = source[index + 1] ?? "";
@@ -49,6 +54,14 @@ export function codeMask(source: string): readonly boolean[] {
       }
       continue;
     }
+    if (mode === "`" && ch === "$" && next === "{") {
+      mask.push(false);
+      index += 1;
+      substitutions.push(depth);
+      depth += 1;
+      mode = "code";
+      continue;
+    }
     if (mode === "'" || mode === '"' || mode === "`") {
       if (ch === "\\") {
         mask.push(false);
@@ -56,7 +69,14 @@ export function codeMask(source: string): readonly boolean[] {
       } else if (ch === mode) mode = "code";
       continue;
     }
-    if (ch === "/" && next === "/") mode = "line";
+    if (ch === "{") depth += 1;
+    else if (ch === "}") {
+      depth -= 1;
+      if (substitutions.at(-1) === depth) {
+        substitutions.pop();
+        mode = "`";
+      }
+    } else if (ch === "/" && next === "/") mode = "line";
     else if (ch === "/" && next === "*") mode = "block";
     else if (ch === "'" || ch === '"' || ch === "`") mode = ch;
   }

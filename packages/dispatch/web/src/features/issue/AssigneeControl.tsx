@@ -17,12 +17,12 @@ import { useIssueAssignee } from "./useIssueAssignee";
  * touch on it, or focus) and then kept for the session: a fresh issue load makes no request
  * for it, and the badge never waits on it. Anyone signed in may reassign. The write
  * goes through `useIssueAssignee`, so the issue detail, the project lists and the inbox's
- * partitions update at once and roll back together; a refused person shows the server's
- * reason. Like `PriorityControl`, the select stays enabled while a save is in flight - a
- * disabled control drops the focus it holds and leaves the tab order - and a pick made meanwhile
- * is queued behind the save. A login is open text, so the badge reserves the fourteen
- * characters of `reservedOpenTextWidth` whatever it names, cuts a longer login with an ellipsis
- * and keeps the whole of it in the control's `title`. Labelled `Assignee of <KEY>`.
+ * partitions show the pick at once and stop showing it together if it is refused; a refused
+ * person shows the server's reason. Like `PriorityControl`, the select stays enabled while a
+ * save is in flight - a disabled control drops the focus it holds and leaves the tab order - and
+ * a pick made meanwhile is queued behind the save. A login is open text, so the badge reserves
+ * the fourteen characters of `reservedOpenTextWidth` whatever it names, cuts a longer login with
+ * an ellipsis and keeps the whole of it in the control's `title`. Labelled `Assignee of <KEY>`.
  */
 export function AssigneeControl({
   assignee,

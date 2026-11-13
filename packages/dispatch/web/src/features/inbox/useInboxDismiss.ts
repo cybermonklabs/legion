@@ -168,8 +168,8 @@ function withoutRows(
 
 /** What a press took, read at the press: the drop it made in the unread count
  *  (`unread-count.ts`), and the rows it took out of the view it was made in. Only one of the two
- *  views is written: a dismiss is made in the Inbox, a restore in the Dismissed view. Putting
- *  those rows back on a refusal is the store's (`WriteSpec.shows`). */
+ *  views is written: a dismiss is made in the Inbox, a restore in the Dismissed view. A refused
+ *  press stops being drawn on them, as every change the store shows does (`WriteSpec.shows`). */
 interface DismissPress {
   readonly drop: UnreadDrop | undefined;
   /** What left the Inbox's own read. */
@@ -206,13 +206,14 @@ export interface InboxDismiss {
  * The Inbox's one dismiss write, for one list: its own optimistic apply and its own refusal. The
  * Inbox owns it rather than each control, because the write takes the row - and with it every
  * control drawn on it - off the page, so a refusal owned by the row would be unmounted before it
- * arrived. The drawer mounts its own Inbox, so it gets its own. A refused press is the store's to
- * put back on the views it wrote - as Dispatch last gave them, every other live write's change
- * over them (R10 of dispatch://INFRA-299) - and `unread-count.ts`'s to take back on the count.
+ * arrived. The drawer mounts its own Inbox, so it gets its own. A refused press stops being
+ * drawn: the views it wrote are the store's copies of what Dispatch last gave them, every other
+ * live write's change over them (R10 of dispatch://INFRA-299), and `unread-count.ts` takes the
+ * press's drop off the count.
  *
  * `onSettled` is told the rows one press named once Dispatch has decided it, either way: the
- * Inbox keeps those rows out of its hand-hold while the press is out, and a row the store put
- * back is an ordinary row again.
+ * Inbox keeps those rows out of its hand-hold while the press is out, and a row the press no
+ * longer takes out is an ordinary row again.
  */
 export function useInboxDismiss({
   onSettled,

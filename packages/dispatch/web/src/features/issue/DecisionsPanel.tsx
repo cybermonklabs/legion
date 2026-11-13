@@ -31,6 +31,7 @@ import { MarkdownBody } from "../refs/MarkdownBody";
 import { buildIssuePath, DECISIONS_DOCUMENT_SLUG, documentItemPath } from "../refs/routes";
 import { textSourceOf } from "../refs/text-references";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { writesOf } from "../writes/write-store";
 
 /** The word that opens the paragraph the server reads as a decision's doubt
  *  (`api/decisions.go`'s `unsurePrefix`). */
@@ -400,7 +401,7 @@ function WaitingDecision({
         void queryClient.invalidateQueries({ exact: true, queryKey: ["decisions", issueKey] });
         return;
       }
-      queryClient.setQueryData<IssueDecisions>(["decisions", issueKey], (view) =>
+      writesOf(queryClient).answer<IssueDecisions>(["decisions", issueKey], (view) =>
         view === undefined
           ? view
           : {

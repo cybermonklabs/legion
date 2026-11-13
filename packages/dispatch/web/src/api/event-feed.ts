@@ -6,6 +6,7 @@ import {
   markPendingAskThreadInvalidation,
   markPendingAskThreadsOnIssue,
 } from "../features/inbox/ask-thread-freshness";
+import { writesOf } from "../features/writes/write-store";
 
 import { askThreadsIssue, eventRefreshTargets } from "./event-refresh";
 import { liveSocketFor } from "./live-socket";
@@ -106,7 +107,7 @@ export function prependEventToLog(queryClient: QueryClient, event: DispatchEvent
   if (event.issue_key === null) {
     return;
   }
-  queryClient.setQueryData<EventPages>(["events", event.issue_key], (current) => {
+  writesOf(queryClient).answer<EventPages>(["events", event.issue_key], (current) => {
     if (current === undefined) {
       return current;
     }

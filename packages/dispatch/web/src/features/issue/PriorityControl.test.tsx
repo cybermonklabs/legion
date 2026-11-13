@@ -293,7 +293,7 @@ test("PriorityControl saves a pick made during the first save once that save set
   }
 });
 
-test("a queued pick that fails rolls back to the priority the server last confirmed, not the pick", async () => {
+test("a queued pick that fails leaves the priority the server last confirmed, not the pick", async () => {
   const first = Promise.withResolvers<Issue>();
   const second = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches()
@@ -421,11 +421,12 @@ test("a refused pick is reported with no Retry while a newer pick stands in the 
   }
 });
 
-// R10 of dispatch://INFRA-299. A refused save puts back the value the server last confirmed,
-// which is not the pick before it when the server refused that one too: the first refusal rolls
-// nothing back, because a newer pick stands in the line, so the second refusal is what puts the
-// screen right, and it must reach past the pick the server never took.
-test("a refused pick after another refused pick rolls back to the server's value, not to the first pick", async () => {
+// R10 of dispatch://INFRA-299. A refused save stops being drawn, so the screen shows the value
+// the server last confirmed, which is not the pick before it when the server refused that one
+// too: the first refusal changes nothing on screen, because a newer pick stands in the line and
+// is drawn over it, so the second refusal is what puts the screen right, and the screen it
+// leaves reaches past the pick the server never took.
+test("a refused pick after another refused pick leaves the server's value, not the first pick", async () => {
   const first = Promise.withResolvers<Issue>();
   const second = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches()
@@ -461,10 +462,10 @@ test("a refused pick after another refused pick rolls back to the server's value
   }
 });
 
-// R10 of dispatch://INFRA-299. A pick that replaces one still waiting its turn rolls back, once
-// refused, to what the screen held before the pick it replaced was shown: that pick was never
+// R10 of dispatch://INFRA-299. A pick that replaces one still waiting its turn, once refused,
+// leaves the screen on what it held before the pick it replaced was shown: that pick was never
 // sent, so the server never had it, and the screen must not come back to it.
-test("a refused pick that replaced a waiting pick rolls back past the pick it replaced", async () => {
+test("a refused pick that replaced a waiting pick leaves the screen past the pick it replaced", async () => {
   const first = Promise.withResolvers<Issue>();
   const second = Promise.withResolvers<Issue>();
   const patchIssue = answerIssuePatches()

@@ -120,9 +120,10 @@ export interface MarkAllRead {
 
 /**
  * The Inbox's **Mark all read**, for one list: its own filters, its own read mark, its own
- * optimistic apply. The drawer mounts its own Inbox, so it gets its own. A refused press is the
- * store's to put back on the list - as Dispatch last gave it, every other live write's change
- * over it (R10 of dispatch://INFRA-299) - and `unread-count.ts`'s to take back on the count.
+ * optimistic apply. The drawer mounts its own Inbox, so it gets its own. A refused press stops
+ * being drawn: the list is the store's copy of what Dispatch last gave it with every other live
+ * write's change over it (R10 of dispatch://INFRA-299), and `unread-count.ts` takes the press's
+ * drop off the count.
  *
  * The press writes two reads at once - the Inbox's own list and the unread count every badge
  * shares - so the rows are drawn as read and the Type filter's counts, the sidebar's Inbox count

@@ -33,6 +33,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { writesOf } from "../writes/write-store";
 import {
   settingsSubmitButton,
   settingsTableHead,
@@ -212,7 +213,7 @@ export function AgentTokensSection(): ReactNode {
         return;
       }
       const { token, ...safeToken } = created;
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) => [
+      writesOf(queryClient).answer<AgentToken[]>(agentTokensQueryKey, (current = []) => [
         safeToken,
         ...current,
       ]);
@@ -225,7 +226,7 @@ export function AgentTokensSection(): ReactNode {
     request: (id: string) => agentTokenRevokeRequest(id),
     target: (id) => `agent-token:${id}`,
     onSuccess: (_result, id) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      writesOf(queryClient).answer<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === id ? { ...token, revoked_at: new Date().toISOString() } : token
         )
@@ -241,7 +242,7 @@ export function AgentTokensSection(): ReactNode {
       agentTokenScopesRequest(input.id, input.scopes),
     target: (input) => `agent-token:${input.id}`,
     onSuccess: (updated, input) => {
-      queryClient.setQueryData<AgentToken[]>(agentTokensQueryKey, (current = []) =>
+      writesOf(queryClient).answer<AgentToken[]>(agentTokensQueryKey, (current = []) =>
         current.map((token) =>
           token.id === input.id ? (updated ?? { ...token, scopes: input.scopes }) : token
         )

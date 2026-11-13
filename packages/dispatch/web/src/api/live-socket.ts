@@ -2,19 +2,20 @@
 // live subscription of the page runs. The Delivery and Pipeline pages' live-owned queries
 // (`meta.live`, `api/queries.ts`'s three delivery reads) subscribe to their views (LEGION-690):
 // Dispatch answers each with a snapshot, the matching GET route's body, and from then on sends only
-// what changed, and this client writes both into the query cache with `setQueryData`, so the page
-// renders them as any read. The event feed (`subscribeEvents`) and each agent live view
-// (`subscribeAgent`) ride the same socket with handlers of their own. Nothing here reads on a
-// timer: a lost socket reconnects and resumes every subscription, a delivery view from the last
-// change it applied with the revisions it holds and the event feed from the last event it applied,
-// and Dispatch answers what changed since. Dispatch rotates every socket once it reaches its age
-// (close 4001); the page reopens at once and shows nothing of it.
+// what changed, and this client merges both into the query cache through the write store
+// (`Writes.answer`), so the page renders them as any read. The event feed (`subscribeEvents`) and
+// each agent live view (`subscribeAgent`) ride the same socket with handlers of their own. Nothing
+// here reads on a timer: a lost socket reconnects and resumes every subscription, a delivery view
+// from the last change it applied with the revisions it holds and the event feed from the last
+// event it applied, and Dispatch answers what changed since. Dispatch rotates every socket once it
+// reaches its age (close 4001); the page reopens at once and shows nothing of it.
 import { type AgentStreamResponder, LIVE_SOCKET_MAX_AGE_CLOSE } from "@legion/contracts";
 import { hashKey, type QueryClient, type QueryKey, useQueryClient } from "@tanstack/react-query";
 import { useSyncExternalStore } from "react";
 
 import { applyDelta, applyRevs } from "../features/delivery/lib/applyDelta";
 import type { DeliveryFreshness } from "../features/delivery/lib/freshness";
+import { failQuery, writesOf } from "../features/writes/write-store";
 import { ApiError } from "./client";
 import { reachable, unreachable } from "./reachability";
 import type {
@@ -329,7 +330,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     if (sub === undefined) return;
     sub.seq = frame.seq;
     sub.revs = frame.revs;
-    queryClient.setQueryData(sub.queryKey, frame.body);
+    writesOf(queryClient).answer(sub.queryKey, () => frame.body);
     sub.pending?.resolve(frame.body);
     sub.pending = null;
     noteChange(frame.seq, frame.changed_at);
@@ -342,9 +343,8 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
       console.error("live socket: a delta arrived before its subscription's snapshot", frame);
       return;
     }
-    queryClient.setQueryData<DeliveryLiveBody>(
-      sub.queryKey,
-      (data: DeliveryLiveBody | undefined) => (data === undefined ? data : applyDelta(data, frame))
+    writesOf(queryClient).answer<DeliveryLiveBody>(sub.queryKey, (data) =>
+      data === undefined ? data : applyDelta(data, frame)
     );
     sub.seq = frame.seq;
     sub.revs = applyRevs(sub.revs, frame.revs);
@@ -395,15 +395,7 @@ export function createLiveSocket(queryClient: QueryClient): LiveSocket {
     }
     // A subscription that already answered fails as a failed refetch does, keeping its data. It
     // stays subscribed: Dispatch answers it again once it can (a configuration saved, say).
-    const query = cache.find({ exact: true, queryKey: sub.queryKey });
-    query?.setState({
-      ...query.state,
-      error: failure,
-      errorUpdateCount: query.state.errorUpdateCount + 1,
-      errorUpdatedAt: Date.now(),
-      fetchFailureReason: failure,
-      status: "error",
-    });
+    failQuery(queryClient, sub.queryKey, failure);
   };
 
   const onError = (frame: LiveError) => {

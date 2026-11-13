@@ -19,6 +19,7 @@ import { eventItemId, isPinnedEvent, stateForIssue } from "../issue/pins";
 import { AgentName, useAgentText } from "../refs/AgentName";
 import { Timestamp } from "../refs/Timestamp";
 import { ViewportAnchor } from "../shell/ViewportAnchor";
+import { answerSharing } from "../writes/write-store";
 import { ActivityLine } from "./ActivityLine";
 import { buildActivityItems, dateKey } from "./activity-model";
 
@@ -47,12 +48,14 @@ export function ActivityTab({ issueKey, state }: ActivityTabProps): ReactNode {
     // (mergeEventPages, prependEventToLog); it is still a full page with older events beneath it.
     getNextPageParam: (page) => (page.length >= 200 ? page.at(-1)?.seq : undefined),
     // The feed (api/event-feed.ts) prepends events as they are published; a refetch whose read
-    // predates one of them must not take it back.
-    structuralSharing: (current, incoming) =>
+    // predates one of them must not take it back. Set beneath the write store's copies, as every
+    // rule is (`answerSharing`).
+    structuralSharing: answerSharing((current, incoming) =>
       replaceEqualDeep(
         current,
         mergeEventPages(current as EventPages | undefined, incoming as EventPages)
-      ),
+      )
+    ),
   });
   const issueState = stateForIssue(state, issueKey);
   const events = useMemo(() => log.data?.pages.flat() ?? [], [log.data]);

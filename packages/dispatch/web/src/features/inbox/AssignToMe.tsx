@@ -10,11 +10,11 @@ import {
 import { useIssueAssignee } from "../issue/useIssueAssignee";
 
 /** Takes an issue nobody holds for the viewer: one PATCH through the shared assignee write, so
- *  the row is theirs at once and rolls back if the server refuses. Under the Unassigned filter
- *  the row stops matching while the save is in flight, so the control tells the Inbox when its
- *  write is live (pending or failed) and the Inbox keeps the row listed until then: `Assigning…`,
- *  and on refusal the server's reason with Retry, are shown by this same instance rather than
- *  lost to a remount.
+ *  the row is theirs at once, and is drawn as Dispatch has it again if the server refuses. Under
+ *  the Unassigned filter the row stops matching while the save is in flight, so the control tells
+ *  the Inbox when its write is live (pending or failed) and the Inbox keeps the row listed until
+ *  then: `Assigning…`, and on refusal the server's reason with Retry, are shown by this same
+ *  instance rather than lost to a remount.
  *
  *  Its own module rather than `Inbox.tsx`'s, because the Inbox's reading pane draws it too
  *  (`ReadingPaneHead`): the Inbox mounts the pane, so a control the pane's head imports from the

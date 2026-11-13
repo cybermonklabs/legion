@@ -1,419 +1,142 @@
 import { expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
-import { dirname, join, normalize } from "node:path";
+import { join } from "node:path";
 
-import { shippedSources } from "../../__tests__/source-scan";
+import { codeMask, shippedSources } from "../../__tests__/source-scan";
 
 /**
- * No surface writes into a cache a write shows a change on but through the store (R7 and R10 of
- * dispatch://INFRA-299). The store keeps Dispatch's copy of each such cache apart from the screen
- * and draws the screen as that copy with every live change over it (`Writes.#draw`); a
- * `setQueryData` over the cache as it stands would carry those changes into what the store takes
- * as Dispatch's, and a refused change would stay on the page. So every merge of an answer goes
- * through `Writes.answer`, and this file reads every call of `setQueryData` and `setQueriesData`
- * the app ships, reads the key it writes - through the constants, the key factories and the
- * query options it names - and fails on each one whose key some `shown.on` or `shown.under`
- * names, naming the file and line of both. A write whose key it cannot read fails too, unless it
- * is one of the few let through below by name, each with the reason it writes no such cache.
+ * No module but the write store writes a cache (R7 and R10 of dispatch://INFRA-299). The store
+ * keeps Dispatch's copy of each cache a live write shows a change on apart from the screen, and
+ * draws the screen as that copy with every live change over it (`Writes.#draw`); a write into
+ * such a cache from outside the store would carry those changes into what the store takes as
+ * Dispatch's, and a change that stopped being drawn would stay on the page. Which caches a change
+ * is drawn on is decided as the page runs, so no module writes a cache by hand at all: every
+ * answer goes through `Writes.answer`, which merges it into the copy where one is held and into
+ * the cache where none is.
+ *
+ * So this file bans, in every module the app ships but the store, the names TanStack writes a
+ * cache's data by, however they are spelled: `setQueryData`, `setQueriesData` and `setData` (a
+ * query's own) anywhere in code - a call, a `.bind`, a `.call`, an `.apply`, a name taken out of
+ * an object - or as a string a bracket reads (`client["setQueryData"]`), with whatever key, read
+ * or not, a call names; and `setState` reached as a member of anything but `this`, read by a
+ * bracket, or taken out of an object by name. A query's `setState` is the one any module can
+ * reach as a member; `this.setState` is a React class component's own state (`ErrorBoundary`),
+ * and a `setState` written as a bare name is a local function - a `useState` setter, a module's
+ * own - which no query is. Comments and strings are read as JavaScript reads them
+ * (`codeMask`), so a name a comment holds is no write, and one a template's `${…}` holds is.
+ *
+ * Test files and their `__tests__/` helpers are outside the ban (`shippedSources`): their
+ * fixtures seed caches before any write is out.
+ *
+ * And every `structuralSharing` rule the app ships is set beneath the store's copies
+ * (`answerSharing`): a rule judges an answer against the cache it lands on, which is the screen
+ * where a live change is drawn, and only `answerSharing` judges it against Dispatch's copy. Every
+ * rule is held to it, whatever cache it is on, since which caches a change is drawn on is decided
+ * as the page runs; one on a cache no change is drawn on behaves as the bare rule does. A row
+ * rather than a type: TanStack's option is typed `boolean | (old, new) => unknown`, and no
+ * declaration this app can add narrows a property TanStack declares. `select` is not held to it:
+ * it picks what a component reads out of the screen, which is what the page shows, and decides
+ * nothing of what the cache or the copy holds.
  */
 
 /** `web/src`, which every path below is read from. */
 const webSrc = join(import.meta.dir, "..", "..");
 
-/** One element of a key this file cannot read: any value. */
-const ANY = Symbol("any element");
-/** The rest of a key this file cannot read: any elements, however many. */
-const REST = Symbol("any elements");
-type Part = string | typeof ANY | typeof REST;
-/** A key as this file reads it: each element a string it names, or one it cannot. */
-type Key = readonly Part[];
-
-/** A call that names a cache, where it is, and the keys it may name (`undefined`: unread). */
-interface Site {
-  readonly where: string;
-  readonly text: string;
-  /** Whether the call names every cache under its key (`setQueriesData`, `shown.under`) rather
-   *  than the one cache of it. */
-  readonly prefix: boolean;
-  readonly keys: readonly Key[] | undefined;
-}
-
-/** The writes let through by their file and their key's text, each with why it writes no cache
- *  a write shows a change on. */
-const letThrough: readonly { readonly path: string; readonly key: string; readonly why: string }[] =
-  [
-    {
-      key: "sub.queryKey",
-      path: "api/live-socket.ts",
-      why: "a delivery view's own key (`LiveSocket.subscribe`), written whole from Dispatch's snapshot and its deltas; no write shows a change on a delivery view",
-    },
-    {
-      key: "myRepliesOwnerQuery(owner).queryKey",
-      path: "features/threads/replies-fixture.ts",
-      why: "a fixture the tests seed their caches with before any write is out",
-    },
-  ];
-
-/** The store itself, which draws every cache a write shows a change on. */
+/** The store itself, the one module that writes a cache. */
 const STORE = "features/writes/write-store.ts";
 
-/** `source` with every comment blanked, its line breaks kept, and every string left whole. */
-function withoutComments(source: string): string {
-  let out = "";
-  let mode: "code" | "line" | "block" | "'" | '"' | "`" = "code";
-  for (let index = 0; index < source.length; index += 1) {
-    const ch = source[index] ?? "";
-    const next = source[index + 1] ?? "";
-    if (mode === "line" || mode === "block") {
-      if (mode === "line" && ch === "\n") mode = "code";
-      if (mode === "block" && ch === "*" && next === "/") {
-        mode = "code";
-        out += "  ";
-        index += 1;
-        continue;
-      }
-      out += ch === "\n" ? "\n" : " ";
-      continue;
-    }
-    if (mode !== "code") {
-      out += ch;
-      if (ch === "\\") {
-        out += next;
-        index += 1;
-      } else if (ch === mode) mode = "code";
-      continue;
-    }
-    if (ch === "/" && next === "/") {
-      mode = "line";
-      out += " ";
-      continue;
-    }
-    if (ch === "/" && next === "*") {
-      mode = "block";
-      out += " ";
-      continue;
-    }
-    if (ch === "'" || ch === '"' || ch === "`") mode = ch;
-    out += ch;
-  }
-  return out;
-}
-
-/** Walks `text` from `from`, a string or a template read whole, and answers the index of the
- *  first of `stops` at the depth it started at, or the index of the bracket that closes that
- *  depth, or the end. */
-function scanTo(text: string, from: number, stops: string): number {
-  let depth = 0;
-  for (let index = from; index < text.length; index += 1) {
-    const ch = text[index] ?? "";
-    if (ch === "'" || ch === '"' || ch === "`") {
-      index = stringEnd(text, index);
-      continue;
-    }
-    if (depth === 0 && stops.includes(ch)) {
-      // `=>` and `?.` are no stop of a `>` or a `?`.
-      if (ch === "?" && (text[index + 1] === "." || text[index + 1] === "?")) {
-        index += 1;
-        continue;
-      }
-      return index;
-    }
-    if (ch === "(" || ch === "[" || ch === "{") depth += 1;
-    else if (ch === ")" || ch === "]" || ch === "}") {
-      if (depth === 0) return index;
-      depth -= 1;
-    }
-  }
-  return text.length;
-}
-
-/** The index of the quote that closes the string or template opening at `open`. */
-function stringEnd(text: string, open: number): number {
-  const quote = text[open];
-  for (let index = open + 1; index < text.length; index += 1) {
-    if (text[index] === "\\") index += 1;
-    else if (text[index] === quote) return index;
-  }
-  return text.length;
-}
-
-/** The arguments of the call whose `(` is at `open`, each as its text. */
-function argumentsAt(text: string, open: number): string[] {
-  const args: string[] = [];
-  let at = open + 1;
-  for (;;) {
-    const end = scanTo(text, at, ",");
-    args.push(text.slice(at, end).trim());
-    if (text[end] !== ",") return args.filter((arg) => arg !== "");
-    at = end + 1;
-  }
-}
-
-/** `expr` without what only types it: `as const`, `as QueryKey`, `satisfies …`, parentheses. */
-function bare(expr: string): string {
-  let out = expr.trim().replace(/\s+(?:as|satisfies)\s+[\w.<>[\]\s|]+$/, "");
-  while (out.startsWith("(") && scanTo(out, 1, "") === out.length - 1) out = out.slice(1, -1);
-  return out.trim();
-}
-
-/** Every element of the keys `a` and `b` name, joined end to end. */
-function joined(a: readonly Key[], b: readonly Key[]): Key[] {
-  return a.flatMap((head) => b.map((tail) => [...head, ...tail]));
-}
-
-/** The source of `path`, comments blanked. */
-function sourceAt(sources: ReadonlyMap<string, string>, path: string): string {
-  return withoutComments(sources.get(path) ?? "");
-}
-
-/** Reads the keys of every query key `expr` names in `path`. */
-class KeyReader {
-  readonly #sources: ReadonlyMap<string, string>;
-  /** The names being read now, so a name defined by itself is read as unreadable. */
-  readonly #reading = new Set<string>();
-
-  constructor(sources: ReadonlyMap<string, string>) {
-    this.#sources = sources;
-  }
-
-  /** The keys `expr`, written in `path`, may name, or `undefined` where it cannot be read. */
-  keys(expr: string, path: string): Key[] | undefined {
-    const text = bare(expr);
-    const question = scanTo(text, 0, "?");
-    if (question < text.length && text[question] === "?") {
-      const colon = scanTo(text, question + 1, ":");
-      const yes = this.keys(text.slice(question + 1, colon), path);
-      const no = this.keys(text.slice(colon + 1), path);
-      return yes === undefined || no === undefined ? undefined : [...yes, ...no];
-    }
-    if (text.startsWith("[") && scanTo(text, 1, "") === text.length - 1) {
-      return this.#array(text.slice(1, -1), path);
-    }
-    const options = /^(.*)\.queryKey$/s.exec(text);
-    if (options !== null) return this.#optionsKeys(options[1] ?? "", path);
-    const call = /^([A-Za-z_$][\w$]*)\s*(?:<[^()]*>)?\(/.exec(text);
-    if (call !== null && scanTo(text, (call[0] ?? "").length, "") === text.length - 1) {
-      return this.#returned(call[1] ?? "", path);
-    }
-    if (/^[A-Za-z_$][\w$]*$/.test(text)) return this.#named(text, path);
-    return undefined;
-  }
-
-  /** The keys an array literal's elements name: each string a string, each spread the keys it
-   *  spreads, and anything else any element. */
-  #array(body: string, path: string): Key[] {
-    let keys: Key[] = [[]];
-    for (const element of argumentsAt(`(${body})`, 0)) {
-      if (element.startsWith("...")) {
-        keys = joined(keys, this.keys(element.slice(3), path) ?? [[REST]]);
-        continue;
-      }
-      const literal = /^(["'`])(.*)\1$/s.exec(element);
-      const value = literal === null || literal[2]?.includes("${") ? ANY : (literal[2] ?? "");
-      keys = joined(keys, [[value]]);
-    }
-    return keys;
-  }
-
-  /** The keys of the query options `expr` names - a call of a factory of them, or a name one is
-   *  kept under - read off their `queryKey`. */
-  #optionsKeys(expr: string, path: string): Key[] | undefined {
-    const text = bare(expr);
-    const call = /^([A-Za-z_$][\w$]*)\s*\(/.exec(text);
-    const name = call?.[1] ?? (/^[A-Za-z_$][\w$]*$/.test(text) ? text : undefined);
-    if (name === undefined) return undefined;
-    return this.#withDefinition(name, path, (definition) => {
-      if (call === null && definition.kind === "const") {
-        return this.#optionsKeys(definition.text, definition.path);
-      }
-      const at = /\bqueryKey\s*:/.exec(definition.text);
-      if (at === null) return undefined;
-      const from = at.index + at[0].length;
-      const value = definition.text.slice(from, scanTo(definition.text, from, ",}"));
-      return this.keys(value, definition.path);
-    });
-  }
-
-  /** The keys a function named `name` answers with: every `return` of its body, or the body of
-   *  an arrow that has none. */
-  #returned(name: string, path: string): Key[] | undefined {
-    return this.#withDefinition(name, path, (definition) => {
-      const arrow = /=>\s*/.exec(definition.text);
-      const body =
-        definition.kind === "const" && arrow !== null
-          ? definition.text.slice(arrow.index + arrow[0].length)
-          : definition.text;
-      if (!body.trimStart().startsWith("{") && definition.kind === "const") {
-        return this.keys(body, definition.path);
-      }
-      const values = [...body.matchAll(/\breturn\s+/g)].map((match) => {
-        const from = match.index + match[0].length;
-        return body.slice(from, scanTo(body, from, ";"));
-      });
-      if (values.length === 0) return undefined;
-      const keys = values.map((value) => this.keys(value, definition.path));
-      return keys.some((key) => key === undefined) ? undefined : keys.flatMap((key) => key ?? []);
-    });
-  }
-
-  /** The keys the constant `name` holds. */
-  #named(name: string, path: string): Key[] | undefined {
-    return this.#withDefinition(name, path, (definition) =>
-      definition.kind === "const" ? this.keys(definition.text, definition.path) : undefined
-    );
-  }
-
-  /** `read` of every definition of `name` that `path` sees - its own, else the one it imports -
-   *  joined, or `undefined` where there is none or one cannot be read. */
-  #withDefinition(
-    name: string,
-    path: string,
-    read: (definition: Definition) => Key[] | undefined
-  ): Key[] | undefined {
-    const id = `${path}#${name}`;
-    if (this.#reading.has(id)) return undefined;
-    this.#reading.add(id);
-    try {
-      const definitions = this.#definitions(name, path);
-      if (definitions.length === 0) return undefined;
-      const keys = definitions.map(read);
-      return keys.some((key) => key === undefined) ? undefined : keys.flatMap((key) => key ?? []);
-    } finally {
-      this.#reading.delete(id);
-    }
-  }
-
-  /** Every definition of `name` in `path`, or, where it has none, in the module it imports
-   *  `name` from. */
-  #definitions(name: string, path: string): Definition[] {
-    const source = sourceAt(this.#sources, path);
-    const own = definitionsIn(source, name, path);
-    if (own.length > 0) return own;
-    for (const match of source.matchAll(/\bimport\s+(?:type\s+)?\{([^}]*)\}\s*from\s*"([^"]+)"/g)) {
-      const names = (match[1] ?? "").split(",").map((entry) => entry.replace(/^\s*type\s+/, ""));
-      if (!names.some((entry) => entry.trim() === name)) continue;
-      const from = moduleAt(path, match[2] ?? "", this.#sources);
-      return from === undefined ? [] : definitionsIn(sourceAt(this.#sources, from), name, from);
-    }
-    return [];
-  }
-}
-
-/** One definition of a name: a constant's initializer, or a function's whole text. */
-interface Definition {
-  readonly kind: "const" | "function";
-  readonly path: string;
-  readonly text: string;
-}
-
-/** Every `const`, `let` and `function` named `name` in `source`. */
-function definitionsIn(source: string, name: string, path: string): Definition[] {
-  const found: Definition[] = [];
-  for (const match of source.matchAll(
-    new RegExp(`\\b(?:const|let)\\s+${name}\\b\\s*(?::[^=]*)?=(?!=|>)`, "g")
-  )) {
-    const from = match.index + match[0].length;
-    found.push({ kind: "const", path, text: source.slice(from, scanTo(source, from, ";")) });
-  }
-  for (const match of source.matchAll(new RegExp(`\\bfunction\\s+${name}\\s*[<(]`, "g"))) {
-    // A function the app ships at its top level closes on a `}` at the start of a line.
-    const end = source.indexOf("\n}", match.index);
-    found.push({
-      kind: "function",
-      path,
-      text: source.slice(match.index, end === -1 ? source.length : end + 2),
-    });
-  }
-  return found;
-}
-
-/** The shipped module `specifier`, imported by `path`, by its path under `web/src`. */
-function moduleAt(
-  path: string,
-  specifier: string,
-  sources: ReadonlyMap<string, string>
-): string | undefined {
-  if (!specifier.startsWith(".")) return undefined;
-  const base = normalize(join(dirname(path), specifier)).replaceAll("\\", "/");
-  return [`${base}.ts`, `${base}.tsx`, `${base}/index.ts`].find((candidate) =>
-    sources.has(candidate)
-  );
-}
+/** The names a cache's data is written by. */
+const WRITE_NAMES = /\b(setQueryData|setQueriesData|setData|setState)\b/g;
+/** The same names, each written whole as a string. */
+const WRITE_STRINGS = /(["'`])(setQueryData|setQueriesData|setData|setState)\1/g;
 
 /** The line `index` is on in `source`, counted from one. */
 function lineOf(source: string, index: number): number {
   return source.slice(0, index).split("\n").length;
 }
 
-/** Every call in `sources` that writes a cache directly, and every one that shows a change on
- *  one, each with the keys it names. */
-function sitesIn(sources: ReadonlyMap<string, string>): {
-  readonly writes: readonly Site[];
-  readonly shown: readonly Site[];
-} {
-  const reader = new KeyReader(sources);
-  const writes: Site[] = [];
-  const shown: Site[] = [];
-  for (const path of sources.keys()) {
-    const source = sourceAt(sources, path);
-    for (const match of source.matchAll(/\.(setQueryData|setQueriesData)\s*(?:<[^()]*>)?\(/g)) {
-      const [first] = argumentsAt(source, match.index + match[0].length - 1);
-      const prefix = match[1] === "setQueriesData";
-      const filter = prefix ? /^\{\s*queryKey\s*:\s*([\s\S]*?)\s*[,}]/.exec(first ?? "") : null;
-      const text = (prefix ? filter?.[1] : first) ?? "";
-      const where = `${path}:${lineOf(source, match.index)}`;
-      writes.push({ keys: reader.keys(text, path), prefix, text, where });
-    }
-    for (const match of source.matchAll(/\bshown\.(on|under)\s*(?:<[^()]*>)?\(/g)) {
-      const [first] = argumentsAt(source, match.index + match[0].length - 1);
-      const text = first ?? "";
-      const where = `${path}:${lineOf(source, match.index)}`;
-      shown.push({ keys: reader.keys(text, path), prefix: match[1] === "under", text, where });
+/** The code character nearest before `index`, skipping blanks, comments and strings. */
+function codeBefore(source: string, mask: readonly boolean[], index: number): string {
+  for (let at = index - 1; at >= 0; at -= 1) {
+    if (mask[at] === true && !/\s/.test(source[at] ?? "")) return source[at] ?? "";
+  }
+  return "";
+}
+
+/** The bracket that holds `index`, the innermost one still open there. */
+function openBracket(source: string, mask: readonly boolean[], index: number): string {
+  let depth = 0;
+  for (let at = index - 1; at >= 0; at -= 1) {
+    if (mask[at] !== true) continue;
+    const ch = source[at] ?? "";
+    if (")]}".includes(ch)) depth += 1;
+    else if ("([{".includes(ch)) {
+      if (depth === 0) return ch;
+      depth -= 1;
     }
   }
-  return { shown, writes };
+  return "";
 }
 
-/** Whether some cache is named both by `a` and by `b`, each naming one key, or every key under
- *  it where it is open. */
-function meet(a: readonly Part[], aOpen: boolean, b: readonly Part[], bOpen: boolean): boolean {
-  const [x, ...restA] = a;
-  const [y, ...restB] = b;
-  if (x === REST || y === REST) return true;
-  if (x === undefined) return y === undefined || aOpen;
-  if (y === undefined) return bOpen;
-  if (typeof x === "string" && typeof y === "string" && x !== y) return false;
-  return meet(restA, aOpen, restB, bOpen);
+/** Whether the bare `setState` at `index` is a property named in an object - a literal or a
+ *  pattern, `{ setState }`, `{ setState: write }` - rather than a local function. */
+function namedInObject(source: string, mask: readonly boolean[], index: number): boolean {
+  const before = codeBefore(source, mask, index);
+  const after = source.slice(index + "setState".length);
+  return (
+    openBracket(source, mask, index) === "{" &&
+    (before === "{" || before === ",") &&
+    /^\s*(?:[:,}]|=(?![=>]))/.test(after)
+  );
 }
 
-/** What is wrong with the cache writes of `sources`, one line each. */
-function directWritesOverShownCaches(sources: ReadonlyMap<string, string>): string[] {
-  const { shown, writes } = sitesIn(sources);
+/** Whether the `setState` at `index` is a write into a query's state: one reached as a member of
+ *  anything but `this`, or taken out of an object by name. */
+function queryState(source: string, mask: readonly boolean[], index: number): boolean {
+  const before = source.slice(0, index);
+  if (/(?:\?\.|\.)\s*$/.test(before)) return !/\bthis\s*(?:\?\.|\.)\s*$/.test(before);
+  return namedInObject(source, mask, index);
+}
+
+/** Every cache write in `source`, the module at `path`, as `path:line name`. */
+function cacheWritesIn(path: string, source: string): string[] {
+  const mask = codeMask(source);
+  const found: { readonly index: number; readonly name: string }[] = [];
+  for (const match of source.matchAll(WRITE_NAMES)) {
+    const name = match[1] ?? "";
+    if (mask[match.index] !== true) continue;
+    if (name === "setState" && !queryState(source, mask, match.index)) continue;
+    found.push({ index: match.index, name });
+  }
+  for (const match of source.matchAll(WRITE_STRINGS)) {
+    if (mask[match.index] === true) found.push({ index: match.index, name: match[0] });
+  }
+  return found
+    .sort((a, b) => a.index - b.index)
+    .map(({ index, name }) => `${path}:${lineOf(source, index)} ${name}`);
+}
+
+/** What is wrong with the cache writes of `sources`, one line each, naming its file and line. */
+function directCacheWrites(sources: ReadonlyMap<string, string>): string[] {
+  return [...sources]
+    .filter(([path]) => path !== STORE)
+    .flatMap(([path, source]) => cacheWritesIn(path, source))
+    .map((site) => `${site} writes a cache outside the write store: merge through Writes.answer`);
+}
+
+/** Every `structuralSharing` rule in `sources` set outside `answerSharing`, one line each. */
+function rulesOutsideAnswerSharing(sources: ReadonlyMap<string, string>): string[] {
   const found: string[] = [];
-  for (const site of shown) {
-    if (site.keys === undefined) {
-      found.push(`${site.where} shows a change on a cache whose key cannot be read: ${site.text}`);
-    }
-  }
-  for (const site of writes) {
-    if (site.where.startsWith(`${STORE}:`)) continue;
-    const named = letThrough.some(
-      (entry) => site.where.startsWith(`${entry.path}:`) && entry.key === site.text
-    );
-    if (named) continue;
-    if (site.keys === undefined) {
-      found.push(`${site.where} writes a cache whose key cannot be read: ${site.text}`);
-      continue;
-    }
-    for (const change of shown) {
-      const over = site.keys.some((key) =>
-        (change.keys ?? []).some((other) => meet(key, site.prefix, other, change.prefix))
+  for (const [path, source] of sources) {
+    if (path === STORE) continue;
+    const mask = codeMask(source);
+    for (const match of source.matchAll(/\bstructuralSharing\b/g)) {
+      if (mask[match.index] !== true) continue;
+      const value = source.slice(match.index + match[0].length);
+      if (/^\s*:\s*(?:answerSharing\s*\(|true\b|false\b)/.test(value)) continue;
+      found.push(
+        `${path}:${lineOf(source, match.index)} sets a structuralSharing rule outside answerSharing`
       );
-      if (over) {
-        found.push(
-          `${site.where} writes ${site.text} directly, a cache ${change.where} shows a change on: merge it through Writes.answer`
-        );
-      }
     }
   }
   return found;
@@ -426,53 +149,101 @@ function shipped(): ReadonlyMap<string, string> {
   );
 }
 
-test("no shipped module writes a cache a write shows a change on but through the store", () => {
-  expect(directWritesOverShownCaches(shipped())).toEqual([]);
+test("no shipped module but the store writes a cache", () => {
+  expect(directCacheWrites(shipped())).toEqual([]);
 });
 
-// The rule has to see what it guards: every change the app shows names a cache it reads, the
-// pin's among them, and every write it lets through by name is still one the app makes.
-test("the scan reads the caches the app's changes are shown on, and every write it names", () => {
-  const sources = shipped();
-  const { shown, writes } = sitesIn(sources);
-  expect(shown.length).toBeGreaterThan(20);
-  expect(shown.find((site) => site.where.startsWith("features/issue/pin-write.ts:"))?.keys).toEqual(
-    [["user-state"]]
-  );
-  expect(
-    shown.find((site) => site.where.startsWith("features/project/board-moves.ts:"))?.keys
-  ).toEqual([
-    ["issues", "project", ANY],
-    ["issues", "project", ANY, "labels", ANY],
-  ]);
-  for (const entry of letThrough) {
-    expect(
-      writes.some((site) => site.where.startsWith(`${entry.path}:`) && site.text === entry.key)
-    ).toBe(true);
-  }
-  expect(writes.some((site) => site.where.startsWith(`${STORE}:`))).toBe(true);
+// The ban has to see what it guards: read as any module is, the store's own source is full of
+// the writes it alone may make.
+test("the ban reads the store's own cache writes, which it alone may make", () => {
+  const store = shipped().get(STORE) ?? "";
+  const names = cacheWritesIn(STORE, store).map((site) => site.split(" ")[1]);
+  expect(names).toContain("setQueryData");
+  expect(names).toContain("setState");
 });
 
-// The scan fails on the very write the store's copy replaced: a surface merging an answer over
-// the viewer's state as it stands, where a pin shows its change.
-test("a direct merge over a cache a write shows a change on is named by file and line", () => {
+// Every spelling the reviews planted, and the ones a writer could reach for next, is named by
+// file and line; a React state, a local setter, a comment and a string that only mention a name
+// are not.
+test("every spelling of a direct cache write is named by file and line", () => {
   const sources = new Map(shipped());
   sources.set(
     "features/issue/merged-over.ts",
     [
-      'import type { QueryClient } from "@tanstack/react-query";',
+      'import type { Query, QueryClient } from "@tanstack/react-query";',
+      'import { Component, useState } from "react";',
       "",
-      "export function mergeOver(client: QueryClient, next: unknown): void {",
+      "export function mergeOver(client: QueryClient, query: Query, next: object): void {",
       '  client.setQueryData(["user-state"], (current: object) => ({ ...current, next }));',
+      '  client.getQueryCache().find({ queryKey: ["user-state"] })?.setData(next);',
+      "  query.setState({ ...query.state, data: next });",
+      "  const write = client.setQueryData.bind(client);",
+      '  client.setQueryData.call(client, ["user-state"], next);',
+      '  client["setQueryData"](["user-state"], next);',
+      '  client.setQueriesData({ queryKey: ["user-state"] }, next);',
+      "  query?.setState({ ...query.state, data: next });",
+      "  query['setState']({ ...query.state, data: next });",
+      "  const { setState } = query;",
+      // biome-ignore lint/suspicious/noTemplateCurlyInString: the planted module's own template.
+      "  const label = `${client.setQueryData(['user-state'], next)}`;",
+      "  // client.setQueryData(['user-state'], next) in a comment is no write,",
+      '  const said = "and a string that says setQueryData is none either";',
+      "  void [write, setState, label, said];",
+      "}",
+      "",
+      "export function useLocal(): void {",
+      "  const [state, setState] = useState(0);",
+      "  setState(state + 1);",
+      "}",
+      "",
+      "export class Boundary extends Component<object, { failed: boolean }> {",
+      "  reset(): void {",
+      "    this.setState({ failed: false });",
+      "  }",
       "}",
       "",
     ].join("\n")
   );
-  const found = directWritesOverShownCaches(sources);
-  expect(found).toContainEqual(
-    expect.stringMatching(
-      /^features\/issue\/merged-over\.ts:4 writes \["user-state"\] directly, a cache features\/issue\/pin-write\.ts:\d+ shows a change on/
-    )
+  const where = "features/issue/merged-over.ts";
+  expect(directCacheWrites(sources).map((line) => line.split(" writes ")[0])).toEqual([
+    `${where}:5 setQueryData`,
+    `${where}:6 setData`,
+    `${where}:7 setState`,
+    `${where}:8 setQueryData`,
+    `${where}:9 setQueryData`,
+    `${where}:10 "setQueryData"`,
+    `${where}:11 setQueriesData`,
+    `${where}:12 setState`,
+    `${where}:13 'setState'`,
+    `${where}:14 setState`,
+    `${where}:15 setQueryData`,
+  ]);
+});
+
+test("every structuralSharing rule the app ships is set beneath the store's copies", () => {
+  expect(rulesOutsideAnswerSharing(shipped())).toEqual([]);
+});
+
+// The row reads the rules it holds: the issue's, which keeps out an issue older than the one
+// held, is one; a bare rule and one spelled short are named.
+test("a structuralSharing rule outside answerSharing is named by file and line", () => {
+  const sources = new Map(shipped());
+  expect(sources.get("api/queries.ts")).toMatch(/structuralSharing: answerSharing\(/);
+  sources.set(
+    "features/issue/bare-rule.ts",
+    [
+      'import { queryOptions } from "@tanstack/react-query";',
+      "",
+      "const structuralSharing = (_held: unknown, next: unknown) => next;",
+      'export const bare = queryOptions({ queryKey: ["s"], structuralSharing: (_a, b) => b });',
+      'export const short = queryOptions({ queryKey: ["s"], structuralSharing });',
+      'export const plain = queryOptions({ queryKey: ["s"], structuralSharing: false });',
+      "",
+    ].join("\n")
   );
-  expect(found.every((line) => line.startsWith("features/issue/merged-over.ts:4 "))).toBe(true);
+  expect(rulesOutsideAnswerSharing(sources)).toEqual([
+    "features/issue/bare-rule.ts:3 sets a structuralSharing rule outside answerSharing",
+    "features/issue/bare-rule.ts:4 sets a structuralSharing rule outside answerSharing",
+    "features/issue/bare-rule.ts:5 sets a structuralSharing rule outside answerSharing",
+  ]);
 });

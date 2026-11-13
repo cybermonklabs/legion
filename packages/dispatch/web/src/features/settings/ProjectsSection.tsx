@@ -21,6 +21,7 @@ import {
 import { Timestamp } from "../refs/Timestamp";
 import { LandedWithoutAnswer } from "../writes/LandedWithoutAnswer";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { writesOf } from "../writes/write-store";
 import {
   settingsFieldLabel,
   settingsMonoInput,
@@ -332,7 +333,7 @@ function useDefaultAssigneeWrite(project: string): {
       if (saved === null || "superseded" in saved) {
         return;
       }
-      queryClient.setQueryData<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
+      writesOf(queryClient).answer<ProjectDefaultAssignee[]>(defaultsKey, (rows) => {
         if (rows === undefined) {
           return rows;
         }

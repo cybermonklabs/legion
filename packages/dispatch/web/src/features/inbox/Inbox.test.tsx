@@ -1929,7 +1929,7 @@ test("a sibling ask of the same issue leaving the list does not drop an in-fligh
       within(rowA() as HTMLElement).getByRole("button", { name: "Assign CORE-3 to me" })
     ).toBeTruthy();
 
-    // The server refuses: A rolls back, and its own control shows the reason.
+    // The server refuses: A's assignment is drawn no more, and its own control shows the reason.
     await act(async () => {
       save.reject(
         new ApiError(409, { code: "ISSUE_CLOSED", error: "CORE-3 is closed; reopen it first" })

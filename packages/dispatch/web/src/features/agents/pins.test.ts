@@ -119,8 +119,8 @@ test("a pin stays shown over an answer to the viewer's agent state that lands wh
   }
 });
 
-// R10 of dispatch://INFRA-299. A pin's press rolls nothing back itself: a refused pin is the
-// store's to put back - the agent state as Dispatch last gave it - before the state is read
+// R10 of dispatch://INFRA-299. A pin's press undoes nothing itself: a refused pin stops being
+// drawn, so the page shows the agent state as Dispatch last gave it, before the state is read
 // again. Where that read fails - offline, a 5xx - no session is left pinned on the page.
 test("a refused pin leaves the agent state Dispatch last gave when the read again fails", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });

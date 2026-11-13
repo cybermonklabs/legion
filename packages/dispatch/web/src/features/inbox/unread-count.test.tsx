@@ -199,8 +199,9 @@ async function dismissRefusedAfterMarkAllMade(countRead: () => Promise<MyReplies
 }
 
 // A press made while an earlier one is out takes its rows out of the count before the earlier
-// one: a refusal of the earlier one puts back five less the two rows Dispatch marked - the count
-// Dispatch last confirmed - while it reads the count again, never the five no answer gives.
+// one: once the earlier one is refused and its drop is drawn no more, the count reads five less
+// the two rows Dispatch marked - the count Dispatch last confirmed - while it reads the count
+// again, never the five no answer gives.
 test("a Dismiss refused after a later Mark all read was made reads three while the count is read again", async () => {
   const counted = Promise.withResolvers<MyRepliesResponse>();
   const client = await dismissRefusedAfterMarkAllMade(() => counted.promise);

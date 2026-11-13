@@ -1874,6 +1874,22 @@ export function writesOf(client: QueryClient): Writes {
   return store;
 }
 
+/** Fails `key`'s query as a failed refetch does, with `failure`, keeping the data it holds: a
+ *  live view Dispatch stopped answering (`createLiveSocket`). The one write into a query's state
+ *  beside its data the page makes, kept in this module with every other, since none outside it
+ *  writes a query's state (`no-direct-cache-writes.test.ts`). */
+export function failQuery(client: QueryClient, key: QueryKey, failure: Error): void {
+  const query = client.getQueryCache().find({ exact: true, queryKey: key });
+  query?.setState({
+    ...query.state,
+    error: failure,
+    errorUpdateCount: query.state.errorUpdateCount + 1,
+    errorUpdatedAt: Date.now(),
+    fetchFailureReason: failure,
+    status: "error",
+  });
+}
+
 /** Has `watch` told of every store made from now on (none when `undefined`), for the unit tests'
  *  preload, which stops each one's trying after every test (`Writes.clear`). A store outlives the
  *  test that made it, and a write it left out goes on retrying on its backoff once the test's spies

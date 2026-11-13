@@ -37,7 +37,7 @@ import {
 } from "../../theme/classes";
 import { deliveryAttempts } from "../agents/attempts";
 import { AskCard } from "../inbox/AskCard";
-import { writePin } from "../issue/pin-write";
+import { storeIssueState, writePin } from "../issue/pin-write";
 import { conversationItemId, isPinnedConversation, stateForIssue } from "../issue/pins";
 import { ThreadCard } from "../margin/ThreadCard";
 import { type CommentActionFailure, useCommentActionQueue } from "../margin/useCommentActionQueue";
@@ -63,7 +63,6 @@ import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
-import { writesOf } from "../writes/write-store";
 import { Avatar } from "./Avatar";
 import type { ReplyTarget } from "./composer-model";
 import {
@@ -1192,12 +1191,9 @@ export function ConversationTab({
   useSendMarkOnce({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
     // Into Dispatch's copy of the viewer's state while a pin of any issue shows a change there
-    // (`Writes.answer`), so that pin stays over the mark's answer and none is carried into it.
-    onSuccess: (next, mark) =>
-      writesOf(queryClient).answer<UserState>(["user-state"], (current) => ({
-        ...current,
-        [mark.issueKey]: next,
-      })),
+    // (`storeIssueState`), so that pin stays drawn over the mark's answer and none is carried
+    // into it.
+    onSuccess: (next, mark) => storeIssueState(queryClient, mark.issueKey, next),
     request: (mark: { issueKey: string; seq: number }) =>
       issueStateRequest(mark.issueKey, { last_read_seq: mark.seq }),
     shouldSend: read !== undefined && read.seq > lastReadSeq,

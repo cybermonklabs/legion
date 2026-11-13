@@ -13,6 +13,7 @@ import type { AnswerAskInput, Ask, AskAnswer, AskRead, AskWithTrees } from "../.
 import { useSubmitGuard } from "../../hooks/useSubmitGuard";
 import { isViewer } from "../refs/actor";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { writesOf } from "../writes/write-store";
 import { answerAskInput } from "./answer-ask";
 import { useAnswerDraft } from "./answer-drafts";
 import {
@@ -150,7 +151,7 @@ export function useAskAnswerForm({
   const answers = threadQuery.data?.answers ?? [];
   // The card says why an answer was refused, in the ask's own words, beside the draft it holds;
   // the shell's indicator shows the answer only while it is out. The row's removal from the
-  // Inbox, its restore on a refusal and the hold that keeps the question where the reader
+  // Inbox, drawn no more once refused, and the hold that keeps the question where the reader
   // pressed it are the decline's too, and are written once beside the hold itself.
   const mutation = useOutstandingAnswerWrite({
     askId: ask.id,
@@ -196,7 +197,7 @@ export function useAskAnswerForm({
       if (changed || updatedAsk === null) {
         if (updatedAsk?.answer != null) {
           const changedAnswer = updatedAsk.answer;
-          queryClient.setQueryData<AskRead>(["ask-thread", ask.id], (current) =>
+          writesOf(queryClient).answer<AskRead>(["ask-thread", ask.id], (current) =>
             current === undefined
               ? undefined
               : {

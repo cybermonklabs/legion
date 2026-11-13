@@ -95,7 +95,7 @@ export type KeyedWriteResult<TData, TVariables, TContext> = UseMutationResult<
  * pending-writes indicator while it is out and, refused, with Retry and Discard (`Writes.run`).
  * The mutation settles with Dispatch's answer - `null` for a landing without one - its refusal, or
  * `SendStoppedError` once the reader stops it. What `shows` drew leaves the screen on anything
- * but a landing; what else the surface drew optimistically is its own to roll back. A `mutate` of
+ * but a landing; what else the surface drew at the press is its own to undo. A `mutate` of
  * the same variables a press the reader stopped was made with is that press made again, under its
  * key - Dispatch may have taken it, and answers the key with what it did - while one after
  * Dispatch's own refusal is a new press, since Dispatch would answer the old key with that

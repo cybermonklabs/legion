@@ -59,7 +59,7 @@ test("another sign-in lets go of the last pin's answer", async () => {
     | undefined;
   const sent = await nextPinAfter((client) => {
     writesOf(client).signedIn("bob");
-    // The dropped pin is undone as a refused one is: the store puts back the state Dispatch
+    // The dropped pin stops being drawn as a refused one does: the page shows the state Dispatch
     // last confirmed - alice's first pin, which it made - and reads it again.
     rolledBack = {
       dismissed: client.getQueryData<UserState>(["user-state"])?.["CORE-1"]?.dismissed,
@@ -144,8 +144,8 @@ test("a pin shows its change again over an answer to the viewer's state", async 
   }
 });
 
-// R10 of dispatch://INFRA-299. Nothing awaits a pin's press to roll it back, so a refused pin is
-// the store's to put back: the viewer's state as Dispatch last gave it, before the state is read
+// R10 of dispatch://INFRA-299. Nothing awaits a pin's press to undo it: a refused pin stops being
+// drawn, so the page shows the viewer's state as Dispatch last gave it, before the state is read
 // again. Where that read fails - offline, a 5xx - the page shows no pin Dispatch never took.
 test("a refused pin leaves the state Dispatch last gave when the read again fails", async () => {
   const client = signedIn("alice");
@@ -182,13 +182,13 @@ test("a refused pin leaves the state Dispatch last gave when the read again fail
   }
 });
 
-// R10 of dispatch://INFRA-299. What a refused pin is put back to is the state as Dispatch last
-// gave it. Another issue's pin landing while this one is out is merged over the state as it
-// stands (the pin kind's own `landed`), and that state carries this pin's change, shown by the
-// store: the merge is Dispatch's answer for CORE-2 alone, not for CORE-1. So when this pin is
+// R10 of dispatch://INFRA-299. What a refused pin leaves on the page is the state as Dispatch
+// last gave it. Another issue's pin landing while this one is out is merged into the store's copy
+// of the state (`storeIssueState`), never over the state as it stands, which carries this pin's
+// change: the merge is Dispatch's answer for CORE-2 alone, not for CORE-1. So when this pin is
 // refused and the read again fails, CORE-1 must show what Dispatch last gave it, not the pin
 // Dispatch refused.
-test("a refused pin is not put back to another issue's pin merged over it while it was out", async () => {
+test("a refused pin does not leave another issue's pin answer carrying it while it was out", async () => {
   const client = signedIn("alice");
   let online = true;
   const getMyState = spyOn(api, "getMyState").mockImplementation(() =>

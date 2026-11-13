@@ -1,7 +1,7 @@
 /**
  * The Inbox's **Dismiss**: what one press sends, what it takes off the page before the server
- * answers, what it puts back when the server refuses, and the `e` and the bulk bar that press it
- * (INFRA-450).
+ * answers, what the page shows once the server refuses it and it is drawn no more, and the `e`
+ * and the bulk bar that press it (INFRA-450).
  */
 
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
@@ -197,7 +197,7 @@ test("a count answer landing while the press is out is lowered once, whether or 
   await waitFor(() => expect(dismissed).toHaveBeenCalledTimes(1));
 });
 
-test("a refused dismiss puts the row back where it stood and says so", async () => {
+test("a refused dismiss shows the row where it stood again and says so", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();
   dismissed.mockRejectedValue(new ApiError(404, { error: "not found" }));
@@ -213,7 +213,7 @@ test("a refused dismiss puts the row back where it stood and says so", async () 
   expect(rowIds()).toEqual(["reply:c1", "reply:c9"]);
 });
 
-test("a row a refused dismiss put back is the reader's hand's again, held under the next read", async () => {
+test("a row a refused dismiss no longer takes out is the reader's hand's again, held under the next read", async () => {
   const user = userEvent.setup();
   const dismissed = answerInboxDismisses();
   dismissed.mockRejectedValue(new ApiError(404, { error: "not found" }));
@@ -224,9 +224,9 @@ test("a row a refused dismiss put back is the reader's hand's again, held under 
   await user.click(document.querySelector('[data-inbox-dismiss="reply:c1"]') as HTMLElement);
   await screen.findByRole("alert");
 
-  // The reader's hand is on the row the refusal put back, and the next read of the list no longer
-  // holds it - somebody else dealt with the thread. It stays where they can see it, as any row
-  // under their hand does: the press that took it out of the hold has settled.
+  // The reader's hand is on the row the refused press no longer takes out, and the next read of
+  // the list no longer holds it - somebody else dealt with the thread. It stays where they can
+  // see it, as any row under their hand does: the press that took it out of the hold has settled.
   const row = document.querySelector<HTMLElement>('[data-inbox-row="reply:c1"]');
   act(() => row?.focus());
   act(() => {

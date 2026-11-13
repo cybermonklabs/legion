@@ -77,6 +77,17 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
   });
 }
 
+/** Puts the viewer's state of `issueKey` Dispatch answered with - a pin's, a header pin's, a read
+ *  mark's - into the viewer's state (`["user-state"]`), so every surface reads it at once: into
+ *  Dispatch's copy of it while a pin shows a change there (`Writes.answer`), so a pin of any
+ *  issue still out stays drawn over it and none is carried into Dispatch's copy. */
+export function storeIssueState(client: QueryClient, issueKey: string, next: UserIssueState): void {
+  writesOf(client).answer<UserState>(["user-state"], (current) => ({
+    ...current,
+    [issueKey]: next,
+  }));
+}
+
 /**
  * A pin or an unpin, one write of the store each, ordered on its issue (`pin:<issue>`), shown in
  * the shell's indicator and kept across a reload. The write shows its change on `["user-state"]`
@@ -100,10 +111,7 @@ const pinWrite = defineWriteKind<PinWrite>({
       void client.invalidateQueries({ queryKey: ["user-state"] });
       return;
     }
-    writesOf(client).answer<UserState>(["user-state"], (current) => ({
-      ...current,
-      [issueKey]: answer as UserIssueState,
-    }));
+    storeIssueState(client, issueKey, answer as UserIssueState);
   },
   name: "pin",
   reset: () => authoritative.clear(),

@@ -6,6 +6,7 @@ import { api, documentReadRequest } from "../../api/client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
+import { writesOf } from "../writes/write-store";
 
 /** What a stale block says when the reader rests on it. */
 export const STALE_BLOCK_TITLE = "A decision that shaped this block changed after it.";
@@ -174,7 +175,7 @@ export function useSpecMarks({
       enabled && readAtOpen !== undefined && shownVersion !== undefined
         ? { key: `${artifact.id}@${shownVersion}`, value: shownVersion }
         : undefined,
-    onSuccess: (result) => queryClient.setQueryData(readKey, result),
+    onSuccess: (result) => writesOf(queryClient).answer(readKey, () => result),
     request: (version) => documentReadRequest(artifact.id, version),
     shouldSend: true,
     target: `read:document:${artifact.id}`,

@@ -1303,7 +1303,7 @@ test("AskCard submits a selected single option with added context", async () => 
   }
 });
 
-test("AskCard restores its inbox entry if an optimistic answer fails", async () => {
+test("AskCard's inbox entry is listed again if an optimistic answer fails", async () => {
   const user = userEvent.setup();
   let rejectAnswer: (reason?: unknown) => void = () => {};
   const pendingAnswer = new Promise<Ask>((_resolve, reject) => {

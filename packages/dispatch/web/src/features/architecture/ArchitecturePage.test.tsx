@@ -638,7 +638,7 @@ test("Unassigned: the picker PATCHes an explicit set, the row leaves the list at
       "CORE has no component ghost"
     );
     expect(within(list).getByRole("link", { name: "CORE-7 · Loose end" })).toBeTruthy();
-    // The optimistic move rolled back: the scope line still counts it.
+    // The refused move is drawn no more: the scope line still counts it.
     expect(screen.getByTestId("architecture-scope")).toHaveTextContent("1 unassigned");
 
     // The success path: the tree cache moves the issue at once; the row stays, saving, until
