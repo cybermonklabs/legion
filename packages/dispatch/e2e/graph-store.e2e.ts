@@ -32,7 +32,7 @@ import {
   servesAddedType,
   storeSchemaBeforeTheChange,
 } from "./block-schema";
-import { connectedDot, countDocumentSockets, documentEditor, typeAtEnd } from "./editor";
+import { connectedDot, documentEditor, typeAtEnd } from "./editor";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
@@ -103,6 +103,22 @@ async function newestStoredMarkdown(artifact: string): Promise<string> {
   return (await getArtifactVersion(artifact, newest.number)).markdown;
 }
 
+/** The schema version each document socket the page opens for `artifact` presented, in the order
+ *  the page opened them. The tab names the block schema it read in the socket's own URL
+ *  (`schema_version`, which `web/src/features/doc/connection.ts` hands the provider), and the
+ *  server admits a socket writable only where that is the version it installed, so the URL says
+ *  which schema each connection was made with. The list's length is the sockets opened. */
+function presentedSchemaVersions(page: Page, artifact: string): string[] {
+  const presented: string[] = [];
+  page.on("websocket", (socket) => {
+    const url = new URL(socket.url());
+    if (url.pathname === `/ws/doc/${artifact}`) {
+      presented.push(url.searchParams.get("schema_version") ?? "none");
+    }
+  });
+  return presented;
+}
+
 // SLOW(>=2s): one live editor across a supertag migration - the store moved under the running
 // server, the socket closed and opened again, and a settled version read back.
 test("a supertag change leaves an open editor writing", async ({ browser }, testInfo) => {
@@ -117,7 +133,7 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
-    const sockets = countDocumentSockets(page, artifact);
+    const presented = presentedSchemaVersions(page, artifact);
     await page.goto(`/issues/${key}/spec`);
     await expect(documentEditor(page)).toContainText("The first line.");
     await expect(connectedDot(page)).toHaveText("connected");
@@ -138,8 +154,20 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
     // The transition: between the migration's commit and the socket's return the process is
     // still on the old schema, so a document holding a block of the new type is refused rather
     // than stored under it. The write goes through the tab, whose socket is still the one it
-    // opened before the change.
+    // opened before the change: the tab reads connected, and it has opened one document socket,
+    // presenting the old version, because a process that has not installed the new schema has
+    // closed nothing. That is what puts the write inside the window between the migration's
+    // commit and the socket's return.
     expect(await installedVersion()).toBe(priorSchemaVersion);
+    await expect(
+      connectedDot(page),
+      "the tab stays connected while the migration commits"
+    ).toHaveText("connected");
+    expect(
+      presented,
+      "the tab has opened one document socket, presenting the old schema, so the switch has not " +
+        "yet closed it and opened another"
+    ).toEqual([String(priorSchemaVersion)]);
     const refused = await writeThroughTheTab(
       page,
       key,
@@ -161,7 +189,7 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
     // The tab loses its socket to that switch, reads the installed schema and connects again
     // with it. The second socket is the one that proves the reconnect.
     await expect
-      .poll(sockets, {
+      .poll(() => presented.length, {
         message:
           "the tab opened no second document socket for this document, so the switch closed " +
           "none: the server this ran against either holds no socket registry " +
@@ -171,6 +199,13 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
       })
       .toBeGreaterThanOrEqual(2);
     await expect(connectedDot(page)).toHaveText("connected");
+    // The socket it opened again presents the version the server installed: the tab re-read the
+    // block schema before it connected, rather than reconnecting with the one it held.
+    expect(
+      presented[1],
+      `the second document socket presented schema version ${presented[1]}, want the installed ` +
+        `${builtSchemaVersion}; every socket presented ${presented.join(", ")}`
+    ).toBe(String(builtSchemaVersion));
 
     // The person types again in the same tab, and the text is stored.
     await typeAtEnd(page, "Typed after the switch.");
@@ -241,6 +276,7 @@ test("a supertag change leaves an open editor writing", async ({ browser }, test
  * so only the predicate keeps it off the page.
  */
 async function seedThePersonPage(): Promise<{
+  authored: string;
   issue: string;
   received: string;
 }> {
@@ -254,7 +290,11 @@ async function seedThePersonPage(): Promise<{
     title: "Person page",
   });
 
-  await createComment(issue.key, { body: "Alice wrote the first." }, { login: "alice" });
+  const authored = await createComment(
+    issue.key,
+    { body: "Alice wrote the first." },
+    { login: "alice" }
+  );
   await createComment(
     issue.key,
     { body: "The session wrote the second." },
@@ -331,6 +371,7 @@ async function seedThePersonPage(): Promise<{
      from graph_nodes where kind = 'comment' and id = '${unseen.id}'`
   );
   return {
+    authored: authored.id,
     issue: issue.key,
     received: received.id,
   };
@@ -406,6 +447,34 @@ test("a person page lists what they authored and what reached them", async ({
       )
     ).toBe("1");
     await expect(page.getByText("Bob wrote the third, for the session.")).toHaveCount(0);
+
+    // The authored row answers the store's current tuples too: with the authored_by tuple of
+    // alice's first comment retracted the same way, her page lists nothing, while that comment
+    // stands in its thread as it was.
+    expect(
+      await sql(
+        `with retracted as (
+           insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event, legacy_source_seq, asserted)
+           select from_kind, from_id, kind, to_kind, to_id, now(), who, 0, null, false
+           from graph_tuples
+           where from_kind = 'comment' and from_id = '${seeded.authored}'
+             and kind = 'authored_by' and to_kind = 'person' and to_id = 'alice' and asserted
+           returning 1)
+         select count(*) from retracted`
+      ),
+      "one authored_by tuple of alice's first comment is retracted"
+    ).toBe("1");
+    await page.goto("/people/alice");
+    await expect(page.getByRole("heading", { level: 1 })).toHaveText("alice");
+    await expect(
+      page.getByRole("list", { name: "Person nodes" }).getByRole("listitem"),
+      "with its authored_by tuple retracted, alice's authored comment is on no row of her page"
+    ).toHaveCount(0);
+    await expect(page.getByText("Alice wrote the first.")).toHaveCount(0);
+    expect(
+      await sql(`select count(*) from comments where id = '${seeded.authored}'::uuid`),
+      "alice's first comment still stands as a row of comments"
+    ).toBe("1");
   } finally {
     await alice.close();
   }

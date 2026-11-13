@@ -21,7 +21,9 @@ import {
   createIssue,
   createIssueArtifact,
   createProject,
+  getArtifact,
   getArtifactText,
+  getArtifactVersion,
   userHeaders,
 } from "./api";
 import {
@@ -97,6 +99,23 @@ async function typeAndStore(page: Page, artifact: string, text: string): Promise
     .toContain(text);
 }
 
+/** The document's stored versions as one process reads them, and the markdown of the newest: what
+ *  a write was stored as, which the live text a room holds is not. */
+async function storedVersions(
+  artifact: string,
+  target: DispatchProcess
+): Promise<{ newest: string; numbers: number[] }> {
+  const numbers = ((await getArtifact(artifact, { process: target })).versions ?? []).map(
+    (version) => version.number
+  );
+  const last = numbers.at(-1);
+  const newest =
+    last === undefined
+      ? ""
+      : (await getArtifactVersion(artifact, last, { process: target })).markdown;
+  return { newest, numbers };
+}
+
 // SLOW(>=2s): two processes, two editor tabs, a migration one of them misses, and the catch-up.
 test("two processes agree on the installed schema", async ({ browser }) => {
   await createProject({ key: "CORE", name: "Core" });
@@ -116,6 +135,16 @@ test("two processes agree on the installed schema", async ({ browser }) => {
     { login: "alice", process: "a" }
   );
   const notesID = notes.artifact.id;
+  // The document as it is stored before the switch: one version, holding the text it was
+  // written with and no block of the type the migration adds.
+  const before = await storedVersions(notesID, "a");
+  expect(before.numbers, "notes.md is stored as one version before the switch").toHaveLength(1);
+  expect(before.newest, "notes.md's one version holds the text it was written with").toContain(
+    "Nothing typed yet."
+  );
+  expect(before.newest, `notes.md's one version holds no :::${ADDED_TYPE} block`).not.toContain(
+    `:::${ADDED_TYPE}`
+  );
 
   await storeSchemaBeforeTheChange();
   for (const target of dispatchProcesses) {
@@ -137,9 +166,10 @@ test("two processes agree on the installed schema", async ({ browser }) => {
   }
 
   try {
-    // The migration, with one process's listener terminated in the same psql session right before
-    // the commit: that process hears no notification and holds the schema it has until its hub
-    // redials.
+    // The migration, applied by psql while the first process runs, with the other process's
+    // listener terminated in the same psql session right before the commit: that process hears
+    // no notification and holds the schema it has until its hub redials. No Dispatch process
+    // performs the migration.
     const names = await listeners();
     expect(names, "both processes name a listener connection").toHaveLength(2);
     await applySupertagMigration({ stopListenerOf: names[1] });
@@ -183,52 +213,76 @@ test("two processes agree on the installed schema", async ({ browser }) => {
 
     // The transition: the second process still holds the old version, so a document holding a
     // block of the new type written through it is refused rather than stored under that version.
-    const refused = await uploadThrough(
-      second,
-      issue.key,
-      "notes.md",
-      documentWithAddedType("A claim the second process has not learned.")
+    const lost = "A claim the second process has not learned.";
+    const refused = await uploadThrough(second, issue.key, "notes.md", documentWithAddedType(lost));
+    // Every assertion from here names the process, the version it held at the transition and the
+    // write it took, so a failure says which process took what.
+    const took = (target: DispatchProcess, write: { body: string; status: number }) =>
+      `process ${target}, holding schema version ${held[target]}, answered the write ` +
+      `${write.status} ${write.body}`;
+    // The stored versions are read before the answer is judged: a stale process that took the
+    // write and dropped the block it cannot hold has stored a version without it, and the
+    // failure then quotes the block that version lost rather than the status alone.
+    const transition = await storedVersions(notesID, second);
+    if (refused.status !== 400) {
+      expect(
+        transition.newest,
+        `${took(second, refused)}: the write was taken, and its newest stored version ` +
+          `(${transition.numbers.at(-1)}) lost the block ":::${ADDED_TYPE}{#c1} ${lost}"`
+      ).toContain(`:::${ADDED_TYPE}`);
+      expect(
+        transition.newest,
+        `${took(second, refused)}: the newest stored version lost "${lost}"`
+      ).toContain(lost);
+    }
+    expect(refused.status, took(second, refused)).toBe(400);
+    expect(refused.body, took(second, refused)).toContain(
+      `unknown typed block \\"${ADDED_TYPE}\\"`
     );
-    expect(
-      refused.status,
-      `process ${second}, holding version ${held[second]}, answered ${refused.body}`
-    ).toBe(400);
-    expect(refused.body).toContain(`unknown typed block \\"${ADDED_TYPE}\\"`);
-    // The stored version is the one before, with no block dropped from it.
-    const stored = await getArtifactText(notesID, { process: second });
-    expect(stored.markdown).toContain("Nothing typed yet.");
-    expect(stored.markdown).not.toContain(`:::${ADDED_TYPE}`);
+    // The stored version is the one before, with no block dropped from it: the refused write
+    // stored nothing.
+    expect(transition.numbers, `${took(second, refused)}; notes.md's stored versions`).toEqual(
+      before.numbers
+    );
+    expect(transition.newest, took(second, refused)).toContain("Nothing typed yet.");
+    expect(transition.newest, took(second, refused)).not.toContain(`:::${ADDED_TYPE}`);
 
     // The second process handles its notification once its listener is back: `pglisten.Hub`
     // redials, every wake is signalled after that LISTEN, and the installer reads the store. The
     // installed version then reads equal on both.
     for (const target of dispatchProcesses) {
       await expect
-        .poll(() => installedVersion(target), { timeout: 30_000 })
+        .poll(() => installedVersion(target), {
+          message: `${took(target, refused)}; it never installed version ${builtSchemaVersion}`,
+          timeout: 30_000,
+        })
         .toBe(builtSchemaVersion);
     }
 
-    // The same document written again through the second process stores the new block.
-    const taken = await uploadThrough(
-      second,
-      issue.key,
-      "notes.md",
-      documentWithAddedType("A claim the second process now holds.")
+    // The same document written again through the second process stores the new block, in a
+    // version of its own.
+    const kept = "A claim the second process now holds.";
+    const taken = await uploadThrough(second, issue.key, "notes.md", documentWithAddedType(kept));
+    expect(taken.status, took(second, taken)).toBe(201);
+    const after = await storedVersions(notesID, second);
+    expect(
+      after.numbers.at(-1),
+      `${took(second, taken)}; notes.md's newest stored version, against ${before.numbers.join(", ")} before`
+    ).toBeGreaterThan(before.numbers.at(-1) ?? 0);
+    expect(after.newest, `${took(second, taken)}; the newest stored version`).toContain(
+      `:::${ADDED_TYPE}`
     );
-    expect(taken.status, taken.body).toBe(201);
-    const after = await getArtifactText(notesID, { process: second });
-    expect(after.markdown).toContain(`:::${ADDED_TYPE}`);
-    expect(after.markdown).toContain("A claim the second process now holds.");
+    expect(after.newest, `${took(second, taken)}; the newest stored version`).toContain(kept);
 
     // Neither process restarted.
-    expect(await processStartTimes()).toBe(startedBefore);
+    expect(await processStartTimes(), took(second, taken)).toBe(startedBefore);
 
     // The editor socket opened before the change writes again, with no reload: the tab lost its
     // socket to the switch, read the installed schema and connected with it.
     const page = pages[second] as Page;
-    await expect(connectedDot(page)).toHaveText("connected");
+    await expect(connectedDot(page), took(second, taken)).toHaveText("connected");
     await typeAndStore(page, artifact, `Typed on process ${second} after the switch.`);
-    await expect(page.getByText("Reload to edit.")).toHaveCount(0);
+    await expect(page.getByText("Reload to edit."), took(second, taken)).toHaveCount(0);
   } finally {
     for (const context of Object.values(contexts)) {
       await context.close();

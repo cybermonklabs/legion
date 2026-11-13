@@ -678,12 +678,17 @@ backlog_oldest="$(sed -n 's/^census: sizing backlog oldest_owed_at=\([^ ]*\) .*$
 pass C11 "the report owes $backlog_owed document(s), the oldest since $backlog_oldest"
 
 # C12: the drain. The lease goes back, the loop takes it, and the window measured is the loop's
-# own: from the first document it settled to the last, as cmd/dispatch's writeCostTick measures a
-# tick. The wait before it is the reconciliation's interval and no part of its rate.
+# own, as cmd/dispatch's writeCostTick measures a tick. The window opens at the first poll that
+# finds a document settled, so what the loop settled before that poll is outside it: the window
+# holds the documents still owed at that poll and no others. Every figure read off it - each rate,
+# the seconds a document and both gates - therefore counts those documents ($drained) and not the
+# whole corpus, which would charge the window for work done before it opened. The wait before it
+# is the reconciliation's interval and no part of its rate.
 release_block_index
 released="$(date +%s.%N)"
 drain_started=""
 drain_finished=""
+drained=""
 while :; do
   owed C12 "count the documents still owed an index"
   left="$answer"
@@ -692,7 +697,10 @@ while :; do
     drain_finished="$now"
     break
   fi
-  [[ -n "$drain_started" || "$left" -ge "$((owed_before + drain_documents))" ]] || drain_started="$now"
+  if [[ -z "$drain_started" && "$left" -lt "$((owed_before + drain_documents))" ]]; then
+    drain_started="$now"
+    drained=$((left - owed_before))
+  fi
   awk -v from="$released" -v to="$now" -v limit="$drain_wait" 'BEGIN { exit !(to - from <= limit) }' ||
     fail C12 "the loop drains the corpus" \
       "$((left - owed_before)) document(s) of the corpus were still owed an index ${drain_wait}s after the lease was given back"
@@ -709,19 +717,27 @@ drain_blocks="$answer"
 [[ "$drain_blocks" -gt "$((defer_blocks * drain_documents))" ]] ||
   fail C12 "the corpus is past the deferral bound" \
     "the loop indexed $drain_blocks block(s) over $drain_documents document(s), which is not more than $defer_blocks each"
+# Every document of the corpus is one file written under another name (write_document), so each
+# holds the same blocks, and the blocks of the window are that many for each document it drained.
+blocks_each=$((drain_blocks / drain_documents))
+[[ "$((blocks_each * drain_documents))" == "$drain_blocks" ]] ||
+  fail C12 "every document of the corpus holds the same blocks" \
+    "the loop indexed $drain_blocks block(s) over $drain_documents copies of one document, which no one count a document divides"
+drained_blocks=$((blocks_each * drained))
+drain_rate="$(a_minute "$drained" "$drain_seconds")"
 pass C12 "the window wrote $drain_documents document(s) and $drain_blocks block(s) over the ${write_seconds}s it held the lease: $(a_minute "$drain_documents" "$write_seconds") documents a minute, $(a_minute "$drain_blocks" "$write_seconds") blocks a minute"
-pass C12 "the loop drained the same $drain_documents document(s) and $drain_blocks block(s) over the ${drain_seconds}s from its first settled document to its last: $(a_minute "$drain_documents" "$drain_seconds") documents a minute, $(a_minute "$drain_blocks" "$drain_seconds") blocks a minute (it began $(since "$released" "$drain_started")s after the lease went back, which is the reconciliation's interval and no part of this rate)"
+pass C12 "the loop drained $drained of those document(s), $drained_blocks block(s), over the ${drain_seconds}s from the first poll that found one settled to its last: $drain_rate documents a minute, $(a_minute "$drained_blocks" "$drain_seconds") blocks a minute (the $((drain_documents - drained)) it settled before that poll are outside the window; it began $(since "$released" "$drain_started")s after the lease went back, which is the reconciliation's interval and no part of this rate)"
 # The two rates above are not held to each other, and this line says why rather than leaving a
 # reader to work it out: a write past the bound defers the block index precisely so it does not
 # pay for it, so the loop spends on each document what that write did not, and a window of such
 # writes back to back always produces documents faster than any loop settles them. The seconds
 # each side spends on one document are printed, because they are the whole of the reason.
-pass C12 "a deferring write spends $(awk -v s="$write_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')s on one of these documents where the loop spends $(awk -v s="$drain_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')s, which is the deferral working: the write leaves the index to the loop, so a burst of such writes always outruns it and is no rate a deployment sustains"
+pass C12 "a deferring write spends $(awk -v s="$write_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')s on one of these documents where the loop spends $(awk -v s="$drain_seconds" -v n="$drained" 'BEGIN { printf("%.2f", s / n) }')s, which is the deferral working: the write leaves the index to the loop, so a burst of such writes always outruns it and is no rate a deployment sustains"
 # The loop's own design capacity, a reading and no gate: one tick reads a batch of
 # blockIndexDocumentBatch documents and the next comes BlockIndexReconcileInterval later, so the
 # loop is built to settle that many documents in that long. A margin this narrow decides no
 # build, which is why it is printed and not judged.
-pass C12 "the loop is built to settle $document_batch document(s) every ${reconcile_seconds}s, which is $(a_minute "$document_batch" "$reconcile_seconds") documents a minute against the $(a_minute "$drain_documents" "$drain_seconds") it drained: a reading of how near its own ceiling the loop ran, and no gate"
+pass C12 "the loop is built to settle $document_batch document(s) every ${reconcile_seconds}s, which is $(a_minute "$document_batch" "$reconcile_seconds") documents a minute against the $drain_rate it drained: a reading of how near its own ceiling the loop ran, and no gate"
 # The first gate. The work this loop owes is documents a write deferred, and no other write, so
 # the rate work arrives at is the rate documents above the bound were written at over the
 # census's own window. A loop below that rate grows an owed set without bound.
@@ -736,11 +752,11 @@ deferred_arrivals="$answer"
 # A rate this low is nothing at two decimals, so this one figure carries five.
 arrival_a_minute="$(awk -v count="$deferred_arrivals" -v days="$window_days" \
   'BEGIN { printf("%.5f", count / (days * 1440)) }')"
-awk -v drained="$(a_minute "$drain_documents" "$drain_seconds")" -v arriving="$arrival_a_minute" \
+awk -v drained="$drain_rate" -v arriving="$arrival_a_minute" \
   'BEGIN { exit !(drained >= arriving) }' ||
   fail C12 "the loop drains no slower than deferred work arrives" \
-    "the loop drains $(a_minute "$drain_documents" "$drain_seconds") documents a minute where this database took $deferred_arrivals document(s) past the $defer_blocks-block bound over $window_days days, which is $arrival_a_minute a minute"
-pass C12 "the loop drains no slower than deferred work arrives: $(a_minute "$drain_documents" "$drain_seconds") documents a minute against the $deferred_arrivals document(s) past the $defer_blocks-block bound this database took over $window_days days, $arrival_a_minute a minute"
+    "the loop drains $drain_rate documents a minute where this database took $deferred_arrivals document(s) past the $defer_blocks-block bound over $window_days days, which is $arrival_a_minute a minute"
+pass C12 "the loop drains no slower than deferred work arrives: $drain_rate documents a minute against the $deferred_arrivals document(s) past the $defer_blocks-block bound this database took over $window_days days, $arrival_a_minute a minute"
 
 # C13: the second gate. A request that indexes a document of the same size itself is the loop's
 # work done where it used to be done, so it is the one measurement that answers whether the loop
@@ -763,11 +779,17 @@ inline_blocks="$answer"
 [[ "$inline_blocks" -gt 0 ]] ||
   fail C13 "the request path indexed those documents" "their writes left no block in document_blocks"
 pass C13 "the request path wrote and indexed $drain_documents document(s) of $inline_blocks block(s) over ${inline_seconds}s: $(a_minute "$drain_documents" "$inline_seconds") documents a minute, $(a_minute "$inline_blocks" "$inline_seconds") blocks a minute"
-awk -v loop="$drain_seconds" -v request="$inline_seconds" -v margin="$inline_tolerance" \
-  'BEGIN { exit !(loop <= request * margin) }' ||
+# The gate is on the seconds one document costs each side: the loop's window over the documents
+# it drained in it, and the request path's over the documents it wrote, so neither side is
+# charged for a document the other did not time.
+loop_each="$(awk -v s="$drain_seconds" -v n="$drained" 'BEGIN { printf("%.2f", s / n) }')"
+request_each="$(awk -v s="$inline_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')"
+awk -v loop="$drain_seconds" -v looped="$drained" -v request="$inline_seconds" \
+  -v requested="$drain_documents" -v margin="$inline_tolerance" \
+  'BEGIN { exit !(loop / looped <= request / requested * margin) }' ||
   fail C13 "the loop indexes a document no slower than the request path does" \
-    "the loop spent $(awk -v s="$drain_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')s on each of $drain_documents document(s) of $((defer_blocks + 1)) blocks where a request indexing a document of $((defer_blocks - 1)) blocks spent $(awk -v s="$inline_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')s, which is past the tenth this check allows"
-pass C13 "the loop indexes a document no slower than the request path does, within a tenth: $(awk -v s="$drain_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')s a document against the request path's $(awk -v s="$inline_seconds" -v n="$drain_documents" 'BEGIN { printf("%.2f", s / n) }')s"
+    "the loop spent ${loop_each}s on each of the $drained document(s) of $((defer_blocks + 1)) blocks it drained in its window where a request indexing a document of $((defer_blocks - 1)) blocks spent ${request_each}s on each of $drain_documents, which is past the tenth this check allows"
+pass C13 "the loop indexes a document no slower than the request path does, within a tenth: ${loop_each}s a document over the $drained it drained in its window against the request path's ${request_each}s over the $drain_documents it wrote"
 
 # C14: production's own growth. This pod's database is seeded, so every rate above it is this
 # corpus's and not production's, and a projection from a thin corpus would pass whatever

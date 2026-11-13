@@ -11,12 +11,22 @@
 # document still loads, the marker where the secret was; no column of any table of the database
 # holds the secret, by a search that names no store and finds a control row planted beside it,
 # and the `events` rows that held it stand with their payload redacted, the marker naming the
-# erase in each and the row's id, time and actor what they were before; the `graph_erasures` row
-# holds what was removed, who ran it and when, and holds no erased text; every node left carries
+# erase in each and the row's id, time and actor what they were before; the erase is recorded in
+# one `graph_erasures` row, which holds what was removed - this run's own version and review by
+# name - who ran it and when, and holds no erased text; every node left carries
 # a supertag of the closed list the store itself holds, so the erase wrote no node of its own;
-# `envoy-dispatch census --store` reads zero differences; and the command's path over HTTP
-# answers 404 to the deployment's agent bearer and to a person's cookie alike, because no route
-# serves it.
+# `envoy-dispatch census --store` reads zero differences over rows it read; and the command's path
+# over HTTP answers 404 to the deployment's agent bearer and to a person's cookie alike, because
+# no route serves it.
+#
+# Every read that wants zero after the erase - the node's tuples, the version, the four stores -
+# runs before it as well and finds the rows that held the secret, and the node's address answers
+# 200 before it, so each answer after the erase is held against something that was there.
+#
+# The embedding store is read the same way, and its order is forced. The block-index pass cuts
+# the windows of the comment and of the document into `embeddings` on a tick of its own, so the
+# driver waits until both texts' windows hold the secret, then holds that pass's lease across the
+# erase: every run erases a node whose windows are written, and no tick writes one mid-erase.
 #
 # Inputs: DISPATCH_URL (the server), DISPATCH_TOKEN or DISPATCH_TOKEN_FILE (an agent bearer, read
 # here and never printed), PROJECT (an existing project key), DATABASE_URL (the database that
@@ -63,6 +73,19 @@ readonly origin="${base%%://*}://${base_host%%/*}"
 # alone, and before this it left the second of them reported.
 # shellcheck disable=SC2153 # PROJECT and DATABASE_URL are the caller's inputs, checked by name above
 readonly project="$PROJECT" database_url="$DATABASE_URL"
+script_dir="$(cd -- "$(dirname -- "$0")" && pwd)"
+readonly script_dir
+# The block-index pass's lease, which writes the embedding windows this driver holds still across
+# the erase, read from the Go sources that declare it: the lease's name and the first key every
+# loop lease is taken with (duty.Exclusive).
+readonly loop_source="$script_dir/../../../envoy/internal/dispatch/docs/block_index.go"
+readonly lease_source="$script_dir/../../../envoy/internal/dispatch/duty/exclusive.go"
+# How long the driver waits for that pass to write the windows - it runs once a tick, 30 s apart
+# on this build - and how long the session holding its lease sleeps, which is a hang guard alone:
+# release_block_index interrupts it as soon as the erase is done.
+readonly window_wait=120
+readonly lease_seconds=900
+readonly lease_polls=1500
 readonly login="${DEV_SIGNIN_LOGIN:-alice}"
 session="graph-erase-$(date +%s)-$$"
 readonly session
@@ -85,8 +108,10 @@ readonly work
 printf 'Authorization: Bearer %s\n' "$token" >"$work/auth"
 
 key=""
+lease_pid=""
 cleanup() {
   local code=$?
+  release_block_index
   if [[ -n "$key" ]]; then
     send PATCH "/api/v1/issues/$key" \
       "$(jq -cn --arg s "$session" '{status: "done", actor: {kind: "session", id: $s}}')"
@@ -126,6 +151,74 @@ want_rows() {
   query "$1" "$2" "$4"
   [[ "$answer" == "$3" ]] || fail "$1" "$2" "read $answer, want $3 (from: $4)"
   pass "$1" "$2"
+}
+
+# want_held SECTION WHAT SQL: the count SQL reads is above zero, and the check prints it. Each of
+# these is a read E5 later wants zero from, run before the erase, so that zero is a row the erase
+# removed and not a search that matched nothing.
+want_held() {
+  query "$1" "$2" "$3"
+  [[ "$answer" =~ ^[1-9][0-9]*$ ]] || fail "$1" "$2" "read $answer, want at least 1 (from: $3)"
+  pass "$1" "$2: $answer row(s)"
+}
+
+# held_soon SECTION WHAT SQL: polls SQL, a count, until it reads above zero, for up to
+# $window_wait seconds, and prints the count it read. It is for a row a pass of the server writes
+# on its own tick, which no request of this driver can ask for.
+held_soon() {
+  local waited=0
+  while true; do
+    query "$1" "$2" "$3"
+    [[ ! "$answer" =~ ^[1-9][0-9]*$ ]] || break
+    [[ "$waited" -lt $((window_wait * 2)) ]] ||
+      fail "$1" "$2" "read $answer after ${window_wait}s, want at least 1 (from: $3)"
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  pass "$1" "$2: $answer row(s)"
+}
+
+# declared SECTION WHAT FILE SED: the one value SED prints out of a Go source file, refused when
+# the file or the declaration is gone, so a build that moved the lease moves this driver with it.
+declared() {
+  [[ -r "$3" ]] || fail "$1" "$2" "$3 is unreadable"
+  answer="$(sed -n "$4" "$3")"
+  [[ -n "$answer" ]] || fail "$1" "$2" "no such declaration in $3"
+}
+
+# hold_block_index SECTION: takes the block-index pass's own lease, waiting out a tick that holds
+# it, so no tick writes an embedding window while this driver erases: duty.Exclusive takes this
+# lease before every pass and skips the pass where another session holds it. The lease is a
+# session lock, so a psql of this driver's holds it until release_block_index interrupts that
+# session's sleep. It is graph-sizing.sh's hold_block_index.
+hold_block_index() {
+  local polls=0
+  : >"$work/lease"
+  env -u PGHOSTADDR psql "$database_url" -Atq -o /dev/null >/dev/null 2>"$work/lease" <<SQL &
+select pg_advisory_lock($lease_namespace, hashtext('$lease_name'));
+\\warn the $lease_name lease is held
+select pg_sleep($lease_seconds);
+SQL
+  lease_pid=$!
+  until grep -q "the $lease_name lease is held" "$work/lease"; do
+    polls=$((polls + 1))
+    [[ "$polls" -le "$lease_polls" ]] ||
+      fail "$1" "hold the $lease_name lease" \
+        "it was not given up inside $((lease_polls / 5))s: $(head -c 300 "$work/lease")"
+    kill -0 "$lease_pid" 2>/dev/null ||
+      fail "$1" "hold the $lease_name lease" "psql stopped: $(head -c 300 "$work/lease")"
+    sleep 0.2
+  done
+  pass "$1" "this driver holds the $lease_name lease, so no tick writes an embedding window during the erase"
+}
+
+# release_block_index gives that lease back: SIGINT makes psql cancel its sleep and read the end of
+# its own input, which closes the session and frees the lock there and then.
+release_block_index() {
+  [[ -n "$lease_pid" ]] || return 0
+  kill -INT "$lease_pid" 2>/dev/null || true
+  wait "$lease_pid" 2>/dev/null || true
+  lease_pid=""
 }
 
 # erase SECTION ARGS...: runs `envoy-dispatch erase ARGS`, its output in $work/erase and its exit
@@ -262,6 +355,17 @@ send POST "/api/v1/issues/$key/comments" "$(jq -cn --arg s "$session" \
 want_status 201 E2 "write a comment the erase does not touch"
 pass E2 "the session that wrote both keeps a row the erase leaves"
 
+# The reads E5 wants zero from, each stated once here and run on both sides of the erase: before
+# it each must find the rows that held the secret (E3), so after it each zero is the erase's work.
+readonly node_tuples_sql="select count(*) from graph_tuples where (from_kind = 'comment' and from_id = '$comment') or (to_kind = 'comment' and to_id = '$comment')"
+readonly version_sql="select count(*) from artifact_versions where artifact_id = '$document' and number = $version"
+readonly -a store_reads=(
+  "comment row|select count(*) from comments where body like '%$secret%'"
+  "document version|select count(*) from artifact_versions where markdown like '%$secret%'"
+  "block text|select count(*) from document_block_texts where text like '%$secret%'"
+  "block excerpt|select count(*) from document_blocks where excerpt like '%$secret%'"
+)
+
 # E3: the command refuses until it has listed what it would remove.
 erase E3 --node "$node"
 [[ "$erase_code" == 1 ]] ||
@@ -311,6 +415,27 @@ events_before="$answer"
 readonly events_before
 pass E3 "the event log holds $events_held row(s) with the secret, read with their id, time and actor"
 
+# The rest of what E5 reads gone, read here while it stands: the node's tuples, the version that
+# holds the erased text, and each of the four stores that must hold no row with it afterwards.
+want_held E3 "the comment's node holds tuples before the erase" "$node_tuples_sql"
+want_held E3 "the version holding the secret is stored before the erase" "$version_sql"
+for read in "${store_reads[@]}"; do
+  want_held E3 "a ${read%%|*} holds the secret before the erase" "${read#*|}"
+done
+
+# The embedding windows both texts are cut into, which the block-index pass writes on its own
+# tick (refs.WriteItemWindows for the comment, refs.WriteDocumentWindows for the document) and no
+# request writes: the driver waits for both to hold the secret, so every run erases a node whose
+# windows stand. A run that erased before the pass had cut them left nothing in `embeddings` for
+# the search of E5 to find, which is how an erase that never touched that store passed some runs
+# and failed others.
+held_soon E3 "the comment's embedding windows hold the secret before the erase" \
+  "select count(*) from embeddings where kind = 'comment_block'
+     and split_part(id, '#', 1) = 'comment/$comment' and position('$secret' in text_snapshot) > 0"
+held_soon E3 "the document's embedding windows hold the secret before the erase" \
+  "select count(*) from embeddings where kind = 'document_block'
+     and split_part(id, '#', 1) = '$document' and position('$secret' in text_snapshot) > 0"
+
 # The answer an address nobody holds gives, read before the erase, so the comparison after it is
 # against this server's own words and not against a status this driver chose.
 missing="00000000-0000-4000-8000-000000000000"
@@ -318,13 +443,30 @@ send GET "/api/v1/references?to=$(q "dispatch://$key/comment/$missing")"
 readonly nobody_status="$status"
 cp "$work/body" "$work/nobody"
 pass E3 "an address nobody holds answers HTTP $nobody_status"
+# The node's own address, read before the erase: it resolves, so what it answers after the erase
+# is the erase's doing, and the two answers E5 compares differ before it.
+send GET "/api/v1/references?to=$(q "dispatch://$key/comment/$comment")"
+want_status 200 E3 "the comment's address resolves before the erase"
+[[ "$nobody_status" != 200 ]] ||
+  fail E3 "an address nobody holds answers otherwise than one that resolves" \
+    "both answered HTTP 200, so E5's comparison could not tell the erased node from a live one"
+pass E3 "the comment's address answers HTTP 200 before the erase, where an address nobody holds answers HTTP $nobody_status"
 
-# E4: the erase itself.
+# E4: the erase itself, under the block-index pass's lease, so no tick writes a window between the
+# reads above and the erase and none while it runs. The lease goes back once the erase is done.
+declared E4 "read the block index's lease" "$loop_source" \
+  's/^const BlockIndexLease = "\(.*\)"$/\1/p'
+lease_name="$answer"
+declared E4 "read the first key of a loop lease" "$lease_source" \
+  's/^const leaseNamespace int32 = \(0x[0-9A-Fa-f]*\)$/\1/p'
+lease_namespace=$((answer))
+hold_block_index E4
 erase E4 --node "$node" --confirm
+release_block_index
 [[ "$erase_code" == 0 ]] ||
   fail E4 "erase $node" "exited $erase_code: $(<"$work/erase")"
 grep -Fq "removed by" "$work/erase" || fail E4 "erase $node" "$(<"$work/erase")"
-pass E4 "envoy-dispatch erase --node $node --confirm removed it"
+pass E4 "envoy-dispatch erase --node $node --confirm removed it, the $lease_name lease held across it and given back"
 
 # E5: the bytes are gone, and so is everything that stood on them.
 send GET "/api/v1/references?to=$(q "dispatch://$key/comment/$comment")"
@@ -341,26 +483,20 @@ cmp -s "$work/erased.answer" "$work/nobody.answer" ||
 pass E5 "the node's address answers what an address nobody holds answers, byte for byte"
 want_rows E5 "no node of it remains" 0 \
   "select count(*) from graph_nodes where kind = 'comment' and id = '$comment'"
-want_rows E5 "no tuple of it remains" 0 \
-  "select count(*) from graph_tuples where (from_kind = 'comment' and from_id = '$comment') or (to_kind = 'comment' and to_id = '$comment')"
+want_rows E5 "no tuple of it remains" 0 "$node_tuples_sql"
 want_rows E5 "no projection row of it remains" 0 \
   "select count(*) from comments where id = '$comment'"
-want_rows E5 "the version holding the erased text is gone" 0 \
-  "select count(*) from artifact_versions where artifact_id = '$document' and number = $version"
+want_rows E5 "the version holding the erased text is gone" 0 "$version_sql"
 want_rows E5 "the review over those bytes is gone ($key, $document_ref version $version)" 0 \
   "select count(*) from artifact_reviews where artifact_id = '$document' and version = $version"
 # Every store that can hold those bytes, which is what this check rests on: a search of two
 # tables under a line that says "anywhere" reported none while three others held the secret
-# (measured 2026-11-12 at fedf8392a354). The first four must hold no row with the text; the
-# event log is append-only, so its payload keeps the row with the text redacted.
-want_rows E5 "no comment row still holds the erased text" 0 \
-  "select count(*) from comments where body like '%$secret%'"
-want_rows E5 "no document version still holds the erased text" 0 \
-  "select count(*) from artifact_versions where markdown like '%$secret%'"
-want_rows E5 "no block text still holds the erased text" 0 \
-  "select count(*) from document_block_texts where text like '%$secret%'"
-want_rows E5 "no block excerpt still holds the erased text" 0 \
-  "select count(*) from document_blocks where excerpt like '%$secret%'"
+# (measured 2026-11-12 at fedf8392a354). The first four must hold no row with the text, and E3
+# read each holding it; the event log is append-only, so its payload keeps the row with the text
+# redacted.
+for read in "${store_reads[@]}"; do
+  want_rows E5 "no ${read%%|*} still holds the erased text" 0 "${read#*|}"
+done
 want_rows E5 "no event payload still holds the erased text" 0 \
   "select count(*) from events where payload::text like '%$secret%'"
 # The document that held the secret still loads, from the one update the erase seeded its history
@@ -418,19 +554,32 @@ grep -Eq "^  text_trees swept after the commit: [0-9]+\$" "$work/erase" ||
   fail E5 "the run says how many display trees it swept after the commit" "no sweep line in: $(<"$work/erase")"
 pass E5 "envoy-dispatch erase reported its sweep of text_trees after the commit"
 
-# E6: the record of the erase.
+# E6: the record of the erase: one row, read whole.
+want_rows E6 "the erase recorded one graph_erasures row" 1 \
+  "select count(*) from graph_erasures where node_kind = 'comment' and node_id = '$comment'"
 query E6 "read the graph_erasures row" \
   "select jsonb_build_object('node_kind', node_kind, 'node_id', node_id, 'removed', removed, 'ran_by', ran_by, 'ran_at', ran_at)::text from graph_erasures where node_id = '$comment'"
 [[ -n "$answer" ]] || fail E6 "read the graph_erasures row" "the erase recorded nothing"
 printf '%s' "$answer" >"$work/erasure.json"
 jq -e --arg id "$comment" '.node_kind == "comment" and .node_id == $id' "$work/erasure.json" >/dev/null ||
   fail E6 "the record names the node" "$(<"$work/erasure.json")"
-jq -e '(.removed.rows | length) > 0 and (.removed.versions | length) > 0 and (.removed.reviews | length) > 0' \
+jq -e '(.removed.rows | length) > 0' "$work/erasure.json" >/dev/null ||
+  fail E6 "the record holds the rows it removed" "$(<"$work/erasure.json")"
+# The version and the review this run wrote, each by its own name: a record that named some other
+# version or review, or none, is not the record of this erase.
+jq -e --arg doc "$document_ref" --arg key "$key" --argjson v "$version" \
+  'any(.removed.versions[]; .document == $doc and .issue == $key and .version == $v)' \
   "$work/erasure.json" >/dev/null ||
-  fail E6 "the record holds what was removed" "$(<"$work/erasure.json")"
+  fail E6 "the record holds the version the erase ended ($document_ref version $version of $key)" \
+    "$(jq -c '.removed.versions' "$work/erasure.json")"
+jq -e --arg doc "$document_ref" --arg key "$key" --argjson v "$version" --arg r "$review" \
+  'any(.removed.reviews[]; .id == $r and .document == $doc and .issue == $key and .version == $v)' \
+  "$work/erasure.json" >/dev/null ||
+  fail E6 "the record holds the review the erase ended (review $review of $document_ref version $version)" \
+    "$(jq -c '.removed.reviews' "$work/erasure.json")"
 jq -e '(.ran_by.database_user | length) > 0 and (.ran_at | length) > 0' "$work/erasure.json" >/dev/null ||
   fail E6 "the record holds who ran it and when" "$(<"$work/erasure.json")"
-pass E6 "the graph_erasures row holds what was removed, who ran it and when"
+pass E6 "the graph_erasures row holds what was removed - $document_ref version $version and review $review among it - who ran it and when"
 jq -e --arg s "$secret" 'tostring | contains($s) | not' "$work/erasure.json" >/dev/null ||
   fail E6 "the record holds no erased text" "the graph_erasures row holds the erased secret"
 pass E6 "the graph_erasures row holds no erased text"
@@ -452,9 +601,12 @@ env -u DISPATCH_TOKEN -u DISPATCH_TOKEN_FILE DATABASE_URL="$database_url" \
   fail E8 "the store census after the erase" "envoy-dispatch census --store exited $census_code: $(cat "$work/census")"
 grep -Eq '^census: store rows_checked=[0-9,]+ differences=0$' "$work/census" ||
   fail E8 "the store census after the erase" "$(grep -E '^census: store (rows_checked|REFUSED)' "$work/census" || true)"
+# Zero differences over zero rows compares nothing with nothing, so the census must have read rows.
+grep -Eq '^census: store rows_checked=[1-9][0-9,]* ' "$work/census" ||
+  fail E8 "the store census read rows" "$(grep -E '^census: store rows_checked' "$work/census" || true)"
 grep -Fqx 'census: store ok' "$work/census" ||
   fail E8 "the store census after the erase" "$(tail -n 3 "$work/census")"
-pass E8 "envoy-dispatch census --store reads zero differences"
+pass E8 "envoy-dispatch census --store reads zero differences over $(sed -n 's/^census: store rows_checked=\([0-9,]*\) .*$/\1/p' "$work/census") rows"
 
 # E9: no route serves the erase. Both a credential that reaches every write route and a person's
 # own cookie read 404, which is what a path this server does not mount answers.
