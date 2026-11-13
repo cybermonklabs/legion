@@ -1189,9 +1189,10 @@ func (r *podUpdateRig) resumeInPod(role claim.Role) {
 // what that path writes: nothing, because every worker of this round had answered and the pod
 // took nothing unpushed with it.
 //
-// The suspension that lets the process go here is the daemon's own, which holds no rule. An
-// operator's suspension is the one wait that comes before this reading (readReplacement's
-// waitsForOperator), so under it the round would wait for the operator's resume instead.
+// The suspension that lets the process go here is an operator's, and the clock is past the
+// round's bound, which is the hold the bound never steps over. It holds a pod that is there, and
+// this one is not: the pod is read before the hold (readReplacement, roundWithNoProcessInItsPod),
+// so the round ends rather than wait for the resume of a claim on a pod that no longer exists.
 func TestPodUpdateEndsTheRoundWhenTheRuntimeSaysItsUnrecordedPodIsGone(t *testing.T) {
 	const overAGonePod = "supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over"
 	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
@@ -1201,9 +1202,10 @@ func TestPodUpdateEndsTheRoundWhenTheRuntimeSaysItsUnrecordedPodIsGone(t *testin
 	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
 	rig.signal(claim.RoleImplementer, "a1b2c3d")
 	rig.settleAll()
+	rig.clockAt(podUpdateBound.Add(time.Hour))
 
 	group := rig.snapshot()
-	rig.suspendBy(claim.RoleImplementer, supervise.SuspendedByDaemon)
+	rig.suspendByOperator(claim.RoleImplementer)
 	rig.s.runtime = &podGoneAfterTheDriftRead{Runtime: rig.rt}
 
 	rig.s.reconcilePodUpdates(rig.ctx, group)

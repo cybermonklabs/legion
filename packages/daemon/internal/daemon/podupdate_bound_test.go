@@ -337,6 +337,149 @@ func TestPodUpdateSuspensionOfTheOnlyClaimHoldsThePodPastTheBound(t *testing.T) 
 	wantNoRefusedNotice(t, rig)
 }
 
+// An operator suspends the only claim of a round, which had not answered, and while the sweep
+// runs the pod is replaced where it stood for a failure of its own: the sweep's snapshot records
+// the pod and reads it drifted, and the runtime answers it gone when the round asks about it.
+// The operator's suspension is the one wait the bound does not step over, and the clock is an
+// hour past the bound, but that hold is of a pod that is there: this one is gone, so the round
+// ends there, the issue is told that its implementer lost what it had not pushed, and no
+// ReplacePod is called — not at that sweep and not at the sweeps after it. Read the hold
+// before the pod, the round would wait for the resume of a claim on a pod that no longer exists.
+func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenItsPodIsGone(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.settleAll()
+	rig.clockAt(podUpdateBound.Add(time.Hour))
+
+	group := rig.snapshot()
+	rig.suspendByOperator(claim.RoleImplementer)
+	if c := rig.claimOf(claim.RoleImplementer); !c.RuleHolds() {
+		t.Fatalf("the suspended implementer = %s held by %q, want an operator's hold", c.State, c.SuspensionHeldBy)
+	}
+	rig.s.runtime = &podGoneAfterTheDriftRead{Runtime: rig.rt}
+	rig.s.reconcilePodUpdates(rig.ctx, group)
+
+	rig.awaitClaim(claim.RoleImplementer, "its round to end with the pod that is not there",
+		func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	messages := rig.messages()
+	if len(messages) != 1 || !strings.Contains(messages[0], "The pod that ran this issue's roles is gone") ||
+		!strings.Contains(messages[0], string(claim.RoleImplementer)) {
+		t.Fatalf("the issue was written %q, want one message that its pod went and its implementer lost what it had not pushed", messages)
+	}
+
+	rig.tick()
+	rig.tick()
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("ReplacePod called %d times for a pod that is not there", len(calls))
+	}
+	if notices := rig.notices(); len(notices) != 0 {
+		t.Fatalf("the controller was told %+v of a round that ended with its pod", notices)
+	}
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != "" || c.State != supervise.StateSuspended {
+		t.Fatalf("the implementer after the sweeps = %s in round %q, want it suspended in no round", c.State, c.UpdateRound)
+	}
+}
+
+// The other reading that says a pod went, under the same hold: every worker answered, an
+// operator suspends the implementer while it is still in the round's pod, and then that pod goes
+// and the displaced path brings the tester back in the pod that replaced it. The claims record
+// that other pod in the round's own place, which says the round's pod went whatever the
+// operator's suspension says, so the round ends there over the pod that went
+// (endRoundOverAGonePod), with nothing lost and nothing told, and nothing is replaced. Read the
+// hold first, the round would wait for the operator's resume over a pod that is gone, and tell
+// the controller of a suspension that holds nothing.
+func TestPodUpdateEndsTheRoundOfAnOperatorsSuspensionWhenAnotherPodIsInItsPlace(t *testing.T) {
+	const overAGonePod = "supervise: the pod of this issue's update round is not there, and every claim of the round had answered; nothing was lost and the round is over"
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer), readyWorker(claim.RoleTester))
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	roles := []claim.Role{claim.RoleImplementer, claim.RoleTester}
+	for _, role := range roles {
+		rig.awaitRound(role, podUpdateRound)
+		rig.signal(role, "a1b2c3d")
+	}
+	rig.settleAll()
+	rig.suspendByOperator(claim.RoleImplementer)
+	rig.displacedInto(claim.RoleTester, podUpdateReplacementPod)
+	rig.settleAll()
+	if c := rig.claimOf(claim.RoleImplementer); !c.RuleHolds() || c.LeftPodRound(podUpdateRound) {
+		t.Fatalf("the suspended implementer = %s held by %q, left the round %t; want an operator's hold on a member of the round",
+			c.State, c.SuspensionHeldBy, c.LeftPodRound(podUpdateRound))
+	}
+	rig.clockAt(podUpdateBound.Add(time.Hour))
+
+	rig.tick()
+
+	if lines := loggedLines(t, rig.logs.String(), overAGonePod); len(lines) != 1 {
+		t.Fatalf("the sweep ended the round over a gone pod %d times, want once: %+v", len(lines), lines)
+	}
+	if notices := rig.notices(); len(notices) != 0 {
+		t.Fatalf("the controller was told %+v of a round whose pod another one has replaced", notices)
+	}
+	if messages := rig.messages(); len(messages) != 0 {
+		t.Fatalf("the issue was written %q; every worker of the round had answered before its pod went", messages)
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("ReplacePod called %d times for a pod that is already gone", len(calls))
+	}
+	for _, role := range roles {
+		rig.awaitClaim(role, "its round to end over the pod that is gone",
+			func(c supervise.Claim) bool { return c.UpdateRound == "" })
+	}
+}
+
+// The only claim of a round is the one an operator suspends, and no claim of the issue records a
+// pod from then on (letGo clears the locator), so every sweep reads the round podless and nothing
+// of it can move until the operator resumes the claim (tellPodlessRound). That is no stall
+// before the bound, so the controller is told nothing then. At the bound it is told once, naming
+// what holds the round — the operator's suspension, and no claim recording a process in a pod —
+// and the sweeps after it tell nothing more, however long the round stays open.
+func TestPodUpdateTellsAPodlessRoundAnOperatorHoldsOncePastItsBound(t *testing.T) {
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.drifts(podUpdateDrift)
+
+	rig.tick()
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.settleAll()
+	rig.suspendByOperator(claim.RoleImplementer)
+
+	rig.clockAt(podUpdateBound.Add(-time.Minute))
+	rig.tick()
+	if notices := rig.notices(); len(notices) != 0 {
+		t.Fatalf("at %s, before the bound %s, the controller was told %+v of a podless round", rig.clock.Now(), podUpdateBound, notices)
+	}
+
+	rig.clockAt(podUpdateBound)
+	rig.tick()
+	notices := rig.notices()
+	if len(notices) != 1 {
+		t.Fatalf("at the bound %s the controller was told %d times of a podless round an operator holds, want once: %+v", podUpdateBound, len(notices), notices)
+	}
+	for _, want := range []string{"No claim of this issue records a process in a pod", "An operator suspended", string(claim.RoleImplementer)} {
+		if !strings.Contains(notices[0].Reason, want) {
+			t.Errorf("the notice says %q, want it to say %q", notices[0].Reason, want)
+		}
+	}
+	wantWaiting(t, notices[0], map[claim.Role]bool{claim.RoleImplementer: false})
+
+	rig.clockAt(podUpdateBound.Add(time.Hour))
+	rig.tick()
+	if after := rig.notices(); len(after) != 1 {
+		t.Fatalf("an hour past the bound the controller has been told %d times of the round, want the one notice at the bound: %+v", len(after), after)
+	}
+	if c := rig.claimOf(claim.RoleImplementer); c.UpdateRound != podUpdateRound {
+		t.Fatalf("the suspended claim's round = %q, want it still open: only the operator's resume ends this wait", c.UpdateRound)
+	}
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times with no claim recording it", len(calls))
+	}
+	wantNoRefusedNotice(t, rig)
+}
+
 // An operator suspends a claim while the replacement the bound let through waits for the pod's
 // launch turn. The sweep's own reading was taken before the suspension, so only the daemon's
 // last word (replacementDue) can see it, and it refuses the replacement: no pod is replaced
