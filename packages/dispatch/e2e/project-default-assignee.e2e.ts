@@ -97,7 +97,7 @@ test("a question on an issue nobody holds follows its project's default assignee
 
     // 1. The question is in the list of the person CORE names, and in no list of the other's.
     await expect(inboxRow(alicePage, ask.id)).toBeVisible();
-    await expect(alicePage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await expectInboxCount(alicePage, 1);
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
     await expect(bobPage.locator("[data-inbox-row]")).toHaveCount(0);
@@ -108,7 +108,7 @@ test("a question on an issue nobody holds follows its project's default assignee
     await nameDefaultFromSettings(await bob.newPage(), "alice", "bob");
 
     await expect(inboxRow(bobPage, ask.id)).toBeVisible();
-    await expect(bobPage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(bobPage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await expectInboxCount(bobPage, 1);
     await expect(inboxRow(alicePage, ask.id)).toHaveCount(0);
     await expect(alicePage.getByText("Nothing needs you")).toBeVisible();
@@ -125,7 +125,7 @@ test("a question on an issue nobody holds follows its project's default assignee
     // write.
     await patchIssue(issue.key, { assignee: "alice" }, asker);
     await expect(inboxRow(alicePage, ask.id)).toBeVisible();
-    await expect(alicePage.getByText(/^Blocked on you: 1 item/)).toBeVisible();
+    await expect(alicePage.getByRole("button", { name: /^Blocked on you: 1 item/ })).toBeVisible();
     await expectInboxCount(alicePage, 1);
     await expect(inboxRow(bobPage, ask.id)).toHaveCount(0);
     await expect(bobPage.getByText("Nothing needs you")).toBeVisible();
