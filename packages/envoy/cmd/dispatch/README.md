@@ -26,7 +26,7 @@ Each item below names a variable, then its purpose.
   Dispatch applies embedded migrations before serving.
   Every pool's size is fixed in code, at most 108 connections a process in all (`store.ConnectionsPerProcess`) (the request pool's 48 is `store.SharedPoolSize`), so a connection string carrying `pool_max_conns` is refused at startup; remove the parameter.
   Each connection names its pool in `application_name`, which replaces the connection string's own:
-  `dispatch-requests`, `dispatch-background`, `dispatch-live`, `dispatch-settlements`, `dispatch-rooms`, `dispatch-room-appends`, `dispatch-health`, `dispatch-listen`, `dispatch-leases`, `dispatch-outbox`, `dispatch-compaction`, `dispatch-horizon` or `dispatch-registry`, so `select application_name, count(*) from pg_stat_activity group by 1` shows what each pool holds.
+  `dispatch-requests`, `dispatch-background`, `dispatch-live`, `dispatch-settlements`, `dispatch-rooms`, `dispatch-room-appends`, `dispatch-health`, `dispatch-listen`, `dispatch-leases`, `dispatch-outbox`, `dispatch-compaction`, `dispatch-text-trees`, `dispatch-horizon` or `dispatch-registry`, so `select application_name, count(*) from pg_stat_activity group by 1` shows what each pool holds.
   A request-pool connection carries one more setting no other pool's does, `idle_in_transaction_session_timeout` of 70 seconds (`store.RequestIdleInTransactionTimeout`), so Postgres ends an orphaned request transaction instead of leaving it holding the rows it locked and the event horizon until the server notices its socket is gone.
   The 70 seconds is computed rather than chosen: the longest a request transaction sits idle by design is one cold read of a document's stored history (60 seconds, `store.ColdReadBound`), which a check-result write waits out with its transaction open under two issue row locks (`api/results.go` into `docs/read_cache.go`), plus the 5 seconds the rollback that ends it is bounded by (`store.RollbackTimeout`) and a 5-second margin.
   Raising the cold read's bound raises this one with it, since the document service's own bound is that constant.
@@ -723,21 +723,35 @@ curl -s http://127.0.0.1:<port>/debug/vars | jq .dispatch_rooms
 ```
 
 - `resident_rooms`: the rooms held in memory, which with the rooms sockets being admitted reserved are what `DISPATCH_MAX_LIVE_ROOMS` caps.
+
 - `room_records`: the room records the document service keeps.
+
 - `connections`: the browsers connected to rooms and the sockets being admitted to one, the count `DISPATCH_MAX_DOC_CONNECTIONS` caps.
+
 - `pending_updates`: the browser updates the rooms' persistence has yet to take.
+
 - `pending_update_bytes`: the bytes of the updates the rooms' queues hold.
+
 - `durable_appends`: the updates whose append has not landed.
+
 - `append_batches`: the append transactions of browser updates committed since the process started, an update stored alone included.
+
 - `appended_updates`: the browser updates those transactions stored.
+
 - `append_round_trips`: the round trips those transactions sent from the document's lock to its release, failed ones included.
+
 - `batch_sizes`: how many committed batches stored how many updates, by bucket (`1`, `2`, `3-4`, … `129-256`).
+
 - `pools.room_appends`, `pools.rooms`: each pool's connections held (`acquired`) and idle (`idle`), the acquires that found no idle connection (`empty_acquires`), and the time acquires waited in all (`acquire_duration_ns`); zeros for a pool not opened yet.
+
 - `read_cache`: the cold reads' cache's weight in bytes (`bytes`), its entries (`entries`) and its budget (`budget`).
+
 - `preloads`: the cold sockets' loaded states waiting for their room's load.
+
 - `resident_bytes`: the encoded bytes the resident rooms took, each load and every update since: loaded state only.
   It leaves out the updates a room parks after it loaded, while they wait for an edit it has not received; parked rows already stored are part of the history a load decodes, so they count.
   ygo bounds those per room by `MaxPendingItems`, which Dispatch sets to `maxUpdateItems` (1<<20, `internal/dispatch/docs/service.go` `New`): a count of parked items and, separately, of parked delete ranges, not bytes.
+
 - `settlement_wakeups`: the wakes of the waits for a room's appends.
 
 ## The live socket behind a proxy
@@ -892,6 +906,7 @@ What the two processes share, and what each keeps to itself:
 - GitHub's rate limits hold every process.
   GitHub budgets the App and each installation, not a process, and warns that requests sent while limited may get the integration banned, so a limit one process meets is recorded in `github_rate_limits` (migration `0160`) and every process reads it before it sends GitHub anything (`githubapp.Client.request`, `githubapp/ratelimit`).
   Scope `app` holds the calls the App JWT signs (installation lookups, token mints, the webhook delivery endpoints) and `installation:<id>` the calls under that installation's token, each for the wait GitHub gave, by the database's clock.
+  The read and the record run on the pool of the caller that sends: a request's GitHub calls on the request pool, and every background loop's - the delivery reconcile, the delivery intakes, the architecture ticker, the webhook redelivery sweep and the CI reconcile - on the background pool, through a GitHub client of the loops' own, so no loop takes a request's connection for a GitHub call.
   While one is in force a call under it fails at once with no request:
   the GitHub proxy answers `503 GITHUB_RATE_LIMITED` with `Retry-After` (Routes, below), a delivery intake read fails and is acknowledged as any failure is and the five-minute reconcile catches up once the limit ends, and the webhook redelivery sweep stops (Webhook redelivery, above).
   A database that cannot be read or written leaves each process to GitHub's own answers, with a log line.
@@ -947,6 +962,7 @@ What the two processes share, and what each keeps to itself:
 
 - A sign-in started on one process completes on the other:
   its state travels in the browser's signed `dispatch_oauth_state` cookie, not in a process (Identity, above), given one `DISPATCH_SERVER_URL` on every process.
+
 - `server.started` names the build every live process serves, once each time that build changes.
   A process that finds every live process serving one stamped, non-empty commit that the latest row of `server_build_announcements` does not name inserts a row;
   any process whose bus is connected publishes each row not yet published, with the event id `dispatch-server-started-<commit>-<seq>` and `started_at` the database's time of the announcement.
@@ -1101,14 +1117,14 @@ Every pool's size is fixed in code (`internal/dispatch/store/pools.go`), and a s
 | Pool | Connections | What takes them |
 | --- | --- | --- |
 | Requests (`store.SharedPoolSize`) | 48 | Every API request's reads and writes, and the document writers that hold a room's lock on a connection of their own (`lockRoom` through `withRoomLock`: snapshots, prunes, deletions); `application_name=dispatch-requests`. |
-| Background (`backgroundPoolSize`) | 6 | The background loops and the work a request leaves running behind its answer - the comment mention sender's own claim statements and a read's store of the display trees it built among them - so a request never queues behind one of their statements; `application_name=dispatch-background`. |
+| Background (`backgroundPoolSize`) | 6 | The background loops - the delivery sweep's resume (at most three of the six at once) and the GitHub rate limits the loops' own GitHub client reads among them - and the work a request leaves running behind its answer - the comment mention sender's own claim statements and a read's store of the display trees it built among them - so a request never queues behind one of their statements; `application_name=dispatch-background`. |
 | Live (`livePoolSize`) | 4 | The live-update readers: the event stream relay, the delivery hub's intake, recompute and seed, and an events subscription's replay; `application_name=dispatch-live`. |
-| Settlements (`settlementsPoolSize`) | 4 | The document settlements, so a burst of them neither waits for the requests' connections nor takes them; `application_name=dispatch-settlements`. |
+| Settlements (`settlementsPoolSize`) | 4 | The document settlements, the store of the display tree of each version they write among them, so a burst of them neither waits for the requests' connections nor takes them; `application_name=dispatch-settlements`. |
 | Leases (`store.LeasePoolSize`) | 19 | The periodic maintenance loops' once-overall leases (`duty.Exclusive`): one per lease name on `duty`'s list (`store.LeaseNameCount`, 17), the display tree fill's pass and the embeddings `project_key` fill's one pass among them, and two spare. |
 | Room appends (`roomAppendsPoolSize`) | 8 | The document rooms' batches of browser updates; `application_name=dispatch-room-appends`. |
 | Rooms (`RoomsPoolSize`) | 4 | Document loads; `application_name=dispatch-rooms`. |
 | Compaction (`compactionPoolSize`) | 2 | A document's compaction: the read transaction of the rows it folds, and its write back under the document's lock (`Pool.Compaction`); `application_name=dispatch-compaction`. |
-| Display tree fill (`textTreePoolSize`) | 2 | The background fill's own reads and writes (`Pool.TextTrees`, `texttreefill`): a pass reads its next batch of texts only once the batch before it is stored, and stores a batch with at most two readings in flight, so two is every connection it can use. |
+| Display tree fill (`textTreePoolSize`) | 2 | The background fill's own reads and writes (`Pool.TextTrees`, `texttreefill`): a pass reads its next batch of texts only once the batch before it is stored, and stores a batch with at most two readings in flight, so two is every connection it can use; `application_name=dispatch-text-trees`. |
 | Health (`healthPoolSize`) | 1 | The `/healthz` probe. |
 | Outbox (`outboxPoolSize`) | 2 | The events outbox's scan and, beside it, the renewal of its publisher hold (`duty.Hold`). |
 | Horizon (`horizonPoolSize`) | 2 | The event log's safe horizon (`events.Horizon`): its observations, its marks and the reads beside them, its stall diagnosis and its persist write. |
@@ -1287,7 +1303,7 @@ the contracting migration — one that drops, renames or narrows — ships no ea
   — ships behind a release that writes only the values the narrower shape admits, and narrows in the release after it.
 
 A migration that cannot be written that way is a stop-the-world migration:
-it is deployed with no server of the earlier release running, and that is an exception named in the pull request, not a default (`0113` and `0117` below are the two).
+it is deployed with no server of the earlier release running, and that is an exception named in the pull request, not a default (`0113`, `0117` and `20261111210103` below are the three).
 The pre-deploy census ("Pre-deploy census" below) is unchanged by that rule and still applies to every migration:
 it is taken before any migration of the release applies, and a census that refuses fails the deploy before the service moves.
 The rule in brief is `internal/dispatch/store/README.md`, beside the migrations directory rather than in it, since the loader below refuses a set holding a file named anything else.
@@ -2126,6 +2142,66 @@ Its census answers `0`: the trigger runs only on versions written after it.
 Migration `0009_project_artifacts` deletes malformed derived artifact references, reports their count, and re-derives them from source text on the next write.
 It aborts server boot before a migration record or schema change only when an existing artifact has no owning issue.
 On success it backfills each artifact's project and generated `ref_key`.
+
+Migration `20261111210103_projects_default_assignee_not_null` fills every project's `default_assignee` and then makes the column not null, so the last step of the chain that decides who a question reaches — the person the ask was handed to, then the issue's assignee, then the project's default — always lands on a person (INFRA-3090).
+`0116_project_default_assignee` added the column nullable and nothing ever filled it, so an ask on an unassigned issue of a project nobody had set a default on reached nobody's Inbox, which is the defect this change ends.
+The fill reads two sources and takes the first that names somebody who has signed in:
+the login holding most of that project's issues (`issues.project_key`, `issues.assignee`), a tie broken by the most recent issue among the tied logins (`issues.created_at`, then `issues.key`);
+then the person who created the project, read from its `project.created` event (`events.actor`, the jsonb of `model.Actor`: the `id` of an actor of kind `user`, else any actor's `owner`).
+Both sources are held to `people`, because a login no `people` row holds reaches nobody, which is the defect itself, so a stale assignee is passed over rather than stored.
+A project an agent session created with the shared bearer names nobody in its event (`api/projects_test.go`, `TestASessionBearerCreatesAProject`), so it is filled from its issues or not at all.
+A project neither source names stops the migration with its key in the message, raised from a `DO` block, since a `select` cannot raise.
+It locks `projects` alone, in `ACCESS EXCLUSIVE`, taken before the fill reads anything and held to commit, so no project created between the fill and the `ALTER` escapes with a null default;
+`issues`, `events` and `people` are read under `ACCESS SHARE`, which no write waits behind, so the census's one-gigabyte table limit reaches none of them.
+Its census counts the projects naming no default, which is every project the fill writes, so it refuses the deploy of a database nobody has filled.
+That is the point of it: run the fill on the release still serving, which is the migration's own two statements, and then take the census again, so that whoever deploys types no login at all.
+
+```sql
+-- 1. The login holding most of the project's issues, the most recent issue breaking a tie.
+with assigned as (
+	select i.project_key, i.assignee, i.created_at, i.key
+	from issues i
+	join people p on p.email = i.assignee
+), counted as (
+	select project_key, assignee, count(*) as held
+	from assigned
+	group by project_key, assignee
+), majority as (
+	select distinct on (a.project_key) a.project_key, a.assignee
+	from assigned a
+	join counted c on c.project_key = a.project_key and c.assignee = a.assignee
+	order by a.project_key, c.held desc, a.created_at desc, a.key desc
+)
+update projects p
+set default_assignee = m.assignee
+from majority m
+where p.key = m.project_key and p.default_assignee is null;
+
+-- 2. The person who created the project, where the first step named nobody.
+update projects p
+set default_assignee = creator.login
+from (
+	select distinct on (e.project_key)
+		e.project_key,
+		coalesce(
+			case when e.actor->>'kind' = 'user' then lower(e.actor->>'id') end,
+			lower(e.actor->>'owner')) as login
+	from events e
+	where e.type = 'project.created' and e.project_key is not null
+	order by e.project_key, e.id
+) creator
+join people person on person.email = creator.login
+where p.key = creator.project_key and p.default_assignee is null;
+```
+
+A project left with no default after both statements is one to name a person on by hand, `PUT /api/v1/projects/<key>/default-assignee` with `{"assignee": "<the person's email>"}`, which this release still serves.
+Reaching the migration with one left stops it, and its refusal names the repair that works from there: nothing is serving by then, so it is `update projects set default_assignee = '<the person''s email>' where key = '<KEY>';` on the database itself.
+
+**`20261111210103` is a stop-the-world migration: deploy it with no server of the earlier release running.**
+The narrowing ships in the same release as the fill, where the rule above splits a narrowing across two releases, because the deployment runs one replica under a Kubernetes Deployment's `strategy: Recreate` (`packages/envoy/infra/README.md`):
+no server of the earlier release serves while the migration runs, and the release that boots over it names a default on every project it creates.
+An older release started over the new schema creates a project with no default, which the column now refuses (`23502`), so that create answers `500`;
+recover a failed deploy forward, as `0113` and `0117` require.
 
 A migration runs while the build before it is still serving.
 The app Deployment of `envoy-infra:gcp:Dispatch` rolls above one replica (`packages/envoy/infra/README.md`), so from the start of a rollout until the last pod of the previous release is gone
@@ -3031,7 +3107,7 @@ Each item below names a path with its method and identity, then its purpose.
 - `/api/v1/inbox?project=&assignee=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
   List open asks newest-first, including their issue key, title, and assignee.
-  `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, and the assignee of its issue until somebody hands it on — so it keeps the asks waiting on the caller, the asks nobody waits on (a project-document ask nobody was handed included), or the asks waiting on that person;
+  `assignee=me|unassigned|<email>` filters on the person each ask waits on — whoever it was handed to, the assignee of its issue until somebody hands it on, and the default assignee of its project while the issue holds nobody — so it keeps the asks waiting on the caller or on that person, and `unassigned` keeps the asks that chain names nobody for, which every project naming a default assignee leaves none of;
   an email nobody has signed in with is `400 ASSIGNEE_NOT_ALLOWED`.
 
 - `/api/v1/me/answers?limit=&offset=` (GET; cookie, trusted header, or bearer; needs the `person` scope)
@@ -3105,12 +3181,16 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects` (GET; cookie, trusted header, or bearer)
 
-  List projects (`key`, `name`, `open_asks`, `created_at`), ordered by key.
+  List projects (`key`, `name`, `open_asks`, `gated_steps`, `created_at`), ordered by key.
+  A project's default assignee is not listed: `GET /api/v1/settings/project-default-assignees`, which needs the `person` scope, is the one read of it.
 
 - `/api/v1/projects` (POST; cookie, trusted header, or bearer)
 
-  Create a project from `key` and `name`, for a person or an agent session alike;
-  rejects a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate (U+202A-U+202E, U+2066-U+2069), and a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF);
+  Create a project from `key`, `name` and an optional `default_assignee`, for a person or an agent session alike.
+  Every project names a default assignee, the last step of the chain that decides who a question reaches, so the create takes the login `default_assignee` names, else the person creating the project, else the person its credential acts for.
+  A call that can name none — a credential that acts for no person and names no `default_assignee` — is `400 INVALID_PROJECT` naming the field, and a login nobody has signed in with, whether the call names it or it is the person the credential acts for (a broker-issued token's owner comes from the broker, not from `people`), is `400 ASSIGNEE_NOT_ALLOWED`.
+  The answer is the project plus the `default_assignee` it took; the `project.created` event carries the project alone.
+  It also rejects a key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate (U+202A-U+202E, U+2066-U+2069), and a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF);
   combining marks, format characters, private-use characters and whitespace don't count) with `400 INVALID_PROJECT`, a name over 80 characters (`contracts.ProjectNameMax`, UTF-16 units after the trim) with `400 CAP_EXCEEDED`, and a duplicate key with `409 PROJECT_EXISTS`.
 
 - `/api/v1/settings/repo-projects` (GET; cookie, trusted header, or bearer)
@@ -3137,13 +3217,15 @@ Each item below names a path with its method and identity, then its purpose.
   `{id, instance, started_at, ended_at, state, counts, cursor}`.
   `instance` is the `server_processes` id of the process that ran the pass, which may be long gone — the rows are kept for 48 hours and a process is not.
   `ended_at`, `counts` and `cursor` are `null` until the pass ends;
-  `counts` is then the eight numbers the pass's one log line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`) and `cursor` is `{repository, from, number, rest, counted}`, where the pass left the order for the pass after it and so the address that pass takes it up at: `from` names the page of the repository's open pull requests, one above the last head of the page before it; `number` is the first pull request of that page the pass did not finish, `0` for the whole page; `rest` says the page is read from the repository's REST listing rather than from a query; and `counted` that its heads are already among the heads the cycle knows the repository has. All of them are zero and false for a pass that reached the end of the order. The page's position in the repository is recorded nowhere: a pull request merged below moves the position and moves no number.
+  `counts` is then the eight numbers the pass's one log line carries (`graphql_queries`, `graphql_points`, `rest_requests`, `rest_not_modified`, `heads_over_rest`, `records`, `heads`, `heads_known`) and `cursor` is `{repository, from, number, rest, counted}`, where the pass left the order for the pass after it and so the address that pass takes it up at: `from` names the page of the repository's open pull requests, one above the last head of the page before it; `number` is the first pull request of that page the pass did not finish, `0` for the whole page; `rest` says the page is read from the repository's REST listing rather than from a query; and `counted` that its heads are already among the heads the cycle knows the repository has.
+  All of them are zero and false for a pass that reached the end of the order.
+  The page's position in the repository is recorded nowhere: a pull request merged below moves the position and moves no number.
   `state` is `running`, `complete`, `deadline`, `rate_limit`, `cancelled` (its process shut down under the pass) or `ended_without_completing`, the last being a process killed between a pass's start and its end.
   A deployment that has run no pass answers `[]`.
 
 - `/api/v1/settings/project-default-assignees` (GET; cookie, trusted header, or bearer; needs the `person` scope)
 
-  List every project that names a default assignee, by project key, as `[{project, assignee}]`; a project with no default is left out.
+  List every project with the person it defaults to, by project key, as `[{project, assignee}]`; every project is listed, because every project names a default, and no project at all is an empty list.
   It needs the `person` scope, since the default names a person.
 
 - `/api/v1/settings/new-issue` (GET; cookie, trusted header, or bearer)
@@ -3155,10 +3237,11 @@ Each item below names a path with its method and identity, then its purpose.
 
 - `/api/v1/projects/{key}/default-assignee` (PUT; cookie, trusted header, or bearer; needs the `person` scope)
 
-  Set a project's default assignee `{assignee}` (the email of a person who has signed in, or `null` to clear it):
-  who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to — the last step of the create chain.
-  `400 ASSIGNEE_NOT_ALLOWED` for an email nobody has signed in with, `400 INVALID_PROJECT` for a body without `assignee` or one whose `assignee` is neither a string nor null, `404 NOT_FOUND` for an unknown project.
-  It needs the `person` scope too, and no agent surface sets it.
+  Move a project's default assignee to another person, `{assignee}` being the email of a person who has signed in:
+  who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to — the last step of the create chain — and who a question on an issue nobody holds reaches.
+  Nothing clears a default, so a body whose `assignee` is absent, null or blank is `400 INVALID_PROJECT`.
+  `400 ASSIGNEE_NOT_ALLOWED` for an email nobody has signed in with, `404 NOT_FOUND` for an unknown project.
+  It needs the `person` scope too, and no agent moves a default: an agent names a project's first one on `POST /api/v1/projects`.
 
 - `/api/v1/delivery/session-groups` (POST; cookie, trusted header, or bearer)
 
@@ -3856,7 +3939,7 @@ On a comment, an ask or an issue message it is the logins with a Replies row on 
 on a direct (issue-less) conversation's message, which keeps no Replies row, it is the thread root's author, the one person whose Inbox holds that conversation's agent row, and `[]` when no person opened the thread.
 On an issue event it is the sorted union of two sets, naming a login in both of them once:
 for a close or a reopen the logins with a row on the issue's open asks, which the Inbox leaves out of their Replies while the issue is open and the ask waits on them, and `[]` for any other status move;
-for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on.
+for an assignee move the assignee the issue was taken from and the one it was given to, whose rows that same rule moves for every ask nobody has handed on, a side where the issue holds nobody being the project's default assignee, whom a question on such an issue reaches (`issueWriteThreadLogins`, `api/thread_logins.go`).
 An `ask.asked_of` names two people instead of a thread's readers: the person the ask waited on and the person it waits on now, since a hand-on moves the ask between their lists and changes nothing for a reader of its thread.
 `user_state.updated` carries `changed`, which of `pinned`, `last_read_seq` and `dismissed` the write moved, or `["snoozed"]` for a snooze or an un-snooze of one Inbox row (`PUT` or `DELETE /api/v1/me/asks/{id}/snooze`, which append it only when the row moved).
 A snooze's payload is exactly `{login, changed: ["snoozed"]}`:
@@ -3977,7 +4060,7 @@ A request the combined cap alone holds up waits ahead of the other class's later
 An admitted read has 20 seconds to answer, and a file version download 5 minutes for the work before its answer begins - reading its row and opening the file store - after which its transfer alone bounds it (below), so a download of a large file to a slow but steady reader is never cut for taking long;
 a write has no deadline and, once admitted, runs to completion.
 A write whose client goes away ends there and then instead: no commit is started for a client that has gone, so nothing of that write lands, and the transaction is rolled back at once rather than held for a commit nobody waits on.
-A wait for a database connection is bounded on every pool but three: 3 seconds for a request's, a document load's, a live reader's or the event horizon's, 30 for background work, settlements and compaction, 2 for a lease and 10 for a LISTEN dial.
+A wait for a database connection is bounded on every pool but three: 3 seconds for a request's, a document load's, a live reader's or the event horizon's, 30 for background work, settlements, compaction, the display tree fill and the rooms' appends, 2 for a lease and 10 for a LISTEN dial.
 The outbox's, the registry's and the health probe's acquires have no bound: the registry is its pool's only caller, the outbox's pool has one connection for each of its two callers - its scan and its publisher hold's renewal - each running one statement or transaction at a time, so neither waits behind the other, and the probe bounds its own wait, dial and query together at 2 seconds instead.
 The document and delivery websockets are neither admitted nor bounded.
 

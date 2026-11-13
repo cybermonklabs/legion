@@ -62,7 +62,7 @@ func stageSettlement(t *testing.T, service *Service, artifactID string) *settlem
 func openStageTransaction(t *testing.T, pass *settlementPass, parent context.Context) context.Context {
 	t.Helper()
 	service, artifactID := pass.service, pass.room
-	ledger := &Ledger{service: service, ownTx: true}
+	ledger := &Ledger{service: service, ownTx: true, treePool: pass.settlements}
 	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), pass.cursor)
 	tx, err := pass.settlements.Begin(ctx)
 	if err != nil {

@@ -37,10 +37,12 @@ import (
 // so its tree is stored by the first read of it (getArtifactVersion) and by nothing else.
 //
 // The store itself is texttrees.StoreFor, the one policy every path that writes a stored text
-// keeps, which is also why a caller still holding a pooled connection stores nothing.
+// keeps, which is also why a caller still holding a pooled connection stores nothing. It runs on
+// the store ctx names (workStore): a request's own pool, or the background pool for background
+// work that runs through this server.
 func (s *server) storeDisplayTrees(ctx context.Context, subject string, texts ...string) {
 	docs.AfterWriterGateRelease(ctx, func() {
-		if err := texttrees.StoreFor(ctx, s.deps.Store, pmdoc.DisplayLatest, texts...); err != nil {
+		if err := texttrees.StoreFor(ctx, s.workStore(ctx), pmdoc.DisplayLatest, texts...); err != nil {
 			slog.Warn("dispatch: store display trees failed", "subject", subject, "error", err)
 		}
 	})

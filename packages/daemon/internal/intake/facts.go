@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
@@ -474,6 +473,23 @@ type ControllerTick struct {
 }
 
 func (ControllerTick) isFact() {}
+
+// EntrySweep is the daemon's periodic convergence of the phase entries, applied as a synthetic
+// fact every entrySweepInterval by the workflow runtime's own ticker (internal/daemon's
+// tickEntrySweep) and never decoded from an event. Admission is the only handler that acts on
+// it: it reads the project's issues, its slots and its line facts as its promote path does and
+// sends every role whose claim is behind the entry its phases row names that entry's work
+// (admit.Admission.convergeEntries).
+//
+// It carries nothing, because the difference it closes is one the record already holds and the
+// handler reads the whole project. What it is for is the running: an admission pass runs on a
+// fact, and a daemon with no fact arriving — a quiet project, a transition whose own start row
+// the outbox fenced out — would otherwise leave a role behind its entry until something else
+// happened. Going through ApplyFact takes the one lock every fact takes, so the sweep reads no
+// record a transition is in the middle of writing.
+type EntrySweep struct{}
+
+func (EntrySweep) isFact() {}
 
 // PullRequestOpened registers a pull request whose branch or body identifies a Dispatch issue.
 type PullRequestOpened struct {
@@ -1168,6 +1184,37 @@ type PodBackstopDue struct {
 
 func (PodBackstopDue) isFact() {}
 
+// WorkerSilent is one claim the daemon's minute sweep read as a silent phase worker: up and
+// between turns, in no update round, its last step older than Bound (config.Config.WorkerSilence),
+// and its session's report explaining none of that quiet. The sweep applies it from the live
+// claims, never from an event, and its handler decides in the fact's own transaction
+// (internal/daemon's tellSilentPhaseWorkers says why, workerSilentEventID what its id is).
+type WorkerSilent struct {
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	LastStep   time.Time
+	Bound      time.Duration
+}
+
+func (WorkerSilent) isFact() {}
+
+// WorkerBackgroundStalled is one claim the daemon's minute sweep read as a phase worker waiting
+// on background work of its own (Kinds) whose session's report, at ReportedAt, is older than
+// Bound (config.Config.WorkerBackground). The sweep applies it from the live claims, never from
+// an event, and its handler tells the architect and sends nothing (internal/daemon's
+// workerBackgroundEventID says what its id is).
+type WorkerBackgroundStalled struct {
+	Issue      string
+	Role       claim.Role
+	Generation uint64
+	ReportedAt time.Time
+	Kinds      []string
+	Bound      time.Duration
+}
+
+func (WorkerBackgroundStalled) isFact() {}
+
 // Handler changes the workflow record inside the caller-owned transaction.
 type Handler interface {
 	Apply(context.Context, pgx.Tx, Fact) (Result, error)
@@ -1175,9 +1222,14 @@ type Handler interface {
 
 // Result carries a refusal that is durable: handlers finish and the transaction commits. Duplicate
 // reports that the event id was already processed, so no handler ran and nothing changed.
+//
+// Unspent is a handler leaving the event unmarked, so the same id applies again when it is next
+// sent (ApplyFact). A handler sets it only for a refusal whose cause can clear while the fact's
+// id stays the same, and writes nothing where it sets it.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
+	Unspent   bool
 }
 
 type commitHooksKey struct{}
@@ -1238,6 +1290,23 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 	return &Refusal{Status: 409, Code: "CHILD_NOT_ADOPTABLE", Message: fmt.Sprintf("%s cannot join the tree of %s: %s", key, tree, reason)}
 }
 
+// Pool is the Postgres connection pool the intake applies its facts on, keeps its consumers'
+// positions in and reads what it has already applied from. In the daemon it is always the store's
+// guarded pool (store.Pool), and that is the point of the hand-over: a handler that asks the pool
+// for a second connection while the fact's own transaction holds one — under the global fact lock
+// every other fact queues behind — is refused at that call (store.ErrNestedAcquire) instead of
+// waiting for a connection only it can give back (INFRA-3169).
+//
+// It is named as the three methods the intake uses rather than as that one type because the
+// packages that measure the handlers against a real Postgres — the workflow engine's and
+// admission's tests — open pools of their own and apply facts straight on them, and the guard has
+// nothing to say about a pool a test owns. Nothing in the daemon opens a pool but the store.
+type Pool interface {
+	BeginTx(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}
+
 // ApplyFact is the only transaction path for facts, whether they arrived through JetStream, the
 // API, or supervision. It records the event before running handlers, skips duplicates before any
 // handler runs, remembers the first refusal while completing every handler, and rolls all writes
@@ -1258,7 +1327,7 @@ func ChildNotAdoptable(key, tree, reason string) *Refusal {
 // Making per-tree locking correct means promotion taking the candidate tree's lock as well, which
 // is cross-tree lock ordering, which is a deadlock a daemon supervising long-lived agents would
 // hold until a human noticed. Serial facts are a throughput cost; that is the trade being made.
-func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
+func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	tx, err := pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return Result{}, err
@@ -1307,13 +1376,16 @@ func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, 
 		if result.Refusal == nil && candidate.Refusal != nil {
 			result.Refusal = candidate.Refusal
 		}
+		result.Unspent = result.Unspent || candidate.Unspent
 	}
 	// A refused report of a production check leaves its event unmarked, so a report sent again —
 	// the same look and verdict, which is the same fact id its route mints (api's checkReport) —
-	// applies instead of being answered as one already received. It is this fact alone: an
-	// unmarked refusal of any other fact would make a refused handoff apply on its next delivery,
-	// which those refusals exist to stop (dispatch://INFRA-714/spec R12).
-	if _, report := fact.(CheckReport); report && result.Refusal != nil {
+	// applies instead of being answered as one already received. Beside it, a handler leaves a
+	// fact unmarked only where the refusal's cause can clear without changing the fact's id
+	// (Result.Unspent). An unmarked refusal of any other fact would make a refused handoff apply
+	// on its next delivery, which those refusals exist to stop (dispatch://INFRA-714/spec R12).
+	_, report := fact.(CheckReport)
+	if (report && result.Refusal != nil) || result.Unspent {
 		if err := record.NewStore().ForgetProcessed(ctx, tx, source, eventID); err != nil {
 			return Result{}, err
 		}
@@ -1328,12 +1400,12 @@ func ApplyFact(ctx context.Context, pool *pgxpool.Pool, source, eventID string, 
 
 // Applied is which of eventIDs from source ApplyFact has already applied, read in one query and
 // outside the fact lock. A fact's processed_events row commits with the fact, and only a refused
-// production check report removes its own (ApplyFact), so an id read here as applied is one
-// ApplyFact would only take the lock to skip. A caller that
+// production check report or a fact a handler left unspent removes its own (ApplyFact), so an id
+// read here as applied is one ApplyFact would only take the lock to skip. A caller that
 // replays many facts it has most likely applied before (the boot's terminal replay) applies only
 // the rest: the duplicates cost one read between them, not a transaction each queued on the lock
 // behind every live fact.
-func Applied(ctx context.Context, pool *pgxpool.Pool, source string, eventIDs []string) (map[string]bool, error) {
+func Applied(ctx context.Context, pool Pool, source string, eventIDs []string) (map[string]bool, error) {
 	applied := make(map[string]bool, len(eventIDs))
 	if len(eventIDs) == 0 {
 		return applied, nil

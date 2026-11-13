@@ -1894,8 +1894,14 @@ func (s *Service) commitSettlement(ctx context.Context, tx pgx.Tx, ledger *Ledge
 	// The settlement's own transaction commits here rather than through Ledger.Commit, so the
 	// display tree of the version it wrote is stored here too: a settlement's version is a text
 	// a reader is shown like any other, and its markdown is this write's own, not the markdown of
-	// the version the route before it wrote. A settlement holds no writer gate, so the store
-	// stands where it is (Ledger.storeVersionTrees).
+	// the version the route before it wrote. A settlement holds no writer gate, so the store runs
+	// at once (Ledger.storeVersionTrees). It runs on the settlements pool the settlement named
+	// (settlePass, Ledger.treePool), never the request pool: the commit above has given the
+	// transaction's connection back, so the store takes that pool's connection again rather than a
+	// second one beside it (store.ErrNestedAcquire), and the slot the settlement holds has a
+	// connection of that pool for itself (settlementWorkers), so the store waits behind no other
+	// settlement. The block-id backfill, which commits here too, names no pool and stores on its
+	// process's own.
 	ledger.storeVersionTrees(ctx)
 	if advanced {
 		s.noteStoredUpdates(room, int64(appended[len(appended)-1]))

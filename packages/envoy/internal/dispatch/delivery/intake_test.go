@@ -204,7 +204,7 @@ const (
 func seedProjectRepository(t *testing.T, ctx context.Context, pool *store.Pool, key, name, repo string) {
 	t.Helper()
 	if _, err := pool.Exec(ctx, `
-		insert into projects (key, name) values ($1, $2) on conflict do nothing
+		insert into projects (key, name, default_assignee) values ($1, $2, 'alice') on conflict do nothing
 	`, key, name); err != nil {
 		t.Fatalf("seed the project: %v", err)
 	}

@@ -22,9 +22,11 @@ const MaintenanceSweepInterval = time.Minute
 // past its window that stored no terminal event and deletes every run past its TTL
 // (sweepGoingRequests), and then sends every delivery a process that died left owed
 // (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil where nothing
-// delivers. It stops when ctx is done. pool is what its statements run on: cmd/dispatch hands it
-// the background pool (store.Pool.Background), so a pass neither waits for the requests'
-// connections nor takes one.
+// delivers. It stops when ctx is done. pool is what its own statements run on: cmd/dispatch hands
+// it the background pool (store.Pool.Background). The resume runs through the server that answers
+// the requests, so it names the background pool for itself at its entry (withWorkStore), and its
+// whole send path runs there too: a pass neither waits for the requests' connections nor takes
+// one, and a busy background pool makes it wait that pool's acquire bound instead.
 //
 // It is a timer and not a woken loop (duty.RunWoken), the shape every other sweep of this server
 // took, because no commit announces any of its work: a key and a proof record pass their windows

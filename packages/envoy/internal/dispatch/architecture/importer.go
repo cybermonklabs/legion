@@ -125,13 +125,16 @@ func NewImporter(database *store.Store, github *githubapp.Client, broker *events
 	}
 }
 
-// On is this importer reading and writing through database instead: the same GitHub App client,
-// event broker and flights, so a sync of one source on either importer joins the other's instead
-// of making its own set of GitHub calls, and one Close ends both. cmd/dispatch runs the ticker on
-// the background pool's store this way, while the routes sync on the request pool's.
-func (i *Importer) On(database *store.Store) *Importer {
+// On is this importer reading and writing through database, and calling GitHub through github,
+// instead of its own: the same event broker and flights, so a sync of one source on either
+// importer joins the other's instead of making its own set of GitHub calls, and one Close ends
+// both. cmd/dispatch runs the ticker on the background pool's store this way, with a GitHub client
+// whose shared rate limits are read and recorded on that pool too, while the routes sync on the
+// request pool's store and client.
+func (i *Importer) On(database *store.Store, github *githubapp.Client) *Importer {
 	derived := *i
 	derived.store = database
+	derived.github = github
 	return &derived
 }
 

@@ -72,10 +72,10 @@ import (
 // (12 s) from its first try, and the try that starts just inside that window is bounded by the
 // listener client's own five seconds, so one attempt is about 17 seconds at worst. A pass reads
 // three kinds - the owed message attempts, the keyed sends with no attempt and the owed mention
-// attempts - deliverySweepBatch of each, so 300 attempts, and sends them
-// broadcastDeliveryWorkers (4) at a time: 75 rounds of about 17 seconds, some 21 minutes, is the
-// worst case, and no other process runs a pass of that loop for the whole of it. It needs every
-// one of those 300 attempts to meet a take-over; a pass with nothing owed ends in five reads.
+// attempts - deliverySweepBatch of each, so 300 attempts, and sends them resumeWorkers (3) at a
+// time: 100 rounds of about 17 seconds, some 28 minutes, is the worst case, and no other process
+// runs a pass of that loop for the whole of it. It needs every one of those 300 attempts to meet a
+// take-over; a pass with nothing owed ends in five reads.
 const deliverySweepBatch = 100
 
 // The causes an owed attempt nothing can send is settled with (settleUndeliverable).
@@ -160,16 +160,30 @@ type owedDelivery struct {
 
 // resumeOwedDeliveries is one pass of the delivery sweep: it settles every owed attempt nothing can
 // send and every attempt a later attempt of its mention superseded, then reads every other owed
-// attempt and sends each, broadcastDeliveryWorkers at a time, returning once every one has
-// settled. The sends run on a context the pass's own cancellation does
-// not reach and are counted in the server's background wait, so a shutdown that cuts the pass short
-// lets the sends it started finish. Only a read of what is owed fails it; a send the listener
-// refuses is recorded on its attempt, and an attempt it could not settle is logged and left to the
-// next pass.
+// attempt and sends each, resumeWorkers at a time, returning once every one has settled. The sends
+// run on a context the pass's own cancellation does not reach and are counted in the server's
+// background wait, so a shutdown that cuts the pass short lets the sends it started finish. Only a
+// read of what is owed fails it; a send the listener refuses is recorded on its attempt, and an
+// attempt it could not settle is logged and left to the next pass.
+//
+// The pass is background work - the maintenance loop runs it (RunMaintenanceSweep), and no client
+// waits on it - so every statement of it runs on the background pool, named here at its entry
+// (withWorkStore) for the whole send path below: the reads, the claims, the settles and the
+// display trees of the receipts it publishes. This server answers the requests too, so its own
+// store stays the request pool's. A pass that cannot open the background pool sends nothing and
+// fails, rather than reading on through the request pool.
 func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 	if s.deps.Envoy == nil {
 		return nil
 	}
+	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+		return errors.New("resume owed deliveries: database unavailable")
+	}
+	background, err := s.deps.Store.Pool.Background()
+	if err != nil {
+		return fmt.Errorf("resume owed deliveries: open the background pool: %w", err)
+	}
+	ctx = withWorkStore(ctx, &store.Store{Pool: background})
 	s.detached.start()
 	defer s.detached.done()
 	if err := s.settleUndeliverable(ctx); err != nil {
@@ -189,7 +203,7 @@ func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 	sending := context.WithoutCancel(ctx)
 	pending := make(chan owedDelivery)
 	var wait sync.WaitGroup
-	for range min(broadcastDeliveryWorkers, len(owed)) {
+	for range min(resumeWorkers(background), len(owed)) {
 		wait.Go(func() {
 			for delivery := range pending {
 				// A mark of this worker's own: workers sharing one would refuse each other a
@@ -213,16 +227,26 @@ func (s *server) resumeOwedDeliveries(ctx context.Context) error {
 	return nil
 }
 
+// resumeWorkers is how many owed attempts a pass sends at once: half the background pool's
+// connections, three of its six, and never more than a broadcast's workers. Each worker holds one
+// connection at a time (its own mark, store.ForConcurrentRead) and none across a listener call,
+// so the pass holds at most half the pool and every other loop that shares it keeps the other
+// half. A worker that finds the pool busy waits its acquire bound (thirty seconds) and is then
+// refused (store.ErrPoolBusy): the attempt is logged and stays owed for the next pass.
+func resumeWorkers(background *store.Pool) int {
+	return max(1, min(broadcastDeliveryWorkers, int(background.Stat().MaxConns())/2))
+}
+
 // resumeOwedDelivery sends one owed attempt, as a repeat under its write's key sends it, bound to
 // its number and holding no claim of its own: an attempt a live sender took in the meantime, or
 // that settled, is left as it is, and no attempt of the sweep's own is opened.
 func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) error {
 	if owed.commentID != "" {
-		comment, err := s.loadComment(ctx, s.deps.Store.Pool, owed.commentID)
+		comment, err := s.loadComment(ctx, s.workStore(ctx).Pool, owed.commentID)
 		if err != nil {
 			return err
 		}
-		created, err := s.loadCommentCreatedEvent(ctx, s.deps.Store.Pool, comment)
+		created, err := s.loadCommentCreatedEvent(ctx, s.workStore(ctx).Pool, comment)
 		if err != nil {
 			return err
 		}
@@ -231,7 +255,7 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 			attemptClaim{attempt: owed.attempt}, s.newTakeoverRetry())
 		return err
 	}
-	message, err := s.loadMessage(ctx, s.deps.Store.Pool, "", owed.messageID)
+	message, err := s.loadMessage(ctx, s.workStore(ctx).Pool, "", owed.messageID)
 	if err != nil {
 		return err
 	}
@@ -252,7 +276,7 @@ func (s *server) resumeOwedDelivery(ctx context.Context, owed owedDelivery) erro
 func (s *server) owedDeliveries(ctx context.Context) ([]owedDelivery, error) {
 	window := contracts.DeliveryDuplicateWindow.Seconds()
 	var owed []owedDelivery
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	rows, err := s.workStore(ctx).Pool.Query(ctx, `
 		select d.message_id::text, d.attempt, d.delivery, d.requested_by
 		from message_deliveries d
 		where `+owedMessageAttempt+`
@@ -281,7 +305,7 @@ func (s *server) owedDeliveries(ctx context.Context) ([]owedDelivery, error) {
 	}
 	owed = append(owed, messages...)
 
-	rows, err = s.deps.Store.Pool.Query(ctx, owedKeyedSendsQuery,
+	rows, err = s.workStore(ctx).Pool.Query(ctx, owedKeyedSendsQuery,
 		s.keyLease().Seconds(), contracts.IdempotencyKeyTTL.Seconds(), deliverySweepBatch)
 	if err != nil {
 		return nil, fmt.Errorf("read the keyed sends with no attempt: %w", err)
@@ -296,7 +320,7 @@ func (s *server) owedDeliveries(ctx context.Context) ([]owedDelivery, error) {
 	}
 	owed = append(owed, unattempted...)
 
-	rows, err = s.deps.Store.Pool.Query(ctx, `
+	rows, err = s.workStore(ctx).Pool.Query(ctx, `
 		select d.comment_id::text, d.target, d.attempt, d.delivery
 		from comment_deliveries d
 		where `+owedCommentAttempt+`
@@ -372,7 +396,7 @@ func (s *server) settleUndeliverable(ctx context.Context) error {
 func (s *server) settleSupersededMentions(ctx context.Context) error {
 	total := 0
 	for {
-		rows, err := s.deps.Store.Pool.Query(ctx, `
+		rows, err := s.workStore(ctx).Pool.Query(ctx, `
 			select `+commentDeliveryColumns+`
 			from comment_deliveries d
 			where `+supersededCommentAttempt+`
@@ -415,7 +439,7 @@ func (s *server) settleSupersededMentions(ctx context.Context) error {
 // since, or that settled meanwhile, is left as it stands. The comment's author is the actor, as
 // it is for every other attempt this sweep settles (settleUndeliverableMention).
 func (s *server) settleSupersededMention(ctx context.Context, attempt model.CommentDelivery) (bool, error) {
-	comment, err := s.loadComment(ctx, s.deps.Store.Pool, attempt.CommentID)
+	comment, err := s.loadComment(ctx, s.workStore(ctx).Pool, attempt.CommentID)
 	if err != nil {
 		return false, err
 	}
@@ -430,7 +454,7 @@ func (s *server) settleSupersededMention(ctx context.Context, attempt model.Comm
 // undeliverableDeliveries reads, oldest first, up to deliverySweepBatch of the owed comment
 // mention attempts nothing can send, and whether that read filled its batch.
 func (s *server) undeliverableDeliveries(ctx context.Context) ([]undeliverableAttempt, bool, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	rows, err := s.workStore(ctx).Pool.Query(ctx, `
 		select d.comment_id::text, d.target, d.attempt, `+commentAttemptMentionGone+`
 		from comment_deliveries d
 		where `+owedCommentAttempt+`
@@ -464,7 +488,7 @@ func (s *server) undeliverableDeliveries(ctx context.Context) ([]undeliverableAt
 // whether it did: one someone claimed or settled meanwhile, or whose cause no longer holds under
 // that lock - a comment that holds its mention again - is left as it is.
 func (s *server) settleUndeliverableMention(ctx context.Context, undeliverable undeliverableAttempt) (bool, error) {
-	comment, err := s.loadComment(ctx, s.deps.Store.Pool, undeliverable.commentID)
+	comment, err := s.loadComment(ctx, s.workStore(ctx).Pool, undeliverable.commentID)
 	if err != nil {
 		return false, err
 	}

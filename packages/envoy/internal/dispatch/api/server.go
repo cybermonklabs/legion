@@ -1798,16 +1798,41 @@ func (s *server) publish(ctx context.Context, events ...model.Event) {
 }
 
 // begin opens the transaction of a request: every transaction an API handler opens comes from
-// here, so requestTx is what each of them commits and rolls back.
+// here, so requestTx is what each of them commits and rolls back. It opens it on the store ctx
+// names (workStore): the request pool for every request, and the background pool for the
+// background work that runs through this server (resumeOwedDeliveries).
 func (s *server) begin(ctx context.Context) (pgx.Tx, error) {
-	if s.deps.Store == nil || s.deps.Store.Pool == nil {
+	database := s.workStore(ctx)
+	if database == nil || database.Pool == nil {
 		return nil, errorf(http.StatusServiceUnavailable, "DATABASE_UNAVAILABLE", "database unavailable")
 	}
-	tx, err := s.deps.Store.Pool.Begin(ctx)
+	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin transaction: %w", err)
 	}
 	return requestTx{Tx: tx}, nil
+}
+
+type workStoreKey struct{}
+
+// withWorkStore names database as the store every statement this server makes under ctx runs
+// on, in place of its own (workStore). The server's own store is the request pool's, which is
+// right for a request and wrong for background work: a loop no client waits on, running through
+// the server that answers the requests, names the background pool's store at its entry, so the
+// whole path below it - its reads, its transactions (begin) and the display trees its events
+// carry (storeDisplayTrees) - takes no connection admission counts for requests. The delivery
+// sweep's resume is that loop (resumeOwedDeliveries).
+func withWorkStore(ctx context.Context, database *store.Store) context.Context {
+	return context.WithValue(ctx, workStoreKey{}, database)
+}
+
+// workStore is the store a statement this server makes under ctx runs on: the one ctx names
+// (withWorkStore), else the server's own.
+func (s *server) workStore(ctx context.Context) *store.Store {
+	if database, named := ctx.Value(workStoreKey{}).(*store.Store); named {
+		return database
+	}
+	return s.deps.Store
 }
 
 // requestTx is a request's transaction (server.begin): the pool's transaction, which rolls back

@@ -89,9 +89,11 @@ export const ASK_IS_FOR_A_PERSON =
 
 /** Whom an open ask waits on, and who may move it: the companion of ASK_IS_FOR_A_PERSON, carried
  *  by the same texts. The person it waits on is the server's `waiting_on_person`, which every ask
- *  read carries. */
+ *  read carries, resolved in three steps (`askedOfPersonExpression` in
+ *  `packages/envoy/internal/dispatch/api/ask_rows.go`). Every project names a default assignee,
+ *  so the third step always names a person and no ask reaches nobody. */
 export const ASK_WAITS_ON_THE_ASSIGNEE =
-  "An ask waits on the issue's assignee until a person hands it on. No agent can hand one on.";
+  "An ask waits on its asked-of person, else the issue's assignee, else the project's default assignee; no agent hands one on.";
 
 const HUMAN_AGREED_TO_DOCUMENT = "the human has agreed to every point in the document";
 
@@ -692,7 +694,7 @@ export const dispatchToolSpecs = [
       assignee: z
         .string()
         .describe(
-          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee when it still names a person who has signed in, else unassigned. Set it only when a person said who owns the issue."
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); defaults to your owner when you act for a person, else the parent's assignee, else the project's default assignee. Every project names a default assignee, so a new issue always has one. A question on it reaches the person it was handed to, else the issue's assignee, else the project's default assignee. Set it only when a person said who owns the issue."
         )
         .optional(),
       components: componentsArgument(z).optional(),
@@ -737,7 +739,10 @@ export const dispatchToolSpecs = [
       "included, waits for the reopen. " +
       "priority is yours to set and a human overrides it. assignee is the person who answers " +
       "this issue's asks, and every ask on it waits on them until a person hands that ask on. " +
-      "Passing null unassigns the issue. Set the assignee when a person said who owns the work, as you " +
+      "Passing null unassigns the issue, and every ask on it then waits on the project's default " +
+      "assignee: a question reaches the person it was handed to, else the issue's assignee, else " +
+      "the project's default assignee, so every question reaches a person. " +
+      "Set the assignee when a person said who owns the work, as you " +
       "file the issue or hand it over. before and after move the issue on " +
       "its project's board: before puts it above that issue, after below, and both together " +
       "land it between them. A project's board order is one agent's to keep; in a Legion " +
@@ -777,7 +782,7 @@ export const dispatchToolSpecs = [
         .nullable()
         .optional()
         .describe(
-          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); null unassigns the issue. Set it only when a person said who owns the issue, never to move a question off the person holding it."
+          "Email of the person who answers this issue's asks (someone who has signed in to Dispatch); null unassigns the issue, and every ask on it then waits on the project's default assignee. Set it only when a person said who owns the issue, never to move a question off the person holding it."
         ),
       external_links: z
         .array(z.string({ min: 1 }))
@@ -1447,7 +1452,11 @@ export const dispatchToolSpecs = [
       "Ask a human to approve a document at its current version. Before calling, have a fresh read-only reader check the spec against the code and the human's words, then resolve every finding; a Legion architect runs `plan-gap-analyst` and `plan-reviewer`. Opens an approval ask (Approve / " +
       "Request changes) in the human's Inbox whose question names the document and version, " +
       "followed by the summary; the answer pins a review to that version and arrives as " +
-      "artifact.approved or artifact.changes_requested. An open request follows the document: a " +
+      "artifact.approved or artifact.changes_requested. " +
+      "The request reaches the person it was handed to, else the issue's assignee, else the " +
+      "project's default assignee, so it always reaches a person, and this tool's answer names " +
+      "that person. " +
+      "An open request follows the document: a " +
       "later version moves it to that version and leaves it waiting on you, as a human's reply in " +
       "its thread does. Only the first move since the request was opened or handed back sends an " +
       "event, and never to the session whose version made it; dispatch doc-read shows whom it " +
@@ -1955,7 +1964,13 @@ export const dispatchToolSpecs = [
       "A key that already exists is refused " +
       "with 409 PROJECT_EXISTS whoever created it, so after a retry it can mean the first call made the project. " +
       `A key that is not a project key (${PROJECT_KEY_RULE}) or an empty name is refused with 400 ` +
-      `INVALID_PROJECT, and a name over ${PROJECT_NAME_MAX} characters with 400 CAP_EXCEEDED. When no person ` +
+      `INVALID_PROJECT, and a name over ${PROJECT_NAME_MAX} characters with 400 CAP_EXCEEDED. ` +
+      "Every project names a default assignee, the person its unowned work lands on: the login " +
+      "default_assignee names, else the person creating the project, else the person your " +
+      "credential acts for. A call that names none under a credential acting for no person is " +
+      "refused with 400 INVALID_PROJECT naming default_assignee, so ask a person who it should " +
+      "be rather than choosing one. A login nobody has signed in with is refused with 400 " +
+      "ASSIGNEE_NOT_ALLOWED. The answer names the default the project took. When no person " +
       "asked for a project and an existing project already covers the work, do not create a project. File an " +
       "issue in that project with dispatch issue.",
     arguments: (z) => ({
@@ -1965,6 +1980,12 @@ export const dispatchToolSpecs = [
         .describe(
           `The project's name, shown beside its key, at most ${PROJECT_NAME_MAX} characters.`
         ),
+      default_assignee: z
+        .string()
+        .describe(
+          "Email of the person the project's unowned work lands on: a new issue with no assignee, and every question on an issue nobody holds. It must name a person who has signed in to Dispatch. Left out, it falls to the person creating the project, else the person your credential acts for; a credential that acts for nobody must name it."
+        )
+        .optional(),
     }),
     strict: true,
   },
@@ -2047,7 +2068,7 @@ export const dispatchToolSpecs = [
     name: "dispatch_whoami",
     example: {},
     description:
-      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
+      "Who Dispatch takes this session for: {session, owner, service, project}. session is the session Dispatch records your writes as. It is the session your credential proved, and the tool says so when that is not the session you run in. owner is the lowercase email of the person you act for, and is the first choice of assignee for issues you create. owner is null under the shared token and under a broker token that names a service and no person. With a null owner, a create with no assignee falls back to the parent's assignee and then to the project's default assignee, which every project names, so every issue you create has an assignee. A question on an issue reaches the person it was handed to, else the issue's assignee, else the project's default assignee. service is the subject of the verified service-account token that authenticated you, or the fleet a broker token naming no person belongs to, or null. A broker token that names a service may read and is refused every write with SIGN_IN_REQUIRED, which names the command a person signs in on that machine with. project is the one project key your credential may write, or null when it names none.",
     arguments: () => ({}),
     strict: true,
   },

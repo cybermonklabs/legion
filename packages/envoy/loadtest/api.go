@@ -358,6 +358,18 @@ func (a *api) callRetryKeyed(ctx context.Context, method, path string, w who, bo
 // multipartFile's form both take.
 func sessionActor(id string) map[string]any { return map[string]any{"kind": "session", "id": id} }
 
+// seedPerson is the person a seed creates its projects as, and so the person each seeded project
+// names as its default assignee: who an issue of that project nobody holds, and a question on
+// one, reaches. Every project names a person (internal/dispatch/store/migrations/
+// 20261111210103_projects_default_assignee_not_null.up.sql), and the create takes the login the
+// call names, else the person creating it, else the person its credential acts for
+// (internal/dispatch/api/projects.go). A seed writes as a session under the stack's shared
+// bearer, which acts for nobody, so its project create carries the identity header instead: that
+// person is the second step, and the header records them as somebody who has signed in
+// (internal/dispatch/identity.HeaderIdentity.Login), which a login named in the call would have
+// to be already (allowedLogin).
+const seedPerson = "person-seed"
+
 func trunc(b []byte) string {
 	if len(b) > 300 {
 		return string(b[:300]) + "…"

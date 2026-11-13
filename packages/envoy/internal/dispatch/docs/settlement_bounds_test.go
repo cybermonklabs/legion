@@ -17,6 +17,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
 // A settlement holding one of the settlementWorkers slots takes its transaction's connection from
@@ -337,6 +338,58 @@ func TestASettlementWithoutItsPoolWarmsNoColdRoomThroughTheRequestPool(t *testin
 	}
 	if !owes {
 		t.Fatal("the document's pending-settlement row is gone, want it kept for the resumption")
+	}
+}
+
+// A settlement that writes a version stores that version's display tree on the settlements pool
+// its transaction ran on (Ledger.treePool), and takes no request-pool connection at all: the
+// store runs once the commit has given the transaction's connection back (commitSettlement), so
+// it takes that pool's connection again and none admission counts for requests. The tree is
+// stored all the same, so the next reader of the version copies it.
+func TestAVersioningSettlementTakesNoRequestPoolConnection(t *testing.T) {
+	service, artifactID := newTestService(t)
+	service.settle = time.Hour
+	seedServiceText(t, service, artifactID, "before")
+	settleCurrentGeneration(t, service, artifactID)
+	editLiveTree(t, service, artifactID, replaceRun("before", "after"))
+	versions := latestVersionNumber(t, service, artifactID)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	// The edit is durable before anything is counted, so the room's own persistence takes no
+	// connection while the settlement runs.
+	if err := service.waitForPendingUpdates(ctx, artifactID); err != nil {
+		t.Fatalf("wait for the edit to reach persistence: %v", err)
+	}
+	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
+		t.Fatalf("wait for the edit to become durable: %v", err)
+	}
+	settlements, err := service.store.Pool.Settlements()
+	if err != nil {
+		t.Fatalf("open the settlements pool: %v", err)
+	}
+	generation := roomGeneration(t, service, artifactID)
+
+	before := service.store.Pool.Stat().AcquireCount()
+	outcome := service.settleRoomWithin(ctx, artifactID, generation, false)
+	took := service.store.Pool.Stat().AcquireCount() - before
+
+	if outcome.next != settleEnded || outcome.err != nil {
+		t.Fatalf("the settlement ended as %+v, want it ended having versioned the edit", outcome)
+	}
+	if latest := latestVersionNumber(t, service, artifactID); latest != versions+1 {
+		t.Fatalf("latest version = %d, want %d: the settlement versions the edit", latest, versions+1)
+	}
+	if took != 0 {
+		t.Fatalf("the settlement took %d request-pool connection(s), want none: a settlement stores its version's display tree on the settlements pool", took)
+	}
+	const markdown = "after\n"
+	requireLatestVersionMarkdown(t, service, artifactID, markdown)
+	stored, err := texttrees.New(settlements).Read(ctx, pmdoc.DisplayLatest, [][32]byte{pmdoc.TextSum(markdown)})
+	if err != nil {
+		t.Fatalf("read the version's stored tree: %v", err)
+	}
+	if _, held := stored[pmdoc.TextSum(markdown)]; !held {
+		t.Fatalf("the settlement stored no display tree of its version %q", markdown)
 	}
 }
 

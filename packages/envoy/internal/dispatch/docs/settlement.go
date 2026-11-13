@@ -368,7 +368,10 @@ func (s *settlement) settlePass(parent context.Context) (settleStep, settleOutco
 	if step, outcome := pass.take(); step != settleOn {
 		return step, outcome
 	}
-	ledger := &Ledger{service: s.service, ownTx: true}
+	// The version's display tree is stored on the settlements pool too (treePool), once the commit
+	// has given the transaction's connection back, so the store takes no connection admission
+	// counts for requests (commitSettlement).
+	ledger := &Ledger{service: s.service, ownTx: true, treePool: s.settlements}
 	ctx := withRoomCursor(store.WithTransactionTracking(withLedger(parent, ledger)), pass.cursor)
 	tx, err := s.settlements.Begin(ctx)
 	if err != nil {

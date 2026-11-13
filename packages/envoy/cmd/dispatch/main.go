@@ -42,6 +42,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/embedqueue"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/logging"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
@@ -868,16 +870,26 @@ func main() {
 		slog.Info("dispatch: CI reconcile off: it needs NATS and the GitHub App private key")
 	}
 
-	// The ticker's importer is the routes' one on the background pool: it shares their flights, so
-	// a Refresh and a tick of one source make one set of GitHub calls, and the Close below ends
-	// both importers' flights.
-	go architecture.Run(ctx, appCtx.Architecture().On(backgroundStore), leases)
+	// The GitHub App client the three loops below call GitHub through - the architecture ticker,
+	// the delivery reconcile and the delivery intakes - obeys and records the rate limits every
+	// process shares (github_rate_limits) on the background pool: it reads them before every
+	// request it sends (githubapp.Client.send), so the routes' client, whose limits are on the
+	// request pool, would take a request connection for each of a loop's GitHub calls.
+	backgroundGitHub, err := githubapp.New(appCfg, boot.GitHubAPIBase, githubapp.WithLimits(ratelimit.New(background)))
+	if err != nil {
+		fatal("dispatch: open the background loops' GitHub App client", "error", err)
+	}
+
+	// The ticker's importer is the routes' one on the background pool, with the background loops'
+	// GitHub client: it shares their flights, so a Refresh and a tick of one source make one set of
+	// GitHub calls, and the Close below ends both importers' flights.
+	go architecture.Run(ctx, appCtx.Architecture().On(backgroundStore, backgroundGitHub), leases)
 
 	// LEGION-567: the delivery timeline's 5-minute GitHub-App reconcile runs regardless of NATS
 	// (it never touches it); the NATS consumer that catches events between reconcile passes needs
 	// a client, exactly like the outbox above. Both take the event broker: each writes
 	// issue.deployed on a pull request's issue once its shipping run is known (LEGION-781).
-	reconcile := delivery.NewReconcile(background, appCtx.GitHub(), broker)
+	reconcile := delivery.NewReconcile(background, backgroundGitHub, broker)
 	if boot.ReconcileAtStart {
 		reconcile.FirstPassAtStart()
 	}
@@ -898,7 +910,7 @@ func main() {
 		connectIntake := func(name string) (*bus.Client, error) {
 			return bus.Connect(envoyConfig.Envoy.NatsURLs, serverClient(bus.WithEnvironment(env.lookup), bus.WithName(name))...)
 		}
-		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, background, leases, appCtx.GitHub(), broker, settingsWake)
+		stopIntakes, err := delivery.StartIntakes(ctx, connectIntake, background, leases, backgroundGitHub, broker, settingsWake)
 		if err != nil {
 			fatal("dispatch delivery: connect NATS", "error", err)
 		}

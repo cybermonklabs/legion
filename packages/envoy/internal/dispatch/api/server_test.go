@@ -2049,6 +2049,10 @@ func newCookieServerOn(t *testing.T, database *store.Store, heartbeat time.Durat
 	if err != nil {
 		t.Fatalf("establish alice's session: %v", err)
 	}
+	// A session cookie is issued at sign-in, and a sign-in records the person (people.Record, as
+	// the sign-in callback does), so alice is somebody who has signed in: a project she creates
+	// defaults to her, and that default is held to the people table like every other.
+	seedPeople(t, database, "alice@d.example")
 	cookie, err := http.ParseSetCookie(auth.IssueSessionCookie("alice@d.example", generation, testSigningKey, true))
 	if err != nil {
 		t.Fatalf("parse session cookie: %v", err)

@@ -49,6 +49,12 @@ type Ledger struct {
 	// ledgerVersion because a version a writer records nothing else about - one written with no
 	// author capture - still stores its tree.
 	versionTexts []ledgerVersionText
+	// treePool is the pool the commit stores those trees through (storeWrittenTrees): a
+	// settlement names the settlements pool its transaction ran on (settlePass). Nil is the
+	// service's own pool, the request pool, which is the right one for a request: its transaction
+	// has committed and given its connection back, so the store is one more connection of the
+	// request's own, inside its weight.
+	treePool *store.Pool
 	// seeds holds, per document this transaction seeded (SeedText), the actor that wrote its
 	// first text and the tree it wrote, which credit records and registers as that actor's ask
 	// blocks once the transaction has committed.
@@ -252,10 +258,16 @@ func (l *Ledger) publishEvents() {
 // transaction with no gate on its context - a settlement, the block-id backfill - holds nothing
 // up and stores its trees where it stands.
 //
-// A failure is logged with the documents it was for and changes no answer. The store itself is
-// texttrees.StoreFor, the one policy every path that writes a stored text keeps, which is also
-// why a caller still holding a pooled connection stores nothing; the texts are gathered only
-// where there is something to store, so that caller builds no slice either.
+// Its pool is the writer's (treeTable). A request's store runs on the request pool, once its
+// transaction has given its connection back, so it is one connection of the request's own. A
+// settlement's runs on the settlements pool its transaction ran on (treePool), so it takes no
+// connection admission counts for requests. The block-id backfill, an operator command that
+// serves no request, stores on the one pool its process opened.
+//
+// A failure is logged with the documents it was for and changes no answer. A caller still
+// holding a pooled connection stores nothing, as texttrees.StoreFor's policy for every path that
+// writes a stored text says; the texts are gathered only where there is something to store, so
+// that caller builds no slice either.
 func (l *Ledger) storeVersionTrees(ctx context.Context) {
 	if len(l.versionTexts) == 0 {
 		return
@@ -276,7 +288,7 @@ func (l *Ledger) storeWrittenTrees(ctx context.Context, written []ledgerVersionT
 	for _, one := range written {
 		texts = append(texts, one.markdown)
 	}
-	if err := texttrees.StoreFor(ctx, l.service.store, pmdoc.DisplayLatest, texts...); err != nil {
+	if err := l.treeTable().Store(ctx, pmdoc.DisplayLatest, texts...); err != nil {
 		// The documents are listed for this line alone, so they are gathered where it is written
 		// rather than on every committed write.
 		documents := make([]string, 0, len(written))
@@ -285,6 +297,15 @@ func (l *Ledger) storeWrittenTrees(ctx context.Context, written []ledgerVersionT
 		}
 		slog.Warn("dispatch: store document version display trees failed", "documents", documents, "error", err)
 	}
+}
+
+// treeTable is the text_trees table on the pool this ledger stores its versions' trees through:
+// the one its writer named (treePool), else the service's own.
+func (l *Ledger) treeTable() texttrees.Table {
+	if l.treePool != nil {
+		return texttrees.New(l.treePool)
+	}
+	return texttrees.For(l.service.store)
 }
 
 // commit is Commit up to the publish. Another transaction can run between the two, and tests

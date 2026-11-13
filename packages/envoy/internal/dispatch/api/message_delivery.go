@@ -305,12 +305,12 @@ func (s *server) messageDeliveryRoute(ctx context.Context, message model.Message
 	var err error
 	if resumeAttempt > 0 {
 		lapsed = true
-		err = s.deps.Store.Pool.QueryRow(ctx, `
+		err = s.workStore(ctx).Pool.QueryRow(ctx, `
 			select session_id from message_deliveries
 			where message_id = $1 and attempt = $2 and state = 'pending'
 		`, message.ID, resumeAttempt).Scan(&pinned)
 	} else {
-		err = s.deps.Store.Pool.QueryRow(ctx, `
+		err = s.workStore(ctx).Pool.QueryRow(ctx, `
 			select session_id, `+model.DeliveryClaimFreeSQL+`
 			from message_deliveries
 			where message_id = $1 and state = 'pending'

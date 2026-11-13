@@ -47,6 +47,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `updated project ${event.payload.key}`;
     case "settings.repo_project.updated":
       return `${event.payload.deleted ? "removed" : "updated"} repository mapping ${event.payload.mapping.repo}`;
+    // No write clears a default now: a project always names the person its unowned work lands
+    // on. An event retained from before that rule can record a clear, and keeps its wording.
     case "settings.project_default_assignee.updated":
       return event.payload.assignee === null
         ? `cleared the default assignee of ${event.payload.project}`
@@ -157,7 +159,8 @@ function describe(event: DispatchEvent, previousStatus: string | undefined): str
       return `handed “${event.payload.question}” back for approval`;
     case "ask.asked_of":
       // Who the ask waits on now. The payload names no login where it was handed to the
-      // assignee of its own issue, which is where an ask with no `asked_of` waits.
+      // assignee of its own issue: an ask with no `asked_of` waits on that assignee, or on its
+      // project's default assignee while the issue holds nobody.
       return `handed “${event.payload.question}” to ${event.payload.asked_of ?? "the issue's assignee"}`;
     case "ask.answered":
       return event.payload.previous_answer === undefined

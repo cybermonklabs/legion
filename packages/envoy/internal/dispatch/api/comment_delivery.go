@@ -775,7 +775,7 @@ func (s *server) supersedeOvertakenAttempts(
 	if sent.State != "sent" || sent.Attempt < 2 {
 		return nil
 	}
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	rows, err := s.workStore(ctx).Pool.Query(ctx, `
 		select `+commentDeliveryColumns+`
 		from comment_deliveries
 		where comment_id = $1 and target = $2 and attempt < $3
