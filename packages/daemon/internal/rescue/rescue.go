@@ -696,15 +696,18 @@ const wholeDiskMargin = 3 * time.Minute
 // internal/shim's tests): a fixture bounded under GuardReserve would have every push refused
 // for want of time rather than checked.
 //
-// A workspace's bound holds four things in a pod, and each is measured: the reads that find the
-// unpushed work (readsBeforeThePush), the read of the worktree's own files (worktreeRead), the
-// guard's own run of the shared check (CheckRun), and what that guard leaves the push, which in
-// a pod runs the same check a second time in the pre-push hook (GuardReserve). 90 + 1800 + 120 +
-// 150 is 2160 s, so a workspace's bound is 36 minutes and the whole disk's, keeping
-// wholeDiskMargin over it, 39. Each is a ceiling and not a wait: a workspace whose files git can
-// answer for at once is checked and pushed in seconds. Most of this package's tests take seconds;
-// measured on 2026-11-13, the read cut by its bound and the snapshot refused jj's lock took about
-// 11 s each, and the differential test about two minutes.
+// A workspace's bound holds four things in a pod: the reads that find the unpushed work
+// (readsBeforeThePush), the read of the worktree's own files (worktreeRead), the guard's own run
+// of the shared check (CheckRun), and what that guard leaves the push, which in a pod runs the
+// same check a second time in the pre-push hook (GuardReserve). The last three come from
+// measurements; readsBeforeThePush is the share an earlier bound left those reads, and the reads
+// before the push were measured on 2026-11-13 at 24.8 s on a fixture of the production shape.
+// 90 + 1800 + 120 + 150 is 2160 s, so a workspace's bound is 36 minutes and the whole disk's,
+// keeping wholeDiskMargin over it, 39. Each is a ceiling and not a wait: a workspace whose files
+// git can answer for at once has them read in seconds, and its push then waits on the leak check,
+// one run of which was measured in a pod at 120 s (CheckRun), run twice there. Most of this
+// package's tests take seconds; measured on 2026-11-13, the read cut by its bound and the
+// snapshot refused jj's lock took about 11 s each, and the differential test about two minutes.
 //
 // A bound that fits one run of the check and not two ends inside the hook's run and loses the
 // dying pod's work to a timeout rather than refusing it; a bound that does not fit the worktree
@@ -1034,15 +1037,17 @@ func heldByJJ(dir string) bool {
 
 // edits is one commit holding the workspace's files as they stand, on top of head, when they
 // differ from head's tree; "" when they do not. A file .gitignore ignores that the index a read
-// starts from does not track is left out, as a role's own push would leave it: by both reads
-// below, the carry of the jj route among them, which adds such a file only where the worktree's
-// index tracks it (carried).
+// starts from does not track is left out by the git read, as a role's own push would leave it;
+// the jj route leaves it out too, but for one: a file jj already tracks that the index lacks
+// (after a `git reset`) stays in jj's tree, so the route keeps it where the git read does not,
+// the one gain the differential test declares (carried).
 //
 // Where the worktree holds a .jj directory, the tree is jj's own: the check copies the
-// worktree's git index, or reads head's tree where the worktree has no index file, takes jj's
-// snapshot of the worktree, reads the tree of the working-copy commit that snapshot wrote, and
-// then carries into it what the git read would have kept and that tree lacks, taken from the
-// index copy and from git's own read of the files that copy does not track (snapshotTree,
+// worktree's git index, or reads head's tree where the worktree has no index file, or starts from
+// the empty index where HEAD is unborn, as the git read does, takes jj's snapshot of the
+// worktree, reads the tree of the working-copy commit that snapshot wrote, and then carries into
+// it what the git read would have kept and that tree lacks, taken from the index copy and from
+// git's own read of the files that copy does not track (snapshotTree,
 // carried). Where it does not, the tree is git's, read into an index of its own from a copy of
 // the worktree's where it has one, so that neither the worktree's index nor any ref moves
 // (indexTree). The two answer the same question, and the jj one is the one a pod can afford:
@@ -1324,7 +1329,14 @@ func (r runner) snapshotTree(dir, head string) (string, error) {
 // every other path is added by name with `update-index --add --replace -- <path>...`, which
 // records each of the others as the git read records it, measured on the same shapes: the file,
 // the symlink, the repository's HEAD, and over a directory holding no repository whose HEAD git
-// resolves nothing new, exit 0.
+// resolves nothing new, exit 0. A gitlink the copy marks assume-unchanged or skip-worktree is
+// none of these: the git read reads nothing at its path and keeps the copy's record, so unlinked
+// passes over every path the copy flags, and the record is the copy's, as the seed writes it or
+// as jj's tree already holds it (seeds). Measured on this build on 2026-11-13, over a committed
+// sub marked either way: removed, a commit made inside it, stripped of its .git, replaced by a
+// file or by a symlink, the git read kept HEAD's `160000` record in each, where the gitlink
+// carried as an unflagged one was removed, moved to the new HEAD, or became the file or the
+// symlink.
 //
 // The untracked half is one `ls-files -z --others --exclude-standard -- .` over the whole
 // worktree against the index copy (GIT_INDEX_FILE=tracked): git's own rule for what `git add
@@ -1425,7 +1437,7 @@ func (r runner) carried(dir, tracked, index, tree string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	readded, removed := unlinked(dir, gitlinks)
+	readded, removed := unlinked(dir, gitlinks, half.flagged)
 	listed, err := r.gitPaths(dir, []string{"GIT_INDEX_FILE=" + tracked}, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")
 	if err != nil {
 		return "", err
@@ -1488,10 +1500,10 @@ const gitlinkMode = "160000"
 // among them that `git add -f` then updates from the worktree; the unflagged records among them
 // whose worktree path is now a directory, which `git add -u` updates; and what git lists at
 // every record that is no gitlink, whose path jj's tree lacks and whose worktree path is now a
-// directory (nowDirectories), read against a copy of the copy at without. Each path is named as
-// git names it relative to dir. held is every path of jj's tree with its mode and object, as
-// carried reads them. It fails where the copy holds a record and another under it that the git
-// read keeps both of (keptUnderAKeptPath).
+// directory (nowDirectories), read against a copy of the copy at without; and every path the copy
+// flags, which unlinked passes over. Each path is named as git names it relative to dir. held is
+// every path of jj's tree with its mode and object, as carried reads them. It fails where the
+// copy holds a record and another under it that the git read keeps both of (keptUnderAKeptPath).
 //
 // An unflagged record is seeded where jj's tree lacks its file and the worktree at dir still
 // holds it: the files the `git add --all` carried stands in for would have updated as tracked
@@ -1512,6 +1524,9 @@ const gitlinkMode = "160000"
 // the git read, which reads no file of either. Where the git read adds an entry that takes a
 // flagged record's place, the carry's add of that entry with --replace takes it out as well
 // (carried). A record jj's tree holds at the same mode and object is left as that tree holds it.
+// A flagged gitlink is seeded and left by the same rule, and every flagged path is named in
+// flagged, which unlinked passes over, so that the gitlink is the copy's record whatever the
+// worktree holds at its path, as the git read keeps it (carried).
 //
 // Otherwise, a file git sees nothing at in the worktree (inWorktree) is a deletion: the git read
 // records it as one, and jj's tree, missing the file, already does. That holds a file one of
@@ -1578,6 +1593,12 @@ func (r runner) seeds(dir, tracked, without string, held map[string]string) (tra
 			continue
 		}
 		copied[file] = copyRecord{mode: mode, flagged: flagged(tag)}
+		if flagged(tag) {
+			if half.flagged == nil {
+				half.flagged = make(map[string]bool)
+			}
+			half.flagged[file] = true
+		}
 		files = append(files, file)
 		line := mode + " " + object + " 0\t" + file + "\x00"
 		if kept, ok := held[file]; ok {
@@ -1642,6 +1663,9 @@ type trackedHalf struct {
 	// listed is what git lists at every record that is no gitlink and whose worktree path is now
 	// a directory, flagged or not (nowDirectories).
 	listed []string
+	// flagged is every path the copy marks assume-unchanged or skip-worktree, whose record the
+	// git read keeps as the copy records it whatever the worktree holds (unlinked).
+	flagged map[string]bool
 }
 
 // nowDirectories is what git's own `ls-files -z --others --exclude-standard` lists at each of
@@ -1799,9 +1823,14 @@ func beyondSymlink(dir, file string) bool {
 // have moved or staged; and, where the directory holds no repository whose HEAD git resolves, an
 // uninitialized submodule's empty directory among them, nothing new, which keeps jj's gitlink. A
 // path os.Lstat fails on for any other reason is readded, so that its add fails and the workspace
-// with it rather than the gitlink being passed over.
-func unlinked(dir string, gitlinks []string) (readded, removed []string) {
+// with it rather than the gitlink being passed over. A path of flagged, which the copy marks
+// assume-unchanged or skip-worktree, is in neither: the git read reads nothing at it and keeps
+// the copy's record, which the seed writes where jj's tree holds another (seeds).
+func unlinked(dir string, gitlinks []string, flagged map[string]bool) (readded, removed []string) {
 	for _, link := range gitlinks {
+		if flagged[link] {
+			continue
+		}
 		if _, gone, _ := inWorktree(dir, link); gone {
 			removed = append(removed, link)
 		} else {
