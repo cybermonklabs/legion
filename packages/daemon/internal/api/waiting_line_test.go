@@ -207,15 +207,11 @@ func TestWaitingLineContractIsTheContractThatAddedTheField(t *testing.T) {
 //
 // What to do when it fires on a sentence that is true — a passage that names another contract
 // beside the field, as one about two boundaries at once does: correct that sentence, or widen
-// the window until it takes in the word that marks the other contract, which is what makes
-// this pass such a passage over. The marks are `retired` and `stranded` for the retired
-// stranded state and `settingSources` for the setting provenance INFRA-1077 took the number
-// above this one with: the contract chain of packages/pi-legion/AGENTS.md states that
-// contract's own boundary a line before it names this field, which is a true sentence about a
-// number that is not this one. Changing the number is never the answer: the number is the
-// daemon's own, and the test above is what holds it. This is honest machinery for the
-// renumber that already left five sentences behind, not a reader of every text that names a
-// contract.
+// the window until it takes in the word that marks the other contract (`retired`, `stranded`),
+// which is what makes this pass such a passage over. Changing the number is never the answer:
+// the number is the daemon's own, and the test above is what holds it. This is honest machinery
+// for the renumber that already left five sentences behind, not a reader of every text that
+// names a contract.
 func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 	root := filepath.Join("..", "..", "..", "..")
 	named := regexp.MustCompile(`(?:contract|below) (\d+)`)
@@ -243,8 +239,8 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 		text := string(body)
 		for _, at := range named.FindAllStringSubmatchIndex(text, -1) {
 			near := text[max(0, at[0]-window):min(len(text), at[1]+window)]
-			if !strings.Contains(near, WaitingLineField) || strings.Contains(near, "retired") ||
-				strings.Contains(near, "stranded") || strings.Contains(near, "settingSources") {
+			if !strings.Contains(near, WaitingLineField) ||
+				strings.Contains(near, "retired") || strings.Contains(near, "stranded") {
 				continue
 			}
 			checked++

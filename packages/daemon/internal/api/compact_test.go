@@ -24,7 +24,7 @@ func compactHarness(t *testing.T, backend func(claim.Role) runtime.Backend) *har
 	t.Helper()
 	h := newHarness(t)
 	h.handler = NewServer("127.0.0.1", 8437, Options{
-		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: operatorSettings(), Controller: h.store,
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, Settings: settingsGating(nil), Controller: h.store,
 		Pool: h.store.Pool(), Record: record.NewStore(), Releaser: h.runtime, Trees: h.store,
 		Handlers: []intake.Handler{&phaseRestarter{}}, RoleFor: workflow.RoleFor, Backend: backend,
 	}).Handler
