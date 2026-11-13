@@ -8,6 +8,7 @@ package projection
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/legion/daemon/internal/api"
@@ -32,7 +33,13 @@ import (
 // issue's worker rather than its place in a queue, and an issue at work whose worker stopped is
 // the commonest question a reader brings. An issue that matches none of the four carries no
 // answer at all: an issue of `admission.active` whose worker is running, and an issue at
-// phase.Held, which holds a slot and so stands in that same list.
+// phase.Held that holds its slot and so stands in that same list. An issue at phase.Held that
+// gave its slot back to wait on another issue stands in the line and reads `waiting`
+// (blockers.waitsOf).
+//
+// A blocked issue and an unlisted one may read the sentence of the held word the record carries
+// for it; heldSentences states the rule, which covers the order of the blocked arm's three
+// sentences, the words each arm serves and what every such sentence may say.
 //
 // The scope is this project's own records that the record holds in the workflow
 // (record.InWorkflow). An issue the record does not hold there — done, backlog, icebox,
@@ -94,6 +101,18 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			}
 		}
 	}
+	// The one word the record carries for each issue it holds in the workflow that stands in
+	// neither the slots nor the line, with the issues that hold it (record.HeldList, read into
+	// state.Admission.Held before this pass runs). Every issue the `unlisted` arm reaches has a
+	// row here, because that list is built over the same two lists this arm is the complement
+	// of, so an issue in none of them is an issue of the held list. A key the map does not hold
+	// reads the zero row all the same, whose word is no word of the ladder and whose sentence
+	// is the fallback: an answer a reader can act on beats none where a later pass publishes
+	// the two lists differently. The `blocked` arm reads it too, by the rule heldSentences states.
+	causes := make(map[string]record.HeldIssue, len(state.Admission.Held))
+	for _, row := range state.Admission.Held {
+		causes[row.Issue] = row
+	}
 	for _, issue := range own {
 		view, projected := state.Issues[issue.Key]
 		if !projected || !record.InWorkflow(issue) {
@@ -130,17 +149,26 @@ func whyStates(state *api.State, own []record.Issue, stranded []supervise.Claim,
 			}
 			why = &api.WhyView{State: api.WhyWaiting, Reason: reason}
 		case held:
+			// The cycle first, then the held word's sentence where heldSentences serves the word
+			// under `blocked`, then the links and children: heldSentences states the rule.
+			cycle := cycles[issue.Key]
+			if cycle == "" {
+				if reason, serves := heldWordReason(api.WhyBlocked, causes[issue.Key]); serves {
+					why = &api.WhyView{State: api.WhyBlocked, Reason: reason}
+					break
+				}
+			}
 			// The links this pass judged, read once for the two fills that name them: the
 			// children fill names them after the children it waits for, and the link fill is
 			// the whole of them.
 			links := blockers.Holds(rows, issue)
-			why = &api.WhyView{State: api.WhyBlocked,
-				Reason: blockedReason(cycles[issue.Key], childWaits[issue.Key], links)}
+			why = &api.WhyView{State: api.WhyBlocked, Reason: blockedReason(cycle, childWaits[issue.Key], links)}
 		default:
 			if _, placed := active[issue.Key]; placed {
 				continue
 			}
-			why = &api.WhyView{State: api.WhyUnlisted, Reason: unlistedReason(issue)}
+			reason, _ := heldWordReason(api.WhyUnlisted, causes[issue.Key])
+			why = &api.WhyView{State: api.WhyUnlisted, Reason: reason}
 		}
 		// An issue whose sentence renders nothing is served no `why` at all, rather than a state
 		// word with no reason beside it: it is the rule the line's own sentence is served by
@@ -221,22 +249,102 @@ func linkReason(waitsOn []string) string {
 	return fmt.Sprintf("It waits on %s, which are not done.", englishIssues(waitsOn))
 }
 
-// unlistedReason is the sentence of an issue the record holds in the workflow that stands in
-// none of the three lists that place one (api.WhyUnlisted). The word is `unlisted` and not
-// `held`, because `held` is a phase of the workflow, whose issues hold a slot and stand in
-// `admission.active`.
+// heldSentences is the sentence table of `why`'s held words: for each word of record.HeldReason
+// that `why` can serve, the states it serves the word under (states) and the sentence it serves
+// (sentence), rendered over heldBy, the issues of the row record.HeldList published for the
+// issue, joined by englishIssues. It is the one statement of the rule below; whyStates reads it
+// in both arms that serve a held word, through heldWordReason.
 //
-// One fill, which is the one this record can answer. The other this build had, an issue waiting
-// for its merge, went with the phase it read: on this contract the merger merges the head it
-// reads and the daemon closes the issue when it reads that merge, so no issue stands in
-// `awaiting_merge` and a root whose merge the rest of its tree still waits on stands in
-// `merging`, holding its slot and listed among the issues at work
-// (dispatch://INFRA-714 R2). The approved spec writes another, for an issue whose recorded cause
-// the record carries, and it follows the field that records one: dispatch://INFRA-2964 writes
-// it, and has not merged.
-func unlistedReason(record.Issue) string {
-	return "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
-		"so no slot has been offered to it. This build records no cause."
+// The arms. A blocked issue (api.WhyBlocked) reads one of three sentences, in this order. First,
+// a child whose own blocked_by link holds it under an ancestor in its tree (a children-first
+// cycle, record.OpenChild.Cycle) reads the cycle sentence alone (blockedReason), whatever its
+// held word: nothing else in the state says the issue it waits on is waiting for it, and
+// `admission.held` still names the held word beside it. Else, an issue whose word this table
+// serves under `blocked` reads that sentence rather than the sentence of the links or children
+// that hold it: closing those would not free it while that word stands, so `why` and
+// `admission.held` name one cause. The words served there are the six the ladder reads before
+// dispatch_blocker (record.HeldBefore), and a test holds the two lists equal. Else — the word is
+// dispatch_blocker, children_first or a later one, or the issue has no held row — it reads
+// blockedReason, whose own text names the links and children.
+//
+// An issue the record holds in the workflow that stands in none of the three lists that place
+// one (api.WhyUnlisted) reads its word's sentence under `unlisted`. Every word but
+// dispatch_blocker and children_first can reach that arm, and those two cannot, because every
+// issue the ladder gives either of them stands in `admission.blocked`. The state word is
+// `unlisted` and not `held`, because `held` is a phase of the workflow, whose issues the daemon
+// has started: they stand in `admission.active`, or in `admission.waiting` while they wait on
+// another issue (blockers.waitsOf). at_work has its entry, though no issue reads that word today
+// (record.HeldAtWork).
+//
+// The fallback is unclassified's sentence, the ladder's own last word, which says that no rule
+// of the held list names what the issue waits for. An unlisted issue whose word the table lacks,
+// or does not serve under `unlisted`, reads it, and so does an unlisted issue whose key the held
+// list carries no row for at all. A word added to the ladder (record.HeldReasonOf) is given its
+// entry here; given none, it reads the fallback, which says less than the row beside it knows.
+//
+// The sentence rule. Every sentence here says what is true of the issue now and what does not
+// start it, and never promises what will start it: the ladder names the first of the words true
+// of an issue, so the end of that one hold starts nothing where a later word holds it too. The
+// ladder is the authority on which issue reads which word (record.HeldReasonOf), and each
+// constant's own doc comment is the authority on what the word means.
+var heldSentences = map[record.HeldReason]heldSentence{
+	record.HeldTreeClosed: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "Its tree is closed: " + heldBy + " has finished, or lingers after leaving the workflow, " +
+			"and the daemon starts no issue of that tree."
+	}},
+	record.HeldTreeParked: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "Its tree is parked: " + heldBy + " stands in backlog or icebox, " +
+			"and the daemon starts no issue of that tree until that root is put back at todo."
+	}},
+	record.HeldLabelOff: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(string) string {
+		return "It is the root of its own tree and its record says the legion label is off, " +
+			"so nothing hands it to the daemon."
+	}},
+	record.HeldAncestry: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "Its Dispatch chain reaches live work above it: " + heldBy + ". " +
+			"It stands as that tree's unreleased work."
+	}},
+	record.HeldRootAwaitingPerson: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "Its tree's root, " + heldBy + ", has handed work to a person, " +
+			"and the daemon starts no issue of that tree before that root resumes."
+	}},
+	record.HeldDesignGate: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "The design gate of its tree stands shut: " + heldBy + " waits for a person's approval of each gated " +
+			"step's document at its current version, and the daemon starts no issue of that tree until it opens."
+	}},
+	record.HeldAcceptedAncestor: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(heldBy string) string {
+		return "The daemon has accepted the reviewed head of " + heldBy + ", which stands above it, " +
+			"and nothing of its own work starts before that issue closes."
+	}},
+	record.HeldAtWork: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
+		return "It stands in a phase that keeps no admission slot, and the waiting line does not carry it: " +
+			"its workers run as they did, and no other issue holds it."
+	}},
+	record.HeldUnclassified: {states: []api.WhyState{api.WhyUnlisted}, sentence: func(string) string {
+		return "The daemon holds it in the workflow, and it stands in neither the issues at work nor the waiting line, " +
+			"so no slot has been offered to it. No rule of the held list says what it waits for."
+	}},
+}
+
+// heldSentence is one entry of heldSentences: the states of `why` that serve the word's
+// sentence, and the sentence over heldBy, the issues of the word's row already joined by
+// englishIssues.
+type heldSentence struct {
+	states   []api.WhyState
+	sentence func(heldBy string) string
+}
+
+// heldWordReason is the sentence heldSentences gives the word of cause under state, over the
+// issues of cause's row, and whether the table serves that word under state. Where it does not,
+// the sentence is the table's fallback, unclassified's, which the unlisted arm serves and the
+// blocked arm passes over for blockedReason (heldSentences states the rule).
+func heldWordReason(state api.WhyState, cause record.HeldIssue) (string, bool) {
+	entry, listed := heldSentences[cause.Reason]
+	serves := listed && slices.Contains(entry.states, state)
+	if !serves {
+		entry = heldSentences[record.HeldUnclassified]
+	}
+	return entry.sentence(englishIssues(cause.HeldBy)), serves
 }
 
 // englishIssues is a list of issue keys as a person writes it: `INFRA-123` alone,

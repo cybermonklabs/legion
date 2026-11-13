@@ -73,7 +73,7 @@ func TestWaitingOnIssueKindIsServedFromItsContract(t *testing.T) {
 // daemon's own contract is never below it; it stands above whyAndLineFieldsContract, which added
 // `kind` itself, since a word cannot arrive before its field.
 func TestWaitingOnIssueContractIsTheContractThatAddedIt(t *testing.T) {
-	const addedWaitingOnIssue = 100
+	const addedWaitingOnIssue = 108
 	if waitingOnIssueContract != addedWaitingOnIssue {
 		t.Fatalf("waitingOnIssueContract = %d, want %d", waitingOnIssueContract, addedWaitingOnIssue)
 	}

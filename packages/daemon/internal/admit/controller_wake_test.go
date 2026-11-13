@@ -202,11 +202,17 @@ func TestTheTickAloneCarriesWhatLegionWaitsOn(t *testing.T) {
 		tick(t, pool, admission, "tick-1")
 
 		// LEGION-301 has no mirror row of its own, which is no finished issue: the wait stands.
+		// The tick carries what the project holds beside what it waits on: the held child stands
+		// in neither the active set nor the line, and its tree's gate is what holds it there
+		// (TestTheTickNoticeCarriesTheHeldIssues), while the waiting root keeps its place in the
+		// line and takes a blocked row alone.
 		assertControllerNotices(t, pool, []effect{
 			{kind: record.OutboxKindControllerNotice, issue: "LEGION-1", payload: record.ControllerNotice{Kind: record.TodoNotice}},
 			{kind: record.OutboxKindControllerNotice, issue: testProject, payload: record.ControllerNotice{Kind: record.TickNotice, Blocked: []record.BlockedIssue{
 				{Issue: "LEGION-209", BlockedBy: []string{"LEGION-300"}},
 				{Issue: "LEGION-211", BlockedBy: []string{"LEGION-301"}},
+			}, Held: []record.HeldIssue{
+				{Issue: "LEGION-209", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-208"}},
 			}}},
 		})
 	})

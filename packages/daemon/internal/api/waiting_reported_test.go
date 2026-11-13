@@ -140,18 +140,21 @@ type waitingIssue struct {
 // (GET /legion/v1/state): the two started issues that wait stand in `admission.waiting` and in
 // `admission.blocked`, each with the keys it waits on, and in neither case in `admission.active`,
 // because an issue the daemon started and that waits on another issue holds none of the cap's
-// rows (INFRA-3036). What a reader of `legion state` is told of them is the other half, under
-// this name in packages/daemon/cmd/legion: the plain line an operator reads. Neither half reads
-// the other's reader, so neither proves what the other does.
+// rows (INFRA-3036). Nor does either stand in `admission.held`, which names no issue the line
+// names (record.HeldList), and each one's `why` reads `waiting`, the state of a member of the
+// line, and not a held word's sentence. What a reader of `legion state` is told of them is the
+// other half, under this name in packages/daemon/cmd/legion: the plain line an operator reads.
+// Neither half reads the other's reader, so neither proves what the other does.
 //
 // Beside the two, the readings that must not change. An issue the daemon has not started that a
 // link holds is reported blocked as it always was, and whether it stands in the line is the
 // line's own rule and not this change's: a queued root stands there and is passed over at
-// promotion, a child held at admitted is not in the line at all. An issue a person moved to
-// backlog is in none of the three lists, since nothing of it is waiting for Legion. An issue at
-// work on nothing is in `admission.active` alone. And the `admission` object carries the keys it
-// carried before the change, no more and no fewer: a reader of the state — the controller, the
-// plugin, `legion state` — reads the same object.
+// promotion, a child held at admitted is not in the line at all and stands in `admission.held`,
+// under whichever word the ladder gives it. An issue a person moved to backlog is in none of the four lists,
+// since nothing of it is waiting for Legion. An issue at work on nothing is in
+// `admission.active` alone. And the `admission` object carries the keys it carries without this
+// change, no more and no fewer: a reader of the state — the controller, the plugin, `legion
+// state` — reads the same object.
 func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	const (
 		startedLink  = "LEGION-210"
@@ -244,7 +247,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	if err := json.Unmarshal(body, &served); err != nil {
 		t.Fatalf("decode the state %s: %v", body, err)
 	}
-	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "trees", "waiting"}; !slices.Equal(got, want) {
+	if got, want := slices.Sorted(maps.Keys(served.Admission)), []string{"active", "blocked", "cap", "held", "trees", "waiting"}; !slices.Equal(got, want) {
 		t.Fatalf("the admission object carries %v, want %v: a reader of the state reads the object it read before the change", got, want)
 	}
 
@@ -274,6 +277,14 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		if got := blockedBy(admissionView.Blocked, waiting.key); !slices.Equal(got, waiting.waits) {
 			t.Errorf("admission.blocked names %s waiting on %v, want %v", waiting.key, got, waiting.waits)
 		}
+		if row, named := heldRow(admissionView.Held, waiting.key); named {
+			t.Errorf("admission.held names %s as %+v, want it out of it: an issue the line carries takes no held row",
+				waiting.key, row)
+		}
+		if why := state.Issues[waiting.key].Why; why == nil || why.State != api.WhyWaiting {
+			t.Errorf("issues.%s.why = %+v, want the state %q: an issue that gave its slot back to wait stands in the line",
+				waiting.key, why, api.WhyWaiting)
+		}
 	}
 
 	// The readings this change leaves as they were.
@@ -291,6 +302,10 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		t.Errorf("admission.waiting = %v, want the held child %s out of it: a child a link holds at admitted is not in the line",
 			admissionView.Waiting, heldChild)
 	}
+	if _, named := heldRow(admissionView.Held, heldChild); !named {
+		t.Errorf("admission.held = %+v, want the held child %s in it: it stands in neither active nor the line",
+			admissionView.Held, heldChild)
+	}
 	for _, list := range []struct {
 		name string
 		keys []string
@@ -298,6 +313,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 		{name: "active", keys: admissionView.Active},
 		{name: "waiting", keys: admissionView.Waiting},
 		{name: "blocked", keys: blockedKeys(admissionView.Blocked)},
+		{name: "held", keys: heldKeys(admissionView.Held)},
 	} {
 		if slices.Contains(list.keys, parked) {
 			t.Errorf("admission.%s = %v, want the parked issue %s out of it: nothing of it waits for Legion", list.name, list.keys, parked)
@@ -312,6 +328,7 @@ func TestAWaitingIssueIsReportedWaitingAndBlocked(t *testing.T) {
 	}{
 		{name: "waiting", keys: admissionView.Waiting},
 		{name: "blocked", keys: blockedKeys(admissionView.Blocked)},
+		{name: "held", keys: heldKeys(admissionView.Held)},
 	} {
 		if slices.Contains(list.keys, atWork) {
 			t.Errorf("admission.%s = %v, want the issue at work %s out of it: it waits on nothing", list.name, list.keys, atWork)
@@ -334,6 +351,25 @@ func blockedKeys(blocked []api.BlockedIssue) []string {
 	keys := make([]string, len(blocked))
 	for i, issue := range blocked {
 		keys[i] = issue.Issue
+	}
+	return keys
+}
+
+// heldRow is the row `admission.held` carries for key, and whether it carries one.
+func heldRow(held []api.HeldIssue, key string) (api.HeldIssue, bool) {
+	for _, row := range held {
+		if row.Issue == key {
+			return row, true
+		}
+	}
+	return api.HeldIssue{}, false
+}
+
+// heldKeys is every issue `admission.held` names.
+func heldKeys(held []api.HeldIssue) []string {
+	keys := make([]string, len(held))
+	for i, row := range held {
+		keys[i] = row.Issue
 	}
 	return keys
 }

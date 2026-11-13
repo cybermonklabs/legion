@@ -170,7 +170,7 @@ func (a *adoptionHarness) waiting() []string {
 		if err != nil {
 			return err
 		}
-		_, _, line, err := blockers.JudgeLine(context.Background(), tx, a.records, testProject, issues, slots, facts, nil)
+		_, _, line, _, err := blockers.JudgeLine(context.Background(), tx, a.records, testProject, issues, slots, facts, nil, time.Now())
 		if err != nil {
 			return err
 		}
@@ -528,6 +528,120 @@ func TestReleaseRefusesAChildItCannotAdopt(t *testing.T) {
 	})
 }
 
+// One release_children wave that names a member of a closed tree is accepted whole: the member's
+// record stands in the closed tree when the request starts, so the wave's own read of it after
+// the adoption fact (enterTodoChild) would answer CHILD_IN_OTHER_TREE had the adoption not
+// already moved it. That is what this proves — the adoption's write lands before that read — and
+// with it the rest of C4 of dispatch://INFRA-3107 end to end: the member joins the live tree at
+// the generation it had raised by one, on the repository it was recorded with, a root of none,
+// and the open gate starts it planning at the slot that stands free.
+func TestReleaseOfAClosedTreesMemberIsAcceptedWhole(t *testing.T) {
+	const closed, member = "LEGION-500", "LEGION-501"
+	a := newAdoptionHarness(t, 2)
+	// A tree whose root is finished with no linger left to run, holding one member that never
+	// started a phase, recorded on a repository of its own.
+	a.recordIssue(record.Issue{Key: closed, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: closed, Phase: phase.Done, Generation: 3,
+		Status: record.DoneStatus, DispatchStatus: record.DoneStatus, Rank: "C", HandedOver: true, LastDispatchSeq: 1})
+	a.recordIssue(record.Issue{Key: member, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: member, Parent: record.ParentOf(closed), Phase: phase.Admitted,
+		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+	a.shows(member, "todo", adoptionTree, 2, true)
+
+	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(t), "issues": []string{member}}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d: %s", member, recorder.Code, recorder.Body)
+	}
+	var response WaveReleaseResponse
+	decodeInto(t, recorder, &response)
+	want := WaveReleaseResponse{Released: []string{member}, Started: []string{member}, Held: []HeldChild{}}
+	if !reflect.DeepEqual(response, want) {
+		t.Fatalf("release answer = %#v, want %#v: the whole wave is accepted", response, want)
+	}
+	a.assertJoinedAndPlanning(member, 4)
+	got := a.record(member)
+	if got.Repo != "sjawhar/legion" || got.DefaultBranch != "main" || got.GitHubRepo != "sjawhar/legion" {
+		t.Fatalf("%s = %#v, want it on the repository it was recorded with", member, got)
+	}
+	if got.Parent == nil || *got.Parent != adoptionTree {
+		t.Fatalf("%s's parent = %v, want %s, the parent the release read", member, got.Parent, adoptionTree)
+	}
+	if lifecycles := a.count(`select count(*) from tree_lifecycles where tree = $1`, member); lifecycles != 0 {
+		t.Fatalf("%s has %d tree lifecycles, want none: the release made a root of it", member, lifecycles)
+	}
+	if len(a.statuses.writes) != 0 {
+		t.Fatalf("Dispatch writes = %#v, want none: the member is already todo", a.statuses.writes)
+	}
+	// The member is the taking tree's now: its architect parks it as it parks any child of it.
+	a.assertParked(member)
+}
+
+// A closed tree's member whose only blocker is the one the release's own Dispatch read showed —
+// the mirror's row of it names none, because the edit that linked it has not reached the daemon —
+// is held on that blocker once it joins the live tree, as a released root is: the read travels
+// with the adoption (intake.AdoptedChild.BlockedBy), the mirror takes it before the adoption
+// judges the member, and the member waits at admitted out of the line, with no planner started,
+// until the blocker closes. This is where #2539's union of the release's read and the mirror meets
+// C4's adoption of a member (workflow's AdoptMember), so a member no read held would start.
+func TestReleaseHoldsAClosedTreesMemberOnTheBlockersItsOwnReadShowed(t *testing.T) {
+	const closed, member, blocker = "LEGION-500", "LEGION-501", "LEGION-402"
+	a := newAdoptionHarness(t, 2)
+	a.recordIssue(record.Issue{Key: closed, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: closed, Phase: phase.Done, Generation: 3,
+		Status: record.DoneStatus, DispatchStatus: record.DoneStatus, Rank: "C", HandedOver: true, LastDispatchSeq: 1})
+	a.recordIssue(record.Issue{Key: member, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+		Tree: closed, Project: testProject, Title: member, Parent: record.ParentOf(closed), Phase: phase.Admitted,
+		Generation: 3, Status: "todo", DispatchStatus: "todo", Rank: "B", HandedOver: true, LastDispatchSeq: 1})
+	// The mirror knows the blocker is unfinished and nothing of the link to it.
+	if err := a.store.Tx(context.Background(), func(tx pgx.Tx) error {
+		return a.records.PutDispatchIssue(context.Background(), tx,
+			record.DispatchIssueRow{Key: blocker, Project: testProject, Status: "in_progress", Seq: 1})
+	}); err != nil {
+		t.Fatalf("seed the blocker's mirror row: %v", err)
+	}
+	if waits := a.mirroredBlockers(member); len(waits) != 0 {
+		t.Fatalf("the mirror of %s waits on %q, want nothing: the link's event has not reached the daemon", member, waits)
+	}
+	a.shows(member, "todo", adoptionTree, 2, true)
+	shown := a.statuses.issues[member]
+	shown.BlockedBy = []string{blocker}
+	a.statuses.issues[member] = shown
+
+	recorder := a.request(http.MethodPost, "/legion/v1/waves/release", map[string]any{"grantId": a.architect.grant(t), "issues": []string{member}}, nil)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("release of %s = %d: %s", member, recorder.Code, recorder.Body)
+	}
+	var response WaveReleaseResponse
+	decodeInto(t, recorder, &response)
+	want := WaveReleaseResponse{Released: []string{member}, Started: []string{}, Held: []HeldChild{{Issue: member, BlockedBy: []string{blocker}}}}
+	if !reflect.DeepEqual(response, want) {
+		t.Fatalf("release answer = %#v, want %#v", response, want)
+	}
+	if got := a.record(member); got.Tree != adoptionTree || got.Phase != phase.Admitted || got.Generation != 4 {
+		t.Fatalf("%s = %#v, want it held admitted in the tree of %s at generation 4", member, got, adoptionTree)
+	}
+	if starts := a.plannerStarts(member, adoptionTree, 4); starts != 0 {
+		t.Fatalf("%s has %d planner starts queued, want none while %s is unfinished", member, starts, blocker)
+	}
+	if waits := a.mirroredBlockers(member); !reflect.DeepEqual(waits, []string{blocker}) {
+		t.Fatalf("the mirror of %s waits on %q after the release, want %s: the release's own read is mirrored", member, waits, blocker)
+	}
+	if slices.Contains(a.waiting(), member) {
+		t.Fatalf("%s is in the waiting line (%q) while %s is unfinished, want it held out of it", member, a.waiting(), blocker)
+	}
+
+	a.apply("blocker-done", intake.DispatchIssue{Key: blocker, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.closed",
+		Status: "done", Title: blocker, Rank: "C"})
+
+	// The close lets it into the line or onto its slot.
+	if got := a.record(member); got.Tree != adoptionTree || got.Generation != 4 {
+		t.Fatalf("%s = %#v after %s closed, want it still in the tree of %s at generation 4", member, got, blocker, adoptionTree)
+	}
+	if !slices.Contains(a.waiting(), member) && a.plannerStarts(member, adoptionTree, 4) == 0 {
+		t.Fatalf("%s is neither in the waiting line (%q) nor started after %s closed", member, a.waiting(), blocker)
+	}
+}
+
 // The three roots dispatch://INFRA-714 found started with their work blocked: a person re-parented
 // each under a running tree and linked it to an open issue in one edit of Dispatch, and the
 // daemon, judging by its own mirror of those links, which that edit's event had not reached,
@@ -587,8 +701,6 @@ func TestReleaseHoldsAnAdoptedRootOnTheBlockersItsOwnReadShowed(t *testing.T) {
 	// The close puts it in the line, where its own slot starts its first phase.
 	a.assertJoinedAndWaiting(adoptionChild, 2)
 }
-
-// mirroredBlockers is what the daemon's mirror says key waits on.
 
 // mirroredBlockers is what the daemon's mirror says key waits on.
 func (a *adoptionHarness) mirroredBlockers(key string) []string {

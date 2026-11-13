@@ -1847,6 +1847,23 @@ func PhaseRowOf(rows []PhaseRow, role claim.Role) PhaseRow {
 // re-admission clears it.
 func (i Issue) Lingers() bool { return i.LingerUntil != nil }
 
+// Lingering says whether the root's linger is still running at now: its deadline is set and now
+// is before it. It is not Lingers, which answers whether a deadline was ever armed and stays
+// true for ever after: nothing clears LingerUntil but a re-admission (admit's readmit), so a
+// tree whose linger expired long ago, and a root a person parked, each still answer Lingers.
+// Where a rule asks whether the tree is being torn down now, rather than whether it ever left
+// the workflow, it asks this: the held list's tree_closed word (HeldReasonOf), which reads a
+// parked root's member as tree_parked once that root's linger has run out, and the route that
+// takes a closed tree's member into a live tree (workflow's AdoptionRefusal), which C4 of
+// dispatch://INFRA-3107 opens only once no linger is left to run.
+//
+// The zero moment reads every armed linger as still running, which is the conservative answer: a
+// reader with no clock of its own leaves the member where it stands rather than reading its tree
+// as torn down already.
+func Lingering(issue Issue, now time.Time) bool {
+	return issue.LingerUntil != nil && now.Before(*issue.LingerUntil)
+}
+
 // LingersAt says whether the root lingers after the close of its generation: it lingers, and
 // re-admission has not moved it to a later generation. A row a linger's expiry wrote acts in that
 // linger only, not in the tree's next run nor in a later linger of it.

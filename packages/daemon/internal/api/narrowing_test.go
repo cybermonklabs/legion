@@ -216,14 +216,14 @@ func TestANarrowedBodySaysSo(t *testing.T) {
 
 	// Every narrowing says what it dropped, not only the mark's own: a caller below every
 	// contract in stateNarrowings is served one line per row that finds something of its own,
-	// each naming its own keys, and a caller at phaseEntriesContract, the row just before
+	// each naming its own keys, and a caller at heldContract, the row just before
 	// waitingOnIssueContract's, the line of the one row the first caller's body no longer
 	// reaches. Between them every row writes its line, and none writes it twice. One line for all
 	// of them, or a line that named the contract and nothing else, would leave a reader of the
 	// log to find out elsewhere what left the body.
 	t.Run("each narrowing names its own keys", func(t *testing.T) {
 		dropped := map[string]bool{}
-		for _, contract := range []int{supervise.PodUpdateContract - 1, phaseEntriesContract} {
+		for _, contract := range []int{supervise.PodUpdateContract - 1, heldContract} {
 			_, narrowings := stateNarrowed(t, narrowingState(t), statePodAddr+":41000", podClaims(contract))
 			want := narrowingsExpected(contract)
 			if len(narrowings) != len(want) {

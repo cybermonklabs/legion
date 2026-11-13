@@ -240,7 +240,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 	// Every started issue that waits on another issue gives its row back, as the real pass does
 	// after its judgement (admit's releaseSlotsForWaits), and the line is judged again on the
 	// state that release leaves.
-	rows, facts, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
+	rows, facts, _, _, err = blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
 	if err != nil {
 		t.Fatalf("judge the line: %v", err)
 	}
@@ -253,7 +253,7 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		}
 	}
 	issues, slots, facts = read()
-	rows, _, line, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows)
+	rows, _, line, _, err := blockers.JudgeLine(scoped, tx, store, "LEGION", issues, slots, facts, rows, time.Now())
 	if err != nil {
 		t.Fatalf("judge the line again: %v", err)
 	}
