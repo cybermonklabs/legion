@@ -1253,7 +1253,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   The lines count issues rather than the trees a tree experiment is drawn for, because the state
   names no tree and a tree handed over as one of its own carries its old tree's draw verbatim, so
   two trees can share one draw.
-  A daemon older than contract 99, which is the daemon the documented rollback leaves, serves
+  A daemon older than contract 113, which is the daemon the documented rollback leaves, serves
   no `assignments`, so the `memory` line counts an issue that carries none from its
   `memoryGroup` and `memoryDrawMode`, wherever `memoryGroup` is set, and reads as the
   earlier release's own `legion state` prints it.

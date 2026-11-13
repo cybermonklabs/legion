@@ -110,7 +110,7 @@ var (
 // compose, band by band: a pod whose claims record a contract from one row of stateNarrowings to
 // below the next is served what that row and every row below it added and none of what a row
 // above it added, and the table below holds a pod in each band; a pod below
-// supervise.PodUpdateContract is served none of them; and a pod at 99, this daemon's declared
+// supervise.PodUpdateContract is served none of them; and a pod at 113, this daemon's declared
 // contract, a pod whose claims record no contract and a caller in no pod — the operator's
 // `legion state`, whose memory line reads the draws, whose experiment lines read the
 // assignments, whose queue line reads the wakes and whose tool-call line reads the step

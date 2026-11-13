@@ -349,7 +349,7 @@ func TestSettingsOfAKubernetesConfigurationNamesEveryKeyAndNoSecret(t *testing.T
 	projects := keysOf(t, top["projects"])
 	assertKeys(t, "settings.projects", projects, []string{"LEGION", "WIDGETS"})
 	// `experiments` always rides the wire, `[]` for the fixture's projects, which declare none
-	// under that key (contract 99); what a project that declares one carries is
+	// under that key (contract 113); what a project that declares one carries is
 	// TestSettingsOfNamesAProjectsExperiments'.
 	assertKeys(t, "settings.projects.WIDGETS", keysOf(t, projects["WIDGETS"]), []string{
 		"slack_channels", "memory", "experiments", "production_check", "deploys",
@@ -624,7 +624,7 @@ func TestSettingsOfNamesAProjectsExperiments(t *testing.T) {
 		"slack_channels", "memory", "experiments", "production_check", "deploys",
 	})
 	if got := string(keysOf(t, projects["LEGION"])["experiments"]); got != "[]" {
-		t.Errorf("a project that declares no experiment under the key carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 99)", got)
+		t.Errorf("a project that declares no experiment under the key carries experiments = %s, want []: the key always rides the wire, so a reader tells such a project from a daemon too old to know it (contract 113)", got)
 	}
 	var document any
 	if err := json.Unmarshal(encoded, &document); err != nil {

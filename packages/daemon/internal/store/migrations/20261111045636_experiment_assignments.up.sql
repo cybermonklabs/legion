@@ -98,12 +98,13 @@ select key, 'memory', 'tree',
 from issues
 where memory_drawn_at is not null or memory_carried;
 
--- Rolling back onto a release before this one: legion-v19.57.3, which the deployment ran when this
--- was written, and whose tree the places cited here were read in. That release draws into
--- issues.memory_* only where it creates a tree's lifecycle row (internal/admit/admit.go, the
--- `if lifecycle.Created` branch of (*Admission).promoteHolds), and the lifecycle row of every
--- tree drawn after this merge exists already, so the rolled-back daemon creates none of them
--- again: it re-draws nothing. It changes arms all the same, which is what the roll back costs.
+-- Rolling back onto a release before this one: legion-v20.11.2, at daemon API contract 104, the
+-- last release before this change, and whose tree the places cited here were read in. That
+-- release draws into issues.memory_* only where it creates a tree's lifecycle row
+-- (internal/admit/admit.go, the `if lifecycle.Created` branch of (*Admission).promoteHolds), and
+-- the lifecycle row of every tree drawn after this merge exists already, so the rolled-back
+-- daemon creates none of them again: it re-draws nothing. It changes arms all the same, which is
+-- what the roll back costs.
 -- That release decides a launch's memory from issues.memory_group alone (its daemon.go's
 -- treeMemoryGroup, `issue.MemoryGroup == "memory"`), and this release writes no memory_* column,
 -- so a tree drawn into the `memory` arm after the upgrade has an empty memory_group: its next role

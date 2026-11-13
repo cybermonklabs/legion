@@ -1,5 +1,5 @@
 kind: Changed
 body: |-
-  The plugin speaks daemon API contract 99, so `read_record` and the controller's `read_state` take
+  The plugin speaks daemon API contract 113, so `read_record` and the controller's `read_state` take
   each issue's `assignments`: the experiments the issue was drawn for, each with its variant, the
-  mode it was drawn under and the instant. Pin it together with a daemon at contract 99.
+  mode it was drawn under and the instant. Pin it together with a daemon at contract 113.

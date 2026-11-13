@@ -603,7 +603,7 @@ const legionWakeWaiting = z.object({
   dueAt: timestamp,
 });
 
-/** `api.AssignmentView` — one experiment's answer for an issue (contract 99): the name the
+/** `api.AssignmentView` — one experiment's answer for an issue (contract 113): the name the
  * project declares the experiment under, the arm the draw gave the unit, the mode in force at
  * that draw and the instant of it. `variant` and `mode` are strings and not enums: the arms are
  * the operator's own names, the empty string is a unit settled at no arm, and a mode a later
@@ -696,7 +696,7 @@ const legionIssue = z.object({
    * off draws — is `none`. They are absent together while no `memory` answer applies to the
    * issue — a tree first opened before the setting existed — and while its only `memory` answer
    * records no draw, which is a hand-over settling the tree at no arm and which answered none
-   * of the three before contract 99 as well. Every issue of a tree carries its tree's, since
+   * of the three before contract 113 as well. Every issue of a tree carries its tree's, since
    * the draw is made once, for the unit (contract 49). */
   memoryGroup: z.enum(["memory", "none"]).optional(),
   memoryDrawMode: z.enum(["off", "on", "random"]).optional(),
@@ -713,7 +713,7 @@ const legionIssue = z.object({
    * takes both as optional. */
   phaseEntry: z.number().int().nonnegative().optional(),
   givenEntry: z.number().int().nonnegative().optional(),
-  /** Every experiment answer that applies to the issue (contract 99): its tree's, for an
+  /** Every experiment answer that applies to the issue (contract 113): its tree's, for an
    * experiment whose unit is the tree, and its own, for one whose unit is the issue, in the
    * order the project's file declares the experiments. That is the `memory` block's experiment
    * first (`settings.projects.<KEY>.memory`, which every project declares, at mode `off` where its
@@ -725,7 +725,7 @@ const legionIssue = z.object({
    * for an experiment the tree it left held no row for, which is how a reader tells a unit
    * settled at no arm from a unit never drawn, which carries no row at all. The key is absent
    * from an issue no experiment holds an answer for, and from every issue of the body the route
-   * serves a caller before 99, so a reader takes it as optional. */
+   * serves a caller before 113, so a reader takes it as optional. */
   assignments: z.array(legionAssignment).optional(),
 });
 
@@ -1335,11 +1335,13 @@ export const LegionOperatorClaimResponse = z.object({
   sessionFile: z.string(),
   forgottenSession: nonEmptyString.optional(),
   forgottenSessionFile: nonEmptyString.optional(),
-  /** Why nothing restarted the claim's phase, on a `retry` that asked for a fresh session
-   * (`{"freshSession":true}`) and nowhere else: the claim is back in a new session owing no
-   * task, and the workflow refused the restart that would have handed it one. The claim started
-   * either way, which is why the refusal rides a successful answer; absent when the phase was
-   * restarted, and when no restart was due. */
+  /** What the request did to the claim that the claim itself does not record, on a `retry` that
+   * asked for a fresh session (`{"freshSession":true}`) and nowhere else: the claim is back in a
+   * new session owing no task and the workflow refused the restart that would have handed it
+   * one, or the request stopped the claim and a step that would have brought it back — the
+   * forget of its session, or its start — was refused, and the sentence names the state that
+   * left the claim in. Either rides a successful answer, because the request changed the claim;
+   * absent when the claim came back and nothing else is to be said. */
   phaseNotRestarted: nonEmptyString.optional(),
   locator: legionLocator.optional(),
   budgets: z.object({

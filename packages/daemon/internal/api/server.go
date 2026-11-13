@@ -1049,17 +1049,17 @@ const leakCheckCauseContract = 87
 // this daemon's own contract, so a caller in a pod from it to below heldContract is served the
 // two keys and neither `admission.held` nor `assignments`, a caller from heldContract to below
 // assignmentsContract the two keys and `admission.held` and no `assignments`, and a caller at
-// 99 all of them.
+// 113 all of them.
 const phaseEntriesContract = 94
 
 // assignmentsContract is the daemon contract that added each issue's experiment assignments to
-// the state (version.go's 99). A plugin before it is served the state without the field: one
+// the state (version.go's 113). A plugin before it is served the state without the field: one
 // built before sjawhar/legion#2788 reads it with a strict schema and would refuse the whole body
 // for a key it does not name, and one built after strips the key instead. The three memory
 // fields keep their own gate at memoryContract beside this one, so a caller from memoryContract
 // to below this one is served the one experiment's answer in the three keys it has read since 49
 // and no assignments, whatever else its own band gives it, and a caller below 49 neither.
-const assignmentsContract = 99
+const assignmentsContract = 113
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
