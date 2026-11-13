@@ -11,11 +11,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 )
 
 // InstallDir is the one directory a pod's copy of the shared public leak check lives in. The
@@ -49,17 +49,6 @@ const tagFile = ".installed-tag"
 // unless the install is of it (Installed). So the version lives in the Dockerfile alone and this
 // package holds no second copy of it.
 const TagVariable = "LEGION_LEAK_CHECK_TAG"
-
-// tagPattern is the published shape of a tag of the check's repository. internal/shimwire writes
-// the same pattern for the frames that carry the check, so the wire imports nothing of this
-// package; a test of this package holds the two equal.
-const tagPattern = `^leak-check-v[1-9][0-9]*$`
-
-var tagShape = regexp.MustCompile(tagPattern)
-
-// ValidTag is whether tag is of the published shape leak-check-v<n>. The daemon refuses any other
-// tag before it reads anything, since a tag becomes a path of a GitHub API endpoint.
-func ValidTag(tag string) bool { return tagShape.MatchString(tag) }
 
 // Where the shared check is published: a tag of a private repository, whose `leak-check` directory
 // holds the launcher (checkName), the python file the launcher runs from beside itself, and the
@@ -97,29 +86,31 @@ var errOverLimit = errors.New("over the read limit")
 // PackTarball reads a GitHub tarball of the check's repository (gzip, then tar), and answers its
 // leak-check directory alone, packed into a new gzipped tarball whose member paths are the
 // directory's own — no repository prefix and no leading `leak-check/` — with each file's bytes
-// and mode as the tarball has them, and how many files it holds. That body is what the daemon
-// serves to a pod's launcher (InstallServed).
+// and mode as the tarball has them. That body is what the daemon serves to a pod's launcher
+// (InstallServed).
 //
 // It refuses a member of that directory that is neither a directory nor a regular file, a member
-// whose path does not stay inside it, a tarball with no such directory, a tarball over
-// maxTarballBytes and a directory that packs over maxPackedBytes. Each error is a predicate of
-// the tarball, written to follow `the tarball of <CheckSlug> at <tag> ` in the cause sentence the
-// daemon builds of it (Cause).
-func PackTarball(r io.Reader) (body []byte, files int, err error) {
+// whose path does not stay inside it, a tarball with no such directory, one whose directory holds
+// no regular file, a tarball over maxTarballBytes and a directory that packs over
+// maxPackedBytes. Each error is a predicate of the tarball, written to follow
+// `the tarball of <CheckSlug> at <tag> ` in the cause sentence the daemon builds of it (Cause).
+func PackTarball(r io.Reader) ([]byte, error) {
 	in := &io.LimitedReader{R: r, N: maxTarballBytes + 1}
 	out := &cappedBuffer{left: maxPackedBytes}
 	files, found, err := pack(in, out)
 	switch {
 	case in.N <= 0:
-		return nil, 0, fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
+		return nil, fmt.Errorf("is over the %d MiB this daemon reads of one", maxTarballBytes>>20)
 	case out.over:
-		return nil, 0, fmt.Errorf("holds a %s directory that packs over the %d MiB this daemon serves", checkDirectory, maxPackedBytes>>20)
+		return nil, fmt.Errorf("holds a %s directory that packs over the %d MiB this daemon serves", checkDirectory, maxPackedBytes>>20)
 	case err != nil:
-		return nil, 0, err
+		return nil, err
 	case !found:
-		return nil, 0, fmt.Errorf("holds no %s directory", checkDirectory)
+		return nil, fmt.Errorf("holds no %s directory", checkDirectory)
+	case files == 0:
+		return nil, fmt.Errorf("holds a %s directory with no file", checkDirectory)
 	}
-	return out.buf.Bytes(), files, nil
+	return out.buf.Bytes(), nil
 }
 
 // pack copies the leak-check directory of the tarball r carries into a gzipped tarball written to
@@ -212,7 +203,8 @@ func memberPath(name string) (string, bool) {
 // ServedInstall is what InstallServed installs: the body the daemon served (PackTarball's), the
 // tag it is of, and where it goes.
 type ServedInstall struct {
-	// Dir is where the check is installed; empty is InstallDir.
+	// Dir is where the check is installed, which the caller names: InstallServed refuses an empty
+	// one.
 	Dir string
 	// Tag is the tag the body is of, which the install records beside the check (tagFile).
 	Tag string
@@ -228,9 +220,8 @@ func (in ServedInstall) logf(format string, args ...any) {
 	}
 }
 
-// InstallServed installs the check the daemon served into in.Dir and answers the installed
-// check's path. The pod's launcher runs it once for the pod, before any role starts; every role's
-// shim then reads the install (Installed).
+// InstallServed installs the check the daemon served into in.Dir. The pod's launcher runs it once
+// for the pod, before any role starts; every role's shim then reads the install (Installed).
 //
 // The steps are in this order, and the order is the point:
 //
@@ -245,26 +236,26 @@ func (in ServedInstall) logf(format string, args ...any) {
 // Every failure leaves the directory as it was and the staging directory removed. Each error is
 // the pod's own sentence of what happened, which the launcher hands the daemon as the cause
 // (Cause). The whole install runs under installBound.
-func InstallServed(ctx context.Context, in ServedInstall) (string, error) {
-	if !ValidTag(in.Tag) {
-		return "", fmt.Errorf("the pod's launcher was served the tag %q, which is not of the published shape leak-check-v<n>", in.Tag)
+func InstallServed(ctx context.Context, in ServedInstall) error {
+	if !shimwire.ValidLeakCheckTag(in.Tag) {
+		return fmt.Errorf("the pod's launcher was served the tag %q, which is not of the published shape leak-check-v<n>", in.Tag)
+	}
+	if in.Dir == "" {
+		return errors.New("the pod's launcher named no directory to install the check into")
 	}
 	dir := in.Dir
-	if dir == "" {
-		dir = InstallDir
-	}
 	ctx, cancel := context.WithTimeout(ctx, installBound)
 	defer cancel()
 	parent := filepath.Dir(dir)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return "", fmt.Errorf("the install directory's parent could not be made: %w", err)
+		return fmt.Errorf("the install directory's parent could not be made: %w", err)
 	}
 	// Beside the final directory, so the rename below is a rename within one filesystem, and
 	// hidden, so a half-unpacked directory is never mistaken for the install by a reader looking
 	// at the scratch.
 	staging, err := os.MkdirTemp(parent, ".leak-check-install-")
 	if err != nil {
-		return "", fmt.Errorf("the staging directory could not be made: %w", err)
+		return fmt.Errorf("the staging directory could not be made: %w", err)
 	}
 	defer os.RemoveAll(staging)
 	files, err := unpackServed(in.Body, staging)
@@ -272,20 +263,19 @@ func InstallServed(ctx context.Context, in ServedInstall) (string, error) {
 		err = errors.New("it holds no file")
 	}
 	if err != nil {
-		return "", fmt.Errorf("the pod's launcher could not unpack the check the daemon served: %w", err)
+		return fmt.Errorf("the pod's launcher could not unpack the check the daemon served: %w", err)
 	}
 	if err := os.WriteFile(filepath.Join(staging, tagFile), []byte(in.Tag+"\n"), 0o644); err != nil {
-		return "", fmt.Errorf("the installed tag could not be recorded: %w", err)
+		return fmt.Errorf("the installed tag could not be recorded: %w", err)
 	}
 	if err := verifyServed(ctx, filepath.Join(staging, checkName), parent); err != nil {
-		return "", err
+		return err
 	}
 	// 0700 is what MkdirTemp makes. The roles of a pod run as one user, so the mode decides
 	// nothing between them, but the install is read by every role and read-only to all of them.
 	if err := os.Chmod(staging, 0o755); err != nil {
-		return "", fmt.Errorf("the staged install could not be made readable: %w", err)
+		return fmt.Errorf("the staged install could not be made readable: %w", err)
 	}
-	check := filepath.Join(dir, checkName)
 	if _, err := os.Lstat(dir); err == nil {
 		// Something is in the way — an install of another tag, one of the same tag a restarted
 		// launcher installs over, or anything else — and a rename onto a directory is refused: by
@@ -301,19 +291,19 @@ func InstallServed(ctx context.Context, in ServedInstall) (string, error) {
 		aside := staging + ".replaced"
 		defer os.RemoveAll(aside)
 		if err := os.Rename(dir, aside); err != nil {
-			return "", fmt.Errorf("%s could not be moved aside: %w", held, err)
+			return fmt.Errorf("%s could not be moved aside: %w", held, err)
 		}
 		if err := os.Rename(staging, dir); err != nil {
 			_ = os.Rename(aside, dir)
-			return "", fmt.Errorf("the staged install could not be moved to %s: %w", dir, err)
+			return fmt.Errorf("the staged install could not be moved to %s: %w", dir, err)
 		}
 		in.logf("the install of %s replaced %s", in.Tag, held)
-		return check, nil
+		return nil
 	}
 	if err := os.Rename(staging, dir); err != nil {
-		return "", fmt.Errorf("the staged install could not be moved to %s: %w", dir, err)
+		return fmt.Errorf("the staged install could not be moved to %s: %w", dir, err)
 	}
-	return check, nil
+	return nil
 }
 
 // unpackServed writes the served body into dir and answers how many files it wrote. The body
@@ -375,9 +365,11 @@ func writeMember(path string, content io.Reader, mode os.FileMode) error {
 // that costs nothing and reads nothing of anyone's: `public-leak-check.sh --help`.
 //
 // It runs with a clean environment: PATH from this process's own, and HOME and TMPDIR set to the
-// install's parent, which is also its working directory, and nothing else. The launcher that runs
-// it is the pod's first process and holds every role's launcher token, so the check is handed
-// none of what that process carries, and writes only under the install's parent.
+// install's parent, which is also its working directory, and nothing else. The run is not in a
+// role's own namespaces but in the launcher's, PID 1 of the roles' container, so beyond its
+// environment it can read what that process can: /var/run/legion/roles/*, every role's launcher
+// token, gh directory and private directory. That is accepted because whoever can move a tag of
+// the check already runs code in every role on every write that role makes (plan D10).
 //
 // What is read is what it printed, never its status. Measured at leak-check-v15: `--help` prints
 // the launcher's own usage header — the line naming the shapes this package calls, `check-public-text`

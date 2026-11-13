@@ -137,6 +137,64 @@ func TestARefusedNarrowingOfTheLeakCheckTokenAsksForNoWiderToken(t *testing.T) {
 	}
 }
 
+// A read of the check GitHub answers 401 drops the read lease the App's token manager cached for
+// agent-infra, so the next read mints a new token: two token requests, the second read served. A
+// read answered 404 drops nothing, and the next read is made with the cached lease: one token
+// request.
+func TestALeakCheckReadAnswered401MintsANewTokenAndA404DoesNot(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		status   int
+		requests int
+	}{
+		{"a read answered 401", http.StatusUnauthorized, 2},
+		{"a read answered 404", http.StatusNotFound, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const checkInstallation = "76"
+			github := provisioningStandIn(t,
+				provisioningInstallation{id: checkInstallation, owner: "theorem-labs", granted: leakCheckGrant,
+					answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
+						mintedToken(w, leakCheckLease, repositories, permissions)
+					}},
+			)
+			raw := leakCheckTarball(t)
+			var asked atomic.Int32
+			url := githubtest.Server(t, githubtest.Spec{Token: leakCheckLease, Handle: func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.URL.Path, "/repos/theorem-labs/agent-infra/tarball/") {
+					githubtest.Unexpected(t, w, r)
+					return
+				}
+				if asked.Add(1) == 1 {
+					w.WriteHeader(tc.status)
+					fmt.Fprintf(w, `{"status":"%d"}`, tc.status)
+					return
+				}
+				_, _ = w.Write(raw)
+			}})
+			source := leakCheckSource(github.tokens, url)
+
+			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d", leakguard.RefusalPrefix, leakCheckTag, tc.status)
+			if _, err := source.Get(context.Background(), leakCheckTag); err == nil || !strings.HasPrefix(err.Error(), want) {
+				t.Fatalf("the first read = %v, want the sentence %q", err, want)
+			}
+			served, err := source.Get(context.Background(), leakCheckTag)
+			if err != nil || len(served.Body) == 0 || asked.Load() != 2 {
+				t.Fatalf("the second read = %d bytes, %v after %d reads; want the check from a second read", len(served.Body), err, asked.Load())
+			}
+			requests := github.requestsTo(checkInstallation)
+			if len(requests) != tc.requests {
+				t.Fatalf("%d token requests on theorem-labs's installation, want %d: %+v", len(requests), tc.requests, requests)
+			}
+			for _, request := range requests {
+				if !slices.Equal(request.repositories, []string{"agent-infra"}) || !maps.Equal(request.permissions, leakCheckReadSet) {
+					t.Fatalf("a token request named %v with %v, want [agent-infra] with %v", request.repositories, request.permissions, leakCheckReadSet)
+				}
+			}
+		})
+	}
+}
+
 // A mint GitHub refuses for any other reason is refused with the mint's sentence: an App with no
 // installation on theorem-labs (appauth.ErrNotInstalled), and an installation whose token
 // exchange answers 401.

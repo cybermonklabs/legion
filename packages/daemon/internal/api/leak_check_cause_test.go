@@ -93,17 +93,16 @@ func TestTheStateServedToAPodBeforeTheLeakCheckCauseContractLeavesTheNextCallers
 	}
 }
 
-// leakCheckCauseContract is the contract whose entry in version.go added the key, and it is this
-// daemon's own: a caller at this contract is served it. A constant above DaemonAPIVersion would be
-// a key no pod is ever served; one below it would serve the key to a plugin that never asked.
-func TestTheLeakCheckCauseContractIsThisDaemonsContract(t *testing.T) {
+// leakCheckCauseContract is the contract whose entry in version.go added the key, and this
+// daemon's own contract is never below it: a caller at this contract is served it.
+func TestTheLeakCheckCauseContractIsTheContractThatAddedTheKey(t *testing.T) {
 	const addedLeakCheckCause = 87
 	if leakCheckCauseContract != addedLeakCheckCause {
 		t.Fatalf("leakCheckCauseContract = %d, want %d, the contract whose entry in version.go adds the claim views' `leakCheckCause`",
 			leakCheckCauseContract, addedLeakCheckCause)
 	}
-	if leakCheckCauseContract != DaemonAPIVersion {
-		t.Fatalf("leakCheckCauseContract = %d, DaemonAPIVersion %d: the key is this release's own",
+	if leakCheckCauseContract > DaemonAPIVersion {
+		t.Fatalf("leakCheckCauseContract = %d, above DaemonAPIVersion %d: no caller could be served the key",
 			leakCheckCauseContract, DaemonAPIVersion)
 	}
 }

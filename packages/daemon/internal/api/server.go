@@ -959,17 +959,7 @@ func carriesGatedSteps(state State) bool {
 // it is written only where there is one, so this is asked of the state rather than answered
 // true, as carriesUpdateRounds and carriesMemory are.
 func carriesStallRecord(state State) bool {
-	for _, issue := range state.Issues {
-		if issue.Architect != nil && issue.Architect.Step != nil {
-			return true
-		}
-		for _, worker := range issue.Workers {
-			if worker.Claim.Step != nil {
-				return true
-			}
-		}
-	}
-	return false
+	return anyClaimView(state, func(view ClaimView) bool { return view.Step != nil })
 }
 
 // carriesRecordFields is whether state carries any key recordFieldsContract added: the
@@ -1278,28 +1268,13 @@ func withoutRetiredStranded(state State) State {
 }
 
 // withoutStallRecord is state with no claim view carrying `step`, the one key stallRecordContract
-// added to this route; nothing else of that contract is on it. The issue maps are copied, so the
-// state the source answered is left as it was, as withoutUpdateRounds leaves it.
+// added to this route; nothing else of that contract is on it. The state the source answered is
+// left as it was (mapClaimViews), as withoutUpdateRounds leaves it.
 func withoutStallRecord(state State) State {
-	issues := make(map[string]Issue, len(state.Issues))
-	for key, issue := range state.Issues {
-		if issue.Architect != nil {
-			architect := *issue.Architect
-			architect.Step = nil
-			issue.Architect = &architect
-		}
-		if issue.Workers != nil {
-			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
-			for role, worker := range issue.Workers {
-				worker.Claim.Step = nil
-				workers[role] = worker
-			}
-			issue.Workers = workers
-		}
-		issues[key] = issue
-	}
-	state.Issues = issues
-	return state
+	return mapClaimViews(state, func(view ClaimView) ClaimView {
+		view.Step = nil
+		return view
+	})
 }
 
 // carriesLeakCheckCause is whether any claim view of state carries the key
@@ -1307,12 +1282,28 @@ func withoutStallRecord(state State) State {
 // because the shared public leak check could not be installed. Like the step record it is
 // written only where there is one, so this is asked of the state rather than answered true.
 func carriesLeakCheckCause(state State) bool {
+	return anyClaimView(state, func(view ClaimView) bool { return view.LeakCheckCause != "" })
+}
+
+// withoutLeakCheckCause is state with no claim view carrying `leakCheckCause`, the one key
+// leakCheckCauseContract added to this route; nothing else of that contract is on it. The state
+// the source answered is left as it was (mapClaimViews), as withoutStallRecord leaves it.
+func withoutLeakCheckCause(state State) State {
+	return mapClaimViews(state, func(view ClaimView) ClaimView {
+		view.LeakCheckCause = ""
+		return view
+	})
+}
+
+// anyClaimView is whether test holds of any claim view of state: an issue's architect, or the
+// claim of any of its workers.
+func anyClaimView(state State, test func(ClaimView) bool) bool {
 	for _, issue := range state.Issues {
-		if issue.Architect != nil && issue.Architect.LeakCheckCause != "" {
+		if issue.Architect != nil && test(*issue.Architect) {
 			return true
 		}
 		for _, worker := range issue.Workers {
-			if worker.Claim.LeakCheckCause != "" {
+			if test(worker.Claim) {
 				return true
 			}
 		}
@@ -1320,22 +1311,21 @@ func carriesLeakCheckCause(state State) bool {
 	return false
 }
 
-// withoutLeakCheckCause is state with no claim view carrying `leakCheckCause`, the one key
-// leakCheckCauseContract added to this route; nothing else of that contract is on it. The issue
-// maps are copied, so the state the source answered is left as it was, as withoutStallRecord
-// leaves it.
-func withoutLeakCheckCause(state State) State {
+// mapClaimViews is state with every claim view — each issue's architect and the claim of each of
+// its workers — replaced by what change makes of it. The issues map is rebuilt, and each
+// architect and Workers map copied before change sees it, so the state the source answered is
+// left as it was.
+func mapClaimViews(state State, change func(ClaimView) ClaimView) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		if issue.Architect != nil {
-			architect := *issue.Architect
-			architect.LeakCheckCause = ""
+			architect := change(*issue.Architect)
 			issue.Architect = &architect
 		}
 		if issue.Workers != nil {
 			workers := make(map[claim.Role]PhaseView, len(issue.Workers))
 			for role, worker := range issue.Workers {
-				worker.Claim.LeakCheckCause = ""
+				worker.Claim = change(worker.Claim)
 				workers[role] = worker
 			}
 			issue.Workers = workers

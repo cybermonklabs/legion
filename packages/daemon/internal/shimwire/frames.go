@@ -964,8 +964,9 @@ const LauncherBundlePayloadBytes = 256 << 10
 const MaxWorkspaceBundleBodyBytes = 64 << 20
 
 // LeakCheckTagPattern is the published shape of a tag of the shared public leak check. The pattern
-// is written here rather than imported so the wire depends on nothing of the daemon's;
-// internal/leakguard writes its own and a test there holds the two equal.
+// is written here rather than imported so the wire depends on nothing of the daemon's; it is the
+// one copy, which internal/leakguard reads too (ValidLeakCheckTag), since a tag becomes a path of a
+// GitHub API endpoint there.
 const LeakCheckTagPattern = `^leak-check-v[1-9][0-9]*$`
 
 var leakCheckTagShape = regexp.MustCompile(LeakCheckTagPattern)

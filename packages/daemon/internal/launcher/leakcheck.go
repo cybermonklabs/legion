@@ -104,7 +104,7 @@ func (c *checkInstall) receive(ctx context.Context, frame shimwire.LauncherLeakC
 		return refuse(leakguard.Cause(fmt.Sprintf("the check the daemon served rebuilt to sha256 %s, not the %s its slices declared",
 			got, frame.SHA256), nil))
 	}
-	if _, err := leakguard.InstallServed(ctx, leakguard.ServedInstall{
+	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{
 		Dir: c.dir, Tag: frame.Tag, Body: body,
 		Log: func(format string, args ...any) { logf("launcher: "+format, args...) },
 	}); err != nil {

@@ -41,7 +41,7 @@ func (f *fakeLeakCheck) Get(_ context.Context, tag string) (leakguard.Served, er
 	if err != nil {
 		return leakguard.Served{}, err
 	}
-	return leakguard.Served{Tag: tag, Body: f.body, SHA256: shimwire.BundleDigest(f.body), Frames: frames}, nil
+	return leakguard.Served{Tag: tag, Body: f.body, Frames: frames}, nil
 }
 
 func (f *fakeLeakCheck) reads() []string {

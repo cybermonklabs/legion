@@ -588,14 +588,14 @@ func installedCheck(t *testing.T, tag string) string {
 	raw := leakguardtest.GitHubTarball(t, map[string]leakguardtest.Member{
 		leakguardtest.CheckName: {Body: "#!/bin/sh\n" + leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "help-runs")), Mode: 0o755},
 	})
-	body, _, err := leakguard.PackTarball(bytes.NewReader(raw))
+	body, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatal(err)
 	}
 	dir := filepath.Join(t.TempDir(), "leak-check")
 	ctx, cancel := context.WithTimeout(context.Background(), waitLimit)
 	defer cancel()
-	if _, err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body}); err != nil {
+	if err := leakguard.InstallServed(ctx, leakguard.ServedInstall{Dir: dir, Tag: tag, Body: body}); err != nil {
 		t.Fatal(err)
 	}
 	return dir

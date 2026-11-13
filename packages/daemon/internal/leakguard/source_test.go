@@ -117,8 +117,8 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 		if errs[i] != nil {
 			t.Fatalf("launcher %d was refused: %v", i, errs[i])
 		}
-		if served[i].SHA256 != served[0].SHA256 || string(served[i].Body) != string(served[0].Body) {
-			t.Fatalf("launcher %d was served %s, launcher 0 %s: want one body", i, served[i].SHA256, served[0].SHA256)
+		if served[i].Frames[0].SHA256 != served[0].Frames[0].SHA256 || string(served[i].Body) != string(served[0].Body) {
+			t.Fatalf("launcher %d was served %s, launcher 0 %s: want one body", i, served[i].Frames[0].SHA256, served[0].Frames[0].SHA256)
 		}
 	}
 	if reads, minted := fake.readsOf(theTag), mints.Load(); reads != 1 || minted != 1 {
@@ -137,8 +137,8 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("an ask at %s: %v", second, err)
 	}
-	if other.Tag != second || other.SHA256 == served[0].SHA256 {
-		t.Fatalf("the ask at %s was served %s at %s, want its own body", second, other.SHA256, other.Tag)
+	if other.Tag != second || other.Frames[0].SHA256 == served[0].Frames[0].SHA256 {
+		t.Fatalf("the ask at %s was served %s at %s, want its own body", second, other.Frames[0].SHA256, other.Tag)
 	}
 	if reads := fake.readsOf(second); reads != 1 || fake.total() != 2 {
 		t.Fatalf("an ask at %s made %d reads of it and %d in all, want one more read", second, reads, fake.total())
@@ -149,8 +149,8 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a fresh Source's ask at %s: %v", theTag, err)
 	}
-	if again.SHA256 != served[0].SHA256 {
-		t.Fatalf("a fresh Source was served %s, want the body at %s, %s", again.SHA256, theTag, served[0].SHA256)
+	if again.Frames[0].SHA256 != served[0].Frames[0].SHA256 {
+		t.Fatalf("a fresh Source was served %s, want the body at %s, %s", again.Frames[0].SHA256, theTag, served[0].Frames[0].SHA256)
 	}
 	if reads := fake.readsOf(theTag); reads != 2 {
 		t.Fatalf("a fresh Source's ask made %d reads at %s, want it to read again: 2", reads, theTag)
@@ -158,7 +158,7 @@ func TestOneReadServesEveryLauncherThatAsksForATag(t *testing.T) {
 }
 
 // The body the source serves is the leak-check directory alone, the paths its own with no
-// repository prefix, and its digest is the body's SHA-256.
+// repository prefix, and the digest its frames declare is the body's SHA-256.
 func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 	files := theCheck(answersItsHelp)
 	raw := leakguardtest.GitHubTarball(t, files)
@@ -169,8 +169,8 @@ func TestTheServedBodyIsTheDirectoryAloneWithItsDigest(t *testing.T) {
 		t.Fatalf("the read: %v", err)
 	}
 	sum := sha256.Sum256(got.Body)
-	if got.Tag != theTag || got.SHA256 != hex.EncodeToString(sum[:]) {
-		t.Fatalf("served %s at %s, want %s at the body's SHA-256 %x", got.SHA256, got.Tag, theTag, sum)
+	if got.Tag != theTag || got.Frames[0].SHA256 != hex.EncodeToString(sum[:]) {
+		t.Fatalf("served frames declaring %s at %s, want %s at the body's SHA-256 %x", got.Frames[0].SHA256, got.Tag, theTag, sum)
 	}
 	members := membersOf(t, got.Body)
 	names := slices.Sorted(maps.Keys(members))
@@ -247,17 +247,99 @@ func TestARefusedReadIsRefusedWithGitHubsAnswerAndNotKept(t *testing.T) {
 	}
 }
 
-// A tarball with no leak-check directory is refused naming the tarball and the tag.
-func TestATarballWithoutTheDirectoryIsRefused(t *testing.T) {
-	raw := leakguardtest.Tarball(t, map[string]leakguardtest.Member{
-		leakguardtest.TarballPrefix + "README.md": {Body: "the rest of the repository\n", Mode: 0o644},
-	})
-	fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, _ string) { _, _ = w.Write(raw) })
-	var mints atomic.Int32
-	_, err := sourceOver(fake.url, &mints).Get(bound(t), theTag)
-	want := RefusalPrefix + "the tarball of theorem-labs/agent-infra at " + theTag + " holds no leak-check directory"
-	if err == nil || err.Error() != want {
-		t.Fatalf("a tarball without the directory = %v, want %q", err, want)
+// A 401 is GitHub no longer taking the token the read was made with: the read calls Forget once,
+// so the next mint is a new token, and the read is not kept. Any other refusal forgets nothing.
+func TestAReadAnswered401ForgetsTheTokenAndIsNotKept(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		answer string
+		forget int32
+	}{
+		{"a read answered 401", http.StatusUnauthorized, `{"message":"Bad credentials","status":"401"}`, 1},
+		{"a read answered 404", http.StatusNotFound, `{"message":"Not Found","status":"404"}`, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var refuse atomic.Bool
+			refuse.Store(true)
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, tag string) {
+				if refuse.Load() {
+					w.WriteHeader(tc.status)
+					_, _ = fmt.Fprintln(w, tc.answer)
+					return
+				}
+				_, _ = w.Write(wholeCheck(t, marked(tag)))
+			})
+			var mints, forgets atomic.Int32
+			source := sourceOver(fake.url, &mints)
+			source.Forget = func() { forgets.Add(1) }
+			_, err := source.Get(bound(t), theTag)
+			want := fmt.Sprintf("%sGitHub answered the read of theorem-labs/agent-infra at %s with HTTP %d: %s", RefusalPrefix, theTag, tc.status, tc.answer)
+			if err == nil || err.Error() != want {
+				t.Fatalf("the refused read = %v, want %q", err, want)
+			}
+			if got := forgets.Load(); got != tc.forget {
+				t.Fatalf("the refused read forgot the token %d times, want %d", got, tc.forget)
+			}
+
+			refuse.Store(false)
+			if _, err := source.Get(bound(t), theTag); err != nil {
+				t.Fatalf("the ask after the refused read: %v", err)
+			}
+			if reads, minted := fake.readsOf(theTag), mints.Load(); reads != 2 || minted != 2 {
+				t.Fatalf("the ask after the refused read made the reads %d and the mints %d, want it read again: 2 and 2", reads, minted)
+			}
+			if got := forgets.Load(); got != tc.forget {
+				t.Fatalf("the read that succeeded forgot the token, %d forgets in all, want %d", got, tc.forget)
+			}
+		})
+	}
+}
+
+// A tarball with no leak-check directory, and one whose directory holds no file, are each
+// refused naming the tarball and the tag, and neither is kept: the next ask reads again.
+func TestATarballWithoutTheCheckIsRefusedAndNotKept(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  func(t *testing.T) []byte
+		want string
+	}{
+		{"no leak-check directory", func(t *testing.T) []byte {
+			return leakguardtest.Tarball(t, map[string]leakguardtest.Member{
+				leakguardtest.TarballPrefix + "README.md": {Body: "the rest of the repository\n", Mode: 0o644},
+			})
+		}, "holds no leak-check directory"},
+		{"a leak-check directory with no file", func(t *testing.T) []byte {
+			return leakguardtest.GitHubTarball(t, nil)
+		}, "holds a leak-check directory with no file"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var empty atomic.Bool
+			empty.Store(true)
+			raw := tc.raw(t)
+			fake := serveCheck(t, func(w http.ResponseWriter, _ *http.Request, tag string) {
+				if empty.Load() {
+					_, _ = w.Write(raw)
+					return
+				}
+				_, _ = w.Write(wholeCheck(t, marked(tag)))
+			})
+			var mints atomic.Int32
+			source := sourceOver(fake.url, &mints)
+			_, err := source.Get(bound(t), theTag)
+			want := RefusalPrefix + "the tarball of theorem-labs/agent-infra at " + theTag + " " + tc.want
+			if err == nil || err.Error() != want {
+				t.Fatalf("the tarball = %v, want %q", err, want)
+			}
+
+			empty.Store(false)
+			if _, err := source.Get(bound(t), theTag); err != nil {
+				t.Fatalf("the ask after the refused tarball: %v", err)
+			}
+			if reads := fake.readsOf(theTag); reads != 2 {
+				t.Fatalf("the ask after the refused tarball made %d reads, want it read again: 2", reads)
+			}
+		})
 	}
 }
 

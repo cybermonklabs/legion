@@ -623,21 +623,25 @@ func (t *implementTokens) warnOwnToken(owner string) {
 		"so its pods clone with the owner's own installation token rather than a reading lease", "owner", owner)
 }
 
-// leakCheckRepository is the shared public leak check's repository, which the daemon reads at the
-// tag a pod's launcher names and serves to that launcher (leakguard.Source).
-var leakCheckRepository = ghrepo.MustParse(leakguard.CheckSlug)
-
 // leakCheckSource is the daemon's reader of the shared public leak check, minting through apps
 // (leakCheckToken) and reading under githubAPI, GitHub's REST root ("" is
 // https://api.github.com), which the Sandbox runtime pushes to each pod's launcher before any role
-// of the pod starts (sandbox.Options.LeakCheck). A daemon with no GitHub Apps has no reader: the
-// answer is then the nil interface, never a nil *leakguard.Source inside one, so the runtime's
-// comparison with nil reads the daemon as holding no credential.
+// of the pod starts (sandbox.Options.LeakCheck). Where apps drops a read scope
+// (appauth.ReadScopeForgetter), a read GitHub answers 401 drops the lease leakCheckToken mints, so
+// the next read mints a new one. A daemon with no GitHub Apps has no reader: the answer is then
+// the nil interface, never a nil *leakguard.Source inside one, so the runtime's comparison with
+// nil reads the daemon as holding no credential.
 func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckReader {
 	if apps == nil {
 		return nil
 	}
-	return &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	source := &leakguard.Source{Token: leakCheckToken(apps), API: githubAPI}
+	if forgetter, ok := apps.(appauth.ReadScopeForgetter); ok {
+		source.Forget = func() {
+			forgetter.ForgetReadScope(appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
+		}
+	}
+	return source
 }
 
 // leakCheckToken mints the token the shared public leak check is read with: the implement App's
@@ -652,7 +656,7 @@ func leakCheckSource(apps appauth.Tokens, githubAPI string) sandbox.LeakCheckRea
 // repository selection, and the App's configuration or its installation on the owner.
 func leakCheckToken(apps appauth.Tokens) func(context.Context) (string, error) {
 	return func(ctx context.Context) (string, error) {
-		lease, err := apps.ReadToken(ctx, appauth.Implement, leakCheckRepository.Owner(), []string{leakCheckRepository.Name()})
+		lease, err := apps.ReadToken(ctx, appauth.Implement, leakguard.CheckRepository.Owner(), []string{leakguard.CheckRepository.Name()})
 		switch {
 		case err == nil:
 			return lease.Token, nil

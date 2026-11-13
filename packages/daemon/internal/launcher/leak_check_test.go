@@ -1,10 +1,13 @@
 package launcher
 
 import (
+	"archive/tar"
 	"bytes"
+	"compress/gzip"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"math/rand/v2"
@@ -52,14 +55,37 @@ func packedLeakCheck(t *testing.T, launcher string) []byte {
 		"public_leak_check.py":   {Body: "# the check itself\n", Mode: 0o644},
 		"fixtures/must-pass.bin": {Body: string(fixture), Mode: 0o644},
 	})
-	body, files, err := leakguard.PackTarball(bytes.NewReader(raw))
+	body, err := leakguard.PackTarball(bytes.NewReader(raw))
 	if err != nil {
 		t.Fatalf("pack the test's tarball: %v", err)
 	}
-	if files != 3 {
+	if files := packedFiles(t, body); files != 3 {
 		t.Fatalf("the pack holds %d files, want the check's 3", files)
 	}
 	return body
+}
+
+// packedFiles is how many regular files the packed body holds.
+func packedFiles(t *testing.T, body []byte) int {
+	t.Helper()
+	zipped, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("the packed body is no gzip stream: %v", err)
+	}
+	archive := tar.NewReader(zipped)
+	files := 0
+	for {
+		header, err := archive.Next()
+		if errors.Is(err, io.EOF) {
+			return files
+		}
+		if err != nil {
+			t.Fatalf("read the packed body: %v", err)
+		}
+		if header.Typeflag == tar.TypeReg {
+			files++
+		}
+	}
 }
 
 // slicedLeakCheck is the launcher_leak_check sequence the daemon pushes of body at tag.
@@ -438,7 +464,7 @@ func TestARefusedLeakCheckLeavesTheDirectoryAsItWas(t *testing.T) {
 			parent := t.TempDir()
 			dir := filepath.Join(parent, "leak-check")
 			earlier := packedLeakCheck(t, leakguardtest.AnswersHelp(filepath.Join(t.TempDir(), "earlier-runs")))
-			if _, err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: earlier}); err != nil {
+			if err := leakguard.InstallServed(context.Background(), leakguard.ServedInstall{Dir: dir, Tag: leakCheckPin, Body: earlier}); err != nil {
 				t.Fatal(err)
 			}
 			before := tree(t, parent)
