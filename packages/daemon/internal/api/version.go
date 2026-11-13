@@ -1335,7 +1335,7 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 97: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
+// 103: INFRA-2009 -- the cache trimmer in an issue pod's launcher process, which is two shapes of
 // the launcher wire. The daemon's answer to a launcher's hello carries the settings the trimmer
 // runs by, as one optional member of `shimwire.LauncherHelloAck` (`volumeTrim`: the two marks,
 // the minimum age and the interval, from `runtime.kubernetes.volume_trim`), written by
@@ -1404,5 +1404,11 @@ package api
 // At the second forward merge of 2026-11-13 main had 94, below 95, but #3712 had moved to 95,
 // so the number moved again: above main's 94 the open heads declare 95 (#3712), 96 (#2731 and
 // #3573), 98 (#3708) and 99 (#3575), so 97 is the lowest free number above main's. It is held
-// under the same rule: move it only when main's own number or another open head's reaches 97.)
-const DaemonAPIVersion = 97
+// under the same rule: move it only when main's own number or another open head's reaches 97.
+// Read again immediately before the push of 2026-11-13 that followed review round 12, with
+// main still at 94: the open heads declare 95 (#3659), 96 (#2731), 97 (#3937), 98 (#3708), 99
+// (#3575), 100 (#3573 and #3715), 101 (#3712) and 102 (#3730), so 97 is given up because #3937
+// declares it as well and 103 is the lowest number above main's that no open head declares. It
+// is held under the same rule: move it only when main's own number or another open head's
+// reaches 103.)
+const DaemonAPIVersion = 103

@@ -30,7 +30,9 @@ questions, approve the spec, and review the pull request. Everything happens in
 1. Open the issue in Dispatch and add the label **`legion`** from the issue header.
 2. For a new issue (status `triage`), that is the whole handover: your label is queued by the
    daemon, and the issue moves to `todo` itself. For a parked issue (`backlog` or `icebox`), set
-   its status to **`todo`**, or approve its spec: your approval queues it the same way.
+   its status to **`todo`**, or approve its spec: your approval queues it the same way when the
+   issue has no parent. An approval that Dispatch carries in your name from an earlier one does
+   not queue it.
 
 When a slot is free the daemon admits the issue and the status changes to `in_progress`; when
 every slot is taken, the issue waits in `todo` and takes the next free slot in the board's order.
@@ -40,7 +42,8 @@ until it is done or leaves the workflow,
 so a wait of its own — on a blocker, on its children or on you — keeps the slot, and its agents
 stay live beside it.
 A label an agent session set on an issue in `triage` goes to the controller instead: the controller
-decides whether to admit it, park it, or leave it for you.
+decides whether to admit it or leave it for you, and parks it only when a person asked for that or
+its work is done, folded into another issue or no longer needed.
 
 The controller never takes an issue on its own, whatever slots are free: Legion works what a person
 hands it, and the clear defects its own agents report. You can also ask the controller to hand an
@@ -166,8 +169,9 @@ resumes.
   way finishes what it was doing. To keep Legion off it for good, also take the `legion` label off;
   taking the label off alone does not stop a tree that has started.
 - **To run it again**, set it back to `todo` with the label on, or approve its spec: a person's
-  approval of a parked labelled issue's spec is queued by the daemon, and the issue moves to `todo`
-  itself. The tree starts over as a new generation, from its architect.
+  approval of a parked labelled issue's spec is queued by the daemon when the issue has no
+  parent, and the issue moves to `todo` itself; an approval that Dispatch carries in your name from
+  an earlier one does not queue it. The tree starts over as a new generation, from its architect.
 - **To close it without a change**, tell the architect at the design gate that no change is needed;
   it closes the issue with that reason. You can also close the issue yourself from the dashboard.
 
@@ -184,10 +188,10 @@ you stop the work.
 
 | Status | Set by | What it means for a Legion issue |
 | --- | --- | --- |
-| `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now, park it, or leave it to you. |
+| `triage` | whoever files the issue | New. A person's `legion` label is queued by the daemon: the issue moves to `todo` itself. A label a session set goes to the controller, which decides whether to admit it now or leave it to you, and parks it only when a person asked for that or its work is done, folded into another issue or no longer needed. |
 | `icebox` | a person or the controller | Parked for the long term. Legion does not run it. |
-| `backlog` | a person or the controller | Should not run now: it waits on a decision or a deploy. Legion does not run it. |
-| `todo` | a person or the controller | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
+| `backlog` | a person or the controller | Should not run now: a person asked for that, for example while it waits on a decision or a deploy, or its work is done, folded into another issue or no longer needed. Legion does not run it. |
+| `todo` | a person, the controller, or the daemon for a person's handover | Ready. A labelled root is admitted when a slot is free and waits in line until then. A child in `todo` waits in the same line for a slot of its own, and shows `todo` only until its first phase: the move into planning sets it to `in_progress`. |
 | `in_progress` | the daemon | Admitted: the architect is writing the spec or waiting for your approval, or the planner or implementer is working. Work sent back by a failed test, a review, or a head that conflicts with its base returns here. |
 | `testing` | the daemon | The implementer opened the pull request and finished; the tester is checking the change. |
 | `needs_review` | the daemon | The tester passed; Legion's reviewer is reviewing, and once it approves the architect reads the evidence and accepts the change or sends it back. Your GitHub review counts now. |
