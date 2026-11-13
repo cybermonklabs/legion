@@ -12,6 +12,9 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
@@ -136,5 +139,48 @@ func TestPodUpdateRescueThroughAnOlderShimNamesOnlyItsOwnPodsBranch(t *testing.T
 	}
 	if read.Branch != podUpdateRescueBranch {
 		t.Errorf("the older shim read branch %q, want the pod's own prefix %q", read.Branch, podUpdateRescueBranch)
+	}
+}
+
+// An older shim's report of many per-pod branches is told in a summary that Dispatch takes in one
+// post, and the message links the full list. Such a shim reports no commits, so the message
+// names how many branches it reported and the first 20 of them with their commits, and the
+// document it links lists all 217.
+func TestPodUpdateRescueThroughAnOlderShimOfManyBranchesFitsOnePostAndLinksThemAll(t *testing.T) {
+	remote := map[string]string{"main": fmt.Sprintf("%040x", 1), claim.IssueBranch(podUpdateIssue): fmt.Sprintf("%040x", 2)}
+	var own []string
+	for n := 1; n <= 217; n++ {
+		name := fmt.Sprintf("%s-%d", podUpdateRescueBranch, n)
+		own = append(own, name)
+		remote[name] = fmt.Sprintf("%040x", 1000+n)
+	}
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.rt.RescueWith(func(_ context.Context, _ runtime.Known, request runtime.RescueRequest) ([]runtime.WorkspaceRescue, error) {
+		_, report, err := olderShimRescue(request, remote)
+		return report, err
+	})
+	rig.answeredRound(claim.RoleImplementer)
+
+	rig.awaitReplacement(1, "once the implementer answered and its older shim's check passed")
+	post := rig.rescuePost()
+	if units := utf8.RuneCountInString(post.Body); units >= dispatchbody.BlockUnits {
+		t.Fatalf("the rescue message is %d characters, want fewer than one Dispatch block's %d", units, dispatchbody.BlockUnits)
+	}
+	if pairs := strings.Count(post.Body, "` (commit "); pairs != rescueListed {
+		t.Errorf("the rescue message names %d branches with their commits, want the first %d:\n%s", pairs, rescueListed, post.Body)
+	}
+	for _, want := range []string{"217 rescue branches", "and 197 more", "Merge each of these branches into the issue branch, or delete the branch"} {
+		if !strings.Contains(post.Body, want) {
+			t.Errorf("the rescue message does not say %q:\n%s", want, post.Body)
+		}
+	}
+	var missing []string
+	for _, name := range own {
+		if !strings.Contains(post.Artifact.Content, "repository: sjawhar/legion\nbranch: "+name+"\ntip: "+remote[name]+"\n") {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("the message's document lacks %d of the 217 branches: %v\n%s", len(missing), missing, post.Artifact.Content)
 	}
 }

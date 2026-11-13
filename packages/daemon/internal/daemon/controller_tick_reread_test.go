@@ -212,6 +212,7 @@ func TestThePeriodicTurnsReReadMirrorsTheClaim(t *testing.T) {
 // Dispatch answers for an issue it no longer serves — and fails every read while err is set.
 // Nothing else of the client is reached by a turn.
 type tickDispatch struct {
+	noArtifacts
 	mu        sync.Mutex
 	issues    map[string]dispatch.Issue
 	summaries []dispatch.IssueSummary

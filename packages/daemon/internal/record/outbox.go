@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -154,10 +155,29 @@ type ClaimRelease struct{}
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 
 // MessagePost is a Dispatch message body. The runner posts it as Posted: the body, then its outbox
-// marker.
+// marker. Artifact, when set, is a document the body links (dispatch://<issue>/artifact/<name>):
+// the runner puts it on the issue before it posts the body, so the link never comes before its
+// document.
 type MessagePost struct {
-	Body string `json:"body"`
+	Body     string           `json:"body"`
+	Artifact *MessageArtifact `json:"artifact,omitempty"`
 }
+
+// MessageArtifact is the markdown document a message links. Name is the slug Dispatch files it
+// under, so the message can link it before it exists: a name that is no slug is refused, since
+// Dispatch would file it under another (its artifactSlug). Content is the markdown, at most
+// MaxMessageArtifactBytes.
+type MessageArtifact struct {
+	Name    string `json:"name"`
+	Content string `json:"content"`
+}
+
+// MaxMessageArtifactBytes is the most bytes a message's artifact may hold: Dispatch's own bound on
+// one markdown document (pmdoc.MaxDocumentBytes), past which it refuses the upload.
+const MaxMessageArtifactBytes = 1 << 20
+
+// artifactSlug is the grammar of a Dispatch slug, which every reader of a dispatch:// link spells.
+var artifactSlug = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 func (MessagePost) OutboxKind() OutboxKind { return OutboxKindDispatchMessage }
 
@@ -1213,7 +1233,21 @@ func validateOutboxPayload(payload OutboxPayload) error {
 		if value.Reason != "" && value.Status != "done" {
 			return fmt.Errorf("a status write to %s carries a reason; only a done write does", value.Status)
 		}
-	case MessagePost, GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
+	case MessagePost:
+		// Each is a refusal Dispatch would make of the upload on every run, or a link that would
+		// name no document, so the row is refused before it is queued.
+		if artifact := value.Artifact; artifact != nil {
+			if !artifactSlug.MatchString(artifact.Name) {
+				return fmt.Errorf("a message's artifact is named %q, which is no Dispatch slug: runs of lowercase ASCII letters and digits, each two joined by one dash", artifact.Name)
+			}
+			if strings.TrimSpace(artifact.Content) == "" {
+				return fmt.Errorf("a message's artifact %s holds no content", artifact.Name)
+			}
+			if len(artifact.Content) > MaxMessageArtifactBytes {
+				return fmt.Errorf("a message's artifact %s holds %d bytes, more than the %d of one Dispatch document", artifact.Name, len(artifact.Content), MaxMessageArtifactBytes)
+			}
+		}
+	case GateSeed, LingerClose, IssueBranch, CheckBound, ClaimRelease:
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")

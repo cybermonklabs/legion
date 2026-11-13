@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -513,8 +517,8 @@ func (s *supervision) replacePodForRound(ctx context.Context, replace podReplace
 	s.log.Info("supervise: every worker of this update round has answered; the pod is replaced and the round is over",
 		"issue", issue, "round", round, "pod", pod, "failedNotWaitedFor", namesOf(failed),
 		"rescued", checked.rescued(), "unchecked", checked.unchecked)
-	if message := rescueMessage(round, checked); message != "" {
-		if err := s.writeOnIssue(ctx, issue, message); err != nil && ctx.Err() == nil {
+	if post := rescueMessage(issue, round, checked); post.Body != "" {
+		if err := s.writeOnIssue(ctx, issue, post); err != nil && ctx.Err() == nil {
 			s.log.Error("supervise: write on the issue what the push check before its pod's replacement found",
 				"issue", issue, "round", round, "rescued", checked.rescued(), "unchecked", checked.unchecked, "error", err)
 		}
@@ -643,32 +647,53 @@ type pushCheck struct {
 	unchecked  string
 }
 
-// rescued is every rescue branch the check reports, as `<branch>@<commit>`, each once: a branch an
-// earlier check of the same pod pushed is reported by every workspace whose remote holds it.
+// rescued is every rescue branch the check reports, as `<branch>@<commit> in <owner>/<repo>`, each
+// once for each repository (branches).
 func (p pushCheck) rescued() []string {
 	var named []string
 	for _, b := range p.branches() {
-		named = append(named, b.name+"@"+b.commit)
+		named = append(named, b.Name+"@"+b.Commit+" in "+b.repository)
 	}
 	return named
 }
 
-// rescuedBranch is one rescue branch of the check, and the workspace that first reports it.
-type rescuedBranch struct{ name, commit, dir string }
+// rescuedBranch is one rescue branch of the check as the shim reports it, and the repository of
+// the workspace that first reports it (rescueRepository).
+type rescuedBranch struct {
+	runtime.RescuedBranch
+	repository string
+}
 
-// branches is every rescue branch the check reports, each once, in the order reported.
+// branches is every rescue branch the check reports, in the order reported, each once for each
+// repository. Each repository of the issue has a `legion/<KEY>-rescue` of its own, so the name
+// alone would hide all but the first. An older shim reports a branch of its pod again from every
+// workspace whose remote holds it, so the workspace alone would name one branch twice.
 func (p pushCheck) branches() []rescuedBranch {
+	type key struct{ repository, name string }
 	var branches []rescuedBranch
-	seen := map[string]bool{}
+	seen := map[key]bool{}
 	for _, w := range p.workspaces {
+		repository := rescueRepository(w.Dir)
 		for _, b := range w.Branches {
-			if !seen[b.Name] {
-				seen[b.Name] = true
-				branches = append(branches, rescuedBranch{name: b.Name, commit: b.Commit, dir: w.Dir})
+			if k := (key{repository, b.Name}); !seen[k] {
+				seen[k] = true
+				branches = append(branches, rescuedBranch{RescuedBranch: b, repository: repository})
 			}
 		}
 	}
 	return branches
+}
+
+// rescueRepository is the repository of a workspace on the pod's disk, `<owner>/<repo>`, read from
+// its path, which provisioning lays out as <state>/workspaces/<owner>/<repo>/<issue>
+// (workspace.Location). A directory laid out otherwise stands for itself.
+func rescueRepository(dir string) string {
+	repo := filepath.Dir(dir)
+	owner := filepath.Dir(repo)
+	if filepath.Base(filepath.Dir(owner)) != "workspaces" {
+		return dir
+	}
+	return filepath.Base(owner) + "/" + filepath.Base(repo)
 }
 
 // rescueBranch is the prefix of every rescue branch of a pod's replacement:
@@ -790,26 +815,229 @@ func rescuers(group []supervise.Claim, round string) []supervise.Claim {
 	return append(implement, review...)
 }
 
-// rescueMessage is what the issue is told after its pod's replacement when the push check pushed
-// rescue branches or could not check the pod, and "" when it found nothing. The issue's branch
-// does not hold rescued work, and the next pod provisions from that branch, so somebody must bring
-// it in. Another agent reads it, so it follows ASD-STE100.
-func rescueMessage(round string, checked pushCheck) string {
+// rescueListed is how many commit ids of a branch, or branches of an older shim's report, the
+// rescue's message names before it says how many more there are. The document the message links
+// lists every one, so the message fits in one block of Dispatch's whatever the check found: a
+// notice that named each branch whole was 34,828 characters, and Dispatch refused it
+// (dispatch://INFRA-2704).
+const rescueListed = 20
+
+// rescueMessage is what the issue is told after its pod's replacement when the push check found
+// work the issue branch does not have, or could not check the pod, and an empty post when it found
+// nothing. The issue's branch does not hold rescued work, and the next pod provisions from that
+// branch, so somebody must bring it in. The body is a summary (rescueSummary) that links a document
+// of every branch and commit (rescueList), which the outbox puts on the issue before it posts the
+// body. A summary Dispatch would refuse all the same is made again with no ids in it. Another agent
+// reads it, so it follows ASD-STE100.
+func rescueMessage(issue, round string, checked pushCheck) record.MessagePost {
 	if checked.unchecked != "" {
-		return fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)
+		return record.MessagePost{Body: fmt.Sprintf("The daemon replaced the pod of this issue (update round %s). It did not check the pod's workspaces for work that was not pushed: %s. Work that a worker did not push is lost with the pod.", round, checked.unchecked)}
 	}
+	branches := checked.branches()
+	if len(branches) == 0 {
+		return record.MessagePost{}
+	}
+	artifact := &record.MessageArtifact{Name: rescueArtifactName(round), Content: rescueList(issue, round, branches)}
+	link := "dispatch://" + issue + "/artifact/" + artifact.Name
+	body := rescueSummary(round, branches, link, rescueListed)
+	if dispatchbody.Check(record.LongestPost(body)) != nil {
+		body = rescueSummary(round, branches, link, 0)
+	}
+	return record.MessagePost{Body: body, Artifact: artifact}
+}
+
+// rescueArtifactName is the name of the document a rescue's message links: `rescue-<round>`, with
+// each character that is no lowercase ASCII letter or digit made a dash, each run of dashes made
+// one, and no dash at either end. Dispatch files a document of that name under the name itself
+// (its artifactSlug), so the message links it by its name before it exists, and a second run of
+// the message's row finds the document the first one put there.
+func rescueArtifactName(round string) string {
+	var name strings.Builder
+	dash := false
+	for _, r := range "rescue-" + round {
+		if ('a' <= r && r <= 'z') || ('0' <= r && r <= '9') {
+			if dash && name.Len() > 0 {
+				name.WriteByte('-')
+			}
+			name.WriteRune(r)
+			dash = false
+			continue
+		}
+		dash = true
+	}
+	return name.String()
+}
+
+// rescueSummary is the body of a rescue's message, which names at most listed commit ids of each
+// branch and listed branches of an older shim's report, and ends with the link to the full list.
+// A branch that carries its commits is one a shim of this daemon reported: the issue's one rescue
+// branch of a repository, with what this check pushed to it, or, where it pushed nothing, the
+// commits only that branch holds. A branch with no commits is an older shim's per-pod branch,
+// which that shim reports as it always did (runtime.RescuedBranch).
+func rescueSummary(round string, branches []rescuedBranch, link string, listed int) string {
+	var carried, older []rescuedBranch
+	for _, b := range branches {
+		if len(b.Commits) > 0 {
+			carried = append(carried, b)
+		} else {
+			older = append(older, b)
+		}
+	}
+	var text strings.Builder
+	fmt.Fprintf(&text, "Before the daemon replaced the pod of this issue (update round %s), its push check found work that the issue branch does not have. The new pod starts from the issue branch.", round)
+	if len(carried) > 0 {
+		var names []string
+		text.WriteString("\n")
+		for _, b := range carried {
+			text.WriteString("\n- " + rescueBranchSummary(b, listed))
+			if name := "`" + b.Name + "`"; !slices.Contains(names, name) {
+				names = append(names, name)
+			}
+		}
+		fmt.Fprintf(&text, "\n\nWhen this work is necessary, merge %s into the issue branch. The branch keeps each earlier rescue of this issue.", rescueJoin(names, len(names)))
+	}
+	if len(older) > 0 {
+		fmt.Fprintf(&text, "\n\nThe pod's shim is older than this daemon. It reported %s of this pod. It did not report their commits.", rescueCount(len(older), "rescue branch", "rescue branches"))
+		if listed > 0 {
+			text.WriteString("\n")
+			for _, b := range older[:min(listed, len(older))] {
+				fmt.Fprintf(&text, "\n- `%s` (commit %s) in `%s`", b.Name, b.Commit, b.repository)
+			}
+			if more := len(older) - listed; more > 0 {
+				fmt.Fprintf(&text, "\n- and %d more", more)
+			}
+		}
+		text.WriteString("\n\nMerge each of these branches into the issue branch, or delete the branch if its work is not necessary.")
+	}
+	text.WriteString("\n\nThe full list of branches and commits is in this document: " + link)
+	return text.String()
+}
+
+// rescueBranchSummary is the summary's item for one branch that carries its commits: its
+// repository, its name and its tip, then what this check pushed to it and the tip before, or, for
+// a branch it pushed nothing to, the commits only that branch holds. It names at most listed ids.
+// That the branch already holds the work says nothing of which pod put it there: the same report
+// comes from a later check of this pod and from a new pod whose put-back restored work only the
+// branch holds.
+func rescueBranchSummary(b rescuedBranch, listed int) string {
+	var text strings.Builder
+	if b.Pushed {
+		fmt.Fprintf(&text, "In the repository `%s`, the push check pushed %s to the branch `%s`. The tip of the branch is now `%s`.",
+			b.repository, rescueCount(len(b.Commits), "commit", "commits"), b.Name, b.Commit)
+		if b.Previous == "" {
+			text.WriteString(" This is a new branch.")
+		} else {
+			fmt.Fprintf(&text, " The tip before the push was `%s`.", b.Previous)
+		}
+		if listed > 0 {
+			if len(b.Commits) == 1 {
+				fmt.Fprintf(&text, " The commit is %s.", rescueIDs(b.Commits, listed))
+			} else {
+				fmt.Fprintf(&text, " The commits are %s.", rescueIDs(b.Commits, listed))
+			}
+		}
+		return text.String()
+	}
+	fmt.Fprintf(&text, "In the repository `%s`, the branch `%s` already holds this work from an earlier rescue. Its tip is `%s`. The issue branch does not have this work.",
+		b.repository, b.Name, b.Commit)
+	only := rescueCount(len(b.Commits), "commit is", "commits are")
+	if listed > 0 {
+		fmt.Fprintf(&text, " %s only on this branch: %s.", only, rescueIDs(b.Commits, listed))
+	} else {
+		fmt.Fprintf(&text, " %s only on this branch.", only)
+	}
+	return text.String()
+}
+
+// rescueIDs is the first listed of commits' ids, each as code, and how many more there are.
+func rescueIDs(commits []runtime.RescuedCommit, listed int) string {
+	ids := make([]string, len(commits))
+	for i, c := range commits {
+		ids[i] = "`" + c.ID + "`"
+	}
+	return rescueJoin(ids, listed)
+}
+
+// rescueJoin is the first listed of items, joined as a sentence joins them, with how many more
+// there are when there are more.
+func rescueJoin(items []string, listed int) string {
+	if more := len(items) - listed; more > 0 {
+		return strings.Join(items[:listed], ", ") + " and " + strconv.Itoa(more) + " more"
+	}
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// rescueCount is n with the word for one or for many.
+func rescueCount(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return strconv.Itoa(n) + " " + many
+}
+
+// rescueList is the document a rescue's message links: every branch the check reported, with its
+// repository, its tip and its tip before, and every commit each carries with its subject. The list
+// is one fenced code block, so no subject a commit was given is read as markdown, and the fence is
+// longer than any run of backticks inside it, so no subject closes it. A list longer than one
+// Dispatch document can be (record.MaxMessageArtifactBytes) stops where it would pass that bound,
+// and says how many lines it leaves out, so the message is never refused for its document.
+func rescueList(issue, round string, branches []rescuedBranch) string {
 	var lines []string
-	for _, b := range checked.branches() {
-		lines = append(lines, fmt.Sprintf("- `%s` (commit %s), from %s", b.name, b.commit, b.dir))
+	for i, b := range branches {
+		if i > 0 {
+			lines = append(lines, "")
+		}
+		lines = append(lines, "repository: "+b.repository, "branch: "+b.Name, "tip: "+b.Commit)
+		switch {
+		case len(b.Commits) == 0:
+			lines = append(lines, "tip before: not reported, because the pod's shim is older than the daemon")
+		case !b.Pushed:
+			lines = append(lines, "tip before: the push check pushed nothing, and these commits are only on this branch")
+		case b.Previous == "":
+			lines = append(lines, "tip before: none, because this is a new branch")
+		default:
+			lines = append(lines, "tip before: "+b.Previous)
+		}
+		if len(b.Commits) > 0 {
+			lines = append(lines, "commits: "+strconv.Itoa(len(b.Commits)))
+		}
+		for _, c := range b.Commits {
+			lines = append(lines, strings.TrimRight(c.ID+" "+c.Subject, " "))
+		}
 	}
-	if len(lines) == 0 {
-		return ""
+	header := fmt.Sprintf("Before the daemon replaced the pod of %s (update round %s), its push check found this work. The issue branch does not have it.\n\n", issue, round)
+	listing := strings.Join(lines, "\n")
+	fence := strings.Repeat("`", max(3, longestRun(listing, '`')+1))
+	// What the header, the two fences and the line that names what is left out take of the bound.
+	room := record.MaxMessageArtifactBytes - len(header) - 2*(len(fence)+1) - 200
+	left := ""
+	if len(listing) > room {
+		kept, size := 0, 0
+		for kept < len(lines) && size+len(lines[kept])+1 <= room {
+			size += len(lines[kept]) + 1
+			kept++
+		}
+		listing = strings.Join(lines[:kept], "\n")
+		left = fmt.Sprintf("\nThe list stops here. It leaves out %d more lines, because one Dispatch document holds at most %d bytes.\n", len(lines)-kept, record.MaxMessageArtifactBytes)
 	}
-	return fmt.Sprintf(`Before the daemon replaced the pod of this issue (update round %s), it found work in the pod's workspaces that the remote did not have. It pushed that work to these branches:
+	return header + fence + "\n" + listing + "\n" + fence + "\n" + left
+}
 
-%s
-
-The issue branch does not have this work, and the new pod starts from the issue branch. Merge each branch into the issue branch, or delete the branch if its work is not necessary.`, round, strings.Join(lines, "\n"))
+// longestRun is the length of the longest run of c in text.
+func longestRun(text string, c byte) int {
+	longest, run := 0, 0
+	for i := range len(text) {
+		if text[i] != c {
+			run = 0
+			continue
+		}
+		run++
+		longest = max(longest, run)
+	}
+	return longest
 }
 
 // viewedGroup is every claim of the issue a round weighs, as the store names them and as each
@@ -965,7 +1193,7 @@ func (s *supervision) podWentWithoutItsRound(ctx context.Context, issue string, 
 	reasons := roundReasons(group, round)
 	s.log.Warn("supervise: the pod of an open update round is gone; the roles that had not answered lost what they had not pushed",
 		"issue", issue, "round", round, "pod", pod, "lost", namesOf(lost))
-	if err := s.writeOnIssue(ctx, issue, podWentMessage(round, reasons, lost)); err != nil {
+	if err := s.writeOnIssue(ctx, issue, record.MessagePost{Body: podWentMessage(round, reasons, lost)}); err != nil {
 		s.log.Error("supervise: write on the issue that its pod went without its update round",
 			"issue", issue, "round", round, "error", err)
 	}
@@ -1146,12 +1374,13 @@ func (s *supervision) markUpdateTold(ctx context.Context, group []supervise.Clai
 	}
 }
 
-// writeOnIssue posts one message on the issue, through the outbox's Dispatch message row.
-func (s *supervision) writeOnIssue(ctx context.Context, issue, body string) error {
+// writeOnIssue posts one message on the issue, with the document it links when it links one,
+// through the outbox's Dispatch message row.
+func (s *supervision) writeOnIssue(ctx context.Context, issue string, post record.MessagePost) error {
 	if s.enqueue == nil {
 		return fmt.Errorf("write on %s: this deployment has no workflow to write through", issue)
 	}
-	return s.enqueue(ctx, issue, record.MessagePost{Body: body})
+	return s.enqueue(ctx, issue, post)
 }
 
 // endPodUpdates ends the round on every claim of the group that is in one. A round ends only

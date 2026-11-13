@@ -11,12 +11,18 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/dispatchbody"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/rescue/rescuetest"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -30,6 +36,50 @@ var podUpdateRescueBranch = "legion/" + podUpdateIssue + "-rescue-" + podUpdateP
 
 // podUpdateRescueTarget is the issue's one rescue branch, which the check pushes the disk's work to.
 var podUpdateRescueTarget = "legion/" + podUpdateIssue + "-rescue"
+
+// podUpdateRescueDocument is the document the rig's rescue message links, named for the rig's
+// round as Dispatch files that name, and podUpdateRescueLink is the link the message ends with.
+const (
+	podUpdateRescueDocument = "rescue-pod-9d3f0c7a-2b41-4a39-9f6b-6c1d0a7e5b22"
+	podUpdateRescueLink     = "dispatch://" + podUpdateIssue + "/artifact/" + podUpdateRescueDocument
+)
+
+// posts is every message the sweep wrote on the issue, oldest first, each with the document it
+// links, decoded as the outbox decodes its row.
+func (r *podUpdateRig) posts() []record.MessagePost {
+	r.t.Helper()
+	var posts []record.MessagePost
+	for _, row := range r.rows(record.OutboxKindDispatchMessage) {
+		payload, err := record.DecodeOutboxPayload(row)
+		if err != nil {
+			r.t.Fatalf("decode message %d: %v", row.ID, err)
+		}
+		posts = append(posts, payload.(record.MessagePost))
+	}
+	return posts
+}
+
+// rescuePost is the one message the sweep wrote on the issue, held to what every rescue's message
+// is: a body Dispatch takes in one post, which ends with the link to the document of the full
+// list, and that document under the round's own name.
+func (r *podUpdateRig) rescuePost() record.MessagePost {
+	r.t.Helper()
+	posts := r.posts()
+	if len(posts) != 1 {
+		r.t.Fatalf("the issue was told %d times, want one rescue message: %+v", len(posts), posts)
+	}
+	post := posts[0]
+	if over := dispatchbody.Check(record.LongestPost(post.Body)); over != nil {
+		r.t.Fatalf("Dispatch would refuse the rescue message: %v\n%s", over, post.Body)
+	}
+	if !strings.HasSuffix(post.Body, podUpdateRescueLink) {
+		r.t.Fatalf("the rescue message does not end with the link %s:\n%s", podUpdateRescueLink, post.Body)
+	}
+	if post.Artifact == nil || post.Artifact.Name != podUpdateRescueDocument {
+		r.t.Fatalf("the rescue message carries the document %+v, want one named %s", post.Artifact, podUpdateRescueDocument)
+	}
+	return post
+}
 
 // rescuedOver is the commit the remote's rescue branch holds, and its first parent: the check puts
 // the disk's work under a rescue commit of its own (internal/rescue), so the work it found is that
@@ -197,10 +247,10 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 			}
 			branch := podUpdateRescueTarget
 			held, rescued := rescuedOver(t, d)
-			messages := rig.messages()
+			posts := rig.posts()
 			if want == "" {
-				if held != "" || len(messages) != 0 {
-					t.Fatalf("the remote holds %s at %q and the issue was told %q, want neither for a clean disk", branch, held, messages)
+				if held != "" || len(posts) != 0 {
+					t.Fatalf("the remote holds %s at %q and the issue was told %+v, want neither for a clean disk", branch, held, posts)
 				}
 				return
 			}
@@ -213,13 +263,107 @@ func TestPodUpdatePushesWhatTheDiskHoldsBeforeItReplacesThePod(t *testing.T) {
 			if extra := d.RemoteBranch(podUpdateRescueBranch + "-1"); extra != "" {
 				t.Fatalf("the remote holds %s-1 at %s, want the issue's one rescue branch alone", podUpdateRescueBranch, extra)
 			}
-			if len(messages) != 1 || !strings.Contains(messages[0], "`"+branch+"` (commit "+held+")") || !strings.Contains(messages[0], d.Workspace) {
-				t.Fatalf("the issue was told %q, want one message naming %s at %s from %s", messages, branch, held, d.Workspace)
+			// The branch is new, and the work the check found is its tip's first parent, so both
+			// are among the commits it pushed, which the summary names and the document lists.
+			post := rig.rescuePost()
+			repository := rescuetest.Owner + "/" + rescuetest.Repo
+			for _, want := range []string{"`" + repository + "`", "`" + branch + "`", "`" + held + "`", "This is a new branch.", "`" + rescued + "`", "merge `" + branch + "` into the issue branch"} {
+				if !strings.Contains(post.Body, want) {
+					t.Errorf("the issue's message does not name %q:\n%s", want, post.Body)
+				}
+			}
+			for _, want := range []string{"repository: " + repository, "branch: " + branch, "tip: " + held, "tip before: none, because this is a new branch", "\n" + held, "\n" + rescued} {
+				if !strings.Contains(post.Artifact.Content, want) {
+					t.Errorf("the message's document does not list %q:\n%s", want, post.Artifact.Content)
+				}
 			}
 			if logs := rig.logs.String(); !strings.Contains(logs, branch+"@"+held) || !strings.Contains(logs, "push check of a workspace before its pod is replaced: rescued") {
 				t.Errorf("the sweep's log does not name %s@%s on its workspace line and its replacement line:\n%s", branch, held, logs)
 			}
 		})
+	}
+}
+
+// commitLine makes n commits on the issue's own branch with one git fast-import, each adding a
+// file of its own, and returns their ids, oldest first: a line as long as a test needs, made in
+// one process rather than in one jj command for each commit.
+func commitLine(t *testing.T, d *rescuetest.Disk, n int) []string {
+	t.Helper()
+	ref := "refs/heads/" + d.Branch
+	base := d.Git("rev-parse", ref)
+	now := time.Now().Unix()
+	var stream strings.Builder
+	for i := 1; i <= n; i++ {
+		message := fmt.Sprintf("work %d of the issue's own line\n", i)
+		body := fmt.Sprintf("work %d\n", i)
+		fmt.Fprintf(&stream, "commit %s\nmark :%d\ncommitter Legion Test <test@example.invalid> %d +0000\ndata %d\n%s", ref, i, now, len(message), message)
+		if i == 1 {
+			fmt.Fprintf(&stream, "from %s\n", base)
+		}
+		fmt.Fprintf(&stream, "M 100644 inline work-%03d.txt\ndata %d\n%s\n", i, len(body), body)
+	}
+	cmd := exec.Command("git", "fast-import", "--quiet")
+	cmd.Dir, cmd.Env, cmd.Stdin = d.Workspace, d.Env, strings.NewReader(stream.String())
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git fast-import of %d commits: %v\n%s", n, err, out)
+	}
+	line := strings.Fields(d.Git("rev-list", "--reverse", base+".."+ref))
+	if len(line) != n {
+		t.Fatalf("the issue's branch holds %d commits over its base, want the %d made", len(line), n)
+	}
+	return line
+}
+
+// A rescue of a long line of work is told in a summary that Dispatch takes in one post, and the
+// message links the full list. 300 commits on the issue's own line reach the remote's one rescue
+// branch under the rescue's own commit, so the check pushed 301. The message names the branch,
+// that count and the link, and the document it links lists every one of the 301.
+func TestPodUpdateTellsTheIssueOfALongRescueInASummaryThatLinksTheFullList(t *testing.T) {
+	d := rescuetest.New(t, podUpdateIssue)
+	line := commitLine(t, d, 300)
+	rig := newPodUpdateRig(t, readyWorker(claim.RoleImplementer))
+	rig.rescueOn(d)
+	rig.answeredRound(claim.RoleImplementer)
+
+	rig.awaitReplacement(1, "once the implementer answered and the push check carried the 300 commits")
+	tip := d.RemoteBranch(podUpdateRescueTarget)
+	if tip == "" {
+		t.Fatalf("the remote has no %s; it holds %v", podUpdateRescueTarget, d.RemoteBranches())
+	}
+	onBranch := strings.Fields(d.Run(d.Remote, "git", "rev-list", tip))
+	var missing []string
+	for _, id := range line {
+		if !slices.Contains(onBranch, id) {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("the remote's %s at %s lacks %d of the 300 commits: %v", podUpdateRescueTarget, tip, len(missing), missing)
+	}
+
+	post := rig.rescuePost()
+	if units := utf8.RuneCountInString(post.Body); units >= dispatchbody.BlockUnits {
+		t.Fatalf("the rescue message is %d characters, want fewer than one Dispatch block's %d", units, dispatchbody.BlockUnits)
+	}
+	for _, want := range []string{"`" + podUpdateRescueTarget + "`", "pushed 301 commits", "`" + tip + "`", "`" + line[len(line)-1] + "`", "and 281 more"} {
+		if !strings.Contains(post.Body, want) {
+			t.Errorf("the rescue message does not name %q:\n%s", want, post.Body)
+		}
+	}
+	if strings.Contains(post.Body, line[0]) {
+		t.Errorf("the rescue message names the line's first commit %s, want the first 20 of the 301 alone, newest first:\n%s", line[0], post.Body)
+	}
+	if !strings.Contains(post.Artifact.Content, "commits: 301\n") {
+		t.Errorf("the message's document does not count the 301 commits:\n%s", post.Artifact.Content)
+	}
+	missing = nil
+	for _, id := range append(line, tip) {
+		if !strings.Contains(post.Artifact.Content, "\n"+id+" ") {
+			missing = append(missing, id)
+		}
+	}
+	if len(missing) > 0 {
+		t.Fatalf("the message's document lacks %d of the 301 commits: %v", len(missing), missing)
 	}
 }
 
