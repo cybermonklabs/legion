@@ -3096,6 +3096,40 @@ func TestACICheckNamePaddedWithSpacesIsRefusedOrReadAsTheRunItNames(t *testing.T
 	}
 }
 
+// A ci_check with spaces around it names the run without them: the read asks GitHub for that run,
+// and its success is a pass with its one derived result, naming the run unpadded in ci.run, the
+// line and the result. A ci_check of only spaces names no run: the check is an ordinary one, with
+// no ci member and no result, and GitHub is asked for nothing.
+func TestCIResultReadsAPaddedCICheckAsTheRunItNames(t *testing.T) {
+	handler, database, fake := resultsGitHubCheckRuns(t)
+	issueInRepository(t, handler, "RESCT", "acme/widgets", "Trimmed")
+
+	padded := issueOfProject(t, handler, "RESCT", "Padded",
+		ciCheckBlock("c1", `negative_control="`+ciCheckNegativeControl+`" ci_check=" `+ciCheckRun+`"`))
+	writeHead(t, database, "acme/widgets", 7, headCommit, "open", padded)
+	fake.set(headCommit, completedRun(61, ciCheckRun, "success"))
+	check := checkOf(t, readResults(t, handler, padded), "c1")
+	if check.CICheck != ciCheckRun {
+		t.Fatalf("c1 ci_check = %q, want %q", check.CICheck, ciCheckRun)
+	}
+	assertCI(t, check, ciCheckRun, model.CIStatePass, "success", ciVerdictLineOf("c1", ciCheckRun, "pass", headCommit))
+	assertDerived(t, check, 61, ciCheckRun, "success", "pass", headCommit)
+
+	blank := issueOfProject(t, handler, "RESCT", "Blank",
+		ciCheckBlock("c1", `negative_control="`+ciCheckNegativeControl+`" ci_check="   "`))
+	writeHead(t, database, "acme/widgets", 8, newHeadCommit, "open", blank)
+	fake.set(newHeadCommit, completedRun(62, ciCheckRun, "success"))
+	before := fake.allReads()
+	check = checkOf(t, readResults(t, handler, blank), "c1")
+	if check.CICheck != "" || check.CI != nil || len(check.Results) != 0 {
+		t.Fatalf("c1 with a blank ci_check reads ci_check %q, ci %+v and results %+v, want an ordinary check with none",
+			check.CICheck, check.CI, check.Results)
+	}
+	if asked := fake.allReads() - before; asked != 0 {
+		t.Fatalf("a check with a blank ci_check read %d pages of check runs, want none", asked)
+	}
+}
+
 // The open pull request's head is read over an older merged one's, and once the open one merges
 // the merged pull request of the highest number is read: the answer keeps speaking after the
 // merge, current at that merged head. The older merged head is never read.

@@ -25,9 +25,10 @@ const (
 const CheckWhenBeforeMerge = "before_merge"
 
 // CarriesCICheck reports whether check names a check run in `ci_check`. A blank value names none,
-// as the editor hides an empty attribute.
+// as the editor hides an empty attribute. check is CheckBlockOf's, which trims the value, so a
+// value of only spaces is blank here.
 func CarriesCICheck(check model.CheckBlock) bool {
-	return strings.TrimSpace(check.CICheck) != ""
+	return check.CICheck != ""
 }
 
 // CICheckRule is the first of the four rules check breaks, read as a check carrying `ci_check`
@@ -96,13 +97,15 @@ func checkBlockNodes(tree *pmdoc.Node) []*pmdoc.Node {
 }
 
 // CheckBlockOf is the check block node holds, with the attributes a check block carries: its id,
-// `ci_check`, run, `when` (a blank one read as the default, before_merge), negative control and
-// surface. Every reader of a check block's attributes comes here: the four rules (CICheckRule) and
-// the results routes.
+// `ci_check` (with the spaces around it trimmed, as the editor cannot show them, so it names the
+// run it reads as), run, `when` (a blank one read as the default, before_merge), negative control
+// and surface. Every reader of a check block's attributes comes here: the four rules
+// (CICheckRule), settlement and the results routes.
 func CheckBlockOf(node *pmdoc.Node) model.CheckBlock {
 	var check model.CheckBlock
 	check.BlockID, _ = node.Attrs[pmdoc.BlockIDAttr].(string)
-	check.CICheck, _ = node.Attrs["ci_check"].(string)
+	ciCheck, _ := node.Attrs["ci_check"].(string)
+	check.CICheck = strings.TrimSpace(ciCheck)
 	check.Run, _ = node.Attrs["run"].(string)
 	check.When, _ = node.Attrs["when"].(string)
 	check.NegativeControl, _ = node.Attrs["negative_control"].(string)
