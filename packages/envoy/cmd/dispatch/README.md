@@ -1665,9 +1665,10 @@ Only direct SQL writes such a component: the importer writes components under th
 A census that refuses on it is repaired on the release still serving, before the deploy, by deleting them:
 `delete from components c where not exists (select 1 from architecture_sources s where s.project_key = c.project_key)`; then take the census again.
 
-**`0117` was the last migration deployed with no server of the earlier release running:
+**`0117` was deployed with no server of the earlier release running:
 deploy it that way, and never start a release older than `0117` over it again.**
-A deployment still on a release before it crosses it once with Dispatch stopped, before it runs more than one replica; every release after it rolls.
+A deployment still on a release before it crosses it once with Dispatch stopped, before it runs more than one replica.
+The last such migration is `20261111210103` (below), and every release after it rolls.
 Stop the earlier release, or scale it to zero, before the new release boots and migrates:
 a Kubernetes Deployment's `strategy: Recreate`, which `envoy-infra:gcp:Dispatch` uses at its default one replica (`packages/envoy/infra/README.md`);
 a deployment running more than one replica, which rolls, is scaled to zero first.
