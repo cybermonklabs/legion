@@ -377,6 +377,54 @@ export async function reconnectedSockets(
     .toBe(count);
 }
 
+/** How many rows this browser's pending-edit store (`web/src/features/doc/pending-edits.ts`)
+ *  holds for `artifactId`: the edits typed into it that the server has not acknowledged. */
+export async function pendingEditCount(page: Page, artifactId: string): Promise<number> {
+  return page.evaluate(async (id) => {
+    const database = await new Promise<IDBDatabase | undefined>((resolve, reject) => {
+      let request: IDBOpenDBRequest;
+      try {
+        request = indexedDB.open("dispatch-pending-edits");
+      } catch {
+        resolve(undefined);
+        return;
+      }
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => resolve(request.result);
+    });
+    if (database === undefined) {
+      return 0;
+    }
+    try {
+      if (!database.objectStoreNames.contains("edits")) {
+        return 0;
+      }
+      return await new Promise<number>((resolve, reject) => {
+        const request = database
+          .transaction("edits", "readonly")
+          .objectStore("edits")
+          .count(IDBKeyRange.bound([id], [id, []]));
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+    } finally {
+      database.close();
+    }
+  }, artifactId);
+}
+
+/** Resolves once the store holds a row for every character of `text`, so a reload after it
+ *  loses none of what was typed. */
+export async function waitForPersistedTyping(
+  page: Page,
+  artifactId: string,
+  text: string
+): Promise<void> {
+  await expect
+    .poll(() => pendingEditCount(page, artifactId), PROBE)
+    .toBeGreaterThanOrEqual(text.length);
+}
+
 /** Document sockets the tab still holds open: one per live document, never one per visit. */
 export function openDocumentSockets(page: Page): () => number {
   let open = 0;
@@ -412,12 +460,17 @@ function isSyncStatusFrame(message: string | Buffer): boolean {
  * the top of the margin, which is the state the link's hold exists for, and a reconnect after
  * `sever()` waits. `release()` connects what is held and anything that arrives afterwards.
  * `holdServerFrames()` holds only tag-8 server acknowledgements on connected routes, while still
- * applying each client update to the server. Install it before the page's first navigation: only
- * sockets opened afterwards are routed, and Playwright has no fallthrough for WebSocket routes.
+ * applying each client update to the server. `onServerFrame` is handed every frame the server
+ * sends on any connection, as it crossed the socket and before it reaches the page. Install it
+ * before the page's first navigation: only sockets opened afterwards are routed, and Playwright
+ * has no fallthrough for WebSocket routes.
  */
 export async function documentTransport(
   page: Page,
-  { holding = false }: { holding?: boolean } = {}
+  {
+    holding = false,
+    onServerFrame,
+  }: { holding?: boolean; onServerFrame?: (message: string | Buffer) => void } = {}
 ): Promise<{
   hold: () => void;
   holdServerFrames: () => void;
@@ -434,6 +487,7 @@ export async function documentTransport(
     const server = route.connectToServer();
     live.push(route);
     server.onMessage((message) => {
+      onServerFrame?.(message);
       if (holdingServerFrames && isSyncStatusFrame(message)) {
         heldServerFrames.push({ message, route });
         return;

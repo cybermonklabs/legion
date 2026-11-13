@@ -14,6 +14,11 @@
 // reader has reached. None of those three carries throttling: what they prove is what the page
 // does, not how long it takes.
 //
+// The last row is acceptance A11's reconnect: an edit the reader types into the larger document
+// while its socket is down reaches the server through a reconnect whose sync is the whole
+// document, which the server sends in frames of at most 64 KiB (R11), and the row reads those
+// frames off the socket.
+//
 // Which document a row seeds is in its title. The three rows about the editor before its last
 // batch seed the AHXV6-1-shaped document of `large-documents.ts` or the document whose opening
 // block is a decision: what they read is an order, a place or a count, and 406,000 characters
@@ -29,8 +34,12 @@
 // built is in `large-documents-build.e2e.ts`; the draw the server sends, and the reads and the
 // chrome the page holds until the first batch, are in `large-documents-first-screen.e2e.ts`.
 // What the seven files share is `large-documents-rows.ts`.
+import { MessageType } from "@hocuspocus/provider";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { createDecoder, readVarUint } from "lib0/decoding";
+import { messageYjsSyncStep1, messageYjsSyncStep2 } from "y-protocols/sync";
 
+import { readField } from "../web/src/features/doc/sync-frame";
 import { createComment, createIssue, createProject, getArtifactText, listIssueAsks } from "./api";
 import {
   connectedDot,
@@ -39,6 +48,7 @@ import {
   editorBeingBuilt,
   placeCaret,
   selectTextIn,
+  waitForPersistedTyping,
 } from "./editor";
 import {
   commentDiagrams,
@@ -722,6 +732,155 @@ test(`a comment body of ${commentDiagrams} diagrams draws only the diagrams near
         measured: "diagrams of the body within a viewport height of the reader",
       }
     );
+  } finally {
+    await alice.close();
+  }
+});
+
+/** The cap R11 holds every frame of a reply to a SyncStep1 to, the document's name and the outer
+ *  tag included: `stateFrameBytes` of the sjawhar/ygo fork's `provider/websocket/peer.go`, which
+ *  `packages/envoy/internal/dispatch/docs/first_sync_frames_test.go` holds the server to. */
+const syncFrameBytes = 64 << 10;
+
+/** One frame of the server's reply to the page's SyncStep1, as it crossed the socket. */
+interface ReplyFrame {
+  /** The whole frame, the document's name and the outer tag included. */
+  readonly bytes: number;
+  /** The sync message it carries: `messageYjsUpdate` for each frame of a split reply but the
+   *  last, `messageYjsSyncStep2` for the last. */
+  readonly sync: number;
+}
+
+/**
+ * The reply to the page's SyncStep1 among `frames`, every frame the server sent the page in
+ * order: each sync frame carrying an update or a SyncStep2, up to and including the first
+ * SyncStep2, which is what the page reads as the end of its sync. The server's own SyncStep1 and
+ * every frame of another tag are not the reply and are passed over.
+ */
+function replyToTheSyncStep1(frames: readonly Buffer[]): ReplyFrame[] {
+  const reply: ReplyFrame[] = [];
+  for (const frame of frames) {
+    const decoder = createDecoder(new Uint8Array(frame));
+    readField(decoder); // the document name
+    if (readVarUint(decoder) !== MessageType.Sync) {
+      continue;
+    }
+    const sync = readVarUint(decoder);
+    if (sync === messageYjsSyncStep1) {
+      continue;
+    }
+    reply.push({ bytes: frame.length, sync });
+    if (sync === messageYjsSyncStep2) {
+      break;
+    }
+  }
+  return reply;
+}
+
+// A11's "an unsent edit survives a reconnect", over the document whose reply R11 cuts into
+// frames. The page's socket is dropped once its editor is built and editable, the reader types
+// while it is down, and the reconnect is held until the page has reloaded: what the reader typed
+// is then in this browser's pending-edit store and nowhere else, and it reaches the server only
+// as the store's restore, which waits for the reconnect's sync to end in its SyncStep2
+// (`web/src/features/doc/connection.ts`, `notifyAdmitted`). The text is read from the server's
+// `/text`, never from the page.
+//
+// The reload is what makes the reconnect's sync the larger document. A socket that reconnects
+// under the same page asks the room only for what its Yjs document lacks - the provider's
+// SyncStep1 carries that document's state vector - and with nobody writing meanwhile the room
+// answers with one SyncStep2 frame: 1,159 bytes on this document, measured on an issue pod with
+// this row's steps less the reload, which a split never touches. A reloaded page's document is
+// empty, so its SyncStep1 asks for everything, and the reply is the whole 406,000 characters:
+// 1,229,593 to 1,261,067 bytes in 20 or 21 frames over four runs there, the reply R11 splits.
+// The row reads that reply's frames off the socket it holds (`documentTransport`'s
+// `onServerFrame`) and holds them to R11's cap, so a server that sent it as one frame fails here
+// by name: on the fork tag `main` pins (v1.55.1-sami.2) it came as one frame of 1,259,887 bytes.
+//
+// In `chromium` and not on a phone: the claim is about the server's frames and the browser's
+// store, neither of which a phone's viewport changes, and an untagged row runs in that project
+// alone, whose rows the lane lists first and so cuts into its early shards rather than the last.
+//
+// SLOW(>=2s): the larger document's seed and its editor's build, which the typing waits for, a
+// reload, and the reconnect's sync of the whole document and the restore after it.
+test(`an unsent edit survives a reconnect to ${documentNames.large}, whose sync comes in frames of at most 64 KiB`, async ({
+  browser,
+}) => {
+  test.setTimeout(900_000);
+  const { artifactId, path } = await seedDocument("specs-large.md", largeDocument);
+  // The last section's prose, so the edit stands on the end of the document, which a reply cut
+  // in document order carries in its last frames.
+  const quote = proseOpening(documentDiagrams.large - 1);
+  const typed = " Kept through the split reconnect.";
+
+  const alice = await asUser(browser, "alice");
+  try {
+    const page = await alice.newPage();
+    let reconnecting = false;
+    const reconnectFrames: Buffer[] = [];
+    const transport = await documentTransport(page, {
+      onServerFrame: (message) => {
+        if (reconnecting && typeof message !== "string") {
+          reconnectFrames.push(message);
+        }
+      },
+    });
+    await page.goto(path);
+    // The build of 406,000 characters is minutes on a busy machine: this is the wait a build
+    // that never ends fails by, not a budget the row spends.
+    await expect(documentEditor(page)).toHaveAttribute("contenteditable", "true", {
+      timeout: 600_000,
+    });
+    await expect(connectedDot(page)).toHaveText("connected");
+
+    // The socket is dropped, not merely held, and its reconnect is held.
+    transport.hold();
+    await transport.sever();
+    await expect(connectedDot(page)).toHaveCount(0);
+    await placeCaret(page, "after", quote);
+    await page.keyboard.type(typed);
+    await waitForPersistedTyping(page, artifactId, typed);
+    expect(
+      (await getArtifactText(artifactId)).markdown,
+      "the server holds the edit before the reconnect: the socket was never down"
+    ).not.toContain(typed);
+
+    await page.reload();
+    reconnecting = true;
+    await transport.release();
+    await expect(connectedDot(page)).toHaveText("connected", { timeout: 240_000 });
+
+    await expect
+      .poll(async () => (await getArtifactText(artifactId)).markdown, {
+        intervals: [500],
+        message: "the edit typed while the socket was down never reached the server's /text",
+        timeout: 240_000,
+      })
+      .toContain(`${quote}${typed}`);
+    const stored = (await getArtifactText(artifactId)).markdown;
+    expect(stored.split(typed).length - 1, "the edit reached the server more than once").toBe(1);
+
+    const reply = replyToTheSyncStep1(reconnectFrames);
+    const largest = Math.max(0, ...reply.map((frame) => frame.bytes));
+    const total = reply.reduce((sum, frame) => sum + frame.bytes, 0);
+    console.log(
+      `R11 the reconnect's sync · ${reply.length} frames, the largest ${largest} bytes, ` +
+        `${total} bytes in all, against a cap of ${syncFrameBytes} a frame.`
+    );
+    expect(
+      reply.at(-1)?.sync,
+      "the reconnect's sync never ended in a SyncStep2, so no reply to the page's SyncStep1 " +
+        "was read"
+    ).toBe(messageYjsSyncStep2);
+    expect(
+      total,
+      "the reconnect's sync carried no more than one frame's worth, so there was nothing to split " +
+        "and this run says nothing about a split reply"
+    ).toBeGreaterThan(syncFrameBytes);
+    expect(
+      largest,
+      "a frame of the reconnect's sync is over 64 KiB: the reply to the page's SyncStep1 was " +
+        "not cut into R11's frames"
+    ).toBeLessThanOrEqual(syncFrameBytes);
   } finally {
     await alice.close();
   }

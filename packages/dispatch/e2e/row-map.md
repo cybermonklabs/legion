@@ -292,7 +292,7 @@ such a row loses is feedback on the pull request itself.
 | `e2e/large-documents-first-screen.e2e.ts` | the first block is the Go server's own draw in the page it sent, and the reads the page holds are the issue's own reads to that server |
 | `e2e/large-documents-long-build.e2e.ts` | its rows read a build the server's sync begins over the document it drew into the page it sent, and the edit row writes as another person on the document socket |
 | `e2e/large-documents-measured.e2e.ts` | its two measurements are taken over a build the server's sync begins, in front of the draw that server sent, and run one row at a time in `iphone-measure-alone` |
-| `e2e/large-documents-reader.e2e.ts` | the document is read in its live editor and the decisions in it are answered against the asks the server records |
+| `e2e/large-documents-reader.e2e.ts` | the document is read in its live editor and the decisions in it are answered against the asks the server records; the reconnect row reads the frames the document's room answers a SyncStep1 with, and an edit's arrival in the server's `/text` |
 | `e2e/layout.e2e.ts` | its two rows read a whole page load on each of the routes that draw a margin, and one of those is a project document, whose margin sits on the live document's room |
 | `e2e/live-socket.e2e.ts` | the `/ws/live` socket's own behaviour |
 | `e2e/live.e2e.ts` | live delivery of writes made after the page loaded |

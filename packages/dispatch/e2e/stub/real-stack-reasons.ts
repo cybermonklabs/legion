@@ -207,7 +207,7 @@ export const realStackReasons: Record<string, string> = {
   "large-documents-measured.e2e.ts":
     "its two measurements are taken over a build the server's sync begins, in front of the draw that server sent, and run one row at a time in `iphone-measure-alone`",
   "large-documents-reader.e2e.ts":
-    "the document is read in its live editor and the decisions in it are answered against the asks the server records",
+    "the document is read in its live editor and the decisions in it are answered against the asks the server records; the reconnect row reads the frames the document's room answers a SyncStep1 with, and an edit's arrival in the server's `/text`",
   "layout.e2e.ts":
     "its two rows read a whole page load on each of the routes that draw a margin, and one of those is a project document, whose margin sits on the live document's room",
   "live-socket.e2e.ts": "the `/ws/live` socket's own behaviour",
