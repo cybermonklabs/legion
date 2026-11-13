@@ -145,11 +145,17 @@ an approval of a document that is not the root's primary one.
        `todo` releases no hold. Post one comment on the issue where the decision was made
        (`dispatch comment --issue <KEY> --body-file -`): `Parked decision read: <ref> by <login>
        gives this tree its next step (<one sentence>). Legion runs it again.`
-     - Any other park, or you cannot read who parked the tree: set nothing, since a decision on the
-       tree is no request to start it: you move a park that is not your own hold only when a
-       person asks you to start it ([Free slots](skill://legion-controller/SKILL.md#free-slots)).
-       Post one comment there: `Parked decision read: <ref> by <login> gives this tree its next
-       step (<one sentence>).`, then the sentence for that park, then `Its architect then starts
+     - Any other park, or you cannot read who parked the tree, when the decision's own words ask
+       Legion to start the tree: that is a person's request to start it
+       ([Free slots](skill://legion-controller/SKILL.md#free-slots)). Set the root to `todo`
+       (`set_status`) and post one comment on the issue where the decision was made:
+       `Parked decision read: <ref> by <login> asks Legion to start this tree. Legion runs it
+       again.`
+     - Any other park, or you cannot read who parked the tree, in any other case: set nothing. A
+       decision that only gives the work a next step is no request to start it.
+       Post one comment on the issue where the decision was made: `Parked decision read: <ref> by
+       <login> gives this tree its next step (<one sentence>).`, then the sentence for that park,
+       then `Its architect then starts
        with this decision.` For a comment that is no reply on an ask, leave out the last sentence:
        the daemon relays no such comment. The sentence for the park:
        - A person's or another session's: `<parker> parked the tree, so it stays parked until they
@@ -197,8 +203,9 @@ an approval of a document that is not the root's primary one.
 
 At every start (step 4 of the start procedure) and on each `tick`:
 
-1. List the parked roots: `dispatch issues --project <PROJECT> --status backlog --label legion
-   --all`, then the same with `--status icebox`. `--all` reads every match in one request, as
+1. List the parked roots:
+   `dispatch issues --project <PROJECT> --status backlog --label legion --all`, then the same
+   with `--status icebox`. `--all` reads every match in one request, as
    [At every start](skill://legion-controller/references/triage.md#at-every-start) reads triage.
    Keep the rows that `read_state` records under `issues` at phase `done`.
 2. For each, read the root (`dispatch read --issue <root>`), then its children

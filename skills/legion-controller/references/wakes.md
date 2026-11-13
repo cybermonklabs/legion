@@ -252,8 +252,6 @@ mark: cite the ask's answer in the park's comment, whose first line is
 Set the root of a park with that mark back to `todo` once you checked that the event has
 happened, a person asks, or a person's decision after the park gives its work a next step, as the
 escalated hold above says.
-For a `todo` after your check, post a comment on the root that cites the park's mark and says
-what you checked.
 
 ## `worker-died on <KEY>` (`role: "architect"`)
 
@@ -281,8 +279,7 @@ mark. Cite the ask's answer in the park's comment, whose first line is
 (`skill://legion-controller/references/parked-decisions.md#deciding`, step 2). Set the root of a
 park with that mark back to `todo` once you checked that the architect's cause is gone, a person
 asks, or a person's decision after the park gives its work a next step, as the escalated hold
-above says. For a `todo` after your check, post a comment on the root that cites the park's mark
-and says what you checked.
+above says.
 
 This re-admission is not the hold release of the `held` wake above. The `backlog` takes the tree
 out of the workflow, so the `todo` after it starts a new generation whatever phase the root stood

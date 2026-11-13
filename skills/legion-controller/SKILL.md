@@ -143,8 +143,7 @@ run now". Move an issue out of `backlog` or `icebox` only on a request or a plan
 names it, only as the list of moves to `todo` below allows, and cite that request. That rule does
 not apply to your own hold, a park whose mark `Parked by Legion while it waits on:` passes the
 test of `skill://legion-controller/references/parked-decisions.md#deciding`, step 2. That tree
-returns to `todo` as the list below says. When you return it on a check of its cause or its event,
-post a comment on the root that cites that mark and says what you checked.
+returns to `todo` as the list below says.
 A free slot is no reason to park an issue, and a full cap is no reason either.
 When a tree holds a slot while it waits on an event outside Legion, that wait is no reason to park
 it either (`skill://legion-controller/references/wakes.md#a-tree-that-waits-on-an-event-outside-legion`).
