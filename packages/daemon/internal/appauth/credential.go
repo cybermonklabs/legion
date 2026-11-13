@@ -23,17 +23,18 @@ var ErrOwnerOutsideProject = errors.New("is not an owner of the project's reposi
 // GitHubCredential is the one function every role's gh files come from (runtime.GitHubCredential)
 // over tokens: a bundle whose directories (GitHubDirs, built from the same description) each hold
 // one lease of the role's App, rendered as gh's hosts.yml and config.yml and named for the App and
-// its expiry so a log can say whose token it wrote. Every lease names the repositories it reaches
-// and no others, so a directory's token is never wider than the directory's own name says:
+// its expiry so a log can say whose token it wrote. Every lease reaches its owner's whole
+// installation at its own permissions, so a directory's name says which lease a command is served,
+// not which repositories the token reaches:
 //
 //   - the directory named for the issue's recorded owner and the directory named for the owner
 //     whose installation serves that repository hold the one write lease for it (Tokens.Token),
 //     and each other repository the mapping serves under the owner that lease is minted for has
 //     a directory of its own, `<owner>/<repo>`, holding a read-only lease (Tokens.ReadToken)
-//     naming that repository alone;
+//     cached under that repository alone;
 //   - each other repository the issue's recorded owner serves beside the one the role writes to
 //     has such a directory under that owner's own name too (bundleDirs' recorded clause). A
-//     write lease names one repository, so where a configured pair resolves the recorded
+//     write lease is minted on one installation, so where a configured pair resolves the recorded
 //     owner's directory writes its issue's repository — the one the owner the pair moved it to
 //     serves — and reaches none of the recorded owner's others, which the project serves and
 //     the role may read; without a directory of their own those repositories are named by no
