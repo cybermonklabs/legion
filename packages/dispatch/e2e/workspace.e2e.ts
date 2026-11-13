@@ -1,6 +1,7 @@
 import { shownAgentRows } from "./agents";
 import { getInbox } from "./api";
 import { askCard, inboxRow } from "./inbox-pane";
+import { awaitSeededInbox } from "./local-instance-support";
 import { navigateInApp } from "./sends";
 import { expect, test } from "./test";
 import { asUser } from "./users";
@@ -15,7 +16,7 @@ test("the seeded workspace fills every surface the person scope opens @pr", asyn
   browser,
 }, testInfo) => {
   const seeded = await seedWorkspace();
-  expect(await getInbox({ login: "alice" })).toHaveLength(seeded.inboxRows);
+  await awaitSeededInbox(seeded.inbox, () => getInbox({ login: "alice" }));
 
   const alice = await asUser(browser, "alice");
   try {
