@@ -18,16 +18,12 @@
 // being built is in `large-documents-reader.e2e.ts`; the draw the server sends, and the reads
 // and the chrome the page holds until the first batch, are in
 // `large-documents-first-screen.e2e.ts`. What the four files share is `large-documents-rows.ts`.
+import { setTimeout as sleep } from "node:timers/promises";
+
 import { expect, type Page, test } from "@playwright/test";
 
-import { getArtifactBlocks } from "./api";
-import {
-  connectedDot,
-  documentEditor,
-  documentTransport,
-  editorBeingBuilt,
-  placeCaret,
-} from "./editor";
+import { getArtifactBlocks, patchIssue } from "./api";
+import { connectedDot, documentEditor, documentTransport, editorBeingBuilt } from "./editor";
 import {
   decisionBlocks,
   documentDiagrams,
@@ -48,9 +44,13 @@ import {
   seedDocument,
   serverDrawnBlocks,
   shortDocument,
+  type TheOtherPersonsPen,
+  type ThePenIsMadeOf,
+  theOtherPersonsPen,
   topLevelBlocks,
 } from "./large-documents-rows";
 import { settledScrollTop } from "./mermaid-helpers";
+import { expectNoneOf } from "./none-of";
 import { asUser } from "./users";
 
 // The two rows below are about the draw that makes the numbers of
@@ -214,6 +214,17 @@ test(`the editor opens ${documentNames.small} with every block of it in the DOM 
   }
 });
 
+// How long the other person rests between two of his words below: the pace a person types a
+// ten-character word at with the `delay: 25` his page used to carry, now that a word costs him
+// one insert rather than ten keystrokes. He writes at a person's pace rather than as fast as
+// this process can for the reason the row gives: a hundred words written in one turn would all
+// be in her document before her socket had finished syncing.
+const aWordApartMs = 250;
+
+/** The pattern the other person's words are stamped by in the two rows below, which is every
+ *  word either of them has him write (`theOtherPersonsPen`). */
+const theirWords = "Pangolin\\d+";
+
 test(`an edit made while ${documentNames.small}'s editor is being built is in it when the build ends @phone`, async ({
   browser,
 }) => {
@@ -221,20 +232,18 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
   // The AHXV6-1-shaped document: what this row needs of a build is that it outlast several of
   // the other person's words, which the row proves itself before it reads anything else. It
   // costs 94 s over this document against 428 s over the larger one on this pod.
-  const { path } = await seedDocument("specs-small.md", smallDocument);
-  const title = documentTitle(documentDiagrams.small);
+  const { artifactId, path } = await seedDocument("specs-small.md", smallDocument);
 
   const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  // The other person holds the document and writes into its first block from this process, not
+  // from a second browser page of the same document: his page's own layout of it was what paced
+  // his words, where an insert and a frame answer whatever her build is doing
+  // (`theOtherPersonsPen`). He is in the room before Alice's socket is let through, so the only
+  // thing left for him to do afterwards is write. Opened inside the row's own `try`, so that a
+  // room which refuses him leaves neither him nor her context behind.
+  let writer: TheOtherPersonsPen | undefined;
   try {
-    // Bob has the document open and his caret in its first block before Alice's socket is let
-    // through, so the only thing left for him to do afterwards is press the keys.
-    const bobPage = await bob.newPage();
-    await bobPage.goto(path);
-    await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
-    await expect(connectedDot(bobPage)).toHaveText("connected");
-    await placeCaret(bobPage, "after", title);
-
+    writer = await theOtherPersonsPen(artifactId, theirWords);
     const page = await alice.newPage();
     await framesOfTheBuild(page);
     const transport = await documentTransport(page, { holding: true });
@@ -247,13 +256,10 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     // boot and her page's own draw above it are setup (`throttleTheCpu`).
     await throttleTheCpu(page);
 
-    // Bob writes a word at a time, from the moment Alice's socket is let through until her
+    // He writes a word at a time, from the moment Alice's socket is let through until her
     // editor is open, so his writing covers the whole of her build rather than a moment the row
-    // has to guess at. He writes at a person's pace (`delay`) rather than as fast as the
-    // protocol allows, for the same reason: a hundred words typed in three seconds would all be
-    // written before her socket had even finished syncing. Which of his words crossed the build
-    // is not something either page can say; that his writing covered one is what the frames
-    // below prove.
+    // has to guess at. Which of his words crossed the build is not something either side can
+    // say; that his writing covered one is what the frames below prove.
     await transport.release();
     const opened = documentEditor(page)
       .waitFor({ state: "visible", timeout: 240_000 })
@@ -265,26 +271,88 @@ test(`an edit made while ${documentNames.small}'s editor is being built is in it
     });
     while (!open && written.length < 120) {
       const word = `Pangolin${written.length}`;
-      await bobPage.keyboard.type(` ${word}`, { delay: 25 });
+      writer.write(word);
       written.push(word);
+      // His pace between words, not a wait for a state: what this row needs is that his writing
+      // be spread over the whole of her build rather than be in her document before her socket
+      // has synced, and a person's quarter of a second a word is what spreads it
+      // (`aWordApartMs`). Her build is waited for by `opened`, which ends this loop.
+      await sleep(aWordApartMs);
     }
     await opened;
     expect(written.length).toBeGreaterThan(3);
 
-    // Alice's editor holds every word Bob wrote while it was being built, in the block he wrote
+    // Alice's editor holds every word he wrote while it was being built, in the block he wrote
     // them in.
     await expect(documentEditor(page)).toContainText(written.join(" "), { timeout: 240_000 });
     const whole = await blocksBuilt(page);
     const frames = await page.evaluate(() => window.__blocksBuilt ?? []);
     expect(
       frames.filter((held) => held > 0 && held < whole),
-      "no frame was drawn holding part of the document, so Bob's words crossed no build and " +
+      "no frame was drawn holding part of the document, so his words crossed no build and " +
         "this run says nothing about an edit that does"
     ).not.toEqual([]);
   } finally {
-    await bob.close();
+    writer?.close();
     await alice.close();
   }
+});
+
+// How long the row below waits for a reconnect that must not come: a provider left alive after
+// a refusal reconnects on its own delay, which is 1,000 ms from the first attempt and climbs
+// (`HocuspocusProviderWebsocket`'s `delay`), so a second with no socket in it is a reconnect
+// loop that is not running rather than one that is merely between attempts.
+const noReconnectInMs = 1_000;
+
+// What the other person's pen leaves behind when the document's room will not have him as a
+// writer: nothing at all. The rows above and in `large-documents-measured.e2e.ts` hold him
+// through a `close` he only returns once he is admitted, so the refusal is the one path where
+// nobody else can drop him - and a provider left on it reconnects to that room for the rest of
+// the worker's life, holding its socket and its copy of the document beside every row that
+// follows (`theOtherPersonsPen`).
+//
+// The refusal this row arranges is a closed issue, which admits every writer read-only
+// (`schemaReadOnly`, `docs/socket_admission.go`) and is one of the two the pen answers. It
+// needs no browser: what it reads is what the pen is made of, which the pen hands it as it
+// makes it.
+test("the other person's pen drops its socket and its copy when the room refuses him @phone", async () => {
+  const { artifactId, issueKey } = await seedDocument("refused-writer.md", shortDocument);
+  await patchIssue(issueKey, { status: "done" });
+
+  let parts: ThePenIsMadeOf | undefined;
+  await expect(
+    theOtherPersonsPen(artifactId, theirWords, (made) => {
+      parts = made;
+    })
+  ).rejects.toThrow(/read-only/);
+  expect(
+    parts,
+    "the pen never made the provider, socket and document this row reads"
+  ).toBeDefined();
+
+  // His copy of the document is gone, and so is the socket that carried it: no web socket left
+  // open and nothing that would open another.
+  expect(parts?.doc.isDestroyed, "the refused writer's copy of the document is still alive").toBe(
+    true
+  );
+  expect(parts?.socket.webSocket, "the refused writer's web socket is still open").toBeNull();
+  expect(
+    parts?.socket.shouldConnect,
+    "the refused writer's socket still means to connect, so it reconnects to the room it was " +
+      "refused by"
+  ).toBe(false);
+  expect(
+    parts?.socket.configuration.providerMap.size,
+    "the refused writer's provider is still attached to its socket"
+  ).toBe(0);
+
+  // And it stays gone: a provider that was left alive would have opened the next socket by now.
+  await sleep(noReconnectInMs);
+  expect(
+    parts?.socket.webSocket,
+    `the refused writer opened another socket within ${noReconnectInMs} ms: his reconnect loop ` +
+      "is running beside the rows after this one"
+  ).toBeNull();
 });
 
 /**
@@ -373,21 +441,25 @@ test("every block of a document is on the screen exactly once as its editor is b
     await transport.release();
     await expect(documentEditor(page)).toBeVisible({ timeout: 480_000 });
     const frames = (await page.evaluate(() => window.__blockFrames ?? [])).slice(drewAt);
-    expect(frames.length).toBeGreaterThan(1);
-
     // Never twice: no frame held one block id on two surfaces at once, which is what a build
-    // that revealed its blocks without taking the draw's copies away would show.
-    expect(
-      frames.filter((frame) => frame.twice.length > 0).map((frame) => frame.twice),
-      "a frame held a block of the document twice: the editor built it and the page's own draw " +
-        "still held it"
-    ).toEqual([]);
+    // that revealed its blocks without taking the draw's copies away would show. The floor each
+    // clause carries is the frames of the build itself - a reading that caught one frame or
+    // none caught no build, and "no frame held a block twice" is then true of what it never
+    // watched (dispatch://INFRA-341, the pairing every universal clause of a check takes).
+    expectNoneOf(frames, {
+      amongAtLeast: 2,
+      are: (frame) => frame.twice.length > 0,
+      matched: "frames that held a block of the document twice, the editor's and the draw's",
+      measured: "frames drawn while the editor was being built",
+    });
     // And never missing: every frame held the whole document, whichever surface each block was
     // on, so no block of it was off the screen while the editor was being built.
-    expect(
-      frames.filter((frame) => frame.blocks !== whole).map((frame) => frame.blocks),
-      `a frame held something other than the document's ${whole} blocks`
-    ).toEqual([]);
+    expectNoneOf(frames, {
+      amongAtLeast: 2,
+      are: (frame) => frame.blocks !== whole,
+      matched: `frames that held something other than the document's ${whole} blocks`,
+      measured: "frames drawn while the editor was being built",
+    });
     // And the build really was in batches behind that count: frames were drawn with part of the
     // document in the editor and the rest still in the page's own draw.
     expect(
@@ -528,20 +600,26 @@ test(`each decision card of ${documentNames.small} is drawn in a task of its own
 
     const drawn = await page.evaluate(() => window.__drawnInTasks ?? []);
     const drewACard = drawn.filter((task) => task.cards > 0);
-    expect(
-      drewACard.length,
-      `the page drew its ${decisionBlocks} decision cards over ${drewACard.length} task(s): ` +
-        "a card drawn in the same task as another is a freeze the reader feels as one"
-    ).toBeGreaterThanOrEqual(decisionBlocks);
-    expect(
-      drewACard.filter((task) => task.cards > 1),
-      "one task drew more than one decision card"
-    ).toEqual([]);
-    expect(
-      drawn.filter((task) => task.cards > 0 && task.blocks !== 0),
-      "one task both changed the editor's own blocks and drew a decision card: the build's " +
-        "batch and the card's first draw are two tasks, never one"
-    ).toEqual([]);
+    // A card drawn in the same task as another is a freeze the reader feels as one, so no task
+    // drew two - over the tasks that drew the document's own decision cards, of which there are
+    // at least as many as the document has decisions: a row that measured fewer measured a page
+    // that drew its cards somewhere this record never saw, and "no task drew two" is then true
+    // of what it never watched (dispatch://INFRA-341, the pairing every universal clause of a
+    // check takes).
+    expectNoneOf(drewACard, {
+      amongAtLeast: decisionBlocks,
+      are: (task) => task.cards > 1,
+      matched: "tasks that drew more than one decision card",
+      measured: "tasks of the page that drew a decision card",
+    });
+    expectNoneOf(drawn, {
+      amongAtLeast: decisionBlocks,
+      are: (task) => task.cards > 0 && task.blocks !== 0,
+      matched:
+        "tasks that both changed the editor's own blocks and drew a decision card: the " +
+        "build's batch and the card's first draw are two tasks, never one",
+      measured: "tasks of the page that drew anything",
+    });
   } finally {
     await alice.close();
   }

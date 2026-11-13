@@ -928,6 +928,12 @@ test("the chrome arriving moves the document's own first block by no pixels @pho
     // header, which is the skeleton's own `header` while the socket is held
     // (dispatch://INFRA-341, the pairing every universal clause of a check takes, as the row
     // above does at its own read).
+    //
+    // The strip's box is named before the count and not left to it: this row is `@phone`, where
+    // the shell draws a `header` of its own beside the issue's (`web/src/app.tsx`), so two boxes
+    // are in the page whether or not `issue-tabs-box` is one of them and the floor below is met
+    // by a strip that was renamed or never mounted.
+    await expect(page.getByTestId("issue-tabs-box")).toBeAttached();
     const chrome = await page.evaluate(() =>
       [...document.querySelectorAll('[data-testid="issue-tabs-box"], header')].map((box) => ({
         name: box.getAttribute("data-testid") ?? box.tagName.toLowerCase(),

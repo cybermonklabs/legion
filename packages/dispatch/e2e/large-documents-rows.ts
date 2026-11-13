@@ -1,7 +1,8 @@
 // What the rows of the four `large-documents-*.e2e.ts` files share: the seed every one of them
-// writes, the readings the page leaves on `window` for them, and the three surfaces a block of
-// the document can stand on. A helper here is one more than one of those files needs; a helper
-// one file needs stays in that file.
+// writes, the readings the page leaves on `window` for them, the three surfaces a block of the
+// document can stand on, and the other person who writes into the document while a reader's
+// editor is built (`theOtherPersonsPen`). A helper here is one more than one of those files
+// needs; a helper one file needs stays in that file.
 //
 // They were one file until the `iphone` half of it cost a browser shard 610 s of a step that is
 // given 540 (dispatch://INFRA-341, run 42794865122's `shard (4)`), and Playwright hands a
@@ -15,9 +16,20 @@
 //
 // The documents themselves are `large-documents.ts`, and what a page announces about its own
 // draw and its build is `large-documents-page.ts`.
+import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { expect, type Page } from "@playwright/test";
+import * as Y from "yjs";
 
-import { createIssue, createIssueArtifact, createProject, getArtifactBlocks } from "./api";
+import { FRAGMENT_NAME } from "../web/src/features/doc/roots";
+import {
+  baseUrl,
+  createIssue,
+  createIssueArtifact,
+  createProject,
+  getArtifactBlocks,
+  getBlockSchema,
+  sessionCookie,
+} from "./api";
 import { sql } from "./psql";
 import { resetDatabase } from "./seed";
 /** What one animation frame of the build held: how many of the document's top-level blocks
@@ -307,3 +319,179 @@ export async function topLevelBlocks(artifactId: string): Promise<number> {
 /** A document of one short section, so these rows seed in a moment: what they read is the
  *  order the page does things in, which no length of document changes. */
 export const shortDocument = "# The lease ledger\n\nThe paragraph a reader meets first.\n";
+
+/** The other person, writing into the document from this process. */
+export interface TheOtherPersonsPen {
+  /** Leaves the document's room and drops his copy of it. */
+  close(): void;
+  /** When each word left, by the word: `Date.now()` as the frame carrying it went out on his
+   *  socket, which is the same machine's clock her page stamps its own serving on. */
+  readonly sent: Readonly<Record<string, number>>;
+  /** Writes one word into the document, as one insert and so one frame on her socket. */
+  write(word: string): void;
+}
+
+/** What a pen is made of, for the one row that reads them: the probe of
+ *  `large-documents-build.e2e.ts` holds these over a room that refuses him and reads that each
+ *  is gone. Nothing else is given them - a row that writes uses `write` and `close`. */
+export interface ThePenIsMadeOf {
+  readonly doc: Y.Doc;
+  readonly provider: HocuspocusProvider;
+  readonly socket: HocuspocusProviderWebsocket;
+}
+
+/**
+ * The other person as a Node client of the document's own websocket: he joins her room, writes
+ * a word when her build asks for one, and stamps each word as the frame carrying it leaves
+ * him.
+ *
+ * **Why he is not a second page.** He was one until this head, and what that measured was the
+ * harness. His page held the same document hers does - 406,000 characters in the rows that
+ * seed the larger one - so one of his words cost a layout of all of it, 1.2 s on this pod and
+ * 232 ms on CI's own `iphone-alone` runner, and that cost, never her build, is what capped the
+ * words a window could carry: CI's leg read one word against a floor of two and failed on its
+ * own premise (run 43265368727). His speed was an artifact of the instrument and no fact about
+ * her page, so the instrument is what moved. Everything her page does, the sent-time
+ * population, the turn-exact reading and the floor are what they were, and a writer whose word
+ * is an insert and a frame answers every step her build crosses, which puts more arriving work
+ * inside that build than a browser peer could: a page that starves its socket fails harder.
+ *
+ * It is this module's, rather than one file's, because three rows write as the other person
+ * now - the timed row of `large-documents-measured.e2e.ts`, its edit row and the edit row of
+ * `large-documents-build.e2e.ts` - and a second browser page of the same document is the
+ * expensive instrument for each of them. (`large-documents-reader.e2e.ts`'s two people need
+ * the editor's own keymaps, Enter and Backspace, and keep their page.)
+ *
+ * **How he joins.** The stack her page connects with (`web/src/features/doc/connection.ts`): a
+ * `HocuspocusProvider` over a `Y.Doc` of his own, on `/ws/doc/<artifactId>`, carrying the
+ * `schema_version` the server itself answers (`getBlockSchema`) as that parameter and as its
+ * token, since a client presenting any other version is admitted read-only (`schemaReadOnly`,
+ * `docs/socket_admission.go`) and a writer who cannot write would leave a row reading a window
+ * no word ever reached. The room takes a signed-in person's cookie and no bearer at all
+ * (INFRA-264), so he carries bob's, in the header Node's own `WebSocket` takes where the
+ * browser's takes sub-protocols - which is the whole of the polyfill below. He is ready once
+ * the room has authenticated him and his copy has synced, which is the admission
+ * `connection.ts` itself waits for, so he holds the document before her page loads.
+ *
+ * **What a refused admission leaves.** Nothing. A room that admits him read-only - a closed
+ * issue, a schema version that is not the server's - or that refuses him outright is the one
+ * path on which he never returns a `close` for his caller to call, so the three things he is
+ * made of are destroyed here before the refusal is rethrown. Left alive, his provider would go
+ * on reconnecting to that room beside every row that follows, on a socket and a `Y.Doc` nobody
+ * holds a name for.
+ *
+ * **How he writes a word.** One insert at the end of the document's first block, where the rows
+ * used to put his caret (`placeCaret(bobPage, "after", title)`): one Yjs transaction, so one
+ * update, so one frame on her socket carrying that word's bytes and nothing else's.
+ *
+ * **How a row knows when each word was sent.** The frame is stamped as it goes out, in the
+ * `send` his socket makes, which is where his page stamped it too. This is the half of a
+ * socket message's wait the reader's own page cannot hold: the frame reaches the server and
+ * comes back down her socket in a millisecond or two on one machine, so the stamp is her
+ * frame arriving to within that, and the wait read against it carries the relay with it -
+ * the direction that cannot flatter her page.
+ *
+ * `theirWords` is the pattern his words are stamped by; `made` is handed what he is made of as
+ * he is made, for the probe row that reads what a refusal leaves.
+ */
+export async function theOtherPersonsPen(
+  artifactId: string,
+  theirWords: string,
+  made?: (parts: ThePenIsMadeOf) => void
+): Promise<TheOtherPersonsPen> {
+  const cookie = await sessionCookie("bob");
+  const { version } = await getBlockSchema();
+  const sent: Record<string, number> = {};
+  const theirs = new RegExp(theirWords, "g");
+  const read = new TextDecoder();
+  const his = new Y.Doc();
+  const socket = new HocuspocusProviderWebsocket({
+    WebSocketPolyfill: class extends WebSocket {
+      constructor(url: string | URL) {
+        // Node's WebSocket takes its options where the browser's takes sub-protocols, and the
+        // document's room admits a signed-in person's cookie and nothing else.
+        super(url, {
+          headers: { Cookie: `${cookie.name}=${cookie.value}` },
+        } as unknown as string[]);
+      }
+
+      override send(data: Parameters<WebSocket["send"]>[0]): void {
+        if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
+          const sentAt = Date.now();
+          for (const [word] of read.decode(data).matchAll(theirs)) {
+            sent[word] ??= sentAt;
+          }
+        }
+        super.send(data);
+      }
+    },
+    connect: false,
+    parameters: { schema_version: version },
+    url: `${baseUrl.replace(/^http/, "ws")}/ws/doc/${encodeURIComponent(artifactId)}`,
+  });
+  const admitted = Promise.withResolvers<void>();
+  let provider: HocuspocusProvider;
+  // Authenticated and synced, whichever comes last, which is the admission the page's own
+  // connection announces a document on: the room queues its SyncStep2 before it reads the
+  // socket's token, so a writer that has both holds the document the reader is about to build.
+  const admit = () => {
+    if (provider.isAuthenticated && provider.isSynced) {
+      admitted.resolve();
+    }
+  };
+  provider = new HocuspocusProvider({
+    document: his,
+    name: artifactId,
+    onAuthenticated: () => {
+      // The scope the room admitted him on, as the page reads it (`isSchemaReadOnly`): a
+      // read-only admission is a closed issue or a schema version that is not the server's,
+      // and either leaves a window no word of his could reach.
+      if (provider.authorizedScope === "readonly") {
+        admitted.reject(
+          new Error(
+            `the document's room admitted this writer read-only at schema version ${version}`
+          )
+        );
+        return;
+      }
+      admit();
+    },
+    onAuthenticationFailed: ({ reason }) => {
+      admitted.reject(new Error(`the document's room refused this writer: ${reason}`));
+    },
+    onSynced: admit,
+    // His socket is his own, as each document's is the page's: destroying him closes it rather
+    // than leaving its connection checker and its reconnect behind.
+    preserveConnection: false,
+    token: String(version),
+    websocketProvider: socket,
+  });
+  made?.({ doc: his, provider, socket });
+  const dropHim = () => {
+    provider.destroy();
+    socket.destroy();
+    his.destroy();
+  };
+  void socket.connect();
+  try {
+    await admitted.promise;
+  } catch (refused) {
+    // He is the caller's to close only once he is admitted, so this is the one path where
+    // nobody else can: a provider left here reconnects to that room for the rest of the worker's
+    // life, holding its socket and his copy of the document beside every row that follows.
+    dropHim();
+    throw refused;
+  }
+  return {
+    close: dropHim,
+    sent,
+    write: (word: string) => {
+      const block = his.getXmlFragment(FRAGMENT_NAME).get(0);
+      const text = block instanceof Y.XmlElement ? block.get(0) : undefined;
+      if (!(text instanceof Y.XmlText)) {
+        throw new Error("the document's first block is not text for the other person to write");
+      }
+      text.insert(text.length, ` ${word}`);
+    },
+  };
+}

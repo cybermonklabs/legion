@@ -52,13 +52,10 @@
 // and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
 // `large-documents-reader.e2e.ts` and `large-documents-first-screen.e2e.ts`, and what the four
 // files share is `large-documents-rows.ts`.
-import { HocuspocusProvider, HocuspocusProviderWebsocket } from "@hocuspocus/provider";
 import { type Browser, expect, type Page, test } from "@playwright/test";
-import * as Y from "yjs";
 
-import { FRAGMENT_NAME } from "../web/src/features/doc/roots";
-import { baseUrl, getArtifactText, getBlockSchema, listIssueAsks, sessionCookie } from "./api";
-import { connectedDot, documentEditor, documentTransport, placeCaret } from "./editor";
+import { getArtifactText, listIssueAsks } from "./api";
+import { documentEditor, documentTransport } from "./editor";
 import {
   decisionBlockId,
   diagramsIn,
@@ -88,6 +85,8 @@ import {
   type ServedWord,
   seedDocument,
   type TheBuildRan,
+  type TheOtherPersonsPen,
+  theOtherPersonsPen,
   topLevelBlocks,
 } from "./large-documents-rows";
 import { expectNoneOf } from "./none-of";
@@ -763,146 +762,6 @@ async function whatTheBuildServes(
   };
 }
 
-/** The other person, writing into the document from this process. */
-interface TheOtherPersonsPen {
-  /** Leaves the document's room and drops his copy of it. */
-  close(): void;
-  /** When each word left, by the word: `Date.now()` as the frame carrying it went out on his
-   *  socket, which is the same machine's clock her page stamps its own serving on. */
-  readonly sent: Readonly<Record<string, number>>;
-  /** Writes one word into the document, as one insert and so one frame on her socket. */
-  write(word: string): void;
-}
-
-/**
- * The other person as a Node client of the document's own websocket: he joins her room, writes
- * a word when her build asks for one, and stamps each word as the frame carrying it leaves
- * him.
- *
- * **Why he is not a second page any more.** He was one until this head, and what that measured
- * was the harness. His page held the same 406,000-character document hers does, so one of his
- * words cost a layout of all of it - 1.2 s on this pod, 232 ms on CI's own `iphone-alone`
- * runner - and that cost, never her build, is what capped the words the window could carry:
- * CI's leg read one word against a floor of two and failed on its own premise
- * (run 43265368727). His speed was an artifact of the instrument and no fact about her page,
- * so the instrument is what moved. Everything her page does, the sent-time population, the
- * turn-exact reading and the floor are what they were, and a writer whose word is an insert
- * and a frame answers every step her build crosses, which puts more arriving work inside
- * that build than a browser peer could: a page that starves its socket fails harder.
- *
- * **How he joins.** The stack her page connects with (`web/src/features/doc/connection.ts`): a
- * `HocuspocusProvider` over a `Y.Doc` of his own, on `/ws/doc/<artifactId>`, carrying the
- * `schema_version` the server itself answers (`getBlockSchema`) as that parameter and as its
- * token, since a client presenting any other version is admitted read-only (`schemaReadOnly`,
- * `docs/socket_admission.go`) and a writer who cannot write would leave this row reading a
- * window no word ever reached. The room takes a signed-in person's cookie and no bearer at all
- * (INFRA-264), so he carries bob's, in the header Node's own `WebSocket` takes where the
- * browser's takes sub-protocols - which is the whole of the polyfill below. He is ready once
- * the room has authenticated him and his copy has synced, which is the admission
- * `connection.ts` itself waits for, so he holds the document before her page loads.
- *
- * **How he writes a word.** One insert at the end of the document's first block, where the
- * row used to put his caret (`placeCaret(bobPage, "after", title)`): one Yjs transaction, so
- * one update, so one frame on her socket carrying that word's bytes and nothing else's.
- *
- * **How the row knows when each word was sent.** The frame is stamped as it goes out, in the
- * `send` his socket makes, which is where his page stamped it too. This is the half of a
- * socket message's wait the reader's own page cannot hold: the frame reaches the server and
- * comes back down her socket in a millisecond or two on one machine, so the stamp is her
- * frame arriving to within that, and the wait read against it carries the relay with it -
- * the direction that cannot flatter her page.
- */
-async function theOtherPersonsPen(
-  artifactId: string,
-  theirWords: string
-): Promise<TheOtherPersonsPen> {
-  const cookie = await sessionCookie("bob");
-  const { version } = await getBlockSchema();
-  const sent: Record<string, number> = {};
-  const theirs = new RegExp(theirWords, "g");
-  const read = new TextDecoder();
-  const his = new Y.Doc();
-  const socket = new HocuspocusProviderWebsocket({
-    WebSocketPolyfill: class extends WebSocket {
-      constructor(url: string | URL) {
-        // Node's WebSocket takes its options where the browser's takes sub-protocols, and the
-        // document's room admits a signed-in person's cookie and nothing else.
-        super(url, {
-          headers: { Cookie: `${cookie.name}=${cookie.value}` },
-        } as unknown as string[]);
-      }
-
-      override send(data: Parameters<WebSocket["send"]>[0]): void {
-        if (data instanceof ArrayBuffer || ArrayBuffer.isView(data)) {
-          const sentAt = Date.now();
-          for (const [word] of read.decode(data).matchAll(theirs)) {
-            sent[word] ??= sentAt;
-          }
-        }
-        super.send(data);
-      }
-    },
-    connect: false,
-    parameters: { schema_version: version },
-    url: `${baseUrl.replace(/^http/, "ws")}/ws/doc/${encodeURIComponent(artifactId)}`,
-  });
-  const admitted = Promise.withResolvers<void>();
-  let provider: HocuspocusProvider;
-  // Authenticated and synced, whichever comes last, which is the admission the page's own
-  // connection announces a document on: the room queues its SyncStep2 before it reads the
-  // socket's token, so a writer that has both holds the document the reader is about to build.
-  const admit = () => {
-    if (provider.isAuthenticated && provider.isSynced) {
-      admitted.resolve();
-    }
-  };
-  provider = new HocuspocusProvider({
-    document: his,
-    name: artifactId,
-    onAuthenticated: () => {
-      // The scope the room admitted him on, as the page reads it (`isSchemaReadOnly`): a
-      // read-only admission is a closed issue or a schema version that is not the server's,
-      // and either leaves a window no word of his could reach.
-      if (provider.authorizedScope === "readonly") {
-        admitted.reject(
-          new Error(
-            `the document's room admitted this writer read-only at schema version ${version}`
-          )
-        );
-        return;
-      }
-      admit();
-    },
-    onAuthenticationFailed: ({ reason }) => {
-      admitted.reject(new Error(`the document's room refused this writer: ${reason}`));
-    },
-    onSynced: admit,
-    // His socket is his own, as each document's is the page's: destroying him closes it rather
-    // than leaving its connection checker and its reconnect behind.
-    preserveConnection: false,
-    token: String(version),
-    websocketProvider: socket,
-  });
-  void socket.connect();
-  await admitted.promise;
-  return {
-    close: () => {
-      provider.destroy();
-      socket.destroy();
-      his.destroy();
-    },
-    sent,
-    write: (word: string) => {
-      const block = his.getXmlFragment(FRAGMENT_NAME).get(0);
-      const text = block instanceof Y.XmlElement ? block.get(0) : undefined;
-      if (!(text instanceof Y.XmlText)) {
-        throw new Error("the document's first block is not text for the other person to write");
-      }
-      text.insert(text.length, ` ${word}`);
-    },
-  };
-}
-
 /** One word the other person wrote: when he sent it and when the reader's page served the
  *  frame carrying it, both on the one machine's wall clock and both printed, and the turn of
  *  the reader's page's own loop it was served in, which is what the row reads it by.
@@ -1032,8 +891,13 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
   // He is in the document's room, holding the copy she is about to build, before her page
   // loads: the only thing left for him to do while she builds is write, and every word he
   // writes is a frame on her socket (`theOtherPersonsPen`).
-  const writer = await theOtherPersonsPen(artifactId, theirWordsPattern);
+  //
+  // Opened inside the row's own `try`, so that a room which refuses him - a read-only scope, a
+  // refused authentication - leaves neither him nor her context behind: he drops what he is
+  // made of before he throws, and the `finally` below closes her.
+  let writer: TheOtherPersonsPen | undefined;
   try {
+    writer = await theOtherPersonsPen(artifactId, theirWordsPattern);
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
@@ -1341,7 +1205,7 @@ test(`a page timer and a socket message are served while ${documentNames.large}'
         "past the window"
     ).toEqual([]);
   } finally {
-    writer.close();
+    writer?.close();
     await alice.close();
   }
 });
@@ -1702,10 +1566,16 @@ test(`a decision answered while ${documentNames.large}'s editor is built goes ou
     );
 
     expect(pressed, "the page never pressed the card's Answer button").toBeDefined();
-    // What the press was made in is construction rather than a reading, so the line above
-    // prints it and nothing here asserts it: the page presses from the first batch's own
-    // signal, in that batch's task (`theReaderAnswersAtTheFirstBatch`), so the editor holds
-    // that batch's blocks and is not yet named whenever the press happens at all.
+    // And the press was made during a build rather than after one. That the editor was not yet
+    // named is construction - the page presses from the first batch's own signal, in that
+    // batch's task (`theReaderAnswersAtTheFirstBatch`) - but "not yet named" is not "more
+    // blocks to come": a first batch holding the whole document meets it, and over such a run
+    // the half second below would be a reading of an idle page. What the build still owed is
+    // the document's own blocks against the ones the editor held at the press.
+    expect(
+      pressed?.built ?? whole,
+      "the first batch was the whole document, so this press was not made during a build"
+    ).toBeLessThan(whole);
     expect(
       Math.round(leftAfterMs),
       `the reader's answer took ${Math.round(leftAfterMs)} ms to leave the page after the ` +
@@ -1748,9 +1618,12 @@ async function whenTheirWordLands(page: Page, word: string): Promise<void> {
 }
 
 // The larger document, as the row above it: what this one needs of a build is that it outlast
-// a keystroke driven from here and the socket message that carries it. Over the AHXV6-1-shaped
+// one word of another person's and the socket message that carries it. Over the AHXV6-1-shaped
 // document the word reached the editor with 1,343 of its 1,436 blocks built on this pod, which
-// leaves the row nothing to fail on, against 2,111 of 7,036 over the larger one.
+// leaves the row nothing to fail on, against 2,111 of 7,036 over the larger one when the word
+// was typed into a second browser page and 53 of 7,036 now that it is an insert from this
+// process (`theOtherPersonsPen`): the page the word used to be typed into spent its own second
+// or more laying out the same document before it could send one.
 test(`another person's edit reaches ${documentNames.large} while its editor is built @phone`, async ({
   browser,
 }) => {
@@ -1760,26 +1633,30 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
   const word = "Pangolin.";
 
   const alice = await asUser(browser, "alice");
-  const bob = await asUser(browser, "bob");
+  // The other person writes from this process rather than from a second browser page of the
+  // same 406,000 characters: his word is one insert and one frame on her socket, where his page
+  // spent a second or more laying the whole document out for it, which is what the row would
+  // have been measuring instead of her build (`theOtherPersonsPen`). He is in the room before
+  // her page loads, so the only thing left for him to do while she builds is write. The pattern
+  // he stamps his words by is this one word, with the stop in it escaped.
+  //
+  // Opened inside the row's own `try`, as the row above opens him: a room that refuses him
+  // leaves neither him nor her context behind.
+  let writer: TheOtherPersonsPen | undefined;
   try {
-    const bobPage = await bob.newPage();
-    await bobPage.goto(path);
-    await expect(documentEditor(bobPage)).toContainText(title, { timeout: 240_000 });
-    await expect(connectedDot(bobPage)).toHaveText("connected");
-    await placeCaret(bobPage, "after", title);
-
+    writer = await theOtherPersonsPen(artifactId, word.replace(/\./g, "\\."));
     const page = await alice.newPage();
     await throttleTheCpu(page);
     const reached = await watchTheDocument(page);
     await whenTheirWordLands(page, word);
     await page.goto(path, { waitUntil: "commit" });
 
-    // Bob writes one word into the document's first block, which Alice's first batch has
-    // already built, the moment she has that batch: it is in her Yjs document before his
-    // keystroke is over, and the only thing between it and her editor is the socket message
-    // that carries it.
+    // He writes one word into the document's first block, which Alice's first batch has
+    // already built, the moment she has that batch: it is in her Yjs document as the insert
+    // returns, and the only thing between it and her editor is the socket message that carries
+    // it.
     await reached.firstBlock;
-    await bobPage.keyboard.type(` ${word}`, { delay: 25 });
+    writer.write(word);
 
     const openedMs = await reached.editorOpened;
     const whole = await blocksBuilt(page);
@@ -1809,7 +1686,7 @@ test(`another person's edit reaches ${documentNames.large} while its editor is b
     const { markdown } = await getArtifactText(artifactId);
     expect(markdown).toContain(`# ${title} ${word}`);
   } finally {
-    await bob.close();
+    writer?.close();
     await alice.close();
   }
 });

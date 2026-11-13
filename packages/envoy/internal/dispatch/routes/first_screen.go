@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"time"
@@ -190,6 +191,21 @@ func (r *router) startDraw(req *http.Request, address api.FirstScreenAddress) (d
 	go func() {
 		defer endDraw()
 		defer func() { <-firstScreenDrawSlots }()
+		// A panic in the draw fails this page view and nothing else. The draw runs on a
+		// goroutine of its own, where an unrecovered panic takes the process down with it and
+		// every reader of this server with it, and what it reaches recovers none of its own:
+		// ygo's ApplyUpdateV1 and pmdoc.FirstScreenHTML both panic outward, where every other
+		// off-request decode in the documents package recovers (docs/read_cache.go's
+		// foldDocument, docs/websocket.go's LoadDoc, pmdoc/panic.go). Nothing is sent on `drawn`,
+		// so the page waits out its budget and sends the shell, which is what a refused draw and
+		// a slow one send.
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				slog.Error("dispatch: the first-screen draw panicked",
+					"issue", address.IssueKey, "slug", address.Slug,
+					"panic", recovered, "stack", string(debug.Stack()))
+			}
+		}()
 		drawn <- r.firstScreen(docs.WithoutRecoveryWait(drawing), req, address)
 	}()
 	return drawn, true

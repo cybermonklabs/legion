@@ -3733,7 +3733,13 @@ func (s *Service) awaitRoomRecovery(ctx context.Context, room string) error {
 		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
 	}
 	if ctx.Value(withoutRecoveryWait{}) != nil {
-		// The caller logs what it went without, which says more than the room alone.
+		// As the transaction's refusal above: a room that stays failed is otherwise visible only
+		// in its callers' 503s, and a caller marked WithoutRecoveryWait answers without one at
+		// all - the first screen's draw sends the page its shell and says nothing
+		// (routes/first_screen.go), an anchor is left off the response it decorates - so this is
+		// where the failure reaches a log, with the room and the cause it was refused for.
+		slog.Warn("dispatch: refuse an operation that waits for no failed document room's recovery",
+			"room", room, "error", failure)
 		return fmt.Errorf("%w: %w", ErrServiceUnavailable, failure)
 	}
 	select {

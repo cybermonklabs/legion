@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -695,6 +696,88 @@ func TestADetachedDrawEndsByItself(t *testing.T) {
 	case <-time.After(firstScreenDrawCap + 30*time.Second):
 		t.Fatalf("a draw the page gave up on was still running %s later: nothing can end it, and it holds its slot and a rooms-pool connection for the life of the process",
 			firstScreenDrawCap+30*time.Second)
+	}
+}
+
+// theDrawnDocument is what the draws of the row below hand the page when they do not panic.
+const theDrawnDocument = `<p data-block-id="b-1">The document</p>`
+
+// aBudgetADrawWins is what the row below gives a draw that answers at once: long enough that a
+// draw which returns an answer always reaches the page, so the shell the panicking draw leaves
+// is the panic's doing and not a budget no draw can win. The row waits it out once, for the one
+// page view whose draw panics.
+const aBudgetADrawWins = time.Second
+
+// A draw that panics costs this page view its document and nothing else. The draw runs on a
+// goroutine of its own, where an unrecovered panic takes the process down - every reader of this
+// server, not the one reader whose document could not be drawn - and the draw recovers none of
+// its own on the way: it reaches ygo's ApplyUpdateV1 and pmdoc.FirstScreenHTML, and neither
+// recovers, where every other off-request decode in the documents package does
+// (docs/read_cache.go's foldDocument, docs/websocket.go's LoadDoc, pmdoc/panic.go).
+//
+// So this row panics the draw and reads what is left: the page goes out as the shell when the
+// budget is spent, the draw's slot comes back, and the server answers the next reader with a
+// document. A control draws first under the same budget, so the shell below is the panic's and
+// not the budget's. Without the recover the panic ends the test binary, and every row of this
+// package goes with it, which is the process this row is about.
+func TestADrawThatPanicsSendsTheShellAndTheServerLivesOn(t *testing.T) {
+	var panicking atomic.Bool
+	panicked := make(chan struct{}, 1)
+	page, path := pageWithADraw(t, aBudgetADrawWins,
+		func(context.Context, *http.Request, api.FirstScreenAddress) api.FirstScreen {
+			if panicking.Load() {
+				panicked <- struct{}{}
+				panic("the document's history is not a document")
+			}
+			return api.FirstScreen{Drawn: true, HTML: theDrawnDocument}
+		})
+	servePage := func() *httptest.ResponseRecorder {
+		t.Helper()
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodGet, "http://dispatch.test"+theDocumentAddress, nil)
+		page.servePageForDocument(response, request, path, theDocumentAddress)
+		return response
+	}
+
+	if drew := servePage().Body.String(); !strings.Contains(drew, theDrawnDocument) {
+		t.Fatalf("a draw that answers did not reach the page to begin with, so this budget proves nothing:\n%s", drew)
+	}
+	held := len(firstScreenDrawSlots)
+
+	panicking.Store(true)
+	response := servePage()
+	select {
+	case <-panicked:
+	default:
+		t.Fatal("the draw never panicked: this row read a page view of nothing")
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("the page whose draw panicked: status=%d", response.Code)
+	}
+	if response.Body.String() != firstScreenPage {
+		t.Fatalf("a page whose draw panicked carried something other than the shell:\n%s", response.Body.String())
+	}
+	if got := response.Header().Get("Cache-Control"); got != pageCacheControl {
+		t.Fatalf("the shell's Cache-Control = %q, want %q", got, pageCacheControl)
+	}
+
+	// And the draw's slot came back with it: the release is deferred, so it runs as the panic
+	// unwinds, and a draw that kept its slot would take one of the few this process has out of it
+	// for good. Not a verdict on the clock - the goroutine releases the slot and ends - so this
+	// bound only turns a slot that never comes back into a failure rather than a hung row.
+	for begun := time.Now(); len(firstScreenDrawSlots) > held; {
+		if time.Since(begun) > 30*time.Second {
+			t.Fatalf("the slot of a draw that panicked never came back: %d of %d are held",
+				len(firstScreenDrawSlots), cap(firstScreenDrawSlots))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// And the process is still serving: the next reader of the same address gets their document,
+	// which is what an unrecovered panic on that goroutine would have taken from them.
+	panicking.Store(false)
+	if drew := servePage().Body.String(); !strings.Contains(drew, theDrawnDocument) {
+		t.Fatalf("the page view after a draw panicked lost its document:\n%s", drew)
 	}
 }
 

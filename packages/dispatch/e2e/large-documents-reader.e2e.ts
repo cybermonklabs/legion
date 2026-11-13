@@ -14,10 +14,13 @@
 // reader has reached. None of those three carries throttling: what they prove is what the page
 // does, not how long it takes.
 //
-// Which document a row seeds is in its title, and every one of them seeds the AHXV6-1-shaped
-// document of `large-documents.ts` or the document whose opening block is a decision, never the
-// larger document, whose build costs about five times as much: what these rows read is an
-// order, a place or a count, and 406,000 characters buy none of them anything.
+// Which document a row seeds is in its title. The three rows about the editor before its last
+// batch seed the AHXV6-1-shaped document of `large-documents.ts` or the document whose opening
+// block is a decision: what they read is an order, a place or a count, and 406,000 characters
+// buy none of them anything. The two rows of A7 that are about the larger document seed the
+// larger document, because that is what the acceptance and its check c-a7 name - a block link
+// and an answered decision near the end of it - and a build of five times the work is what
+// they cost the lane for it (the link row says the measurement).
 //
 // The numbers R11's targets are read from, and every row that needs a build to last, are in
 // `large-documents-measured.e2e.ts`; what stands on the reader's screen while the editor is
@@ -44,6 +47,7 @@ import {
   documentDiagrams,
   documentNames,
   documentTitle,
+  largeDocument,
   openingDecisionBlockId,
   openingDecisionDocument,
   proseOpening,
@@ -63,15 +67,23 @@ import { expectNoneOf } from "./none-of";
 import { resetDatabase } from "./seed";
 import { asUser } from "./users";
 
-test(`a link to the decision block at the end of ${documentNames.small} lands on that block @phone`, async ({
+test(`a link to the decision block at the end of ${documentNames.large} lands on that block @phone`, async ({
   browser,
 }) => {
-  test.setTimeout(600_000);
+  test.setTimeout(900_000);
   const block = decisionBlockId(decisionBlocks);
-  // The AHXV6-1-shaped document: the last of the five decision blocks sits in the last section
-  // of either document, and where the page ends up is the same question over 81,000 characters
-  // as over 406,000.
-  const { path } = await seedDocument("specs-small.md", smallDocument);
+  // The larger document, because that is the document the claim is about: A7 and its check
+  // c-a7 say the block link lands on a decision block near the end of the LARGER document, and
+  // a row over the AHXV6-1-shaped one proves the clause over 81,000 characters rather than the
+  // 406,000 the check names (dispatch://INFRA-341, the architect's decision on review round 3:
+  // seed the larger document in this row and in the answering row below, with the check left
+  // as it is and no deviation recorded). The landing is the same question over either, and what
+  // the larger one costs the lane is the seed and the build it then waits for, measured on this
+  // pod in the `iphone` project a row at a time: this row 8.1 s over the smaller document and
+  // 17.9 s over this one, the answering row below 9.0 s against 22.9 s. The pair costs that
+  // leg 23.7 s more than it did, which is 0.4 of a minute, and neither row throttles anything,
+  // so nothing of that is a measurement another row would have to be read against.
+  const { path } = await seedDocument("specs-large.md", largeDocument);
 
   const alice = await asUser(browser, "alice");
   try {
@@ -83,7 +95,10 @@ test(`a link to the decision block at the end of ${documentNames.small} lands on
     // (`features/doc/refocus-when-settled.ts`). A block behind `contain-intrinsic-size` has a
     // box before it has painted, so the first focus lands on an estimate; the block has to be in
     // the viewport once the page has stopped moving, not only before it.
-    await expect(linked).toBeInViewport({ timeout: 240_000 });
+    //
+    // The wait is the larger document's build, which is minutes rather than seconds on a busy
+    // machine: 600 s is the wait a build that never ends fails by, not a budget this row spends.
+    await expect(linked).toBeInViewport({ timeout: 600_000 });
     await settledScrollTop(page);
     await expect(linked).toBeInViewport();
   } finally {
@@ -580,19 +595,24 @@ test(`two people write in ${documentNames.small} while its editor is built @phon
   }
 });
 
-test(`a reader answers a decision block in ${documentNames.small} @phone`, async ({ browser }) => {
-  test.setTimeout(600_000);
+test(`a reader answers a decision block in ${documentNames.large} @phone`, async ({ browser }) => {
+  test.setTimeout(900_000);
   const block = decisionBlockId(decisionBlocks);
-  const { path } = await seedDocument("specs-small.md", smallDocument);
+  // The larger document, for the reason the link row at the top of this file gives: A7's check
+  // c-a7 names the answered decision near the end of the LARGER document, and this row is the
+  // half of it that answers one.
+  const { path } = await seedDocument("specs-large.md", largeDocument);
 
   const alice = await asUser(browser, "alice");
   try {
     const page = await alice.newPage();
     await page.goto(`${path}#b-${block}`);
     const decision = documentEditor(page).locator(`[data-dispatch-ask-block="${block}"]`);
-    // The block hosts the Inbox's own ask card once the server has indexed it.
+    // The block hosts the Inbox's own ask card once the server has indexed it, which is once
+    // the editor this document's build fills has reached that block: minutes over 406,000
+    // characters, so the wait below is what a build that never ends fails by.
     const card = decision.locator("article[data-testid^=ask-]");
-    await expect(card).toBeVisible({ timeout: 240_000 });
+    await expect(card).toBeVisible({ timeout: 600_000 });
 
     await card.getByRole("radio", { name: "The next window" }).check();
     await card.getByRole("button", { exact: true, name: "Answer" }).click();
@@ -666,10 +686,17 @@ test(`a comment body of ${commentDiagrams} diagrams draws only the diagrams near
       .toBe(true);
 
     const blocks = await diagramBlocks(card);
-    expect(blocks).toHaveLength(commentDiagrams);
     // Every block the page asked for drew: a refusal would mean the renderer ran for it after
-    // all, which is the cost this rule exists to save.
-    expect(blocks.filter((block) => block.asked !== block.drawn)).toEqual([]);
+    // all, which is the cost this rule exists to save. Over the body's own diagrams, of which
+    // there are as many as it was written with: a reading that found fewer read something other
+    // than this body, and "every block that was asked for drew" is then true of what it never
+    // measured (dispatch://INFRA-341, the pairing every universal clause of a check takes).
+    expectNoneOf(blocks, {
+      amongAtLeast: commentDiagrams,
+      are: (block) => block.asked !== block.drawn,
+      matched: "diagrams the page asked for and left undrawn, or drew without asking for",
+      measured: "diagram blocks of the body",
+    });
     // The reader has reached some of the diagrams and not the rest.
     const drawn = blocks.filter((block) => block.drawn).length;
     expect(drawn).toBeGreaterThan(0);

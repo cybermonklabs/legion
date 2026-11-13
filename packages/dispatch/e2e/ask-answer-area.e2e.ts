@@ -418,15 +418,19 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
       [askBack, EMPTY_DRAFT_REFUSAL],
     ] as const) {
       // A refused button keeps its place in the tab order, so the reader can reach and hold it;
-      // pressing it anyway does nothing. (A tap on a phone leaves the focus where the browser
-      // puts it, so the reach is read before the press, as the other refusal rows read it.)
+      // pressing it anyway does nothing. The press is read after it as well as the reach before
+      // it: a forced press lands on whatever the page leaves at that point, and the Reply half
+      // of this row found its own press reaching another control's refused Send, so each press
+      // here says where it landed - a refused button that keeps the focus is the button pressed.
       await button.focus();
       await expect(button).toBeFocused();
       await expect(button).toBeDisabled();
       await expect(button).toHaveAttribute("title", reason);
       await expect(button).toHaveAccessibleDescription(reason);
       await expect(card.getByText(reason, { exact: true })).toBeVisible();
+      await button.scrollIntoViewIfNeeded();
       await button.click({ force: true });
+      await expect(button).toBeFocused();
     }
     // Nothing being sent cannot be awaited: half a second is the window either press would have
     // reached the server in, and every write this row makes lands well inside it.
@@ -444,7 +448,21 @@ test("Answer, Ask back and Reply refuse an empty ask box in place, sending nothi
     await expect(reply).toHaveAttribute("title", EMPTY_DRAFT_REFUSAL);
     await expect(reply).toHaveAccessibleDescription(EMPTY_DRAFT_REFUSAL);
     await expect(turn.getByText(EMPTY_DRAFT_REFUSAL, { exact: true })).toBeVisible();
+    // The press is made where the button is the thing under it. On a phone the conversation's
+    // own composer is pinned to the bottom of the screen, and the turn's Reply button lies
+    // under it where the page leaves it: a forced press at that point reaches the composer's
+    // own refused `Send` - which is where the focus then went, and why nothing below could be
+    // read of Reply at all. A refused button takes no unforced press to wait for either
+    // (`aria-disabled` is Playwright's "not enabled"), so the scroll is what makes the press
+    // the reader's.
+    await reply.evaluate((button) => {
+      button.scrollIntoView({ block: "center" });
+    });
     await reply.click({ force: true });
+    // And the press left the focus where it was: what c-a1 asks of a refused Reply is that the
+    // reader keeps it with its reason, and a focus read only before the press says nothing
+    // about what the press did with it.
+    await expect(reply).toBeFocused();
     await turn.getByLabel("Reply").press("ControlOrMeta+Enter");
     // Nothing being sent cannot be awaited: half a second is the window a press that was going
     // to post this reply would have posted it in.
