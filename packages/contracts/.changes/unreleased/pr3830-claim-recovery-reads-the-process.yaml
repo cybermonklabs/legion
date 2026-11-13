@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
   `LegionClaimRequest` says which claims each of the daemon's two claim recoveries reaches, and
-  which refusal each gives, at daemon API contract 103. `fresh_session` reaches a claim stored
+  which refusal each gives, at daemon API contract 104. `fresh_session` reaches a claim stored
   working that no process stands behind, which the daemon tells from a claim in a turn by reading
   that claim's process at the request. `CLAIM_IN_A_TURN` is for a claim whose process that read
   finds running, and one whose session is being compacted. A claim whose process the runtime

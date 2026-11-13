@@ -1335,7 +1335,49 @@ package api
 // well rather than passed over. Read the base's own number and every open pull request again
 // at the next merge rather than from this line.)
 //
-// 103: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
+// 98: INFRA-3107 -- `GET /legion/v1/state` carries `admission.held`, every issue the daemon's
+// record holds in the workflow that stands in neither `admission.active` nor `admission.waiting`:
+// the issue's key, the one word for why nothing of it runs (`record.HeldReason`, a closed list of
+// eleven read in one order by one ladder, of which `at_work` names no issue on this contract, as
+// `record.HeldAtWork` says) and the issues that hold it where any do (`heldBy`, absent where none
+// does — a root whose Legion label is off, an issue none of the other words is true of). The
+// three lists together are every issue of the workflow and what each is doing, which `active` and
+// `waiting` alone never were: an issue in neither was simply missing, and a reader could not tell
+// one the daemon was about to start from one nothing will start again.
+// `packages/contracts/src/legion-api.ts` reads the word as a `z.enum` of the eleven, which
+// refuses a value it does not name rather than stripping it like an unknown key, so a word added
+// to the ladder later bumps this number again. The key itself is written on every body, empty
+// rather than null, and a caller from a pod whose claims record a contract below 98 is served the
+// admission block without it (api's stateFor, withoutHeld), as a caller below 94 is served every
+// issue without `phaseEntry` and `givenEntry`, one below 87 every claim view without
+// `leakCheckCause`, one below 85 every issue without its rendered answer and every member of the
+// waiting line without that contract's own fields, one below 75 the body without the nine keys
+// of the decided record and its contract mark, one below 73 without `claimsToRefresh`, one below
+// 62 the workers without their counts of the moves back and one below 51 the admission block
+// without its trees; the fifteen strips compose, and every reader from 98 on takes the key as
+// optional for exactly those stripped bodies. No other key of the wire moves: no list above it
+// changes, though `why.reason` now follows the held word for some issues in `admission.blocked`
+// and `unlisted` alike, for every caller at 85 or above (the sentence table of
+// `internal/projection/why.go` is the one statement of which), which moves no contract, since the
+// reason is free text. The rows are read from the judgement the state already made
+// (`blockers.JudgeLine`, which now answers the rows the pass left behind beside the line it
+// built), so the body costs no further read of the store.
+// (The base declares 94, main's #3677 entry right above this one, landed by
+// cybermonklabs/legion#3677 (INFRA-2800). By the rule of 2026-11-13T06:29Z this change keeps 98
+// while it stands above its base and no other open head declares it, and renumbers only when the
+// base takes 98 or a number above it. It declared 76 when this pull request opened, then 78 and
+// 86, each renumbered when another change took the number first, then 94, which it left for 98
+// because an open head declared a higher number that could land first; 86 was read at
+// 2026-11-12T15:52Z as the lowest free number above the base alone, and #2539, an open head that
+// already declared it, merged at 18:19Z. A reading
+// of the open heads is of this file at refs/pull/<n>/head for every open pull request, not of a
+// file list: GitHub cuts a pull request's file list short, so one that changes more files than
+// the page holds answers without this path. Read the base's own number and every open pull
+// request again at the next merge rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+//
+// 104: INFRA-3161 -- the two claim recoveries read the claim's process, and `fresh_session`
 // reaches a claim stored working that no process stands behind. Such a claim was refused
 // `CLAIM_IN_A_TURN` by both recoveries, which left a project controller no recovery at all for a
 // dead architect. Both doors now read that claim's process at the moment of the request
@@ -1370,19 +1412,18 @@ package api
 // claims each operation reaches and the code and the sentence each refusal gives, which
 // `packages/contracts/src/legion-claim-recovery.ts` mirrors and which a controller reads in the
 // `legion` tool's own description, so this number is what keeps a plugin stating the old
-// behaviour off a daemon that answers the new one. (This entry has taken five numbers: 70 when the
+// behaviour off a daemon that answers the new one. (This entry has taken six numbers: 70 when the
 // base carried 68, 76 at the forward merges of 2026-11-12 where main declared 73 and then 75, 86 at
 // the third, fbe970eef84d, where main declared 85, 90 at the fourth, a4c0ff994adc, which the pull
-// request's own conflict forced and where main declared 86, and still 90 at the fifth,
-// 12ba4e6afa71, where main declared 87. It takes 103 at the sixth, 8d9d1ff2dd56, which the
-// conflict forced again and where main declares 94, the entry right above this one. The reading
-// of `const DaemonAPIVersion` at refs/pull/<n>/head at 2026-11-13T11:15Z, for every open pull
-// request whose file list names this file or is longer than the page that lists it, gives above
-// the base's 94: 95 on #3659, 96 on #2731, 97 on #3519 and #3937, 98 on #3708, 99 on #3575, 100
-// on #3573 and #3715, 101 on #3712 and 102 on #3730, with 94 itself on #3707 and #3767, so 103 is
-// the lowest free number above the base's, which is what the gate's refusal names. Read the
-// base's own number and every open pull request again at the next forward merge rather than from
-// this line, as
+// request's own conflict forced and where main declared 86, still 90 at the fifth, 12ba4e6afa71,
+// where main declared 87, and 103 at the sixth, 8d9d1ff2dd56, where main declared 94. It takes 104
+// at the seventh, b7a2f926d3a8, which the conflict forced again and where main declares 98, the
+// entry right above this one. The reading of `const DaemonAPIVersion` at refs/pull/<n>/head at
+// 2026-11-13T12:40Z, for every open pull request whose file list names this file or is longer than
+// the page that lists it, gives above the base's 98: 99 on #3575, 100 on #3573 and #3715, 101 on
+// #3712, 102 on #3730 and 103 on #3519, so 104 is the lowest free number above the base's and above
+// every other open head's, which is what the gate's refusal names. Read the base's own number and
+// every open pull request again at the next forward merge rather than from this line, as
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
-const DaemonAPIVersion = 103
+const DaemonAPIVersion = 104

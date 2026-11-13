@@ -1,7 +1,7 @@
 kind: Changed
 body: |-
   The controller's `legion` tool says what the daemon's two claim recoveries reach now, and the
-  plugin declares daemon API contract 103. `fresh_session` reaches a claim stored working that no
+  plugin declares daemon API contract 104. `fresh_session` reaches a claim stored working that no
   process stands behind: the daemon reads that claim's process when the request arrives, suspends
   the claim where it stands, and starts it again with the task its dead turn held, which is the
   one recovery a project controller has for a dead architect. `compact` refuses that claim

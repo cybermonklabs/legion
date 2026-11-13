@@ -34,7 +34,7 @@ child, so the issue it names may be either. Name the free slots; take nothing.
 daemon waits half a minute and folds that window's events into one wake. Take nothing: it is not
 Legion's.
 
-## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?, silent?}`)
+## `tick on <PROJECT>` (`{kind: "tick", openCapabilities?, blocked?, held?, silent?}`)
 
 The daemon's periodic wake, a minute after it starts and then every
 `controller_wake_interval_seconds` (an hour by default), whatever the slots. Run the skill's every-turn
@@ -57,6 +57,18 @@ same list under `admission.blocked`, and `legion state` prints it as `blocked on
 A link's wait ends when each blocker reaches `done` (a person's close, or the blocker's own merge) or its
 link is taken off (by a person or the tree's architect), and a children-first wait ends when the
 last open child leaves the workflow: name the waits in the day's report and
+take nothing for them.
+
+`held`, when present, is `[{issue, reason, heldBy?}, …]`: every issue the daemon's record holds
+in the workflow that stands in neither `admission.active` nor `admission.waiting`, each with one
+word for why nothing of it runs and the issues that hold it. `heldBy` is absent where no issue
+holds the one that waits. The field is absent where the project holds nothing, as `blocked` is.
+`read_state` shows the same rows under `admission.held`, with the same word for each issue, and
+`legion state` prints their counts as `admission.held:`. The word for each row, and what ends
+each hold, is the table in `skill://legion-controller/references/admission.md`. The rows name the
+blocked issues again, under whichever word the daemon's order gives them, so an issue can stand
+in `blocked` and in `held` at once: `blocked` is what readers use for a link or a children-first
+wait, and `held` says of every held issue what it waits for. Name them in the day's report and
 take nothing for them.
 
 `silent`, when present, is `[{issue, role, lastStep, silent, backgroundSince?}, …]`: every issue whose phase worker
