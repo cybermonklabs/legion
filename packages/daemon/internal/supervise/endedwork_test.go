@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
 )
 
 // endedWorkLine is the one line a let-go that records what it ended writes (recordEnd).
@@ -308,6 +309,54 @@ func TestARelaunchRecordsASuspension(t *testing.T) {
 			Background: true, Kinds: []string{"async-job"}, Reported: true})
 		h.wantEndedLine(cause)
 	})
+}
+
+// A suspension that lands over a process the daemon found gone (suspendOverADeadProcess, the
+// recovery a fresh session makes): either no death was judged for it, because the recovery's own
+// read is the first to find it gone, or the death that was judged could not write the take-back of
+// its task. Either way the suspension lets a dead process go, so the end is recorded as the death it
+// is, under the runtime's account of it (endDied, deathCause), and not as the suspension: the
+// record names the dead turn and its task, and the subagent the launch's report named. Where the
+// death was judged, its own record stands and the suspension adds none, so one line is written
+// either way.
+func TestARelaunchRecordsADeathASuspensionLandsOver(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gone func(h *harness) runtime.Observation
+	}{
+		{name: "the recovery's read is the first to find the process gone", gone: func(h *harness) runtime.Observation {
+			h.rt.ScriptProbe(fake.ProbeResult{Kind: runtime.Gone})
+			if got := h.m.ReadProcess(h.ctx); got != ProcessGone {
+				h.t.Fatalf("the read of the claim's process answered %q, want %q", got, ProcessGone)
+			}
+			return runtime.Observation{Kind: runtime.Gone}
+		}},
+		{name: "the death the sweep judged could not take its task back", gone: func(h *harness) runtime.Observation {
+			observation := runtime.Observation{Locator: h.locator(), Kind: runtime.Gone, At: h.clock.Now()}
+			h.store.fail("PutDelivery", errBoom)
+			if err := h.handle(RuntimeObservation{Observation: observation}); err == nil {
+				h.t.Fatal("the death was judged whole, want the take-back the store would not write")
+			}
+			h.store.fail("PutDelivery", nil)
+			return observation
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t)
+			h.reach(StateWorking)
+			h.reportActivity("subagent")
+			dead, at := h.generation(), h.clock.Now()
+			observation := tc.gone(h)
+
+			h.must(RequestSuspend{Claim: h.token, Reason: "a fresh session was asked for", By: SuspendedByOperator, NeverHold: true})
+
+			h.wantState(StateSuspended)
+			cause := endDied(deathCause(observation))
+			h.wantEnded(EndedWork{At: at, Cause: cause, Generation: dead, Turn: true, TaskTurn: true,
+				Background: true, Kinds: []string{"subagent"}, Reported: true})
+			h.wantEndedLine(cause)
+		})
+	}
 }
 
 // A failure: a provider error that cannot clear fails the claim, which stops its process. The

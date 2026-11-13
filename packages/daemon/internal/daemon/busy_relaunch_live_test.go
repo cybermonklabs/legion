@@ -31,11 +31,9 @@
 //     so a turn starts a `task` subagent or an `async` bash job, and a held answer, so a turn —
 //     the late turn, a turn of the agent's own, a subagent's own request — stays open until the
 //     step lets it go or the process that asked dies.
-//   - the Envoy listener a pane registers with (newConsumerPaneListener), which answers that
-//     registration with a consumer of the session's own, as a session has needed since
-//     cybermonklabs/legion#2603. The shared newPaneListener answers one at this head and none at
-//     the base, where every pane that registers with it ends its claim boot, so this proof keeps
-//     its own.
+//   - the Envoy listener a pane registers with: the live proofs' shared newPaneListener
+//     (live_agent_proof_test.go), which answers that registration with a consumer of the
+//     session's own, as a session has needed since cybermonklabs/legion#2603.
 //
 // Each step runs as a subtest of its own (run), so a step that fails ends there and the next
 // step still runs: the negative control's one run shows every step's own failure, each at the
@@ -274,7 +272,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	r.overlays = r.writeOverlays(work)
 
 	r.rt = newLocalRuntime(t, r.cfg.StateDir, r.legion, omp, r.home, r.profile)
-	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newConsumerPaneListener(t), r.cfg.NatsURLs
+	r.rt.daemonURL, r.rt.envoyURL, r.rt.natsURLs = r.cfg.DaemonURL, newPaneListener(t), r.cfg.NatsURLs
 	r.rt.overlays = func(token claim.Token) []string { return r.overlays[token] }
 
 	r.seed()
@@ -1147,53 +1145,6 @@ func subagentCall(marker string) map[string]any {
 			"solutionSpace": "one check: the command is given",
 		}},
 	}
-}
-
-// ---- the pane's Envoy listener -----------------------------------------------------------------------
-
-// newConsumerPaneListener is the Envoy listener a pane is told through ENVOY_URL: newPaneListener's
-// answer (live_agent_proof_test.go) — the session, a machine, the caller's directory and no topics,
-// for every path — with the one thing a registration has needed since cybermonklabs/legion#2603
-// (dispatch://INFRA-771), a consumer of the session's own. A session receives only what its own
-// consumer holds, so pi-envoy's client refuses a `POST /v1/interests/subscribe` answered with no
-// `delivery` (packages/envoy-client/src/transport.ts, parseSubscribeAnswer: "the listener answered
-// no delivery for <session>: it predates session consumers"), and pi-legion's claim boot then ends
-// the session so the daemon launches it again — which this proof's first run read on every pane,
-// three launches each, until the third death failed the claim. The answer is the one every stand-in
-// listener of the plugins builds (packages/envoy-client/test/subscribe-answer.ts,
-// consumerDelivery): consumer mode on the session's own deliver subject
-// (`notifications.envoy.deliver.<session>`, consumer-delivery.ts's deliverSubject), with no gap. No
-// frame is ever relayed on it: nothing this proof reads reaches a pane through Envoy.
-//
-// newPaneListener answers the same since this change, which is what the other live proofs register
-// through. This copy is the driver's own all the same, because the driver is built over the base
-// commit too, whose newPaneListener answers no consumer.
-func newConsumerPaneListener(t *testing.T) string {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		var sent struct {
-			SessionID string `json:"session_id"`
-			Dir       string `json:"dir"`
-		}
-		if body, err := io.ReadAll(req.Body); err == nil {
-			_ = json.Unmarshal(body, &sent)
-		}
-		dir := sent.Dir
-		if dir == "" {
-			dir = "/"
-		}
-		answer := map[string]any{"session_id": sent.SessionID, "machine_id": "busy-relaunch-proof", "dir": dir, "topics": []string{}}
-		if req.URL.Path == "/v1/interests/subscribe" {
-			answer["delivery"] = map[string]any{
-				"mode": "consumer", "subject": "notifications.envoy.deliver." + sent.SessionID,
-				"stream_id": "busy-relaunch-proof", "gap": false,
-			}
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(answer)
-	}))
-	t.Cleanup(server.Close)
-	return server.URL
 }
 
 // ---- the scripted model stand-in ---------------------------------------------------------------------

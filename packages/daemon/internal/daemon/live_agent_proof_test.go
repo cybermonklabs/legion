@@ -365,15 +365,8 @@ func installProofPlugins(t *testing.T, root, work, home, profile, omp string) {
 // calls — the fixture's noticeListener, which the daemon itself publishes its notices to, serves
 // the publish route alone and 404s the rest. It answers as the plugins' own pane harness does
 // (packages/pi-shared/test/omp-harness.ts, runLegionPane's stand-in): the session, a machine and
-// no topics, for every path, and for a registration (`POST /v1/interests/subscribe`) a consumer
-// of the session's own as well. A registration has needed one since cybermonklabs/legion#2603
-// (dispatch://INFRA-771): pi-envoy's client refuses an answer with no `delivery`
-// (packages/envoy-client/src/transport.ts, parseSubscribeAnswer: "the listener answered no
-// delivery for <session>: it predates session consumers"), and the claim boot then ends the
-// session, so every pane of a proof built on this listener died at its registration and was
-// launched again until its claim failed. The answer is the one the plugins' stand-in listeners
-// build (packages/envoy-client/test/subscribe-answer.ts, consumerDelivery): consumer mode on the
-// session's own deliver subject, with no gap.
+// no topics, for every path, and on `/v1/interests/subscribe` the consumer delivery too
+// (paneListenerDelivery), which the plugin refuses a registration without.
 //
 // Nothing the proof reads comes from here, and no frame is relayed on that subject. What an
 // architect or the controller is told is read from the daemon's own listener, which is the
@@ -401,16 +394,31 @@ func newPaneListener(t *testing.T) string {
 			"topics":     []string{},
 		}
 		if req.URL.Path == "/v1/interests/subscribe" {
-			answer["delivery"] = map[string]any{
-				"mode": "consumer", "subject": "notifications.envoy.deliver." + sent.SessionID,
-				"stream_id": "live-agent-proof", "gap": false,
-			}
+			answer["delivery"] = paneListenerDelivery(sent.SessionID)
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(answer)
 	}))
 	t.Cleanup(server.Close)
 	return server.URL
+}
+
+// paneListenerDelivery is the `delivery` the pane listener answers a registration with: the
+// session's own relay subject, as every stand-in listener of the plugins builds it
+// (packages/envoy-client/test/subscribe-answer.ts, consumerDelivery, with omp-harness.ts's
+// stream id). Since the core receive path was removed (#2603), the plugin refuses a registration
+// answered without one (packages/envoy-client/src/transport.ts, parseSubscribeAnswer), and the
+// claim boot that registration belongs to exits the pane before its claim is ready. The mode and
+// the subject's prefix are the idle rig's constants (idle_rig_agent_test.go), which say whose
+// they are. Nothing is published to the subject: what the proof reads comes from the daemon's own
+// listener.
+func paneListenerDelivery(sessionID string) map[string]any {
+	return map[string]any{
+		"mode":      idleRigDeliveryConsumer,
+		"subject":   idleRigDeliverSubjectPrefix + sessionID,
+		"stream_id": "standin-stream",
+		"gap":       false,
+	}
 }
 
 // ---- the model stand-ins -------------------------------------------------------------------------
