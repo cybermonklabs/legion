@@ -399,6 +399,72 @@ test("a mapping answer landing while a Default pick waits its turn keeps the pic
   }
 });
 
+// R7 and R10 of dispatch://INFRA-299. A new mapping's save lands while a Default pick of another
+// repository is out - made on another surface of the page, since this one takes one mapping
+// press at a time - and its answer is merged into the list: into Dispatch's copy of it, not over
+// the list as it stands, which carries the pick. So once the pick is refused and the list cannot
+// be read again, the page shows the new mapping and the default Dispatch last gave.
+test("a mapping answer merged while a Default pick is out stays once the pick is refused and the read fails", async () => {
+  const user = userEvent.setup();
+  const server = mappingServer([mappingRow("owner/repo", false), mappingRow("owner/other", true)]);
+  const page = renderMappings(server);
+  const refusal = Promise.withResolvers<RepoProject>();
+  page.putRepoProject.mockImplementation(async (owner, repo, input) =>
+    repo === "repo" ? refusal.promise : server.put(`${owner}/${repo}`, input)
+  );
+  try {
+    await screen.findByRole("radio", { name: "Default repository of CORE: owner/repo" });
+    let pick: Promise<unknown> | undefined;
+    await act(async () => {
+      pick = writesOf(page.queryClient)
+        .run({
+          detail: null,
+          kind: plainWrite,
+          label: "owner/repo made CORE's default",
+          presentation: "indicator",
+          request: repoProjectRequest("owner/repo", { default: true, project: "CORE" }),
+          shows: (shown) => {
+            shown.on<RepoProject[]>(["repo-projects"], (rows) =>
+              rows.map((row) => ({ ...row, default: row.repo === "owner/repo" }))
+            );
+          },
+          target: "repo-mapping:owner/repo",
+        })
+        .catch(() => undefined);
+      await settle();
+    });
+    await waitFor(() => expect(page.putRepoProject).toHaveBeenCalledTimes(1));
+    expect(defaultRadio("owner/repo").checked).toBe(true);
+
+    // From here on the mappings cannot be read: every read again fails, and the page says so
+    // over the list, so what the list holds is read from its cache.
+    const mapping = (repo: string) =>
+      page.queryClient
+        .getQueryData<RepoProject[]>(["repo-projects"])
+        ?.find((row) => row.repo === repo);
+    page.listRepoProjects.mockRejectedValue(new Error("offline"));
+    await user.click(screen.getByLabelText("Repository"));
+    await user.paste("owner/new");
+    await user.selectOptions(screen.getByLabelText("Project"), "CORE");
+    await user.click(screen.getByRole("button", { name: "Add mapping" }));
+    await waitFor(() => expect(mapping("owner/new")).toMatchObject({ project: "CORE" }));
+    expect(mapping("owner/repo")?.default).toBe(true);
+
+    await act(async () => {
+      refusal.reject(new ApiError(422, { code: "INVALID_MAPPING", error: "not a mapping" }));
+      await pick;
+    });
+    await waitFor(() =>
+      expect(page.queryClient.getQueryState(["repo-projects"])?.status).toBe("error")
+    );
+    expect(mapping("owner/repo")?.default).toBe(false);
+    expect(mapping("owner/other")?.default).toBe(true);
+    expect(mapping("owner/new")).toMatchObject({ default: false, project: "CORE" });
+  } finally {
+    page.done();
+  }
+});
+
 test("a mapping answer landing while a Default pick is late and still being tried keeps the pick", async () => {
   jest.useFakeTimers();
   const user = userOnFakeClock();

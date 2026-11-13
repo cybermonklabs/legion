@@ -36,6 +36,7 @@ import type {
 import { DocumentRuntime } from "../doc/runtime";
 import { MarginProvider } from "../margin/margin-context";
 import { KeymapProvider } from "../shell/KeymapProvider";
+import { writesOf } from "../writes/write-store";
 import { IssuePage } from "./IssuePage";
 import { writePin } from "./pin-write";
 import { pinnedItemMarker } from "./pins";
@@ -2242,6 +2243,51 @@ test("IssuePage's pin answer keeps a Conversation pin waiting behind it on the s
       await conversationPin.promise;
     });
     view.unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
+// R7 and R10 of dispatch://INFRA-299. The header's pin lands while another issue's pin is out,
+// and its answer is merged into the viewer's state - into Dispatch's copy of it, not over the
+// state as it stands, which carries the other pin. So once that pin is refused and the state
+// cannot be read again, the page shows the header's pin and not the one Dispatch refused.
+test("IssuePage's pin answer merged while another issue's pin is out stays once that pin is refused and the read fails", async () => {
+  const user = userEvent.setup();
+  const restore = stubIssuePage(issue);
+  const refusal = Promise.withResolvers<UserIssueState>();
+  const pinned = { dismissed: [], last_read_seq: 0, pinned: true, seq: 1 };
+  const putIssueState = answerIssueStates().mockImplementation((key) =>
+    key === "CORE-2" ? refusal.promise : Promise.resolve(pinned)
+  );
+  const queryClient = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  queryClient.setQueryData(["issues", "pinned"], []);
+  const view = renderIssuePage("/issues/CORE-1/conversation", undefined, undefined, queryClient);
+  const state = () => queryClient.getQueryData<UserState>(["user-state"]);
+
+  try {
+    await within(view.container).findByRole("heading", { level: 1, name: issue.title });
+    act(() => writePin(queryClient, "CORE-2", { id: "comment-9", op: "pin" }));
+    await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
+    expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
+
+    // From here on the viewer's state cannot be read: every read again fails.
+    api.getMyState = () => Promise.reject(new Error("offline"));
+    await user.click(within(view.container).getByRole("button", { name: "Pin issue" }));
+    await waitFor(() => expect(state()?.["CORE-1"]?.pinned).toBe(true));
+    expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
+
+    await act(async () =>
+      refusal.reject(new ApiError(422, { code: "INVALID_STATE", error: "not a state" }))
+    );
+    await waitFor(() => expect(queryClient.getQueryState(["user-state"])?.status).toBe("error"));
+    expect(state()?.["CORE-2"]?.dismissed ?? []).toEqual([]);
+    expect(state()?.["CORE-1"]?.pinned).toBe(true);
+  } finally {
+    view.unmount();
+    writesOf(queryClient).clear();
     putIssueState.mockRestore();
     restore();
   }

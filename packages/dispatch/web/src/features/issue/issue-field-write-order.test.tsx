@@ -1,5 +1,5 @@
 import { expect, type Mock, test } from "bun:test";
-import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver, useQuery } from "@tanstack/react-query";
 import { act, type RenderResult, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
@@ -7,10 +7,12 @@ import type { ReactNode } from "react";
 import { settle } from "../../__tests__/fake-clock";
 import { memoryFiles, UnloadTarget } from "../../__tests__/kept-sends-harness";
 import { answerIssuePatches } from "../../__tests__/send-answers";
-import { ApiError, type WriteBounds } from "../../api/client";
+import { ApiError, issuePatchRequest, type WriteBounds } from "../../api/client";
+import { mergeIssue } from "../../api/issue-cache";
+import { issueQuery } from "../../api/queries";
 import type { Issue, IssueDetails, UpdateIssueInput } from "../../api/types";
 import { WriteStorage } from "../writes/write-storage";
-import { Writes, writesOf } from "../writes/write-store";
+import { plainWrite, Writes, writesOf } from "../writes/write-store";
 import { issuePriority } from "./issue-priority";
 import { PriorityControl } from "./PriorityControl";
 
@@ -461,6 +463,102 @@ test("a pick that has not gone out is sent after a reload inside the store's res
     // through the real client once this test's answers are taken back.
     writesOf(client).clear();
     kept.retire();
+    patchIssue.mockRestore();
+  }
+});
+
+// R7 and R10. Another field's save answers while a priority pick is out, and the answer is merged
+// into the issue (`mergeIssue`) - into Dispatch's copy of it, not over the issue as it stands,
+// which carries the pick. So once the pick is refused and the issue cannot be read, the page
+// shows the merged answer, and not the priority Dispatch refused.
+test("an issue answer merged while a pick is out stays once the pick is refused and the issue cannot be read", async () => {
+  const client = pageClient();
+  const refused = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => refused.promise);
+  const read = failingRead();
+  // A surface drawing the issue, so the read again goes out, and fails.
+  const unsubscribe = new QueryObserver(client, {
+    queryFn: read.read,
+    queryKey: detailKey,
+    staleTime: Number.POSITIVE_INFINITY,
+  }).subscribe(() => {});
+  const shown = () => client.getQueryData<IssueDetails>(detailKey);
+  try {
+    const pick = writesOf(client).run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-1 priority set to 3",
+      presentation: "indicator",
+      request: issuePatchRequest(issue.key, { priority: 3 }),
+      shows: (change) => {
+        change.on<IssueDetails>(detailKey, (current) => ({ ...current, priority: 3 }));
+      },
+      target: `issue:${issue.key}`,
+    });
+    expect(shown()?.priority).toBe(3);
+
+    // The assignee's save lands meanwhile, and its answer is merged into the issue.
+    mergeIssue(client, { ...issue, assignee: "bob", updated_at: "2026-09-09T00:01:00Z" });
+    expect(shown()).toMatchObject({ assignee: "bob", priority: 3 });
+
+    refused.reject(new ApiError(422, { code: "INVALID_PRIORITY", error: "not a priority" }));
+    await expect(pick).rejects.toThrow("not a priority");
+    await waitFor(() => expect(client.getQueryState(detailKey)?.status).toBe("error"));
+    expect(read.tries()).toBeGreaterThan(0);
+    expect(shown()).toMatchObject({ assignee: "bob", priority: 1 });
+  } finally {
+    unsubscribe();
+    writesOf(client).clear();
+    patchIssue.mockRestore();
+  }
+});
+
+// R10. A read that lands while a pick is out and already holds the picked priority - another
+// person set the same value, or the pick was made and its answer is still on its way - is
+// Dispatch's answer even though it equals the screen, which the issue read's rule hands back as
+// the object the cache held. So once the pick is refused and every read fails, the page shows
+// the priority Dispatch gave, two, and not the one before the pick.
+test("a read equal to the screen while a pick is out is Dispatch's answer once the pick is refused and reads fail", async () => {
+  const client = pageClient();
+  const refused = Promise.withResolvers<Issue>();
+  const patchIssue = answerIssuePatches().mockImplementation(() => refused.promise);
+  let online = true;
+  // A surface drawing the issue under the issue read's own rule: its first read again answers
+  // the issue with the picked priority, and every read after it fails.
+  const unsubscribe = new QueryObserver(client, {
+    ...issueQuery(issue.key),
+    queryFn: () =>
+      online
+        ? Promise.resolve<IssueDetails>({ ...details, priority: 2 })
+        : Promise.reject(new Error("Failed to fetch")),
+    staleTime: Number.POSITIVE_INFINITY,
+  }).subscribe(() => {});
+  const shown = () => client.getQueryData<IssueDetails>(detailKey);
+  try {
+    const pick = writesOf(client).run({
+      detail: null,
+      kind: plainWrite,
+      label: "CORE-1 priority set to 2",
+      presentation: "indicator",
+      request: issuePatchRequest(issue.key, { priority: 2 }),
+      shows: (change) => {
+        change.on<IssueDetails>(detailKey, (current) => ({ ...current, priority: 2 }));
+      },
+      target: `issue:${issue.key}`,
+    });
+    expect(shown()?.priority).toBe(2);
+
+    await client.refetchQueries({ queryKey: detailKey });
+    expect(shown()?.priority).toBe(2);
+
+    online = false;
+    refused.reject(new ApiError(422, { code: "INVALID_PRIORITY", error: "not a priority" }));
+    await expect(pick).rejects.toThrow("not a priority");
+    await waitFor(() => expect(client.getQueryState(detailKey)?.status).toBe("error"));
+    expect(shown()?.priority).toBe(2);
+  } finally {
+    unsubscribe();
+    writesOf(client).clear();
     patchIssue.mockRestore();
   }
 });

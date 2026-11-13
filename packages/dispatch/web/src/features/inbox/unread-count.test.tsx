@@ -252,3 +252,58 @@ test("two presses out at once drop the count by both, whatever a count answer al
   dismissed.resolve({ dismissed: 1 });
   await waitFor(() => expect(listMyReplies.mock.calls.length).toBeGreaterThan(reads));
 });
+
+// R10. A count answer that lands while a Dismiss is out is Dispatch's count, held under the
+// press's bound while it is out. Once the press is refused and the count cannot be read again,
+// the badge shows that answer - six, a thread arrived - not the refused press's five less one,
+// nor the five that stood before the press.
+test("a count answer that landed while a Dismiss was out stays once it is refused and the count read fails", async () => {
+  const user = userEvent.setup();
+  const { client, dismissed, listMyReplies, readCount } = renderPresses();
+
+  await user.click(screen.getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(inboxCount()).toBe("4"));
+  // A thread arrived: six unread, held under the press's bound.
+  await readCount(COUNT + 1);
+  expect(inboxCount()).toBe("4");
+
+  listMyReplies.mockImplementation((page) =>
+    page?.limit === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(threadsRead(ROWS))
+  );
+  dismissed.reject(refusal());
+  await screen.findByText("Could not dismiss 1 thread: not found.");
+  await waitFor(() =>
+    expect(client.getQueryState(myRepliesCountQuery().queryKey)?.status).toBe("error")
+  );
+  expect(inboxCount()).toBe(String(COUNT + 1));
+});
+
+// R10. A press Dispatch made writes its own drop alone into the count Dispatch last gave: five,
+// less the two rows Mark all read marked, never less the Dismiss still out beside it. So when the
+// count cannot be read after that landing, and the Dismiss is then refused while it still cannot,
+// the badge reads three - the two rows Dispatch took gone, the Dismiss's row back.
+test("a Dismiss refused after a later Mark all read was made reads three when every count read since fails", async () => {
+  const user = userEvent.setup();
+  const { client, dismissed, listMyReplies, read } = renderPresses();
+
+  await user.click(screen.getByRole("button", { name: "Dismiss" }));
+  await waitFor(() => expect(inboxCount()).toBe("4"));
+  await user.click(screen.getByRole("button", { name: "Mark all read" }));
+  await waitFor(() => expect(inboxCount()).toBe("2"));
+
+  // From here on the count cannot be read.
+  listMyReplies.mockImplementation((page) =>
+    page?.limit === 1 ? Promise.reject(new Error("offline")) : Promise.resolve(threadsRead(ROWS))
+  );
+  read.resolve({ marked: 2 });
+  await waitFor(() =>
+    expect(client.getQueryState(myRepliesCountQuery().queryKey)?.status).toBe("error")
+  );
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(inboxCount()).toBe("2");
+
+  dismissed.reject(refusal());
+  await screen.findByText("Could not dismiss 1 thread: not found.");
+  await waitFor(() => expect(client.isFetching()).toBe(0));
+  expect(inboxCount()).toBe("3");
+});

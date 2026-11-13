@@ -80,13 +80,15 @@ function pinsOut(writes: Writes, issueKey: string): boolean {
 /**
  * A pin or an unpin, one write of the store each, ordered on its issue (`pin:<issue>`), shown in
  * the shell's indicator and kept across a reload. The write shows its change on `["user-state"]`
- * at the press and again over each answer that lands there while it is out (`writePin`); once
- * the issue's last pin lands, the state Dispatch answered replaces what the page showed and the
- * next pin reads the state afresh. A refused, discarded or dropped one is the store's to put
- * back, as every write's change is: the state Dispatch last gave the page, with every other live
- * pin over it, read again from Dispatch - so a read that fails leaves no pin Dispatch never took
- * on screen - and the next pin reads the state afresh. The states pins' answers left go with the
- * person signed in (`reset`), so another person's next pin never writes over them.
+ * at the press, and the store draws it over each answer that lands there while it is out
+ * (`writePin`); once the issue's last pin lands, the state Dispatch answered is merged into the
+ * store's copy of the viewer's state (`Writes.answer`) - never over the state as it stands, which
+ * carries every other live pin - and the next pin reads the state afresh. A refused, discarded or
+ * dropped one stops being drawn, as every write's change does: the page shows the state Dispatch
+ * last gave, with every other live pin over it, and reads it again - so a read that fails leaves
+ * no pin Dispatch never took on screen - and the next pin reads the state afresh. The states
+ * pins' answers left go with the person signed in (`reset`), so another person's next pin never
+ * writes over them.
  */
 const pinWrite = defineWriteKind<PinWrite>({
   kept: keptPin,
@@ -98,7 +100,7 @@ const pinWrite = defineWriteKind<PinWrite>({
       void client.invalidateQueries({ queryKey: ["user-state"] });
       return;
     }
-    client.setQueryData<UserState>(["user-state"], (current) => ({
+    writesOf(client).answer<UserState>(["user-state"], (current) => ({
       ...current,
       [issueKey]: answer as UserIssueState,
     }));

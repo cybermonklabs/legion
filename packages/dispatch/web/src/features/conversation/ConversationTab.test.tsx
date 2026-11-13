@@ -1,5 +1,5 @@
 import { afterEach, expect, jest, type Mock, spyOn, test } from "bun:test";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the two clicks of one same-tick double press, which user-event cannot fire inside a single task
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -23,6 +23,7 @@ import {
 import { wholeText } from "../../__tests__/whole-text";
 import type { WriteBounds } from "../../api/client";
 import { ApiError, api } from "../../api/client";
+import { userStateQuery } from "../../api/queries";
 import type {
   Actor,
   Agent,
@@ -41,6 +42,8 @@ import type {
   UserState,
 } from "../../api/types";
 import { messageDeliveryFields } from "../agents/delivery-fixture";
+import { writePin } from "../issue/pin-write";
+import { pinnedItemMarker } from "../issue/pins";
 import { stubMatchMedia } from "../margin/margin-fixture";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { userPreferenceStorageKey } from "../shell/userPreference";
@@ -2319,6 +2322,62 @@ test("the read mark writes the issue's head seq as the reader, and retries an un
     );
   } finally {
     view.unmount();
+    getMyState.mockRestore();
+    putIssueState.mockRestore();
+    stub.restore();
+    viewport.restore();
+  }
+});
+
+// R7 and R10 of dispatch://INFRA-299. The read mark lands while another issue's pin is out, and
+// its answer is merged into the viewer's state - into Dispatch's copy of it, not over the state
+// as it stands, which carries the pin. So once the pin is refused and the state cannot be read
+// again, the page shows the mark and not the pin Dispatch refused.
+test("a read mark's answer merged while another issue's pin is out stays once the pin is refused and the read fails", async () => {
+  const viewport = installIntersectionObserver();
+  const stub = stubLists({
+    comments: [comment("comment-1", { body: "Newest" })],
+    head: [headEvent(7)],
+  });
+  const getMyState = spyOn(api, "getMyState").mockImplementation(async () => ({
+    "CORE-1": issueState([], 1),
+  }));
+  const refusal = Promise.withResolvers<UserIssueState>();
+  const putIssueState = answerIssueStates().mockImplementation(async (key, input) =>
+    key === "CORE-2" ? refusal.promise : issueState([], input.last_read_seq ?? 0)
+  );
+  const queryClient = newQueryClient();
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  queryClient.setQueryData<UserState>(["user-state"], { "CORE-1": issueState([], 1) });
+  // A surface drawing the viewer's state, so the read again goes out.
+  const unsubscribe = new QueryObserver(queryClient, userStateQuery()).subscribe(() => {});
+  const view = render(tab({ "CORE-1": issueState([], 1) }, true, queryClient));
+  const state = () => queryClient.getQueryData<UserState>(["user-state"]);
+
+  try {
+    await screen.findByText("Newest");
+    act(() => writePin(queryClient, "CORE-2", { id: "comment-9", op: "pin" }));
+    await waitFor(() => expect(putIssueState).toHaveBeenCalledTimes(1));
+    expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
+
+    // From here on the viewer's state cannot be read: every read again fails.
+    getMyState.mockImplementation(() => Promise.reject(new Error("offline")));
+    const card = view.container.querySelector('[data-turn="comment:comment-1"]');
+    if (card === null) throw new Error("expected the newest card");
+    await dwellOnFakeClock(viewport, card);
+    await waitFor(() => expect(state()?.["CORE-1"]?.last_read_seq).toBe(7));
+    expect(state()?.["CORE-2"]?.dismissed).toEqual([pinnedItemMarker("comment-9")]);
+
+    await act(async () =>
+      refusal.reject(new ApiError(422, { code: "INVALID_STATE", error: "not a state" }))
+    );
+    await waitFor(() => expect(queryClient.getQueryState(["user-state"])?.status).toBe("error"));
+    expect(state()?.["CORE-2"]?.dismissed ?? []).toEqual([]);
+    expect(state()?.["CORE-1"]?.last_read_seq).toBe(7);
+  } finally {
+    view.unmount();
+    unsubscribe();
+    writesOf(queryClient).clear();
     getMyState.mockRestore();
     putIssueState.mockRestore();
     stub.restore();

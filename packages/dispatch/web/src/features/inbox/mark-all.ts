@@ -34,6 +34,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import {
+  madeUnreadCount,
   pressUnreadDrop,
   refusedUnreadDrop,
   settledUnreadDrop,
@@ -173,7 +174,7 @@ export function useMarkAllRead({
         drop:
           threads === undefined
             ? undefined
-            : pressUnreadDrop(queryClient, markedRows(threads, input).size),
+            : pressUnreadDrop(queryClient, markedRows(threads, input).size, input),
       };
     },
     onSettled: (_data, _error, _input, press) => settledUnreadDrop(queryClient, press?.drop),
@@ -185,16 +186,21 @@ export function useMarkAllRead({
     },
     request: (input) => markInboxReadRequest(input),
     /** The mark this press shows: every row of the list it marks drawn as read, and the count
-     *  every badge shares held under every press live on it (`shownUnreadCount`). The rows are
-     *  read off the cache as it stands, so an answer this is shown over again marks the rows
-     *  that answer carries, and one that already holds them read is left as it is. */
+     *  every badge shares held under every press live on it (`shownUnreadCount`) - once
+     *  Dispatch made it, its own drop alone (`madeUnreadCount`). The rows are read off the cache
+     *  as it stands, so an answer this is shown over again marks the rows that answer carries,
+     *  and one that already holds them read is left as it is. */
     shows: (input) => (shown) => {
       const through = input.read_through;
       if (through === undefined || through === null) return;
       shown.on<MyRepliesResponse>(threadsKey, (threads) =>
         applyMarkAll(threads, markedRows(threads, input), through)
       );
-      shown.on<number>(countKey, shownUnreadCount(queryClient));
+      shown.on<number>(
+        countKey,
+        shownUnreadCount(queryClient),
+        madeUnreadCount(queryClient, input)
+      );
     },
     target: () => "inbox:read",
   });

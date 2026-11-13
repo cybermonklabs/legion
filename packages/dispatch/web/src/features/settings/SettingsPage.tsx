@@ -23,6 +23,7 @@ import { SignInsSection } from "../credentials/SignInsSection";
 import { DeliverySettingsForm } from "../delivery/DeliverySettingsForm";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useWrites } from "../writes/write-store";
 import { AgentTokensSection } from "./AgentTokensSection";
 import { ArchitectureSourcesSection } from "./ArchitectureSourcesSection";
 import {
@@ -68,6 +69,7 @@ function withMapping(current: RepoProject[], mapping: RepoProject): RepoProject[
 export function SettingsPage(): ReactNode {
   useDocumentTitle("Settings · Dispatch");
   const queryClient = useQueryClient();
+  const writes = useWrites();
   const [repository, setRepository] = useState("");
   const [project, setProject] = useState("");
   const [failedAction, setFailedAction] = useState<FailedAction>();
@@ -77,8 +79,8 @@ export function SettingsPage(): ReactNode {
   const credentialsAvailable = useQuery(credentialPendingQuery());
   // Both mapping writes show their refusal on the row they changed, and both stand in that
   // row's line (`repo-mapping:<owner/repo>`), so a save and a removal of one mapping go out in
-  // press order. A refused one is the store's to put back: the list as Dispatch last gave it,
-  // every other live mapping write over it (R10 of dispatch://INFRA-299).
+  // press order. A refused one stops being drawn: the list as Dispatch last gave it, every other
+  // live mapping write over it (R10 of dispatch://INFRA-299).
   const putMapping = useKeyedWrite<RepoProject, MappingInput>({
     request: ({ repo, ...input }) => repoProjectRequest(repo, input),
     target: ({ repo }) => `repo-mapping:${repo}`,
@@ -114,10 +116,12 @@ export function SettingsPage(): ReactNode {
         });
       });
     },
-    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again.
+    // A landing with no answer keeps the optimistic row; `onSettled` reads them all again. The
+    // answer is merged into the store's copy of the list (`Writes.answer`), so another mapping
+    // write still out stays over it and none is carried into what that write's refusal leaves.
     onSuccess: (mapping, variables) => {
       if (mapping !== null) {
-        queryClient.setQueryData<RepoProject[]>(["repo-projects"], (current = []) =>
+        writes.answer<RepoProject[]>(["repo-projects"], (current = []) =>
           withMapping(current, mapping)
         );
       }

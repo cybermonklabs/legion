@@ -9,6 +9,7 @@ import { userAgentStateQuery } from "../../api/queries";
 import type { UserAgentState, UserAgentStates } from "../../api/types";
 import { writesOf } from "../writes/write-store";
 import { legacyPinnedIds, pinnedAgentSessions, useAgentPinWrite } from "./pins";
+import { storeAgentState } from "./unread";
 
 // The rail lists the person's pins oldest first (INFRA-812, R1), so the agent they pinned first
 // keeps the top row however their agent state is keyed, and a session they have only read or
@@ -150,6 +151,60 @@ test("a refused pin leaves the agent state Dispatch last gave when the read agai
     expect(
       pinnedAgentSessions(queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey))
     ).toEqual([]);
+  } finally {
+    hook.unmount();
+    unsubscribe();
+    writesOf(queryClient).clear();
+    getMyAgentState.mockRestore();
+  }
+});
+
+// R7 and R10 of dispatch://INFRA-299. Another session's state a PUT answered with - a read mark,
+// a Clear - is merged while a pin is out (`storeAgentState`), into Dispatch's copy of the agent
+// state rather than over the state as it stands, which carries the pin. So once the pin is
+// refused and the read again fails, the page shows that answer and no pin Dispatch never took.
+test("an agent state answer merged while a pin is out stays once the pin is refused and the read fails", async () => {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient.setQueryData(["whoami"], { event_head: "0", kind: "user", login: "alice" });
+  const getMyAgentState = spyOn(api, "getMyAgentState")
+    .mockResolvedValueOnce({
+      "planner-session": { unread_replies: 0 },
+      "tester-session": { unread_replies: 3 },
+    })
+    .mockRejectedValue(new NetworkError("/api/v1/me/agents/state", new TypeError("offline")));
+  const refusal = Promise.withResolvers<UserAgentState>();
+  const put = answerAgentStates().mockImplementation(() => refusal.promise);
+  // A surface drawing the viewer's agent state, so the read again goes out.
+  const unsubscribe = new QueryObserver(queryClient, userAgentStateQuery()).subscribe(() => {});
+  const hook = renderHook(() => useAgentPinWrite(), {
+    wrapper: ({ children }: { children: ReactNode }) =>
+      createElement(QueryClientProvider, { client: queryClient }, children),
+  });
+  const states = () => queryClient.getQueryData<UserAgentStates>(userAgentStateQuery().queryKey);
+  try {
+    await queryClient.fetchQuery(userAgentStateQuery());
+    let made: Promise<boolean> | undefined;
+    await act(async () => {
+      made = hook.result.current("planner-session", true);
+    });
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1));
+    expect(pinnedAgentSessions(states())).toEqual(["planner-session"]);
+
+    // The tester's conversation is read on another surface while the pin is out.
+    act(() => {
+      storeAgentState(queryClient, "tester-session", { unread_replies: 0 });
+    });
+    expect(pinnedAgentSessions(states())).toEqual(["planner-session"]);
+
+    await act(async () => {
+      refusal.reject(new ApiError(422, { code: "INVALID_STATE", error: "not a state" }));
+      expect(await made).toBe(false);
+    });
+    await waitFor(() =>
+      expect(queryClient.getQueryState(userAgentStateQuery().queryKey)?.status).toBe("error")
+    );
+    expect(pinnedAgentSessions(states())).toEqual([]);
+    expect(states()?.["tester-session"]).toEqual({ unread_replies: 0 });
   } finally {
     hook.unmount();
     unsubscribe();

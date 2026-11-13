@@ -45,6 +45,7 @@ import { useKeyedWrite } from "../writes/useKeyedWrite";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import {
+  madeUnreadCount,
   pressUnreadDrop,
   refusedUnreadDrop,
   settledUnreadDrop,
@@ -274,7 +275,7 @@ export function useInboxDismiss({
       const unread = inbox.filter((row) => row.unread).length;
       return {
         dismissed,
-        drop: unread > 0 ? pressUnreadDrop(queryClient, unread) : undefined,
+        drop: unread > 0 ? pressUnreadDrop(queryClient, unread, input) : undefined,
         inbox,
       };
     },
@@ -299,9 +300,10 @@ export function useInboxDismiss({
     },
     request: (input) => inboxDismissRequest(inboxDismissBody(input)),
     /** The change this press shows: the rows it names out of the view it was made in, and the
-     *  count every badge shares held under every press live on it (`shownUnreadCount`). Each
-     *  row is taken out of the cache as it stands, by its id, so an answer this is shown over
-     *  again loses the same rows it names, and one that no longer holds them is left as it is. */
+     *  count every badge shares held under every press live on it (`shownUnreadCount`) - once
+     *  Dispatch made it, its own drop alone (`madeUnreadCount`). Each row is taken out of the
+     *  cache as it stands, by its id, so an answer this is shown over again loses the same rows
+     *  it names, and one that no longer holds them is left as it is. */
     shows: (input) => {
       const body = inboxDismissBody(input);
       return (shown) => {
@@ -312,7 +314,11 @@ export function useInboxDismiss({
           }));
         } else {
           shown.on<MyRepliesResponse>(inboxKey, (current) => withoutRows(current, body).answer);
-          shown.on<number>(countKey, shownUnreadCount(queryClient));
+          shown.on<number>(
+            countKey,
+            shownUnreadCount(queryClient),
+            madeUnreadCount(queryClient, input)
+          );
         }
       };
     },

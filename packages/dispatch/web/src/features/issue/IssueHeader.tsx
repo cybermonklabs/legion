@@ -62,6 +62,7 @@ import { ReferencedBy, ReferencedByToggle } from "../refs/ReferencedBy";
 import { buildDispatchReference, buildIssuePath, sessionOfAddress } from "../refs/routes";
 import { useKeymap } from "../shell/keymap";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
+import { useWrites } from "../writes/write-store";
 import { ApprovalSteps } from "./ApprovalSteps";
 import { AssigneeControl } from "./AssigneeControl";
 import { ClaimChip } from "./ClaimChip";
@@ -288,12 +289,14 @@ export function IssueHeader({
     documentArtifact?.approval !== undefined &&
     (documentArtifact.approval.state !== "draft" || approvalRequestOpen);
   const pinGuard = useSubmitGuard();
+  const writes = useWrites();
   // The header's pin writes the same row as the Conversation's and the Activity tab's pins, so it
   // goes in that row's line (`pin:<key>`, `features/issue/pin-write.ts`): one row, one line. Its
-  // change is the issue's `pinned` alone, over the row as it stands (`shows`), so the store shows
-  // it again over each answer that lands there while it is live, shows a pin waiting behind it
-  // again over the row Dispatch answers it with, and puts back the row Dispatch last gave if it
-  // leaves without landing (R7 and R10 of dispatch://INFRA-299).
+  // change is the issue's `pinned` alone, over the row as it stands (`shows`), so the store draws
+  // it over each answer that lands there while it is live, draws a pin waiting behind it over the
+  // row Dispatch answers it with, and leaves the row Dispatch last gave if it leaves without
+  // landing (R7 and R10 of dispatch://INFRA-299). Its answer is merged into the store's copy of
+  // the state (`Writes.answer`), never over the state as it stands.
   const updateState = useKeyedWrite({
     label: (pinned: boolean) => `${issue.key} ${pinned ? "pinned" : "unpinned"}`,
     request: (pinned: boolean) => issueStateRequest(issue.key, { pinned }),
@@ -314,7 +317,7 @@ export function IssueHeader({
     onMutate: () => queryClient.cancelQueries({ queryKey: userStateQuery().queryKey }),
     onSuccess: (next) => {
       if (next === null) return;
-      queryClient.setQueryData<UserState>(userStateQuery().queryKey, (current) => ({
+      writes.answer<UserState>(userStateQuery().queryKey, (current) => ({
         ...current,
         [issue.key]: next,
       }));

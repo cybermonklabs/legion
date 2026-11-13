@@ -354,10 +354,10 @@ test("two rapid moves on one board run one after the other, the second from the 
   }
 });
 
-// R7 of dispatch://INFRA-299. A drop's placement is written in the press's tick as the store's
-// own writing (`Writes.placeAhead`), placed on the board as every earlier drop left it: a drop
-// made while an earlier one is unanswered keeps its own place, and the earlier drop's rule is not
-// run again over it.
+// R7 of dispatch://INFRA-299. A drop's placement is shown in the press's tick, ahead of its write
+// (`Writes.showAhead`), in the press's place among the board's live changes: a drop made while an
+// earlier one is unanswered keeps its own place, since the store draws the earlier drop and then
+// this one over the board as Dispatch gave it, as they were placed.
 test("a second drop while the first is unanswered leaves both cards where they were dropped", async () => {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const queryKey = ["issues", "project", "CORE"] as const;
@@ -409,10 +409,10 @@ test("a second drop while the first is unanswered leaves both cards where they w
   }
 });
 
-// R10 of dispatch://INFRA-299 under two drops. A drop made while an earlier one is live is placed
-// ahead of its write on the board that earlier drop left (`Writes.placeAhead`), and the store
-// keeps the board as Dispatch last gave it - with the earlier drop in it once Dispatch made it -
-// as what a refusal puts back. With every read of the board failing from then on, the earlier
+// R10 of dispatch://INFRA-299 under two drops. A drop made while an earlier one is live is shown
+// ahead of its write (`Writes.showAhead`), and the store keeps the board as Dispatch last gave it
+// - with the earlier drop written in once Dispatch made it - apart from the screen. With every
+// read of the board failing from then on, a refused drop simply stops being drawn: the earlier
 // card stays where it was dropped and the refused card goes back where Dispatch has it.
 test("a drop refused behind an earlier drop, with the board unreadable, puts back only the refused card", async () => {
   const queryClient = new QueryClient({

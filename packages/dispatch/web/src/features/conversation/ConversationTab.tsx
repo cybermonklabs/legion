@@ -63,6 +63,7 @@ import { useThreadOrder } from "../threads/thread-order";
 import { useMarkThreadRead } from "../threads/useMarkThreadRead";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
+import { writesOf } from "../writes/write-store";
 import { Avatar } from "./Avatar";
 import type { ReplyTarget } from "./composer-model";
 import {
@@ -1190,8 +1191,10 @@ export function ConversationTab({
   });
   useSendMarkOnce({
     mark: read === undefined ? undefined : { key: `${read.issueKey} ${read.seq}`, value: read },
+    // Into Dispatch's copy of the viewer's state while a pin of any issue shows a change there
+    // (`Writes.answer`), so that pin stays over the mark's answer and none is carried into it.
     onSuccess: (next, mark) =>
-      queryClient.setQueryData<UserState>(["user-state"], (current) => ({
+      writesOf(queryClient).answer<UserState>(["user-state"], (current) => ({
         ...current,
         [mark.issueKey]: next,
       })),

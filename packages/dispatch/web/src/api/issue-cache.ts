@@ -1,5 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 
+import { writesOf } from "../features/writes/write-store";
 import type { Artifact, DocumentRole, Issue, IssueDetails } from "./types";
 
 /** The issue's primary document (its spec), or undefined until the details have loaded. */
@@ -39,10 +40,12 @@ export function roleDocument(
  * the `Issue` fields, so they are merged over the details-only fields until the next full fetch.
  * `route_status` is one of those, judged for the route the details were read with: a new route
  * clears it, its holder and its reason rather than wear the old route's, and the issue's own
- * event refetches them.
+ * event refetches them. While a pick of another field of the issue is still out, the response
+ * is merged into Dispatch's copy of the issue (`Writes.answer`), so that pick stays over it and
+ * is not carried into what its refusal leaves.
  */
 export function mergeIssue(queryClient: QueryClient, next: Issue): void {
-  queryClient.setQueryData<IssueDetails>(["issue", next.key], (current) => {
+  writesOf(queryClient).answer<IssueDetails>(["issue", next.key], (current) => {
     if (current === undefined) {
       return undefined;
     }

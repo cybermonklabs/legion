@@ -12,6 +12,7 @@ import type {
 } from "../../api/types";
 import { compareTimestamps } from "../../lib/timestamps";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
+import { writesOf } from "../writes/write-store";
 
 /** The badge an unread count wears wherever it shows: the navigation, the compact header, and
  *  the agent's row. */
@@ -80,13 +81,15 @@ export function useUnreadAtOpen(
 }
 
 /** Puts the session's state a PUT answered with into the viewer's shared agent-state query, so
- *  every badge and row reads it at once. */
+ *  every badge and row reads it at once: into Dispatch's copy of it while a pin shows a change
+ *  there (`Writes.answer`), so a pin of another session still out stays over it and none is
+ *  carried into what that pin's refusal leaves. */
 export function storeAgentState(
   queryClient: QueryClient,
   sessionId: string,
   next: UserAgentState
 ): void {
-  queryClient.setQueryData<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
+  writesOf(queryClient).answer<UserAgentStates>(userAgentStateQuery().queryKey, (current) => ({
     ...current,
     [sessionId]: next,
   }));
