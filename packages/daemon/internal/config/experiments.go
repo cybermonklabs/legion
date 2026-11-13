@@ -163,8 +163,10 @@ var MemoryVariantNames = []string{MemoryVariantMemory, MemoryVariantNone}
 // (weight 1, carrying the block's config_files and instructions) and none (weight 1, carrying
 // neither) — the group the daemon has always drawn.
 //
-// Every project declares it, whatever it writes: a project that writes no block declares it at
-// mode off, whose draw records each new tree at no variant. That is the record the daemon has
+// Every project declares it, whatever it writes: a project that writes neither the block nor
+// experiments.memory declares it at mode off, and one that writes experiments.memory declares it
+// at that key's own mode (the paragraph after this one). For the first, the mode-off draw records
+// each new tree at no variant, which is the record the daemon has
 // written for every tree of such a project since the memory draw existed — the draw ran at every
 // tree's first lifecycle row whatever the file said, and the empty mode read back as the word
 // `off` — and the three memory fields a reader asks of such a tree answer off that row
