@@ -496,13 +496,15 @@ func (a *Admission) lineFacts(ctx context.Context, tx pgx.Tx) ([]record.Issue, r
 	return issues, facts, nil
 }
 
-// blockedFrom is every issue Legion is waiting to start that waits on something else, as the
-// tick notice carries it: the candidates promotion passes over, the children the workflow holds
-// behind an unfinished Dispatch issue, and the parents whose own children are still open
-// (workflow.ChildWaitRows), judged from issues and facts the caller has already read and from
-// this transaction's own reads by the function the state's `blocked` is built with
-// (blockers.Blocked), so the controller is told exactly what `legion state` shows. The slots are
-// read here, because they are the one fact of the judgement no other reader of this pass wants.
+// blockedFrom is every issue Legion waits on another issue for, one it has still to start or one
+// it started that gave its slot back, as the tick notice carries it: the candidates promotion
+// passes over, the children the workflow holds behind an unfinished Dispatch issue, the parents
+// whose own children are still open (workflow.ChildWaitRows), and the started issues that gave
+// their slot back to wait (record.LineWaitingOnIssue), judged from issues and facts the caller
+// has already read and from this transaction's own reads by the function the state's `blocked`
+// is built with (blockers.Blocked), so the controller is told exactly what `legion state` shows.
+// The slots are read here, because they are the one fact of the judgement no other reader of
+// this pass wants.
 func (a *Admission) blockedFrom(ctx context.Context, tx pgx.Tx, issues []record.Issue, facts record.LineFacts) ([]record.BlockedIssue, error) {
 	slots, err := a.store.Slots(ctx, tx)
 	if err != nil {

@@ -303,8 +303,9 @@ type Notice struct {
 	// the legion.yaml line that records a decision; a gap is the operator's to close or decide, a
 	// live row's the session's environment to fix, and neither is the controller's.
 	OpenCapabilities []string `json:"openCapabilities,omitempty"`
-	// Blocked is every issue Legion is waiting to start because it waits on a Dispatch issue
-	// nobody has finished (INFRA-225), with what each still waits on. Only a tick controller
+	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for (INFRA-225),
+	// one it has still to start or one it started that gave its admission slot back for the wait,
+	// with what each still waits on. Only a tick controller
 	// notice carries it, as OpenCapabilities does: the tick is the turn that posts the day's
 	// report, so the controller names each there and takes nothing for it. A tick with nothing
 	// blocked carries none.
@@ -433,9 +434,10 @@ func (u UpdateStalled) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// BlockedIssue is one issue Legion is waiting to start and the issues it waits on that are not
-// done, in the order Dispatch lists them (blockers.Unfinished): a root admission skips, or a
-// child the workflow holds at `admitted`. It lives here, below both readers, so the tick notice
+// BlockedIssue is one issue Legion waits on another issue for and the issues it waits on that are
+// not done, in the order Dispatch lists them (blockers.Unfinished): a root admission skips, a
+// child the workflow holds at `admitted`, or a started issue that gave its admission slot back
+// for the wait. It lives here, below both readers, so the tick notice
 // above and the state's `blocked` (api.BlockedIssue, an alias of this type) carry one shape
 // rather than two that could drift.
 type BlockedIssue struct {
