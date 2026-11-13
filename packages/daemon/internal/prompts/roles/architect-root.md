@@ -36,7 +36,8 @@ you found in the spec. Your decomposition, the order its work lands in and how e
 child issues and the planner's `plan` handoff, not the root spec. Mark each requirement of the
 spec as a `requirement` block, and write the issue's Verification document (`verification.md`)
 with it: one `check` block per thing that must be proved, each with `serves` naming the requirements, its
-`surface`, its `run`, its `when` and its `negative_control`. Once its ask blocks are
+`surface`, its `run`, its `when` and its `negative_control`. A check carrying `ci_check` is CI's
+and takes no `run` (`skill://legion-architect/references/design-gate.md`). Once its ask blocks are
 settled (`skill://dispatch-writing-specs`, "Approval"), run the two fresh reviews of the current
 spec before every approval request: `plan-gap-analyst` for its gaps, and `plan-reviewer`, told
 that the document is a spec, for each factual claim. Resolve every finding, and check with a

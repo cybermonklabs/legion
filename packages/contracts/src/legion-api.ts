@@ -424,7 +424,7 @@ const legionSlotView = z.object({
  * rendered afresh from `record.LinePart` and `record.LineKind` at each read and never stored, so no
  * retired word comes back off a row, and naming the five kinds is what lets a reader branch on
  * them. `waiting_on_issue`, a started issue that gave its admission slot back to wait on another
- * issue, is the fifth, added at contract 110; a caller below 110 is served such a member without
+ * issue, is the fifth, added at contract 111; a caller below 111 is served such a member without
  * its `kind`. */
 const legionWaitingLineView = z.object({
   place: z.number().int().positive(),

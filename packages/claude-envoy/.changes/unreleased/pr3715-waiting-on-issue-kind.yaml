@@ -1,2 +1,2 @@
 kind: Changed
-body: The daemon API contract is 110. The waiting line's `kind` gains `waiting_on_issue`, a started issue that gave its admission slot back to wait on another issue.
+body: The daemon API contract is 111. The waiting line's `kind` gains `waiting_on_issue`, a started issue that gave its admission slot back to wait on another issue.

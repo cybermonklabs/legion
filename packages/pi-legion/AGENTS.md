@@ -94,10 +94,10 @@ field from `legion.goDaemonApiVersion` when the plugin dropped its TypeScript-da
 (LEGION-223): a release before it declares the TypeScript daemon's 9 under this name and is
 refused naming that number. The split of the one plugin into this package and `@sjawhar/pi-envoy`
 (LEGION-247) moved no request, response or pane variable, so it bumped nothing of its own: the
-number is the one `DaemonAPIVersion` declares, last bumped by contract 110's `waiting_on_issue`
+number is the one `DaemonAPIVersion` declares, last bumped by contract 111's `waiting_on_issue`
 (dispatch://INFRA-3036: the waiting line's `kind` gains `waiting_on_issue`, a started issue that
 gave its admission slot back to wait on another issue, and a caller from a pod whose claims record
-a contract under 110 is served such a member without its `kind`, `api.stateFor`,
+a contract under 111 is served such a member without its `kind`, `api.stateFor`,
 `withoutWaitingOnIssue`), after contract 104's claim recoveries
 (dispatch://INFRA-3161: `fresh_session` reaches a claim stored working that no process stands
 behind, the compaction refuses that claim `CLAIM_NOT_RUNNING` naming `fresh_session`, and no

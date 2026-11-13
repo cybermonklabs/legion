@@ -184,6 +184,15 @@ test("the staged decisions rule separates material choices from spec details", (
   expect(skill).not.toContain("Each choice you made alone, and each a person made");
 });
 
+// dispatch://INFRA-3204: a check may name the CI check run that proves it, and then carries no
+// command. Every spec writer reads the check's attributes here, so the list names `ci_check` and
+// its rule, in the phrase the Legion skills and prompts carry once each.
+test("the spec writer's check attributes name `ci_check`, which takes no `run`", () => {
+  const skill = readFileSync(path.join(staged, "dispatch-writing-specs/SKILL.md"), "utf8");
+  expect(skill.split("check carrying `ci_check` is CI's").length - 1).toBe(1);
+  expect(skill).toContain("takes no `run`");
+});
+
 // Agents reach Dispatch through the `dispatch` command, so no skill or daemon prompt may tell one
 // to call a native tool it no longer has: each names the command (`dispatch ask`) instead.
 test("no skill or daemon prompt names a native Dispatch tool", () => {

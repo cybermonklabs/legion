@@ -1427,7 +1427,7 @@ package api
 // docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
 // says.)
 //
-// 110: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
+// 111: INFRA-3036 (cybermonklabs/legion) -- the waiting line's `kind` (`api.WaitingLineView`) on
 // `GET /legion/v1/state` gains a fifth word, `waiting_on_issue`: an issue the daemon has started
 // that gave its admission slot back to wait on another issue — a Dispatch blocker of it that is
 // not done, or an open child its own first phase waits for (record.LineWaitingOnIssue). It
@@ -1436,10 +1436,10 @@ package api
 // and "Admission" in the root AGENTS.md). Such an issue stands in `admission.waiting` and, where
 // what it waits on is a Dispatch blocker or an open child, in `admission.blocked`, and so in no
 // row of 98's `admission.held`, which names no issue `active` or `waiting` names. A plugin from
-// 85 through 109, INFRA-714's 86, INFRA-3219's 87, INFRA-2800's 94, INFRA-3107's 98 and
+// 85 through 110, INFRA-714's 86, INFRA-3219's 87, INFRA-2800's 94, INFRA-3107's 98 and
 // INFRA-3161's 104 above among them, reads `kind` with a `z.enum` of the four words before it, which refuses a word it
 // does not name and with it the whole state body, so a caller from a pod whose claims record a
-// contract below 110 is served every member of that kind without its `kind` (api's stateFor,
+// contract below 111 is served every member of that kind without its `kind` (api's stateFor,
 // withoutWaitingOnIssue), which that schema takes as optional; every other field of the member
 // is 85's, `leakCheckCause` on the claim views is 87's and narrowed as 87 says, the issues'
 // `phaseEntry` and `givenEntry` are 94's and narrowed as 94 says, `admission.held` is 98's and
@@ -1481,7 +1481,11 @@ package api
 // right above, at aee2873c, and this entry sits above it. The same reading of the 137 open pull
 // requests other than this one at 2026-11-13T17:15:05Z gave, above 104, 105 (#3659), 106 (#2731
 // and #3730), 107 (#3712) and 109 (#3519 and #3793), and no open head declares above 109, so
-// this branch takes 110, above main's 104 and above every number another open head declares:
-// 108 is free, but it is below 109. Read the base's own number and every open pull request
-// again at every forward merge rather than from this line.)
-const DaemonAPIVersion = 110
+// this branch moved to 110: 108 was free, but it was below 109. The same reading of the 135 open
+// pull requests other than this one at 2026-11-13T18:08:34Z gave, above 104, 105 (#3659), 106
+// (#2731 and #3730), 107 (#3712), 108 (#3519, which had moved down from 109 meanwhile), 109
+// (#3793) and 110 (#3937, which had moved up from 104 meanwhile), and no open head declares
+// above 110, so this branch takes 111, above main's 104 and above every number another open head
+// declares. Read the base's own number and every open pull request again at every forward merge
+// rather than from this line.)
+const DaemonAPIVersion = 111
