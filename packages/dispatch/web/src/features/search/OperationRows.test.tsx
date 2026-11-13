@@ -106,14 +106,24 @@ const proposal: GoingProposalEvent = {
       {
         action: "dispatch_issue_update",
         invocations: [
-          { arguments: { issue: "LEGION-3", status: "in_progress" }, missing: null },
-          { arguments: { issue: "LEGION-4", status: "in_progress" }, missing: null },
+          {
+            arguments: { issue: "LEGION-3", status: "in_progress" },
+            automatic: true,
+            missing: null,
+          },
+          {
+            arguments: { issue: "LEGION-4", status: "in_progress" },
+            automatic: true,
+            missing: null,
+          },
         ],
         offered: true,
       },
       {
         action: "dispatch_comment",
-        invocations: [{ arguments: { body: "On it.", issue: "LEGION-3" }, missing: null }],
+        invocations: [
+          { arguments: { body: "On it.", issue: "LEGION-3" }, automatic: true, missing: null },
+        ],
         offered: true,
       },
     ],
@@ -330,6 +340,86 @@ test("with the person's setting on, the operation asks first and is sent confirm
   }
 });
 
+/** The decision's update of LEGION-3, which the words named, beside one of LEGION-4 that only an
+ *  item's stored text asked for: the proposal marks it not automatic. */
+const injected: GoingProposalEvent = {
+  data: {
+    offers: [
+      {
+        action: "dispatch_issue_update",
+        invocations: [
+          {
+            arguments: { issue: "LEGION-3", status: "in_progress" },
+            automatic: true,
+            missing: null,
+          },
+          { arguments: { issue: "LEGION-4", status: "done" }, automatic: false, missing: null },
+        ],
+        offered: true,
+      },
+    ],
+  },
+  event: "proposal",
+};
+
+test("a submit runs only the invocations the proposal marked automatic, and the rest is a row the person picks", async () => {
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), injected, ended);
+    expect(
+      await screen.findByRole("option", { name: /^Run issue update on LEGION-3(?! and)/ })
+    ).toHaveAttribute("id", OPERATION_OPTION_ID);
+    const offered = screen.getByRole("option", { name: /^Run issue update on LEGION-4/ });
+    expect(offered).toHaveAttribute("id", offerOptionId("dispatch_issue_update"));
+
+    await submit(user);
+    await waitFor(() => expect(screen.getAllByTestId("going-write-line")).toHaveLength(1));
+    await tick(1000);
+    expect(sent()).toEqual([{ approved: "auto", invocation: 0, offer: "dispatch_issue_update" }]);
+
+    // The person picks the offered write: it runs as theirs, and the one already made is not made
+    // again.
+    await user.click(screen.getByRole("option", { name: /^Run issue update on LEGION-4/ }));
+    await waitFor(() =>
+      expect(sent()).toEqual([
+        { approved: "auto", invocation: 0, offer: "dispatch_issue_update" },
+        { approved: "person", invocation: 1, offer: "dispatch_issue_update" },
+      ])
+    );
+  } finally {
+    bar.unmount();
+  }
+});
+
+test("with the person's setting on, the confirm step lists only the automatic invocations and confirms only those", async () => {
+  settings.mockResolvedValue({ confirm_writes: true });
+  const user = userOnFakeClock();
+  const bar = renderBar();
+  try {
+    await ask(user, "astrolabe");
+    stream(decision(true, ["dispatch_issue_update"]), injected, ended);
+    await screen.findByRole("option", { name: /^Run issue update on LEGION-3(?! and)/ });
+
+    await submit(user);
+    const step = await screen.findByTestId("going-confirm-step");
+    expect(
+      within(step)
+        .getAllByTestId("going-write-line")
+        .map((line) => line.textContent)
+    ).toEqual(["issue update LEGION-3: asks first"]);
+    await user.click(within(step).getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(sent()).toEqual([
+        { approved: "confirmed", invocation: 0, offer: "dispatch_issue_update" },
+      ])
+    );
+  } finally {
+    bar.unmount();
+  }
+});
+
 test("an invocation missing one argument asks for it, and the write carries the value as its fill", async () => {
   const user = userOnFakeClock();
   const bar = renderBar();
@@ -345,6 +435,7 @@ test("an invocation missing one argument asks for it, and the write carries the 
               invocations: [
                 {
                   arguments: { action: "follow", ask: "ask-1" },
+                  automatic: true,
                   missing: { field: "@session", kind: "text" },
                 },
               ],
@@ -408,7 +499,11 @@ test("a new issue the run made is the issue its write names, with no read of it 
             {
               action: "dispatch_issue",
               invocations: [
-                { arguments: { project: "LEGION", title: "astrolabe" }, missing: null },
+                {
+                  arguments: { project: "LEGION", title: "astrolabe" },
+                  automatic: true,
+                  missing: null,
+                },
               ],
               offered: true,
             },
@@ -459,7 +554,7 @@ test("a send through the run whose delivery failed answers why, as the direct se
       offers: [
         {
           action: "dispatch_send_to_agent",
-          invocations: [{ arguments: { session: "session-1" }, missing: null }],
+          invocations: [{ arguments: { session: "session-1" }, automatic: true, missing: null }],
           offered: true,
         },
       ],

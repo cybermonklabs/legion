@@ -219,10 +219,15 @@ export interface GoingMissingArgument {
 }
 
 /** One run of an action: the arguments the answer and the page filled, each checked against the
- *  action's own schema, and the one argument still missing, null where none is. */
+ *  action's own schema, the one argument still missing, null where none is, and whether it may
+ *  run at once on submit: only where every item it names is the chip's issue or project, where the
+ *  words are about the page, or is named whole in the person's own words. Any other invocation
+ *  came from text someone stored and is an offer the person picks, which the server refuses to
+ *  run as `auto` (`GOING_NOT_AUTOMATIC`). */
 export interface GoingInvocation {
   readonly arguments: Readonly<Record<string, unknown>>;
   readonly missing: GoingMissingArgument | null;
+  readonly automatic: boolean;
 }
 
 /** One action the decision offered: one invocation per item it changes, and `offered` false

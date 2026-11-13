@@ -2,10 +2,11 @@ package api
 
 // going_writes.go runs one write of a command-bar run (R3, R4): POST
 // /api/v1/going/runs/{id}/writes takes one invocation of one action the run's proposal offered,
-// reads the value it is about to change, performs it as the caller, reads the value it left, and
-// appends all of it to the run's record (appendGoingRunWrite). The bar sends one write-store
-// request per write, so a refused write shows its refusal in its own line and an undo of a write
-// still queued stops it before it is sent.
+// claims it on the run's record (claimGoingRunWrite), reads the value it is about to change,
+// performs it as the caller, reads the value it left, and records all of it in the place of the
+// claim (recordGoingRunWrite). The bar sends one write-store request per write, so a refused write
+// shows its refusal in its own line and an undo of a write still queued stops it before it is
+// sent.
 //
 // The write runs as the caller: through the server's own route table, called
 // in-process (server.inProcess), with the caller's credential copied from this request and
@@ -22,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"reflect"
@@ -33,6 +35,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -141,10 +144,31 @@ const (
 	codeGoingRunUnproposed        = "GOING_RUN_UNPROPOSED"
 	codeGoingNotProposed          = "GOING_NOT_PROPOSED"
 	codeGoingApprovalRequired     = "GOING_APPROVAL_REQUIRED"
+	codeGoingNotAutomatic         = "GOING_NOT_AUTOMATIC"
 	codeGoingConfirmationRequired = "GOING_CONFIRMATION_REQUIRED"
 	codeGoingArguments            = "GOING_ARGUMENTS"
 	codeGoingInput                = "GOING_INPUT"
+	// codeGoingWriteInProgress is an invocation whose write another request has claimed and not
+	// yet recorded: 429 with a Retry-After, which neither the keyed layer keeps (storedStatus)
+	// nor the bar's write store gives up on, so the retry is answered the first write's line.
+	codeGoingWriteInProgress = "GOING_WRITE_IN_PROGRESS"
+	// codeGoingWriteUnsettled is an invocation whose write was claimed longer ago than any
+	// request making it can still run (goingClaimBound) and never recorded: it may have landed,
+	// so it is not written again, and the person reads the item to see.
+	codeGoingWriteUnsettled = "GOING_WRITE_UNSETTLED"
 )
+
+// goingClaimedRetryAfter is the Retry-After, in seconds, of a write or an undo another request of
+// the same invocation or run is making.
+const goingClaimedRetryAfter = "1"
+
+// goingWriteLineOf is the line a write of the run answers, from the write as the run records it.
+func goingWriteLineOf(write goingRunWrite) goingWriteLine {
+	return goingWriteLine{
+		WriteID: write.ID, Action: write.Action, Item: write.Target, Field: write.Field,
+		Before: write.Before, Now: write.After, Outcome: write.Outcome,
+	}
+}
 
 // goingWriteInput is POST /api/v1/going/runs/{id}/writes's body: which invocation of which offer
 // of the run's proposal to run, any of its arguments the person changed, the value of the one
@@ -180,20 +204,25 @@ type goingWriteLine struct {
 
 // createGoingWrite is POST /api/v1/going/runs/{id}/writes: one write of the caller's own run. A
 // run that is not the caller's, that the record does not hold, or that is older than thirty days
-// is 404 GOING_RUN_NOT_FOUND, one answer for all three. An invocation the run already wrote, and
-// whose write went through, is not written again: the request writes nothing and answers that
-// write's line as the run recorded it. Two writes of one invocation take turns under a lock keyed
-// by the run, the offer and the invocation, taken once the run is known to be the caller's, so the
-// second reads the first off the run; a write that was refused made nothing, and does not stop
-// another. A repeat under the write's own Idempotency-Key is answered by the keyed layer from the
-// first answer, as every keyed write's is. The run must have proposed or ended (409
-// GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
+// is 404 GOING_RUN_NOT_FOUND, one answer for all three. Each invocation of a run is written once:
+// the write claims its invocation on the run before it reads or sends anything
+// (claimGoingRunWrite), in one statement that holds no lock and no connection past itself, so of
+// two requests for one invocation one claims it. A request for an invocation whose write went
+// through writes nothing and answers that write's line as the run recorded it; one whose write is
+// claimed and not yet recorded is 429 GOING_WRITE_IN_PROGRESS with a Retry-After, and once that
+// claim is older than any request can still be running (goingClaimBound) 409
+// GOING_WRITE_UNSETTLED, since it may have landed. A write that was refused made nothing, and
+// does not stop another. A repeat under the write's own Idempotency-Key is answered by the keyed
+// layer from the first answer, as every keyed write's is. The run must have proposed or ended
+// (409 GOING_RUN_UNPROPOSED), and the action and the invocation must be in its proposal (409
 // GOING_NOT_PROPOSED). `auto` is refused, 409 GOING_APPROVAL_REQUIRED, for the two writes that
-// always ask and for any but the action the decision chose at or above the action threshold, and
+// always ask and for any but the action the decision chose at or above the action threshold, 409
+// GOING_NOT_AUTOMATIC for an invocation the proposal did not mark automatic (goingAutomatic), and
 // 409 GOING_CONFIRMATION_REQUIRED where the caller turned confirm_writes on. The value before is
 // read, the write performed and the value after read, each in-process as the caller; the write,
-// refused or not, is appended to the run. A refusal by the route the write ran through, or by a
-// read the write needed, is answered as that route answered it, status, code and all.
+// refused or not, is recorded in the place of its claim. A refusal by the route the write ran
+// through, or by a read the write needed, is answered as that route answered it, status, code
+// and all.
 func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -208,26 +237,11 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		writeError(w, codeGoingInput, http.StatusBadRequest, "approved must be auto, person or confirmed")
 		return
 	}
-	owned, ok := s.readCallersGoingRun(w, r, caller.ID)
-	if !ok {
-		return
-	}
-	release, err := s.lockGoing(r.Context(), fmt.Sprintf("going-write:%s:%d:%s", owned.ID, input.Invocation, input.Offer))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	defer release()
-	// The read the write goes by, under the lock: a write of this invocation that went through
-	// before it is on the run by now.
 	run, ok := s.readCallersGoingRun(w, r, caller.ID)
 	if !ok {
 		return
 	}
-	if index := slices.IndexFunc(run.Writes, func(write goingRunWrite) bool {
-		return write.Outcome.OK && write.Action == input.Offer && write.Invocation == input.Invocation
-	}); index >= 0 {
-		WriteJSON(w, http.StatusOK, goingWriteLineOf(run.Writes[index]))
+	if s.answerGoingWriteClaimed(w, run, input) {
 		return
 	}
 	if !run.Finished && len(run.Proposal) == 0 {
@@ -241,7 +255,7 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if input.Approved == goingApprovedAuto {
-		if refused := s.goingAutoRefusal(r.Context(), run, input.Offer, caller.ID); refused != nil {
+		if refused := s.goingAutoRefusal(r.Context(), run, input.Offer, invocation, caller.ID); refused != nil {
 			s.writeHandlerError(w, refused)
 			return
 		}
@@ -251,102 +265,181 @@ func (s *server) createGoingWrite(w http.ResponseWriter, r *http.Request) {
 		s.writeAuthenticationError(w, err)
 		return
 	}
-	session := goingCredentialOf(actor, false).session()
+	session := goingCredentialOf(r, actor, false).session()
 	doer := s.goingDoer(r)
 	arguments, named, refused := goingArgumentsOf(invocation, input)
 	if refused != nil {
 		s.writeHandlerError(w, refused)
 		return
 	}
-	write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved}
+	// Bounded as a keyed request's handler is, keyed or not, so a claim older than
+	// goingClaimBound is one no request is still making.
+	ctx, cancel := context.WithTimeout(r.Context(), s.goingClaimBound())
+	defer cancel()
+	write := goingRunWrite{ID: uuid.NewString(), Action: input.Offer, Invocation: input.Invocation, Approved: input.Approved, At: time.Now().UTC()}
+	if err := s.claimGoingRunWrite(ctx, run.ID, caller.ID, write); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			s.writeHandlerError(w, fmt.Errorf("claim the going write: %w", err))
+			return
+		}
+		// Another request claimed the invocation since the read, or the run is gone.
+		again, ok := s.readCallersGoingRun(w, r, caller.ID)
+		if ok && !s.answerGoingWriteClaimed(w, again, input) {
+			writeGoingWriteInProgress(w)
+		}
+		return
+	}
+	claim := goingWriteClaim{s: s, w: w, ctx: ctx, run: run.ID, login: caller.ID, write: write}
 	if named != "" {
 		// The session the person named for a row addressing the caller's own session, read off
 		// the roster as the person may read it.
-		resolved, err := (goingReader{doer: doer}).session(r.Context(), named)
+		resolved, err := (goingReader{doer: doer}).session(ctx, named)
 		if err != nil {
-			s.refuseGoingWrite(w, r, run.ID, caller.ID, write, goingObservation{}, err)
+			claim.refuse(goingObservation{}, err)
 			return
 		}
 		session = resolved
 	}
 	performer := GoingCaller{Catalogue: s.going, Session: session, Doer: doer}
-	prepared, err := performer.prepare(r.Context(), input.Offer, arguments)
+	prepared, err := performer.prepare(ctx, input.Offer, arguments)
 	if err != nil {
-		s.refuseGoingWrite(w, r, run.ID, caller.ID, write, goingObservation{}, err)
+		claim.refuse(goingObservation{}, err)
 		return
 	}
 	observer := goingObserver{read: performer.reader(), s: s}
-	before, err := observer.observe(r.Context(), prepared, nil, goingObservation{})
+	before, err := observer.observe(ctx, prepared, nil, goingObservation{})
 	if err != nil {
-		s.refuseGoingWrite(w, r, run.ID, caller.ID, write, before, err)
+		claim.refuse(before, err)
 		return
 	}
-	response, landed, err := performer.send(r.Context(), prepared)
+	response, landed, err := performer.send(ctx, prepared)
 	if err != nil {
-		s.writeHandlerError(w, fmt.Errorf("perform %s in-process: %w", input.Offer, err))
+		err = fmt.Errorf("perform %s in-process: %w", input.Offer, err)
+		if len(landed) == 0 {
+			// Nothing was sent, so nothing landed: the invocation may be written again.
+			claim.refuse(before, err)
+			return
+		}
+		// A write sent ahead of the row's own landed: the claim stays, so it is not sent twice.
+		s.writeHandlerError(w, err)
 		return
 	}
-	write.Landed = landed
+	claim.write.Landed = landed
 	answer, err := io.ReadAll(response.Body)
 	_ = response.Body.Close()
 	if err != nil {
+		// What the write did is unknown: the claim stays, so it is not written again.
 		s.writeHandlerError(w, fmt.Errorf("read what %s answered: %w", input.Offer, err))
 		return
 	}
 	if response.StatusCode >= http.StatusMultipleChoices {
-		s.refuseGoingWrite(w, r, run.ID, caller.ID, write, before, goingRefusalOf(response, answer))
+		claim.refuse(before, goingRefusalOf(response, answer))
 		return
 	}
-	write.Outcome = goingWriteOutcome{OK: true, Status: response.StatusCode}
-	after, err := observer.observe(r.Context(), prepared, answer, before)
+	claim.write.Outcome = goingWriteOutcome{OK: true, Status: response.StatusCode}
+	after, err := observer.observe(ctx, prepared, answer, before)
 	if err != nil {
 		// The write landed; only the read back of it failed, which the record says rather than
 		// losing the write, in the words goingFailed gives it.
 		after = goingObservation{target: before.target, field: before.field, issue: before.issue}
-		write.Outcome.Message = "the write landed and the value after it could not be read: " + goingFailed(err).Message
+		claim.write.Outcome.Message = "the write landed and the value after it could not be read: " + goingFailed(err).Message
 	}
-	write.Target, write.Field = cmp.Or(after.target, before.target), cmp.Or(after.field, before.field)
-	write.Before, write.After = goingJSONOrNull(before.value), goingJSONOrNull(after.value)
-	write.At = time.Now().UTC()
-	if err := s.appendGoingRunWrite(r.Context(), run.ID, caller.ID, write, cmp.Or(after.issue, before.issue)); err != nil {
-		s.writeGoingRunAppendError(w, err)
+	claim.write.Target, claim.write.Field = cmp.Or(after.target, before.target), cmp.Or(after.field, before.field)
+	claim.write.Before, claim.write.After = goingJSONOrNull(before.value), goingJSONOrNull(after.value)
+	if claim.record(cmp.Or(after.issue, before.issue)) {
+		WriteJSON(w, http.StatusOK, goingWriteLineOf(claim.write))
+	}
+}
+
+// answerGoingWriteClaimed answers a request for an invocation the run already holds a write of
+// that went through - that write's line - or one claimed and not yet recorded - 429
+// GOING_WRITE_IN_PROGRESS while the request that claimed it may still be running, and 409
+// GOING_WRITE_UNSETTLED once it cannot be - and reports whether it answered.
+func (s *server) answerGoingWriteClaimed(w http.ResponseWriter, run goingRun, input goingWriteInput) bool {
+	index := slices.IndexFunc(run.Writes, func(write goingRunWrite) bool {
+		return write.Action == input.Offer && write.Invocation == input.Invocation && (write.Outcome.OK || write.Pending)
+	})
+	if index < 0 {
+		return false
+	}
+	claimed := run.Writes[index]
+	switch {
+	case !claimed.Pending:
+		WriteJSON(w, http.StatusOK, goingWriteLineOf(claimed))
+	case time.Since(claimed.At) < s.goingClaimBound():
+		writeGoingWriteInProgress(w)
+	default:
+		writeError(w, codeGoingWriteUnsettled, http.StatusConflict, fmt.Sprintf(
+			"this invocation's write was sent at %s and its outcome was never recorded, so it may have landed: it is not written again; read the item to see what it holds",
+			claimed.At.Format(time.RFC3339)))
+	}
+	return true
+}
+
+// writeGoingWriteInProgress answers a request for an invocation another request is writing.
+func writeGoingWriteInProgress(w http.ResponseWriter) {
+	w.Header().Set("Retry-After", goingClaimedRetryAfter)
+	writeError(w, codeGoingWriteInProgress, http.StatusTooManyRequests,
+		"another request is writing this invocation now: ask again shortly for its line")
+}
+
+// goingBookkeeping is the context a claim is recorded or released on: ctx's values without its
+// end, bounded as the keyed layer's own bookkeeping is (keyedBookkeeping), so a write that landed
+// as its request's time ran out is still recorded.
+func goingBookkeeping(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), keyedBookkeeping)
+}
+
+// goingWriteClaim is a write that claimed its invocation on the run, and the request answering it.
+type goingWriteClaim struct {
+	s     *server
+	w     http.ResponseWriter
+	ctx   context.Context
+	run   string
+	login string
+	write goingRunWrite
+}
+
+// record records the claimed write as it went, in the place of its claim, and reports whether it
+// was recorded; where it was not, the request is answered the failure, and the claim stays.
+func (c goingWriteClaim) record(issue string) bool {
+	c.write.At = time.Now().UTC()
+	ctx, cancel := goingBookkeeping(c.ctx)
+	defer cancel()
+	if err := c.s.recordGoingRunWrite(ctx, c.run, c.login, c.write, issue); err != nil {
+		c.s.writeGoingRunAppendError(c.w, err)
+		return false
+	}
+	return true
+}
+
+// refuse answers a claimed write that was refused or failed before it landed: by the route it ran
+// through or by a read it needed, each answered as that route answered it and recorded as the
+// write's outcome; by its own schema or translation, 400 GOING_ARGUMENTS, which no route saw and
+// the run does not record; or by the server's own failure. Every one but a route's refusal made
+// nothing the run records, so its claim is given up and the invocation may be written again.
+func (c goingWriteClaim) refuse(before goingObservation, err error) {
+	var refusal goingRefusal
+	if errors.As(err, &refusal) {
+		c.write.Target, c.write.Field = before.target, before.field
+		c.write.Before, c.write.After = goingJSONOrNull(before.value), json.RawMessage("null")
+		c.write.Outcome = goingWriteOutcome{Status: refusal.Status, Code: refusal.Code, Message: refusal.Message}
+		if c.record(before.issue) {
+			refusal.write(c.w)
+		}
 		return
 	}
-	WriteJSON(w, http.StatusOK, goingWriteLineOf(write))
-}
-
-// goingWriteLineOf is the line a write of the run answers, from the write as the run records it.
-func goingWriteLineOf(write goingRunWrite) goingWriteLine {
-	return goingWriteLine{
-		WriteID: write.ID, Action: write.Action, Item: write.Target, Field: write.Field,
-		Before: write.Before, Now: write.After, Outcome: write.Outcome,
+	ctx, cancel := goingBookkeeping(c.ctx)
+	defer cancel()
+	if released := c.s.releaseGoingRunWrite(ctx, c.run, c.login, c.write.ID); released != nil {
+		slog.Error("dispatch: give up the claim of a going write that made nothing", "error", released)
 	}
-}
-
-// refuseGoingWrite answers a write refused once it was the caller's to make: by the route it ran
-// through or by a read it needed, each answered as that route answered it and appended to the run
-// as the write's outcome, or by its own schema or translation, 400 GOING_ARGUMENTS, which no route
-// saw and the run does not record.
-func (s *server) refuseGoingWrite(w http.ResponseWriter, r *http.Request, runID, login string, write goingRunWrite, before goingObservation, err error) {
 	var argument GoingArgumentError
 	if errors.As(err, &argument) {
-		writeError(w, codeGoingArguments, http.StatusBadRequest, argument.Error())
+		writeError(c.w, codeGoingArguments, http.StatusBadRequest, argument.Error())
 		return
 	}
-	var refusal goingRefusal
-	if !errors.As(err, &refusal) {
-		s.writeHandlerError(w, err)
-		return
-	}
-	write.Target, write.Field = before.target, before.field
-	write.Before, write.After = goingJSONOrNull(before.value), json.RawMessage("null")
-	write.Outcome = goingWriteOutcome{Status: refusal.Status, Code: refusal.Code, Message: refusal.Message}
-	write.At = time.Now().UTC()
-	if err := s.appendGoingRunWrite(r.Context(), runID, login, write, before.issue); err != nil {
-		s.writeGoingRunAppendError(w, err)
-		return
-	}
-	refusal.write(w)
+	c.s.writeHandlerError(c.w, err)
 }
 
 // writeGoingRunAppendError answers a write or an undo the record would not take: a run that went
@@ -410,8 +503,10 @@ func goingProposedInvocation(run goingRun, input goingWriteInput) (goingInvocati
 
 // goingAutoRefusal is why a write may not run at once, nil where it may: the two writes that
 // always ask, any action but the one the decision chose at or above the action
-// threshold (the decision's act), and a caller who asked to confirm every write.
-func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action, login string) error {
+// threshold (the decision's act), an invocation the proposal did not mark automatic - one that
+// acts on an item neither the page nor the person's words named (goingAutomatic) - and a caller
+// who asked to confirm every write.
+func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action string, invocation goingInvocation, login string) error {
 	if goingAlwaysAsk[action] {
 		return errorf(http.StatusConflict, codeGoingApprovalRequired,
 			"%s always asks before it runs: send it as approved person or confirmed", action)
@@ -425,6 +520,10 @@ func (s *server) goingAutoRefusal(ctx context.Context, run goingRun, action, log
 	if !decision.Act || len(decision.Actions) == 0 || decision.Actions[0].Action != action {
 		return errorf(http.StatusConflict, codeGoingApprovalRequired,
 			"the decision did not choose %s at or above the action threshold, so it runs only when the person picks it: send it as approved person or confirmed", action)
+	}
+	if !invocation.Automatic {
+		return errorf(http.StatusConflict, codeGoingNotAutomatic,
+			"this invocation of %s acts on an item neither the page nor the person's own words named, so it runs only when the person picks it: send it as approved person or confirmed", action)
 	}
 	settings, err := s.readGoingSettings(ctx, login)
 	if err != nil {
@@ -563,6 +662,13 @@ func (o goingObserver) observe(ctx context.Context, prepared goingPrepared, answ
 		return o.document(ctx, resolved)
 	}
 	if answer == nil {
+		if prepared.action == "dispatch_request_approval" {
+			// A request renews an approval ask already open rather than opening one, so the
+			// asks open before it are what tells the undo whether this write opened its ask.
+			open, err := o.openApprovalAsks(ctx, path["id"])
+			return goingObservation{target: path["id"], field: field, issue: issue,
+				value: goingApprovalBefore{OpenAsks: open}}, err
+		}
 		// A write that makes an item: nothing of it is there before it.
 		return goingObservation{target: goingTargetOfPath(path), field: field, issue: issue}, nil
 	}
@@ -750,30 +856,37 @@ func (o goingObserver) rankPlace(ctx context.Context, key string) (goingRankPlac
 
 // rankRestore is how a write back puts an issue at the place it held: between the two neighbours
 // it had, those of them that are still issues of its project, or both where they still stand in
-// order, and why it cannot where neither is.
-func (o goingObserver) rankRestore(ctx context.Context, key string, place goingRankPlace) (map[string]any, string) {
+// order, and why it cannot where neither is. A read of the neighbours that failed is its error,
+// never a reason: the undo answers it as the server's own failure, which leaves the write
+// undoable.
+func (o goingObserver) rankRestore(ctx context.Context, key string, place goingRankPlace) (map[string]any, string, error) {
 	names := make([]string, 0, 2)
 	for _, neighbour := range []*string{place.After, place.Before} {
 		if neighbour != nil {
 			names = append(names, *neighbour)
 		}
 	}
-	// A neighbour that is no longer an issue of the project is passed over, and so is one whose
-	// read failed: either leaves that side of the place unnamed.
+	// A neighbour that is no longer an issue of the project is passed over: it leaves that side
+	// of the place unnamed.
 	ranks := map[string]string{}
 	if len(names) > 0 {
 		rows, err := o.s.deps.Store.Pool.Query(ctx, `
 			select n.key, n.rank from issues n join issues i on i.key = $2 and i.project_key = n.project_key
 			where n.key = any($1)
 		`, names, key)
-		if err == nil {
-			for rows.Next() {
-				var name, rank string
-				if rows.Scan(&name, &rank) == nil {
-					ranks[name] = rank
-				}
+		if err != nil {
+			return nil, "", fmt.Errorf("read the ranks of the issues %s stood between: %w", key, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var name, rank string
+			if err := rows.Scan(&name, &rank); err != nil {
+				return nil, "", fmt.Errorf("read the ranks of the issues %s stood between: %w", key, err)
 			}
-			rows.Close()
+			ranks[name] = rank
+		}
+		if err := rows.Err(); err != nil {
+			return nil, "", fmt.Errorf("read the ranks of the issues %s stood between: %w", key, err)
 		}
 	}
 	restore := map[string]any{}
@@ -786,9 +899,34 @@ func (o goingObserver) rankRestore(ctx context.Context, key string, place goingR
 		}
 	}
 	if len(restore) == 0 {
-		return nil, "rank: neither issue it stood between is an issue of its project now, so its place cannot be named back"
+		return nil, "rank: neither issue it stood between is an issue of its project now, so its place cannot be named back", nil
 	}
-	return restore, ""
+	return restore, "", nil
+}
+
+// goingApprovalBefore is an approval request's value before it: the id of every approval ask open
+// where the request could renew one rather than open its own (openApprovalAsks).
+type goingApprovalBefore struct {
+	OpenAsks []string `json:"open_asks"`
+}
+
+// openApprovalAsks is the id of every approval ask open that an approval request of the document
+// could renew instead of opening one: each naming the document, and each of the document's issue,
+// since a request renews one open over any document it names - an issue's Verification document
+// beside its spec (requestArtifactApproval). It is read from the store, as rankPlace is, since no
+// route lists a document's open approval asks.
+func (o goingObserver) openApprovalAsks(ctx context.Context, artifact string) ([]string, error) {
+	open := []string{}
+	if err := o.s.deps.Store.Pool.QueryRow(ctx, `
+		select coalesce(array_agg(a.id::text order by a.id), '{}')
+		from asks a
+		where a.kind = 'approval' and a.state = 'open'
+		  and (`+docs.ApprovalDocumentsJSONPath+` ? $1
+		       or a.issue_key = (select d.issue_key from artifacts d where d.id = $2::uuid))
+	`, artifact, artifact).Scan(&open); err != nil {
+		return nil, fmt.Errorf("read the approval asks open on %s: %w", artifact, err)
+	}
+	return open, nil
 }
 
 // goingIssueFieldValue is one field of an issue's read as an update writes it.

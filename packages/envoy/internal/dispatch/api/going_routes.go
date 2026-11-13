@@ -243,8 +243,9 @@ func (s *server) createGoingRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	// What the run may offer is the caller's to decide, and the caller is this request's: the
 	// run is detached from it, and the row keeps no credential (model.Actor.Recorded).
-	credential := goingCredentialOf(caller, cookie)
+	credential := goingCredentialOf(r, caller, cookie)
 	start := goingRunStart{
+		words:   words,
 		chip:    chip,
 		login:   goingRunLogin(caller),
 		actions: s.going.runnableBy(credential),

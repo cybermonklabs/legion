@@ -103,8 +103,10 @@ func toolResults(t *testing.T, model *goingtest.Model) map[string]going.Read {
 		if message.Role != "tool" {
 			continue
 		}
+		// A read's result is its note that what follows is stored data, then the read's JSON.
+		_, content, _ := strings.Cut(message.Content, "\n")
 		var read going.Read
-		if err := json.Unmarshal([]byte(message.Content), &read); err != nil {
+		if err := json.Unmarshal([]byte(content), &read); err != nil {
 			t.Fatalf("the %s result %q is no read: %v", names[message.ToolCallID], message.Content, err)
 		}
 		results[names[message.ToolCallID]] = read

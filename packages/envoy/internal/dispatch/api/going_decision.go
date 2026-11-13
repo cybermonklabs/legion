@@ -12,9 +12,11 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strings"
 
 	"github.com/sjawhar/envoy/agentloop"
 	"github.com/sjawhar/envoy/going"
+	"github.com/sjawhar/envoy/internal/brokertoken"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -49,15 +51,20 @@ const (
 
 // goingCredential is what decides which rows of the catalogue a caller may be offered: whether
 // the credential is a browser's cookie, which a bearer-only row refuses, the scopes it holds,
-// and the session it proved (session), which fills a row addressing the caller's own session.
+// the session it proved (session), which fills a row addressing the caller's own session, and
+// whether it is presented with a proof bound to each request (a broker-issued access token under
+// DPoP), which a write made in-process cannot carry (goingInProcess copies the credential and no
+// proof, and a proof is single use and bound to one URL).
 type goingCredential struct {
 	cookie     bool
 	credential *model.Credential
+	proofBound bool
 }
 
 // goingCredentialOf is the asking request's credential as goingCredential reads it.
-func goingCredentialOf(actor model.Actor, cookie bool) goingCredential {
-	return goingCredential{cookie: cookie, credential: actor.Credential}
+func goingCredentialOf(r *http.Request, actor model.Actor, cookie bool) goingCredential {
+	_, proofBound := brokertoken.Presented(r)
+	return goingCredential{cookie: cookie, credential: actor.Credential, proofBound: proofBound}
 }
 
 // session is the session the credential proved, "" for none or no credential.
@@ -85,9 +92,15 @@ func (route GoingRoute) runnableBy(caller goingCredential) bool {
 
 // runnableBy is the catalogue as one caller may run it: each action keeps the rows
 // the caller may call, and an action left with none is not offered at all, so a person is never
-// offered a handoff or a reply to a delivery, which only a session's bearer may write.
+// offered a handoff or a reply to a delivery, which only a session's bearer may write. A caller
+// whose token needs a proof per request is offered no action at all: an action runs through the
+// table in-process (goingInProcess), which carries the credential and no proof, so every write
+// and every read it makes would be refused 401.
 func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
 	runnable := make([]GoingAction, 0, len(c.actions))
+	if caller.proofBound {
+		return runnable
+	}
 	for _, action := range c.actions {
 		routes := make([]GoingRoute, 0, len(action.Routes))
 		for _, route := range action.Routes {
@@ -104,11 +117,12 @@ func (c GoingCatalogue) runnableBy(caller goingCredential) []GoingAction {
 	return runnable
 }
 
-// goingRunStart is what a run is started with beyond its request row: the context chip, the
-// login its record is kept under ("" for a caller that is no person, whose run keeps no record),
-// the actions its caller may be offered, the session its caller's credential proved, and the read
-// tools its caller may call (goingReadsFor).
+// goingRunStart is what a run is started with beyond its request row: the person's typed words,
+// the context chip, the login its record is kept under ("" for a caller that is no person, whose
+// run keeps no record), the actions its caller may be offered, the session its caller's
+// credential proved, and the read tools its caller may call (goingReadsFor).
 type goingRunStart struct {
+	words   string
 	chip    *goingContext
 	login   string
 	actions []GoingAction
@@ -297,10 +311,13 @@ type goingOffer struct {
 }
 
 // goingInvocation is one run of an action: the arguments the answer and the page filled, each
-// checked against the action's own schema, and the one argument the bar still has to ask for.
+// checked against the action's own schema, the one argument the bar still has to ask for, and
+// whether it may run at once, on submit, rather than only when the person picks it
+// (goingAutomatic).
 type goingInvocation struct {
 	Arguments map[string]any        `json:"arguments"`
 	Missing   *goingMissingArgument `json:"missing"`
+	Automatic bool                  `json:"automatic"`
 }
 
 // goingMissingArgument is the one argument an invocation still needs, of a kind the bar prompts
@@ -359,6 +376,7 @@ func goingPropose(decision goingDecision, final *going.Final, start goingRunStar
 		offer := goingOffer{Action: name, Invocations: []goingInvocation{}}
 		for _, arguments := range calls {
 			if invocation, kept := goingInvocationOf(action, arguments, chip, start.session); kept {
+				invocation.Automatic = goingAutomatic(invocation.Arguments, chip, start.words)
 				offer.Invocations = append(offer.Invocations, invocation)
 			}
 		}
@@ -366,6 +384,82 @@ func goingPropose(decision goingDecision, final *going.Final, start goingRunStar
 		proposal.Offers = append(proposal.Offers, offer)
 	}
 	return proposal
+}
+
+// goingItemArguments are the arguments that name an item of Dispatch's an invocation acts on or
+// links to: every argument the search lists an item for (goingItemFields), the project, the
+// session a message goes to and the result a retraction names.
+var goingItemArguments = func() map[string]bool {
+	named := map[string]bool{"project": true, "session": true, "retract": true}
+	for argument := range goingItemFields {
+		named[argument] = true
+	}
+	return named
+}()
+
+// goingAutomatic reports whether an invocation may run at once, on submit: only where every item
+// it names (goingItemArguments, each text and each text of a list) is the chip's issue or project
+// - chip is nil where the decision did not read the words as about the page - or is named in the
+// person's own typed words (goingWordsName). The answer model writes the invocations from items
+// any person or agent wrote, so an item only that text names is offered for the person to pick and
+// never runs by itself. The one argument the bar asks the person for is not among the arguments
+// here: what the person fills is theirs.
+func goingAutomatic(arguments map[string]any, chip *goingContext, words string) bool {
+	for argument, value := range arguments {
+		if !goingItemArguments[argument] {
+			continue
+		}
+		values := []any{value}
+		if list, isList := value.([]any); isList {
+			values = list
+		}
+		for _, element := range values {
+			text, isText := element.(string)
+			if !isText || strings.TrimSpace(text) == "" {
+				continue
+			}
+			if !goingChipNames(chip, text) && !goingWordsName(words, text) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// goingChipNames reports whether the chip's issue or project is item.
+func goingChipNames(chip *goingContext, item string) bool {
+	if chip == nil {
+		return false
+	}
+	return (chip.Issue != "" && strings.EqualFold(chip.Issue, item)) ||
+		(chip.Project != "" && strings.EqualFold(chip.Project, item))
+}
+
+// goingWordsName reports whether the typed words name item literally: item occurs in them, with
+// case ignored, as a whole word - neither end runs on into a letter, a digit, a hyphen or an
+// underscore - so DEMO-12 names DEMO-12 and not DEMO-123, and "spec." names the document spec.
+func goingWordsName(words, item string) bool {
+	haystack, needle := strings.ToLower(words), strings.ToLower(strings.TrimSpace(item))
+	if needle == "" {
+		return false
+	}
+	for from := 0; ; {
+		at := strings.Index(haystack[from:], needle)
+		if at < 0 {
+			return false
+		}
+		start, end := from+at, from+at+len(needle)
+		if (start == 0 || !goingWordRune(haystack[start-1])) && (end == len(haystack) || !goingWordRune(haystack[end])) {
+			return true
+		}
+		from = start + 1
+	}
+}
+
+// goingWordRune reports whether b continues a word an item is named by: a letter, a digit, a
+// hyphen or an underscore, or any byte of a character past ASCII.
+func goingWordRune(b byte) bool {
+	return b >= 'a' && b <= 'z' || b >= '0' && b <= '9' || b == '-' || b == '_' || b >= 0x80
 }
 
 // goingInvocationOf holds one element of the answer's arguments to its action's schema and fills

@@ -253,13 +253,14 @@ func TestGoingRunDecidesBeforeItAnswersAndProposesBothOfferedActions(t *testing.
 
 	var proposal goingProposal
 	frameData(t, frames, contracts.GoingEventProposal, &proposal)
+	// The words name DEMO-1 and DEMO-2, so every invocation on them may run at once.
 	want := goingProposal{Offers: []goingOffer{
 		{Action: "dispatch_issue_update", Offered: true, Invocations: []goingInvocation{
-			{Arguments: map[string]any{"issue": "DEMO-1", "status": "done"}},
-			{Arguments: map[string]any{"issue": "DEMO-2", "status": "done"}},
+			{Arguments: map[string]any{"issue": "DEMO-1", "status": "done"}, Automatic: true},
+			{Arguments: map[string]any{"issue": "DEMO-2", "status": "done"}, Automatic: true},
 		}},
 		{Action: "dispatch_comment", Offered: true, Invocations: []goingInvocation{
-			{Arguments: map[string]any{"issue": "DEMO-1", "body": "Closing both."}},
+			{Arguments: map[string]any{"issue": "DEMO-1", "body": "Closing both."}, Automatic: true},
 		}},
 	}}
 	if !reflect.DeepEqual(proposal, want) {
@@ -425,7 +426,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		&going.Final{Arguments: `{"dispatch_claim":[{}]}`},
 		goingRunStart{chip: chip, actions: browser})
 	if got := offer(claimOnPage, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 ||
-		!reflect.DeepEqual(got.Invocations[0], goingInvocation{Arguments: map[string]any{"issue": "DEMO-12"}}) {
+		!reflect.DeepEqual(got.Invocations[0], goingInvocation{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true}) {
 		t.Errorf("on the page the claim is offered as %+v, want the chip's issue filled and nothing missing", got)
 	}
 	if got := offer(claimOnPage, "dispatch_resolve_ask"); got.Offered || len(got.Invocations) != 0 {
@@ -436,7 +437,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		goingDecision{Context: going.ContextNamed, offered: []string{"dispatch_claim"}},
 		&going.Final{Arguments: `{}`},
 		goingRunStart{chip: chip, actions: browser})
-	want := goingInvocation{Arguments: map[string]any{}, Missing: &goingMissingArgument{Field: "issue", Kind: goingPromptItem, Item: "issue"}}
+	want := goingInvocation{Arguments: map[string]any{}, Missing: &goingMissingArgument{Field: "issue", Kind: goingPromptItem, Item: "issue"}, Automatic: true}
 	if got := offer(claimNamed, "dispatch_claim"); !got.Offered || len(got.Invocations) != 1 || !reflect.DeepEqual(got.Invocations[0], want) {
 		t.Errorf("about items the words name, the claim is offered as %+v, want the issue asked for as an item", got)
 	}
@@ -472,7 +473,7 @@ func TestGoingRunProposalFillsFromThePageAndPromptsForOneMissingArgument(t *test
 		goingDecision{Context: going.ContextPage, offered: []string{"dispatch_claim"}},
 		nil,
 		goingRunStart{chip: chip, actions: browser})
-	if got := offer(fallback, "dispatch_claim"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-12"}}}) {
+	if got := offer(fallback, "dispatch_claim"); !got.Offered || !reflect.DeepEqual(got.Invocations, []goingInvocation{{Arguments: map[string]any{"issue": "DEMO-12"}, Automatic: true}}) {
 		t.Errorf("with no structured reply the claim is offered as %+v, want it filled from the page", got)
 	}
 }

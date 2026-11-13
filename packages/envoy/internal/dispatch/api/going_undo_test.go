@@ -7,13 +7,16 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
 // goingUndoKinds is the undo R4 gives each action of the catalogue: a reverse where Dispatch
@@ -403,8 +406,8 @@ func TestGoingUndoPutsARankBackBetweenItsOldNeighbours(t *testing.T) {
 }
 
 // TestGoingUndoTwoUndosOfOneRunTakeTurns: two undos of one run sent at once undo each write once:
-// the second waits for the first, reads what it recorded, and finds nothing left to undo.
-// (awaitResponse's two seconds are too short for an undo waiting out another's three writes.)
+// one claims the run's writes, and the other either finds them claimed - 429 with a Retry-After -
+// or comes after and finds nothing left to undo; a retry once both answered undoes nothing more.
 func TestGoingUndoTwoUndosOfOneRunTakeTurns(t *testing.T) {
 	rig := newGoingWritesRig(t)
 	issue := createInteractionIssue(t, rig.mux, "DEMO", "Twice", "The spec.\n").Key
@@ -430,10 +433,16 @@ func TestGoingUndoTwoUndosOfOneRunTakeTurns(t *testing.T) {
 		case <-time.After(30 * time.Second):
 			t.Fatal("an undo never answered")
 		}
-		if response.Code != http.StatusOK {
-			t.Fatalf("an undo answered %d %s", response.Code, response.Body.String())
+		switch {
+		case response.Code == http.StatusOK:
+			lines += len(decodeBody[goingUndoAnswer](t, response).Lines)
+		case response.Code != http.StatusTooManyRequests || !strings.Contains(response.Body.String(), codeGoingUndoInProgress) ||
+			response.Header().Get("Retry-After") == "":
+			t.Fatalf("an undo answered %d %s, want its lines or 429 %s with a Retry-After", response.Code, response.Body.String(), codeGoingUndoInProgress)
 		}
-		lines += len(decodeBody[goingUndoAnswer](t, response).Lines)
+	}
+	if again := rig.undo(t, "alice", run, nil); len(again.Lines) != 0 {
+		t.Fatalf("an undo after both undid %+v again", again.Lines)
 	}
 	undos := rig.record(t, "alice", run).Undos
 	if lines != 3 || len(undos) != 3 {
@@ -441,8 +450,8 @@ func TestGoingUndoTwoUndosOfOneRunTakeTurns(t *testing.T) {
 	}
 	seen := map[string]bool{}
 	for _, undo := range undos {
-		if seen[undo.WriteID] || !undo.Outcome.OK {
-			t.Fatalf("the run keeps the undos %+v, want each write undone once and ok", undos)
+		if seen[undo.WriteID] || !undo.Outcome.OK || undo.Pending {
+			t.Fatalf("the run keeps the undos %+v, want each write undone once, ok and recorded", undos)
 		}
 		seen[undo.WriteID] = true
 	}
@@ -520,5 +529,152 @@ func TestGoingUndoOfAWriteWhoseActionIsGoneIsRefusedAsUnknown(t *testing.T) {
 	}
 	if labels := rig.issueRead(t, issue).Labels; len(labels) != 1 || labels[0] != "left" {
 		t.Fatalf("the issue's labels read %v, want the write's left in place", labels)
+	}
+}
+
+// TestGoingUndoOfAClaimTheCallerAlreadyHeldReleasesNothing: a bar turn that claims an issue the
+// person already held changed nothing, so its undo leaves the claim with them.
+func TestGoingUndoOfAClaimTheCallerAlreadyHeldReleasesNothing(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Held by hand", "The spec.\n").Key
+	rig.fixture(t, "alice", http.MethodPost, "/api/v1/issues/"+issue+"/claim", map[string]any{})
+	run, _ := rig.runOne(t, "dispatch_claim", map[string]any{"issue": issue}, nil)
+	oneLine(t, rig.undo(t, "alice", run, nil), true)
+	if claim := rig.issueRead(t, issue).Claim; claim == nil || model.CanonicalLogin(claim.Actor.ID) != "alice" {
+		t.Fatalf("alice's own claim reads %+v after the undo of a turn that changed nothing, want it hers still", claim)
+	}
+}
+
+// TestGoingUndoOfAnApprovalRequestRetractsOnlyTheAskItOpened: a second request for approval of a
+// document renews the ask the first opened; the second's undo leaves that ask open, and the
+// first's, which opened it, retracts it.
+func TestGoingUndoOfAnApprovalRequestRetractsOnlyTheAskItOpened(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Approved twice", "The spec.\n").Key
+	askState := func(id string) string {
+		t.Helper()
+		return decodeBody[goingAskRead](t, rig.fixture(t, "alice", http.MethodGet, "/api/v1/asks/"+id, nil)).Ask.State
+	}
+	first, opened := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
+	second, renewed := rig.runOne(t, "dispatch_request_approval", map[string]any{"issue": issue, "artifact": "spec", "summary": "Ready."}, nil)
+	if renewed.Item != opened.Item {
+		t.Fatalf("the second request answered the ask %s, want the first's %s renewed", renewed.Item, opened.Item)
+	}
+	oneLine(t, rig.undo(t, "alice", second, nil), true)
+	if state := askState(opened.Item); state != "open" {
+		t.Fatalf("the approval ask is %s after the undo of the request that renewed it, want open", state)
+	}
+	oneLine(t, rig.undo(t, "alice", first, nil), true)
+	if state := askState(opened.Item); state != "resolved" {
+		t.Fatalf("the approval ask is %s after the undo of the request that opened it, want resolved", state)
+	}
+}
+
+// TestGoingUndoRefusedForACauseThatClearsStaysUndoable: an undo its route refused 429 settles
+// nothing - the run still reads undoable - and a second undo of the run undoes the write.
+func TestGoingUndoRefusedForACauseThatClearsStaysUndoable(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Busy", "The spec.\n").Key
+	status := rig.issueRead(t, issue).Status
+	run, _ := rig.runOne(t, "dispatch_issue_update", map[string]any{"issue": issue, "status": "in_progress"}, nil)
+	inner := rig.served.inProcess
+	t.Cleanup(func() { rig.served.inProcess = inner })
+	limited := false
+	rig.served.inProcess = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPatch && !limited {
+			limited = true
+			w.Header().Set("Retry-After", "1")
+			writeError(w, "RATE_LIMITED", http.StatusTooManyRequests, "too many writes from this caller: try again shortly")
+			return
+		}
+		inner.ServeHTTP(w, r)
+	})
+	refused := oneLine(t, rig.undo(t, "alice", run, nil), false)
+	if refused.Outcome.Status != http.StatusTooManyRequests {
+		t.Fatalf("the undo answered %+v, want the route's 429", refused.Outcome)
+	}
+	listed := decodeBody[goingRunsPage](t, rig.browser(t, "alice", http.MethodGet, "/api/v1/me/going-runs?undoable=true", nil))
+	if !slices.ContainsFunc(listed.Rows, func(row goingRun) bool { return row.ID == run }) {
+		t.Fatal("the run no longer reads undoable after an undo refused 429")
+	}
+	oneLine(t, rig.undo(t, "alice", run, nil), true)
+	if now := rig.issueRead(t, issue).Status; now != status {
+		t.Fatalf("the issue is %s after the second undo, want %s back", now, status)
+	}
+}
+
+// TestGoingUndoSettlesOnlyAVerdictARetryWouldRepeat: ok, another writer's change and a refusal
+// that is the route's final word settle a write; the server's own failure, a refusal that says
+// only this attempt was not heard (401, 408, 429) and a contended claim do not.
+func TestGoingUndoSettlesOnlyAVerdictARetryWouldRepeat(t *testing.T) {
+	for _, tc := range []struct {
+		outcome goingWriteOutcome
+		settles bool
+	}{
+		{goingWriteOutcome{OK: true, Status: http.StatusOK}, true},
+		{goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoChanged}, true},
+		{goingWriteOutcome{Status: http.StatusConflict, Code: codeGoingUndoNotCallers}, true},
+		{goingWriteOutcome{Status: http.StatusForbidden, Code: "OAUTH_SCOPE_REQUIRED"}, true},
+		{goingWriteOutcome{Status: http.StatusConflict, Code: codeClaimContended}, false},
+		{goingWriteOutcome{Status: http.StatusUnauthorized, Code: "UNAUTHENTICATED"}, false},
+		{goingWriteOutcome{Status: http.StatusRequestTimeout, Code: "REQUEST_TIMEOUT"}, false},
+		{goingWriteOutcome{Status: http.StatusTooManyRequests, Code: "RATE_LIMITED"}, false},
+		{goingWriteOutcome{Status: http.StatusInternalServerError, Code: codeInternal}, false},
+		{goingWriteOutcome{Status: http.StatusNotImplemented, Code: codeGoingUndoUnserved}, false},
+	} {
+		if got := goingUndoSettles(tc.outcome); got != tc.settles {
+			t.Errorf("an undo answered %d %s settles its write: %v, want %v", tc.outcome.Status, tc.outcome.Code, got, tc.settles)
+		}
+	}
+}
+
+// TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled: a failed read of the issues a
+// rank stood between is the undo's failure, answered 500 and settling nothing, never another
+// writer's change.
+func TestGoingUndoOfARankWhoseNeighboursCannotBeReadFailsUnsettled(t *testing.T) {
+	rig := newGoingWritesRig(t)
+	issue := createInteractionIssue(t, rig.mux, "DEMO", "Ranked", "The spec.\n").Key
+	neighbour := rig.issue(t, "Its neighbour")
+	// A context holding a connection already: the pool refuses the read a second one.
+	held, release := store.HoldsConnection(context.Background())
+	defer release()
+	observer := goingObserver{s: rig.served}
+	restore, why, err := observer.rankRestore(held, issue, goingRankPlace{After: &neighbour})
+	if err == nil || why != "" || restore != nil {
+		t.Fatalf("rankRestore on a read that failed answered %v, %q, %v; want its error and no reason", restore, why, err)
+	}
+
+	undoer := goingUndoer{s: rig.served}
+	write := goingRunWrite{ID: "w-rank", Action: "dispatch_issue_update", Target: issue, Field: goingRank,
+		Before: json.RawMessage(`{"rank":{"rank":"a"}}`), After: json.RawMessage(`{"rank":{"rank":"b"}}`), Outcome: goingWriteOutcome{OK: true}}
+	read := func([]string) (map[string]any, error) {
+		return map[string]any{goingRank: map[string]any{"rank": "b"}}, nil
+	}
+	_, outcome, _ := undoer.writeBack(context.Background(), write, read, goingIssuePatchRoute, map[string]string{"key": issue},
+		func(string, json.RawMessage, json.RawMessage, json.RawMessage) (any, string, error) {
+			return nil, "", err
+		})
+	if outcome.OK || outcome.Status != http.StatusInternalServerError || goingUndoSettles(outcome) {
+		t.Fatalf("the write back answered %+v, want the server's own 500, which settles nothing", outcome)
+	}
+}
+
+// TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused: a row whose undo kind names no undo
+// this server runs for its action is refused, 501 GOING_UNDO_UNSERVED, which settles nothing,
+// rather than recorded as undone with nothing undone.
+func TestGoingUndoOfARowWhoseUndoThisServerCannotRunIsRefused(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A row added later whose undo is stated as a reverse, with no reverse written for it here.
+	resolve := catalogue.byAction["dispatch_resolve_ask"]
+	for index := range catalogue.actions[resolve].Routes {
+		catalogue.actions[resolve].Routes[index].Undo = GoingUndo{Kind: goingUndoReverse, Routes: []string{goingAskResolveRoute}}
+	}
+	undoer := goingUndoer{s: &server{going: catalogue}}
+	line := undoer.undo(context.Background(), goingRunWrite{ID: "w-1", Action: "dispatch_resolve_ask", Target: "ask-1", Field: "state", Outcome: goingWriteOutcome{OK: true}})
+	if line.Outcome.OK || line.Outcome.Status != http.StatusNotImplemented || line.Outcome.Code != codeGoingUndoUnserved || goingUndoSettles(line.Outcome) {
+		t.Fatalf("the undo of a reverse row with no reverse answered %+v, want 501 %s, unsettled", line.Outcome, codeGoingUndoUnserved)
 	}
 }

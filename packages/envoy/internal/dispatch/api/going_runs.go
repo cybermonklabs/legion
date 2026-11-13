@@ -3,6 +3,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,9 +23,14 @@ import (
 //
 // Every read and write of that record is here. The run writes the row when it starts
 // (recordGoingRun) and fills it as it goes (fillGoingRun), so a run that is abandoned keeps what
-// it stored and reads as unfinished; each write and each undo is appended in one statement
-// (appendGoingRunWrite, appendGoingRunUndo). GET /api/v1/me/going-runs is the one route that
-// reads a row, and it reads the caller's own alone.
+// it stored and reads as unfinished. A write and an undo each claim what they are about to change
+// before they change it, in one statement that holds no lock and no connection past itself: a
+// write appends itself pending (claimGoingRunWrite), unless the run already holds a pending or a
+// successful write of that invocation, and an undo appends a pending undo of each write it is
+// about to undo (claimGoingRunUndos), unless another undo of the run is under way. Each then
+// records how it went in the place of its claim (recordGoingRunWrite, recordGoingRunUndo), or
+// gives the claim up where it made nothing (releaseGoingRunWrite, releaseGoingRunUndos). GET
+// /api/v1/me/going-runs is the one route that reads a row, and it reads the caller's own alone.
 
 // goingRunsKept is how long a run's record is kept: a row older than this is read by nobody,
 // even before sweepGoingRuns deletes it, and takes no write or undo.
@@ -67,6 +73,12 @@ type goingWriteOutcome struct {
 // went, how it came to run - the run made it at once (auto), the person ran it from the bar
 // (person), or the person confirmed it when asked (confirmed) - when, and the items it made
 // before its own request.
+//
+// Pending is a write claimed and not yet recorded: the request making it is under way, or it
+// ended - its process died, or its record could not be written - after its write may have
+// landed. Its outcome is unknown, so it is never written again: a request for its invocation is
+// answered that it is under way, and once the request that claimed it can no longer be running
+// (goingClaimBound) that its outcome is unknown.
 type goingRunWrite struct {
 	ID         string            `json:"id"`
 	Action     string            `json:"action"`
@@ -77,6 +89,7 @@ type goingRunWrite struct {
 	After      json.RawMessage   `json:"after"`
 	Outcome    goingWriteOutcome `json:"outcome"`
 	Approved   string            `json:"approved" enum:"auto,person,confirmed"`
+	Pending    bool              `json:"pending"`
 	At         time.Time         `json:"at"`
 	// Landed is the id of each item a write sent before the row's own made: the message a
 	// reasoned close posts as its reason. It stands whether the row's own request then went
@@ -86,13 +99,17 @@ type goingRunWrite struct {
 
 // goingRunUndo is one undo of a write of the run, named by the write's id, with how it went,
 // field by field where the write changed several, and when. A write is undone once an undo of it
-// is ok, and settled once an undo of it reached a verdict that would only repeat - ok, or refused
-// because another writer changed what the write left - so no later undo of the turn tries it
-// again; an undo that failed short of a verdict (the server's own failure) leaves it undoable.
+// is ok, and settled once an undo of it reached a verdict that would only repeat
+// (goingUndoSettles) - ok, or refused because another writer changed what the write left - so no
+// later undo of the turn tries it again; an undo that failed short of a verdict (the server's own
+// failure, or a refusal that says only that this attempt was not heard) leaves it undoable.
+// Pending is an undo claimed and not yet recorded (claimGoingRunUndos), which holds off a second
+// undo of the run until it is recorded or goingClaimBound has passed.
 type goingRunUndo struct {
 	WriteID string            `json:"write_id"`
 	Outcome goingWriteOutcome `json:"outcome"`
 	Settled bool              `json:"settled"`
+	Pending bool              `json:"pending"`
 	Fields  []goingUndoField  `json:"fields"`
 	At      time.Time         `json:"at"`
 }
@@ -228,36 +245,182 @@ func (s *server) fillGoingRun(ctx context.Context, id string, parts goingRunPart
 	return nil
 }
 
-// appendGoingRunWrite appends one write to the author's run, and issue, the key of the issue it
-// changed (empty for a write that changes none), to the run's issues, in one statement, so two
-// writes of one turn appended at once both land. A run that is not the author's, that the record
-// does not hold, or that is older than goingRunsKept takes nothing and is pgx.ErrNoRows.
-func (s *server) appendGoingRunWrite(ctx context.Context, id, authorLogin string, write goingRunWrite, issue string) error {
+// goingClaimBound is how long a claim on a run (claimGoingRunWrite, claimGoingRunUndos) speaks for
+// a request still under way: the longest a keyed request's handler runs (keyedRunLimit), which
+// the writes and undo routes hold their unkeyed requests to as well. A pending write older than it
+// is answered as a write whose outcome is unknown, and a pending undo older than it no longer
+// holds off another undo of the run.
+func (s *server) goingClaimBound() time.Duration {
+	return s.keyedRunLimit()
+}
+
+// goingRunWriteClaimed is the condition that holds where the run r already holds a write of
+// offer $o and invocation $i that went through or is pending, which a second write of that
+// invocation must not be made beside.
+func goingRunWriteClaimed(offer, invocation int) string {
+	return fmt.Sprintf(`exists (
+		select 1 from jsonb_array_elements(r.writes) w
+		where w->>'action' = $%d and (w->>'invocation')::int = $%d
+		  and ((w->'outcome'->>'ok')::boolean or coalesce((w->>'pending')::boolean, false))
+	)`, offer, invocation)
+}
+
+// claimGoingRunWrite appends write, pending, to the author's run in one statement, unless the run
+// already holds a write of that invocation that went through or is pending: the claim is the
+// statement itself, so of two requests for one invocation one claims it and the other finds it
+// claimed. Either refusal - the invocation claimed, or a run that is not the author's, that the
+// record does not hold, or that is older than goingRunsKept - is pgx.ErrNoRows, which the caller
+// tells apart by reading the run again. The claim marks no Idempotency-Key committed
+// (store.WithoutBeforeCommit): it writes nothing a repeat must not make again, and the write it
+// claims marks the key itself when it lands.
+func (s *server) claimGoingRunWrite(ctx context.Context, id, authorLogin string, write goingRunWrite) error {
+	write.Pending = true
+	encoded, err := json.Marshal(write)
+	if err != nil {
+		return err
+	}
+	return s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
+		update going_runs r set writes = r.writes || jsonb_build_array($3::jsonb)
+		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(4)+`
+		  and not `+goingRunWriteClaimed(5, 6),
+		id, authorLogin, string(encoded), goingRunsKept.Seconds(), write.Action, write.Invocation)
+}
+
+// recordGoingRunWrite records write on the author's run in the place of its claim, the element of
+// its id, or appends it where the run holds none, and adds issue, the key of the issue it changed
+// (empty for a write that changes none), to the run's issues, in one statement, so two writes of
+// one turn recorded at once both land. A run that is not the author's, that the record does not
+// hold, or that is older than goingRunsKept takes nothing and is pgx.ErrNoRows.
+func (s *server) recordGoingRunWrite(ctx context.Context, id, authorLogin string, write goingRunWrite, issue string) error {
+	write.Pending = false
 	encoded, err := json.Marshal(write)
 	if err != nil {
 		return err
 	}
 	return s.appendToGoingRun(ctx, `
 		update going_runs r set
-		  writes = r.writes || jsonb_build_array($3::jsonb),
+		  writes = case
+		    when exists (select 1 from jsonb_array_elements(r.writes) w where w->>'id' = $6)
+		    then (select jsonb_agg(case when w->>'id' = $6 then $3::jsonb else w end order by n)
+		          from jsonb_array_elements(r.writes) with ordinality e(w, n))
+		    else r.writes || jsonb_build_array($3::jsonb)
+		  end,
 		  issues = case when $4::text = '' or $4::text = any(r.issues) then r.issues else array_append(r.issues, $4::text) end
 		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(5),
-		id, authorLogin, string(encoded), strings.TrimSpace(issue), goingRunsKept.Seconds())
+		id, authorLogin, string(encoded), strings.TrimSpace(issue), goingRunsKept.Seconds(), write.ID)
 }
 
-// appendGoingRunUndo appends one undo to the author's run in one statement. An undo of a write
-// the run does not hold is refused with the rest: a run that is not the author's, that the record
-// does not hold, or that is older than goingRunsKept takes nothing, and each is pgx.ErrNoRows.
-func (s *server) appendGoingRunUndo(ctx context.Context, id, authorLogin string, undo goingRunUndo) error {
+// releaseGoingRunWrite gives up the claim of a write that made nothing - one its request failed
+// before sending, or its own schema refused - so its invocation may be written again. Only a
+// pending write is taken off; a run that holds none of that id is left as it is. Like the claim,
+// it marks no Idempotency-Key committed.
+func (s *server) releaseGoingRunWrite(ctx context.Context, id, authorLogin, writeID string) error {
+	return goingReleased(s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
+		update going_runs r set writes = (
+		  select coalesce(jsonb_agg(w order by n), '[]'::jsonb)
+		  from jsonb_array_elements(r.writes) with ordinality e(w, n)
+		  where not (w->>'id' = $3 and coalesce((w->>'pending')::boolean, false))
+		)
+		where r.id = $1::uuid and r.author_login = $2
+		  and exists (select 1 from jsonb_array_elements(r.writes) w
+		              where w->>'id' = $3 and coalesce((w->>'pending')::boolean, false))`,
+		id, authorLogin, writeID))
+}
+
+// goingReleased is a release's error: a release that found nothing to take off has nothing left
+// to do, which is no failure.
+func goingReleased(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	return err
+}
+
+// goingUndoClaimedAt is the moment a pending undo was claimed at as its record spells it, which is
+// how the request that claimed it finds its own claim again: JSON's spelling of a time.
+func goingUndoClaimedAt(at time.Time) string {
+	return at.Format(time.RFC3339Nano)
+}
+
+// goingRunUndoPendingAt is the condition that holds of the undo element u where it is the pending
+// claim made at $at.
+func goingRunUndoPendingAt(at int) string {
+	return fmt.Sprintf(`(coalesce((u->>'pending')::boolean, false) and u->>'at' = $%d)`, at)
+}
+
+// claimGoingRunUndos appends a pending undo of each of writes, claimed at, to the author's run in
+// one statement, unless an undo of the run claimed within goingClaimBound is still pending, or one
+// of writes already has an undo that was ok or settled since the caller read the run. A pending
+// undo of one of writes older than the bound is taken off in the same statement. Either refusal,
+// like a run that is not the author's, that the record does not hold or that is older than
+// goingRunsKept, is pgx.ErrNoRows, which the caller tells apart by reading the run again. The
+// claim marks no Idempotency-Key committed (store.WithoutBeforeCommit), since it writes nothing a
+// repeat must not make again.
+func (s *server) claimGoingRunUndos(ctx context.Context, id, authorLogin string, writes []string, at time.Time) error {
+	pending := make([]goingRunUndo, 0, len(writes))
+	for _, write := range writes {
+		pending = append(pending, goingRunUndo{WriteID: write, Pending: true, Fields: []goingUndoField{}, At: at})
+	}
+	encoded, err := json.Marshal(pending)
+	if err != nil {
+		return err
+	}
+	return s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
+		update going_runs r set undos = (
+		  select coalesce(jsonb_agg(u order by n), '[]'::jsonb)
+		  from jsonb_array_elements(r.undos) with ordinality e(u, n)
+		  where not (coalesce((u->>'pending')::boolean, false) and u->>'write_id' = any($3::text[]))
+		) || $4::jsonb
+		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(5)+`
+		  and not exists (
+		    select 1 from jsonb_array_elements(r.undos) u
+		    where coalesce((u->>'pending')::boolean, false)
+		      and (u->>'at')::timestamptz > now() - make_interval(secs => $6))
+		  and not exists (
+		    select 1 from jsonb_array_elements(r.undos) u
+		    where u->>'write_id' = any($3::text[])
+		      and ((u->'outcome'->>'ok')::boolean or coalesce((u->>'settled')::boolean, false)))`,
+		id, authorLogin, writes, string(encoded), goingRunsKept.Seconds(), s.goingClaimBound().Seconds())
+}
+
+// recordGoingRunUndo records one undo on the author's run in the place of its pending claim made
+// at claimedAt (goingUndoClaimedAt), or appends it where the run holds no such claim - none was
+// made, or another undo took over a claim past goingClaimBound - in one statement. An undo of a
+// write the run does not hold is refused with the rest: a run that is not the author's, that the
+// record does not hold, or that is older than goingRunsKept takes nothing, and each is
+// pgx.ErrNoRows.
+func (s *server) recordGoingRunUndo(ctx context.Context, id, authorLogin string, undo goingRunUndo, claimedAt string) error {
+	undo.Pending = false
 	encoded, err := json.Marshal(undo)
 	if err != nil {
 		return err
 	}
+	claim := `u->>'write_id' = $4 and ` + goingRunUndoPendingAt(6)
 	return s.appendToGoingRun(ctx, `
-		update going_runs r set undos = r.undos || jsonb_build_array($3::jsonb)
+		update going_runs r set undos = case
+		  when exists (select 1 from jsonb_array_elements(r.undos) u where `+claim+`)
+		  then (select jsonb_agg(case when `+claim+` then $3::jsonb else u end order by n)
+		        from jsonb_array_elements(r.undos) with ordinality e(u, n))
+		  else r.undos || jsonb_build_array($3::jsonb)
+		end
 		where r.id = $1::uuid and r.author_login = $2 and `+goingRunWindow(5)+`
 		  and exists (select 1 from jsonb_array_elements(r.writes) w where w->>'id' = $4)`,
-		id, authorLogin, string(encoded), undo.WriteID, goingRunsKept.Seconds())
+		id, authorLogin, string(encoded), undo.WriteID, goingRunsKept.Seconds(), claimedAt)
+}
+
+// releaseGoingRunUndos takes off every pending undo claimed at claimedAt that its request did not
+// record, so the writes it claimed are undoable again at once rather than after goingClaimBound.
+// Like the claim, it marks no Idempotency-Key committed.
+func (s *server) releaseGoingRunUndos(ctx context.Context, id, authorLogin, claimedAt string) error {
+	return goingReleased(s.appendToGoingRun(store.WithoutBeforeCommit(ctx), `
+		update going_runs r set undos = (
+		  select coalesce(jsonb_agg(u order by n), '[]'::jsonb)
+		  from jsonb_array_elements(r.undos) with ordinality e(u, n)
+		  where not `+goingRunUndoPendingAt(3)+`
+		)
+		where r.id = $1::uuid and r.author_login = $2
+		  and exists (select 1 from jsonb_array_elements(r.undos) u where `+goingRunUndoPendingAt(3)+`)`,
+		id, authorLogin, claimedAt))
 }
 
 // appendToGoingRun runs one append to a run in a transaction of the shared pool, so a keyed

@@ -64,9 +64,11 @@ interface Wanted {
 /**
  * Where the bar's operation stands for the words in the box, once the person submitted it or
  * picked an offer: waiting for the decision or the proposal, asking for the one argument an
- * invocation is missing, asking first because the person's setting says so, or an action the
- * proposal offered nothing to run for. Nothing submitted is no state at all, and so is a submit
- * that had nothing to run (`idle`); once a write has gone, its lines say the rest.
+ * invocation is missing, asking first because the person's setting says so, an action the
+ * proposal offered nothing to run for, or one whose every invocation names an item neither the
+ * page nor the words named, which runs only when the person picks it (`picks`). Nothing submitted
+ * is no state at all, and so is a submit that had nothing to run (`idle`); once a write has gone,
+ * its lines say the rest.
  */
 type Stage =
   | ({ readonly kind: "preparing"; readonly words: string } & Wanted)
@@ -81,6 +83,7 @@ type Stage =
       readonly fills: Fills;
     }
   | { readonly kind: "unoffered"; readonly words: string; readonly action: string }
+  | { readonly kind: "picks"; readonly words: string; readonly action: string }
   | { readonly kind: "idle"; readonly words: string };
 
 /** What a submit or a pick comes to now: a stage to show, or the writes to make. */
@@ -96,6 +99,21 @@ type Step =
 /** The offer of `action` the proposal offered something to run for. */
 function offerOf(proposal: Proposal | undefined, action: string): GoingOffer | undefined {
   return proposal?.offers.find((offer) => offer.action === action && offer.offered);
+}
+
+/** The invocations of `offer` a write of the bar runs, by their index in it: every one where the
+ *  person picked the action, and otherwise - a submit, and its confirmation - only those the
+ *  proposal marked automatic. An invocation naming an item neither the page nor the person's
+ *  words named came from text someone stored, and runs only when the person picks it. */
+function runIndexes(offer: GoingOffer | undefined, approved: GoingApproval): number[] {
+  return (offer?.invocations ?? []).flatMap((invocation, index) =>
+    approved === "person" || invocation.automatic ? [index] : []
+  );
+}
+
+/** `offer` with only the invocations at `indexes`, for a row that names their items alone. */
+function offerWith(offer: GoingOffer, indexes: readonly number[]): GoingOffer {
+  return { ...offer, invocations: offer.invocations.filter((_, index) => indexes.includes(index)) };
 }
 
 /** The action the decision acts on by itself: its choice at or above the action threshold, and
@@ -128,7 +146,8 @@ function rowLabel(action: string, offer: GoingOffer | undefined): string {
  * The step a submit (`wanted.action` undefined: the operation the decision chose at or above the
  * action threshold) or a pick comes to, from what the run has streamed so far. A run that has not
  * decided, or a decision whose proposal has not arrived, is `preparing`; an answer that ended
- * without either has nothing to run.
+ * without either has nothing to run. A submit runs only the invocations the proposal marked
+ * automatic (`runIndexes`), and one with none is `picks`: the person picks the rest.
  */
 function nextStep(
   words: string,
@@ -150,8 +169,11 @@ function nextStep(
   }
   const offer = offerOf(answer.proposal, action);
   if (offer === undefined) return { action, kind: "unoffered", words };
-  const unfilled = offer.invocations.some(
-    (invocation, index) => invocation.missing !== null && (wanted.fills[index] ?? "").trim() === ""
+  const runs = runIndexes(offer, wanted.approved);
+  if (runs.length === 0) return { action, kind: "picks", words };
+  const unfilled = runs.some(
+    (index) =>
+      offer.invocations[index]?.missing !== null && (wanted.fills[index] ?? "").trim() === ""
   );
   if (unfilled)
     return { action, approved: wanted.approved, fills: wanted.fills, kind: "filling", words };
@@ -197,9 +219,12 @@ export interface GoingOperations {
  * the box. Where the decision acts - its choice at or above the action threshold and none of the
  * writes that always ask - the operation is one row above the hits with a Run button, and it runs
  * on submit: `$mod+Enter` anywhere in the bar, the Run button, or Enter on the row, which the
- * highlight reaches only when the person moves it there. Below the threshold the two best actions
- * are rows of their own, and neither runs until the person picks it. A new issue and a send to
- * the agent on the issue go through the bar's own two offers, which always ask.
+ * highlight reaches only when the person moves it there. A submit runs only the invocations the
+ * proposal marked automatic - each item they name is the page's or named in the words - and the
+ * rest, which only text someone stored asked for, are a row the person picks. Below the threshold
+ * the two best actions are rows of their own, and neither runs until the person picks it. A new
+ * issue and a send to the agent on the issue go through the bar's own two offers, which always
+ * ask.
  *
  * A submit before the proposal arrives says it is preparing and runs when the proposal lands; one
  * with no run yet asks at once. An invocation missing one argument asks for it first, and with
@@ -236,6 +261,9 @@ export function useGoingOperations({
   const [stage, setStage] = useWordsState<Stage>(words);
   const turn = useTurn(runId);
   const ran = new Set(turn?.lines.map((line) => line.action) ?? []);
+  // Each line's own invocation, `action:index`, so an action whose automatic invocations ran
+  // still offers the ones the person has to pick.
+  const ranInvocations = new Set(turn?.lines.map((line) => line.key) ?? []);
   // The field a missing argument is asked in takes focus as it appears, so the person types the
   // value where the bar asked for it; a ref of one identity, so a later render moves nothing.
   const focusField = useCallback((field: HTMLInputElement | HTMLSelectElement | null) => {
@@ -248,22 +276,28 @@ export function useGoingOperations({
     setStage({ kind: "idle", words });
     void runGoingWrites(
       writes,
-      offer.invocations.map((invocation, index) => ({
-        action,
-        approved,
-        arguments: invocation.arguments,
-        ...(invocation.missing === null
-          ? {}
-          : {
-              fill: {
-                field: invocation.missing.field,
-                value: fillValue(invocation.missing, (fills[index] ?? "").trim()),
-              },
-            }),
-        invocation: index,
-        runId,
-        words: current.words,
-      }))
+      runIndexes(offer, approved).flatMap((index) => {
+        const invocation = offer.invocations[index];
+        if (invocation === undefined) return [];
+        return [
+          {
+            action,
+            approved,
+            arguments: invocation.arguments,
+            ...(invocation.missing === null
+              ? {}
+              : {
+                  fill: {
+                    field: invocation.missing.field,
+                    value: fillValue(invocation.missing, (fills[index] ?? "").trim()),
+                  },
+                }),
+            invocation: index,
+            runId,
+            words: current.words,
+          },
+        ];
+      })
     );
   };
   const apply = (step: Step) => {
@@ -298,9 +332,11 @@ export function useGoingOperations({
     const acted = actedAction(decision);
     if (acted !== undefined) {
       sectionLabel = "Operation";
-      if (!ran.has(acted) && (proposal === undefined || offerOf(proposal, acted) !== undefined)) {
+      const actedOffer = offerOf(proposal, acted);
+      const automatic = runIndexes(actedOffer, "auto");
+      if (!ran.has(acted) && (proposal === undefined || automatic.length > 0)) {
         const waiting = stage?.kind === "preparing";
-        const label = rowLabel(acted, offerOf(proposal, acted));
+        const label = rowLabel(acted, actedOffer && offerWith(actedOffer, automatic));
         options.push({
           hint: waiting ? (
             <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>Preparing…</span>
@@ -320,6 +356,24 @@ export function useGoingOperations({
           ),
           label,
           row: { id: OPERATION_OPTION_ID, kind: "offer", label, select: submit },
+        });
+      }
+      // The invocations no submit runs - each names an item neither the page nor the words named -
+      // are a row of their own, which runs them only when the person picks it.
+      const offered = (actedOffer?.invocations ?? []).flatMap((invocation, index) =>
+        invocation.automatic || ranInvocations.has(`${acted}:${index}`) ? [] : [index]
+      );
+      if (actedOffer !== undefined && offered.length > 0) {
+        const label = rowLabel(acted, offerWith(actedOffer, offered));
+        options.push({
+          hint: <span className={`shrink-0 text-xs ${textMutedOnSurface}`}>Pick to run</span>,
+          label,
+          row: {
+            id: offerOptionId(acted),
+            kind: "offer",
+            label,
+            select: () => begin({ action: acted, approved: "person", fills: {} }),
+          },
         });
       }
     } else {
@@ -412,6 +466,12 @@ export function useGoingOperations({
             Nothing to run: the answer gave {actionName(stage.action)} nothing it can run with.
           </p>
         ) : null}
+        {stage?.kind === "picks" ? (
+          <p className={barNoteClassName} data-testid="going-operation-picks" role="status">
+            Nothing ran at once: the answer has {actionName(stage.action)} act on items neither this
+            page nor your words named. Pick it to run it.
+          </p>
+        ) : null}
         {stage?.kind === "filling" ? (
           <MissingArguments
             focusField={focusField}
@@ -420,6 +480,7 @@ export function useGoingOperations({
             offer={offerOf(proposal, stage.action)}
             onFill={(fills) => setStage({ ...stage, fills })}
             onSubmit={submit}
+            runs={runIndexes(offerOf(proposal, stage.action), stage.approved)}
           />
         ) : null}
         {stage?.kind === "confirming" ? (
@@ -428,6 +489,7 @@ export function useGoingOperations({
             offer={offerOf(proposal, stage.action)}
             onCancel={() => setStage({ kind: "idle", words })}
             onConfirm={() => run(stage.action, "confirmed", stage.fills)}
+            runs={runIndexes(offerOf(proposal, stage.action), "confirmed")}
           />
         ) : null}
         {turn === undefined || turn.lines.length === 0 ? null : (
@@ -450,7 +512,8 @@ export function useGoingOperations({
 }
 
 /** The field an invocation's one missing argument is asked in: a text, a number, one of an
- *  enumeration's values, or an item the bar's hits list. */
+ *  enumeration's values, or an item the bar's hits list - for each invocation the write will run
+ *  (`runs`, `runIndexes`). */
 function MissingArguments({
   focusField,
   fills,
@@ -458,6 +521,7 @@ function MissingArguments({
   offer,
   onFill,
   onSubmit,
+  runs,
 }: {
   readonly focusField: (field: HTMLInputElement | HTMLSelectElement | null) => void;
   readonly fills: Fills;
@@ -465,10 +529,13 @@ function MissingArguments({
   readonly offer: GoingOffer | undefined;
   readonly onFill: (fills: Fills) => void;
   readonly onSubmit: () => void;
+  readonly runs: readonly number[];
 }): ReactNode {
   if (offer === undefined) return null;
   const asked = offer.invocations.flatMap((invocation, index) =>
-    invocation.missing === null ? [] : [{ index, invocation, missing: invocation.missing }]
+    invocation.missing === null || !runs.includes(index)
+      ? []
+      : [{ index, invocation, missing: invocation.missing }]
   );
   const submitted = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
@@ -533,23 +600,32 @@ function MissingArguments({
 }
 
 /** The step a person whose setting asks before every write takes before the bar writes: the
- *  writes it would make, each in its line, and Confirm or Cancel. */
+ *  writes a confirm would make (`runs`: the automatic ones, as a submit would), each in its line,
+ *  and Confirm or Cancel. An invocation the person has to pick is not among them. */
 function ConfirmStep({
   action,
   offer,
   onCancel,
   onConfirm,
+  runs,
 }: {
   readonly action: string;
   readonly offer: GoingOffer | undefined;
   readonly onCancel: () => void;
   readonly onConfirm: () => void;
+  readonly runs: readonly number[];
 }): ReactNode {
   // Each line named once, ahead of the list: an offer's invocations are its own, in its order.
-  const asking = (offer?.invocations ?? []).map((invocation, index) => ({
-    key: `${action}:${index}`,
-    text: `${actionOn(action, targetOf(invocation.arguments))}: asks first`,
-  }));
+  const asking = (offer?.invocations ?? []).flatMap((invocation, index) =>
+    runs.includes(index)
+      ? [
+          {
+            key: `${action}:${index}`,
+            text: `${actionOn(action, targetOf(invocation.arguments))}: asks first`,
+          },
+        ]
+      : []
+  );
   return (
     <div data-testid="going-confirm-step">
       <p className={barNoteClassName}>Your setting asks before every write. Run these?</p>

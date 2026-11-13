@@ -191,5 +191,5 @@ func (r *answerRun) readCall(ctx context.Context, read ReadFunc, call agentloop.
 		r.citations[item.Href] = item
 	}
 	r.mu.Unlock()
-	return string(encoded), false
+	return "That read answered " + storedDataNote + ":\n" + string(encoded), false
 }

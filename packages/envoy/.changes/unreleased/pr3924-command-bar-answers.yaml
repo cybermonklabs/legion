@@ -12,6 +12,10 @@ body: |-
   structured output answers in prose, with no block.
   `POST /api/v1/going/runs/{id}/writes` runs one offered write as the caller and records the
   value before and after it, and `POST /api/v1/going/runs/{id}/undo` undoes a turn.
+  An offered write runs at once only where every item it names is the page's or named in the
+  person's own words; any other is an offer the person picks (`409 GOING_NOT_AUTOMATIC` for `auto`),
+  and each write is claimed on the run once, so a second request while it runs answers
+  `429 GOING_WRITE_IN_PROGRESS`.
   `GET` and `PUT /api/v1/me/going/settings` hold a person's `confirm_writes`,
   `GET /api/v1/me/going-runs` lists the person's runs of the last 30 days,
   `POST /api/v1/going/requests/{id}/cancel` stops a run, and

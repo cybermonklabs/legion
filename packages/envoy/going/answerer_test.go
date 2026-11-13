@@ -518,6 +518,38 @@ func TestStructuredOutputRefusedByA400FallsBackToProse(t *testing.T) {
 	}
 }
 
+// TestStructuredOutputRefusedForAnotherCauseFallsBackForThatRunAlone: a 400 whose error names no
+// structured output - a content filter's, a context too long - is that run's alone: the run
+// answers in prose, and the next run asks for the Final object again and gets blocks.
+func TestStructuredOutputRefusedForAnotherCauseFallsBackForThatRunAlone(t *testing.T) {
+	model := goingtest.NewModel(t,
+		goingtest.Reply{Status: http.StatusBadRequest,
+			Message: "The response was filtered due to the prompt triggering the content management policy."},
+		goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds no answer to that question."}},
+		goingtest.Reply{Final: &goingtest.Final{Answer: "Dispatch holds no answer to that question.", Arguments: "{}"}},
+	)
+	answerer := testAnswerer(t, model, going.AnswererConfig{})
+	for run := range 2 {
+		stream := &answerStream{}
+		if err := answerer.Run(t.Context(), testReads().request("who owns the broadcast order", stream), stream.emit); err != nil {
+			t.Fatalf("Run %d: %v", run, err)
+		}
+		stream.ended(t)
+		if run == 0 {
+			if _, known := answerer.Blocks(); known {
+				t.Error("Blocks is known after a content filter's 400, want unknown: the service never refused the structured output")
+			}
+		}
+	}
+	requests := model.Requests()
+	if len(requests) != 3 || !requests[0].Structured() || requests[1].Structured() || !requests[2].Structured() {
+		t.Fatalf("model served %d calls, want the refused structured one, its prose fallback, then the next run's structured one", len(requests))
+	}
+	if blocks, known := answerer.Blocks(); !blocks || !known {
+		t.Errorf("Blocks = %v, %v after the next run's structured reply was accepted, want true", blocks, known)
+	}
+}
+
 // TestRunTellsTheStructuredCallTheOffer: the structured call is told each offered action with its
 // argument schema and the chart the decision settled on, which is what lets it write their
 // arguments and the chart's block; the prose call that follows a refusal is told neither, since

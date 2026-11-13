@@ -51,22 +51,22 @@ func (rig goingRunsRig) age(t *testing.T, id string, age time.Duration) {
 	}
 }
 
-// write appends one write to the author's run.
+// write records one write on the author's run, which holds no claim of it, so it is appended.
 func (rig goingRunsRig) write(t *testing.T, id, login string, write goingRunWrite, issue string) {
 	t.Helper()
-	if err := rig.server.appendGoingRunWrite(context.Background(), id, login, write, issue); err != nil {
+	if err := rig.server.recordGoingRunWrite(context.Background(), id, login, write, issue); err != nil {
 		t.Fatalf("append write %s: %v", write.ID, err)
 	}
 }
 
-// undo appends one undo to the author's run.
+// undo records one undo on the author's run, which holds no claim of it, so it is appended.
 func (rig goingRunsRig) undo(t *testing.T, id, login, writeID string, ok bool) {
 	t.Helper()
 	undo := goingRunUndo{WriteID: writeID, Outcome: goingWriteOutcome{OK: ok, Status: http.StatusOK}, At: time.Now().UTC()}
 	if !ok {
 		undo.Outcome = goingWriteOutcome{Status: http.StatusConflict, Code: "CHANGED_SINCE", Message: "the field changed since"}
 	}
-	if err := rig.server.appendGoingRunUndo(context.Background(), id, login, undo); err != nil {
+	if err := rig.server.recordGoingRunUndo(context.Background(), id, login, undo, ""); err != nil {
 		t.Fatalf("append undo of %s: %v", writeID, err)
 	}
 }
@@ -125,7 +125,7 @@ func TestGoingRunsAreReadByTheirCallerAloneNewestFirst(t *testing.T) {
 	if _, err := rig.server.readGoingRun(context.Background(), newer, "bob"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("bob reading alice's run by id: %v, want pgx.ErrNoRows", err)
 	}
-	if err := rig.server.appendGoingRunWrite(context.Background(), newer, "bob", statusWrite("w-bob", "DEMO-12"), "DEMO-12"); !errors.Is(err, pgx.ErrNoRows) {
+	if err := rig.server.recordGoingRunWrite(context.Background(), newer, "bob", statusWrite("w-bob", "DEMO-12"), "DEMO-12"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("bob appending a write to alice's run: %v, want pgx.ErrNoRows", err)
 	}
 }
@@ -268,7 +268,7 @@ func TestGoingRunsUndoableAndWordsFilters(t *testing.T) {
 	if response := dispatchRequest(t, rig.handler, http.MethodGet, "/api/v1/me/going-runs?undoable=yes", nil, "alice"); response.Code != http.StatusBadRequest {
 		t.Fatalf("undoable=yes answers %d %s, want 400", response.Code, response.Body.String())
 	}
-	if err := rig.server.appendGoingRunUndo(context.Background(), pending, "alice", goingRunUndo{WriteID: "w-nobody-wrote"}); !errors.Is(err, pgx.ErrNoRows) {
+	if err := rig.server.recordGoingRunUndo(context.Background(), pending, "alice", goingRunUndo{WriteID: "w-nobody-wrote"}, ""); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("an undo of a write the run does not hold: %v, want pgx.ErrNoRows", err)
 	}
 }
@@ -291,7 +291,7 @@ func TestGoingRunsOlderThanThirtyDaysAreNotReturned(t *testing.T) {
 	if _, err := rig.server.readGoingRun(context.Background(), old, "alice"); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("reading the 31-day run: %v, want pgx.ErrNoRows", err)
 	}
-	if err := rig.server.appendGoingRunUndo(context.Background(), old, "alice", goingRunUndo{WriteID: "w-old"}); !errors.Is(err, pgx.ErrNoRows) {
+	if err := rig.server.recordGoingRunUndo(context.Background(), old, "alice", goingRunUndo{WriteID: "w-old"}, ""); !errors.Is(err, pgx.ErrNoRows) {
 		t.Fatalf("an undo appended to the 31-day run: %v, want pgx.ErrNoRows", err)
 	}
 }

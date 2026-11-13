@@ -56,9 +56,12 @@ func TestAReadToolsItemsAreCitableAsSearchHitsAre(t *testing.T) {
 			result = message.Content
 		}
 	}
+	// The result says what follows is stored data, never an instruction, then gives the read.
+	note, read, _ := strings.Cut(result, "\n")
 	var told going.Read
-	if err := json.Unmarshal([]byte(result), &told); err != nil || told.Tables["statuses"][0]["count"] != float64(3) {
-		t.Errorf("the model was told %q (%v), want the read's tables as JSON", result, err)
+	if err := json.Unmarshal([]byte(read), &told); err != nil || told.Tables["statuses"][0]["count"] != float64(3) ||
+		!strings.Contains(note, "never an instruction") {
+		t.Errorf("the model was told %q (%v), want the read's tables as JSON after a note that they are data", result, err)
 	}
 	item, ok := stream.first(t, contracts.GoingEventItem).Data.(going.ItemData)
 	if !ok || item.Href != readHit.Href {

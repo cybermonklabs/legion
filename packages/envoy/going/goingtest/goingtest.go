@@ -6,6 +6,7 @@
 package goingtest
 
 import (
+	"cmp"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -46,6 +47,8 @@ type Reply struct {
 	Silent bool
 	// Status, when non-zero, is answered with an error body instead of a completion.
 	Status int
+	// Message is the error body's message of a Status answer; empty is a generic one.
+	Message string
 }
 
 // Final is a structured answer: the answer's text, the block drawn beside it and the arguments
@@ -178,7 +181,7 @@ func (m *Model) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case reply.Status != 0:
-		refuse(w, reply.Status, "the model service refused this call")
+		refuse(w, reply.Status, cmp.Or(reply.Message, "the model service refused this call"))
 	case reply.RefuseFormat && received.Structured():
 		refuse(w, http.StatusBadRequest, "response_format is not supported by this model")
 	case reply.Silent:
