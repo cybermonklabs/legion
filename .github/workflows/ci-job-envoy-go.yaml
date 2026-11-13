@@ -129,13 +129,15 @@ jobs:
       # jobs' own steps are built from, so what this step leaves out and what the other jobs run
       # cannot drift apart. What is left is the rest of the module, the two longest packages of
       # it (the API's and the documents service's) now among the ones the lane runs, so its 20
-      # minutes are ample. TestWebDisplayFixture is skipped: without `--check` it writes the web
-      # app's committed display-tree fixture rather than checking it, so a run here would ask
-      # nothing of it; envoy-go-checks runs it with the check, and both texts are built from the
-      # same list.
+      # minutes are ample. The two tests of the web app's display-tree fixture are skipped:
+      # without `--check` TestWebDisplayFixture writes the committed fixture rather than checking
+      # it, so a run here would ask nothing of it, and
+      # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, which would make it
+      # a read of this job; envoy-go-checks runs both, the first with the check, and both texts
+      # are built from the same list.
       - name: Unit test envoy Go package
         run: |
-          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestWebDisplayFixture)$'
+          go list ./... | grep -Ev '/integration|/internal/textcheck$|/internal/dispatch/delivery($|/)|/internal/dispatch/store($|/)|/internal/bus$|/cmd/listener$|/internal/store$|/internal/session$|/internal/kvwatch($|/)|/internal/dispatch/api$|/internal/dispatch/docs$' | xargs go test -count=1 -timeout 20m -skip '^(TestTheWebFixtureFindsItsFilesFromAnyDirectory|TestWebDisplayFixture)$'
         working-directory: packages/envoy
       # agentloop's live proof makes a real model call, so it sits behind a build tag and CI
       # never runs it. Vetting it keeps it compiling as the package changes.

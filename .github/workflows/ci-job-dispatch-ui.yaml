@@ -40,8 +40,16 @@ jobs:
       # (every job of dispatch-browser.yaml that runs the suite needs contracts built for the
       # same reason and carries a `Build contracts for dispatch e2e` step of its own, which that
       # file's shard job explains).
+      # `build:dispatch` bundles only the contracts entries Dispatch imports - the package itself,
+      # ./repo, ./dispatch-snippet and ./dispatch-tools (web/vite.config.ts:117-126 aliases the
+      # same four) - so the build compiles no module outside the set the dashboard's tsc
+      # programs compile, which is what this job's filter lists, and not ./legion-api, which
+      # Dispatch never imports. package.json allows no comment, so this is where the list is
+      # explained: a new import of a contracts subpath by packages/dispatch adds its entry to
+      # that script, or Playwright's Node resolution fails on the missing dist/ file. The
+      # package's own `bun run test` below runs the same script again (build:contracts).
       - name: Build contracts for the suites that spawn Playwright
-        run: bun run build
+        run: bun run build:dispatch
         working-directory: packages/contracts
       - name: Typecheck proof editor
         run: bun run typecheck

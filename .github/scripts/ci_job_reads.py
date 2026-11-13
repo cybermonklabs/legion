@@ -1115,19 +1115,23 @@ UNIT_TEST_PATTERN = "|".join(
 
 
 # ---------------------------------------------------------------- the web app's display fixture
-# The one test of internal/dispatch/pmdoc whose subject is the committed display-tree fixture the
-# web app's own unit tests draw: TestWebDisplayFixture (web_fixtures_test.go:191-200). Its
-# `--check` is a flag of its own (web_fixtures_test.go:13-21): with it the test compares the
-# committed fixture with what this build makes and fails where they differ, and without it it
-# writes that fixture and asserts nothing. So the fixture step below is the run with a
-# requirement behind it, and the envoy-go unit step - which runs every package of the module the
-# race lane, internal/integration and the text checks leave it, pmdoc among them - skips the test
-# by name: a second run there would rewrite the committed file and pass whatever that file held,
-# so the pair would run twice per run of the router with nothing asked of the second
-# (dispatch://INFRA-1413).
+# The tests of internal/dispatch/pmdoc that touch the committed display-tree fixture the web
+# app's own unit tests draw. TestWebDisplayFixture (web_fixtures_test.go:191-200) is the one
+# whose subject it is. Its `--check` is a flag of its own (web_fixtures_test.go:13-21): with it
+# the test compares the committed fixture with what this build makes and fails where they
+# differ, and without it it writes that fixture and asserts nothing. So the fixture step below is
+# the run with a requirement behind it, and the envoy-go unit step - which runs every package of
+# the module the race lane, internal/integration and the text checks leave it, pmdoc among them -
+# skips the test by name: a second run there would rewrite the committed file and pass whatever
+# that file held, so the pair would run twice per run of the router with nothing asked of the
+# second (dispatch://INFRA-1413). TestTheWebFixtureFindsItsFilesFromAnyDirectory
+# (web_fixtures_test.go:248-255) stats that the same file exists, and an existence check is a
+# read by this table's own rule (the contracts gate declares skills/dispatch-writing-specs/SKILL.md
+# for an existsSync alone), so it runs in the fixture step too and the unit step skips it, which
+# leaves the fixture a read of the fixture step alone.
 # Both step texts are built from this one list, and check-ci-filters.sh pins each step's whole
 # script, so the -skip and the -run cannot come to name different tests.
-WEB_FIXTURE_TESTS = ["TestWebDisplayFixture"]
+WEB_FIXTURE_TESTS = ["TestWebDisplayFixture", "TestTheWebFixtureFindsItsFilesFromAnyDirectory"]
 WEB_FIXTURE_PACKAGE = "internal/dispatch/pmdoc"
 WEB_FIXTURE_SOURCE = f"{ENVOY}/{WEB_FIXTURE_PACKAGE}"
 FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
@@ -1143,8 +1147,8 @@ FIXTURE_SCRIPT = f"go test -count=1 -run {WEB_FIXTURE_PATTERN} ./{WEB_FIXTURE_PA
 # is written against the tail of what `go list` prints, so the package's own path is what they
 # are tried against here.
 if re.search(UNIT_TEST_PATTERN, f"/{WEB_FIXTURE_PACKAGE}"):
-    raise ValueError(f"the display-tree fixture test is in {WEB_FIXTURE_PACKAGE}, which the unit step's "
-                     f"`grep -Ev` takes out, so that step does not run it and the -skip below skips nothing; "
+    raise ValueError(f"the display-tree fixture tests are in {WEB_FIXTURE_PACKAGE}, which the unit step's "
+                     f"`grep -Ev` takes out, so that step does not run them and the -skip below skips nothing; "
                      f"name the step that runs that package now and move the -skip to it")
 UNIT_TEST_SCRIPT = (f"go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | "
                     f"xargs go test -count=1 -timeout 20m -skip {WEB_FIXTURE_PATTERN}")
@@ -2216,8 +2220,9 @@ GATES = [
         ("packages/proof-editor/**", "packages/dispatch/web/vite.config.ts:127-147 (build:web)"),
         # packages/contracts/src is no read of this table's either: the filter's listed block holds
         # the modules dispatch_ui's tsc programs compile, which check-ts-filters.sh writes, and
-        # ci_ts_programs.py's LISTED says why this suite loads that set and no other, though each
-        # job's `Build contracts for dispatch e2e` step bundles every entry of the package.
+        # ci_ts_programs.py's LISTED says why this suite loads that set and no other, and each
+        # job's `Build contracts for dispatch e2e` step runs `build:dispatch`, whose four entries
+        # compile nothing outside it.
         ("packages/envoy-client/bin/dispatch.ts", "packages/dispatch/e2e/inbox-cli.e2e.ts:326 runs it through e2e/dispatch-cli.ts:8"),
         (f"{ENVOY}/internal/dispatch/pmdoc/schema/blocks.json", "packages/dispatch/e2e/engine-reading.ts:13"),
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "read at packages/dispatch/web/src/__tests__/pmdoc-fixtures.ts:48, whose path is the new URL at :44, in the module the browser rows of the seven markdown parity families it holds import; the web unit tests that read the same table run in dispatch-ui, which declares it too"),
@@ -2279,11 +2284,13 @@ GATES = [
         # first two sets are claimed by Runs of jobs this gate's own wide patterns already
         # cover, while the text checks are another job's, and a Run saying ./... would keep
         # what only their tests read - docs/kubernetes.md - on this job's filter.
-        # Its -skip takes TestWebDisplayFixture out of this step (WEB_FIXTURE_TESTS): without
-        # `--check` that test writes the committed web display fixture rather than checking it,
-        # so a second run here asks nothing and can only pass, while the fixture step of
-        # envoy-go-checks runs it with the check that makes it a requirement. The test stays
-        # compiled into this step's binary, which is what a skipped test is.
+        # Its -skip takes WEB_FIXTURE_TESTS out of this step: without `--check`
+        # TestWebDisplayFixture writes the committed web display fixture rather than checking it,
+        # so a second run here asks nothing and can only pass, and
+        # TestTheWebFixtureFindsItsFilesFromAnyDirectory stats that same file, a read this job
+        # need not carry; the fixture step of envoy-go-checks runs both, with the check that
+        # makes the first a requirement. The tests stay compiled into this step's binary, which
+        # is what a skipped test is.
         pinned_step("envoy-go", UNIT_TEST_STEP, ENVOY, UNIT_TEST_SCRIPT, [
             (ENVOY, packages_but(ENVOY, TEXT_CHECK_PACKAGE),
              "go list ./... piped into go test, counted as go test over the module but the text checks", {}),
@@ -2341,13 +2348,12 @@ GATES = [
         (f"{ENVOY}/internal/dispatch/pmdoc/gen/**", f"{at('envoy-go-checks', 'Check pmdoc fixtures are up to date')} (gen.ts --check)"),
         ("packages/proof-editor/src/**", "packages/envoy/internal/dispatch/pmdoc/gen/gen.ts:4-6 imports @legion/proof-editor (exports -> src/lib.ts, src/lib-headless.ts, src/document-reading.ts)"),
         # The web app's display-tree fixture, whose content the fixture step's --check compares the
-        # trees it builds with. Declared on this step and not as a RULES row keyed on
+        # trees it builds with, and whose existence the other test of WEB_FIXTURE_TESTS,
+        # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255), stats in
+        # that same step. Declared on this step and not as a RULES row keyed on
         # web_fixtures_test.go: a row keyed on the file would put the fixture into every job that
-        # compiles pmdoc's tests, envoy-go's unit step among them, which skips this test
-        # (WEB_FIXTURE_TESTS) and reads none of the file's content. That step only stats that the
-        # file exists, in TestTheWebFixtureFindsItsFilesFromAnyDirectory
-        # (web_fixtures_test.go:248-255): a change to the content cannot fail it, and a deletion
-        # that does also fails this step, so this job's filter is enough to hold the file.
+        # compiles pmdoc's tests, envoy-go's unit step among them, which skips both tests and so
+        # touches the file in no way. The fixture is this job's read alone.
         ("packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json",
          f"{at('envoy-go-checks', FIXTURE_STEP)}: internal/dispatch/pmdoc/web_fixtures_test.go:40-45 "
          "webFixturePath joins it under pmdocSourceDir, and --check reads its content to compare"),

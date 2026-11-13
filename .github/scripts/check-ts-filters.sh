@@ -177,7 +177,10 @@ def read_workflow() -> tuple:
 
 def head(tree: str, source: str) -> tuple:
     """A listed block's first lines: what it holds and the command that writes it, so a reader of
-    ci.yaml knows not to edit one by hand."""
+    ci.yaml knows not to edit one by hand. That command names this check as the block's owner:
+    check-ci-filters.sh passes over the block's lines in its rule 9 only while the first line, in
+    this `<begin> by `<script> write`` form, names a script a job of CI runs
+    (ci_filter_coverage.listed_owners), which ci.yaml's lint job makes of this one."""
     return (f"{MARKS.begin} by `{MARKS.write}`: the files of {tree} filter {source}'s",
             "# tsc programs compile. An edit by hand is refused by that check, which writes these.")
 

@@ -25,8 +25,10 @@
 # passes -run must have a filter covering every file the tag step's filter covers, each gate
 # filter must hold exactly the generated `!` patterns that keep it off the Go test files its job
 # does not read, which the write mode writes, no paths-filter step's filters string may come
-# near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in, and
-# every output of the changes job must name the paths-filter step its own filter is declared in.
+# near the 131,072-byte cap the kernel puts on the environment variable Actions hands it in,
+# every output of the changes job must name the paths-filter step its own filter is declared in,
+# and a listed block's patterns are passed over by rule 9 only while its marker names a check a
+# job of CI runs.
 #
 # Each case builds a miniature repository under a temporary directory - a go.work binding one
 # module, a ci.yaml whose `changes` job gates one job, a root package.json with one workspace, and
@@ -589,6 +591,31 @@ replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" \
   $'              - \'fixtures/**\'\n              - \'!docs/**\''
 run_check "$root"
 check "passes" "$(is "$status" 0)"
+
+# A listed block's patterns are another check's to hold (check-ts-filters.sh's, in the real
+# repository), so the second direction passes over them while the block's BEGIN line names a
+# check a job of CI runs. 'docs/readme.md' is no read of app's, so the pass is that skip; a line
+# naming a script no job runs, or this check itself, leaves the pattern held by nothing.
+listed_block=$'              # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of docs filter app\'s\n              # tsc programs compile. An edit by hand is refused by that check, which writes these.\n              - \'docs/readme.md\'\n              # END listed'
+echo "case: a listed block is passed over only while its marker names a check a job of CI runs"
+root=$(fixture listed-owner)
+replace "$root/.github/workflows/ci.yaml" "        run: echo lint" "        run: .github/scripts/check-ts-filters.sh"
+replace "$root/.github/workflows/ci.yaml" "              - 'fixtures/**'" $'              - \'fixtures/**\'\n'"$listed_block"
+run_check "$root"
+check "passes while the lint job runs the check the marker names" "$(is "$status" 0)"
+replace "$root/.github/workflows/ci.yaml" '# BEGIN listed by `.github/scripts/check-ts-filters.sh write`' \
+  '# BEGIN listed by `.github/scripts/check-js-filters.sh write`'
+run_check "$root"
+check "fails once the marker names a script no job runs" "$(is "$status" 1)"
+check "names the filter, the marker and the script" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter app's listed block opens with \`# BEGIN listed by \`.github/scripts/check-js-filters.sh write\`: the files of docs filter app's\`, which names \`.github/scripts/check-js-filters.sh write\`, a command no step of .github/workflows/ci.yaml or of a workflow it calls runs")"
+check "and judges the block's pattern like any other" \
+  "$(contains "$out" "::error file=.github/workflows/ci.yaml::filter app has docs/readme.md, which matches no file app reads")"
+replace "$root/.github/workflows/ci.yaml" '# BEGIN listed by `.github/scripts/check-js-filters.sh write`' \
+  '# BEGIN listed by `.github/scripts/check-ci-filters.sh write`'
+run_check "$root"
+check "fails when the marker names this check, which holds no listed block" "$(is "$status" 1)"
+check "and says why" "$(contains "$out" "which names \`.github/scripts/check-ci-filters.sh write\`, this check, which passes over a listed block's lines rather than holding them")"
 
 # An EXCLUDED filter is another check's to prove, so this one computes no read set for its job
 # and has nothing to hold its patterns to: the image filter here gates the job no gate names.

@@ -78,9 +78,11 @@ LISTED = [
     # packages/dispatch, which bundles the proof editor, and the Playwright config and the e2e
     # helpers it loads are packages/dispatch/e2e, which the dashboard's program compiles. What it
     # loads of @legion/contracts is therefore dispatch_ui's set. Its jobs' `Build contracts for
-    # dispatch e2e` step does bundle every entry of the package, packages/contracts/src/legion-api.ts
-    # and the modules it imports among them, but no row loads those bundles, and a change that breaks
-    # that build fails the contracts job's own `Build contracts` step, whose filter takes the whole tree.
+    # dispatch e2e` step runs packages/contracts' `build:dispatch`, which bundles the four entries
+    # the dashboard imports (web/vite.config.ts:117-126 aliases the same four) and so compiles
+    # nothing outside that set: not packages/contracts/src/legion-api.ts, which Dispatch never
+    # imports. A change that breaks the package's full `build` fails the contracts job's own
+    # `Build contracts` step, whose filter takes the whole tree.
     ("dispatch_browser", "packages/contracts/src", "dispatch_ui",
      "the browser suite runs the SPA built from packages/dispatch and the Playwright config and e2e helpers of "
      "packages/dispatch/e2e, so it loads the contracts modules dispatch_ui's programs compile and no other"),

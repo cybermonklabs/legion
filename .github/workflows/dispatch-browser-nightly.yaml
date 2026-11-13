@@ -132,9 +132,9 @@ jobs:
       - run: bun install --frozen-lockfile
       # The step of this name in .github/workflows/dispatch-browser.yaml's shard job, for the
       # reason it gives: Playwright's Node runner reads `@legion/contracts` out of a build this
-      # checkout has to make before the config loads.
+      # checkout has to make before the config loads, of the entries Dispatch imports alone.
       - name: Build contracts for dispatch e2e
-        run: bun run build
+        run: bun run build:dispatch
         working-directory: packages/contracts
       # Built here rather than left to run-server.sh, which would build it inside the harness's
       # own boot wait, as the multiprocess job does for the same reason.

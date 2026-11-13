@@ -2816,8 +2816,9 @@ jobs:
               - 'packages/dispatch/**'
               - 'packages/proof-editor/**'
               # dispatch_ui's set: this suite has no tsc program, and loads the SPA and the e2e
-              # helpers that filter's programs compile. Its jobs' contracts build bundles
-              # legion-api.ts too, but no row loads it (ci_ts_programs.py, LISTED, says why).
+              # helpers that filter's programs compile. Its jobs' contracts build
+              # (`build:dispatch`) bundles the four entries Dispatch imports and so nothing
+              # outside that set (ci_ts_programs.py, LISTED, says why).
               # BEGIN listed by `.github/scripts/check-ts-filters.sh write`: the files of packages/contracts/src filter dispatch_ui's
               # tsc programs compile. An edit by hand is refused by that check, which writes these.
               - 'packages/contracts/src/actor-label.ts'
@@ -3088,10 +3089,10 @@ jobs:
               # The pmdoc fixture check runs pmdoc/gen, which imports the editor.
               - 'packages/proof-editor/**'
               # The web app's display-tree fixture, whose content the fixture step's --check reads
-              # (internal/dispatch/pmdoc/web_fixtures_test.go:40-45). envoy-go's unit step skips
-              # that test (TestWebDisplayFixture) and reads none of the file's content; its
-              # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255) only
-              # stats that the file exists, and a deletion that fails it fails this job too.
+              # (internal/dispatch/pmdoc/web_fixtures_test.go:40-45) and whose existence
+              # TestTheWebFixtureFindsItsFilesFromAnyDirectory (web_fixtures_test.go:248-255) stats
+              # in the same step. envoy-go's unit step skips both tests, so the file is this job's
+              # read alone.
               - 'packages/dispatch/web/src/features/refs/__fixtures__/display-trees.json'
               # Its pack step writes each archive's notices, for each target the list names.
               - 'scripts/go-third-party-notices.sh'

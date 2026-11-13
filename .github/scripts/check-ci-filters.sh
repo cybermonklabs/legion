@@ -131,9 +131,12 @@
 #      listener-server-change's soak takes its -run from and no step of envoy-go-race reads; a
 #      pattern of a listed block check-ts-filters.sh writes (rule 1 above) is exempt from the
 #      second for the same reason, since that check holds the filter to the file, which a tsc
-#      program of the job compiles and this check, with no Bun, cannot list; and a pattern that
-#      matches no file of the repository at all draws the first direction's refusal alone, never
-#      both.
+#      program of the job compiles and this check, with no Bun, cannot list - which is why the
+#      exemption needs the block's `# BEGIN listed by `<script> write`` line to name a check a
+#      step of ci.yaml or of a workflow it calls runs (the lint job runs check-ts-filters.sh),
+#      and other than this one: a block naming none is refused, naming the filter and the line,
+#      and its patterns are judged like any other; and a pattern that matches no file of the
+#      repository at all draws the first direction's refusal alone, never both.
 #  10. an `if:` of ci.yaml, a job's or a step's, that tests `github.event_name == 'push'` or
 #      `github.event_name != 'push'`, or that compares `github.ref` with a single-quoted
 #      `'refs/heads/...'` literal with `==` or `!=` (either operand first), naming the file, the

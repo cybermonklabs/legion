@@ -1729,9 +1729,66 @@ GENERATED = Marks(BEGIN, END, WRITE)
 # since only that check, in ci.yaml's lint job, has the Bun to run tsc with. Its own two lines mark
 # it, so neither check takes the other's block for its own: rule 17 reads and rewrites only the
 # lines between BEGIN and END, a listed block's lines are items of the list to it, and rule 9's
-# second direction passes over a listed block's patterns (rule_required_files).
+# second direction passes over a listed block's patterns (rule_required_files) while its BEGIN
+# line names that check, which a job of CI runs (listed_owners below).
 TS_LISTED = Marks("# BEGIN listed", "# END listed", ".github/scripts/check-ts-filters.sh write")
 KINDS = (GENERATED, TS_LISTED)
+
+# A listed block's first line names the command that writes it, `<script> write`, which is also
+# the check that holds its lines true: `# BEGIN listed by `<script> write`: ...`, as
+# check-ts-filters.sh's head() writes it.
+LISTED_OWNER = re.compile(r"^# BEGIN listed by `(\S+) write`")
+# The programs a run: line may hand a script to rather than run it itself.
+INTERPRETERS = frozenset({"bash", "sh", "python3"})
+
+
+def ci_commands(documents: dict) -> set:
+    """What CI runs: the command each line of every run: step of ci.yaml and the workflows its
+    jobs call starts - the line's first word, or its second where the first is an interpreter -
+    as a repository-relative path where it is one. ci.yaml's lint job runs check-ts-filters.sh
+    this way (.github/workflows/ci-job-lint.yaml), which makes it an owner listed_owners accepts."""
+    commands = set()
+    for _, _, _, _, job in step_holders(documents):
+        for step in job.get("steps") or []:
+            for line in script_lines(str(step.get("run", ""))):
+                words = line.split()
+                if len(words) > 1 and words[0] in INTERPRETERS:
+                    words = words[1:]
+                if words:
+                    commands.add(words[0].removeprefix("./"))
+    return commands
+
+
+def listed_owners(documents: dict, lines: list, problems: list) -> dict:
+    """The changes job's listed blocks rule 9's second direction may pass over: each one whose
+    BEGIN line names, as the command that writes it, a script a step of CI runs (ci_commands)
+    other than this check. Passing over a block's patterns is right only because another check
+    holds them to what the job reads, so a block whose marker names no such check - a script no
+    job runs, this check itself, or nothing - holds its filter to nothing: it is refused, naming
+    the filter and the marker, and its patterns are judged like any other."""
+    runs = ci_commands(documents)
+    owned = {}
+    for name, block in filter_blocks(lines, [], TS_LISTED).items():
+        if block.begin < 0:
+            continue
+        marker = lines[block.begin].strip()
+        owner = LISTED_OWNER.match(marker)
+        script = owner.group(1).removeprefix("./") if owner else ""
+        if script and script != SCRIPT and script in runs:
+            owned[name] = block
+            continue
+        if not script:
+            what = "no check, in the `# BEGIN listed by `<script> write`` form a listed block's first line takes"
+        elif script == SCRIPT:
+            what = f"`{script} write`, this check, which passes over a listed block's lines rather than holding them"
+        else:
+            what = f"`{script} write`, a command no step of {WORKFLOW} or of a workflow it calls runs"
+        problems.append(f"::error file={WORKFLOW}::filter {name}'s listed block opens with `{marker}`, which names "
+                        f"{what}, so no check of CI holds its lines and rule 9 does not pass over them; name the "
+                        f"check that writes and holds the block and that a job of CI runs, as "
+                        f"`{TS_LISTED.write}` does")
+    return owned
+
 
 
 def selected(patterns: list, expander: Expander) -> set:
@@ -2075,11 +2132,12 @@ def main() -> int:
                             f"{g.filter} does not match")
         if held and not set(fallback).isdisjoint(uncovered):
             problems += held
-    # Rule 9's second direction passes over the patterns of the listed blocks check-ts-filters.sh
-    # writes; whether such a block is well formed is that check's to refuse, not this one's.
+    # Rule 9's second direction passes over the patterns of the listed blocks whose marker names
+    # the check that writes and holds them, and refuses a block whose marker names no check CI
+    # runs (listed_owners); whether an owned block is well formed is its owner's to refuse.
     lines = (REPO / WORKFLOW).read_text().splitlines()
-    check_dead_gate_patterns(data, filters, gate_files, expander, selection, filter_blocks(lines, [], TS_LISTED),
-                             problems)
+    check_dead_gate_patterns(data, filters, gate_files, expander, selection,
+                             listed_owners(documents, lines, problems), problems)
     problems += session.problems
     report += check_push_workflows(data, filters, problems)
     report += check_tag_runs(documents, data, filters, quantifiers, selection, problems)
