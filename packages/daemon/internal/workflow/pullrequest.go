@@ -3,6 +3,7 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -13,6 +14,105 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
+
+// putPullRequest records pr and marks its issue moved where the write is news of the pull
+// request rather than the daemon reconciling what it already knew (pullRequestNews, and the rule
+// in engine.go's dispatchIssue). Every write of a pull request row in this package goes through
+// it but two: the row is written from nine places — a pull request opened, reopened,
+// synchronized, pushed to, closed or merged, a CI settlement, a mergeability read, a review —
+// and a write site added later would otherwise have to remember the mark. Routing them through
+// one function is what makes forgetting it hard rather than easy.
+//
+// The two exceptions call record.Store.PutPullRequest themselves, and each says why where it
+// stands. The first is the listener's duplicate of a settlement the pass already built
+// (review.go's checks), which writes the fence the daemon read and decides nothing: the fence is
+// part of the judgement, so the test below would read that write as news, and the daemon
+// recording what it has read of GitHub is no movement of the work. The second is a push onto the
+// base branch (base_push.go's basePush), which records the commit that push left the base at and
+// nothing else: a base that moved is no fact of the pull request, so the test below names that
+// field nowhere and this helper would mark nothing for it either, and the walk the write sits in
+// touches every pull request recorded on the base with each row in hand already, so a second
+// read apiece would buy nothing. A new write site that only records a read belongs with
+// those two; every write that changes what the record knows of the pull request belongs here.
+//
+// The row the record holds is read first, by its own key in the caller's transaction, so the
+// test has both sides. That read is the cost of never mistaking a repeat for news: GitHub
+// redelivers a webhook, and the daemon's own passes rebuild a push or a settlement whose webhook
+// was lost, so the same fact reaches this code twice as a matter of course.
+//
+// The issue is the row's own (record.PullRequest.Issue), so the helper needs no second argument
+// and cannot be handed the wrong key. The moment is the engine's clock, as every other site's
+// is: the fact is being applied now, whatever clock GitHub stamped it with, and the mark says
+// when the daemon saw the issue move.
+func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRequest) error {
+	recorded, err := e.store.PullRequest(ctx, tx, pr.Issue)
+	if err != nil {
+		return err
+	}
+	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
+		return err
+	}
+	if recorded != nil && !pullRequestNews(*recorded, pr) {
+		return nil
+	}
+	return e.store.MarkIssueMoved(ctx, tx, pr.Issue, e.now())
+}
+
+// pullRequestNews says whether the write of after over before is news of the pull request: the
+// daemon's judgement of it changed (classify.JudgementChanged — its head, the head it checked,
+// its failing and cancelled checks, its check runs, and the settlement fence those were read
+// from), its head run opened or closed, the pushes it is still holding changed, or one of the
+// facts GitHub reports about the pull request itself changed: its state, the branch it merges
+// into, the newest deciding review, GitHub's mergeability verdict and the merge state beside it,
+// the head the daemon holds conflicting, and the merge commit.
+//
+// GitHub's merge state is named for the reason its mergeability is, and the two are read from
+// one answer: the state says whether GitHub would merge this head now, which the tri-state
+// cannot, and it is what an approval standing on the head waits for (review.go's reviewRound). A
+// read that moves it is GitHub answering something other than it answered last time — a check
+// the base requires that has since run, a base that has moved under the head — and the ones that
+// hold an approved head are told to the architect and the reviewer. So a read that changes the
+// state alone and a read that changes the verdict beside it are one kind of fact, and are marked
+// alike. The base the pull request merges into is named for the same reason: a pull request
+// retargeted onto another branch, and the first read to fill the base of one opened before the
+// record kept one, each leave the record holding something of GitHub's it did not hold before.
+//
+// What it leaves out is every part of the row that is the daemon's own bookkeeping of a fact it
+// has already taken: the moves a push spends as it is reconciled (record.PullRequest.Moves,
+// classify.ApplyPushDropping), GitHub's clock of its last change to the pull request
+// (HeadUpdatedAt), and the commit the latest push left the base at (BaseMoved), which is a fact
+// of the base branch and says only which base the recorded mergeability was read against — the
+// push that writes it is no news of the pull request (basePush), and the read that clears it
+// clears a note the daemon left itself. So is the moment of the daemon's last answering read
+// (StateReadAt): a read that only confirms what is recorded writes that field alone (review.go's
+// mergeability), and it says how old the daemon's knowledge of the head is, never that the pull
+// request moved. A redelivered webhook, and a webhook of a push or a
+// settlement one of the daemon's own passes rebuilt first, write those and nothing else; marked
+// as movements they would refresh the quiet time of a tree that has not moved since its work
+// ended, and that tree would never be found (record.QuietTrees). The daemon's own suites hold
+// that line: a late push webhook is asserted to change nothing of the issue record
+// (internal/daemon's lateWebhookPushDecidesNothing), and a settlement that decides nothing —
+// the listener's redelivery and its settlement of a commit that is not the head while a head
+// run is open, the one that closes that run among them — is asserted to move no issue
+// (internal/admit's TestTheRecordKeepsWhenAnIssueLastMoved, its case of the listener's
+// settlement that decides nothing).
+//
+// A field added to record.PullRequest later is not news to this test until it is named here. The
+// direction that costs something is this one — an unnamed field that is news leaves a tree
+// reading quieter than it is, which is one notice to a controller — while naming a field that is
+// not news loses the stopped tree the measure exists to find.
+func pullRequestNews(before, after record.PullRequest) bool {
+	return classify.JudgementChanged(before, after) ||
+		(before.Run == nil) != (after.Run == nil) ||
+		!slices.Equal(before.Pushes, after.Pushes) ||
+		before.State != after.State ||
+		before.Base != after.Base ||
+		before.ReviewSeen != after.ReviewSeen ||
+		before.Mergeability != after.Mergeability ||
+		before.MergeState != after.MergeState ||
+		before.ConflictingHead != after.ConflictingHead ||
+		before.MergeSHA != after.MergeSHA
+}
 
 // pullRequestOpened records the pull request a branch opened, and a reopen is the same pull
 // request: it keeps its newest review, which orders every review it will have, and its pushes and
@@ -78,7 +178,7 @@ func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.P
 		}
 		pr.HeadUpdatedAt = classify.LatestClock(recorded.HeadUpdatedAt, fact.UpdatedAt)
 	}
-	if err := e.store.PutPullRequest(ctx, tx, pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, pr); err != nil {
 		return intake.Result{}, err
 	}
 	if issue.Phase != phase.Implementing {
@@ -133,7 +233,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		if *pr = classify.NameMove(*pr, named); pr.Run == prior.Run {
 			return intake.Result{}, nil
 		}
-		return intake.Result{}, e.store.PutPullRequest(ctx, tx, *pr)
+		return intake.Result{}, e.putPullRequest(ctx, tx, *pr)
 	}
 	arrival := classify.Arrival{Before: fact.Before, Sender: fact.Sender, At: fact.UpdatedAt}
 	moved := classify.MovesBy(*pr, fact.HeadSHA)
@@ -143,7 +243,7 @@ func (e *Engine) pullRequestSynchronized(ctx context.Context, tx pgx.Tx, fact in
 		*pr = classify.NameMove(*pr, named)
 	}
 	pr.HeadUpdatedAt = classify.LatestClock(pr.HeadUpdatedAt, fact.UpdatedAt)
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -179,7 +279,7 @@ func (e *Engine) push(ctx context.Context, tx pgx.Tx, fact intake.Push) (intake.
 	var dropped classify.Dropped
 	*pr, dropped = classify.ApplyPushDropping(*pr, record.ClassifiedPush{SHA: fact.After, Before: fact.Before,
 		ByReviewApp: e.byReviewApp(fact.Pusher), Sender: fact.Sender})
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
 	// Past its bound the record lets the oldest push waiting for a link go (classify.ApplyPush): a
@@ -238,7 +338,7 @@ func (e *Engine) merged(ctx context.Context, tx pgx.Tx, fact intake.PullRequestM
 		return intake.Result{}, err
 	}
 	pr.State, pr.MergeSHA = record.PullRequestMerged, fact.MergeSHA
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 		return intake.Result{}, err
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
@@ -370,7 +470,7 @@ func (e *Engine) closed(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 	}
 	pr.State = record.PullRequestClosed
 	pr.HeadUpdatedAt = classify.LatestClock(pr.HeadUpdatedAt, fact.UpdatedAt)
-	if err := e.store.PutPullRequest(ctx, tx, *pr); err != nil || repeated {
+	if err := e.putPullRequest(ctx, tx, *pr); err != nil || repeated {
 		return intake.Result{}, err
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)

@@ -789,11 +789,13 @@ func statementBound(bound time.Duration) int64 {
 // leak check could not be installed, is served every claim view without `leakCheckCause`
 // (withoutLeakCheckCause); a caller below phaseEntriesContract, the contract that added the
 // entry the issue's current phase stands on and the entry its role was given, is served it
-// without `phaseEntry` and `givenEntry` (withoutPhaseEntries); a caller below heldContract,
-// the contract that named the issues the daemon's record holds in the workflow and queues
-// nowhere, is served it without `admission.held` (withoutHeld); and a caller below
-// mergeWaitContract, the contract that added what a reviewing issue's round waits on from
-// GitHub, is served it without `mergeWait` (withoutMergeWait).
+// without `phaseEntry` and `givenEntry` (withoutPhaseEntries); a caller below heldContract, the
+// contract that named the issues the daemon's record holds in the workflow and queues nowhere,
+// is served it without `admission.held` (withoutHeld); a caller below quietTimeContract, the
+// contract that added each issue's measure of its tree's quiet time, is served it without
+// `treeMovedAt` and `quietHours` (withoutQuietTime); and a caller below mergeWaitContract, the
+// contract that added what a reviewing issue's round waits on from GitHub, is served it without
+// `mergeWait` (withoutMergeWait).
 // The narrowings compose: each is applied when the state carries something of its own, so a
 // caller below all of them — a pod below supervise.PodUpdateContract — is served a body
 // carrying none of the keys they strip, the line's own fields being fields of a view such a
@@ -913,6 +915,7 @@ var stateNarrowings = []stateNarrowing{
 	{leakCheckCauseContract, carriesLeakCheckCause, withoutLeakCheckCause, "the claim views' leakCheckCause"},
 	{phaseEntriesContract, carriesPhaseEntries, withoutPhaseEntries, "the issues' phaseEntry and givenEntry"},
 	{heldContract, carriesHeld, withoutHeld, "admission.held"},
+	{quietTimeContract, carriesQuietTime, withoutQuietTime, "the issues' treeMovedAt and quietHours"},
 	{mergeWaitContract, carriesMergeWait, withoutMergeWait, "the issues' mergeWait"},
 }
 
@@ -1039,8 +1042,19 @@ const leakCheckCauseContract = 87
 // reading at all.
 const phaseEntriesContract = 94
 
+// quietTimeContract is the daemon contract that added each issue's measure of its tree's quiet
+// time to the state (version.go's 111): `treeMovedAt`, the newest movement the daemon has seen
+// anywhere in that tree, and `quietHours`, how long it has been still. A plugin before it is
+// served the state without the two keys: one built before sjawhar/legion#2788 reads it with a
+// strict schema and would refuse the whole body for a key it does not name, and one built after
+// strips them instead, so the strip is what keeps the pair from a caller that did not ask for
+// it rather than what keeps such a caller reading at all. The two are one gate because they are
+// one measure: a caller served the movement without the quiet time beside it, or the other way
+// about, would hold half of what one read of the tree said.
+const quietTimeContract = 111
+
 // mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
-// round waits on from GitHub (version.go's 110). A plugin before it is served the state without
+// round waits on from GitHub (version.go's 115). A plugin before it is served the state without
 // the object: one built before sjawhar/legion#2788 reads it with a strict schema and would
 // refuse the whole body for a key it does not name, and one built after strips the key instead,
 // so the strip is what keeps the object from a caller that did not ask for it rather than what
@@ -1048,7 +1062,7 @@ const phaseEntriesContract = 94
 // number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod
 // below it is served the state without `mergeWait`, whatever else the contracts it does reach
 // give it.
-const mergeWaitContract = 110
+const mergeWaitContract = 115
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {
@@ -1307,6 +1321,31 @@ func withoutPhaseEntries(state State) State {
 	issues := make(map[string]Issue, len(state.Issues))
 	for key, issue := range state.Issues {
 		issue.PhaseEntry, issue.GivenEntry = 0, 0
+		issues[key] = issue
+	}
+	state.Issues = issues
+	return state
+}
+
+// carriesQuietTime is whether any issue of state carries its tree's quiet time, either half of
+// it: the projection writes the two together, and a state carrying one alone is still a state
+// the reader before the contract refuses.
+func carriesQuietTime(state State) bool {
+	for _, issue := range state.Issues {
+		if issue.TreeMovedAt != nil || issue.QuietHours != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// withoutQuietTime is state with no issue carrying `treeMovedAt` or `quietHours`, the two fields
+// quietTimeContract added to the state; nothing else of that contract is on the route. The issue
+// map is copied, so the state the source answered is left as it was.
+func withoutQuietTime(state State) State {
+	issues := make(map[string]Issue, len(state.Issues))
+	for key, issue := range state.Issues {
+		issue.TreeMovedAt, issue.QuietHours = nil, nil
 		issues[key] = issue
 	}
 	state.Issues = issues

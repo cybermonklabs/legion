@@ -895,6 +895,43 @@ func populatedState(t *testing.T) State {
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
+	// Every issue standing in a tree the admission block names carries that tree's quiet time,
+	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
+	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
+	// fixture, so neither of them is measured, which is what a reader is served for an issue no
+	// live tree holds. Every pair is one reading, at quietReadAt, a little after the newest step
+	// record of this state.
+	//
+	// Each tree's movement is the newest fact the measure reads of it — the `MovedAt` of its
+	// members and the step times of their claims (record.QuietTrees) — and its hours are the
+	// reading less that movement, worked out here rather than written beside it: a second
+	// number can disagree with the first, and one did. LEGION-208's pair said the tree had been
+	// still for half an hour while its own implementer's step stood 48 seconds before the
+	// reading, so the fixture showed a pair no daemon would serve, which is why the movement of
+	// that tree is the step record itself. The other trees hold no claim with a step, so each of
+	// them moves at a time of its own. The two reviewing roots move when GitHub last moved their
+	// pull requests: LEGION-218's head went up minutes before, and LEGION-219's two days before.
+	// LEGION-219's head was read a minute before this state, and that read only confirmed what
+	// the record held, which moves no tree (workflow's pullRequestNews), so its tree has been
+	// still for two days although its read stamp is a minute old.
+	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
+	quietMoved := map[string]time.Time{
+		"LEGION-208": implementerStep.At,
+		"LEGION-210": time.Date(2026, 9, 22, 6, 18, 0, 0, time.UTC),
+		"LEGION-211": time.Date(2026, 9, 21, 9, 18, 0, 0, time.UTC),
+		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
+		"LEGION-218": waitingHeadUpdatedAt,
+		"LEGION-219": stuckHeadUpdatedAt,
+	}
+	for key, issue := range state.Issues {
+		movedAt, measured := quietMoved[issue.Tree]
+		if !measured {
+			continue
+		}
+		hours := quietReadAt.Sub(movedAt).Hours()
+		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
+		state.Issues[key] = issue
+	}
 	return state
 }
 
