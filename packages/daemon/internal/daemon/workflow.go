@@ -213,8 +213,9 @@ type workflowRuntime struct {
 	// the engine's Config.ReadMergeState) that readMergeStates has not started a ladder for yet,
 	// and mergeStateRunning each issue whose ladder is still reading, which is why a second fact
 	// of an issue already being read starts no second ladder. mergeStateRetry is how long a
-	// ladder waits between reads of a state GitHub answers `unknown` for, mergeStateLadderWait
-	// when zero, which a test shortens.
+	// ladder waits between reads of a state GitHub answers `unknown` for, and how long the
+	// outbox's merge-queue read waits after a failed read (mergeStateWait, which attach hands the
+	// outbox), mergeStateLadderWait when zero, which a test shortens (overrides.mergeStateRetry).
 	mergeStates       *wakeSet[string]
 	mergeStateMu      sync.Mutex
 	mergeStateRunning map[string]bool
