@@ -251,6 +251,45 @@ test("a search for an issue key names the issue in every hit that cites it, mark
   }
 });
 
+// One renderer: a hit reads its text the way the comment it came from reads it. A key the
+// writer put in a code span is code in the comment, so it names nothing in the hit either; and a
+// link whose words the writer wrote shows those words, never the link's markdown with the
+// target's name drawn inside it. Postgres cuts a hit's fragment where its own parser finds a
+// word, so a fragment can start inside the backticks or the brackets the source wrote.
+test("a search hit draws no reference the comment it quotes holds in code, and no worded link's markdown", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const cited = await createIssue({ project: "CORE", title: "Gyroscope alignment" });
+  const citing = await createIssue({ project: "CORE", title: "Bench work" });
+  await createComment(citing.key, { body: `Run \`${cited.key}\` locally tagcodespan.` });
+  await createComment(citing.key, {
+    body: `See [the gyroscope](dispatch://${cited.key}) now tagworded.`,
+  });
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openSearchFromRail(page, false);
+    const box = page.getByRole("combobox", { name: "Search" });
+    const dialog = page.getByRole("dialog", { name: "Search" });
+
+    await box.fill("CORE tagcodespan");
+    const code = dialog.getByRole("option", { name: /tagcodespan/ });
+    await expect(code).toHaveCount(1);
+    await expect.soft(code.locator("[data-dispatch-ref]")).toHaveCount(0);
+    await expect.soft(code).not.toContainText(cited.title);
+
+    await box.fill("CORE tagworded");
+    const worded = dialog.getByRole("option", { name: /tagworded/ });
+    await expect(worded).toHaveCount(1);
+    await expect.soft(worded).not.toContainText("](");
+    await expect.soft(worded).not.toContainText(cited.title);
+  } finally {
+    await context.close();
+  }
+});
+
 // The same pass, held to what the link pass links, over Postgres's own marks. A mark grows over a
 // reference only where that reference names something and is drawn as a link: `ts_headline`
 // marks `<b>SHA</b>-256`, `<b>UTF</b>-8`, `#<b>general</b>`, `#<b>1234</b>`, `<b>COVID</b>-19`
