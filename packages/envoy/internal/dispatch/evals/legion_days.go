@@ -26,13 +26,15 @@ import (
 // A project's Legion rows of a day are, for each eval with input that day, every series of the
 // eval in each of its cuts (metrics.CutSeries, LegionSeries): the all-repositories row (repo ''),
 // built from every issue and filing of the day, and one row per repository the eval's input is
-// in, built from that repository's alone. An issue's repository is the one its stored row holds
-// (issue_facts.repo). A filing's is the filed issue's, resolved by the rule that fills that column
-// (legionfacts.ReadRepos), since issue_filings holds none; it is resolved when the day is built,
-// so it follows the filed issue's repository as of that build. An issue or a filing that resolves
-// to no repository is in the all-repositories row alone, so the repositories' rows add up to that
-// row only where every input resolves to one. Every Legion row reached its project through its
-// own issue, so its via_repository is 0.
+// in, built from that repository's alone. An issue's repository, and a filing's, is the one the
+// issue (the filed issue) resolves to by the rule that fills issue_facts.repo
+// (legionfacts.ReadRepos), resolved when the day is built rather than read from the stored row:
+// the rule falls back to the project's default mapping in repo_projects, a change of which moves
+// no stored row, and the refresher rebuilds every Legion day when a mapping changes, so the rows
+// follow the mapping within that one pass. An issue or a filing that resolves to no repository is
+// in the all-repositories row alone, so the repositories' rows add up to that row only where every
+// input resolves to one. Every Legion row reached its project through its own issue, so its
+// via_repository is 0.
 //
 // legion-splitting has input on a day with a closed issue or a filing, and the other five on a
 // day with a closed issue. legion-idle-time has none on a day before the first UTC midnight at or
@@ -146,20 +148,22 @@ func onOrAfter(first *time.Time, day time.Time) bool {
 }
 
 // LegionDay is one project's Legion input of one UTC day, read by ReadLegionDay: the stored facts
-// of the issues that closed on it and the filings made on it, with each filed issue's repository.
+// of the issues that closed on it and the filings made on it, with the repository each closed
+// issue and each filed issue resolves to.
 type LegionDay struct {
 	Project string
 	// Day is the day's UTC midnight.
 	Day    time.Time
 	closed []legionfacts.Row
 	filed  []legionfacts.Filing
-	// filedRepos is the repository of each filed issue that resolves to one.
-	filedRepos map[string]string
+	// repos is the repository of each closed issue and each filed issue that resolves to one.
+	repos map[string]string
 }
 
 // ReadLegionDay reads project's Legion input of the UTC day day is on: its issues that closed
 // that day (legionfacts.ReadClosedIn), the filings its Legion sessions made that day
-// (legionfacts.ReadFilingsIn) and the repository of each filed issue (legionfacts.ReadRepos).
+// (legionfacts.ReadFilingsIn) and the repository each of those issues resolves to now
+// (legionfacts.ReadRepos, one read of them all).
 func (s *Store) ReadLegionDay(ctx context.Context, project string, day time.Time) (LegionDay, error) {
 	start := utcMidnight(day)
 	end := start.AddDate(0, 0, 1)
@@ -172,15 +176,18 @@ func (s *Store) ReadLegionDay(ctx context.Context, project string, day time.Time
 	if err != nil {
 		return LegionDay{}, err
 	}
-	keys := make([]string, len(filed))
-	for i, filing := range filed {
-		keys[i] = filing.Issue
+	keys := make([]string, 0, len(closed)+len(filed))
+	for _, row := range closed {
+		keys = append(keys, row.Issue)
+	}
+	for _, filing := range filed {
+		keys = append(keys, filing.Issue)
 	}
 	repos, err := legionfacts.ReadRepos(ctx, pool, keys)
 	if err != nil {
 		return LegionDay{}, err
 	}
-	return LegionDay{Project: project, Day: start, closed: closed, filed: filed, filedRepos: repos}, nil
+	return LegionDay{Project: project, Day: start, closed: closed, filed: filed, repos: repos}, nil
 }
 
 // legionInput is a day's issues and filings, or one repository's of them, as the builders read
@@ -204,16 +211,17 @@ func (d LegionDay) Rows(since LegionSince) ProjectDay {
 	}
 	for _, row := range d.closed {
 		facts := issueFacts(row)
+		repo := d.repos[row.Issue]
 		all.finished = append(all.finished, facts)
-		if row.Repo != "" {
-			repoInput(row.Repo).finished = append(repoInput(row.Repo).finished, facts)
+		if repo != "" {
+			repoInput(repo).finished = append(repoInput(repo).finished, facts)
 		}
-		result.Members = append(result.Members, Member{Family: KindLegion, RowKey: row.Issue, Repo: row.Repo})
+		result.Members = append(result.Members, Member{Family: KindLegion, RowKey: row.Issue, Repo: repo})
 	}
 	for _, filing := range d.filed {
 		one := issueFiling(filing)
 		all.filed = append(all.filed, one)
-		if repo := d.filedRepos[filing.Issue]; repo != "" {
+		if repo := d.repos[filing.Issue]; repo != "" {
 			repoInput(repo).filed = append(repoInput(repo).filed, one)
 		}
 	}

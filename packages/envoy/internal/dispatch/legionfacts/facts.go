@@ -284,6 +284,50 @@ func ReadRepos(ctx context.Context, q Querier, keys []string) (map[string]string
 	return repos, nil
 }
 
+// reresolveRepos resolves the repository of every stored row again by the rule that filled it
+// (ReadRepos) and rewrites the repo of each row whose repository moved, in tx, answering their
+// keys. It is what a change of a repository's mapping owes the stored rows (readChangePage): the
+// rule falls back to the project's default mapping, so a mapping change moves the repository of
+// rows whose issue no feed names, and the eval items route reads each row's repo. The rows' other
+// columns and their updated_at stand, since nothing they were computed from moved. It reads every
+// stored row and resolves them all in one statement: a mapping is an operator's setting, written
+// rarely beside every other change this loop reads.
+func reresolveRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
+	rows, err := tx.Query(ctx, `select project_key, issue_key, coalesce(repo, '') from issue_facts order by project_key, issue_key`)
+	if err != nil {
+		return nil, fmt.Errorf("read the stored rows' repositories: %w", err)
+	}
+	var projects, keys, repos []string
+	var project, key, repo string
+	if _, err := pgx.ForEachRow(rows, []any{&project, &key, &repo}, func() error {
+		projects, keys, repos = append(projects, project), append(keys, key), append(repos, repo)
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the stored rows' repositories: %w", err)
+	}
+	resolved, err := ReadRepos(ctx, tx, keys)
+	if err != nil {
+		return nil, err
+	}
+	var movedProjects, moved, movedRepos []string
+	for i, key := range keys {
+		if resolved[key] != repos[i] {
+			movedProjects, moved, movedRepos = append(movedProjects, projects[i]), append(moved, key), append(movedRepos, resolved[key])
+		}
+	}
+	if len(moved) == 0 {
+		return nil, nil
+	}
+	if _, err := tx.Exec(ctx, `
+		update issue_facts facts set repo = nullif(given.repo, '')
+		from unnest($1::text[], $2::text[], $3::text[]) as given(project, issue, repo)
+		where facts.project_key = given.project and facts.issue_key = given.issue
+	`, movedProjects, moved, movedRepos); err != nil {
+		return nil, fmt.Errorf("rewrite the repositories of %d stored rows: %w", len(moved), err)
+	}
+	return moved, nil
+}
+
 // lineIssue is what the waiting line reads of one issue the daemon reports (legion.LineIssue):
 // the phase of its newest `phase` observation and the slot of its newest `slot` one. An issue the
 // sampler recorded no observation of is an issue the daemon reports nothing of, which is the set

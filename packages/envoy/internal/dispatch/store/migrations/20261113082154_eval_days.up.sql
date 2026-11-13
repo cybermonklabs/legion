@@ -44,6 +44,18 @@
 --                   the project, the family of evals that counted the item, and the item's key,
 --                   which is the row's identity.
 --   day, repo       the day and the repository the item was last counted in.
+--   shipped_by      for a pull request of the delivery family, the row key of the deploy run that
+--                   shipped it when it was last counted (`run:<repo>/<run id>`), '' for one no
+--                   deploy shipped and for every other item. A change of that run, or of the pull
+--                   request, moves which run ships it (containment), and the run it left counts it
+--                   in its own day's rows: this is how the refresher finds that day once the
+--                   stored rows no longer say it.
+-- eval_day_members_day, (project_key, family, day), is the read of the items one write of a day
+-- counted before it: the write of a project's day deletes the members of its families recorded on
+-- that day that the day no longer holds, which the primary key answers only by walking every item
+-- of the project's family, one row per pull request, run or issue it ever counted.
+-- eval_day_members_shipped, (project_key, shipped_by) over the pull requests a deploy shipped, is
+-- the read of the pull requests one deploy run shipped, by project.
 --
 -- Two new tables, both empty: nothing existing is read or rewritten, and the release before this
 -- one neither reads nor writes either, so the two builds roll together (cmd/dispatch/README.md,
@@ -80,5 +92,8 @@ create table eval_day_members (
     row_key text not null,
     day date not null,
     repo text not null default '',
+    shipped_by text not null default '',
     primary key (project_key, family, row_key)
 );
+create index eval_day_members_day on eval_day_members (project_key, family, day);
+create index eval_day_members_shipped on eval_day_members (project_key, shipped_by) where shipped_by <> '';

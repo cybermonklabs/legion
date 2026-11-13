@@ -93,6 +93,10 @@ var cursorNames = []string{eventsCursor, observationsCursor, changesCursor}
 // merge time is the one delivery fact an issue's facts read.
 const pullRequestChange = "pull_request"
 
+// settingsChange is the delivery_changes kind a repository's mapping logs, naming the repository
+// (migration 20261113170752), which moves the repository a stored row resolves to (readChangePage).
+const settingsChange = "settings"
+
 // Deps is what Run needs of the server.
 type Deps struct {
 	// Pool is the database the facts are computed from and written to.
@@ -184,7 +188,7 @@ func run(ctx context.Context, deps Deps, sched schedule) {
 	duty.RunWoken(ctx, duty.WokenLoop{
 		Lease:  Lease,
 		Leases: deps.Leases,
-		Wake:   mergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries),
+		Wake:   duty.MergeWakes(ctx, deps.Events, deps.Observations, deps.Deliveries),
 		MinGap: sched.every,
 		Pass: func(ctx context.Context) time.Time {
 			changed, next, err := pass(ctx, deps, sched)
@@ -201,43 +205,6 @@ func run(ctx context.Context, deps Deps, sched schedule) {
 			return next
 		},
 	})
-}
-
-// mergeWakes is the one wake a WokenLoop reads, signalled by any of the loop's three. It keeps
-// the shape a pglisten.Hub wake has: a buffer of one and a send that never blocks, so any number
-// of changes collapse into one signal and a change that arrives while a pass runs earns a pass
-// after it. A nil wake is left out, and three nil wakes answer nil, which is a loop that runs at
-// start and at each due time alone.
-func mergeWakes(ctx context.Context, wakes ...<-chan struct{}) <-chan struct{} {
-	live := make([]<-chan struct{}, 0, len(wakes))
-	for _, wake := range wakes {
-		if wake != nil {
-			live = append(live, wake)
-		}
-	}
-	switch len(live) {
-	case 0:
-		return nil
-	case 1:
-		return live[0]
-	}
-	merged := make(chan struct{}, 1)
-	for _, wake := range live {
-		go func() {
-			for {
-				select {
-				case <-ctx.Done():
-					return
-				case <-wake:
-					select {
-					case merged <- struct{}{}:
-					default:
-					}
-				}
-			}
-		}()
-	}
-	return merged
 }
 
 // pass is one pass of the loop: it reads page after page of the three feeds until one comes back
@@ -395,7 +362,7 @@ func passPage(ctx context.Context, deps Deps, sched schedule, safe int64, now ti
 		observationsCursor: read.observations.position,
 		changesCursor:      read.changes.position,
 	}
-	changed, err := writePass(ctx, deps.Pool, computed, positions, now, deps.Build)
+	changed, err := writePass(ctx, deps.Pool, computed, positions, now, deps.Build, read.changes.remapped)
 	if err != nil {
 		return changed, false, err
 	}
@@ -461,12 +428,13 @@ func computeProjectWork(ctx context.Context, pool *store.Pool, project string, w
 }
 
 // writePass writes every project's rows and filings, deletes the stale rows and filings inside
-// the sets each project's pass stated, records the projects it computed whole and moves the
-// three cursors, all in one transaction. It answers the keys whose stored rows changed, the
-// deleted keys among them, because a row that went is a change of the stored facts as much as a
-// row that moved. A failure leaves the cursors and the marks where they were, so the next pass
-// reads the same rows again.
-func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string) ([]string, error) {
+// the sets each project's pass stated, resolves every stored row's repository again where remapped
+// says the page read a change of a repository's mapping (reresolveRepos), records the projects it
+// computed whole and moves the three cursors, all in one transaction. It answers the keys whose
+// stored rows changed, the deleted keys among them, because a row that went is a change of the
+// stored facts as much as a row that moved. A failure leaves the cursors and the marks where they
+// were, so the next pass reads the same rows again.
+func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, positions map[string]int64, now time.Time, build string, remapped bool) ([]string, error) {
 	tx, err := pool.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open the Legion facts' write: %w", err)
@@ -482,6 +450,13 @@ func writePass(ctx context.Context, pool *store.Pool, computed []projectPass, po
 		if err := WriteFilings(ctx, tx, project.filings); err != nil {
 			return nil, err
 		}
+	}
+	if remapped {
+		moved, err := reresolveRepos(ctx, tx)
+		if err != nil {
+			return nil, err
+		}
+		changed = append(changed, moved...)
 	}
 	if err := markComputedWhole(ctx, tx, computed, now, build); err != nil {
 		return nil, err

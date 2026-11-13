@@ -63,3 +63,40 @@ func TestEachStoredRowNamesTheRepositoryTheIssuePageResolves(t *testing.T) {
 	}
 	t.Logf("%s: %d stored rows read against refs.IssueRepository, by repository %v", project, len(stored), byRepo)
 }
+
+// TestAMappingChangeReResolvesEveryStoredRepository: a stored row's repository falls back to its
+// project's default mapping, so the pass that reads a mapping's change (the `settings` change
+// repo_projects logs, naming the repository) resolves every stored row again: once the project
+// gains a default repository, the closed issues' rows, which no sweep recomputes and no feed
+// names, store it, as the open ones do.
+func TestAMappingChangeReResolvesEveryStoredRepository(t *testing.T) {
+	c := newConsumer(t, 3)
+	c.pass(t)
+	project := c.fixture.Project
+	closed := 0
+	for key, row := range c.rows(t) {
+		if row.Repo != "" {
+			t.Fatalf("%s stores %q before the project maps any repository", key, row.Repo)
+		}
+		if row.ClosedAt != nil {
+			closed++
+		}
+	}
+	if closed == 0 {
+		t.Fatal("the history holds no closed issue's row, so this test checks only rows the sweep recomputes")
+	}
+	c.exec(t, "give the project a default repository", `
+		insert into repo_projects (repo, project, created_by, is_default) values ('acme/widgets', $1, '{"kind":"user","id":"alice"}', true)
+	`, project)
+	changed := c.pass(t)
+	byRepo := map[string]int{}
+	for key, row := range c.rows(t) {
+		if row.Repo != "acme/widgets" {
+			t.Errorf("%s (closed %t) stores %q after its project's default mapping became acme/widgets", key, row.ClosedAt != nil, row.Repo)
+		}
+		if row.ClosedAt != nil {
+			byRepo[row.Repo]++
+		}
+	}
+	t.Logf("the pass after the mapping changed %d rows; the %d closed rows by repository: %v", len(changed), closed, byRepo)
+}

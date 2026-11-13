@@ -598,11 +598,14 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel) and the delivery settings both intakes route by
-	//     (delivery.SettingsChannel). The two leased ones, reference-excerpts and edit-notices,
-	//     take their lease with no period (duty.RunWoken): a process that finds it held retries
-	//     until a pass of its own runs, since the other process's pass may have read before the
-	//     change that woke this one. The suggestion-outcome loop takes none: each of its pages
+	//     suggestion outcomes (api.EventsChannel), the delivery settings both intakes route by
+	//     (delivery.SettingsChannel), the Legion facts (legionfacts.Run) and the eval day rows
+	//     (evals.Store.RunRefresher, woken by api.EventsChannel and delivery.ChangesChannel, whose
+	//     due time is the next UTC midnight). The four leased ones, reference-excerpts,
+	//     edit-notices, legion-facts and eval-days, take their lease with no period
+	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
+	//     since the other process's pass may have read before the change that woke this one. The
+	//     suggestion-outcome loop takes none: each of its pages
 	//     runs in a transaction holding the suggestion_outcome_cursor row for update, which
 	//     serialises two processes woken by one commit, the first pass on a database included
 	//     (api/suggestion_outcomes.go). The keyed writes' own sweep - the Idempotency-Keys past
@@ -762,6 +765,11 @@ func main() {
 	factsEventsWake := listenerHub.Wake(api.EventsChannel)
 	factsStateWake := listenerHub.Wake(legion.StateChannel)
 	factsChangesWake := listenerHub.Wake(delivery.ChangesChannel)
+	// The eval day-row refresher reads two feeds, each with a wake of its own: the delivery
+	// changes, which name the days a pull request, a run, a stored Legion fact or a filing moves,
+	// and the events, which name the issues whose P0 count or repository moved (evals.RunRefresher).
+	daysEventsWake := listenerHub.Wake(api.EventsChannel)
+	daysChangesWake := listenerHub.Wake(delivery.ChangesChannel)
 	if natsClient != nil && appCtx.GitHub() != nil {
 		settingsWake = listenerHub.Wake(delivery.SettingsChannel)
 	}
@@ -972,7 +980,23 @@ func main() {
 	// made by SQL and writes what this build's catalogue changed. It takes the eval-seed lease,
 	// so two processes booting together write each project once, and a process that finds the
 	// lease held seeds again once it is free, with its own build's catalogue.
-	go evals.New(database, documentService, broker).SeedEveryProject(ctx, leases)
+	evalStore := evals.New(database, documentService, broker)
+	go evalStore.SeedEveryProject(ctx, leases)
+	// The eval day-row refresher keeps every project's stored day rows (eval_days) true to their
+	// inputs: it rewrites the days each delivery change and issue event names, walks every day of
+	// each family from its first input day once per build and each new UTC day as it comes, which
+	// writes the explicit zero rows, seeds a project made by SQL since the boot pass, and prunes
+	// the delivery change log, which no reconcile prunes where no GitHub App runs one. It takes
+	// the eval-days lease, so two processes woken by one commit build each day once, and reads the
+	// event log up to the safe horizon of the same events.Horizon the facts consumer reads. It
+	// records the build it runs as against every row and walk, as the facts consumer does.
+	go evalStore.RunRefresher(ctx, evals.RefresherDeps{
+		Horizon:    background.EventHorizon(),
+		Build:      processBuild(),
+		Leases:     leases,
+		Events:     daysEventsWake,
+		Deliveries: daysChangesWake,
+	})
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because

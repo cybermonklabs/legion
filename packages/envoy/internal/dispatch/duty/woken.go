@@ -53,6 +53,44 @@ func RunWoken(ctx context.Context, loop WokenLoop) {
 	loop.run(ctx, Exclusive)
 }
 
+// MergeWakes is the one wake a WokenLoop reads, signalled by any of wakes: a loop woken by more
+// than one channel (legionfacts.Run, evals.RunRefresher). It keeps the shape a pglisten.Hub wake
+// has: a buffer of one and a send that never blocks, so any number of changes collapse into one
+// signal and a change that arrives while a pass runs earns a pass after it. A nil wake is left out,
+// and only nil wakes answer nil, which is a loop that runs at start and at each due time alone.
+// The goroutines that forward the wakes end when ctx is done.
+func MergeWakes(ctx context.Context, wakes ...<-chan struct{}) <-chan struct{} {
+	live := make([]<-chan struct{}, 0, len(wakes))
+	for _, wake := range wakes {
+		if wake != nil {
+			live = append(live, wake)
+		}
+	}
+	switch len(live) {
+	case 0:
+		return nil
+	case 1:
+		return live[0]
+	}
+	merged := make(chan struct{}, 1)
+	for _, wake := range live {
+		go func() {
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-wake:
+					select {
+					case merged <- struct{}{}:
+					default:
+					}
+				}
+			}
+		}()
+	}
+	return merged
+}
+
 func (l WokenLoop) run(ctx context.Context, exclusive ExclusiveFunc) {
 	if l.Lease != "" && l.MinGap <= 0 {
 		panic("duty: a leased WokenLoop needs a positive MinGap")

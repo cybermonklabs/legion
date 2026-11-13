@@ -82,14 +82,15 @@ func TestALegionDayWritesEachEvalInEveryCutAndRepositoryAndRecordsItsIssues(t *t
 	}
 	actor := `{"kind":"system","id":"legion-day-test"}`
 	// Neither repository is the project's default, so an issue that names none resolves to none.
+	// Each issue's repository is its own, which the day resolves when it is built.
 	exec("the repositories", `insert into repo_projects (repo, project, created_by, is_default) values ('acme/web', 'EVAL', $1, false), ('acme/api', 'EVAL', $1, false)`, actor)
 	for _, issue := range []struct {
 		number int
 		repo   any
-	}{{10, "acme/api"}, {11, nil}, {12, nil}} {
-		exec(fmt.Sprintf("the filed issue EVAL-%d", issue.number), `
+	}{{1, "acme/web"}, {2, "acme/api"}, {3, nil}, {4, "acme/web"}, {10, "acme/api"}, {11, nil}, {12, nil}} {
+		exec(fmt.Sprintf("the issue EVAL-%d", issue.number), `
 			insert into issues (key, project_key, number, title, status, rank, repo, created_by, created_at)
-			values ($1, 'EVAL', $2, 'A filed issue', 'triage', $3, $4, $5::jsonb, $6)
+			values ($1, 'EVAL', $2, 'An issue', 'triage', $3, $4, $5::jsonb, $6)
 		`, fmt.Sprintf("EVAL-%d", issue.number), issue.number, fmt.Sprintf("%08d", issue.number), issue.repo, actor, at(2, 0, 0))
 	}
 	exec("the first claim and slot observations", `

@@ -117,12 +117,14 @@ func readFeedHeads(ctx context.Context, q Querier, safe int64) (pages, error) {
 }
 
 // feed is what one page of one feed read: where that feed now stands, the issues it named, the
-// filings it read (the events feed alone reads any), and whether the page was full.
+// filings it read (the events feed alone reads any), whether the page was full, and whether it
+// read a change of a repository's mapping (the changes feed alone reads any, readChangePage).
 type feed struct {
 	position int64
 	touches  []touch
 	filings  []filing
 	full     bool
+	remapped bool
 }
 
 // filing is one issue an event of the page says a Legion session filed: the issue whose
@@ -398,6 +400,12 @@ func readObservationPage(ctx context.Context, q Querier, after int64, limit int)
 // requests. A change's repo and ref name a row of delivery_pull_requests, whose issue_key is the
 // issue whose facts moved, and a pull request no issue carries names none.
 //
+// It also keeps whether the page holds a change of a repository's mapping in repo_projects, a
+// `settings` change that names the repository (migration 20261113170752). A stored row's repo is
+// the repository its issue resolves to, and the rule falls back to the project's default mapping
+// (refs.IssueRepoTerms), so a mapping change moves the repo of rows no feed names: the pass then
+// resolves every stored row's repository again (reresolveRepos).
+//
 // It also answers whether the cursor had fallen below the oldest change the log still holds.
 // delivery_changes is pruned at delivery.ChangeRetention and oldest first, so a cursor whose own
 // row is gone may have passed over rows it never read. That is a backfill (legionProjects): the
@@ -411,6 +419,9 @@ func readChangePage(ctx context.Context, q Querier, after int64, limit int) (fee
 	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
 	for _, change := range changes {
 		page.position = change.Seq
+		if change.Kind == settingsChange && change.Repo != "" {
+			page.remapped = true
+		}
 		if change.Kind != pullRequestChange {
 			continue
 		}
