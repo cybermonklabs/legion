@@ -82,25 +82,22 @@ package rescue_test
 // Record, drop or fail. For every path, `git add --all` records it, drops it or fails, and where
 // it fails, today's read fails the workspace and the pod is not replaced. So where today's read
 // fails, the route must fail too. A row where today's read fails and the route answers a tree
-// fails as a loss, whatever the row declares but one word: the route would read clean a worktree
-// today's check refuses, and the pod would go with the work in it. That word is todayFailsNamed,
-// for the one shape named rather than refused, a tracked file a required clean filter fails on
-// while it holds what HEAD holds, and it passes only where the route's tree is HEAD's and the
-// worktree holds HEAD's bytes at every path and nothing new (namedFailureHolds), so a changed
-// file or one this process cannot read fails under it too. A row that sets todayFails with
-// neither fails nor that word fails before anything is built, calling the shape a loss. A row
-// whose today's read fails while it sets no todayFails fails as well, naming the row and what
-// each read answered.
+// fails as a loss, whatever the row declares: the route would read clean a worktree today's check
+// refuses, and the pod would go with the work in it. A row that sets todayFails without fails
+// fails before anything is built, calling the shape a loss. A row whose today's read fails while
+// it sets no todayFails fails as well, naming the row and what each read answered.
 //
 // The opposite shape is a deliberate refusal under R4: the route fails and today's read answers a
 // tree, as with a directory this process cannot read, over which `git add --all` warns, exits 0
-// and loses what is inside, where jj's snapshot fails. A row whose route fails says so (fails),
-// and the failure is asserted: a workspace that fails is never a silent loss, since its pod is not
-// replaced for it. A row that expects a tree and gets a failure, or expects a failure and gets a
-// tree, fails. Where today's read fails too, the row says so beside the route's failure
-// (todayFails), and that failure is asserted in place of its tree, with the paths the row stands
-// on, each of which the route's failure must name (failsNaming, namesPath): a route that fails
-// there for another reason than today's read does is no agreement with it.
+// and loses what is inside, where jj's snapshot fails; with a directory it can list and not
+// search; and with a file marked skip-worktree that was edited and made unreadable. A row whose
+// route fails says so (fails), and the failure is asserted: a workspace that fails is never a
+// silent loss, since its pod is not replaced for it. A row that expects a tree and gets a
+// failure, or expects a failure and gets a tree, fails. Where today's read fails too, the row says
+// so beside the route's failure (todayFails), and that failure is asserted in place of its tree,
+// with the paths the row stands on, each of which the route's failure must name (failsNaming,
+// namesPath): a route that fails there for another reason than today's read does is no agreement
+// with it.
 //
 // The rows are the shapes reviews found. The generated matrix (matrix_test.go) holds the two reads
 // to the same comparison over every cell it can build of an index state and a disk state at one
@@ -248,69 +245,12 @@ func answered(tree string, err error) string {
 
 // failureLost is the loss where today's read fails the workspace and the jj route answers a tree,
 // said as a failure message says it, and "" for every other pair of answers. Where `git add
-// --all` fails, the route must fail the workspace too, whatever a cell declares, and whatever a
-// row declares but todayFailsNamed, which namedFailureHolds holds instead.
+// --all` fails, the route must fail the workspace too, whatever a row or a cell declares.
 func failureLost(r reads) string {
 	if r.todayErr == nil || r.routeErr != nil {
 		return ""
 	}
 	return fmt.Sprintf("loss: today's read fails the workspace (%v), and the jj route answers the tree %s: where `git add --all` fails, the route must fail the workspace too, or it reads clean a worktree today's check refuses", r.todayErr, r.route)
-}
-
-// namedFailureHolds holds a row that declares todayFailsNamed, where today's read fails and the
-// jj route answers a tree, to what makes that answer lose nothing: today's read names each path
-// the row declares; the route's tree is HEAD's tree; at every path of that tree the worktree
-// holds HEAD's own entry, a file's bytes as `git hash-object --no-filters` hashes them at its mode
-// by its execute bits (worktreeHolds) or a symlink's target (worktreeAsGitStores); and git lists
-// no file an add would take as new against HEAD's tree. So the route's tree is what the worktree
-// holds, and a changed file, a new one or a file this process cannot read, whose bytes cannot be
-// compared, fails the row.
-func namedFailureHolds(t *testing.T, d *rescuetest.Disk, r reads, row differentialRow) {
-	t.Helper()
-	for path, reason := range row.todayFailsNamed {
-		if !strings.Contains(r.todayErr.Error(), path) {
-			t.Errorf("the row %q declares %q todayFailsNamed (%s), and today's read fails without naming it: %v", row.name, path, reason, r.todayErr)
-		}
-	}
-	head := headOf(t, d, d.Workspace)
-	if head == "" {
-		t.Fatalf("the row %q declares todayFailsNamed, and the workspace's git HEAD is unborn, so there is no HEAD's tree to hold the route's answer to", row.name)
-	}
-	headTree := strings.TrimSpace(gitRead(t, d, d.Workspace, nil, "rev-parse", head+"^{tree}"))
-	if r.route != headTree {
-		t.Errorf("the row %q declares todayFailsNamed, and the jj route answers the tree %s where HEAD's is %s: a named failure is accepted only where the route answers HEAD's tree, which nothing in the worktree has changed", row.name, r.route, headTree)
-	}
-	for path, want := range entriesOf(t, d, headTree) {
-		var held entry
-		why := ""
-		switch info, err := os.Lstat(filepath.Join(d.Workspace, path)); {
-		case want.mode == gitlinkMode:
-			why = "HEAD holds a gitlink there, whose repository this does not compare"
-		case err != nil:
-			why = fmt.Sprintf("the worktree holds nothing there (%v)", err)
-		case info.Mode()&os.ModeSymlink != 0:
-			held, why = worktreeAsGitStores(t, d, path)
-		default:
-			if f, err := os.Open(filepath.Join(d.Workspace, path)); err != nil {
-				why = fmt.Sprintf("the worktree's file cannot be read (%v)", err)
-			} else {
-				f.Close()
-				held, why = worktreeHolds(t, d, path)
-			}
-		}
-		if why == "" && held != want {
-			why = fmt.Sprintf("the worktree holds mode %s blob %s there", held.mode, held.object)
-		}
-		if why != "" {
-			t.Errorf("the row %q declares todayFailsNamed, and the worktree does not hold HEAD's mode %s blob %s at %q: %s, so the route's tree, HEAD's, could hide what the worktree holds", row.name, want.mode, want.object, path, why)
-		}
-	}
-	index := filepath.Join(t.TempDir(), "index")
-	env := []string{"GIT_INDEX_FILE=" + index}
-	gitRead(t, d, d.Workspace, env, "read-tree", head)
-	if added := nulSplit(gitRead(t, d, d.Workspace, env, "ls-files", "-z", "--others", "--exclude-standard", "--", ".")); len(added) > 0 {
-		t.Errorf("the row %q declares todayFailsNamed, and git lists %q as new against HEAD's tree, which the route's tree, HEAD's, does not hold", row.name, added)
-	}
 }
 
 // namesPath is whether err, the jj route's failure, names path as the route writes a path, with
@@ -330,7 +270,7 @@ func unreasoned(row differentialRow) []string {
 	for _, kind := range []struct {
 		word     string
 		declared map[string]string
-	}{{"contentLost", row.contentLost}, {"reformed", row.reformed}, {"lost", row.lost}, {"gained", row.gained}, {"todayFailsNamed", row.todayFailsNamed}} {
+	}{{"contentLost", row.contentLost}, {"reformed", row.reformed}, {"lost", row.lost}, {"gained", row.gained}} {
 		for path, reason := range kind.declared {
 			if strings.TrimSpace(reason) == "" {
 				paths = append(paths, fmt.Sprintf("%s %q", kind.word, path))
@@ -770,17 +710,6 @@ type differentialRow struct {
 	// another reason than today's read is no agreement with it. Every row that sets todayFails
 	// sets it.
 	failsNaming []string
-	// todayFailsNamed is the paths of the one shape where today's read fails the workspace and
-	// the jj route may answer a tree, each with its reason: a tracked file that a required clean
-	// filter fails on while it holds what HEAD holds, which the git read hashes again through
-	// the filter and jj's snapshot passes over. Refusing it would run the filter over every
-	// tracked file, the whole-worktree hash the route removes, so the case is named rather than
-	// refused. A row sets it only beside todayFails and never beside fails, and it is accepted
-	// only where today's read names each of its paths and the route's tree is HEAD's tree while
-	// the worktree holds HEAD's bytes at every path of that tree and nothing more git would add
-	// (namedFailureHolds): so it hides no changed file, and a file this process cannot read,
-	// whose bytes the test cannot compare, cannot use it.
-	todayFailsNamed map[string]string
 	// contentLost, reformed, lost and gained are the paths the row declares the two trees differ
 	// at, each with the reason they may: the exceptions the comment at the head of this file
 	// lists, each checked for exactly its path against what the two trees hold (heldAsRuled).
@@ -1053,6 +982,85 @@ func requiredFilterFails(t *testing.T, d *rescuetest.Disk) {
 	d.Git("config", "filter.bad.required", "true")
 }
 
+// requiredFilterWorks is requiredFilterFails with a required clean filter that works: up, which
+// writes a file's letters in upper case, over f.fx committed as aaaa.
+func requiredFilterWorks(t *testing.T, d *rescuetest.Disk) {
+	t.Helper()
+	d.Write(d.Workspace, ".gitattributes", "*.fx filter=up\n")
+	d.Write(d.Workspace, "f.fx", "aaaa\n")
+	pushedByTheRole(t, d, "a file under a clean filter the repository does not configure yet")
+	requireIndexWithoutStatData(t, d)
+	d.Git("config", "filter.up.clean", "tr a-z A-Z")
+	d.Git("config", "filter.up.required", "true")
+}
+
+// safecrlfRefuses commits c.txt in CRLF lines, and then writes the eol rule `*.txt text eol=lf`
+// and sets core.safecrlf=true, under which git's add refuses a file whose CRLF lines the rule
+// would turn into LF. The index the role's jj wrote has no stat data, so the git read hashes
+// c.txt again under that rule.
+func safecrlfRefuses(t *testing.T, d *rescuetest.Disk) {
+	t.Helper()
+	d.Write(d.Workspace, "c.txt", "AB\r\n")
+	pushedByTheRole(t, d, "a file of CRLF lines committed before an eol rule was written")
+	d.Write(d.Workspace, ".gitattributes", "*.txt text eol=lf\n")
+	d.Git("config", "core.safecrlf", "true")
+	requireIndexWithoutStatData(t, d)
+}
+
+// encodingRefuses commits w.u16 as six bytes with no byte order mark, and then writes the rule
+// `*.u16 working-tree-encoding=UTF-16`, under which git's add refuses UTF-16 that has no byte
+// order mark. The index the role's jj wrote has no stat data, so the git read hashes w.u16 again
+// under that rule.
+func encodingRefuses(t *testing.T, d *rescuetest.Disk) {
+	t.Helper()
+	d.Write(d.Workspace, "w.u16", "AAAAA\n")
+	pushedByTheRole(t, d, "a file committed before its working-tree-encoding was written")
+	d.Write(d.Workspace, ".gitattributes", "*.u16 working-tree-encoding=UTF-16\n")
+	requireIndexWithoutStatData(t, d)
+}
+
+// hiddenRewrite sets the tracked file's mtime a minute back, has the role's jj record it with
+// `jj status`, and rewrites it with body, which is its size, with that mtime set back again
+// (rewrittenAtTheSameSize): an edit jj's stat rule passes over, so jj's tree keeps what HEAD
+// holds there.
+func hiddenRewrite(t *testing.T, d *rescuetest.Disk, file, body string) {
+	t.Helper()
+	back := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(filepath.Join(d.Workspace, file), back, back); err != nil {
+		t.Fatal(err)
+	}
+	d.JJ("status")
+	rewrittenAtTheSameSize(t, d, file, body, true)
+	requireIndexWithoutStatData(t, d)
+}
+
+// statDataByGitThenUnreadable commits u.txt with its mtime a minute back, has git write its
+// record with stat data (`update-index --refresh`, after the role's last jj command, since jj
+// writes none), and makes it mode 000 once its ctime is in a later second than the record's
+// (pastCtimeSecond). With trustCtime git compares that ctime, as it does by default, and
+// otherwise the repository sets core.trustctime=false. The row stands on git's own stat
+// comparison, which is checked here: u.txt reads as changed to `git diff-files` with trustCtime
+// and as unchanged without it.
+func statDataByGitThenUnreadable(t *testing.T, d *rescuetest.Disk, trustCtime bool) {
+	t.Helper()
+	at := filepath.Join(d.Workspace, "u.txt")
+	d.Write(d.Workspace, "u.txt", "AAAA\n")
+	setTimes(t, at, time.Now().Add(-time.Minute))
+	pushedByTheRole(t, d, "a file whose record git then writes with stat data")
+	if !trustCtime {
+		d.Git("config", "core.trustctime", "false")
+	}
+	if _, code, stderr := gitExit(t, d, d.Workspace, nil, "", "update-index", "-q", "--refresh"); code != 0 {
+		t.Fatalf("git update-index --refresh exited %d: %s", code, stderr)
+	}
+	pastCtimeSecond(t, at)
+	unreadableFile(t, d, "u.txt")
+	_, code, stderr := gitExit(t, d, d.Workspace, nil, "", "diff-files", "--quiet", "--", "u.txt")
+	if changed := code == 1; changed != trustCtime || code > 1 {
+		t.Fatalf("git diff-files --quiet -- u.txt exited %d (%s) with ctime compared %v: the row stands on git reading u.txt as changed exactly where it compares the ctime", code, stderr, trustCtime)
+	}
+}
+
 var differentialRows = []differentialRow{
 	{
 		name: "an edit of a tracked file and a new untracked file",
@@ -1186,6 +1194,49 @@ var differentialRows = []differentialRow{
 	},
 	{
 		// Measured on this build on 2026-11-13 over this shape: `git add --all` over a copy of
+		// the index warned `half/inside.txt: Permission denied` and `half/new.txt: Permission
+		// denied`, exited 0 and kept both as the copy recorded them, half/new.txt at the empty
+		// blob jj wrote for a file new in @, so its content was lost; jj's snapshot failed
+		// (`Failed to stat file …/half/new.txt: Permission denied`). The route refuses, as for
+		// the directory above (R4).
+		name: "a directory this process can list but not search",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "half/inside.txt", "a committed file under a directory no one may search\n")
+			pushedByTheRole(t, d, "a file under a directory that is then made unsearchable")
+			d.Write(d.Workspace, "half/new.txt", "a new file under it\n")
+			d.Write(d.Workspace, "open.txt", "a file beside it\n")
+			d.JJ("status")
+			half := filepath.Join(d.Workspace, "half")
+			if err := os.Chmod(half, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { os.Chmod(half, 0o755) })
+			if _, err := os.Lstat(filepath.Join(half, "inside.txt")); err == nil {
+				t.Skip("this process searches a directory of mode 0644, as root does, so no directory it makes is one jj cannot stat a file in")
+			}
+		},
+		fails: "Failed to stat file",
+		holds: []string{"open.txt", "half/inside.txt"},
+	},
+	{
+		// Measured on this build on 2026-11-13 over this shape: `git add --all` over a copy of
+		// the index exited 0 and kept s.txt at HEAD's blob without opening it, as it keeps
+		// every file marked skip-worktree; jj's snapshot, the file's mtime and size having
+		// moved, failed to open it (`Failed to open file …/s.txt: Permission denied`). The
+		// route refuses, as for the directory above (R4).
+		name: "a file marked skip-worktree, edited and then made unreadable",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			d.Write(d.Workspace, "s.txt", "s\n")
+			pushedByTheRole(t, d, "a file then marked skip-worktree")
+			d.Git("update-index", "--skip-worktree", "--", "s.txt")
+			d.Write(d.Workspace, "s.txt", "s, edited\n")
+			unreadableFile(t, d, "s.txt")
+		},
+		fails: "Failed to open file",
+		holds: []string{"s.txt"},
+	},
+	{
+		// Measured on this build on 2026-11-13 over this shape: `git add --all` over a copy of
 		// the index exited 128 (`error: open("u.txt"): Permission denied`, `fatal: updating
 		// files failed`), where `jj status` answered `The working copy has no changes.`. The
 		// route refuses it as the git read does (rescue.unreadable).
@@ -1224,16 +1275,42 @@ var differentialRows = []differentialRow{
 		failsNaming: []string{"u.txt"},
 	},
 	{
+		// git wrote u.txt's record with its stat data, and core.trustctime=false has it compare
+		// no ctime, so the chmod changes nothing git compares: measured with git 2.47.3 on
+		// 2026-11-13, `git add --all` over a copy of the index exited 0 and kept u.txt at its
+		// record without opening it, where the CI's red reproduced. The route asks git's own stat
+		// comparison (rescue.wouldRead) and answers the same tree.
+		name: "a tracked file git trusts under core.trustctime=false, made unreadable",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			statDataByGitThenUnreadable(t, d, false)
+		},
+		holds: []string{"u.txt"},
+	},
+	{
+		// The same record with ctime compared, as git compares it by default, and the chmod's
+		// ctime in a later second than the record's: git's stat comparison reports u.txt
+		// changed, so both reads open it and fail.
+		name: "a tracked file whose stat data git wrote, made unreadable in a later ctime second",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			statDataByGitThenUnreadable(t, d, true)
+		},
+		todayFails:  `open("u.txt"): Permission denied`,
+		fails:       "cannot be read, and the git read fails on a tracked file it cannot read",
+		failsNaming: []string{"u.txt"},
+	},
+	{
 		// Measured on this build on 2026-11-13 over this shape: `git add --all` over a copy of
 		// the index exited 128 (`error: external filter 'false' failed 1`, `fatal: f.fx: clean
-		// filter 'bad' failed`), where `jj status` answered `The working copy has no changes.`
-		// and the route answers HEAD's tree.
-		name:       "a tracked file a required clean filter fails on, as it was committed",
-		build:      requiredFilterFails,
-		todayFails: "clean filter 'bad' failed",
-		todayFailsNamed: map[string]string{
-			"f.fx": "the file holds what HEAD holds and jj's snapshot passes over it, where the git read hashes it again through a clean filter that fails; failing here would run the filter over every tracked file, the whole-worktree hash the route removes, and nothing is lost, since the route's tree is HEAD's",
+		// filter 'bad' failed`), where `jj status` answered `The working copy has no changes.`;
+		// the route reads f.fx again through the carry's `git add -f` (rescue.converting) and
+		// fails with it.
+		name: "a tracked file a required clean filter fails on, as it was committed",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			requiredFilterFails(t, d)
 		},
+		todayFails:  "clean filter 'bad' failed",
+		fails:       "clean filter 'bad' failed",
+		failsNaming: []string{"f.fx"},
 	},
 	{
 		// Once the file is edited, jj snapshots the edit and the carry updates it with `git add
@@ -1246,6 +1323,82 @@ var differentialRows = []differentialRow{
 		todayFails:  "clean filter 'bad' failed",
 		fails:       "clean filter 'bad' failed",
 		failsNaming: []string{"f.fx"},
+	},
+	{
+		// The tester's shape: an edit jj's stat rule passes over, so jj's tree holds HEAD's
+		// AAAA, under a filter that fails. Before the route read such a file again, it answered
+		// HEAD's tree here and lost BBBB, where the git read fails.
+		name: "a tracked file a required clean filter fails on, rewritten at its size with its mtime set back",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			requiredFilterFails(t, d)
+			hiddenRewrite(t, d, "f.fx", "BBBB\n")
+		},
+		todayFails:  "clean filter 'bad' failed",
+		fails:       "clean filter 'bad' failed",
+		failsNaming: []string{"f.fx"},
+	},
+	{
+		// A required filter that works fails nothing: both reads store the edit as the filter
+		// cleans it, in upper case.
+		name: "a tracked file under a required clean filter that works, edited",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			requiredFilterWorks(t, d)
+			d.Write(d.Workspace, "f.fx", "aaaa, edited\n")
+		},
+		holds: []string{"f.fx"},
+	},
+	{
+		// The edit jj's stat rule passes over is read again through the filter by the carry
+		// (rescue.converting), so the route keeps BBBB as the git read does, where it would
+		// otherwise keep HEAD's aaaa.
+		name: "a tracked file under a required clean filter that works, rewritten at its size with its mtime set back",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			requiredFilterWorks(t, d)
+			hiddenRewrite(t, d, "f.fx", "bbbb\n")
+		},
+		holds: []string{"f.fx"},
+	},
+	{
+		// Measured with git 2.47.3 on 2026-11-13: `git add --all` over a copy of the index exited
+		// 128 (`fatal: CRLF would be replaced by LF in c.txt`).
+		name: "a tracked file of CRLF lines under an eol rule core.safecrlf refuses, as it was committed",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			safecrlfRefuses(t, d)
+		},
+		todayFails:  "CRLF would be replaced by LF in c.txt",
+		fails:       "CRLF would be replaced by LF in c.txt",
+		failsNaming: []string{"c.txt"},
+	},
+	{
+		// The rewrite holds LF lines, which the eol rule keeps as they are, so git's add takes it;
+		// the route reads it again through that add and keeps it as the git read does.
+		name: "a tracked file of CRLF lines under an eol rule core.safecrlf refuses, rewritten at its size in LF lines with its mtime set back",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			safecrlfRefuses(t, d)
+			hiddenRewrite(t, d, "c.txt", "ABC\n")
+		},
+		holds: []string{"c.txt"},
+	},
+	{
+		// Measured with git 2.47.3 on 2026-11-13: `git add --all` over a copy of the index exited
+		// 128 (`fatal: BOM is required in 'w.u16' if encoded as UTF-16`).
+		name: "a tracked file whose bytes are not in its working-tree-encoding, as it was committed",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			encodingRefuses(t, d)
+		},
+		todayFails:  "BOM is required in 'w.u16'",
+		fails:       "BOM is required in 'w.u16'",
+		failsNaming: []string{"w.u16"},
+	},
+	{
+		// The rewrite is UTF-16 with its byte order mark, which git's add converts; the route
+		// reads it again through that add and keeps it as the git read does.
+		name: "a tracked file whose bytes are not in its working-tree-encoding, rewritten at its size in that encoding with its mtime set back",
+		build: func(t *testing.T, d *rescuetest.Disk) {
+			encodingRefuses(t, d)
+			hiddenRewrite(t, d, "w.u16", "\xff\xfeA\x00B\x00")
+		},
+		holds: []string{"w.u16"},
 	},
 	{
 		// conflict.txt is conflicted over a base that holds it, added.txt over one that does
@@ -2228,32 +2381,26 @@ func entriesHeldAndAbsent(t *testing.T, row differentialRow, trees map[string]ma
 // path the git read lacks, but for the exceptions heldAsRuled names, each checked for exactly the
 // paths a row names under its kind; every path a row declares, under any kind, carries its
 // reason; where the route fails, the row says so; and where the git read fails, the route fails
-// too, naming the paths the row stands on, or the row fails as a loss, but for the one shape a
-// row may name instead (todayFailsNamed), which is held to what keeps it from hiding a changed
-// file (namedFailureHolds).
+// too, naming the paths the row stands on, or the row fails as a loss.
 func TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps(t *testing.T) {
 	for _, row := range differentialRows {
 		for _, path := range unreasoned(row) {
 			t.Errorf("the row %q declares %s with no reason, want the reason the two trees may differ there", row.name, path)
 		}
-		named := len(row.todayFailsNamed) > 0
-		switch {
-		case named && (row.todayFails == "" || row.fails != ""):
-			t.Errorf("the row %q declares todayFailsNamed, which stands only beside todayFails and without fails: it names a failure of today's read where the jj route answers a tree", row.name)
-		case row.todayFails != "" && !named && len(row.failsNaming) == 0:
+		if row.todayFails != "" && len(row.failsNaming) == 0 {
 			t.Errorf("the row %q sets todayFails and names no path the jj route's failure must name (failsNaming), so a route that fails for another reason would pass as agreeing", row.name)
 		}
 	}
 	for _, row := range differentialRows {
 		t.Run(row.name, func(t *testing.T) {
-			if row.todayFails != "" && row.fails == "" && len(row.todayFailsNamed) == 0 {
-				t.Fatalf("loss: the row %q declares today's read failing the workspace saying %q and the jj route answering a tree, where `git add --all` fails and the route must fail the workspace too; the row names no todayFailsNamed, the one shape the route may answer a tree for there, so want fails set beside todayFails", row.name, row.todayFails)
+			if row.todayFails != "" && row.fails == "" {
+				t.Fatalf("loss: the row %q declares today's read failing the workspace saying %q and the jj route answering a tree, where `git add --all` fails and the route must fail the workspace too, so want fails set beside todayFails", row.name, row.todayFails)
 			}
 			d := rescuetest.New(t, issue)
 			row.build(t, d)
 			r := readBoth(t, d, headOf(t, d, d.Workspace))
 
-			if lost := failureLost(r); lost != "" && len(row.todayFailsNamed) == 0 {
+			if lost := failureLost(r); lost != "" {
 				t.Fatalf("the row %q: %s", row.name, lost)
 			}
 			switch {
@@ -2284,12 +2431,64 @@ func TestTheJJRouteKeepsEveryEntryTheWholeWorktreeGitReadKeeps(t *testing.T) {
 			if r.routeErr != nil {
 				t.Fatalf("the row %q: the jj route fails (%v), want a tree; today's read %s", row.name, r.routeErr, answered(r.today, r.todayErr))
 			}
-			if len(row.todayFailsNamed) > 0 {
-				namedFailureHolds(t, d, r, row)
-				return
-			}
 			heldAsRuled(t, d, r.today, r.route, row)
 			heldAndAbsent(t, d, row, map[string]string{"git read's": r.today, "jj route's": r.route})
 		})
+	}
+}
+
+// The walk for a tracked file this process cannot read (rescue.unreadable) runs under the read's
+// own cut, git's stat comparison of what it found among it: a walk the workspace's bound ends is
+// cut as the rest of the read is, so it eats nothing of the push's reserve, and the commits the
+// check already found are pushed. The cut falls inside the walk every run: the observer every git
+// of the check passes through holds the walk at its git question, `diff-files`, until the read's
+// bound has run out, and the question then runs under the cut.
+func TestAReadCutInsideTheWalkForUnreadableFilesStillRescuesTheCommitsFound(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	d.Write(d.Workspace, "u.txt", "AAAA\n")
+	pushedByTheRole(t, d, "a file that is then made unreadable")
+	d.Write(d.Workspace, "feature.txt", "work the remote lacks\n")
+	d.JJ("commit", "-m", "work the remote lacks")
+	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
+	requireIndexWithoutStatData(t, d)
+	unreadableFile(t, d, "u.txt")
+
+	// The read's own bound is what the workspace's leaves past the push's reserve, 10 s here,
+	// as in the cut cases of rescue_test.go; the walk is held a second past it.
+	bound := rescue.CheckRun + rescue.GuardReserve + 10*time.Second
+	started := time.Now()
+	held := false
+	rescue.ObserveCommands(t, func(dir, name string, args []string) {
+		if name == "git" && slices.Contains(args, "diff-files") && !held {
+			held = true
+			time.Sleep(time.Until(started.Add(11 * time.Second)))
+		}
+	})
+	checked := rescue.Run(context.Background(), rescue.Request{
+		StateDir: d.StateDir, Branch: prefix, Env: d.Env,
+		WorkspaceTimeout: bound, Deadline: time.Now().Add(bound + time.Minute),
+	})
+	took := time.Since(started)
+	if !held {
+		t.Fatal("the check ran no `git diff-files`, so the walk never reached its git question and this case cut nothing inside it")
+	}
+	w := only(t, d, checked)
+	if w.Status != rescue.Failed || len(w.Branches) != 1 {
+		t.Fatalf("the check reported %+v, want the one commit it found rescued and the workspace failed", w)
+	}
+	if b := w.Branches[0]; b.Name != prefix+"-1" || b.Commit != commit || d.RemoteBranch(b.Name) != commit {
+		t.Errorf("the check pushed %s at %s, want %s-1 at the commit %s the workspace holds", b.Name, b.Commit, prefix, commit)
+	}
+	if !strings.Contains(w.Error, "could not be read in the time the workspace's bound left for them") || !strings.Contains(w.Error, d.Workspace) || !strings.Contains(w.Error, "diff-files") {
+		t.Errorf("the entry failed with %q, want it to name the read of %s as the step that ran out, cut at the walk's `diff-files`", w.Error, d.Workspace)
+	}
+	if !strings.Contains(w.Error, "on the remote") {
+		t.Errorf("the entry failed with %q, want it to say that what the check did find reached the remote", w.Error)
+	}
+	if ran := failedAt(t, w, rescuetest.FileStep); ran <= 0 || ran > took {
+		t.Errorf("the entry says the read ran %s, want a time inside the %s the whole check took: %q", ran, took, w.Error)
+	}
+	if took > 30*time.Second {
+		t.Errorf("the check took %s of its %s bound, want the read stopped with the push's reserve in hand", took, bound)
 	}
 }

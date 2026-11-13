@@ -153,6 +153,9 @@ package rescue_test
 // that reason, and every one of them carries a reason that is not empty (unreasoned).
 
 import (
+	"bytes"
+	"crypto/sha1"
+	"encoding/binary"
 	"fmt"
 	"maps"
 	"os"
@@ -420,11 +423,20 @@ func (c matrixCell) declared(w matrixWorkspace) differentialRow {
 // older than the index file is racily clean, and git reads that file again whatever its stat data
 // says, so every record's mtime is set a minute back once it is written, before any index entry is
 // made of it. And git compares a file's ctime to the second, so a same-size rewrite whose mtime is
-// set back waits for the second after the record's ctime, and so does the unreadable state's
-// chmod, which changes nothing else git compares (becomes): measured on this build on 2026-11-13,
-// a file `git add -f` had just added, made mode 000 in the same second, read as unchanged to `git
-// add --all` over a copy of the index, which exited 0 without opening it, and made mode 000 1.1 s
-// later it failed that read, exit 128.
+// set back first waits until the file system stamps a later second than the record's ctime
+// (pastCtimeSecond). The forced entry's record is one git wrote with stat data after every jj
+// command, and its unreadable cell is built so that git trusts that record every run: the chmod
+// changes the file's ctime and nothing else git compares, so the ctime it then has is written
+// into the entry (ctimeRecorded), and git's own stat comparison is checked to report the entry
+// unchanged. Neither read then opens the file, and both keep the record. Measured on this build
+// on 2026-11-13, a file `git add -f` had just added, made mode 000 in the same second, read as
+// unchanged to `git add --all` over a copy of the index, which exited 0 without opening it, and
+// made mode 000 1.1 s later it failed that read, exit 128. Which of the two a chmod after a wait
+// on the wall clock got was chance: the kernel stamps a file's times from a clock it advances
+// once a tick, so a chmod made as the wall clock crossed the record's second could be stamped in
+// that second (pastCtimeSecond), which is the CI red of 7ad1d842, where today's read kept the
+// record and the route refused the file. The row with the ctime in a later second, where both
+// reads fail, is the differential's (statDataByGitThenUnreadable).
 func buildMatrix(t *testing.T, d *rescuetest.Disk, w matrixWorkspace, name, targets string, cells []matrixCell) *rescuetest.Disk {
 	t.Helper()
 	ws := *d
@@ -702,12 +714,85 @@ func becomes(t *testing.T, ws *rescuetest.Disk, targets, workspace string, c mat
 		}
 		symlink(t, moved, parent)
 	case diskUnreadable:
-		pastCtimeSecond(t, at)
 		if err := os.Chmod(at, 0); err != nil {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { os.Chmod(at, 0o644) })
+		if c.index == indexForced {
+			ctimeRecorded(t, ws, c.path())
+		}
 	}
+}
+
+// ctimeRecorded writes the ctime the file at path has now into the entry the worktree's own git
+// index holds for it, in place of the one git recorded, and fails the test unless git's own stat
+// comparison then reports the entry unchanged (`diff-files --quiet`). It is how the forced
+// entry's unreadable cell is built: no git command records the stat data of a file it cannot
+// read, a chmod changes a file's ctime and nothing else git compares, and git compares that
+// ctime to the second, so whether git trusted the entry otherwise hung on which second the chmod
+// was stamped in (buildMatrix). The index is git's version 2 or 3, whose entries each begin with
+// the ctime's seconds and nanoseconds and carry their path from byte 62, or 64 where the entry
+// has extended flags, NUL-padded to a multiple of 8, and which ends in the SHA-1 of what comes
+// before it, written again here; the entry's mtime is a minute back (buildMatrix), so it is not
+// racily clean against an index written now.
+func ctimeRecorded(t *testing.T, ws *rescuetest.Disk, path string) {
+	t.Helper()
+	index := strings.TrimSpace(gitRead(t, ws, ws.Workspace, nil, "rev-parse", "--path-format=absolute", "--git-path", "index"))
+	body, err := os.ReadFile(index)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) < 12+sha1.Size || string(body[:4]) != "DIRC" {
+		t.Fatalf("%s is no git index", index)
+	}
+	if version := binary.BigEndian.Uint32(body[4:8]); version != 2 && version != 3 {
+		t.Fatalf("%s is a git index of version %d, want 2 or 3, whose entries this reads", index, version)
+	}
+	content := body[:len(body)-sha1.Size]
+	if sum := sha1.Sum(content); !bytes.Equal(sum[:], body[len(content):]) {
+		t.Fatalf("%s does not end in the SHA-1 of what comes before it, which this writes again", index)
+	}
+	ctime := ctimeOf(t, filepath.Join(ws.Workspace, path))
+	at := 12
+	for range binary.BigEndian.Uint32(body[8:12]) {
+		name := at + 62
+		if binary.BigEndian.Uint16(body[at+60:at+62])&0x4000 != 0 {
+			name += 2
+		}
+		end := bytes.IndexByte(content[name:], 0)
+		if end < 0 {
+			t.Fatalf("%s holds an entry whose path has no end", index)
+		}
+		if string(content[name:name+end]) == path {
+			binary.BigEndian.PutUint32(body[at:], uint32(ctime.Sec))
+			binary.BigEndian.PutUint32(body[at+4:], uint32(ctime.Nsec))
+			sum := sha1.Sum(content)
+			copy(body[len(content):], sum[:])
+			if err := os.WriteFile(index, body, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, code, stderr := gitExit(t, ws, ws.Workspace, nil, "", "diff-files", "--quiet", "--", path); code != 0 {
+				t.Fatalf("git diff-files --quiet -- %s exited %d (%s) once the entry holds the file's ctime, want 0: the cell stands on git trusting the entry", path, code, stderr)
+			}
+			return
+		}
+		at += (name - at + end + 8) &^ 7
+	}
+	t.Fatalf("%s holds no entry for %s", index, path)
+}
+
+// ctimeOf is the ctime of the file or symlink at, which os.Lstat answers in the stat it reads.
+func ctimeOf(t *testing.T, at string) syscall.Timespec {
+	t.Helper()
+	info, err := os.Lstat(at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("the stat of %s holds no ctime: %T", at, info.Sys())
+	}
+	return stat.Ctim
 }
 
 // relinked points the symlink at at to target, which is as long as what it named, as a role
@@ -742,24 +827,39 @@ func relinked(t *testing.T, at, target string, setBack bool) {
 	}
 }
 
-// pastCtimeSecond waits until the clock is past the second of the ctime of the file at, so that a
-// rewrite of it now has a ctime git tells from the one an index entry made of it before holds.
-// git compares a ctime to the second: measured on this build, a file rewritten at its size with
-// its mtime set back read as unchanged to `git diff-files` in the second of its `git add`, three
-// times out of three, and as changed 1.2 s later, three times out of three. The wait is a second
-// at the most, and none where the clock has passed that second already.
+// pastCtimeSecond waits until the file system stamps a ctime in a later second than the one the
+// file at has now, so that a change made to it after has a ctime git tells from the one an index
+// entry made of it before holds. git compares a ctime to the second: measured on this build, a
+// file rewritten at its size with its mtime set back read as unchanged to `git diff-files` in the
+// second of its `git add`, three times out of three, and as changed 1.2 s later, three times out
+// of three. The clock waited on is the one the file system stamps with, read as a probe file's
+// ctime, and not the process's: the kernel stamps a file's times from a clock it advances once a
+// tick, behind the wall clock. Measured on this build on 2026-11-13, a chmod made as soon as
+// time.Now() had crossed a second was stamped in the second before it 5 times out of 10, its
+// ctime up to 1.6 ms behind the wall clock read before it; a wait on time.Now() alone left the
+// forced entry's chmod in its record's second on CI, where git trusted the entry. The wait is a
+// second and a few milliseconds at the most.
 func pastCtimeSecond(t *testing.T, at string) {
 	t.Helper()
-	info, err := os.Lstat(at)
-	if err != nil {
+	recorded := ctimeOf(t, at).Sec
+	if next := time.Unix(recorded+1, 0); time.Now().Before(next) {
+		time.Sleep(time.Until(next))
+	}
+	probe := filepath.Join(t.TempDir(), "ctime-probe")
+	if err := os.WriteFile(probe, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	stat, ok := info.Sys().(*syscall.Stat_t)
-	if !ok {
-		t.Fatalf("the stat of %s holds no ctime: %T", at, info.Sys())
-	}
-	if next := time.Unix(stat.Ctim.Sec+1, 0); time.Now().Before(next) {
-		time.Sleep(time.Until(next))
+	for mode, deadline := os.FileMode(0o400), time.Now().Add(5*time.Second); ; mode ^= 0o200 {
+		if err := os.Chmod(probe, mode); err != nil {
+			t.Fatal(err)
+		}
+		if ctimeOf(t, probe).Sec > recorded {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the file system stamped no ctime past the second %d of %s in 5 s", recorded, at)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
