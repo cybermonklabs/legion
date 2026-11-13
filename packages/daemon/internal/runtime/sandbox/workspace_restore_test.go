@@ -73,18 +73,22 @@ func takeCopyOf(ctx context.Context, st *store.Store, kind runtime.WorkspaceCopy
 // (store.PutRunningWorkspaceCopy).
 func runningWorkspaceCopy(at time.Time, pod string) runtime.WorkspaceBundle {
 	return runtime.WorkspaceBundle{
-		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x03"), (300<<10)/8),
-		Head:      "9c0dd4f0ba3d8e7a1f4b2c6e5d8a9b0c1d2e3f40",
-		Tips:      []string{"7b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192"},
-		Bookmarks: map[string]string{"legion/" + testTree: "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081"},
-		At:        at,
-		PodUID:    pod,
+		Bundle: bytes.Repeat([]byte("PACKjj\x00\x03"), (300<<10)/8),
+		Head:   "9c0dd4f0ba3d8e7a1f4b2c6e5d8a9b0c1d2e3f40",
+		Tips:   []string{"7b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192"},
+		Bookmarks: map[string]string{
+			"legion/" + testTree: "5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f7081",
+			"side":               "7b1c2d3e4f5a6b7c8d9e0f1a2b3c4d5e6f708192",
+		},
+		At:     at,
+		PodUID: pod,
 	}
 }
 
 // savedWorkspaceBundle is a release's saved work as the store holds it: more than one
 // shimwire.LauncherBundlePayloadBytes of git bundle, so the hop to the launcher is a sequence of
-// slices and not one frame, with the head, the tips and the bookmark a restore needs beside it.
+// slices and not one frame, with the head, the tips and the bookmarks a restore needs beside it —
+// the issue's own branch, which the launcher is never sent, and one other, which it is.
 // It was taken before the rig's clock starts, so every pod the rig makes is one created after
 // the save — the only kind a bundle is sent to
 // (store.TakeWorkspaceCopyForRestore). Its source pod, the pod the work came off, is a pod of
@@ -92,14 +96,24 @@ func runningWorkspaceCopy(at time.Time, pod string) runtime.WorkspaceBundle {
 // a test of the pod the work came off names that pod itself.
 func savedWorkspaceBundle() runtime.WorkspaceBundle {
 	return runtime.WorkspaceBundle{
-		Bundle:    bytes.Repeat([]byte("PACKjj\x00\x02"), (600<<10)/8),
-		Head:      "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
-		Tips:      []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
-		Bookmarks: map[string]string{"legion/" + testTree: "dffe88ae2f793e13436cef3921adc988433fbd4e"},
-		At:        rigNow.Add(-time.Minute),
-		Release:   testRelease,
-		PodUID:    "pod-the-release-took-the-work-off",
+		Bundle: bytes.Repeat([]byte("PACKjj\x00\x02"), (600<<10)/8),
+		Head:   "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		Tips:   []string{"da4f9f492e9f8349389c243743e0a000cd1c676f"},
+		Bookmarks: map[string]string{
+			"legion/" + testTree: "dffe88ae2f793e13436cef3921adc988433fbd4e",
+			"side":               "da4f9f492e9f8349389c243743e0a000cd1c676f",
+		},
+		At:      rigNow.Add(-time.Minute),
+		Release: testRelease,
+		PodUID:  "pod-the-release-took-the-work-off",
 	}
+}
+
+// sentBookmarks is what a launcher is sent of the bookmarks of a copy made by one of the two
+// fixtures above: the one that is not the issue's own branch. No restore sets that branch
+// (bundleFrames), so it stays where the pod's own fetch put it, on what GitHub holds.
+func sentBookmarks(b runtime.WorkspaceBundle) map[string]string {
+	return map[string]string{"side": b.Bookmarks["side"]}
 }
 
 // frameTypes names what a launcher was sent, for a failure an operator reads.
@@ -115,14 +129,16 @@ func frameTypes(frames []shimwire.Frame) []string {
 // the bundle its store kept, sends it to the new pod's launcher in launcher_bundle slices, and
 // drops its own copy when that launcher reports the restore it ran — all of the hop before the
 // launcher is told to start any role, since the launcher restores the bundle into the workspace
-// ahead of the role's command (internal/launcher).
+// ahead of the role's command (internal/launcher). Every bookmark of the bundle crosses but the
+// issue's own branch, and the daemon logs the commit the bundle held that branch on.
 func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *testing.T) {
 	st := migratedStore(t)
+	logs := &logBuffer{}
 	saved := savedWorkspaceBundle()
 	if err := st.PutWorkspaceBundle(context.Background(), testTree, saved.Release, saved); err != nil {
 		t.Fatalf("save the released workspace's bundle: %v", err)
 	}
-	g := newRig(t, nil, withSavedWorkspace(st))
+	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
 	spec := workerSpec(t)
 	g.spawn(spec)
 
@@ -159,12 +175,19 @@ func TestASavedWorkspaceBundleReachesThePodsLauncherBeforeItStartsAnyRole(t *tes
 	if !bytes.Equal(read.Bundle, saved.Bundle) {
 		t.Fatalf("the bundle crossed as %d bytes, want the %d saved", len(read.Bundle), len(saved.Bundle))
 	}
-	if read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
+	if want := sentBookmarks(saved); read.Head != saved.Head || !slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, want) {
 		t.Fatalf("the bundle crossed as head %s, tips %v and bookmarks %v, want %s, %v and %v",
-			read.Head, read.Tips, read.Bookmarks, saved.Head, saved.Tips, saved.Bookmarks)
+			read.Head, read.Tips, read.Bookmarks, saved.Head, saved.Tips, want)
 	}
 	if !read.At.Equal(saved.At) {
 		t.Fatalf("the bundle crossed as taken at %s, want %s", read.At, saved.At)
+	}
+	branch := "legion/" + testTree
+	line := restoreLine(t, logs, withheldBranchLine)
+	for _, want := range []string{"issue=" + testTree, `copy="release bundle"`, "branch=" + branch, "withheld=" + saved.Bookmarks[branch]} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the withheld branch logged %s, want it to carry %s", line, want)
+		}
 	}
 	// The launcher restored it and said so, so the daemon's copy has done its work.
 	if _, held, err := st.WorkspaceBundleSize(g.ctx, testTree); err != nil || held {
@@ -298,10 +321,10 @@ func TestARelaunchInThePodBeingReleasedLeavesTheAttemptForItsReplacement(t *test
 	if err != nil {
 		t.Fatalf("the slices the replacement pod was sent rebuilt no workspace bundle: %v", err)
 	}
-	if !bytes.Equal(read.Bundle, saved.Bundle) || read.Head != saved.Head ||
-		!slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, saved.Bookmarks) {
+	if want := sentBookmarks(saved); !bytes.Equal(read.Bundle, saved.Bundle) || read.Head != saved.Head ||
+		!slices.Equal(read.Tips, saved.Tips) || !maps.Equal(read.Bookmarks, want) {
 		t.Fatalf("the replacement pod was sent %d bytes at head %s with tips %v and bookmarks %v, want the %d saved at %s, %v and %v",
-			len(read.Bundle), read.Head, read.Tips, read.Bookmarks, len(saved.Bundle), saved.Head, saved.Tips, saved.Bookmarks)
+			len(read.Bundle), read.Head, read.Tips, read.Bookmarks, len(saved.Bundle), saved.Head, saved.Tips, want)
 	}
 
 	// That send was the attempt. The replacement pod's own roles container restarting is the
@@ -546,14 +569,14 @@ func TestAPodWhoseIssueHoldsOnlyARunningWorkspaceCopyRestoresIt(t *testing.T) {
 	g.spawn(spec)
 
 	read, slices := bundleBody(t, g.sent(spec.Claim))
-	if !bytes.Equal(read.Bundle, taken.Bundle) || read.Head != taken.Head ||
-		!maps.Equal(read.Bookmarks, taken.Bookmarks) || !read.At.Equal(taken.At) {
+	if want := sentBookmarks(taken); !bytes.Equal(read.Bundle, taken.Bundle) || read.Head != taken.Head ||
+		!maps.Equal(read.Bookmarks, want) || !read.At.Equal(taken.At) {
 		t.Fatalf("the pod was sent %d bytes at head %s with bookmarks %v taken at %s, want the %d of the running copy at %s with %v",
-			len(read.Bundle), read.Head, read.Bookmarks, read.At, len(taken.Bundle), taken.At, taken.Bookmarks)
+			len(read.Bundle), read.Head, read.Bookmarks, read.At, len(taken.Bundle), taken.At, want)
 	}
 	// The line an operator reads says which of the two copies went back and when it was taken,
 	// since the two differ in nothing else that is visible from outside.
-	line := restoreLine(t, logs, "the issue's saved workspace work reached the pod that restores it")
+	line := restoreLine(t, logs, reachedLine)
 	for _, want := range []string{"issue=" + testTree, `copy="running copy"`, "taken=" + loggedAs(taken.At)} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("the restore logged %s, want it to carry %s", line, want)
@@ -605,8 +628,9 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 		t.Fatalf("the pod was sent %d bytes at head %s, want the %d of the newer running copy at %s",
 			len(read.Bundle), read.Head, len(taken.Bundle), taken.Head)
 	}
-	line := restoreLine(t, logs, "the older of the issue's two saved workspace copies is closed unsent")
-	for _, want := range []string{"issue=" + testTree, `copy="release bundle"`, "taken=" + loggedAs(saved.At), `restoring="running copy"`} {
+	line := restoreLine(t, logs, supersededLine)
+	for _, want := range []string{"issue=" + testTree, `copy="release bundle"`, "taken=" + loggedAs(saved.At),
+		`newer="running copy"`, "newerTake=" + runtime.WorkspaceBundleSend.String()} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("the closed copy logged %s, want it to carry %s", line, want)
 		}
@@ -626,6 +650,50 @@ func TestAPodWhoseIssueHoldsBothSavedCopiesRestoresTheNewerAndClosesTheOlder(t *
 	// copy nothing restored.
 	if _, held := runningCopySize(t, st, testTree); held {
 		t.Fatal("after the launcher reported its restore the store holds the running copy, want it dropped")
+	}
+}
+
+// The line of a closed copy names the newer copy and what this pod's ask did with it, which is not
+// always a send. Here the newer copy by `at`, the release bundle, had its one attempt at an earlier
+// pod, and the running copy is older than it — taken on a node whose clock ran behind the
+// release's. This pod is sent neither: the running copy is closed all the same, since a pod that
+// restored it would put it over the newer work, and its line says the newer one was answered
+// nothing here rather than naming no copy at all.
+func TestTheLineOfAClosedCopyNamesTheNewerOneAndWhatThisPodWasAnsweredOfIt(t *testing.T) {
+	st := migratedStore(t)
+	ctx := context.Background()
+	logs := &logBuffer{}
+	saved := savedWorkspaceBundle()
+	if err := st.PutWorkspaceBundle(ctx, testTree, saved.Release, saved); err != nil {
+		t.Fatalf("save the released workspace's bundle: %v", err)
+	}
+	if _, take, err := takeCopyOf(ctx, st, runtime.WorkspaceCopyReleaseBundle, testTree, "pod-an-earlier-wake-made", rigNow); err != nil || take != runtime.WorkspaceBundleSend {
+		t.Fatalf("the earlier pod was answered %v (%v), want the bundle sent", take, err)
+	}
+	taken := runningWorkspaceCopy(saved.At.Add(-time.Minute), "pod-the-cadence-copied")
+	if err := st.PutRunningWorkspaceCopy(ctx, testTree, taken); err != nil {
+		t.Fatalf("take the running copy of the workspace: %v", err)
+	}
+	g := newRig(t, nil, withLog(logs), withSavedWorkspace(st))
+	spec := workerSpec(t)
+	g.spawn(spec)
+
+	for _, frame := range g.sent(spec.Claim) {
+		if slice, ok := frame.(shimwire.LauncherBundle); ok {
+			t.Fatalf("the pod was sent slice %d of %d of copy %d, want nothing: the newer copy had its attempt and the older is closed",
+				slice.Index, slice.Count, slice.Release)
+		}
+	}
+	line := restoreLine(t, logs, supersededLine)
+	for _, want := range []string{"issue=" + testTree, `copy="running copy"`, "taken=" + loggedAs(taken.At),
+		`newer="release bundle"`, "newerTake=" + runtime.WorkspaceBundleNone.String()} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("the closed copy logged %s, want it to carry %s", line, want)
+		}
+	}
+	if after, take, err := takeCopyOf(ctx, st, runtime.WorkspaceCopyRunning, testTree, "pod-after-this-one", rigNow.Add(time.Hour)); err != nil || take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the pod after this one was answered %d bytes of the running copy (%v, %v), want nothing: this pod closed it",
+			len(after.Bundle), take, err)
 	}
 }
 
@@ -651,7 +719,7 @@ func TestAFailedRestoreOfARunningWorkspaceCopyKeepsItAndHoldsNoPod(t *testing.T)
 		t.Fatalf("the failed restore left the launch at %+v, want generation %d", loc, spec.Generation)
 	}
 
-	line := restoreLine(t, logs, "could not restore the issue's saved workspace work")
+	line := restoreLine(t, logs, restoreFailedLine)
 	for _, want := range []string{"issue=" + testTree, refusal} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("the failed restore logged %s, want it to carry %s", line, want)
@@ -711,7 +779,7 @@ func TestARestoreSendsNoCopyOlderThanTheIssuesNewestPushAndLogsThePushItWouldRol
 	for kind, at := range map[string]time.Time{`copy="release bundle"`: earlier.At, `copy="running copy"`: taken.At} {
 		var line string
 		for _, candidate := range strings.Split(logs.String(), "\n") {
-			if strings.Contains(candidate, "taken before the newest push of the issue's branch") && strings.Contains(candidate, kind) {
+			if strings.Contains(candidate, refusedPushedLine) && strings.Contains(candidate, kind) {
 				line = candidate
 			}
 		}

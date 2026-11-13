@@ -116,8 +116,9 @@ type Config struct {
 	// transaction for every push of `legion/<KEY>` on the issue's repository, whether or not the
 	// issue has a pull request. The restore of a new pod reads it to refuse any saved copy of the
 	// issue's workspace older than that push (runtime.DecideWorkspaceRestore), since such a copy
-	// would move the branch back behind the pushed commits. Nil records none, as in every engine
-	// built without the daemon's store.
+	// would put the workspace back on work behind the pushed commits; no restore sets the branch
+	// itself (runtime.RestorableBookmarks). Nil records none, as in every engine built without the
+	// daemon's store.
 	Pushes Pushes
 	// PushRecorded is told, once the push fact's transaction has committed, of each issue whose
 	// push it recorded: the daemon takes a copy of that issue's workspace then

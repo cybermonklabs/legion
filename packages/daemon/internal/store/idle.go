@@ -373,7 +373,7 @@ func (s *Store) CancelIssueRelease(ctx context.Context, project, issue string, r
 		if _, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1 and release_id = $2`, issue, release); err != nil {
 			return err
 		}
-		if _, err := tx.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue); err != nil {
+		if err := deleteRunningCopy(ctx, tx, issue); err != nil {
 			return err
 		}
 		roles, err := stillReleasedRoles(ctx, tx, project, issue, suspended)

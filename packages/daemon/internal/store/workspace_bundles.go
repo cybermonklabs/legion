@@ -56,8 +56,7 @@ func (s *Store) PutWorkspaceBundle(ctx context.Context, issue string, release in
 			issue, release, b.PodUID, b.Bundle, b.Size(), b.At, b.Head, tips, bookmarks); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue)
-		return err
+		return deleteRunningCopy(ctx, tx, issue)
 	})
 	if err != nil {
 		return fmt.Errorf("save the workspace bundle of %s: %w", issue, err)
@@ -98,8 +97,7 @@ func (s *Store) DeleteWorkspaceBundle(ctx context.Context, issue string) error {
 		if _, err := tx.Exec(ctx, `delete from workspace_bundles where issue = $1`, issue); err != nil {
 			return err
 		}
-		_, err := tx.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue)
-		return err
+		return deleteRunningCopy(ctx, tx, issue)
 	})
 	if err != nil {
 		return fmt.Errorf("delete the workspace bundle and the running copy of %s: %w", issue, err)

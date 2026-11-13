@@ -192,7 +192,7 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 		t.Fatal(err)
 	}
 	for _, id := range []int64{stored.restoreID, ids[0]} {
-		if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, id); err != nil {
+		if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", id); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -202,14 +202,14 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-2760"); !row.held {
 		t.Fatal("a report of one issue's copy took another issue's")
 	}
-	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, ids[1]); err != nil {
+	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", ids[1]); err != nil {
 		t.Fatal(err)
 	}
 	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117"); row.held {
 		t.Fatalf("the copy the report named is still held: %+v", row)
 	}
 	// A report the daemon read twice finishes, and so does a delete of an issue holding nothing.
-	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, ids[1]); err != nil {
+	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", ids[1]); err != nil {
 		t.Fatalf("a repeated confirmation: %v", err)
 	}
 	if err := s.DeleteRunningWorkspaceCopy(ctx, "INFRA-2760"); err != nil {
@@ -238,6 +238,34 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	empty.Bundle = nil
 	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-1117", empty); err == nil {
 		t.Fatal("a copy carrying no work was accepted")
+	}
+}
+
+// A restore report is read off the session of one issue's launcher, and the restore id is all it
+// says of the copy it restored. A report whose id names another issue's running copy — a launcher
+// that is wrong, or one a role of its pod has taken over — deletes nothing: that copy is the other
+// issue's work, and the pod that restores it is that issue's next one. The same id reported by the
+// launcher of the copy's own issue drops it.
+func TestARestoreReportNamingAnotherIssuesRunningCopyDeletesNothing(t *testing.T) {
+	ctx := context.Background()
+	s := migratedStore(t)
+	other := runtime.WorkspaceBundle{Bundle: []byte("PACK another issue's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
+		At: time.Date(2026, 11, 12, 9, 30, 0, 0, time.UTC), PodUID: "pod-of-another-issue"}
+	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", other); err != nil {
+		t.Fatal(err)
+	}
+	id := storedRunningCopy(t, s, "INFRA-2760").restoreID
+	if err := s.DeleteRestoredWorkspaceCopy(ctx, "INFRA-1117", id); err != nil {
+		t.Fatal(err)
+	}
+	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-2760"); !row.held || row.size != other.Size() {
+		t.Fatalf("a report of INFRA-1117's launcher naming INFRA-2760's copy %d left %+v, want that copy whole", id, row)
+	}
+	if err := s.DeleteRestoredWorkspaceCopy(ctx, "INFRA-2760", id); err != nil {
+		t.Fatal(err)
+	}
+	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-2760"); row.held {
+		t.Fatalf("the report of the copy's own issue left %+v, want it dropped", row)
 	}
 }
 

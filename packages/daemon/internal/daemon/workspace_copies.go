@@ -371,10 +371,11 @@ func (w *workflowRuntime) copyWorkspaceAtTurnEnd(c supervise.Claim, state superv
 // copyWorkspaceAtPush takes a copy of issue's workspace because the daemon has just recorded a
 // push of its branch: the workflow engine calls it once the push fact's transaction has committed
 // (workflow.Config.PushRecorded). The restore of a new pod refuses every copy older than the
-// issue's newest recorded push (runtime.DecideWorkspaceRestore), because such a copy would move
-// the branch back behind the pushed commits; this is the copy that takes the refused one's place,
-// taken after the push and so holding it and whatever the roles did beyond it. Update rounds make
-// it the common case, since roles push just before their pod is replaced.
+// issue's newest recorded push (runtime.DecideWorkspaceRestore), because such a copy would put the
+// workspace back on work behind the pushed commits; this is the copy that takes the refused one's
+// place, taken after the push and so holding it and whatever the roles did beyond it. Update
+// rounds make it the common case, since roles push just before their pod is replaced. No restore
+// sets the issue's branch itself (runtime.RestorableBookmarks), so neither copy can move it.
 //
 // It goes through the cadence's own single flight (takeRunningCopy), so it never runs beside
 // another copy or a release's save in the same workspace. A copy already in flight is marked

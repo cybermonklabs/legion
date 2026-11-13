@@ -4735,13 +4735,20 @@ the daemon spends its one restore attempt and discards its body, because a copy 
 A tie goes to the release bundle, which was taken after the roles stopped.
 The bytes of a closed copy stay in the database for an operator.
 
-Neither copy is sent when it was taken before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
-A copy is restored with `jj edit` back to its head and `jj bookmark set --allow-backwards` for each bookmark it holds, so a copy taken before the roles pushed would move the branch back behind what GitHub holds, and the role's next push would remove the pushed commits from GitHub.
+No restore sets the issue's branch `legion/<KEY>`, so no restore can move that branch.
+The daemon sends every copy without the copy's own value of that bookmark, so the launcher's `jj bookmark set --allow-backwards` of each bookmark it is sent leaves the branch where the new pod's fetch from GitHub put it.
+The copy's work comes back as visible commits and as the working copy, which the launcher restores with `jj edit` back to the copy's head, and the role's own `jj bookmark set legion/<KEY> -r @-` then moves the branch forward onto that work, or jj refuses the move as backwards or sideways.
+The daemon logs, at Info, a line that begins `launcher bundle: the saved workspace copy's own value of the issue's branch is withheld` with the issue, the copy and the commit the copy held the branch on.
+
+The time rule is the second line: neither copy is sent when it was taken before the newest push of the issue's branch `legion/<KEY>` that the daemon has recorded.
+Such a copy would put the workspace back on work behind what GitHub holds, which the roles would then have to bring forward over the pushed commits.
 A running copy is taken while the roles work and push, so this is its common case: an update round replaces a pod just after its roles push.
 The daemon keeps its own record of each issue's newest push in the `issue_pushes` table: one row per issue, holding `pushed_at`, the daemon's clock when it applied the push webhook for `legion/<KEY>` on the issue's recorded repository, and `head`, the commit that push left.
 The row is written in the push's own transaction whether or not the issue has a pull request, because a branch is pushed before its pull request opens.
 For an issue the daemon has recorded no push for, the rule refuses nothing, since nothing newer than its copies is known to be on GitHub.
 The comparison is the copy's own time, by the clock of the node its pod ran on, against the daemon's clock, so a node clock running ahead of the daemon's by more than the webhook's delay could let a stale copy through.
+The time rule alone misses two copies whose `legion/<KEY>` is behind GitHub's branch or beside it, and in both it is the withheld bookmark that keeps the pushed commits on GitHub:
+a copy taken after a push from outside the pod that the workspace never fetched, which is newer than that push by the clock, and a copy taken before a push the daemon has not recorded, whose webhook is late or was lost.
 A refused copy has its one attempt spent and keeps its bytes for an operator, and the daemon logs, at Warn, a line that begins `launcher bundle: the saved workspace copy was taken before the newest push of the issue's branch the daemon recorded` with the issue, the copy's time, the push's time and the head the push left.
 Each time the daemon records a push it also takes a copy of that issue's workspace, through the same one copy in flight, so the issue's newest copy is normally one taken after its newest push and holds whatever came after it.
 A copy already being built when the push is recorded is not stored, because it read the workspace before the push; the copy the push asked for follows it.
@@ -4777,7 +4784,8 @@ psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'delete from workspace_running_co
 It prints `DELETE <n>`.
 The step is required, and the reason is the roll forward rather than the rollback.
 No earlier daemon reads that table, so while it runs the rows hold no pod and stop no release, but no earlier daemon records a push in `issue_pushes` either.
-A roll forward then finds running copies taken before the rollback and no record of the pushes made while the earlier daemon ran, so the push guard above has nothing to refuse them by, and the first pod replaced after the roll forward would be sent a copy older than the branch on GitHub.
+A roll forward then finds running copies taken before the rollback and no record of the pushes made while the earlier daemon ran, so the time rule above has nothing to refuse them by, and the first pod replaced after the roll forward would be sent a copy older than the branch on GitHub.
+That copy cannot move `legion/<KEY>`, which no restore sets, but it would put that pod's workspace back on work behind the branch, which its roles would then have to bring forward over everything pushed while the earlier daemon ran.
 Deleting the rows costs no work: a running copy's work is on the disk it was taken off, and no earlier daemon restores a running copy at all.
 What the rollback does cost is the copy of a pod the cluster ends while the earlier daemon runs, which no earlier daemon has.
 The rows of `issue_pushes` need no act: they hold only times older than any push the earlier daemon saw, and a running copy the new daemon takes after the roll forward is newer than all of them.

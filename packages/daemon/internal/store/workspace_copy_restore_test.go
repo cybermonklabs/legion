@@ -12,8 +12,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// Both kinds of saved copy keep the same two rules in the one statement that spends their attempt
-// (takeCopy), so one case runs against each table.
+// Both kinds of saved copy keep the same two rules — one decision (runtime.DecideWorkspaceRestore)
+// taken and recorded in the one transaction that spends their attempt (takeCopy) — so one case
+// runs against each table.
 //
 // The pod the work came off is answered nothing and spends nothing. Every start of every role asks
 // for a copy to restore, and that pod goes on starting roles — a release stops its roles and one
