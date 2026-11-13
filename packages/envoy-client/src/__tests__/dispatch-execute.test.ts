@@ -12345,6 +12345,76 @@ describe("executeDispatchTool", () => {
     ]);
   });
 
+  test("a reply's quote of a parent its author deleted prints the deleted line, not (removed)", async () => {
+    const deleted = "11111111-1111-4111-8111-111111111111";
+    const standing = "33333333-3333-4333-8333-333333333333";
+    const replyId = "22222222-2222-4222-8222-222222222222";
+    const comment = (id: string, body: string, replyBlock: unknown) => ({
+      id,
+      issue_key: "DSP-1",
+      author: { kind: "session", id: "reviewer-1" },
+      body,
+      anchor: null,
+      reply_to: deleted,
+      resolved: false,
+      suggestion: null,
+      created_at: "2026-09-09T00:00:00Z",
+      reply_block: replyBlock,
+    });
+    const fetchImpl = async (url: RequestInfo | URL): Promise<Response> => {
+      const target = new URL(String(url));
+      if (target.pathname === `/api/v1/comments/${replyId}`) {
+        return response({
+          // The delete cleared the parent's excerpts, so its block reads removed with no text,
+          // and the quoted post's delete mark is what says the post itself is gone.
+          comment: comment(replyId, "Yes", {
+            node: `comment/${deleted}#b2`,
+            ref: `dispatch://DSP-1/comment/${deleted}#b-b2`,
+            block_id: "b2",
+            text: "",
+            removed: true,
+            deleted_at: "2026-09-10T00:00:00Z",
+            deleted_by: { kind: "user", id: "alice" },
+          }),
+          replies: [
+            // A parent that stands, whose edit removed the block the reply answers.
+            comment("comment-4", "Agreed", {
+              node: `comment/${standing}#b3`,
+              ref: `dispatch://DSP-1/comment/${standing}#b-b3`,
+              block_id: "b3",
+              text: "Gamma.",
+              removed: true,
+            }),
+          ],
+        });
+      }
+      if (target.pathname === "/api/v1/references") return response(emptyGraph("comment"));
+      throw new Error(`unexpected request: ${target.pathname}`);
+    };
+
+    const result = await executeDispatchTool({
+      tool: "dispatch_read",
+      args: { ref: `dispatch://DSP-1/comment/${replyId}` },
+      cwd: "/workspace",
+      host: "omp",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+
+    expect(result.text.split("\n").slice(0, 8)).toEqual([
+      "Comment:",
+      `${replyId} · session reviewer-1`,
+      "Re: block b2 (parent deleted): Deleted by user alice at 2026-09-10T00:00:00Z",
+      "Body: Yes",
+      "Reply chain:",
+      "comment-4 · session reviewer-1",
+      "Re: block b3 (removed)",
+      "Body: Agreed",
+    ]);
+  });
+
   test("a comment read names the comment each nested reply answers", async () => {
     const root = "11111111-1111-4111-8111-111111111111";
     const middle = "22222222-2222-4222-8222-222222222222";

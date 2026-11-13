@@ -246,11 +246,18 @@ export function commentSummary(
   ].join("\n");
 }
 
-/** The block of its parent a reply answers: its id and the head of its text, or that no current
- *  revision of the parent holds it. A comment or message that answers no block prints nothing. */
+/** The block of its parent a reply answers: its id and the head of its text, that no current
+ *  revision of the parent holds it, or, where the parent is a post its author deleted, the
+ *  deleted line every read prints for one (`deletedMark`) in place of the text the delete
+ *  cleared. A comment or message that answers no block prints nothing. */
 function replyBlockLines(record: Pick<Comment, "reply_block">): string[] {
   const block = record.reply_block;
   if (block === undefined || block === null) return [];
+  if (block.deleted_at != null) {
+    return [
+      `Re: block ${block.block_id} (parent deleted): ${deletedMark(block.deleted_at, block.deleted_by)}`,
+    ];
+  }
   return [
     block.removed
       ? `Re: block ${block.block_id} (removed)`

@@ -9,6 +9,7 @@ import { pictureAddresses } from "../dispatch-pictures";
 
 const SERVER = "https://dispatch.example";
 const COMMENT_ID = "22222222-2222-4222-8222-222222222222";
+const MESSAGE_ID = "33333333-3333-4333-8333-333333333333";
 const PICTURE = "dispatch://DSP-1/artifact/shot-png@v1";
 /** The comment as it is stored: the picture its author embedded sits past where the event's
  *  share of the body ends. */
@@ -22,16 +23,25 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
-/** A Dispatch that answers the one comment read, recording each path; `fail` answers it 500
- *  instead, which is how a host meets a Dispatch that is down. */
-function dispatch(fail = false) {
+/** A Dispatch that answers the one comment read, as `stored` says the comment now stands, and
+ *  the read of issue message `MESSAGE_ID`, as `storedMessage` says that message stands,
+ *  recording each path; `fail` answers every read 500 instead, which is how a host meets a
+ *  Dispatch that is down. */
+function dispatch(
+  fail = false,
+  stored: object = { body: STORED_BODY },
+  storedMessage: object = { body: STORED_BODY }
+) {
   const requests: string[] = [];
   const fetchImpl = async (input: RequestInfo | URL): Promise<Response> => {
     const url = new URL(input instanceof Request ? input.url : input.toString());
     requests.push(url.pathname);
     if (fail) return json({ code: "INTERNAL", error: "down" }, 500);
     if (url.pathname === `/api/v1/comments/${COMMENT_ID}`) {
-      return json({ comment: { ...comment, body: STORED_BODY }, replies: [] });
+      return json({ comment: { ...comment, ...stored }, replies: [] });
+    }
+    if (url.pathname === `/api/v1/issues/DSP-1/messages/${MESSAGE_ID}`) {
+      return json({ message: { ...message, ...storedMessage }, replies: [] });
     }
     return json({ code: "NOT_FOUND", error: "not found" }, 404);
   };
@@ -62,6 +72,21 @@ const comment = {
   answers: null,
   mentions: [],
   deliveries: [],
+  created_at: "2026-09-09T00:00:00Z",
+};
+
+const message = {
+  id: MESSAGE_ID,
+  issue_key: "DSP-1",
+  author: { kind: "user" as const, id: "alice" },
+  body: CARRIED_BODY,
+  in_reply_to: null,
+  broadcast_id: null,
+  reply_block: null,
+  deliveries: [],
+  edited_at: null,
+  deleted_at: null,
+  deleted_by: null,
   created_at: "2026-09-09T00:00:00Z",
 };
 
@@ -202,5 +227,34 @@ describe("renderInbound and a body an event did not carry whole", () => {
     const rode = renderInbound(envelopeOf(wholeEvent), SESSION);
     expect(rode.cutItem).toBeUndefined();
     expect(rode.content).not.toContain("first part only");
+  });
+
+  test("an item deleted since the event reads as the deleted line; one edited, as its body", async () => {
+    const deletion = {
+      deleted_at: "2026-09-10T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    };
+    const mark = "Deleted by user alice at 2026-09-10T00:00:00Z";
+    const deleted = dispatch(false, { body: "", ...deletion }, { body: "", ...deletion }).client;
+
+    // The delete cleared the body, which the card would otherwise print empty.
+    const body = await wholeCarriedBody(deleted, ITEM, SESSION);
+    expect(body).toBe(mark);
+    const whole = renderInbound(envelopeOf(cutEvent), SESSION, undefined, body);
+    expect(whole.content).toContain(mark);
+    expect(whole.content).not.toContain(CARRIED_BODY);
+    expect(whole.content).not.toContain("first part only");
+    expect(whole.pictures).toBeUndefined();
+    expect(
+      await wholeCarriedBody(
+        deleted,
+        { resource: "message", id: MESSAGE_ID, issueKey: "DSP-1" },
+        SESSION
+      )
+    ).toBe(mark);
+
+    // A card is no web page: an edited item's body is its current one, with no mark.
+    const edited = dispatch(false, { body: STORED_BODY, edited_at: "2026-09-10T00:00:00Z" }).client;
+    expect(await wholeCarriedBody(edited, ITEM, SESSION)).toBe(STORED_BODY);
   });
 });
