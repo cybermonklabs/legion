@@ -100,9 +100,12 @@ func refusalBody(response *http.Response) []byte {
 
 // responseBound caps what the daemon reads of every GitHub answer but a token exchange's, which
 // is longer and has a bound of its own (exchangeAnswerBound): the installation discovery, the
-// grant read, the two identity lookups and one page of an installation's repositories. GitHub
-// has already acted by the time the answer arrives, so the bound is far above any answer it
-// makes rather than a limit the daemon expects to meet.
+// grant read, the two identity lookups, token mode's viewer and App reads (viewerLogin,
+// checkAppID) and one page of an installation's repositories. GitHub has already acted by the
+// time the answer arrives, so the bound is above any answer it makes rather than a limit the
+// daemon expects to meet. The longest of them is a page of the listing (listInstallation, 100
+// repositories a page), which a read lease now fills since it names no repository: about 530 KB
+// at the size exchangeAnswerBound cites, half this bound.
 const responseBound = 1 << 20
 
 // exchangeAnswerBound caps what a token exchange reads of GitHub's answer, the longest answer
@@ -444,8 +447,8 @@ type scope struct {
 }
 
 // leaseScope is the scope of role's lease for repos on owner, read or write. Its repositories are
-// compared lowercased, as GitHub matches them inside one installation, so two callers that name
-// one repository differently cased share the one lease rather than mint twice.
+// compared lowercased, as GitHub names a repository without regard to case, so two callers that
+// name one repository differently cased share the one lease rather than mint twice.
 func leaseScope(read bool, role AppRole, owner string, repos []string) scope {
 	lowered := make([]string, len(repos))
 	for i, repo := range repos {
@@ -596,10 +599,10 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 // builds the refusal (mintFromCommand), so excluding it here is a guard for a later producer. It
 // is the one predicate every caller that acts on a refusal reads — a Manager deciding what to
 // remember (refusals), a bundle deciding which repositories a directory holds (credential.go's
-// dirEntry) and the controller route's answer (internal/api) — so that none of them reads a rate
-// limit as an answer about what an installation grants. The daemon's provisioning adapter reads
-// it no longer: it returns every error of its mint as it came (internal/daemon's
-// implementTokens).
+// dirEntry), the leak check's token (internal/daemon's leakCheckToken) and the controller route's
+// answer (internal/api) — so that none of them reads a rate limit as an answer about what an
+// installation grants. The daemon's provisioning adapter reads it no longer: it returns every
+// error of its mint as it came (internal/daemon's implementTokens).
 func NarrowingRefused(err error) bool {
 	var trouble *TransientError
 	return errors.Is(err, ErrNarrowingRefused) && !errors.As(err, &trouble)

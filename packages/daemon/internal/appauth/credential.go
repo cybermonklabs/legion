@@ -603,10 +603,11 @@ var (
 )
 
 // refusedNarrowing and refusedName are why a repository is left out of a bundle, as its line says
-// it: GitHub refusing a lease that names it, or gh keeping the owner's own file of that name
-// where the repository's directory would be.
+// it: GitHub refusing the read lease the repository's directory is cached under, or gh keeping the
+// owner's own file of that name where the repository's directory would be. No token request
+// names a repository, so a refused lease is the installation's grant, not its reach.
 const (
-	refusedNarrowing = "the App's installation does not reach it: GitHub refused a token naming it"
+	refusedNarrowing = "GitHub refused the App's read lease on its owner: the installation is not granted what the lease asks for"
 	refusedName      = "gh keeps the owner's own file of that name where the repository's directory would be"
 )
 

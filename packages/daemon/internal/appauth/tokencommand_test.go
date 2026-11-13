@@ -580,12 +580,10 @@ func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing
 	// Each run writes a line that opens it and then its whole environment, and answers as the
 	// broker does.
 	const opened = "==== a run of the token command ===="
-	command := fmt.Sprintf(`{ printf '%%s\n' %q; env; } >>%q; exec %q`, opened, seen, broker.command)
+	broker.command = fmt.Sprintf(`{ printf '%%s\n' %q; env; } >>%q; exec %q`, opened, seen, broker.command)
 	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
-	server := github.serve(t)
 	var stderr bytes.Buffer
-	tokens := New(config.GitHubApps{Implement: config.GitHubApp{AppID: "12345", TokenCommand: command}},
-		Options{BaseURL: server.URL, HTTPClient: server.Client(), Now: func() time.Time { return now }, Stderr: &stderr})
+	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
 	t.Cleanup(tokens.Close)
 
 	if _, err := tokens.Token(context.Background(), Implement, ghrepo.MustParse("acme/legion")); err != nil {

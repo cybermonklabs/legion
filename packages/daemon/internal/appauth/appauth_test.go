@@ -1193,7 +1193,7 @@ func TestReadTokenAsksForTheFourReadsAndNoRepository(t *testing.T) {
 // No request this daemon sends names a repository, for either App, for a write lease or a read
 // one: the App's installation is the whole of what a token reaches (INFRA-2543). A body naming
 // `repositories` or `repository_ids` would narrow the token GitHub mints, which is the narrowing
-// this issue took away, so every body sent is read for both, and for any key but the
+// INFRA-2543 took away, so every body sent is read for both, and for any key but the
 // permissions.
 func TestNoMintEverNamesARepositoryToGitHub(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)

@@ -199,8 +199,8 @@ func provisioningRefusal(w http.ResponseWriter) {
 //   - one that refuses the reading request: the refusal is returned as it came and nothing else
 //     is minted. It once fell back to the App's own write token for that owner, from when a
 //     request named the repository and a 422 could mean the installation did not reach it; no
-//     request names a repository now (INFRA-2543), so a 422 is a permission the account has not
-//     granted, which a wider request is refused for just the same;
+//     request names a repository now (INFRA-2543), so that write token would reach the owner's
+//     whole installation, and a refused reading lease fails the mint rather than hand it out;
 //   - one in GitHub's trouble (a 500): the error is returned as it came, with no second mint and
 //     nothing logged.
 func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
@@ -255,8 +255,8 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 				mintedToken(w, "narrowed-lease", repositories, permissions)
 			}},
 		// An installation that refuses the narrowed read — a grant that changed between the
-		// permissions read and the exchange reaches the adapter as a 422 — and mints the App's
-		// own write token.
+		// permissions read and the exchange reaches the adapter as a 422 — and would mint the
+		// App's own write token if asked, which the adapter never does.
 		provisioningInstallation{id: refusedInstallation, owner: refusedOwner, granted: writeSet,
 			answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
 				if allRead(permissions) {
