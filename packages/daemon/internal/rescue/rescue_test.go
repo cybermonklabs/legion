@@ -63,7 +63,7 @@ func opCount(t *testing.T, d *rescuetest.Disk) int {
 func TestACleanWorkspaceIsCleanAndNothingIsPushed(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	before := d.RemoteBranches()
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	if w.Status != rescue.Clean || len(w.Branches) != 0 || w.Error != "" {
 		t.Fatalf("the check reported %+v, want clean", w)
 	}
@@ -80,7 +80,7 @@ func TestAnUnpushedGitCommitOnTheWorkspaceHeadIsRescued(t *testing.T) {
 	d.Git("add", "fix.txt")
 	d.Git("commit", "--quiet", "-m", "a fix made with plain git")
 	commit := d.Git("rev-parse", "HEAD")
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // A commit on the issue's own branch that no remote ref holds is rescued, though the workspace's
@@ -93,7 +93,7 @@ func TestAnUnpushedCommitOnTheIssuesOwnBranchIsRescued(t *testing.T) {
 	if head := d.Git("rev-parse", "HEAD"); head != d.Base {
 		t.Fatalf("the workspace's git HEAD is %s, want %s: only the issue's branch may name the commit", head, d.Base)
 	}
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // A commit a role made in the pod on a local git branch of another name than the issue's is
@@ -103,7 +103,7 @@ func TestAnUnpushedCommitOnALocalGitBranchIsRescued(t *testing.T) {
 	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
 	commit := d.Run(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "work on a local branch")
 	d.Run(d.Clone, "git", "branch", "topic", commit)
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // Files written in the workspace and in no commit become one commit on top of the workspace's
@@ -121,7 +121,7 @@ func TestADirtyTreeIsRescuedAsOneCommitWithoutChangingTheWorkspace(t *testing.T)
 	}
 	ops := opCount(t, d)
 
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
 		t.Fatalf("the check reported %+v, want one rescued branch", w)
 	}
@@ -161,7 +161,7 @@ func TestAJJOnlyCommitIsRescued(t *testing.T) {
 	if head := d.Git("rev-parse", "HEAD"); head != d.Base {
 		t.Fatalf("the workspace's git HEAD is %s, want %s: only jj may name the commit", head, d.Base)
 	}
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // A merge whose bookmark was never moved onto it: the worker's push of the bookmark says "Nothing
@@ -196,7 +196,7 @@ func TestAMergeWhoseBookmarkWasNotMovedOntoItIsRescued(t *testing.T) {
 					t.Fatalf("the workspace's git HEAD is %s, want %s: only jj may name the merge", head, d.Base)
 				}
 			}
-			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), merge)
+			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), merge)
 		})
 	}
 }
@@ -209,7 +209,7 @@ func TestACommitTheRemoteHoldsUnderARefTheCloneNeverFetchedIsClean(t *testing.T)
 	d.JJ("commit", "-m", "squash-merged work")
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	d.Run(d.Clone, "git", "push", "--quiet", "origin", commit+":refs/pull/7/head")
-	if w := only(t, d, d.Check(context.Background(), prefix)); w.Status != rescue.Clean {
+	if w := only(t, d, d.Check(context.Background(), prefix, "")); w.Status != rescue.Clean {
 		t.Fatalf("the check reported %+v, want clean: the remote holds %s under refs/pull/7/head", w, commit)
 	}
 }
@@ -224,7 +224,7 @@ func TestARescueBranchSkipsANumberTheRemoteHoldsAndReportsIt(t *testing.T) {
 	d.Write(d.Workspace, "feature.txt", "more work\n")
 	d.JJ("commit", "-m", "more work")
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	want := []shimwire.RescueBranch{{Name: prefix + "-1", Commit: d.Base}, {Name: prefix + "-2", Commit: commit}}
 	if w.Status != rescue.Rescued || !reflect.DeepEqual(w.Branches, want) {
 		t.Fatalf("the check reported %+v, want %+v", w, want)
@@ -232,7 +232,7 @@ func TestARescueBranchSkipsANumberTheRemoteHoldsAndReportsIt(t *testing.T) {
 	if held := d.RemoteBranch(prefix + "-1"); held != d.Base {
 		t.Errorf("the remote's %s-1 is %s, want it left at %s", prefix, held, d.Base)
 	}
-	again := only(t, d, d.Check(context.Background(), prefix))
+	again := only(t, d, d.Check(context.Background(), prefix, ""))
 	if again.Status != rescue.Rescued || !reflect.DeepEqual(again.Branches, want) {
 		t.Fatalf("a second check reported %+v, want the two branches again and nothing new pushed: %+v", again, want)
 	}
@@ -251,7 +251,7 @@ func TestAnOwnCommitOnlyAStaleRemoteTrackingRefNamesIsRescued(t *testing.T) {
 	if tracked := d.Run(d.Clone, "git", "rev-parse", "refs/remotes/origin/"+d.Branch); tracked != commit {
 		t.Fatalf("the clone's origin/%s is %s, want the stale %s", d.Branch, tracked, commit)
 	}
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // Work a role set aside in git's stash, with the workspace's files put back as they were, is
@@ -264,7 +264,7 @@ func TestStashedWorkIsRescued(t *testing.T) {
 	if body, err := os.ReadFile(filepath.Join(d.Workspace, "base.txt")); err != nil || string(body) != "base\n" {
 		t.Fatalf("the workspace's base.txt is %q (%v) after the stash, want it put back", body, err)
 	}
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), stash)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), stash)
 }
 
 // A commit only a local tag names is rescued; a tag the remote holds is not work.
@@ -273,7 +273,7 @@ func TestACommitOnlyALocalTagNamesIsRescued(t *testing.T) {
 	tree := d.Run(d.Clone, "git", "rev-parse", d.Base+"^{tree}")
 	commit := d.Run(d.Clone, "git", "commit-tree", tree, "-p", d.Base, "-m", "tagged and never pushed")
 	d.Run(d.Clone, "git", "tag", "-a", "-m", "a tag of the role's", "draft", commit)
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // Another git worktree of the clone — one a role added beside its workspace, on a detached HEAD —
@@ -289,7 +289,7 @@ func TestAnotherWorktreeOfTheCloneIsChecked(t *testing.T) {
 	commit := d.Run(other, "git", "rev-parse", "HEAD")
 	d.Write(other, "notes.txt", "notes in no commit\n")
 
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	if w.Status != rescue.Rescued || len(w.Branches) != 1 {
 		t.Fatalf("the check reported %+v, want one rescued branch", w)
 	}
@@ -313,7 +313,7 @@ func TestTheClonesOwnDirectoryIsNotChecked(t *testing.T) {
 		t.Fatalf("the clone's index names %q, want base.txt: the case stands on a clone whose HEAD and index name a file it holds no copy of", files)
 	}
 	before := d.RemoteBranches()
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	if w.Status != rescue.Clean || len(w.Branches) != 0 || w.Error != "" {
 		for _, b := range w.Branches {
 			t.Errorf("the check pushed %s at %s, whose tree is %s, against the clone's HEAD tree %s",
@@ -334,7 +334,7 @@ func TestAWorkspaceOfACloneWithNoWorkingTreeIsStillRescued(t *testing.T) {
 	d.Write(d.Workspace, "fix.txt", "a fix the remote lacks\n")
 	d.JJ("commit", "-m", "a fix the remote lacks")
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 	if body := d.Run(d.Remote, "git", "show", commit+":fix.txt"); body != "a fix the remote lacks" {
 		t.Errorf("the rescued commit's fix.txt holds %q, want the workspace's file", body)
 	}
@@ -346,7 +346,7 @@ func TestADirectoryThatIsNoGitWorktreeIsAnError(t *testing.T) {
 	d := rescuetest.New(t, issue)
 	stray := filepath.Join(filepath.Dir(d.Workspace), "stray")
 	d.Write(stray, "file.txt", "a file in no repository\n")
-	got := d.Check(context.Background(), prefix)
+	got := d.Check(context.Background(), prefix, "")
 	if len(got) != 2 || got[0].Dir != stray || got[1].Dir != d.Workspace {
 		t.Fatalf("the check reported %+v, want the stray directory, then the workspace", got)
 	}
@@ -364,7 +364,7 @@ func TestAPushTheRemoteRefusesIsAnError(t *testing.T) {
 	d.Write(d.Workspace, "feature.txt", "work the remote will not take\n")
 	d.JJ("commit", "-m", "work the remote will not take")
 	d.RefuseWrites()
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	if w.Status != rescue.Failed || !strings.Contains(w.Error, "the remote refuses this push") || len(w.Branches) != 0 {
 		t.Fatalf("the check reported %+v, want an error naming the remote's refusal", w)
 	}
@@ -388,7 +388,7 @@ func TestTheTestsEnvironmentReachesNoNetworkRemote(t *testing.T) {
 	d.JJ("commit", "-m", "work that must not leave the test")
 	d.Run(d.Clone, "git", "remote", "set-url", "origin", server.URL+"/owner/repo.git")
 	d.Run(d.Clone, "git", "config", "protocol.http.allow", "always")
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	if w.Status != rescue.Failed || !strings.Contains(w.Error, "transport 'http' not allowed") {
 		t.Errorf("the check reported %+v, want git's refusal of the http transport", w)
 	}
@@ -410,7 +410,7 @@ func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
 	commit := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 	before := d.RemoteBranches()
 
-	w := only(t, d, d.Check(context.Background(), prefix))
+	w := only(t, d, d.Check(context.Background(), prefix, ""))
 	if w.Status != rescue.Failed || len(w.Branches) != 0 || !strings.Contains(w.Error, "LEAK CHECK: refusing") {
 		t.Fatalf("the check reported %+v, want the guard's refusal and no branch", w)
 	}
@@ -422,7 +422,7 @@ func TestAPushTheLeakGuardRefusesIsNotMade(t *testing.T) {
 	}
 
 	d.LeakCheck(rescuetest.Passes)
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // The guard's call keeps a reserve of the workspace's bound for the push it clears, and that
@@ -448,5 +448,38 @@ func TestAWorkspaceBoundUnderTheGuardsReserveIsRefusedAndPushesNothing(t *testin
 	}
 	if after := d.RemoteBranches(); !slices.Equal(after, before) {
 		t.Errorf("the remote's branches are %v, want %v unchanged", after, before)
+	}
+}
+
+// The fixture's next pod (rescuetest.Disk.NextPod) is a disk over the first disk's remote,
+// provisioned from it as it stands, so its clone holds the branch the first disk's check pushed;
+// and a stand-in check that records its updates (rescuetest.Disk.RecordUpdates) records the
+// update line of the push it cleared. The lines are read, not counted: in a pod the push's own
+// pre-push hook runs the same stand-in again.
+func TestRescueFixtureNextPodSharesTheRemoteAndRecordsUpdates(t *testing.T) {
+	d := rescuetest.New(t, issue)
+	updates := d.RecordUpdates()
+	d.Write(d.Workspace, "fix.txt", "a fix made with plain git\n")
+	d.Git("add", "fix.txt")
+	d.Git("commit", "--quiet", "-m", "a fix made with plain git")
+	commit := d.Git("rev-parse", "HEAD")
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
+	recorded := updates()
+	if !slices.ContainsFunc(recorded, func(line string) bool {
+		fields := strings.Fields(line)
+		return len(fields) == 4 && fields[1] == commit && fields[2] == "refs/heads/"+prefix+"-1"
+	}) {
+		t.Errorf("the stand-in check recorded %q, want an update line moving refs/heads/%s-1 to %s", recorded, prefix, commit)
+	}
+
+	next := d.NextPod(t)
+	if next.Remote != d.Remote || next.StateDir == d.StateDir || next.Clone == d.Clone || next.Workspace == d.Workspace {
+		t.Fatalf("the next pod's disk is %s over %s, want a disk other than %s over the same remote %s", next.StateDir, next.Remote, d.StateDir, d.Remote)
+	}
+	if held := next.Run(next.Clone, "git", "rev-parse", "refs/remotes/origin/"+prefix+"-1"); held != commit {
+		t.Errorf("the next pod's clone holds origin/%s-1 at %s, want %s, which the first disk's check pushed", prefix, held, commit)
+	}
+	if head := next.Git("rev-parse", "HEAD"); head != d.Base {
+		t.Errorf("the next pod's workspace stands on %s, want the remote's main %s", head, d.Base)
 	}
 }

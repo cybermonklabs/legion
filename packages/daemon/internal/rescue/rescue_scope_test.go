@@ -96,7 +96,7 @@ func TestACommitTheCloneHeldWhenItWasMadeIsNotRescued(t *testing.T) {
 			d.JJ("commit", "-m", "the workspace's own work")
 			own := d.JJ("log", "--no-graph", "-r", "@-", "-T", "commit_id")
 
-			w := only(t, d, d.Check(context.Background(), prefix))
+			w := only(t, d, d.Check(context.Background(), prefix, ""))
 			if w.Status != rescue.Rescued || len(w.Branches) != 1 || w.Branches[0].Commit != own {
 				t.Fatalf("the check reported %+v, want one rescue branch, holding the workspace's own %s and not the fetched %s", w, own, foreign)
 			}
@@ -118,7 +118,7 @@ func TestAWorkspaceBesideStaleCommitsTheCloneHeldIsClean(t *testing.T) {
 	}
 	d.JJ("git", "fetch")
 	before := d.RemoteBranches()
-	if w := only(t, d, d.Check(context.Background(), prefix)); w.Status != rescue.Clean || len(w.Branches) != 0 {
+	if w := only(t, d, d.Check(context.Background(), prefix, "")); w.Status != rescue.Clean || len(w.Branches) != 0 {
 		t.Fatalf("the check reported %+v, want clean: nothing the pod made is unpushed", w)
 	}
 	if after := d.RemoteBranches(); !slices.Equal(after, before) {
@@ -141,7 +141,7 @@ func TestASideLineMadeInThePodIsRescued(t *testing.T) {
 	if head := d.Git("rev-parse", "HEAD"); head == side {
 		t.Fatalf("the workspace's git HEAD is the side line %s: the case does not stand", side)
 	}
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), side)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), side)
 }
 
 // A commit someone else made, which the pod fetched while it ran and origin deleted since, is
@@ -166,7 +166,7 @@ func TestACommitThePodFetchedAndOriginDeletedSinceIsRescued(t *testing.T) {
 			d.JJ("git", "fetch")
 			d.Run(d.Remote, "git", "branch", "--quiet", "-D", "later")
 			d.JJ("git", "fetch")
-			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), later)
+			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), later)
 		})
 	}
 }
@@ -183,7 +183,7 @@ func TestACloneWithNoRecordRescuesEveryHeadOriginLacks(t *testing.T) {
 	}
 	d.Run(d.Remote, "git", "branch", "--quiet", "-D", "other")
 	d.JJ("git", "fetch")
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), foreign)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), foreign)
 }
 
 // recreate creates the issue's workspace again in the live pod, in the order provisioning does
@@ -241,7 +241,7 @@ func TestWorkMadeBeforeTheWorkspaceWasCreatedAgainIsRescued(t *testing.T) {
 		d.JJ("new", `bookmarks(exact:"`+d.Branch+`")`)
 		recreate(t, d, `bookmarks(exact:"`+d.Branch+`")`, false)
 		offBothLines(t, d, early)
-		rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), early)
+		rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), early)
 	})
 	t.Run("created again at main, the issue's moved bookmark set aside", func(t *testing.T) {
 		d := rescuetest.New(t, issue)
@@ -261,7 +261,7 @@ func TestWorkMadeBeforeTheWorkspaceWasCreatedAgainIsRescued(t *testing.T) {
 		}
 		recreate(t, d, "main", true)
 		offBothLines(t, d, moved)
-		rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), moved)
+		rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), moved)
 	})
 }
 
@@ -275,7 +275,7 @@ func TestTheIssuesBranchOnAnEmptyWorkingCopyIsClean(t *testing.T) {
 	if at, branch := d.JJ("log", "--no-graph", "-r", "@", "-T", "commit_id"), d.Run(d.Clone, "git", "rev-parse", "refs/heads/"+d.Branch); at != branch {
 		t.Fatalf("the issue's git branch is %s, want the working copy %s: the case does not stand", branch, at)
 	}
-	if w := only(t, d, d.Check(context.Background(), prefix)); w.Status != rescue.Clean || len(w.Branches) != 0 {
+	if w := only(t, d, d.Check(context.Background(), prefix, "")); w.Status != rescue.Clean || len(w.Branches) != 0 {
 		t.Fatalf("the check reported %+v, want clean: an empty working copy holds no work", w)
 	}
 }
@@ -339,7 +339,7 @@ func TestABranchGitRewroteInThePodKeepingOldDatesIsRescued(t *testing.T) {
 			if committed >= d.Provisioned.Add(-time.Minute).Unix() {
 				t.Fatalf("%s's tip %s was committed at %d, want an hour before the pod: the case does not stand", branch, tip, committed)
 			}
-			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), tip)
+			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), tip)
 		})
 	}
 }
@@ -354,7 +354,7 @@ func TestABranchWithNoReflogIsRescued(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(d.Clone, ".git", "logs", "refs", "heads", "unlogged")); !os.IsNotExist(err) {
 		t.Fatalf("the branch has a reflog (%v): the case does not stand", err)
 	}
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // A commit git made in the workspace itself, whose git HEAD is detached so no branch names it, with
@@ -430,7 +430,7 @@ func TestAnOldDatedCommitMadeInTheWorkspaceIsRescuedOnceTheWorkingCopyMoves(t *t
 					t.Fatalf("%s is on the local branches %q: the case does not stand", commit, branches)
 				}
 				offBothLines(t, d, commit)
-				rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+				rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 			})
 		}
 	}
@@ -451,7 +451,7 @@ func TestABranchWhoseReflogExpiredPastGitsWriteIsRescued(t *testing.T) {
 	if entries := d.Run(d.Clone, "git", "log", "--walk-reflogs", "--format=%gs", "refs/heads/topic", "--"); entries != "export from jj" {
 		t.Fatalf("topic's reflog holds %q, want jj's export alone: the case does not stand", entries)
 	}
-	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), commit)
+	rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), commit)
 }
 
 // A graft (`git replace --graft F W`) makes a commit F that is not the pod's look as though the
@@ -480,7 +480,7 @@ func TestWorkAGraftMakesLookHeldIsRescued(t *testing.T) {
 			if held := d.RemoteBranch("other"); (held == foreign) == deleted {
 				t.Fatalf("the remote holds other at %q: the case does not stand", held)
 			}
-			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix)), work)
+			rescuedTo(t, d, only(t, d, d.Check(context.Background(), prefix, "")), work)
 		})
 	}
 }
