@@ -1344,6 +1344,9 @@ func TestARefusedFrameComesBackOnTheLadderRatherThanEverySecond(t *testing.T) {
 			t.Fatalf("frame %d carries %s = %q, want %d", i+1, relayHeaderDelivered, got, i+1)
 		}
 	}
+	// Each stamp (startSessionStandInOn's arrived) is taken in the callback before that callback sends
+	// the nak reply, and the server's delay starts at the nak, so a late stamp delays the next arrival as
+	// much: the floors below hold whatever the lateness (an 800 ms late first stamp passed 5 of 5).
 	first := frames[1].arrived.Sub(frames[0].arrived)
 	second := frames[2].arrived.Sub(frames[1].arrived)
 	t.Logf("the refused frame came back after %s and then %s", first, second)

@@ -53,7 +53,7 @@ func tbTargets() []mpTarget {
 		}
 		topic := prefix + "mp-twobuild"
 		// The target holds no role, so a controller notice lane is private to it as every other
-		// private subject is (bus.ReachesPrivateStreamSubject's roles).
+		// private subject is (bus.ReachesPrivateStreamSubject's roles, a parameter 2af83d53fc (#2603) added).
 		if bus.ReachesPrivateStreamSubject(sessionID, topic, nil) {
 			continue
 		}

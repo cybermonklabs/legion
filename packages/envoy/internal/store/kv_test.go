@@ -3004,6 +3004,7 @@ func (kv *interleavingWriteKeyValue) Create(key string, value []byte) (uint64, e
 
 // The write removeInterestTopics makes is conditional on the revision of the row it read, so the
 // interleaved write is driven from here too.
+// 2af83d53fc (#2603) added this Update arm to interleavingPutKeyValue; 68fea2de7c's interleavingWriteKeyValue already had it.
 func (kv *interleavingWriteKeyValue) Update(key string, value []byte, last uint64) (uint64, error) {
 	return kv.wrote(kv.KeyValue.Update(key, value, last))
 }

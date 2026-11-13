@@ -129,6 +129,7 @@ func (kv *conflictingInterestKV) Update(key string, value []byte, last uint64) (
 // interestWriteAttempts tries with ErrInterestTopicsNotMerged, which the listener answers as a 503
 // with Retry-After (writeNATSError, cmd/listener/api.go). The count is read from the constant
 // rather than written here, so a change to the writer's bound moves this row with it.
+// 2af83d53fc (#2603) rewrote the writer: ErrInterestTopicsNotMerged after interestWriteAttempts (3), not ErrWriteConflict after 5.
 func TestAnInterestWriteThatLosesEveryRaceIsAConflict(t *testing.T) {
 	a, _ := podRegistries(t)
 	const sessionID = "ses_raced"

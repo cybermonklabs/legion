@@ -197,6 +197,7 @@ func TestTheFanoutRecordsARecipientItCannotReachBeforeItsException(t *testing.T)
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != sessionID {
 		t.Fatalf("the exception names recipient %q, want %q", recipient, sessionID)
 	}
+	// 2af83d53fc (#2603) added this row reading attemptCache.Seen; c1b7247f7f's ledger replaced that cache.
 	if !ledgerAttempted(t, harness.config, item.DedupeKey, sessionID) {
 		t.Fatalf("the fan-out published the exception of %s and recorded no attempt for it: every redelivery inside the window raises another", sessionID)
 	}
@@ -351,6 +352,9 @@ func TestTheFanoutSkipsAMessageOnAFollowedTopicAsAnEchoOfTheSessionThatPublished
 	}
 	awaitFanoutFinished(t, rig, durable, ack.Sequence)
 
+	// This branch's row also asserted ledgerDelivered for the other session, "which took the message
+	// on its own subscription"; 2af83d53fc (#2603) removed that outcome, session.Resolve's
+	// `if entry.SelfSubscribed { ... return DeliveryResult{Skipped: true}, nil }`.
 	for _, sessionID := range []string{sender, other} {
 		if ledgerDelivered(t, rig.harness.config, item.DedupeKey, sessionID) || ledgerAttempted(t, rig.harness.config, item.DedupeKey, sessionID) {
 			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", sessionID)

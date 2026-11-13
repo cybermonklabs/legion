@@ -3186,10 +3186,11 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 
 // TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode proves one
 // incapable subscriber cannot be given a tagged delivery or keep a capable
-// subscriber on the same topic from taking it. Both subscribers are on consumer delivery, as
-// every live session is, so the message the capable one is given is its own consumer's to relay:
-// the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
-// publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
+// subscriber on the same topic from taking it. The capable subscriber is on consumer delivery, as
+// every live session is, so the message it is given is its own consumer's to relay: the fan-out
+// counts that recipient skipped and reports nothing of it (session.SessionEntry.ConsumerRelaysStored).
+// The incapable one's entry records no consumer of its own, so the fan-out is the one report of
+// its refusal and keeps its attempt beside the one exception it publishes (registerFanoutTarget).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
 	harness := newListenerDeliveryHarness(t)
 	const (
@@ -3198,7 +3199,7 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 		incapable = "ses_incapable"
 	)
 	harness.registerConsumerTarget(t, capable, topic, []string{"btw"})
-	harness.registerConsumerTarget(t, incapable, topic, nil)
+	harness.registerFanoutTarget(t, incapable, topic, nil)
 	item := listenerTestEnvelope(topic, "fanout-refuse-unadvertised-mode")
 	item.Payload = `{"event":{"id":0,"issue_key":"CORE-1"},"delivery":{"attempt":1,"mode":"btw"}}`
 	probe, err := harness.client.Conn.SubscribeSync("notifications.envoy.exceptions." + item.Topic)
@@ -3222,12 +3223,17 @@ func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testin
 	}
 
 	// Nothing the fan-out hands to nobody is recorded: the capable subscriber's copy is its own
-	// consumer's to relay and the incapable one's is refused, so neither leaves a ledger record
-	// behind (fanoutDelivery).
-	for _, target := range []string{capable, incapable} {
-		if ledgerDelivered(t, harness.config, item.DedupeKey, target) || ledgerAttempted(t, harness.config, item.DedupeKey, target) {
-			t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", target)
-		}
+	// consumer's to relay, so it leaves no ledger record behind (fanoutDelivery). This branch's
+	// row asserted it recorded delivered instead; 2af83d53fc (#2603) removed the path that
+	// recorded it, session.Resolve's
+	// `if entry.SelfSubscribed { ... return DeliveryResult{Skipped: true}, nil }`.
+	if ledgerDelivered(t, harness.config, item.DedupeKey, capable) || ledgerAttempted(t, harness.config, item.DedupeKey, capable) {
+		t.Fatalf("the fan-out recorded %s, which it handed the message to nobody for", capable)
+	}
+	// The refusal keeps its recipient's attempt, which dedupes the exception across the copies of
+	// the event and the pods of the machine (fanoutDelivery).
+	if !ledgerAttempted(t, harness.config, item.DedupeKey, incapable) {
+		t.Fatalf("the fan-out did not keep %s's attempt beside the exception it reported", incapable)
 	}
 	if recipient := exceptionRecipient(t, assertDeliveryException(t, probe, item, "delivery_failed")); recipient != incapable {
 		t.Fatalf("exception recipient = %q, want %q", recipient, incapable)
@@ -3387,6 +3393,10 @@ func TestListenerDeliveryHandler_FanoutAllowsUntaggedPayload(t *testing.T) {
 	}
 
 	body := metricsBody(t, harness)
+	// This branch's row counted the two skipped as taken on the sessions' own subscriptions;
+	// 2af83d53fc (#2603) removed that outcome, session.Resolve's
+	// `if entry.SelfSubscribed { ... return DeliveryResult{Skipped: true}, nil }`, so the skips
+	// counted here are the two consumers' relays.
 	if got := counterValue(t, body, deliveredSeries("skipped")); got != 2 {
 		t.Fatalf("%s = %d, want 2 - the untagged message is both subscribers' own consumers' to relay:\n%s", deliveredSeries("skipped"), got, body)
 	}

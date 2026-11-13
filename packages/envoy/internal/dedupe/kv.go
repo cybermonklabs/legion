@@ -24,6 +24,14 @@ const (
 // KV timestamp, the server's clock, which every pod shares. A record carrying a field this build
 // does not know decodes as the attempted or delivered record it is: encoding/json ignores
 // unknown fields.
+//
+// It keeps no map of those fields, unlike the registry's records (store.EncodeKeeping), because
+// each write states the writer's own attempt as a whole new value: value builds the record fresh
+// from this process's config and clock, and none of the bucket writes (Create in attempt, its
+// take-over Update, Record's Put) is a read-modify-write. The record the take-over read only
+// feeds judge. A newer build's keys therefore describe the attempt being superseded, and dropping
+// them loses nothing. That holds only while every field describes one attempt: a field about the
+// key across attempts would need a keeping encoder.
 type kvRecord struct {
 	State string `json:"state"`
 	Boot  string `json:"boot"`

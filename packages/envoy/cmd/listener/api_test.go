@@ -2171,7 +2171,7 @@ func TestSubscribeHandlerFailsWhenSessionRegistryPutFails(t *testing.T) {
 // An interest write that loses its compare-and-set on every attempt is a 503 with Retry-After, not
 // a 500: nothing was written and the caller may retry, which envoy-client's backoff reads from the
 // header (packages/envoy-client/src/dispatch-http.ts, retryAfterSeconds). Main's rewritten writer
-// gives up with store.ErrInterestTopicsNotMerged where this branch's gave up with its own error, so
+// (2af83d53fc, #2603) gives up with store.ErrInterestTopicsNotMerged where this branch's gave up with its own error, so
 // the row names the status and the header rather than either error's spelling. Its control: with
 // that error taken out of writeNATSError's case, the answer is the 500 the caller does not retry.
 func TestAnInterestWriteThatGivesUpIsRetryable(t *testing.T) {
