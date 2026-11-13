@@ -77,6 +77,33 @@ func TestTheArmsAreTheRecordedRowsInTheDeclaredOrder(t *testing.T) {
 	}
 }
 
+// The `memory` block's arm reads its copy back at the block's own `memory-instructions.md`, the
+// path a memory-group role's prompt named before any experiment was declared, while the same arm
+// declared under `experiments.memory` reads the key's per-experiment copy like any other arm.
+func TestTheMemoryBlocksArmReadsTheBlocksOwnInstructionsCopy(t *testing.T) {
+	const tree = "LEGION-1"
+	recorded := map[string][]record.Assignment{tree: {{Experiment: "memory", Variant: "memory"}}}
+	block := config.Project{Memory: config.Memory{Mode: config.ExperimentRandom,
+		ConfigFiles: []string{"/etc/legion-operator/memory.yml"}, InstructionsPath: "/etc/legion-operator/memory.md"}}
+	keyed := config.Project{Experiments: []config.Experiment{{Name: "memory", Unit: config.ExperimentTree, Variants: []config.Variant{
+		{Name: "memory", Weight: 1, InstructionsPath: "/etc/legion-operator/memory.md"}, {Name: "none", Weight: 1}}}}}
+	for _, tc := range []struct {
+		name    string
+		project config.Project
+		want    string
+	}{
+		{"the block", block, "/state/memory-instructions.md"},
+		{"experiments.memory", keyed, "/state/experiments/memory/memory.md"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			arms := ForLaunch(tc.project.ExperimentsDeclared("projects.TEST"), "/state").Arms(recorded, tree, tree)
+			if want := []string{tc.want}; !reflect.DeepEqual(arms.Instructions, want) {
+				t.Errorf("Instructions = %q, want %q", arms.Instructions, want)
+			}
+		})
+	}
+}
+
 // A unit runs in no arm of an experiment it holds no row for, and in none of an arm the
 // project's file no longer names: the launch names the files the file still holds.
 func TestAnUnrecordedUnitAndAnArmTheFileDroppedRunInNoArm(t *testing.T) {

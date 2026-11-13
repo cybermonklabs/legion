@@ -110,7 +110,7 @@ func (l Launch) Arms(recorded map[string][]record.Assignment, tree, issue string
 			}
 			arms.Variants = append(arms.Variants, arm(experiment, variant))
 			if variant.InstructionsPath != "" {
-				arms.Instructions = append(arms.Instructions, config.VariantInstructionsFile(l.stateDir, experiment.Name, variant.Name))
+				arms.Instructions = append(arms.Instructions, config.VariantInstructionsFile(l.stateDir, experiment.Name, variant))
 			}
 		}
 	}

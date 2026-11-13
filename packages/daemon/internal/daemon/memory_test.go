@@ -184,7 +184,7 @@ func inMemory(spec runtime.SpawnSpec, instructions string) bool {
 // daemon materialized at boot, after the deployment's own. A role of a tree with no group, and
 // the daemon's controller, carry neither.
 func TestMemoryReachesOnlyTheRolesOfAMemoryTree(t *testing.T) {
-	const instructions = "/state/experiments/memory/memory.md"
+	const instructions = "/state/memory-instructions.md"
 	s := memorySpecs(t, instructions)
 	for _, role := range []claim.Role{claim.RoleArchitect, claim.RolePlanner, claim.RoleImplementer, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger} {
 		spec := memorySpawn(t, s, "LEGION-1", "LEGION-2", role)
@@ -216,7 +216,7 @@ func TestMemoryReachesOnlyTheRolesOfAMemoryTree(t *testing.T) {
 // Only taking the arm out of the file takes the files away (dispatch://INFRA-990's spec: every
 // tree keeps its group for its life; INFRA-1101's R3 and R6).
 func TestAMemoryTreeKeepsItsFilesAfterTheProjectMovesToModeOff(t *testing.T) {
-	const instructions = "/state/experiments/memory/memory.md"
+	const instructions = "/state/memory-instructions.md"
 	// The mode reaches no launch at all, so the one builder serves every mode; what the tmux and
 	// Sandbox options hand over at off is the two tables above.
 	off := memorySpecs(t, instructions)
@@ -243,7 +243,7 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 			spec.Variants, spec.Prompt.VariantInstructionsPaths)
 	}
 
-	refused := memorySpecs(t, "/state/experiments/memory/memory.md")
+	refused := memorySpecs(t, "/state/memory-instructions.md")
 	refused.variants = func(context.Context, string, string) (experiment.Arms, error) {
 		return experiment.Arms{}, errors.New("the store is down")
 	}
@@ -263,7 +263,7 @@ func TestMemoryWithoutInstructionsAppendsNothingAndAFailedReadRefuses(t *testing
 // already drawn into the memory group names those overlays under any mode, so an unreadable one
 // would stop its roles at off as surely as at on. A project with no overlays has none to read.
 func TestMemoryOverlaysNoPaneCouldReadRefuseTheBoot(t *testing.T) {
-	want := "projects.test.memory.config_files names /etc/legion-memory/absent.yml, which a role drawn into that arm could not read: "
+	want := "projects.test.memory.config_files names /etc/legion-memory/absent.yml, which a memory-group role's Oh My Pi could not read: "
 	for _, mode := range []config.ExperimentMode{config.ExperimentOn, config.ExperimentRandom, config.ExperimentOff, ""} {
 		cfg := memoryConfig(config.Memory{Mode: mode, ConfigFiles: []string{"/etc/legion-memory/absent.yml"}})
 		err := checkRoleConfigFiles(cfg)

@@ -207,6 +207,7 @@ var settingsExcluded = map[string]string{
 	"StallLimits.Step":                "derived: LEGION_STALL_STEP_MS in the daemon's environment, not a legion.yaml key",
 	"Hook.Prompt":                     "the words a hook puts in front of its roles, which the deployment writes for its own agents and no pod needs to read from a route that authenticates nobody; `hooks[].prompt_file` carries the path of the file the other form holds them in, as `instructions` carries a path and never its text",
 	"Variant.ConfigFilesField":        "derived: the key an operator wrote the arm's `config_files` under, built by config.Project.ExperimentsDeclared from the project key and the names beside it, which the settings already carry",
+	"Variant.MemoryBlock":             "derived: whether the arm is the `memory` block's rather than the `experiments` key's, set by config.Project.ExperimentsDeclared, which the settings already tell by carrying the block under `memory` and the key under `experiments`",
 }
 
 // Every exported field of every struct the walk reaches (settingsConfigTypes) is named in exactly

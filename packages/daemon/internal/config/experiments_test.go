@@ -269,7 +269,8 @@ func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.
 // recorded under all along — and the only project it is not added to is the one declaring
 // `experiments.memory` itself, the other spelling of that one experiment. Each arm carries the
 // key the operator wrote its overlays under, whichever spelling declared it: the block's arm the
-// block's own `config_files`, an arm of the `experiments` key its own.
+// block's own `config_files`, an arm of the `experiments` key its own. The block's arms, and
+// only theirs, are marked as the block's (Variant.MemoryBlock).
 func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 	memoryBlock := "{mode: on, config_files: [/etc/legion-operator/memory.yml], instructions: /etc/legion-operator/memory.md}"
 	// blockField is the key the `memory` block's arm carries, which is the block's own
@@ -290,8 +291,9 @@ func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 				ConfigFiles:      []string{"/etc/legion-operator/memory.yml"},
 				InstructionsPath: "/etc/legion-operator/memory.md",
 				ConfigFilesField: blockField,
+				MemoryBlock:      true,
 			},
-			{Name: "none", Weight: 1},
+			{Name: "none", Weight: 1, MemoryBlock: true},
 		},
 	}
 	// What a project that writes no `memory` block declares: the same experiment at mode off,
@@ -301,7 +303,7 @@ func TestProjectExperimentsDeclaredMapsTheMemoryBlockInFirst(t *testing.T) {
 		Mode:      ExperimentOff,
 		Unit:      ExperimentTree,
 		OnVariant: "memory",
-		Variants:  []Variant{{Name: "memory", Weight: 1, ConfigFilesField: blockField}, {Name: "none", Weight: 1}},
+		Variants:  []Variant{{Name: "memory", Weight: 1, ConfigFilesField: blockField, MemoryBlock: true}, {Name: "none", Weight: 1, MemoryBlock: true}},
 	}
 	// The key's own spelling of that experiment, which stands alone: the block's mapping is left
 	// out so the project declares one memory experiment and not two. Its arms are the key's, so

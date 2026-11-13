@@ -778,9 +778,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	}
 
 	// One copy per declared variant that names an instructions file, each under its experiment's
-	// own directory, since two names may hold `-` and neither may hold `/`
-	// (config.VariantInstructionsFile, which is where a launch's arms read the copies back from:
-	// experiment.Launch). Boot writes them before the first pane opens.
+	// own directory, since two names may hold `-` and neither may hold `/`, and the `memory`
+	// block's arm at the block's own `memory-instructions.md` (config.VariantInstructionsFile,
+	// which is where a launch's arms read the copies back from: experiment.Launch). Boot writes
+	// them before the first pane opens.
 	for _, read := range reads.variantInstructions {
 		if err := config.WriteVariantInstructions(read.contents, cfg.StateDir, cfg.Project, read.experiment, read.variant); err != nil {
 			return plan{}, err

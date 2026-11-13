@@ -20,10 +20,20 @@ const DeploymentInstructionsFile = "deployment-instructions.md"
 // (config.experimentNamePattern), so a flat name would let two pairs collide.
 const ExperimentsDir = "experiments"
 
+// MemoryInstructionsFile is the copy of the `memory` block's instructions every role of a
+// memory-group tree's prompt reads, under the state directory: the name it has had since before
+// any experiment was declared, which the block's arm keeps (Variant.MemoryBlock).
+const MemoryInstructionsFile = "memory-instructions.md"
+
 // VariantInstructionsFile is the copy of one declared variant's instructions file under the state
-// directory: `<stateDir>/experiments/<experiment>/<variant>.md`.
-func VariantInstructionsFile(stateDir, experiment, variant string) string {
-	return filepath.Join(stateDir, ExperimentsDir, experiment, variant+".md")
+// directory: `<stateDir>/memory-instructions.md` for the arm the `memory` block declares
+// (Variant.MemoryBlock), and `<stateDir>/experiments/<experiment>/<variant>.md` for an arm of the
+// `experiments` key.
+func VariantInstructionsFile(stateDir, experiment string, variant Variant) string {
+	if variant.MemoryBlock {
+		return filepath.Join(stateDir, MemoryInstructionsFile)
+	}
+	return filepath.Join(stateDir, ExperimentsDir, experiment, variant.Name+".md")
 }
 
 // ReadSecretPointer is the trimmed contents of the file a pointer key names — `variable` is the
@@ -227,13 +237,19 @@ func ReadHookPrompt(hook, promptPath string) (string, error) {
 // are separate, where the deployment's own has a Materialize pair as well, because only boot
 // writes a variant's copy and boot refuses before it writes. The path is no answer of its own: a
 // reader of the copy builds it with VariantInstructionsFile, as a launch's arms do
-// (experiment.Launch).
-func WriteVariantInstructions(contents []byte, stateDir, legionID, experiment, variant string) error {
+// (experiment.Launch). The copy is headed `# Memory instructions (<legionID>)` for the block's
+// arm, as the block's copy was before any experiment was declared, and
+// `# <experiment>/<variant> instructions (<legionID>)` for an arm of the `experiments` key.
+func WriteVariantInstructions(contents []byte, stateDir, legionID, experiment string, variant Variant) error {
 	target := VariantInstructionsFile(stateDir, experiment, variant)
 	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
 		return fmt.Errorf("create state directory %s: %w", filepath.Dir(target), err)
 	}
-	body := fmt.Sprintf("# %s/%s instructions (%s)\n\n%s", experiment, variant, legionID, contents)
+	header := fmt.Sprintf("# %s/%s instructions (%s)", experiment, variant.Name, legionID)
+	if variant.MemoryBlock {
+		header = fmt.Sprintf("# Memory instructions (%s)", legionID)
+	}
+	body := header + "\n\n" + string(contents)
 	if err := os.WriteFile(target, []byte(body), 0o644); err != nil {
 		return fmt.Errorf("write %s: %w", target, err)
 	}

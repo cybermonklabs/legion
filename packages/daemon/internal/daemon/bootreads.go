@@ -8,7 +8,6 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
-	"github.com/sjawhar/legion/daemon/internal/experiment"
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
 	"github.com/sjawhar/legion/daemon/internal/podsafety"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
@@ -30,11 +29,13 @@ type bootReads struct {
 
 // variantInstructions is one declared variant's instructions file as boot read it: the experiment
 // and the arm that name it, and the operator's file verbatim. Boot writes one copy per entry
-// under the state directory (config.WriteVariantInstructions), and a launch's prompt ends with
-// the copies of the arms its unit was drawn into.
+// under the state directory (config.WriteVariantInstructions), named and headed as the arm's
+// declaration says (config.Variant.MemoryBlock), and a launch's prompt ends with the copies of the
+// arms its unit was drawn into.
 type variantInstructions struct {
-	experiment, variant string
-	contents            []byte
+	experiment string
+	variant    config.Variant
+	contents   []byte
 }
 
 // readBoot is every refusal boot makes from the configuration, the daemon's environment (lookup,
@@ -107,17 +108,17 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 	// (config.Config.ExperimentsDeclared, the list that maps the `memory` block in as the
 	// experiment named memory). No mode decides it: a unit already drawn into an arm is given
 	// that arm's instructions whatever the mode is now, and only removing the key takes them away.
-	// The block's own arm is refused in the block's own words (config.ReadMemoryInstructions),
-	// which the documentation quotes, and every arm of the `experiments` key, `experiments.memory`
-	// included, in the experiments' words (config.ReadVariantInstructions).
-	memoryBlock := cfg.Projects[cfg.Project].MemoryIsBlock()
+	// The block's own arm (config.Variant.MemoryBlock) is refused in the block's own words
+	// (config.ReadMemoryInstructions), which the documentation quotes, and every arm of the
+	// `experiments` key, `experiments.memory` included, in the experiments' words
+	// (config.ReadVariantInstructions).
 	for _, experiment := range cfg.ExperimentsDeclared() {
 		for _, variant := range experiment.Variants {
 			if variant.InstructionsPath == "" {
 				continue
 			}
 			var contents []byte
-			if memoryBlock && experiment.Name == config.MemoryExperimentName {
+			if variant.MemoryBlock {
 				contents, err = config.ReadMemoryInstructions(variant.InstructionsPath)
 			} else {
 				contents, err = config.ReadVariantInstructions(experiment.Name, variant.Name, variant.InstructionsPath)
@@ -125,7 +126,7 @@ func readBoot(cfg config.Config, lookup func(string) (string, bool), getenv func
 			if err != nil {
 				return bootReads{}, err
 			}
-			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant.Name, contents: contents})
+			r.variantInstructions = append(r.variantInstructions, variantInstructions{experiment: experiment.Name, variant: variant, contents: contents})
 		}
 	}
 	if cfg.DispatchURL != "" {
@@ -224,7 +225,10 @@ func readTmux(cfg config.Config, lookup func(string) (string, bool), getenv func
 // runs on this host as this daemon's user. Under kubernetes the files are the pods' mounts',
 // which only the image probe reads. Every declared arm's overlays are read whatever its
 // experiment's mode is: a unit already drawn into an arm names that arm's files under any mode,
-// and only taking the arm out of the file takes them away.
+// and only taking the arm out of the file takes them away. The block's own arm
+// (config.Variant.MemoryBlock) is refused in the block's own words, which the documentation
+// quotes, and every arm of the `experiments` key, `experiments.memory` included, in the
+// experiments' words.
 func checkRoleConfigFiles(cfg config.Config) error {
 	for _, role := range config.RoleConfigRoles {
 		for _, file := range cfg.RoleConfigFiles[role] {
@@ -233,10 +237,16 @@ func checkRoleConfigFiles(cfg config.Config) error {
 			}
 		}
 	}
-	for _, variant := range experiment.DeclaredVariants(cfg.ExperimentsDeclared()) {
-		for _, file := range variant.ConfigFiles {
-			if err := podsafety.CheckOverlay(file); err != nil {
-				return fmt.Errorf("%s names %s, which a role drawn into that arm could not read: %w", variant.ConfigFilesField, file, err)
+	for _, declared := range cfg.ExperimentsDeclared() {
+		for _, variant := range declared.Variants {
+			reader := "a role drawn into that arm could not read"
+			if variant.MemoryBlock {
+				reader = "a memory-group role's Oh My Pi could not read"
+			}
+			for _, file := range variant.ConfigFiles {
+				if err := podsafety.CheckOverlay(file); err != nil {
+					return fmt.Errorf("%s names %s, which %s: %w", variant.ConfigFilesField, file, reader, err)
+				}
 			}
 		}
 	}

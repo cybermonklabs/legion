@@ -333,8 +333,11 @@ func TestReadVariantInstructionsAnswersTheFileOrRefusesIt(t *testing.T) {
 // experiment, the arm and the legion as the operator wrote it, a blank line, and the operator's
 // file verbatim, under a directory of the experiment's own beside the deployment's own copy. Two
 // arms of two experiments never collide, since the directory holds the experiment's name and no
-// name may hold `/`. A file ReadVariantInstructions refuses never reaches the write, so nothing
-// is written for it.
+// name may hold `/`. The `memory` block's arm keeps the copy the block had before any experiment
+// was declared: `memory-instructions.md` beside the deployment's own, headed
+// `# Memory instructions (<legion>)`, while the same arm declared under `experiments.memory` is an
+// arm of the key like any other. A file ReadVariantInstructions refuses never reaches the write,
+// so nothing is written for it.
 func TestWriteVariantInstructionsWritesTheHeadedCopyPerVariant(t *testing.T) {
 	source := filepath.Join(t.TempDir(), "memory.md")
 	content := "Your tree keeps a memory.\n\n- read it first\n"
@@ -347,14 +350,16 @@ func TestWriteVariantInstructionsWritesTheHeadedCopyPerVariant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadVariantInstructions: %v", err)
 	}
-	// Two arms whose flat `<experiment>-<variant>` names would be one and the same file.
+	// Two arms whose flat `<experiment>-<variant>` names would be one and the same file, and the
+	// memory arm as `experiments.memory` declares it, which is no arm of the block.
 	for _, tc := range []struct{ experiment, variant string }{
 		{"memory", "memory"}, {"plan", "length-long"}, {"plan-length", "long"},
 	} {
-		if err := WriteVariantInstructions(contents, stateDir, "sjawhar/legion", tc.experiment, tc.variant); err != nil {
+		variant := Variant{Name: tc.variant}
+		if err := WriteVariantInstructions(contents, stateDir, "sjawhar/legion", tc.experiment, variant); err != nil {
 			t.Fatalf("WriteVariantInstructions: %v", err)
 		}
-		written := VariantInstructionsFile(stateDir, tc.experiment, tc.variant)
+		written := VariantInstructionsFile(stateDir, tc.experiment, variant)
 		if want := filepath.Join(stateDir, ExperimentsDir, tc.experiment, tc.variant+".md"); written != want {
 			t.Errorf("VariantInstructionsFile = %q, want %q", written, want)
 		}
@@ -365,6 +370,27 @@ func TestWriteVariantInstructionsWritesTheHeadedCopyPerVariant(t *testing.T) {
 		if want := "# " + tc.experiment + "/" + tc.variant + " instructions (sjawhar/legion)\n\n" + content; string(got) != want {
 			t.Errorf("contents = %q, want %q", got, want)
 		}
+	}
+
+	// The block's own arm, read in the block's words as boot reads it.
+	blockContents, err := ReadMemoryInstructions(source)
+	if err != nil {
+		t.Fatalf("ReadMemoryInstructions: %v", err)
+	}
+	block := Variant{Name: MemoryVariantMemory, MemoryBlock: true}
+	if err := WriteVariantInstructions(blockContents, stateDir, "sjawhar/legion", MemoryExperimentName, block); err != nil {
+		t.Fatalf("WriteVariantInstructions for the block's arm: %v", err)
+	}
+	written := VariantInstructionsFile(stateDir, MemoryExperimentName, block)
+	if want := filepath.Join(stateDir, MemoryInstructionsFile); written != want {
+		t.Errorf("VariantInstructionsFile for the block's arm = %q, want %q", written, want)
+	}
+	got, err := os.ReadFile(written)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "# Memory instructions (sjawhar/legion)\n\n" + content; string(got) != want {
+		t.Errorf("the block's copy = %q, want %q", got, want)
 	}
 
 	refused := filepath.Join(t.TempDir(), "state")

@@ -1939,21 +1939,21 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 			name:     "two experiments, each drawn for, in the settings' order",
 			declared: planLength + "," + memory,
 			issues:   `{` + root + `,` + child + `,` + handedOver + `,` + second + `,` + undrawn + `}`,
-			want: "plan-length: 3 issues — 1 no variant, 1 long, 1 short\n" +
-				"memory: 4 issues — 3 memory, 1 none\n",
+			want: "plan-length: 3 issues — 1 long (random), 1 no variant, 1 short (random)\n" +
+				"memory: 4 issues — 3 memory (random), 1 none (random)\n",
 		},
 		{
 			// Two experiments declared and an answer held for one: two lines, not one.
 			name:     "an experiment no issue holds",
 			declared: planLength + "," + memory,
 			issues:   `{` + issue("LEGION-208", "implementing", drawn("memory", "memory")) + `}`,
-			want:     "plan-length: none\nmemory: 1 issue — 1 memory\n",
+			want:     "plan-length: none\nmemory: 1 issue — 1 memory (random)\n",
 		},
 		{
 			name:     "one experiment, a root and a child of its tree",
 			declared: memory,
 			issues:   `{` + root + `,` + child + `}`,
-			want:     "memory: 2 issues — 2 memory\n",
+			want:     "memory: 2 issues — 2 memory (random)\n",
 		},
 		{name: "nothing drawn", declared: memory, issues: `{` + undrawn + `}`, want: "memory: none\n"},
 		{name: "no issues", declared: memory, issues: `{}`, want: "memory: none\n"},
@@ -1987,20 +1987,22 @@ func TestPlainStateCountsTheIssuesInEachDeclaredExperimentsArms(t *testing.T) {
 // block's arms like any other experiment: the block is the experiment named `memory`
 // (config.Project.ExperimentsDeclared), and the settings carry it under `memory` rather than in
 // `experiments`, which stays `[]`. Reading the `experiments` key alone would print
-// `experiments: none` over a deployment every issue of which holds a memory assignment, which is
-// the line this deployment read before any experiment was declared.
+// `experiments: none` over a deployment every issue of which holds a memory assignment. The line
+// is the one this deployment read before any experiment was declared: each arm with the mode it
+// was drawn under, and a tree drawn at mode off, which holds the empty arm, as `none (off)`.
 func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
-	drawn := func(variant string) string {
-		return `{"experiment":"memory","variant":"` + variant + `","mode":"random","drawnAt":"2026-10-25T10:00:00Z"}`
+	drawn := func(variant, mode string) string {
+		return `{"experiment":"memory","variant":"` + variant + `","mode":"` + mode + `","drawnAt":"2026-10-25T10:00:00Z"}`
 	}
-	issue := func(key, variant string) string {
+	issue := func(key, variant, mode string) string {
 		return `"` + key + `":{"key":"` + key + `","generation":1,"phase":"implementing","status":"in_progress"` +
-			`,"assignments":[` + drawn(variant) + `]}`
+			`,"assignments":[` + drawn(variant, mode) + `]}`
 	}
-	issues := `{` + issue("LEGION-208", "memory") + `,` + issue("LEGION-209", "memory") + `,` +
-		issue("LEGION-210", "memory") + `,` + issue("LEGION-300", "none") + `}`
+	issues := `{` + issue("LEGION-208", "memory", "random") + `,` + issue("LEGION-209", "memory", "random") + `,` +
+		issue("LEGION-210", "memory", "random") + `,` + issue("LEGION-300", "none", "random") + `,` +
+		issue("LEGION-400", "", "off") + `}`
 	// The settings as the daemon serves them for such a project: the block as the file writes it,
 	// and an empty `experiments`.
 	settings := `,"settings":{"projects":{"LEGION":{"memory":{"mode":"random",` +
@@ -2019,7 +2021,7 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
 		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
 	}
-	const want = "memory: 4 issues — 3 memory, 1 none\n"
+	const want = "memory: 5 issues — 3 memory (random), 1 none (off), 1 none (random)\n"
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
 	}
@@ -2032,8 +2034,9 @@ func TestPlainStateCountsTheMemoryBlocksArmsWithNoExperimentsKey(t *testing.T) {
 // deployment this fleet runs — counts the memory arms its issues hold all the same: such a
 // project declares the memory experiment at mode off (config.Project.ExperimentsDeclared), under
 // which every tree it opens is drawn and recorded at no arm, so the settings carry neither key
-// and the line is still the memory one. Printing `experiments: none` over it would drop a line
-// every such deployment has read since before any experiment was declared.
+// and the line is still the memory one, printing that empty arm as `none (off)` as it did before
+// any experiment was declared. Printing `experiments: none` over it would drop a line every such
+// deployment has read since before any experiment was declared.
 func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -2061,7 +2064,7 @@ func TestPlainStateCountsTheMemoryArmsOfAProjectThatWritesNoBlock(t *testing.T) 
 	if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
 		t.Fatalf("legion state = %d, stderr %q", code, errb.String())
 	}
-	const want = "memory: 2 issues — 2 no variant\n"
+	const want = "memory: 2 issues — 2 none (off)\n"
 	if !strings.Contains(out.String(), want) {
 		t.Fatalf("legion state printed %q, want the line %q", out.String(), want)
 	}

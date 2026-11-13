@@ -105,7 +105,7 @@ var refusalFixtures = map[string]func(t *testing.T) string{
 		return refusalFile{kubernetes: true,
 			project: "    memory: {mode: on, config_files: [/etc/legion-operator/memory.yml]}\n"}.refuse(t)
 	},
-	"projects.<KEY>.memory.config_files names <file>, which a role drawn into that arm could not read: …": func(t *testing.T) string {
+	"projects.<KEY>.memory.config_files names <file>, which a memory-group role's Oh My Pi could not read: …": func(t *testing.T) string {
 		missing := filepath.Join(t.TempDir(), "missing.yml")
 		return refusalFile{project: "    memory: {mode: on, config_files: [" + missing + "]}\n"}.refuse(t)
 	},

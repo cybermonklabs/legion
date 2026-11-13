@@ -770,15 +770,15 @@ const waitingLineNamedCap = 10
 // deployment read before any experiment was declared.
 func experimentLines(settings api.Settings, project string, issues map[string]api.Issue) []string {
 	declared := settings.Projects[project].DeclaredExperiments(project)
-	counts := make(map[string]map[string]int, len(declared))
+	counts := make(map[string]map[armDraw]int, len(declared))
 	for _, issue := range issues {
 		for _, assignment := range issue.Assignments {
 			held, counted := counts[assignment.Experiment]
 			if !counted {
-				held = map[string]int{}
+				held = map[armDraw]int{}
 				counts[assignment.Experiment] = held
 			}
-			held[assignment.Variant]++
+			held[armDraw{variant: assignment.Variant, mode: assignment.Mode}]++
 		}
 	}
 	lines := make([]string, len(declared))
@@ -788,12 +788,34 @@ func experimentLines(settings api.Settings, project string, issues map[string]ap
 	return lines
 }
 
+// armDraw is what one experiment line counts issues by: the arm an issue holds and the mode it
+// was drawn under (api.AssignmentView's Variant and Mode).
+type armDraw struct{ variant, mode string }
+
+// label is how the line names the arm: its own name, `none` for the empty arm a draw under a
+// mode gave — the arm an experiment at mode off draws — and `no variant` for a row no draw made,
+// which a hand-over settles a unit at when the tree it left held no row for the experiment and
+// which records no mode.
+func (d armDraw) label() string {
+	switch {
+	case d.variant != "":
+		return d.variant
+	case d.mode != "":
+		return "none"
+	default:
+		return "no variant"
+	}
+}
+
 // experimentLine is one experiment's line: how many issues hold an arm of it at all, and how
-// many of those under each arm, in arm order, so two runs over one state print one line. An arm
-// an issue was settled at no variant under — a hand-over out of a tree that held no row for the
-// experiment — is `no variant`, which is an answer and no arm, told apart from an issue the
-// experiment never reached, which holds no row and is counted in nothing.
-func experimentLine(name string, counts map[string]int) string {
+// many of those under each arm and mode, `N <arm> (<mode>)`, in the order of the arm's printed
+// name and then of the mode, so two runs over one state print one line. A row no draw made is
+// `N no variant`, with no mode, which is an answer and no arm, told apart from an issue the
+// experiment never reached, which holds no row and is counted in nothing. Over issues whose
+// `memory` answer a draw made, the `memory` experiment's line is word for word the one `legion
+// state` printed for the memory groups before any experiment was declared; an issue a hand-over
+// settled at no arm, which that line left out, is counted here as `no variant`.
+func experimentLine(name string, counts map[armDraw]int) string {
 	held := 0
 	for _, count := range counts {
 		held += count
@@ -801,13 +823,16 @@ func experimentLine(name string, counts map[string]int) string {
 	if held == 0 {
 		return name + ": none"
 	}
-	named := make([]string, 0, len(counts))
-	for _, variant := range slices.Sorted(maps.Keys(counts)) {
-		arm := variant
-		if arm == "" {
-			arm = "no variant"
+	draws := slices.SortedFunc(maps.Keys(counts), func(a, b armDraw) int {
+		return cmp.Or(cmp.Compare(a.label(), b.label()), cmp.Compare(a.mode, b.mode))
+	})
+	named := make([]string, len(draws))
+	for i, draw := range draws {
+		if draw.mode == "" {
+			named[i] = fmt.Sprintf("%d %s", counts[draw], draw.label())
+			continue
 		}
-		named = append(named, fmt.Sprintf("%d %s", counts[variant], arm))
+		named[i] = fmt.Sprintf("%d %s (%s)", counts[draw], draw.label(), draw.mode)
 	}
 	noun := "issues"
 	if held == 1 {

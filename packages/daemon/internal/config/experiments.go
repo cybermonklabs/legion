@@ -104,6 +104,13 @@ type Variant struct {
 	// known, so it stands on the arms of that list and on none of the arms Project.Experiments
 	// holds as the file was read.
 	ConfigFilesField string
+	// MemoryBlock is whether the arm is one the project's `memory` block declares rather than one
+	// of the `experiments` key, `experiments.memory`'s included. The block's arm keeps what the
+	// block had before any experiment was declared: its refusals' words and its instructions
+	// copy's name and header (VariantInstructionsFile, WriteVariantInstructions). Like
+	// ConfigFilesField, Project.ExperimentsDeclared sets it as it builds the list, so a reader of
+	// the declared list takes it from the arm rather than asking Project.MemoryIsBlock again.
+	MemoryBlock bool
 }
 
 // MemoryExperimentName is the name of the experiment the `memory` block is: the block and the key
@@ -189,8 +196,8 @@ func (project Project) ExperimentsDeclared(key string) []Experiment {
 			OnVariant: MemoryVariantMemory,
 			Variants: []Variant{
 				{Name: MemoryVariantMemory, Weight: 1, ConfigFiles: memory.ConfigFiles,
-					InstructionsPath: memory.InstructionsPath, ConfigFilesField: key + ".memory.config_files"},
-				{Name: MemoryVariantNone, Weight: 1},
+					InstructionsPath: memory.InstructionsPath, ConfigFilesField: key + ".memory.config_files", MemoryBlock: true},
+				{Name: MemoryVariantNone, Weight: 1, MemoryBlock: true},
 			},
 		})
 	}

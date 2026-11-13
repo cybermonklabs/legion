@@ -1196,8 +1196,8 @@ Closing the terminal leaves the project without one, and the daemon logs
     WIDGETS-14 1 of 2, returned: Its work came back at 2026-10-03T09:58:11Z. It is 1st of 1 issue whose work came back, and it takes the free slots first.
     WIDGETS-15 2 of 2, starting: It has not started. It is 1st of 1 issue that has not started, by its own Dispatch rank, and 1 issue whose work came back stands ahead of all of them.
   blocked on Dispatch links: none
-  memory: 6 issues — 4 memory, 2 none
-  plan-length: 4 issues — 2 control, 2 long
+  memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)
+  plan-length: 4 issues — 2 control (random), 2 long (random)
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
   open update rounds: none
@@ -1231,16 +1231,21 @@ Closing the terminal leaves the project without one, and the daemon logs
   this caller no sentence at all, which is what a daemon older than the sentence serves.
 
   **The experiment lines.** There is one per experiment the project declares, counting the issues
-  that hold each arm of that experiment: `memory: 6 issues — 4 memory, 2 none` above. The arms of
-  one line are in the arms' own names; the lines are in the order the daemon declares the
+  that hold each arm of that experiment under each mode it was drawn in:
+  `memory: 6 issues — 3 memory (random), 2 none (off), 1 none (random)` above. Each count reads
+  `N <variant> (<mode>)`, the arm's own name and the mode in force when that unit was drawn;
+  `none` stands for the empty variant a draw under a mode gives, which is what an experiment at
+  mode `off` draws, and `N no variant`, with no mode, counts the units a hand-over settled at no
+  arm because the tree each left held no row for the experiment, which no draw made. The counts
+  of one line are in the order of the name they print and then of the mode; the lines are in the
+  order the daemon declares the
   experiments, which is the `memory` experiment first and then the order
   `projects.<KEY>.experiments` names the rest in. An experiment no issue holds yet is `none` after
   its name. Every project declares the `memory` experiment, a project that writes no `memory`
   block declaring it at mode `off`, under which every new tree is drawn at no arm, so such a
   deployment reads a `memory` line too — `memory: none` until a tree is drawn, and counts of
-  `no variant` after. `no variant` in a count is an answer and no arm: either the experiment was
-  at mode `off` when that unit was drawn, or a hand-over settled it at no arm because the tree it
-  left held no row for the experiment.
+  `none (off)` after, which is the line such a deployment read before any experiment was
+  declared.
   The lines count issues rather than the trees a tree experiment is drawn for, because the state
   names no tree and a tree handed over as one of its own carries its old tree's draw verbatim, so
   two trees can share one draw.
