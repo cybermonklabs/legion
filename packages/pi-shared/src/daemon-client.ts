@@ -66,11 +66,11 @@ export interface RegisterInput {
  * controller's ready carries none. */
 export type ReadyInput = z.input<typeof LegionReadyRequest>;
 
-/** `claim.ReadyForUpdateRequest`: the worker's answer to its pod's update task, saying it has
- * pushed everything it wants kept and the process holding this claim may be replaced. `round` is
- * the round the update task named, which the daemon takes the answer for and no other. `head` is
- * the commit it reports as the head of `legion/<issue>@origin`, left out when the branch is not
- * there. */
+/** `claim.ReadyForUpdateRequest`: the worker's answer to its update round's message, saying it
+ * has pushed everything it wants kept and the process holding this claim may be replaced. `round`
+ * is the round the update message named, which the daemon takes the answer for and no other.
+ * `head` is the commit it reports as the head of `legion/<issue>@origin`, left out when the branch
+ * is not there. */
 export type ReadyForUpdateInput = z.input<typeof LegionReadyForUpdateRequest>;
 
 /** `claim.ExitRequest`: the agent reporting its own end, and why. */

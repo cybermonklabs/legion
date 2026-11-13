@@ -8,8 +8,10 @@
 // tests pin); what reaches a cluster is this package's two halves of it — PodDrift, which the
 // round is opened on, and ReplacePod, which ends it — and this check drives the two as that sweep
 // drives them. The harness plays the sweep here as it plays the daemon's machine for boot tokens,
-// enrollments and sessions: it reads the drift, tasks every worker of the pod, holds the pod while
-// one of them has not answered, and replaces it once both have.
+// enrollments and sessions: it reads the drift, asks every worker of the pod, holds the pod while
+// one of them has not answered, and replaces it once both have. That is the round's early end;
+// the bound that ends a round whatever its workers answer (pod_update_grace_minutes) is the
+// daemon's alone, and that package's tests pin it.
 //
 // Every pod of the run runs a stub agent (live_test.go's header), which reads no task and answers
 // nothing, so each worker's own side of the round is carried out as that role's agent in the pod

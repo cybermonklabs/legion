@@ -41,10 +41,10 @@ var ErrCompactNotTaken = errors.New("the claim was not taken for a compaction, s
 //
 // Two shapes reach it, and the claim is in a different place in each. The write that gives the
 // claim back failed, and the claim is left working, which is where the compaction took it. Or
-// that write landed and what follows it failed — the stale-plugin relaunch held for this end,
-// the update round's slot, or the send of the owed task itself (afterTurn) — and the claim is
-// back with its agent, as a claim whose turn ended is, with the task still to go. The error
-// says the hand-back did not finish, which is true of both, rather than naming one of them.
+// that write landed and what follows it failed — the stale-plugin relaunch held for this end, or
+// the send of the owed task itself (afterTurn) — and the claim is back with its agent, as a claim
+// whose turn ended is, with the task still to go. The error says the hand-back did not finish,
+// which is true of both, rather than naming one of them.
 //
 // What a daemon that stops here leaves behind is a shape it already knows: a claim stored
 // working, whose agent's own answer to "are you streaming" ends it (askTurnOver), or a ready
@@ -116,10 +116,10 @@ type compacting struct {
 // held, and the claim is given back under the lock (CompactEnded).
 //
 // While it runs the claim is working, which is the daemon's one record of a busy agent: the
-// ladder's re-send waits, a newer task waits, an update round's question waits, a second
-// compaction and a fresh session are refused, and the idle release does not take the pod —
-// each because the site that decides it already asks whether the claim is working, and none of
-// them has learned a second word for busy (compactStart).
+// ladder's re-send waits, a newer task waits, a second compaction and a fresh session are
+// refused, and the idle release does not take the pod — each because the site that decides it
+// already asks whether the claim is working, and none of them has learned a second word for busy
+// (compactStart).
 //
 // Nil is a session compacted and the claim given back. A compaction Oh My Pi refused or skipped
 // — a session too small, one already compacted, a summarizer that failed — carries its words
@@ -336,9 +336,8 @@ func compactStart(m *Machine, ctx context.Context, _ Event) error {
 // compactEnded gives the claim back once Oh My Pi has answered, or once the wait for it ran out.
 // It is turnEnded's shape, for the same reason: the claim was working, nothing of it is working
 // now, and what was held for that is owed now — the suspension an operator asked for while the
-// compaction ran, the update round's ask, and the task the claim owes, which goes again whether
-// the compaction ran or was refused (dispatch://INFRA-956 R3). A claim that owes none is sent
-// nothing.
+// compaction ran, and the task the claim owes, which goes again whether the compaction ran or was
+// refused (dispatch://INFRA-956 R3). A claim that owes none is sent nothing.
 //
 // A compaction that ran puts the claim's run of provider-error turns back to zero, so the
 // project's controller can be told a second time if the compacted session's turns go the same

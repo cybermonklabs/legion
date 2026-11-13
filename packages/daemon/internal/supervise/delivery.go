@@ -481,10 +481,10 @@ func (c Claim) openRoundHoldsTask() bool {
 // refuse the answer the ask asks for. An ask names the round it asked in its own delivery id,
 // and keeps it across every take-back (rotateTaskID), so the ask of a round a turn had
 // confirmed comes back under that round when the turn ends in a death or a provider error,
-// with the claim already in the round that replaced it. Sending it again would cost a model
-// turn and make the current round's question wait behind a question nobody wants. That drop
-// and the phase check's are one shape below, and both leave through the answer every drop of a
-// delivery gives the mark armed for it (answerAskFirstAfterDrop).
+// with the claim already in the round that replaced it. Sending it again would cost a model turn
+// for a question nobody wants. That drop and the phase check's are one shape below, and both
+// leave through the answer every drop of a delivery gives the mark armed for it
+// (answerAskFirstAfterDrop).
 func (m *Machine) sendPending(ctx context.Context) error {
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
 	// paced launch is about to replace the process a send would reach (launchWaits).

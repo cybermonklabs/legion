@@ -927,8 +927,8 @@ func TestReadyRequestGolden(t *testing.T) {
 	})
 }
 
-// The ready-for-update request is the worker's answer to its pod's update task: the claim it
-// holds, the generation it answers for, the round the task it read named — the one round the
+// The ready-for-update request is the worker's answer to its update round's ask: the claim it
+// holds, the generation it answers for, the round the ask it read named — the one round the
 // answer counts for — and the head of `legion/<issue>@origin` it reports, which the daemon
 // records and verifies nothing of.
 func TestReadyForUpdateRequestGolden(t *testing.T) {

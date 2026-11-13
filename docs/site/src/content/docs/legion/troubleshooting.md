@@ -476,10 +476,9 @@ too: a credential error is the fleet's rather than this claim's work, so it clim
 any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
-waits for the compaction's end instead, as everything the claim is owed does. An update round's
-question waits behind the owed task, as any other task does: the question needs a turn of the
-worker's own, and that turn would fail the way the task's did, so the pod's round waits until a
-turn of the owed task ends with no provider error.
+waits for the compaction's end instead, as everything the claim is owed does. An update round
+waits for none of this: the daemon publishes the round's message to the role's own topic, and the
+round ends at its bound whether or not a turn of that role succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is

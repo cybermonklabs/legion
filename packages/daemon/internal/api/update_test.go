@@ -20,10 +20,10 @@ func (h *harness) readyForUpdate(body claim.ReadyForUpdateRequest) *httptest.Res
 	return h.request(http.MethodPost, "/legion/v1/claims/ready-for-update", body, nil)
 }
 
-// The answer to the update task travels the whole route: a worker in an open round answers that
-// round and is acknowledged, the same answer naming any other round is refused 409 with the
-// sentence the agent reads, and an answer carrying no round at all is refused 400 before any
-// claim is touched. The refusal is the one the machine makes (supervise.ErrForeignUpdateRound),
+// The answer to the update round's ask travels the whole route: a worker in an open round
+// answers that round and is acknowledged, the same answer naming any other round is refused 409
+// with the sentence the agent reads, and an answer carrying no round at all is refused 400 before
+// any claim is touched. The refusal is the one the machine makes (supervise.ErrForeignUpdateRound),
 // rendered by claimFailure as every claim refusal is.
 func TestReadyForUpdateTakesTheOpenRoundsAnswerAndRefusesAnother(t *testing.T) {
 	h := newHarness(t)

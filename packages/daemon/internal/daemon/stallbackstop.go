@@ -30,9 +30,10 @@ import (
 // never read again. A claim in no turn has no turn to end: a claim's record is never cleared, so
 // the step of a turn that ended hours ago still stands on an idle claim, and reading it would end
 // a turn nobody is in. A claim in an update round is the round's to carry: the round replaces
-// that process once every worker of its pod has answered, and tells the controller when it does
-// not finish (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it would
-// replace a process the round is waiting on and start its clock again.
+// that process with its pod once every worker of the pod has answered and no turn runs, or at
+// the round's bound whatever the workers answered, and tells the controller when something holds
+// it past that bound (reconcilePodUpdates, tellUpdateStalled), so a backstop relaunch under it
+// would replace a process the round is about to replace and start its clock again.
 //
 // The stop itself is the machine's (supervise's backstopStalledTurn), which re-reads the claim's
 // own record before it acts and charges nothing. The post is made at every tick that finds the

@@ -396,7 +396,7 @@ type FailureBudget struct {
 // plugin round's reason, which only an earlier daemon's round carries, names both contracts — so
 // a list built by splitting what the claim
 // records (supervise.Claim.UpdateReasons, one string) would cut each reason into pieces that read
-// as reasons of their own. It is the drift exactly as the round's task states it to the worker.
+// as reasons of their own. It is the drift exactly as the round's ask states it to each role.
 type UpdateStalled struct {
 	Round   string          `json:"round"`
 	Pod     string          `json:"pod,omitempty"`
