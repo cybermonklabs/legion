@@ -341,6 +341,59 @@ func TestAQuestionTheLadderKeptForAnOlderDaemonIsDroppedRatherThanSentAgain(t *t
 	}
 }
 
+// The same drop at the end of this daemon's own ladder wait. The claim is restored holding the
+// ask an older daemon sent, and the turn that ask's prompt started confirms it (askFirst). That
+// turn ends in a provider error, and the prompt's result reaches this daemon before the turn's
+// end. This daemon did not send that prompt and waits for no result of it, so a result after the
+// end finds the ask already retired by that end; a result before the end is the case that
+// reaches the ladder. The result takes the ask back unconfirmed and arms the ladder's wait for
+// it (waitsForProviderError), and sendPending holds the ask while the wait runs. When the wait
+// is over, the ladder's send is where the claim reads the ask, and the ask is dropped there with
+// no prompt: this daemon sends no `update:` task, for the round the claim is in as for any
+// other.
+//
+// The negative control is sendPending's drop narrowed to the rule before this release's, an ask
+// of a round the claim is not in now or has left (`holds := !asks || (round ==
+// m.claim.UpdateRound && !m.claim.LeftPodRound(round))`): the ladder then sends the ask again.
+func TestAQuestionWhoseTurnEndedInAProviderErrorIsDroppedWhenTheLaddersWaitPasses(t *testing.T) {
+	h := newBareHarness(t)
+	c := queuedClaim()
+	if err := h.store.PutClaim(h.ctx, c); err != nil {
+		t.Fatal(err)
+	}
+	h.start(c)
+	h.reach(StateReady)
+	h.openUpdate(testRound, testReasons)
+	ask := h.leftAsk(testRound)
+	sent := len(h.prompts())
+	h.must(StreamTurnStart{Claim: testToken})
+	if p := h.pending(); p.ID != ask.ID || p.ConfirmedAt.IsZero() {
+		t.Fatalf("pending = %+v, want the older daemon's ask confirmed by the turn its prompt started", p)
+	}
+
+	h.must(StreamPromptResult{Claim: testToken, DeliveryID: ask.ID, AgentInvoked: true,
+		Error: "overloaded_error", HTTPStatus: 529})
+	h.mustQuiet(StreamTurnEnd{Claim: testToken})
+
+	owed := h.pending()
+	if !asksRound(owed.ID, testRound) || !owed.ConfirmedAt.IsZero() || !h.m.waitsForProviderError(owed.ID) {
+		t.Fatalf("pending %+v, want the ask of %s taken back unconfirmed with the ladder's wait armed for it", owed, testRound)
+	}
+	h.advance(30*time.Second - time.Second)
+	h.wantPrompts(sent)
+
+	h.advance(time.Second)
+
+	h.wantPrompts(sent)
+	if p := h.claim().Pending; p != nil {
+		t.Fatalf("the claim holds %+v after the ladder's wait, want the older daemon's ask dropped", *p)
+	}
+	if d, ok := h.store.delivery(testToken); ok {
+		t.Errorf("the store holds %+v, want the dropped ask's row gone", d)
+	}
+	h.wantRound(testRound)
+}
+
 // R3: the operator stops a claim whose provider keeps refusing its session and retries it with
 // a fresh one, and the task the ladder kept is the task that fresh session is sent. The stop
 // takes the claim's timers with it (letGo), so no wait names that task any more — and the task

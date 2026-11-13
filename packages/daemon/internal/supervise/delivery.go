@@ -412,15 +412,17 @@ func (c Claim) answeredOpenRound() bool {
 }
 
 // openRoundHoldsTask is whether the claim's open round holds the task the claim has pending: the
-// hold above, over a task that is not an ask of the round itself (updatesRound). This daemon
-// queues no ask of a round as a task: it publishes the ask to the role's Envoy topic
-// (record.UpdateAsk). A task under an `update:` delivery id (updateTaskPrefix) is one an older
-// daemon queued and left in the store, and that daemon may have sent it before the worker
-// answered, so the round's hold is not what keeps it from the worker: the restore asks whether
-// the agent holds it (askFirst), and no send of this daemon carries it (sendPending drops it,
-// and the round's end takes it back). It is built from sendPending's own hold rather than
-// written out again, so the restore that reads it (NewMachine) can never judge a task held that
-// sendPending would send, or the other way about.
+// hold above, over a task that is not an ask of this round (updatesRound). This daemon queues no
+// ask of a round as a task: it publishes the ask to the role's Envoy topic (record.UpdateAsk). A
+// task under an `update:` delivery id (updateTaskPrefix) is one an older daemon queued and left
+// in the store. An ask of this round is excepted, because that daemon may have sent it before
+// the worker answered, so the round's hold is not what keeps it from the worker: the restore
+// asks whether the agent holds it (askFirst), and no send of this daemon carries it
+// (sendPending drops it, and the round's end takes it back). An older daemon's ask of another
+// round, on a claim that answered its current round, is not excepted: the answered round holds
+// it, and the sendPending that runs after the round ends drops it. It is built from
+// sendPending's own hold rather than written out again, so the restore that reads it
+// (NewMachine) can never judge a task held that sendPending would send, or the other way about.
 func (c Claim) openRoundHoldsTask() bool {
 	return c.answeredOpenRound() && !updatesRound(c.Pending, c.UpdateRound)
 }
@@ -486,14 +488,14 @@ func (c Claim) openRoundHoldsTask() bool {
 // Its text is the older daemon's, and that text can tell the worker that the daemon reads the end
 // of the turn as its answer. This daemon reads no end of a turn as an answer: only the worker's
 // ready_for_update call answers a round. A worker that read that text would end its turn and
-// take the end for its answer, so the role reads the round's Envoy ask alone. A claim that has
-// answered its open round reaches no drop here (answeredOpenRound): the task waits for the
-// round's end, which takes back an ask of that round (dropUpdateTask), and the send after the
-// end drops an ask of any other round here. The delivery id names the round, and keeps
-// it across every take-back (rotateTaskID), so an ask whose turn a death cut off comes back still
-// an ask and is dropped here rather than sent again. That drop and the phase check's are one
-// shape below, and both leave through the answer every drop of a delivery gives the mark armed
-// for it (answerAskFirstAfterDrop).
+// take the end for its answer, so this daemon never sends it; a role that read it before the
+// deploy gets the round's Envoy ask as well. A claim that has answered its open round reaches no
+// drop here (answeredOpenRound): the task waits for the round's end, which takes back an ask of
+// that round (dropUpdateTask), and the send after the end drops an ask of any other round here.
+// The delivery id names the round, and keeps it across every take-back (rotateTaskID), so an ask
+// whose turn a death cut off comes back still an ask and is dropped here rather than sent again.
+// That drop and the phase check's are one shape below, and both leave through the answer every
+// drop of a delivery gives the mark armed for it (answerAskFirstAfterDrop).
 func (m *Machine) sendPending(ctx context.Context) error {
 	// A claim holding a suspension is handed nothing (holdSuspension), and neither is one whose
 	// paced launch is about to replace the process a send would reach (launchWaits).

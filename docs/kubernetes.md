@@ -4588,7 +4588,8 @@ If the mark stayed, it would stop the one `update-stalled` notice that this rele
 The earlier release's `update:` task can still wait on the claim.
 This release drops that task and never sends it, whichever round the task names (`sendPending` in `supervise/delivery.go`).
 The text of that task can tell the role that the end of its turn is its answer, and this release reads no end of a turn as an answer.
-So the role reads only the Envoy ask of this release, and only a `ready_for_update` call answers the round.
+So this release never sends the earlier release's task, and a role that read it before the deploy gets the Envoy ask of this release as well.
+Only a `ready_for_update` call answers the round.
 
 How many update rounds run at once is the project's to cap, with two optional top-level `legion.yaml` keys, each a positive integer (`beginPodUpdateSweep`, `podUpdateSweep`):
 `pod_update_max_open_rounds` is how many issues may hold an open round at once, counted over the whole project at the top of every sweep, and `pod_update_rounds_per_minute` how many rounds one sweep may open, where a sweep within 50 seconds of this daemon's last opening opens none (`podUpdateOpeningGap`).
