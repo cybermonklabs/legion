@@ -930,8 +930,8 @@ That is why the daemon clears a worker's report when it launches the worker agai
   an issue pod at the defaults) and lands wherever the pool has room, so a pool at its limits leaves
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
-  reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue that only waits keeps both its slot and its pod,
+  reason. `admission_cap` counts the issues the daemon has started rather than the pods,
+  and an issue that waits on another issue gives its slot back but can keep its pod,
   so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and

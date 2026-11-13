@@ -510,7 +510,7 @@ test("a backward move rejects future read-only phases", () => {
   ).toBeFalse();
 });
 
-// Contract 40: `awaiting_person`, a root that gave its slot up while its architect waits on a
+// Contract 40: `awaiting_person`, a root that keeps its slot while its architect waits on a
 // person, follows `admitted`, and no backward move reaches it. Contract 33: the architect accepts
 // before the merge, in `accepting`, between `reviewing` and `retro`; the merger merges in
 // `merging`, the daemon closes the issue when it reads that merge (`done`), and the production

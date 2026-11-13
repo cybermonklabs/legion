@@ -30,7 +30,7 @@ import (
 // no phase either: a root reaches that phase only from admitted, and it is where the answer
 // "close this" arrives (dispatch://INFRA-545, whose architect could not end its tree and whose
 // controller's own Dispatch close the daemon set back, as a session's write on a waiting root).
-// The slot it gave up while it waits is already free, and leave releases nothing twice.
+// It keeps its slot while it waits (blockers.waitsOf), and leave frees that slot once.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {

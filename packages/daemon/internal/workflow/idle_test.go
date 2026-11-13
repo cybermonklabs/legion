@@ -121,7 +121,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			image: true, want: IdleHoldAwaitingPerson,
 		},
 		{
-			name: "the root's person has answered and it waits only for a slot",
+			name: "the root's person has answered and it waits only for the pass that resumes it",
 			view: func() pods.IdleView {
 				v := idleRoot()
 				v.Phase, v.Root.Phase = phase.AwaitingPerson, phase.AwaitingPerson

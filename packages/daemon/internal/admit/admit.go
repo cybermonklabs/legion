@@ -1444,7 +1444,8 @@ func (a *Admission) logSlot(ctx context.Context, change, issue string, inUse int
 // holds: one a.pending still names, since the Dispatch consumer has not yet reached the stream
 // position Reconcile captured when it deferred that key, or one the boot's catch-up still holds
 // (catchingUpFor). It stops rather than passing over it because the cap counts issues, so every
-// candidate behind the held one competes for the same slots, and a slot is never taken back: a
+// candidate behind the held one competes for the same slots, and a slot is taken back only from
+// an issue that waits on another issue (releaseSlotsForWaits), never to restore rank order: a
 // skip would invert Dispatch's rank order for good. A pass after the hold's release fills the
 // free slots in line order. release, not promote, is what clears pending — it empties the whole
 // set at once, so this need only check membership. An admitted root's architect start is queued
@@ -1562,7 +1563,9 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 			// candidate competes for the same slots now that the cap counts the project's
 			// issues rather than its trees, so passing one over would invert Dispatch's rank
 			// order for all of them and not only inside the held candidate's own tree — and a
-			// slot is never taken back, so that inversion would be permanent. The design is
+			// slot is taken back only from an issue that waits on another issue
+			// (releaseSlotsForWaits), never to restore rank order, so that inversion would
+			// be permanent. The design is
 			// that the daemon gives the first issue of the line its slot; skipping the first
 			// issue is not that. The cost is bounded: a hold ends when the Dispatch consumer
 			// reaches the position Reconcile captured for it, and every fact, tick, hold
@@ -1968,9 +1971,10 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // daemon has started, so a root waiting in the line and one whose tree has left the workflow
 // hold none, and a started root that waits on another issue — a blocker of it that is not done,
 // or an open child its own first phase waits for — gives its row back for that wait as well, a
-// root in accepting or in merging included, while a root in accepting or in merging that waits
-// on no such issue and one waiting on a person (awaiting_person, answered or not;
-// blockers.waitsOf) keep the row they were started with. Every one of those is a tree whose
+// root in accepting or in merging included. Three started roots keep the row they were started
+// with through such a wait (blockers.waitsOf): one waiting on a person (awaiting_person, answered
+// or not), one at admitted whose design gate has never opened (record.AtWork), and a queued root
+// that arrived from another tree carrying its row (record.QueuedRoot). Every one of those is a tree whose
 // lifecycle stands open under the workflow, or whose root waits in the line or on a person,
 // which is exactly record.LiveRoots: so liveness is the term that replaces the old slot test,
 // and it covers the slots, the line and the awaiting_person wait together. The children-first

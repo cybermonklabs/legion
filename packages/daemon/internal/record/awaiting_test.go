@@ -169,9 +169,9 @@ func TestAnAnsweredRootWaitsAheadOfEveryRootThatNeverRan(t *testing.T) {
 	}
 }
 
-// A root waiting on a person returned its slot and is in no line, yet its tree stays live
-// (TreeLive), so LiveRoots names it: a todo root whose Dispatch chain reaches it stays held under
-// that tree's unreleased child (the ancestry hold) rather than taking the slot the wait returned.
+// A root waiting on a person keeps its slot (blockers.waitsOf) and, unanswered, is in no line, yet
+// its tree stays live (TreeLive), so LiveRoots names it: a todo root whose Dispatch chain reaches
+// it stays held under that tree's unreleased child (the ancestry hold) rather than taking a slot.
 func TestARootWaitingOnAPersonKeepsTheAncestryHold(t *testing.T) {
 	awaiting := Issue{Key: "LEGION-4", Tree: "LEGION-4", Project: "LEGION", Title: "LEGION-4", Phase: phase.AwaitingPerson, Generation: 1,
 		Status: "in_progress", Rank: "A", HandedOver: true, Awaiting: &Awaiting{Ask: "ask-q", Since: EventMark{Seq: 5}}}

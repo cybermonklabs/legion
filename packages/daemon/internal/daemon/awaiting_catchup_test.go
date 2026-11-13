@@ -257,8 +257,8 @@ func TestCatchUpReadsAnAdmittedRootsAsksFromItsLastHandout(t *testing.T) {
 }
 
 // seedCaptureArchitect records CAPTURE-100's architect claim, running a turn, in session
-// session-architect, its task taken when confirmed: a root whose architect owes nothing may give
-// its slot back.
+// session-architect, its task taken when confirmed: a root whose architect owes nothing may start
+// its wait on a person.
 func seedCaptureArchitect(ctx context.Context, tx pgx.Tx, confirmed bool) error {
 	if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -784,7 +784,7 @@ func assertCaptureKeptItsSlot(t *testing.T, pool *pgxpool.Pool) *record.Issue {
 // The first boot after the upgrade replays nothing of a root recorded before the cursor existed:
 // a daemon of the earlier release applied that history live, and replayed through this release's
 // handlers it would read a question answered long ago as a fresh hand-back, suspend the running
-// architect, give its slot away, resume it with a stale task and tell a changes request again. The
+// architect, put the root in awaiting_person, resume it with a stale task and tell a changes request again. The
 // boot only sets the cursor to the issue's latest sequence; the next boot reads from there.
 func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 	gate := &record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3}

@@ -1156,7 +1156,7 @@ else
 fi
 
 # no_change_close: a root whose human decides at the design gate that no change is needed. The
-# no-change root took the row the first root gave up at its merge, before that root's close; its
+# no-change root took the row the first root freed at its close, when the daemon read its merge; its
 # architect registered its own closed gate, and it has waited on a person since, keeping that row
 # while its architect stays live. The human requests changes saying no change is needed: that
 # answers the wait, and the root resumes at admitted on the next pass, taking no further slot (the

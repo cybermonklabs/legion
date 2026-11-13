@@ -207,7 +207,7 @@ func Blocked(rows map[string]Row, issues []record.Issue, line []record.LineEntry
 // child's hand-over to a root of its own without its run. So no issue is exempt unless the run it
 // is exempt for is the run it arrived with. A root waiting on a person (awaiting_person, answered or
 // not) carries its run (record.Issue.CarriesRun): its links were read when it was first admitted,
-// and its resume takes the next free slot whatever they say now. Everything else is checked like
+// and it resumes on the slot it holds whatever they say now (waitsOf). Everything else is checked like
 // any other issue: a child that has been released but never started, a waiting root that only left
 // the line and came back, and a child handed over from a finished tree as a root of its own without
 // its run, whether or not it ran there, a done child a person labels as an orphan root among them. A

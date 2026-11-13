@@ -231,8 +231,9 @@ func TestAMergingRowHolderStartsItsMerger(t *testing.T) {
 }
 
 // An issue whose work came back while it held no row (its fixture seeds none, and owes its
-// implementer a start) waits in the line for one. No phase short of done gives a row up now
-// (record.KeepsSlot), so the fixture, not a merge, is why it has none. It waits among the issues
+// implementer a start) waits in the line for one. No phase short of done gives a row up
+// (record.KeepsSlot) except a wait on another issue (blockers.waitsOf), and this issue waits on
+// none, so the fixture is why it has none. It waits among the issues
 // whose work came back, oldest first, which is the line's first part, ahead of an issue whose
 // first phase has yet to start, and it takes the next row that frees.
 func TestAnIssueWhoseWorkCameBackWithNoRowStandsAtTheFrontOfTheLine(t *testing.T) {

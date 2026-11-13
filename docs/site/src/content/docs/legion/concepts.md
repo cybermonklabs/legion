@@ -169,8 +169,9 @@ waiting line among the issues whose work came back, oldest first.
 Once the daemon has seen the wait end, the issue takes the next free slot by itself,
 ahead of every issue that has not started; under a full cap it waits for a free slot.
 The daemon sees a blocker in the same project close as a live event.
-It sees a blocker in another project close only at its periodic turn's re-read
-(`controller_wake_interval_seconds`, an hour by default) or at its boot.
+It sees a blocker in another project close only at its periodic turn's re-read:
+the first turn comes about a minute after the daemon starts,
+then one every `controller_wake_interval_seconds`, an hour by default.
 Three started issues keep their slot although a wait
 names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never
 opened, whose architect is writing the design; and a root that arrived from another tree

@@ -115,8 +115,10 @@ func (w *workflowRuntime) waitedOn(ctx context.Context) ([]string, error) {
 //
 // This turn is the only reader of such a key: an event whose subject key is another project's is
 // dropped undecoded (intake.decodeDispatchFact), so a foreign blocker's close reaches the daemon
-// within one controller_wake_interval_seconds of it and never sooner, and a link to a foreign
-// issue already done holds its slot back for up to that interval too. The cost is one request per
+// only at its next turn: the first turn comes about a minute after the runtime starts
+// (firstControllerTick), then one every controller_wake_interval_seconds, so the close arrives at
+// most one interval after it, and a link to a foreign issue already done holds its slot back
+// until that turn too. The cost is one request per
 // foreign key, sequential, on the wake path and outside the tick's transaction: it is zero for a
 // project waiting on its own issues alone, and begins with the first foreign link.
 //

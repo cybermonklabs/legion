@@ -250,8 +250,8 @@ func TestAChildBlockedByItsOwnParentIsNamedAsACycle(t *testing.T) {
 	}
 }
 
-// A5. A root with no Dispatch children at all takes the next free slot at its gate's opening and
-// starts planning, which is the control for every wait above.
+// A5. A root with no Dispatch children at all starts planning at its gate's opening, on the slot
+// it holds, which is the control for every wait above.
 func TestARootWithNoChildrenStartsPlanningAtItsGatesOpening(t *testing.T) {
 	pool := migratedPool(t)
 	admission := cfTree(t, pool, 3)

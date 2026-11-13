@@ -196,7 +196,7 @@ type IdleDecision struct {
 //     that work and store it over the one that does;
 //
 //   - the pod is not a root's that waits on an answer a person has not given. A root whose answer
-//     has come waits only for its slot and qualifies, and the children of a root that waits on a
+//     has come waits only for the pass that resumes it on its slot and qualifies, and the children of a root that waits on a
 //     person qualify whatever their root is waiting for;
 //
 //   - the pod runs the image the configuration names, and each live claim speaks this daemon's

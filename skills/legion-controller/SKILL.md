@@ -164,13 +164,11 @@ a tree's own root at `admitted` under a design gate a person has opened, a root 
 handed over with the slot it held there, and a child the daemon started that a person set back
 to `todo` — and subtracting such an issue a second time would hide a slot that is free.
 
-The line has two parts, and reading it as one list makes a right order look like a wrong one.
-First the issues whose work came back, oldest first by the moment it came back; then the issues
-that have not started, by the Dispatch rank of each issue's tree root and then its own. Each
-free slot goes to the first issue of the whole line that needs one, so a P2 root can take the
-slot in front of a P0 root that ranks first: the P2 root's work came back, and the P0 root has
-not started. That is the approved design of dispatch://INFRA-980, which finishes started work
-before it starts new work, and it is no defect to report. A move to `backlog` or `icebox` takes
+The line has two parts, and reading it as one list makes a right order look like a wrong one:
+the issues whose work came back stand in the first part, and the issues that have not started in
+the second. So a P2 root whose work came back can take a slot before a P0 root that has not started.
+That is the approved design of dispatch://INFRA-980, and it is no defect to report
+(https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label). A move to `backlog` or `icebox` takes
 an issue out of the line, and a re-rank of the issues ahead of an issue that has not started
 raises that issue inside the second part; neither act moves it ahead of one issue whose work
 came back. `read_state` tells you which part each waiting issue stands in and why

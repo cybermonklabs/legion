@@ -243,8 +243,8 @@ const HoldEscalated HoldReason = "escalated"
 // version and reason of the review); and where on Dispatch the wait began (Since): the newest
 // hand-back the architect made since it was last given work (Issue.DeclaredSeq). It is a snapshot
 // of the wait's subject; what else is still with the person is the root's asks (RootAsk). A
-// person's act Dispatch recorded at or before Since never answers the wait. An answered root waits
-// for a slot ahead of every root that never ran (Waiting).
+// person's act Dispatch recorded at or before Since never answers the wait. An answered root
+// stands in the line's returned part (Waiting) and resumes on the slot it holds.
 type Awaiting struct {
 	Ask            string
 	GateVersion    int

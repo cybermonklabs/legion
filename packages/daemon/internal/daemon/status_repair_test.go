@@ -22,9 +22,10 @@ import (
 // is the shape 12 issues of a deployment stood in: the board read todo for hours of work (read
 // 2026-11-07, dispatch://INFRA-714 R2). The repair takes it: the status of the issue's phase is
 // written to Dispatch and the record is put level with it in the same transaction, so the next run
-// finds nothing to repair. The tree's own lifecycle is what says it runs — a running root holds no
-// admission slot of its own while its children work (dispatch://INFRA-980), so a repair that read
-// the root's slot passed every such child over, which is why the deployment's twelve stood.
+// finds nothing to repair. The tree's own lifecycle is what says it runs, not the root's slot
+// (dispatch://INFRA-980): a running root can hold no slot, as while it waits on another issue
+// (blockers.waitsOf), so a repair that read the root's slot passed such a child over, which is
+// why the deployment's twelve stood.
 func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
@@ -35,7 +36,7 @@ func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
 		GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "the running root", Phase: phase.Accepting,
 		Generation: 1, Status: "needs_review", DispatchStatus: "needs_review", Rank: "U", HandedOver: true})
 	putOutboxIssue(t, pool, records, stranded)
-	// The root holds no slot: its child is the issue at work, which is what the cap counts.
+	// The fixture seeds no slot for the root, as when it waits on another issue; its child holds one.
 	putStatusRepairSlot(t, pool, records, stranded.Key)
 	openStatusRepairLifecycle(t, pool, records, "LEGION-208")
 	engine := workflow.New(records, workflow.Config{Project: "LEGION", Repositories: testRepositories}, quietLogger())
@@ -74,7 +75,7 @@ func TestTheStatusRepairTakesAChildWhoseRecordNeverLeftTodo(t *testing.T) {
 }
 
 // openStatusRepairLifecycle opens tree's lifecycle under the workflow's authority without granting
-// it a slot: a running root holds none of its own while its children work.
+// it a slot: a running root can hold none, as while it waits on another issue.
 func openStatusRepairLifecycle(t *testing.T, pool *pgxpool.Pool, records record.Store, tree string) {
 	t.Helper()
 	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {

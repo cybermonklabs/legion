@@ -386,8 +386,8 @@ const releaseReason = "the issue was set to todo while its phase was held"
 // does not act on. A session holding a claim in the issue's tree is an agent, never a human move,
 // since a phase ends only by its completion (the `legion` tool's `handoff_complete`) and a tree
 // only by the architect's sign-off. Any other session on the root of a running tree — one holding
-// its admission slot, or one waiting on a person, whose tree stays live while it gave its slot
-// back — another tree's agent, or one outside Legion that took the issue for its own, has no part
+// its admission slot, or one waiting on a person, whose tree stays live and which keeps its slot
+// — another tree's agent, or one outside Legion that took the issue for its own, has no part
 // in the tree it would end or park, so the tree's architect is told who wrote what. Either way the
 // workflow does not react: the observation is recorded with the status kept (keepStatus), and the
 // daemon re-asserts its own status through the outbox. A person's move and the daemon's own write
