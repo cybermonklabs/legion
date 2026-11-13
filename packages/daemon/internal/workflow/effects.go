@@ -676,13 +676,13 @@ func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // still serves the earlier entry (the machine refuses a second delivery while one is pending), and
 // the row already names this one.
 //
-// Two starts raise one, each handing its role work it was not already on: a transition's start of
-// the phase the issue has moved into (start), and the promotion's start of a mid-phase worker a
-// re-admitted tree brings back (StartPromotedWorker). Every other start carries the entry its
-// role's phases row already names — the send of an owed entry (SendOwedEntry), the held phase's
-// retry (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them
-// moves the row and a worker's in-flight completion is never refused for an entry it was never
-// given.
+// Three starts raise one, each handing its role work it was not already on: a transition's start
+// of the phase the issue has moved into (start), the promotion's start of a mid-phase worker a
+// re-admitted tree brings back (StartPromotedWorker), and a root architect's start of work it was
+// not on (EnterArchitect, ResumeAwaitedRoot). Every other start carries the entry its role's
+// phases row already names — the send of an owed entry (SendOwedEntry), the held phase's retry
+// (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
+// the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
 // The number counts the entries this role has been handed on this issue, which is why it is raised
 // here: this is the one place a role is handed work it was not on. It needs to be unique among
@@ -705,6 +705,24 @@ func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 		return 0, err
 	}
 	return row.Entry, nil
+}
+
+// EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
+// work of that entry and the moment it was raised, and answers the number for the start that
+// hands it (enter, record.SuperviseRequest.Entry). A root's architect holds a row of the phases
+// record exactly as every phase worker does, so what it was handed, what that work is and how
+// long it has stood are read from the record rather than from the outbox row that carried it.
+//
+// It is the one way a root architect's entry is raised from outside this package, and admission's
+// promotion of a queued root is its one caller: that promotion composes the architect's first
+// task itself (ArchitectStartTask) and enqueues its start itself, because an architect's start
+// waits for no admission slot, so it writes neither through start nor through started, both of
+// which are a phase worker's. The rule it is held to is enter's own, which is why it is one call
+// and not a second implementation: it is made in the transaction that writes that start, and only
+// where the start hands the architect work it was not already on. The resume of a root a person
+// answered raises its entry inside this package instead (ResumeAwaitedRoot).
+func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string) (int64, error) {
+	return e.enter(ctx, tx, root, claim.RoleArchitect, task)
 }
 
 // task is what a started worker is told. It names the phase the worker starts, which the issue

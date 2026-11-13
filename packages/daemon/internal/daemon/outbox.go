@@ -1563,9 +1563,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// something to rewrite.
 		//
 		// Only a row that carries an entry and names a phase is held to it: a production check's
-		// look carries neither and is fenced on its check above, and every other start of no
-		// entry (record.SuperviseRequest.Entry, which lists them) is held to the generation
-		// alone.
+		// look carries neither and is fenced on its check above, every start of no entry
+		// (record.SuperviseRequest.Entry, which lists them) is held to the generation alone, and
+		// so is a root architect's start, which carries an entry and names no phase, since that
+		// architect serves every phase of its tree and its row must act whatever phase the root
+		// stands in. What keeps one entry to one task for the architect is the claim's own rule:
+		// a delivery of an entry it was already queued a task of queues no second one
+		// (supervise.Claim.GivenEntry).
 		if payload.Entry > 0 && payload.Phase != "" {
 			entry, err := r.phaseEntry(ctx, row.Issue, payload.Role)
 			if err != nil {

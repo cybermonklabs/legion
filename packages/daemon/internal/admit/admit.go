@@ -1747,11 +1747,31 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				task := workflow.ArchitectStartTask(workflow.ArchitectStart{Root: issue, Carried: carried,
 					Gate: facts.Gates[issue.Tree], Launch: launches[issue.Tree], Decided: decided})
+				// The start hands the architect work it was not on, so it raises the architect's
+				// phase entry and writes that task as the work of it on the architect's phases
+				// row, in this transaction (workflow.Engine.EnterArchitect), and carries the
+				// number itself (record.SuperviseRequest.Entry). A root's architect holds that
+				// row exactly as every phase worker does: the work is a fact of the record rather
+				// than of the one outbox row that carried it, so a start that reaches no claim
+				// loses none of it, and the outbox reads the entry off this row as it does for
+				// every other role.
+				//
+				// A root the derivation serves no task — one past admitted under its own power,
+				// with nothing decided while its tree could not hear it — is handed nothing, so
+				// it raises no entry: the start carries no task, nothing is delivered for it, and
+				// an entry raised for it would leave the architect's row above what its claim was
+				// ever given with no work to send it.
+				var entry int64
+				if task != "" {
+					if entry, err = a.engine.EnterArchitect(ctx, tx, issue, task); err != nil {
+						return admitted, released, fmt.Errorf("raise the phase entry of %s's architect: %w", issue.Key, err)
+					}
+				}
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no
 				// phase worker.
 				if err := a.engine.EnqueueNaming(ctx, tx, issue.Key, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree,
-					Role: claim.RoleArchitect, Generation: issue.Generation, Task: task, Kept: kept}, kept, now); err != nil {
+					Role: claim.RoleArchitect, Generation: issue.Generation, Task: task, Entry: entry, Kept: kept}, kept, now); err != nil {
 					return admitted, released, fmt.Errorf("enqueue the architect start of %s: %w", issue.Key, err)
 				}
 				if err := a.startMidPhaseMembers(ctx, tx, issue, append(issues, issue), now); err != nil {

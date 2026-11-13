@@ -488,9 +488,10 @@ type PhaseRow struct {
 	// at worst makes a review read as the reviewer's answer: one extra review-stuck notice.
 	CompletedAt time.Time
 	// Entry is the number of the phase entry this role's row is on: a transition's start of the
-	// phase the issue has moved into, and the promotion's start of a mid-phase worker a
-	// re-admitted tree brings back, raise it by one and write the two fields below beside it, in
-	// their own transaction (workflow's start and StartPromotedWorker). It is the finer of the
+	// phase the issue has moved into, the promotion's start of a mid-phase worker a re-admitted
+	// tree brings back, and a root architect's start of work it was not on raise it by one and
+	// write the two fields below beside it, in their own transaction (workflow's start,
+	// StartPromotedWorker, EnterArchitect and ResumeAwaitedRoot). It is the finer of the
 	// two numbers a completion is held to: the issue's generation is the same for every entry of
 	// one run, where the entry is new at each one, which is what tells one testing phase from the
 	// testing phase a conflicting head sent the work back to (api/handoff.go). A start that hands

@@ -3,6 +3,8 @@ package daemon
 import (
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // A root whose admission has just given it a slot is the one case where nothing the daemon had
@@ -14,6 +16,12 @@ import (
 // the catch-up its ready writes, which states the tree and leaves the first act to the agent. A
 // root measured that way sat in its slot with an idle architect that had neither claimed it nor
 // registered its design gate until a person messaged the session.
+//
+// The start carries the phase entry admission raised for that architect
+// (record.SuperviseRequest.Entry), and the architect's phases row carries the same number with
+// the task as the work of it: a root's architect holds that row as every phase worker does, so
+// the delivery records what it was given on the claim (supervise.Claim.GivenEntry) and the work
+// survives the row that carried it.
 //
 // So the start carries the root's own first task, as a phase worker's start carries its phase's,
 // and this holds the whole path main runs: admission queues the start, the outbox runner launches
@@ -33,6 +41,17 @@ func TestAFreshAdmissionGivesItsArchitectItsStartTask(t *testing.T) {
 		if !strings.Contains(pending.Task, want) {
 			t.Fatalf("the architect's start task = %q, want it naming %q", pending.Task, want)
 		}
+	}
+	row := rolePhaseRow(t, r.pool, mainPathRoot, claim.RoleArchitect)
+	if row.Entry != 1 || row.EntryTask != pending.Task || row.EntryRaisedAt.IsZero() {
+		t.Fatalf("the architect's phases row = entry %d, task %q, raised at %s; want entry 1 carrying the task it was given, with the moment it was raised",
+			row.Entry, row.EntryTask, row.EntryRaisedAt)
+	}
+	if pending.Entry != 1 {
+		t.Fatalf("the architect's pending task is of entry %d, want the 1 its row names: the start carries the entry its own transaction raised", pending.Entry)
+	}
+	if given := r.machine().Claim().GivenEntry; given != 1 {
+		t.Fatalf("the architect's claim was given entry %d, want 1: the delivery records the entry it carried", given)
 	}
 
 	r.bringUp()

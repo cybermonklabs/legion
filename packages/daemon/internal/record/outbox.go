@@ -667,21 +667,25 @@ type SuperviseRequest struct {
 	// phases row in its own transaction (record.PhaseRow.Entry). It travels to the claim's
 	// delivery and, once a confirmed delivery is retired, onto the claim, so a completion can be
 	// held to the entry the turn reporting it was given (api/handoff.go) rather than to the run
-	// alone, whose value every phase entry of one run shares. Two starts raise the entry they
-	// carry: a transition's start of the phase the issue has moved into, and the promotion's
-	// start of a mid-phase worker a re-admitted tree brings back (workflow's start and
-	// StartPromotedWorker). Two more carry the entry the role's row already names without raising
-	// it: the send of an owed entry (workflow's SendOwedEntry) and the held phase's retry, which
-	// marks it with ResendEntry below. It is zero for every other operation, and for every start
-	// that hands no entry's work at all. Those starts, in full, so that no other comment need
-	// list them: the tree architect's start (admit's promotion, workflow's
-	// ReconcileAwaiting), the roles admission brings back beside a re-admitted member's phase
-	// worker (admit's startMidPhaseMembers), the boot's resume by rule (workflow's booted), the
-	// phase's resume task a ready worker level with the entry its phases row names is given
-	// (workflow's readyWorkerTask), a production check's look (workflow's startLook), the pod
-	// wake (workflow's wakeRow) and the resume of a cancelled idle release (the daemon's
-	// outbox). Each hands its role work it was already on, or work no phase entry numbers at
-	// all.
+	// alone, whose value every phase entry of one run shares. Three starts raise the entry they
+	// carry: a transition's start of the phase the issue has moved into, the promotion's start of
+	// a mid-phase worker a re-admitted tree brings back (workflow's start and
+	// StartPromotedWorker), and a root architect's start that hands it work it was not on —
+	// admission's promotion of its root where the derivation serves it a task, and the resume of
+	// a root a person answered (workflow.Engine.EnterArchitect and ResumeAwaitedRoot). The
+	// architect's start names no phase (Phase above), so the outbox holds it to the generation
+	// and the claim's given entry alone. Two more carry the entry the role's row already names
+	// without raising it: the send of an owed entry (workflow's SendOwedEntry) and the held
+	// phase's retry, which marks it with ResendEntry below. It is zero for every other
+	// operation, and for every start that hands no entry's work at all. Those starts, in full, so
+	// that no other comment need list them: the promotion's architect start of a root the
+	// derivation serves no task (admit's promotion), the roles admission brings back beside a
+	// re-admitted member's phase worker (admit's startMidPhaseMembers), the boot's resume by rule
+	// (workflow's booted), the phase's resume task a ready worker level with the entry its phases
+	// row names is given (workflow's readyWorkerTask), a production check's look (workflow's
+	// startLook), the pod wake (workflow's wakeRow) and the resume of a cancelled idle release
+	// (the daemon's outbox). Each hands its role work it was already on, or work no phase entry
+	// numbers at all.
 	Entry int64 `json:"entry,omitempty"`
 	// ResendEntry marks a start that hands the role the work of the entry its phases row already
 	// names rather than a new entry, so the claim's given entry does not decline the task
