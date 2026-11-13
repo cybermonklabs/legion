@@ -103,8 +103,9 @@ test("a hit inside bold or code text is marked inside the formatting, with no sy
 
 test("a hit inside a dispatch:// reference keeps its highlight on the reference's resolved title", async () => {
   const getIssueSummary = spyOn(api, "getIssueSummary").mockResolvedValue(issue);
-  // q=CORE-1: `Tracked as <mark>dispatch://CORE-1</mark> since Monday` - the match is inside
-  // the reference the preview replaces with the issue's title.
+  // q=CORE-1, as Postgres answers it: `Tracked as dispatch://<b>CORE</b><b>-1</b> since
+  // Monday` - ts_headline marks the address's words one by one, so the reference stands in three
+  // text nodes. The preview reads it whole, names the issue, and marks the name whole.
   const bare = stored("a-marked-reference");
   const { preview, rerender, view } = renderPreview({
     highlightClassName: "hit",
@@ -117,13 +118,20 @@ test("a hit inside a dispatch:// reference keeps its highlight on the reference'
     const reference = preview().querySelector<HTMLElement>("[data-dispatch-ref]");
     if (reference === null) throw new Error("the reference did not render as one");
     expect(reference.textContent).toBe("CORE-1 Design decision");
-    expect(reference.closest("mark") !== null || reference.querySelector("mark") !== null).toBe(
-      true
-    );
-    for (const mark of preview().querySelectorAll("mark")) {
-      expect(mark.textContent?.trim()).not.toBe("");
-    }
-    expect(preview().textContent).not.toContain("dispatch://");
+    expect(marks(preview())).toEqual(["CORE-1 Design decision"]);
+    expect(reference.closest("mark")).not.toBeNull();
+    expect(preview().textContent).toBe("Tracked as CORE-1 Design decision since Monday.");
+
+    // The same search over a bare key: `Tracked as <b>CORE</b><b>-1</b> since Monday`.
+    const key = stored("a-marked-key");
+    rerender({
+      highlightClassName: "hit",
+      lines: 2,
+      markdown: snippetSource(key.markdown),
+      tree: key.snippet,
+    });
+    await waitFor(() => expect(marks(preview())).toEqual(["CORE-1 Design decision"]));
+    expect(preview().querySelector("mark [data-dispatch-ref]")).not.toBeNull();
 
     // q=design on a hand-written link to the same target: a link whose words its author wrote
     // keeps those words (R8), so the hit is marked where the reader reads it.

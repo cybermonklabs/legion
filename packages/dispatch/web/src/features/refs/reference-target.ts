@@ -14,7 +14,7 @@ import { ApiError, api, artifactVersionPath } from "../../api/client";
 import { primarySpec } from "../../api/issue-cache";
 import { issueQuery } from "../../api/queries";
 import type {
-  ArchitectureTreeComponent,
+  ArchitectureComponentRead,
   Artifact,
   ArtifactText,
   ArtifactVersionContent,
@@ -266,7 +266,7 @@ export interface ReferenceData {
   readonly block: GraphReferences | undefined;
   /** The component a component reference names, once its project's architecture is read: the
    *  one record behind that kind, and what gives the reference the component's own title. */
-  readonly component: ArchitectureTreeComponent | undefined;
+  readonly component: ArchitectureComponentRead | undefined;
 }
 
 export interface ReferenceReadOptions {
@@ -637,13 +637,13 @@ export function useReferenceTarget(
     };
   }
   if (kind === "component") {
-    // A component is named by its architecture row, and says what it is in its own prose. The
-    // architecture is read from the project's own source, not from a stored text, so there is
-    // no tree of that prose to draw and the card parses it.
+    // A component is named by its architecture row, and says what it is in its own prose, which
+    // the architecture read answers with Go's reading of it (`prose_tree`), as the component's
+    // own page draws it (`ComponentDetails`).
     return {
       title: component?.title,
       description: component?.prose,
-      descriptionTree: undefined,
+      descriptionTree: component?.prose_tree,
       picture: undefined,
     };
   }

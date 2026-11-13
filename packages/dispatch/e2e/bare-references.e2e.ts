@@ -16,8 +16,8 @@ import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
   answeredQuestionPreview,
+  DRAWN_REFERENCE,
   HOST_KEY,
-  INERT_REFERENCE,
   OTHER_KEY,
   openMarginThread,
   QUESTION_IDS,
@@ -39,7 +39,7 @@ import { asUser } from "./users";
  * The browser's half of the shared text table (`@legion/contracts`'s DISPATCH_TEXT_REFERENCES,
  * which the Go reader and the dashboard's reader are both held to): every row written into a
  * real Dispatch, read on the three surfaces a person reads text on — the rendered markdown of a
- * Conversation turn, the inert one-line preview of an Answers row, and the live document editor —
+ * Conversation turn, the one-line preview of an Answers row, and the live document editor —
  * each linking exactly the references its row names and nothing else, inside code included,
  * against a server that resolves them for real.
  *
@@ -427,7 +427,7 @@ test("the one-line preview shows each reference the shared table links as its ta
   const world = await seedReferenceWorld();
   // The Replies page carried this one-line preview until INFRA-450 deleted that page, and the
   // Inbox that took its rows draws a thread whole with live links rather than a preview of it.
-  // The inert one-line preview a reader still meets is an answered ask's question on the
+  // The one-line preview a reader still meets is an answered ask's question on the
   // Answers page, so each row of the table is written as one question there. A preview is one
   // line of a list, so the table's longer and multi-line bodies are read on the rendered and
   // editor surfaces alone.
@@ -483,7 +483,7 @@ test("the one-line preview shows each reference the shared table links as its ta
     for (const [item, ask] of asks) {
       const preview = answeredQuestionPreview(page, ask);
       await expect
-        .poll(() => referenceTargetsIn(preview, INERT_REFERENCE), { message: rowName(item) })
+        .poll(() => referenceTargetsIn(preview, DRAWN_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
       await expectMadeTitles(preview, (link) => `[data-dispatch-ref="${link}"]`, titles, item);
       // The Answers row is a record a reader reads (`DISPATCH_READING_SURFACES`'s

@@ -528,7 +528,7 @@ func indentTo(body string, at, end, col, want int) (int, int) {
 // the paragraph that holds it: the search for a span's closing run ends where that paragraph
 // ends, at the first of breaks past where the search began, which codeBlocks writes one of for
 // every line that ends a paragraph, so an unmatched backtick mutes nothing written past its own
-// paragraph. The dashboard's codeSpans reads the same rule
+// paragraph. The dashboard's appendCodeSpans reads the same rule
 // (`packages/dispatch/web/src/features/refs/code-ranges.ts`).
 func appendCodeSpans(spans []codeRange, body string, from, to int, breaks []int) []codeRange {
 	// A break on from itself cuts nothing, the paragraph starting there.

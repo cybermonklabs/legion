@@ -4,7 +4,7 @@ import { type ReactNode, useCallback, useRef } from "react";
 import type { DisplayTree } from "../../api/types";
 import { markdownClassName } from "./markdown-engine";
 import { usePlainHeadline } from "./plain-text";
-import type { TextSource } from "./text-references";
+import { readTextReferences, type TextSource } from "./text-references";
 import {
   type DecorateMarkdown,
   type PaintMarkdown,
@@ -101,11 +101,12 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
   for (const br of element.querySelectorAll("br")) {
     br.replaceWith(document.createTextNode(" "));
   }
+  markWholeReferences(element);
   // A hit the server marked inside a link's own words marks the whole link instead: a
   // reference's words are replaced by its title a moment later (`collectReferenceAnchors`
-  // empties the anchor), so a mark left inside would go with them. A bare `dispatch://`
-  // reference the server marked is inside its mark already, since the link is made from text
-  // the mark holds (`linkifyDispatchRefs`).
+  // empties the anchor), so a mark left inside would go with them. A bare reference the server
+  // marked is inside one mark by now (`markWholeReferences`), and the link is made from the text
+  // that mark holds (`linkifyDispatchRefs`).
   for (const link of element.querySelectorAll("a")) {
     if (link.querySelector(HIGHLIGHT_SELECTOR) === null) {
       continue;
@@ -119,6 +120,128 @@ const paintOneLine: PaintMarkdown = (element, parsed, serializer) => {
     whole.appendChild(link);
   }
 };
+
+/** One node of a run of words a search mark can cut: a text node, or a search mark holding
+ *  nothing but text, which is what the serializer draws the highlight as (it is the schema's last
+ *  mark, so it is the innermost element over a run). */
+interface RunPiece {
+  readonly node: ChildNode;
+  readonly text: string;
+  readonly marked: boolean;
+}
+
+function runPiece(node: ChildNode): RunPiece | undefined {
+  if (node instanceof Text) {
+    return { marked: false, node, text: node.data };
+  }
+  if (
+    node instanceof HTMLElement &&
+    node.matches(HIGHLIGHT_SELECTOR) &&
+    Array.from(node.childNodes).every((child) => child instanceof Text)
+  ) {
+    return { marked: true, node, text: node.textContent ?? "" };
+  }
+  return undefined;
+}
+
+/** Whether `node` is inside a link, a code context or a search mark of `root`, whose words no
+ *  run of `markWholeReferences` reads: a link is already one, code holds no reference a renderer
+ *  links, and a mark is a piece of its parent's run. */
+function insideNoRun(node: HTMLElement, root: HTMLElement): boolean {
+  for (let current: HTMLElement | null = node; current !== null && current !== root; ) {
+    if (current.matches("a, code, pre") || current.matches(HIGHLIGHT_SELECTOR)) {
+      return true;
+    }
+    current = current.parentElement;
+  }
+  return false;
+}
+
+/**
+ * Puts each reference a search mark falls in under one mark of its own, whole. Postgres's
+ * `ts_headline` marks the words it matched, and it cuts an address or a key into its own words to
+ * do so: a search for `CORE-1` answers `dispatch://<b>CORE</b><b>-1</b>` and `<b>CORE</b><b>-1</b>`
+ * (measured against the pod's Postgres, 2026-11-13, INFRA-1702), so the snippet's tree holds the
+ * reference in three text nodes. The link pass reads one text node at a time
+ * (`linkifyDispatchRefs`), so it would find no reference there, and the hit would show the raw
+ * address where the reader should see the issue's name.
+ *
+ * So every run of adjacent text nodes and marks is read as the one text it is, and each
+ * reference in it that holds a marked character is marked from its first character to its last.
+ * The run is then written again as one node per stretch of marked or unmarked words, so each
+ * marked reference stands in one text node inside one mark, which the link pass turns into a
+ * link and the title replaces. A run no mark falls in, or whose marks touch no reference, is
+ * left as it was.
+ */
+function markWholeReferences(element: HTMLElement): void {
+  const containers = [element, ...element.querySelectorAll<HTMLElement>("*")].filter(
+    (container) => !insideNoRun(container, element)
+  );
+  for (const container of containers) {
+    let run: RunPiece[] = [];
+    for (const child of Array.from(container.childNodes)) {
+      const piece = runPiece(child);
+      if (piece === undefined) {
+        markReferencesOfRun(run);
+        run = [];
+      } else {
+        run.push(piece);
+      }
+    }
+    markReferencesOfRun(run);
+  }
+}
+
+function markReferencesOfRun(run: readonly RunPiece[]): void {
+  if (!run.some((piece) => piece.marked)) {
+    return;
+  }
+  const text = run.map((piece) => piece.text).join("");
+  const marked: boolean[] = [];
+  for (const piece of run) {
+    for (let index = 0; index < piece.text.length; index += 1) {
+      marked.push(piece.marked);
+    }
+  }
+  let widened = false;
+  for (const reference of readTextReferences(text).references) {
+    if (!marked.slice(reference.start, reference.end).includes(true)) {
+      continue;
+    }
+    marked.fill(true, reference.start, reference.end);
+    widened = true;
+  }
+  if (!widened) {
+    return;
+  }
+  const first = run[0];
+  if (first === undefined) {
+    return;
+  }
+  const parent = first.node.parentNode;
+  if (parent === null) {
+    return;
+  }
+  for (let from = 0; from < text.length; ) {
+    let to = from + 1;
+    while (to < text.length && marked[to] === marked[from]) {
+      to += 1;
+    }
+    const words = document.createTextNode(text.slice(from, to));
+    if (marked[from] === true) {
+      const mark = document.createElement("mark");
+      mark.setAttribute("data-search-highlight", "");
+      mark.appendChild(words);
+      parent.insertBefore(mark, first.node);
+    } else {
+      parent.insertBefore(words, first.node);
+    }
+    from = to;
+  }
+  for (const piece of run) {
+    piece.node.remove();
+  }
+}
 
 /**
  * A line or two of Markdown someone wrote, formatted and then cut to fit: a search hit's
@@ -184,7 +307,7 @@ export function MarkdownPreview({
 }): ReactNode {
   const root = useRef<HTMLSpanElement>(null);
   const decorate = useCallback<DecorateMarkdown>(
-    (element, anchors) => {
+    (element) => {
       if (highlightClassName !== "") {
         for (const mark of element.querySelectorAll<HTMLElement>(HIGHLIGHT_SELECTOR)) {
           mark.className = highlightClassName;
@@ -193,7 +316,6 @@ export function MarkdownPreview({
       if (lead !== undefined && lead !== "") {
         element.prepend(document.createTextNode(lead));
       }
-      return anchors;
     },
     [highlightClassName, lead]
   );

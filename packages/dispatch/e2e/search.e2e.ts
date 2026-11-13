@@ -1,6 +1,7 @@
 import {
   answerAsk,
   createAsk,
+  createComment,
   createIssue,
   createMessage,
   createProject,
@@ -210,6 +211,41 @@ test("an ask hit says whether it is answered, and an answered one shows its late
     const openHit = dialog.getByRole("option").filter({ hasText: "winds the orrery" });
     await expect(openHit).toContainText("Open");
     await expect(openHit).not.toContainText("Answered");
+  } finally {
+    await context.close();
+  }
+});
+
+// A search for an issue's key, the commonest search there is, over the marks Postgres itself
+// writes: ts_headline marks `CORE-1` as `<b>CORE</b><b>-1</b>`, inside an address and as a bare key
+// alike, so no fixture of this suite decides the shape the palette draws. Each hit that cites the
+// issue reads as its name, marked whole, with no address left.
+test("a search for an issue key names the issue in every hit that cites it, marked whole", async ({
+  browser,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const cited = await createIssue({ project: "CORE", title: "Gyroscope alignment" });
+  const citing = await createIssue({ project: "CORE", title: "Bench work" });
+  await createComment(citing.key, {
+    body: `Tracked as dispatch://${cited.key} since Monday.`,
+  });
+  await createMessage(citing.key, { body: `Tracked as ${cited.key} since Monday.` }, searchSession);
+  const context = await asUser(browser, "alice");
+
+  try {
+    const page = await context.newPage();
+    await openSearchFromRail(page, false);
+    await page.getByRole("combobox", { name: "Search" }).fill(cited.key);
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    for (const name of [/^comment /, /^message /]) {
+      const hit = dialog.getByRole("option", { name });
+      await expect(hit).toHaveCount(1);
+      await expect(hit.locator("mark")).toHaveText([`${cited.key} Gyroscope alignment`]);
+      await expect(hit.locator("mark [data-dispatch-ref]")).toHaveCount(1);
+      await expect(hit).not.toContainText("dispatch://");
+      // ts_headline ends its fragment on the last word, so the sentence's stop is not in it.
+      await expect(hit).toContainText(`Tracked as ${cited.key} Gyroscope alignment since Monday`);
+    }
   } finally {
     await context.close();
   }

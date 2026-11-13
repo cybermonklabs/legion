@@ -117,9 +117,9 @@ func sameShape(t *testing.T, tree json.RawMessage) json.RawMessage {
 // pmdoc.ReadForDisplay makes of exactly that text, and the document the route table emits
 // declares that tree where the answer carries it. The routes covered here are the issue's
 // comment list and one comment's thread, the issue's ask list and one ask, the issue's message
-// list, the issue's event log, a document's text, the caller's own answers, a project's
-// architecture and one node's references; the search snippet, whose tree is cut and marked
-// rather than read whole, has its own test below.
+// list, the issue's event log, a document's text, the caller's own answers, the caller's own
+// replies (each row's subject line), a project's architecture and one node's references; the
+// search snippet, whose tree is cut and marked rather than read whole, has its own test below.
 func TestEveryReadCarriesItsDisplayTreesOnlyUnderTheHeader(t *testing.T) {
 	handler := newTestHandler(t)
 	const (

@@ -842,7 +842,7 @@
   },
   {
     "name": "a-marked-reference",
-    "markdown": "Tracked as dispatch://CORE-1 since Monday.\n",
+    "markdown": "Tracked as dispatch://CORE-1 since Monday.\n",
     "latest": {
       "type": "doc",
       "content": [
@@ -851,7 +851,7 @@
           "content": [
             {
               "type": "text",
-              "text": "Tracked as dispatch://CORE-1 since Monday."
+              "text": "Tracked as dispatch://CORE-1 since Monday."
             }
           ]
         }
@@ -865,7 +865,75 @@
           "content": [
             {
               "type": "text",
-              "text": "Tracked as dispatch://CORE-1 since Monday."
+              "text": "Tracked as dispatch://CORE-1 since Monday."
+            }
+          ]
+        }
+      ]
+    },
+    "snippet": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Tracked as dispatch://"
+            },
+            {
+              "type": "text",
+              "text": "CORE",
+              "marks": [
+                {
+                  "type": "searchHighlight"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-1",
+              "marks": [
+                {
+                  "type": "searchHighlight"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": " since Monday."
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "name": "a-marked-key",
+    "markdown": "Tracked as CORE-1 since Monday.\n",
+    "latest": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Tracked as CORE-1 since Monday."
+            }
+          ]
+        }
+      ]
+    },
+    "version": {
+      "type": "doc",
+      "content": [
+        {
+          "type": "paragraph",
+          "content": [
+            {
+              "type": "text",
+              "text": "Tracked as CORE-1 since Monday."
             }
           ]
         }
@@ -883,7 +951,16 @@
             },
             {
               "type": "text",
-              "text": "dispatch://CORE-1",
+              "text": "CORE",
+              "marks": [
+                {
+                  "type": "searchHighlight"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-1",
               "marks": [
                 {
                   "type": "searchHighlight"
@@ -1209,7 +1286,7 @@
   },
   {
     "name": "a-marked-word-and-reference",
-    "markdown": "Report the port to support before we export dispatch://CORE-1\n",
+    "markdown": "Report the port to support before we export dispatch://CORE-1\n",
     "latest": {
       "type": "doc",
       "content": [
@@ -1218,7 +1295,7 @@
           "content": [
             {
               "type": "text",
-              "text": "Report the port to support before we export dispatch://CORE-1"
+              "text": "Report the port to support before we export dispatch://CORE-1"
             }
           ]
         }
@@ -1232,7 +1309,7 @@
           "content": [
             {
               "type": "text",
-              "text": "Report the port to support before we export dispatch://CORE-1"
+              "text": "Report the port to support before we export dispatch://CORE-1"
             }
           ]
         }
@@ -1259,11 +1336,20 @@
             },
             {
               "type": "text",
-              "text": " to support before we export "
+              "text": " to support before we export dispatch://"
             },
             {
               "type": "text",
-              "text": "dispatch://CORE-1",
+              "text": "CORE",
+              "marks": [
+                {
+                  "type": "searchHighlight"
+                }
+              ]
+            },
+            {
+              "type": "text",
+              "text": "-1",
               "marks": [
                 {
                   "type": "searchHighlight"

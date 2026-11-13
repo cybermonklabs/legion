@@ -98,13 +98,10 @@ export interface RenderedMarkdown {
   portals: ReactNode;
 }
 
-/** A surface's last pass over its rendered element, given the reference anchors the link pass
- *  found (each already emptied for its portal). It answers the anchors to portal into: the same
- *  ones, or whatever element it put in each one's place. */
-export type DecorateMarkdown = (
-  element: HTMLElement,
-  anchors: readonly ReferenceAnchor[]
-) => readonly ReferenceAnchor[];
+/** A surface's last pass over its rendered element, after the link pass has found each
+ *  reference anchor and emptied it for its portal: it may style the element or add to it, and it
+ *  leaves every anchor where the link pass put it. */
+export type DecorateMarkdown = (element: HTMLElement) => void;
 
 /**
  * What one piece of a sliced paint yields: `"page"` where the work it has just done reached the
@@ -262,8 +259,8 @@ export interface RenderedMarkdownOptions {
   references: ReferenceLinking;
 }
 
-/** Every anchor a paint leaves for a portal: the reference anchors the link pass found, as
- *  `decorate` answered them, and each Dispatch picture's placeholder after it. */
+/** Every anchor a paint leaves for a portal: the reference anchors the link pass found, and each
+ *  Dispatch picture's placeholder after `decorate` has run. */
 interface PortalAnchors {
   readonly pictures: readonly PictureAnchor[];
   readonly references: readonly ReferenceAnchor[];
@@ -315,11 +312,11 @@ function portalAnchors(
   linkifyDispatchRefs(element, references);
   const found = collectReferenceAnchors(element);
   const live = hostLinksReferences(host) ? found : inertLinks(element, found);
-  const anchors = decorate === undefined ? live : decorate(element, live);
+  decorate?.(element);
   const placeholders = collectPictureAnchors(element);
   return {
     pictures: placeholders.length === 0 ? NO_PICTURES : placeholders,
-    references: anchors.length === 0 ? NO_ANCHORS : anchors,
+    references: live.length === 0 ? NO_ANCHORS : live,
   };
 }
 
@@ -422,9 +419,8 @@ function keepTheReadersPlace(element: HTMLElement): ReadersPlace {
  * to the SPA route and its text handed to a portal-mounted `RefLink` for the resolved title.
  * `decorate` runs last, on the fallback text as on a painted element, so a `<mark>` it adds
  * never splits a reference before the link pass sees it, and a plain lead it prepends is never
- * read as a reference; it answers the anchors the portals mount into, so it may replace an
- * anchor's element. Each Dispatch picture's placeholder is found after it, wherever it left one
- * (`MarkdownPreview` puts an inert span in a link's place), and gets a portal-mounted
+ * read as a reference; it leaves every anchor where the link pass put it. Each Dispatch
+ * picture's placeholder is found after it, wherever the paint left one, and gets a portal-mounted
  * `DispatchPicture` in the shape `pictures` names. Where the app provides a decision card
  * (`TextAskCard`), each `ask` shell a parsed `paint` drew gets one, mounted in the same commit
  * (`collectAskHosts`); the card is a dependency, so a new provider value renders again. On a

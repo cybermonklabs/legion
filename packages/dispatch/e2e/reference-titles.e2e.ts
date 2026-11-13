@@ -29,11 +29,12 @@ import { asUser } from "./users";
  * names. A bare address and a link whose text is its own address — the form a document stores an
  * autolink in — both read as the target's title in the live editor, in a past version of the
  * same document, in a rendered comment, in that comment's reply where the Inbox draws it, and
- * in an inert one-line preview; a link whose text its author wrote keeps those words; and an
+ * in a one-line preview; a link whose text its author wrote keeps those words; and an
  * address whose target does not exist reads as the address, since there is no title to read it
  * as.
  *
- * The inert one-line preview is read on the Answers page. The Replies page carried it until
+ * The one-line preview is read on the Answers page, whose row is a record and so draws live
+ * links. The Replies page carried it until
  * INFRA-450 deleted that page, and the Inbox that took its rows draws a thread whole with live
  * links rather than a preview of it, so the preview a reader still meets is an answered ask's
  * question (`answeredQuestionPreview`).
@@ -95,7 +96,7 @@ function forms(kind: TargetKind, target: Target): readonly string[] {
  * version; then an anchored comment writing the bare and self-addressed forms and the missing
  * addresses; then, per form and per missing address, a thread whose reply is that text alone -
  * which the Inbox lists as a Reply row - and an ask whose question is that same text, answered
- * by the reader so the Answers page draws its inert preview.
+ * by the reader so the Answers page draws its one-line preview.
  */
 async function seedTitles(): Promise<Seeded> {
   const world = await seedReferenceWorld();
@@ -213,7 +214,7 @@ function missingAnswered(page: Page, seeded: Seeded): Promise<unknown> {
 }
 
 for (const kind of KINDS) {
-  test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as its title in the live editor, a past version, a comment, its reply on the Inbox and an inert one-line preview`, async ({
+  test(`a bare address and a link whose text is its own address to the ${kind.toLowerCase()} read as its title in the live editor, a past version, a comment, its reply on the Inbox and a one-line preview`, async ({
     browser,
   }, testInfo) => {
     const seeded = await seedTitles();

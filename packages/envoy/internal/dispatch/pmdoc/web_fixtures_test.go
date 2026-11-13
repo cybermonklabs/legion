@@ -53,6 +53,13 @@ const (
 	webSnippetStop  = "\uE001"
 )
 
+// webMarkedCore1 is CORE-1 as ts_headline marks it for the query CORE-1, word by word:
+// `select ts_headline('english', 'Tracked as dispatch://CORE-1 since Monday.',
+// websearch_to_tsquery('english', 'CORE-1'))` answers `Tracked as dispatch://<b>CORE</b><b>-1</b>
+// since Monday.`, and the bare key `<b>CORE</b><b>-1</b>` (measured 2026-11-13, INFRA-1702). A
+// fixture marking the address whole is a shape the search never sends.
+const webMarkedCore1 = webSnippetStart + "CORE" + webSnippetStop + webSnippetStart + "-1" + webSnippetStop
+
 // webFixtureCase is one stored text the web app's unit tests draw: its markdown, so a view can
 // be handed the source its tree was read from, and the tree in each mode.
 type webFixtureCase struct {
@@ -105,9 +112,16 @@ func webFixtureTexts(t *testing.T) []webFixtureText {
 			"a-marked-link",
 			"Read [the " + webSnippetStart + "design" + webSnippetStop + "](https://example.com/d) first.\n",
 		},
+		// A search for CORE-1 as Postgres answers it: ts_headline marks the address's own words
+		// one by one rather than the address whole (webMarkedCore1), so the reference stands in
+		// three text nodes of the snippet's tree.
 		{
 			"a-marked-reference",
-			"Tracked as " + webSnippetStart + "dispatch://CORE-1" + webSnippetStop + " since Monday.\n",
+			"Tracked as dispatch://" + webMarkedCore1 + " since Monday.\n",
+		},
+		{
+			"a-marked-key",
+			"Tracked as " + webMarkedCore1 + " since Monday.\n",
 		},
 		{
 			"a-marked-link-to-a-reference",
@@ -126,8 +140,7 @@ func webFixtureTexts(t *testing.T) []webFixtureText {
 		{
 			"a-marked-word-and-reference",
 			"Report the " + webSnippetStart + "port" + webSnippetStop +
-				" to support before we export " + webSnippetStart + "dispatch://CORE-1" +
-				webSnippetStop + "\n",
+				" to support before we export dispatch://" + webMarkedCore1 + "\n",
 		},
 		{
 			"a-headline-with-references",

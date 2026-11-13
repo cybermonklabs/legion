@@ -322,9 +322,9 @@ export async function seedReferenceWorld(): Promise<ReferenceWorld> {
 /** What a rendered body links: its reference anchors and the placeholder a Dispatch picture
  *  links its artifact's page from. */
 export const RENDERED_REFERENCE = "a[data-dispatch-ref], a[data-dispatch-picture]";
-/** What an inert one-line preview shows for the same: a link-styled span carrying the same
- *  attributes, with no link inside it. */
-export const INERT_REFERENCE = "[data-dispatch-ref], [data-dispatch-picture]";
+/** Every reference a body draws, whether its host makes it a link or a link-styled span with
+ *  no link inside it (a preview inside a control): the same attributes either way. */
+export const DRAWN_REFERENCE = "[data-dispatch-ref], [data-dispatch-picture]";
 /** The rendered body of a turn or a card, which is never one of the one-line previews beside
  *  it (a reference card's two lines of its target, a reply's quote of its parent). */
 export const RENDERED_BODY = ".dispatch-markdown:not([data-markdown-preview])";
@@ -398,15 +398,15 @@ export async function closeMarginThread(page: Page, project: string): Promise<vo
 }
 
 /**
- * The inert one-line preview a reader still meets: an answered ask's question on the Answers
- * page (`web/src/features/answers/AnswersPage.tsx`, a `MarkdownPreview` with no `links` prop,
- * which is what makes it inert).
+ * The one-line preview a reader still meets: an answered ask's question on the Answers page
+ * (`web/src/features/answers/AnswersPage.tsx`, a `MarkdownPreview`). Its host is a record a
+ * reader reads (`DISPATCH_READING_SURFACES`'s `answers-subject`), so its references are live
+ * links (`ReferenceHostIs`).
  *
  * The Replies page's own row carried this before INFRA-450, and that page is gone: `/replies`
  * lands on the Inbox, and the Inbox draws a thread row's thread whole with `MarkdownBody` and
  * live links (`features/inbox/ThreadBody.tsx`), so no one-line preview of a reply is left to
- * read. A preview is one control's text, so a reference in it reads as link-styled text with no
- * link inside it.
+ * read.
  */
 export function answeredQuestionPreview(page: Page, askId: string): Locator {
   return page.locator(`[data-answer-row="${askId}"]`).locator("[data-markdown-preview]").first();
