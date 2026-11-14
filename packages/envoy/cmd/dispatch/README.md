@@ -1320,6 +1320,9 @@ A session setting can come from an earlier migration: a `set` without `local` ou
 With `standard_conforming_strings` off, a backslash before a quote in a plain literal escapes that quote, so a text that the census reads as one statement can hold a second statement for Postgres.
 With `client_encoding` at `SJIS`, the last byte of a UTF-8 character and a backslash after it can be one character, so that backslash escapes nothing.
 With `backslash_quote` off, Postgres refuses a `\'` in an `E'…'` literal, which the census reads as an escaped quote.
+The runner needs a database whose encoding holds every character of the migrations it applies: `UTF8`, or `SQL_ASCII`.
+With `client_encoding` at `UTF8`, Postgres converts the text of each migration to the database's encoding, and it stops at the first character that this encoding does not have.
+On PostgreSQL 18.6, `select 1 -- em dash —` fails on a `LATIN1` database with `character with byte sequence 0xe2 0x80 0x94 in encoding "UTF8" has no equivalent in encoding "LATIN1"`, and it runs on a `SQL_ASCII` database.
 
 The notes below describe some of the migrations, numbered and timestamped alike; not every migration has one.
 A new migration describes itself in the header comment of its own `.up.sql`, as `0129_document_edit_notices.up.sql` does, and adds nothing here, so two pull requests that each add a migration do not edit this section.
@@ -2334,7 +2337,6 @@ It refuses:
 
   The census reads the catalog of the database it judges, in its read-only transaction, for an added column's type, for the cast and the function of its default, and for whether the table of a created index is new.
   No other kind needs a catalog read to be admitted.
-  For a `create or replace function`, the census also reads whether a cast calls a function of that name, since the answer decides whether that migration and the later ones read the catalog (below).
   The census reads no catalog to admit a statement of the migrations below, so it admits none of their added columns, `text` included, and none of their created indexes:
 
   - a migration that sets or resets any setting other than `lock_timeout` and `statement_timeout`, `set local` included, or runs `reset all`.
@@ -2354,14 +2356,13 @@ It refuses:
     The list holds the statements that this repository's migrations write and that are known to leave these names as they are:
 
     - `insert`, `update`, `delete` and `select`, with a `with` or without, but not `select … into`, which creates a table and fills it as `create table … as` does.
-      Such a statement stays on the list only when nothing in it writes a system catalog: neither the statement nor an `insert`, `update`, `delete` or `merge` in its `with` may write a table named in `pg_catalog`, or named with no schema and a name that starts with `pg_`.
-      A superuser's write to `pg_proc` or `pg_cast` can make a cast's function volatile or add a cast, and the census reads the catalog as it was before the write.
 
     - `lock table`, `create trigger` and `create index`.
 
-    - `create table` and `create view`, with or without `or replace`.
+    - `create table` and `create view`, with or without `or replace`, when `pg_catalog` holds no type of the same name.
       The new row type can hide a type of the same name in a later schema of the `search_path`.
       But no cast targets the new row type, and it is not a domain, so Postgres adds a column of that type in the catalog alone.
+      A `create table int4` stops the reads all the same: the census reads a later column of type `int4` as the `pg_catalog` type, and under a `search_path` that lists `pg_catalog` after the new table's schema, Postgres reads it as the new row type.
 
     - `alter table` of a table, and `alter index` other than a rename, when no subcommand has `cascade`.
       A `drop column … cascade` or a `drop constraint … cascade` can drop objects that the statement does not name.
@@ -2371,30 +2372,41 @@ It refuses:
     - `drop index`, `drop trigger`, `drop function`, `drop table` and `drop view`, with `restrict`, which is the default.
       Without `cascade`, Postgres does not drop a function that a cast calls, or a table or a view whose row type a cast or a function names.
 
-    - `create function` and `create procedure` in `plpgsql` or `sql`, except a `create or replace` of a function that a cast may call.
+    - `create function` and `create procedure` in `plpgsql` or `sql`, with or without `or replace`, when `pg_catalog` holds no function of the same name and no cast calls a function of that name.
+      The census matches the name in any schema.
+      The census admits a default that calls a `pg_catalog` function such as `now()`, and it reads that function in the catalog as the catalog is before the pending migrations.
+      A function of the same name that a pending migration creates in another schema can take the call.
+      A `create or replace function pg_catalog.now()` can make `now()` volatile, and on PostgreSQL 18.6 Postgres then rewrote the table for a later added column whose default calls `now()`.
       A volatile cast function makes Postgres rewrite the table for an added column with a default.
-      The census matches such a function by its name, in any schema.
 
     - `set` and `reset` of `lock_timeout` and `statement_timeout`.
       A `set` or `reset` of any other setting stops the reads as the two items above say, so a `set local` stops them for its own migration alone.
 
+    A statement on the list stops the reads all the same when it names a relation of `pg_catalog`, or a relation whose rules read one, or when it calls `set_config`.
+    The census reads the whole statement for these: a `from`, a `join` or a `with`, the table that an `insert`, `update`, `delete` or `merge` writes, the table of a `lock`, a `create index` or a `create trigger`, a `references`, a `like` or an `inherits`, an expression such as a column's default, and an SQL-standard function body.
+    The census counts a view over a `pg_catalog` relation, such as a view over `pg_proc` or a view of `information_schema`, and a table with a rule that reads one, as a relation of `pg_catalog`, through views over views to any depth.
+    A write to `pg_proc` or `pg_cast`, by a superuser or through such a view, can make a cast's function volatile or add a cast, and an update of `pg_settings` changes a setting.
+    The census reads the catalog as it was before the write, and it does not tell a read of such a relation from a write.
+    A call of `set_config` changes a setting as a `set` does, `search_path` included.
+
     Every other statement stops the reads, for its own migration and for every later one.
     A `do` block, a `call`, an `alter function`, an `alter role … set` and an `alter database … set` stop them.
     So do `create table … as`, `select … into`, `create materialized view`, a drop with `cascade` and a function in another language.
+    So do `create event trigger` and `alter event trigger`, which also take the exemption from every later migration (below).
     So does every statement that creates, alters, renames or drops a type, a domain, a cast, a schema, an extension or a role.
     A rename of a table, a view, a materialized view or a foreign table stops the reads for every later migration, because the relation's row type keeps the casts that target it under its new name.
     After such a rename, a later migration's type name can resolve to that row type in an earlier schema of the `search_path`, through a cast that the census did not read.
     `create table`, `create view`, `drop table` and `drop view` do not stop the reads, because they are on the list.
-    The census lists the statements that keep the reads on, and not the statements that stop them, because a list of the statements that stop them missed one more statement at each review of it.
+    The census lists the statements that keep the reads on, and not the statements that stop them.
+    A statement that a list of the second kind misses admits a column that Postgres rewrites the table for.
+    A statement that this list misses only costs the later migrations their catalog reads, which is a refusal.
 
   - every migration after a pending migration that does not parse in the census's Postgres 17 grammar, since the census cannot see what such a migration changes.
     A migration can parse on the PostgreSQL 18 server and not in the census (a `virtual` generated column).
-    Such a migration is not exempt itself either.
+    Such a migration is not exempt itself either, and no later migration is exempt (below).
 
-  The census reads only the statements its parser shows, and three limits stay.
-  A `select` that calls `set_config` keeps the reads on, because `select` is on the list.
-  An event trigger that a pending migration creates does not cancel the exemption of a later migration, because the census reads the event triggers once, before any pending migration applies.
-  The census does not read the code that a function or a trigger runs.
+  The census reads every statement that a pending migration's text shows, whoever may run it, a superuser included.
+  It does not read the code that a function body or a trigger body runs, a `do` block's body included: such code can, for example, create an event trigger that the census does not see.
 
   A marked single non-unique `CREATE INDEX CONCURRENTLY IF NOT EXISTS` has a separate size exception: its scans do not hold off ordinary writes, not because the build is catalog-only.
   The census still reports its table size, skips counting rows above the limit, and checks its holders and census as usual.
@@ -2402,6 +2414,8 @@ It refuses:
   A `rename column` fires its event triggers under the tag `ALTER TABLE`, and `lock table`, `set` and `reset` fire no event trigger.
   A trigger whose tags name none of those commands counts for nothing.
   The census reads those event triggers once for the whole database, so an enabled one that counts takes the exemption from every migration, a migration holding no drop included, which is the side that refuses rather than the side that applies.
+  A pending `create event trigger` or `alter event trigger` takes both exceptions from every later pending migration, whatever the trigger's tags, and the size refusal names its migration.
+  So does a pending migration that does not parse, since the census cannot see whether it creates an event trigger.
   The report still prints the table's size beside the limit and says why the migration is exempt, and its lock holders refuse it as they refuse any other.
   A trigger named only in a comment, a string literal or a function body exempts nothing, and one statement of any other kind beside it ends the exemption;
 
