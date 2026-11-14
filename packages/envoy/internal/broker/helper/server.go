@@ -15,6 +15,7 @@ import (
 	"net/http"
 	neturl "net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -42,6 +43,18 @@ type Server struct {
 	// the rows that read a reclaimed identity sets a minute, so their own ordering cannot race
 	// the bound, and the row that reads the bound itself sets one short enough to be quick.
 	FirstConfirmBound time.Duration
+	// BrokerCallBound bounds each broker-call op (login, enroll-session-key,
+	// unenroll-session-key) as a whole: the op's context ends at the bound, and the helper
+	// answers at the bound plus 1 s whatever the op is doing (brokerCall). Zero, which is what
+	// cmd/agent-secrets-helper leaves it, means DefaultBrokerCallBound; a row that reads the
+	// bound sets one short enough to be quick.
+	BrokerCallBound time.Duration
+	// calls counts the connections Serve accepted that may still owe a broker-call op's answer,
+	// and pending is the same count as a number, for the line Serve logs while it waits on
+	// calls: each connection counts from its accept until its handler has read a request that
+	// is not a broker call, or has written the answer of one that is (Serve).
+	calls   sync.WaitGroup
+	pending atomic.Int64
 	// dormantGraceNS is DefaultDormantGrace unless SetDormantGrace names another: how long a
 	// named session's identity is kept for it to come back to before SweepDormant revokes it.
 	// Atomic, because a test sets it while the Server's own goroutines (retire, Recover's log
@@ -50,6 +63,16 @@ type Server struct {
 }
 
 // Serve accepts until ctx ends. Each connection carries one request.
+//
+// It returns only once every broker-call op it accepted has written its answer, so a helper that
+// stops (cmd/agent-secrets-helper exits when Serve returns) never closes a client's connection
+// with no answer while a broker call runs. On a stop ctx has ended, so each op's own context has
+// ended with it, and the wait is at most the bound plus 1 s (brokerCall), in practice the time it
+// takes to write the answers. Each connection is counted before its handler starts, since an Add
+// that moves a WaitGroup's count up from zero must come before the Wait it would hold, and the
+// handler gives the count back as soon as it has read a request that is not a broker call: no
+// other op holds the stop, whatever it waits on (a register's wait_seconds does not watch ctx). A
+// connection whose request is still being read holds it for at most that read's 5 s deadline.
 func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 	go func() {
 		<-ctx.Done()
@@ -58,24 +81,47 @@ func (s *Server) Serve(ctx context.Context, ln *net.UnixListener) error {
 	for {
 		conn, err := ln.AcceptUnix()
 		if err != nil {
+			s.awaitCalls()
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
+		s.calls.Add(1)
+		s.pending.Add(1)
 		go s.handle(ctx, conn)
 	}
 }
 
+// awaitCalls waits until every connection Serve counted has been given back (doneCall), and
+// logs at WARN how many it waits for when there are any.
+func (s *Server) awaitCalls() {
+	if n := s.pending.Load(); n > 0 {
+		s.Log.Warn("the helper is stopping; it waits for the broker calls in flight to answer", "calls", n, "bound", s.brokerCallBound())
+	}
+	s.calls.Wait()
+}
+
+// doneCall gives back the count Serve took for one connection.
+func (s *Server) doneCall() {
+	s.pending.Add(-1)
+	s.calls.Done()
+}
+
 // peerOps are the ops judged on who the caller is: each resolves the peer's session from its
-// pid, through an ancestry walk the pinned pidfd holds still. Every other op is a pass-through
-// broker call or a question about the helper itself (see the switch below), and the socket's
+// pid, through an ancestry walk the pinned pidfd holds still. Every other op is a broker-call op
+// (brokerCallOps) or a question about the helper itself (see the switch below), and the socket's
 // own mode — 0600, this user's — is the whole of what guards it, which is why the peer is
 // pinned for these and for nothing else: a kernel that cannot pin one (SO_PEERPIDFD is Linux
 // 6.5) still enrols a box's key and still logs this machine in.
 var peerOps = map[string]bool{"register": true, "sign": true, "sign-request": true, "sign-launcher": true, "unregister": true}
 
 func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
+	// release gives back the count Serve took for this connection, once: as soon as the request
+	// is read for an op that is not a broker call, and otherwise once the answer is written, since
+	// the deferred calls run in reverse and so after the reply and the close.
+	release := sync.OnceFunc(s.doneCall)
+	defer release()
 	defer conn.Close()
 	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
 	line, err := bufio.NewReaderSize(conn, maxLine).ReadBytes('\n')
@@ -86,6 +132,9 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 	if err := json.Unmarshal(line, &req); err != nil {
 		s.reply(conn, Response{Code: CodeBadRequest, Error: "one JSON object per line"})
 		return
+	}
+	if brokerCallOps[req.Op] == nil {
+		release()
 	}
 	var peer *Peer
 	var pid int
@@ -141,20 +190,28 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		s.Log.Info("undrained: taking new sessions again")
 		resp = Response{OK: true}
 	case "login":
-		// login, login-status, enroll-session-key and unenroll-session-key are pass-through broker
-		// calls, not registry-session ops: a key the helper does not hold is not a registry session
-		// (see Broker.EnrollSessionKey), so none of these needs peer's pid at all.
-		resp = s.login(ctx)
+		// login, enroll-session-key and unenroll-session-key are the broker-call ops: each
+		// answers with the outcome of a broker call it makes while the client waits, so each runs
+		// under the bound (brokerCall), and Serve waits for its answer before it returns. None is
+		// a registry-session op: a key the helper does not hold is not a registry session (see
+		// Broker.EnrollSessionKey), so none of these needs peer's pid at all.
+		resp = s.brokerCall(ctx, conn, req.Op, s.login)
 	case "login-status":
+		// login-status calls no broker: it reads the helper's own record of the most recent
+		// login and of the credential it holds.
 		resp = s.loginStatus()
 	case "enroll-session-key":
 		if s.Registry.Draining() {
 			resp = drainingResponse
 			break
 		}
-		resp = s.enrollSessionKey(ctx, req.RuntimeID, req.Thumbprint, req.SessionID)
+		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
+			return s.enrollSessionKey(ctx, req.RuntimeID, req.Thumbprint, req.SessionID)
+		})
 	case "unenroll-session-key":
-		resp = s.unenrollSessionKey(ctx, req.EnrollmentID)
+		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
+			return s.unenrollSessionKey(ctx, req.EnrollmentID)
+		})
 	default:
 		resp = Response{Code: CodeBadRequest, Error: "unknown op " + req.Op}
 	}
@@ -167,6 +224,95 @@ func (s *Server) reply(conn net.Conn, resp Response) {
 		return
 	}
 	_, _ = conn.Write(append(data, '\n'))
+}
+
+// brokerCallOps are the ops whose answer is the outcome of a broker call the helper makes while
+// the client waits, each run under the bound (brokerCall), and each op's own refusal for an
+// outcome it does not know, which brokerCall answers at its timer. It is the one list of both,
+// so an op that brokerCall runs cannot be left out of the ops Serve waits for when it stops.
+// unregister calls the broker too, but what it answers is local, the session retired, and its
+// revoke goes on after the answer (retire). No other op calls the broker before it answers.
+var brokerCallOps = map[string]func(cause string) Response{"login": loginUnknown, "enroll-session-key": enrollUnknown, "unenroll-session-key": unenrollUnknown}
+
+// brokerCallBound is this Server's bound on one broker-call op: BrokerCallBound when it is set,
+// DefaultBrokerCallBound otherwise.
+func (s *Server) brokerCallBound() time.Duration {
+	if s.BrokerCallBound > 0 {
+		return s.BrokerCallBound
+	}
+	return DefaultBrokerCallBound
+}
+
+// brokerCall runs call, the broker-call op named op, under the bound B (brokerCallBound), and
+// answers by B + 1 s whatever the op is doing. It sets conn's deadline to B + 5 s, the same 5 s
+// every op has for its read and its write, so the connection stays open past the latest answer.
+// call runs on a goroutine of its own, under ctx (Serve's) ended at B, and the answer is the
+// first of its result and a timer at B + 1 s. On the timer the answer is brokerCallOps[op](cause),
+// the op's own refusal for an outcome it does not know, and a WARN names the op and the bound;
+// when the op ends after that, its result is logged too, so an operator can see what the broker
+// did.
+//
+// What ends the wait, in each state the op can be in while the client waits:
+//
+//   - The op returns before B, with any result: that result is the answer, with its code (an
+//     unknown outcome among them: enrollSessionKey, unenrollSessionKey, login).
+//   - An HTTP request of the op is in flight at B: the op's context ends at B, the transport ends
+//     the request, the op returns, and its result is the answer (requestReach.settle). It is
+//     unknown when the request was sent (written whole, or the broker began to answer), and when
+//     the transport held a connection for it, written or not, since HTTP/2's round trip can
+//     return for an ended context before its write of the request ends. It is a known failure
+//     when the context ended before the transport held a connection.
+//   - The op waits past B + 1 s on a lock that is held across an HTTP request and does not watch
+//     the op's context (a sign-in's trade, a login in progress, a refresh of the machine login
+//     that clearOnInvalid waits for): the timer ends the wait, and the answer is unknown.
+//   - The op runs local code only (signing a proof, reading the operator file): its result is the
+//     answer, at once.
+//   - The helper is stopping (ctx ends): the op's context ends with it, and then as above; Serve
+//     returns only after the answer is written.
+//
+// So when the answer is written, no HTTP round trip of the op is in flight and none can start:
+// the op's context ends at B or earlier, the answer comes at the op's result or at B + 1 s, every
+// request the op makes carries that context (Login's device authorization through
+// Broker.contextClient), and net/http's Transport sends nothing on a context that has ended.
+//
+// The timer's answer is unknown and not failed because the timer cannot see which requests the
+// op has made.
+func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call func(context.Context) Response) Response {
+	bound := s.brokerCallBound()
+	_ = conn.SetDeadline(time.Now().Add(bound + 5*time.Second))
+	callCtx, cancel := context.WithTimeout(ctx, bound)
+	result := make(chan Response, 1)
+	go func() {
+		defer cancel()
+		result <- call(callCtx)
+	}()
+	timer := time.NewTimer(bound + time.Second)
+	defer timer.Stop()
+	select {
+	case resp := <-result:
+		return resp
+	case <-timer.C:
+	}
+	s.Log.Warn("a broker call did not end within its bound; its outcome is answered as unknown", "op", op, "bound", bound)
+	go func() {
+		s.Log.Warn("a broker call answered as unknown has ended", append([]any{"op", op}, resultAttrs(<-result)...)...)
+	}()
+	return brokerCallOps[op](fmt.Sprintf("the operation did not end in %s, so the helper does not know if the broker got the request", bound))
+}
+
+// resultAttrs are the log attributes of a broker-call op's result: whether it succeeded, its code
+// and error when it did not, and the enrollment id it made, where there is one. A login that
+// succeeded carries its confirmation code in Code, which is for the approver's screen and never
+// the journal, so only a refusal's code is logged.
+func resultAttrs(resp Response) []any {
+	attrs := []any{"ok", resp.OK}
+	if !resp.OK {
+		attrs = append(attrs, "code", resp.Code, "error", resp.Error)
+	}
+	if resp.EnrollmentID != "" {
+		attrs = append(attrs, "enrollment_id", resp.EnrollmentID)
+	}
+	return attrs
 }
 
 // sessionHeldMsg is the refusal a register gets when another live process already holds the omp
@@ -710,11 +856,17 @@ func (s *Server) drain() Response {
 }
 
 // login starts (or reports the running) machine login and returns its human-facing
-// confirmation code and the page where a person types it (the broker's verification_uri). A pass-through broker call: it needs no registered session, so the
-// dispatcher closes peer before calling it.
+// confirmation code and the page where a person types it (the broker's verification_uri). A
+// broker-call op (brokerCall): it needs no registered session and no peer. A login whose outcome
+// the helper does not know (Broker.Login sent the device authorization and got no result it could
+// read) answers LOGIN_FAILED with an error that says so (loginUnknown); any other failure answers
+// LOGIN_FAILED with the failure as it came.
 func (s *Server) login(ctx context.Context) Response {
 	code, err := s.Broker.Login(ctx, s.Hostname)
 	if err != nil {
+		if outcomeUnknown(err) {
+			return loginUnknown(sentCause(err))
+		}
 		return Response{Code: CodeLoginFailed, Error: err.Error()}
 	}
 	ls := s.Broker.LoginStatus()
@@ -805,10 +957,12 @@ func heldPrincipal(err error) (string, bool) {
 	}
 }
 
-// enrollSessionKey enrolls a key a launcher holds for a session on this machine — a pass-through
-// broker call requiring no registered session (see Broker.EnrollSessionKey), so unlike sign it
-// does not check descendancy at all. An enrollment the helper cannot attempt for want of a
-// launcher credential logs cannotEnrollMsg, as a registered session's does.
+// enrollSessionKey enrolls a key a launcher holds for a session on this machine — a broker-call
+// op (brokerCall) requiring no registered session (see Broker.EnrollSessionKey), so unlike sign
+// it does not check descendancy at all. An enrollment the helper cannot attempt for want of a
+// launcher credential logs cannotEnrollMsg, as a registered session's does. An enrollment whose
+// outcome the helper does not know (Broker.enrollUnder) answers ENROLL_OUTCOME_UNKNOWN
+// (enrollUnknown); a known failure answers ENROLL_FAILED with the failure as it came.
 func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) Response {
 	if runtimeID == "" || thumbprint == "" {
 		return Response{Code: CodeBadRequest, Error: "enroll-session-key needs runtime_id and thumbprint"}
@@ -818,21 +972,52 @@ func (s *Server) enrollSessionKey(ctx context.Context, runtimeID, thumbprint str
 		if s.lacksCredential(err) {
 			s.Log.Error(cannotEnrollMsg, "runtime_id", runtimeID, "why", s.Broker.noCredentialReason())
 		}
+		if outcomeUnknown(err) {
+			return enrollUnknown(sentCause(err))
+		}
 		return Response{Code: CodeEnrollFailed, Error: err.Error()}
 	}
 	return Response{OK: true, EnrollmentID: id, LeaseExpires: lease.UTC().Format(time.RFC3339Nano)}
 }
 
 // unenrollSessionKey ends an enrollment enroll-session-key made; idempotent like Broker.Revoke
-// (204/404 both succeed).
+// (204/404 both succeed). A revoke whose outcome the helper does not know (Broker.revokeUnder)
+// answers UNENROLL_OUTCOME_UNKNOWN (unenrollUnknown); a known failure answers UNENROLL_FAILED
+// with the failure as it came.
 func (s *Server) unenrollSessionKey(ctx context.Context, enrollmentID string) Response {
 	if enrollmentID == "" {
 		return Response{Code: CodeBadRequest, Error: "unenroll-session-key needs enrollment_id"}
 	}
 	if err := s.Broker.Revoke(ctx, enrollmentID); err != nil {
+		if outcomeUnknown(err) {
+			return unenrollUnknown(sentCause(err))
+		}
 		return Response{Code: CodeUnenrollFailed, Error: err.Error()}
 	}
 	return Response{OK: true}
+}
+
+// enrollUnknown, unenrollUnknown and loginUnknown answer a broker-call op whose outcome the
+// helper does not know, with cause saying why it does not: sentCause, or the bound the op did
+// not end within (brokerCall). An agent-secrets from before these answers prints the code and
+// the error as they come, so the error itself says that the outcome is unknown and what to do
+// next.
+func enrollUnknown(cause string) Response {
+	return Response{Code: CodeEnrollUnknown, Error: "the outcome is unknown: " + cause + "; the broker may have made the enrollment; run the same enroll again: it answers the enrollment the broker made, if there is one"}
+}
+
+func unenrollUnknown(cause string) Response {
+	return Response{Code: CodeUnenrollUnknown, Error: "the outcome is unknown: " + cause + "; the broker may have revoked the enrollment; it is safe to run the same unenroll again"}
+}
+
+func loginUnknown(cause string) Response {
+	return Response{Code: CodeLoginFailed, Error: "the outcome is unknown: " + cause + "; no confirmation code was shown, so nobody can approve this login; it is safe to run: agent-secrets machine login, again"}
+}
+
+// sentCause is the cause of an unknown outcome whose request the helper sent, with err, the
+// failure that came after it.
+func sentCause(err error) string {
+	return "the helper sent the request to the broker, but did not get its result (" + err.Error() + ")"
 }
 
 // adopt starts the two goroutines every session has: enrollment with renewal, and the exit
@@ -1387,10 +1572,13 @@ func (s *Server) dormantGrace() time.Duration {
 	return DefaultDormantGrace
 }
 
-// retire forgets the session. One with no omp session id has its enrollment revoked at once
-// (three tries; the lease is the fallback), as before. A named one is parked instead, for
-// DormantGrace, so the same session coming back takes its identity — and its pending requests
-// and grants — rather than a new one; sweepDormant revokes it if it does not.
+// retire forgets the session. One with no omp session id has its enrollments revoked at once by
+// the bounded revoke (three tries; the lease is the fallback), fired off on goroutines of their
+// own as every sibling path fires it (SweepDormant), so an unregister answers at once with what
+// it decides, the session retired, and the revoke goes on and logs its own failure. A named one
+// is parked instead, for DormantGrace, so the same session coming back takes its identity — and
+// its pending requests and grants — rather than a new one; sweepDormant revokes it if it does
+// not.
 // Idempotent: an unregister followed by the exit watch firing retires once.
 //
 // Leaving the live set and entering the dormant one are ONE registry step (Registry.Retire),
@@ -1419,7 +1607,7 @@ func (s *Server) retire(ctx context.Context, sess *Session, why string) {
 	// Nothing can claim an unnamed session's identity, so both its enrollments end now: the
 	// live one and any still awaiting its revoke.
 	for _, id := range nonEmpty(cur.EnrollmentID, cur.LapsedID) {
-		s.revoke(ctx, id)
+		go s.revoke(ctx, id)
 	}
 	s.Log.Info("session retired", "runtime_id", cur.RuntimeID, "why", why)
 }
@@ -1444,8 +1632,8 @@ func (s *Server) SweepDormant(ctx context.Context) {
 			// the save below does not run. There is nothing to wait for either: revoke returns
 			// nothing, logs its own failure, and touches no registry state. ctx bounds these
 			// goroutines exactly as it bounded the calls made inline, and every sibling path
-			// in this file fires the same call off the same way (register, adoptSessionID and
-			// both branches of Recover).
+			// in this file fires the same call off the same way (register, adoptSessionID,
+			// retire and both branches of Recover).
 			go s.revoke(ctx, id)
 		}
 	}

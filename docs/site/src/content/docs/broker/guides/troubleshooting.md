@@ -40,6 +40,19 @@ out`, and so on). The messages below leave that part out.
 | `the request to the broker at … failed`, naming the call and `AGENT_SECRETS_URL` | The request failed in a way none of the rows above names; the error after the colon is the transport's own. | Read that error; it says which layer failed. |
 | `the broker's address is not a valid URL`, naming the call and `AGENT_SECRETS_URL` (exit 1) | `AGENT_SECRETS_URL` is not a URL the client can build a request from, such as a bad `%` escape or a port that is not a number. Nothing was sent. | Set `AGENT_SECRETS_URL` to the broker's public URL, escaping any `%`, `@`, `/`, `?` or `#` in a user name or password. |
 
+## An enroll or unenroll with an unknown outcome
+
+`agent-secrets enroll --helper` and `agent-secrets unenroll --helper` ask the machine's helper,
+and the helper asks the broker. When the broker's answer does not come back, nobody on the machine
+knows whether the broker made, or revoked, the enrollment. These messages say so, and each exits 1.
+
+| Message | Cause | Fix |
+| --- | --- | --- |
+| `ENROLL_OUTCOME_UNKNOWN: the outcome is unknown: …; the broker may have made the enrollment; run the same enroll again: it answers the enrollment the broker made, if there is one`, from `agent-secrets enroll --helper` | The helper sent the enrollment request to the broker and did not get a result it could read: the connection failed after the request was sent, the broker or a proxy in front of it answered with a 5xx status, or the answer could not be read. The message also comes when the enrollment did not end within the helper's 20 seconds: its error then ends in `context deadline exceeded`, or says `the operation did not end in 20s` when the helper was still waiting to send the request. The broker may have made the enrollment, and `enroll` wrote no `enrollment` file. | Run the same command again, with the same runtime id and thumbprint. If the broker made the enrollment, it answers with that enrollment, and `enroll` writes its id. A box's launcher unenrolls only an id it recorded: if it does not run the command again, an enrollment the broker made ends only with its lease, `BROKER_LEASE_SECONDS` after the broker made it ([when the box stops](/legion/broker/guides/run-an-agent-in-a-container/#when-the-box-stops)). |
+| `agent-secrets enroll: the helper gave no answer (…). So it is not known if the broker made the enrollment. Run the same command again: if the broker made the enrollment, the command gets that enrollment.` | `enroll` sent its request to the helper, and the helper closed the connection or did not answer within 30 seconds. A helper older than `ENROLL_OUTCOME_UNKNOWN` closes the connection after 5 seconds while its call to the broker goes on. The broker may have made the enrollment, and `enroll` wrote no `enrollment` file. | As for `ENROLL_OUTCOME_UNKNOWN`. Run the helper on the same release as `agent-secrets`, so that it answers with the broker's outcome. |
+| `UNENROLL_OUTCOME_UNKNOWN: the outcome is unknown: …; the broker may have revoked the enrollment; it is safe to run the same unenroll again`, from `agent-secrets unenroll --helper` | As for `ENROLL_OUTCOME_UNKNOWN`, for the revoke: the helper sent it to the broker and did not get a result it could read, so the broker may have revoked the enrollment. | Run the same command again. The broker answers the revoke of an enrollment that already ended as done, so the command exits 0 once the enrollment is revoked. If no run succeeds, the enrollment ends with its lease once the box's `agent-secrets renew` stops. |
+| `agent-secrets unenroll: the helper gave no answer (…). So it is not known if the broker revoked the enrollment. It is safe to run the same command again.` | As for `enroll`'s message of the same words, for the revoke. | As for `UNENROLL_OUTCOME_UNKNOWN`. |
+
 ## A pod's renewer cannot read its token
 
 | Message | Cause | Fix |

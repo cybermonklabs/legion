@@ -1,0 +1,22 @@
+kind: Fixed
+body: |-
+    `agent-secrets-helper` now answers `agent-secrets enroll --helper`, `agent-secrets unenroll --helper` and the login call of `agent-secrets machine login` with the broker's outcome, or with an answer that says the outcome is unknown.
+    Before, the helper closed the connection after 5 s while its call to the broker went on, so `enroll --helper` could exit 1 with an empty reply while the broker made the enrollment.
+    The helper now ends each of these broker calls at 20 s, answers by 21 s, and keeps the connection open for 25 s.
+    These three commands wait 30 s for the helper's answer, where `machine login` waited 10 s.
+    The new codes `ENROLL_OUTCOME_UNKNOWN` and `UNENROLL_OUTCOME_UNKNOWN` say that the helper sent the request to the broker and got no result it could read, or that the call did not end within 20 s, so the broker may have made or revoked the enrollment.
+    Run the same command again: the same enroll answers the enrollment the broker made, if it made one, and an unenroll is safe to repeat.
+    A login whose outcome is unknown answers `LOGIN_FAILED` with an error that says so.
+    `ENROLL_FAILED` and `UNENROLL_FAILED` now mean a known outcome only: the broker refused, or the helper never asked it.
+    When the helper gives no answer at all, `enroll --helper` and `unenroll --helper` now say that the outcome is unknown and that you can run the same command again.
+    `enroll --helper` makes the key directory before it asks the helper, and when it cannot write the `enrollment` file, its error names the enrollment the broker made.
+    The helper now answers the broker calls in flight before it stops, and `unregister` answers at once while its revoke goes on.
+    An old helper still closes the connection after 5 s until it restarts on a release that has this change, and sjawhar/dotfiles pins `legion-envoy-v29.54.0`.
+    Against an old helper, a new `enroll --helper` or `unenroll --helper` says that the helper gave no answer and that the outcome is unknown, but the old helper can still answer `ENROLL_FAILED` for a failure after the broker wrote, for example a 502 from a front door.
+    An old `machine login` waits 10 s, so against a broker slower than about 8 s it can close before the new helper answers.
+    If the broker answers within 20 s, the helper records the login as pending, and the next `machine login` shows its code.
+    An `enroll --helper` attempt can now take up to about 23 s, not 5 s.
+    A broker slower than 20 s still leaves a launcher with no recorded enrollment id, and such an enrollment ends with its lease unless the launcher runs the same enroll again.
+time: 2026-11-14T16:11:53.917429636Z
+custom:
+    Issue: pr4037

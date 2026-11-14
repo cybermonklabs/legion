@@ -13,6 +13,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptrace"
 	"os"
 	"slices"
 	"strconv"
@@ -280,15 +281,39 @@ func (b *Broker) httpClient() *http.Client {
 	return b.HTTP
 }
 
+// baseTransport is httpClient's transport, or http.DefaultTransport when it is nil, as net/http
+// reads a nil transport.
+func (b *Broker) baseTransport() http.RoundTripper {
+	if t := b.httpClient().Transport; t != nil {
+		return t
+	}
+	return http.DefaultTransport
+}
+
+// contextClient is a copy of httpClient, with every field kept, whose transport sends each
+// request under ctx. It is for a library that builds its request with no context: x/oauth2
+// v0.37.0's DeviceAuth reads its context only to choose the client, so without this the op's
+// bound would not end the device authorization and the op's trace would not see it.
+func (b *Broker) contextClient(ctx context.Context) *http.Client {
+	client := *b.httpClient()
+	client.Transport = contextTransport{ctx: ctx, base: b.baseTransport()}
+	return &client
+}
+
+// contextTransport sends each request through base under ctx (contextClient).
+type contextTransport struct {
+	ctx  context.Context
+	base http.RoundTripper
+}
+
+func (t contextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return t.base.RoundTrip(req.WithContext(t.ctx))
+}
+
 // tokenContext is ctx carrying the client x/oauth2 sends token requests with: b.HTTP's transport
 // and timeout, with a DPoP proof of key on every request, as the broker's token endpoint requires.
 func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) context.Context {
-	client := b.httpClient()
-	base := client.Transport
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: brokerclient.NewDPoPTransport(key, base), Timeout: client.Timeout})
+	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: brokerclient.NewDPoPTransport(key, b.baseTransport()), Timeout: b.httpClient().Timeout})
 }
 
 // oauthBrokerError is err as a BrokerError when the broker answered it with an OAuth error: the
@@ -330,6 +355,11 @@ func machineFileFrom(key *ecdsa.PrivateKey, tok *oauth2.Token) (*MachineFile, er
 // denial/expiry. It never retries past a terminal state, and a later Login while one is still
 // pending just reports it. A login while a credential is held mints a new key and a new login,
 // which replaces the held one only once it is issued.
+//
+// The device authorization is sent under ctx (contextClient), so the op's bound ends it, and its
+// failure is settled as known or unknown (requestReach.settle): an answer with no device_code or
+// user_code is a 2xx the helper could not read, so it is unknown too. The poll keeps the client
+// it always had, with no bound: it runs after the op has answered.
 func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 	b.loginMu.Lock()
 	defer b.loginMu.Unlock()
@@ -354,13 +384,14 @@ func (b *Broker) Login(ctx context.Context, hostname string) (string, error) {
 		return "", err
 	}
 	cfg := b.oauthConfig()
-	da, err := cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, b.httpClient()),
+	ctx, reach := traceReach(ctx)
+	da, err := cfg.DeviceAuth(context.WithValue(ctx, oauth2.HTTPClient, b.contextClient(ctx)),
 		oauth2.SetAuthURLParam("request", compact), oauth2.SetAuthURLParam("dpop_jkt", thumbprint))
 	if err != nil {
-		return "", oauthBrokerError(redact.Error(err, b.URL))
+		return "", reach.settle(oauthBrokerError(redact.Error(err, b.URL)))
 	}
 	if da.DeviceCode == "" || da.UserCode == "" {
-		return "", errors.New("broker returned no device_code/user_code")
+		return "", reach.settle(errors.New("broker returned no device_code/user_code"))
 	}
 	b.recordLogin(&loginState{Code: da.UserCode, State: "pending", VerificationURI: da.VerificationURI})
 	go b.pollLogin(key, cfg, da, operator)
@@ -1265,10 +1296,10 @@ func (b *Broker) EnrollIdentity(ctx context.Context, cur identity) (string, time
 }
 
 // EnrollSessionKey registers a key the helper does not hold, one a launcher enrolls for a session
-// on this machine (a box's, a container's): a pass-through broker call with no registry Session,
-// so it takes the key's runtime_id, thumbprint and optional session_id directly. Otherwise it is
-// Enroll: the same fail-closed check when there is no machine credential yet, the same launcher
-// proof, the same 200/201 handling and the same 401 LAUNCHER_INVALID handling.
+// on this machine (a box's, a container's): a broker call with no registry Session, so it takes
+// the key's runtime_id, thumbprint and optional session_id directly. Otherwise it is Enroll: the
+// same fail-closed check when there is no machine credential yet, the same launcher proof, the
+// same 200/201 handling and the same 401 LAUNCHER_INVALID handling.
 func (b *Broker) EnrollSessionKey(ctx context.Context, runtimeID, thumbprint string, sessionID *string) (string, time.Time, error) {
 	return b.enroll(ctx, runtimeID, thumbprint, sessionID, "box")
 }
@@ -1370,6 +1401,11 @@ func (b *Broker) enrollAs(ctx context.Context, kind, runtimeID, thumbprint strin
 // credential, and a 401 LAUNCHER_INVALID drops exactly that one (clearOnInvalid); a person's
 // credential is the caller's to settle. A 403 SESSION_HELD answers with the operator this
 // request signed as, which is the principal the broker refused (sessionHeldUnder).
+//
+// Its failure is settled as known or unknown (requestReach.settle) before anything else reads
+// it, and an answer with no enrollment_id is a 2xx the helper could not read, so it is unknown
+// too. A refusal the caller retries (a 401 LAUNCHER_INVALID, a 400 INVALID_KIND) is a 4xx and so
+// always known: an unknown outcome ends the op.
 func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Authority, cred *machineCredential,
 	kind, runtimeID, thumbprint string, sessionID *string,
 ) (string, time.Time, error) {
@@ -1386,6 +1422,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Author
 	if err != nil {
 		return "", time.Time{}, err
 	}
+	ctx, reach := traceReach(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return "", time.Time{}, redact.Error(err, b.URL)
@@ -1394,6 +1431,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Author
 	req.Header.Set("Content-Type", "application/json")
 	var out leaseReply
 	if err := b.do(req, []int{http.StatusOK, http.StatusCreated}, &out); err != nil {
+		err = reach.settle(err)
 		if cred != nil {
 			err = b.clearOnInvalid(cred, err)
 		}
@@ -1406,7 +1444,7 @@ func (b *Broker) enrollUnder(ctx context.Context, authority *brokerclient.Author
 		return "", time.Time{}, err
 	}
 	if out.EnrollmentID == "" {
-		return "", time.Time{}, fmt.Errorf("broker returned no enrollment_id")
+		return "", time.Time{}, reach.settle(fmt.Errorf("broker returned no enrollment_id"))
 	}
 	return out.EnrollmentID, out.LeaseExpiresAt, nil
 }
@@ -1475,19 +1513,23 @@ func (b *Broker) Revoke(ctx context.Context, enrollmentID string) error {
 }
 
 // revokeUnder is one DELETE /v1/enrollments/{id} signed with authority; cred is this machine's
-// held credential where that is what signed, which a 401 LAUNCHER_INVALID drops.
+// held credential where that is what signed, which a 401 LAUNCHER_INVALID drops. Its failure is
+// settled as known or unknown (requestReach.settle) before anything else reads it, so Revoke's
+// retry after a 403, a known refusal, never follows an unknown outcome.
 func (b *Broker) revokeUnder(ctx context.Context, authority *brokerclient.Authority, cred *machineCredential, enrollmentID string) error {
 	url := b.URL + "/v1/enrollments/" + enrollmentID
 	compact, err := proof.SignLauncher(authority.Key, authority.CredentialID, http.MethodDelete, url, time.Now())
 	if err != nil {
 		return err
 	}
+	ctx, reach := traceReach(ctx)
 	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
 	if err != nil {
 		return redact.Error(err, b.URL)
 	}
 	req.Header.Set("Proof", compact)
 	if err := b.do(req, []int{http.StatusNoContent, http.StatusNotFound}, nil); err != nil {
+		err = reach.settle(err)
 		if cred == nil {
 			return err
 		}
@@ -1520,4 +1562,83 @@ func (b *Broker) do(req *http.Request, ok []int, out any) error {
 		return json.Unmarshal(data, out)
 	}
 	return nil
+}
+
+// requestReach records how far one broker request got, for a caller that tells the outcome of
+// that request to a client (traceReach, settle). Each record only ever moves to true, so a
+// transport that sends the request twice cannot unsay one.
+type requestReach struct {
+	// sent is the whole request written (WroteRequest with no error), or the broker beginning to
+	// answer (GotFirstResponseByte).
+	sent atomic.Bool
+	// connected is the transport holding a connection for the request (GotConn).
+	connected atomic.Bool
+}
+
+// traceReach returns ctx with a trace that records, in the requestReach it returns, how far a
+// request made under ctx got.
+func traceReach(ctx context.Context) (context.Context, *requestReach) {
+	r := &requestReach{}
+	return httptrace.WithClientTrace(ctx, &httptrace.ClientTrace{
+		GotConn: func(httptrace.GotConnInfo) { r.connected.Store(true) },
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				r.sent.Store(true)
+			}
+		},
+		GotFirstResponseByte: func() { r.sent.Store(true) },
+	}), r
+}
+
+// settle is err, the failure of the request r traced, as its caller is told it: marked as an
+// unknown outcome (outcomeUnknown) when the request may have changed the broker's state, and as
+// it came otherwise.
+//
+// A 4xx answer is known: the broker decides its refusals before it writes anything. Every other
+// failure of a request that was sent is unknown: a transport error after the write (a reset, a
+// timeout, the op's context ending at its bound), a 5xx (a front door's 502 or 504 can come after
+// the broker wrote), and a 2xx the helper could not read (a body that will not read or decode, or
+// one that lacks what the caller needs). A failure of a request that was never sent in full is
+// known: a refused dial, a context that ended before the transport held a connection, a failed
+// write. So is a failure before any request: signing a proof, reading the operator file, a
+// sign-in's trade.
+//
+// The record is complete when the round trip returns, on every path but one. HTTP/1 waits for
+// its write loop before it returns an error (persistConn.mapRoundTripError reads writeLoopDone),
+// HTTP/2 waits for the stream on its other errors, and GotFirstResponseByte runs before either
+// hands back a response. WroteRequest alone would not do for a response: HTTP/2 can hand back a
+// 2xx before it has finished the write of the request body. The one path is HTTP/2's round trip
+// whose context ends: it returns at once, and the write of the request can still be finishing.
+// So a request whose context ended while the transport held a connection for it is unknown,
+// whether or not the trace saw the write end.
+func (r *requestReach) settle(err error) error {
+	if err == nil {
+		return nil
+	}
+	var be *BrokerError
+	if errors.As(err, &be) && be.Status >= 400 && be.Status < 500 {
+		return err
+	}
+	ended := errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
+	if r.sent.Load() || (r.connected.Load() && ended) {
+		return &outcomeUnknownError{err: err}
+	}
+	return err
+}
+
+// outcomeUnknownError marks the failure of a broker request whose outcome the helper does not
+// know (requestReach.settle). It reads as the failure it wraps and unwraps to it, so every caller
+// that tests a failure with errors.As or errors.Is, and every message made from one, reads it as
+// before.
+type outcomeUnknownError struct{ err error }
+
+func (e *outcomeUnknownError) Error() string { return e.err.Error() }
+
+func (e *outcomeUnknownError) Unwrap() error { return e.err }
+
+// outcomeUnknown reports whether err is the failure of a broker request whose outcome the helper
+// does not know: the broker may have acted on it.
+func outcomeUnknown(err error) bool {
+	var u *outcomeUnknownError
+	return errors.As(err, &u)
 }

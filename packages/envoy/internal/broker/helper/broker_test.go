@@ -155,6 +155,17 @@ type fakeBroker struct {
 	// refuseKinds answers an enroll naming one of these kinds 400 INVALID_KIND, as a broker before
 	// the session kind refuses "session".
 	refuseKinds map[string]bool
+	// deviceAuthFail answers the next N device authorizations 503 without reading them: an outage
+	// of the broker's OAuth front door, whose 503 can come after the broker acted.
+	deviceAuthFail int
+	// deviceAuthHold, when set, holds every device authorization until its request's context ends
+	// (the client has given up on it), and deviceAuthEnded counts each such end, so a test can tell
+	// that the helper ended the request rather than left it running.
+	deviceAuthHold  bool
+	deviceAuthEnded int
+	// revokeGate, when set, holds every DELETE until the test closes it, after revokeAttempts has
+	// counted it, so a test can keep a revoke in flight for exactly as long as it needs.
+	revokeGate chan struct{}
 }
 
 func newFakeBroker(t *testing.T) *fakeBroker {
@@ -239,6 +250,12 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 		}
 		f.mu.Lock()
 		f.revokeAttempts++
+		gate := f.revokeGate
+		f.mu.Unlock()
+		if gate != nil {
+			<-gate
+		}
+		f.mu.Lock()
 		if f.revokeForbidden[r.PathValue("id")] {
 			f.mu.Unlock()
 			writeJSON(w, 403, map[string]string{"code": "OPERATOR_MISMATCH", "error": "the enrollment belongs to another operator"})
@@ -343,7 +360,23 @@ func newFakeBroker(t *testing.T) *fakeBroker {
 	})
 	mux.HandleFunc("POST /v1/oauth/device_authorization", func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
+		if f.deviceAuthHold {
+			f.mu.Unlock()
+			// The server watches the connection for the client's close, which is what ends the
+			// request's context, only once the request's body is read.
+			_ = r.ParseForm()
+			<-r.Context().Done()
+			f.mu.Lock()
+			f.deviceAuthEnded++
+			f.mu.Unlock()
+			return
+		}
 		defer f.mu.Unlock()
+		if f.deviceAuthFail > 0 {
+			f.deviceAuthFail--
+			writeJSON(w, 503, map[string]string{"code": "DATABASE", "error": "postgres unreachable"})
+			return
+		}
 		_ = r.ParseForm()
 		f.lastLoginRequest = r.PostForm.Get("request")
 		ro, err := record.VerifyRequestObject(f.lastLoginRequest, f.srv.URL, time.Minute, time.Now())

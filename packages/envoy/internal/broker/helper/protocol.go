@@ -146,14 +146,30 @@ const (
 	// or changed while the helper was identifying it.
 	CodeUnidentified = "PEER_UNIDENTIFIED"
 	// CodeLoginFailed answers a login the helper could not start with the broker; the error says
-	// why.
+	// why. When the helper does not know the outcome (it sent the request to the broker and got no
+	// answer it could read, or the login did not end within the helper's bound), the error says
+	// that the outcome is unknown and that `agent-secrets machine login` is safe to run again: no
+	// confirmation code was shown, so nobody can approve a login the broker may hold, and it
+	// expires by itself.
 	CodeLoginFailed = "LOGIN_FAILED"
-	// CodeEnrollFailed answers an enroll-session-key the broker refused or could not be asked;
-	// the error says why.
+	// CodeEnrollFailed answers an enroll-session-key whose outcome is known: the broker refused it,
+	// or the helper never asked the broker (it holds no launcher credential, could not read a
+	// sign-in, or could not send the request). This request made no enrollment; the error says why.
 	CodeEnrollFailed = "ENROLL_FAILED"
-	// CodeUnenrollFailed answers an unenroll-session-key the broker refused or could not be
-	// asked; the error says why.
+	// CodeEnrollUnknown answers an enroll-session-key whose outcome the helper does not know: it
+	// wrote the request to the broker and no answer it could read came back, or the operation did
+	// not end within the helper's bound. So the broker may have made the enrollment. The same
+	// enroll again answers the enrollment the broker made, if it made one; the error says why the
+	// outcome is unknown.
+	CodeEnrollUnknown = "ENROLL_OUTCOME_UNKNOWN"
+	// CodeUnenrollFailed answers an unenroll-session-key whose outcome is known: the broker refused
+	// it, or the helper never asked the broker. This request revoked nothing; the error says why.
 	CodeUnenrollFailed = "UNENROLL_FAILED"
+	// CodeUnenrollUnknown answers an unenroll-session-key whose outcome the helper does not know: it
+	// wrote the request to the broker and no answer it could read came back, or the operation did
+	// not end within the helper's bound. So the broker may have revoked the enrollment. An unenroll
+	// is safe to run again; the error says why the outcome is unknown.
+	CodeUnenrollUnknown = "UNENROLL_OUTCOME_UNKNOWN"
 	// CodeKeygen answers a register the helper could not make the new session's signing key for;
 	// the error says why.
 	CodeKeygen = "KEYGEN"
@@ -287,8 +303,46 @@ func MigrateStateFile(from, to string) error {
 	return os.Remove(from)
 }
 
+// BrokerCallWait is how long a client waits for the answer of a broker-call op: login,
+// enroll-session-key or unenroll-session-key, the three ops whose answer is the outcome of a
+// broker call the helper makes while the client waits. It is the timeout a client gives Call, so
+// the dial is inside it. 30 s is what `agent-secrets enroll` and `agent-secrets unenroll` already
+// waited, and what the released agent-secrets at legion-envoy-v29.54.0 still waits.
+const BrokerCallWait = 30 * time.Second
+
+// DefaultBrokerCallBound is how long the helper lets one broker-call op run before it answers
+// (Server.BrokerCallBound): 20 s, set from BrokerCallWait so that the answer reaches every client
+// inside that wait. A client spends up to 2 s on the dial (Call). The op then runs for at most
+// the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
+// for its read and its write: the op's requests end with its context at the bound, and the helper
+// answers at the bound plus 1 s whatever the op is doing. 2 s + 20 s + 5 s is 27 s, under 30 s.
+// The released agent-secrets at legion-envoy-v29.54.0, which sjawhar/dotfiles pins, also waits
+// 30 s, so it gets this helper's answer and not an empty reply. A healthy broker answers in a
+// fraction of a second (DefaultFirstConfirmBound); the slow answers that were measured took 5 s
+// and 8 s.
+const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
+
+// ErrNoReply is in every Call error that comes after the helper was sent the whole request: the
+// helper gave no reply the client could read. No line came before the connection closed or the
+// timeout passed, or the line is not one JSON object. So the client does not know what the helper
+// did with the request: for a broker-call op, the broker may have acted on it. Test for it with
+// errors.Is. The error's text stays the failure's own.
+var ErrNoReply = errors.New("the helper gave no reply")
+
+// noReplyError is a Call failure that comes after the whole request was written. It reads as the
+// failure it wraps, so every message made from it reads as before. It unwraps to that failure and
+// to ErrNoReply, so errors.As on the failure and errors.Is(err, ErrNoReply) both hold.
+type noReplyError struct{ err error }
+
+func (e *noReplyError) Error() string { return e.err.Error() }
+
+func (e *noReplyError) Unwrap() []error { return []error{e.err, ErrNoReply} }
+
 // Call sends one request and reads one reply, all within timeout, the dial included (the dial
-// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack.
+// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack. An
+// error after the whole request was written (no reply line within the timeout, or a reply that
+// is not one JSON object) also matches ErrNoReply, because the helper may have acted on the
+// request. A failed dial, marshal or write does not: the helper did not get the whole request.
 func Call(sock string, req Request, timeout time.Duration) (Response, error) {
 	deadline := time.Now().Add(timeout)
 	conn, err := (&net.Dialer{Timeout: 2 * time.Second, Deadline: deadline}).Dial("unix", sock)
@@ -306,11 +360,11 @@ func Call(sock string, req Request, timeout time.Duration) (Response, error) {
 	}
 	line, err := bufio.NewReaderSize(conn, maxLine).ReadBytes('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return Response{}, err
+		return Response{}, &noReplyError{err: err}
 	}
 	var resp Response
 	if err := json.Unmarshal(line, &resp); err != nil {
-		return Response{}, fmt.Errorf("helper reply is not one JSON object: %w", err)
+		return Response{}, &noReplyError{err: fmt.Errorf("helper reply is not one JSON object: %w", err)}
 	}
 	return resp, nil
 }
