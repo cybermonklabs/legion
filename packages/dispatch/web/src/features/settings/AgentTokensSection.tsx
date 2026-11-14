@@ -91,7 +91,7 @@ const BOTH_SCOPES: readonly DispatchScope[] = DISPATCH_SCOPES;
  *  box for is left out rather than drawn as a box nobody can clear, and a token whose list came
  *  back absent holds none. */
 function heldScopes(scopes: readonly string[] | null): DispatchScope[] {
-  return DISPATCH_SCOPES.filter((known) => scopes !== null && scopes.includes(known));
+  return DISPATCH_SCOPES.filter((known) => scopes?.includes(known));
 }
 
 /** The whole set a token holds after one box is ticked or cleared, in `TOKEN_SCOPES` order.

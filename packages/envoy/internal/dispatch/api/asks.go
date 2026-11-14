@@ -131,6 +131,7 @@ func (s *server) createAsk(w http.ResponseWriter, r *http.Request) {
 
 // createAskInput is the body of POST /api/v1/issues/{key}/asks and POST /api/v1/artifacts/{id}/asks.
 type createAskInput struct {
+	writingCheckOverride
 	Question string             `json:"question" required:"true"`
 	Kind     string             `json:"kind"`
 	Options  []model.AskOption  `json:"options"`
@@ -180,6 +181,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	urgency, err := normalizeAskUrgency(input.Urgency)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 
@@ -345,6 +349,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 
 // editAskInput is the body of PATCH /api/v1/asks/{id}.
 type editAskInput struct {
+	writingCheckOverride
 	Question *string            `json:"question"`
 	Options  *[]model.AskOption `json:"options"`
 	Multiple *bool              `json:"multiple"`
@@ -420,6 +425,15 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		asThePerson = &person
+	}
+	// The writer the check judges is the person where the credential acts for one, since that is
+	// who an edit of their own ask is recorded as, and the actor otherwise.
+	writer := actor
+	if asThePerson != nil {
+		writer = *asThePerson
+	}
+	if !s.writingCheck(w, r, writer, input) {
+		return
 	}
 
 	tx, err := s.begin(r.Context())

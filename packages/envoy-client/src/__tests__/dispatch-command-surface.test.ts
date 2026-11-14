@@ -518,6 +518,10 @@ function answerFor(method: string, pathname: string, body?: unknown): Response {
     if (rest === "answers") {
       return response({ session_id: SESSION, since: AT, total: 0, items: [] });
     }
+    // A message into a session's own conversation, which stands on no issue.
+    if (rest === "messages" && method === "POST") {
+      return response({ ...messageBody(), issue_key: null }, 201);
+    }
   }
   if (segments[2] === "issues" && segments.length >= 4) {
     if (rest === "" && (method === "GET" || method === "PATCH")) {

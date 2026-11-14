@@ -824,6 +824,7 @@ func (s *server) renewMessageDeliveryClaim(
 
 // messageReplyInput is the body of POST /api/v1/messages/{id}/reply.
 type messageReplyInput struct {
+	writingCheckOverride
 	Actor   *model.Actor `json:"actor"`
 	Attempt int          `json:"attempt" required:"true"`
 	Body    *string      `json:"body"`
@@ -869,6 +870,9 @@ func (s *server) replyMessage(w http.ResponseWriter, r *http.Request) {
 	followUp, err := followUpRequested(r)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 

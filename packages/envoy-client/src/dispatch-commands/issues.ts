@@ -143,7 +143,7 @@ function advancesRevisionToSend(issue: IssueDetails, named: number | undefined):
 
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
 export async function issueCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, linkBase } = context;
+  const { args, client, actor, input, linkBase, writingOverride } = context;
   const project = stringArg(args, "project");
   const title = stringArg(args, "title");
   const parent = optionalString(args, "parent");
@@ -172,6 +172,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo }),
       ...(Array.isArray(labels) ? { labels: labels as string[] } : {}),
+      ...writingOverride,
       actor,
     });
     refuseUnsavedRepository(created.created ? "created" : "already holds", created, repo);
@@ -244,7 +245,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
 
 /** `dispatch issue-update`: change one issue's fields, posting a closing reason first. */
 export async function issueUpdateCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, issue } = context;
+  const { args, client, actor, input, issue, writingOverride } = context;
   const issueKey = issue();
   const status = optionalString(args, "status");
   const reason = optionalString(args, "reason");
@@ -292,7 +293,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   let closingNote: { readonly id: string; readonly ref: string } | undefined;
   if (reason !== undefined) {
     try {
-      const message = await client.message(issueKey, { body: reason, actor });
+      const message = await client.message(issueKey, {
+        body: reason,
+        ...writingOverride,
+        actor,
+      });
       closingNote = {
         id: message.id,
         ref: dispatchChildRef(dispatchIssueRef(issueKey), "message", message.id),
@@ -352,6 +357,7 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
       ...(sentLinks === undefined ? {} : { external_links: sentLinks }),
       ...(rank === undefined ? {} : { rank }),
+      ...writingOverride,
       actor,
     });
   } catch (error) {
@@ -840,12 +846,13 @@ function formatCheckResults(results: IssueCheckResults, brief = false): string {
 
 /** `dispatch result`: record one result of one check of an issue's Verification document. */
 export async function resultCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor } = context;
+  const { args, client, actor, writingOverride } = context;
   const retract = optionalString(args, "retract");
   if (retract !== undefined) {
     const retraction = await client.retractResult(retract, {
       actor,
       reason: stringArg(args, "reason"),
+      ...writingOverride,
     });
     return {
       text: `Retracted result ${retraction.result_id}. ${actorText(retraction.actor)} retracted it at ${retraction.created_at}. The reason: ${retraction.reason}\n\nThe result stays readable, and it proves nothing from now on. Record a new result where the check still needs one.`,
@@ -877,6 +884,7 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
     verdict: stringArg(args, "verdict") as "pass" | "fail",
     commit: stringArg(args, "commit"),
     ...optional,
+    ...writingOverride,
   });
   return {
     text: `Recorded ${recorded.result.verdict} for check ${recorded.result.check_block_id} of ${recorded.result.check_issue_key} at ${recorded.result.commit_sha}, as ${recorded.result.role}.\n\nPull request body line:\n${recorded.line}`,

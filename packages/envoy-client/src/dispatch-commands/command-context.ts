@@ -6,6 +6,7 @@ import { ToolInputError } from "../tool-input-errors";
 import {
   type CommandContext,
   type ExecuteDispatchToolInput,
+  optionalBoolean,
   optionalString,
   type ResolvedArtifact,
   type SessionContext,
@@ -90,6 +91,10 @@ export async function commandContext(session: SessionContext): Promise<CommandCo
     ...session,
     client,
     actor,
+    writingOverride:
+      optionalBoolean(session.args, "override_writing_check") === true
+        ? { override_writing_check: "agent" }
+        : {},
     owner,
     documentOwner,
     resolveDocument,

@@ -34,6 +34,9 @@ export interface DispatchStack {
   readonly url: string;
   /** The bearer token the server accepts for an agent, as `DISPATCH_TOKEN` takes it. */
   readonly token: string;
+  /** The stack's own database, for a row that sets up a state no route reaches: a delivery
+   *  attempt bound to a session, which the server writes only once a listener resolved it. */
+  readonly databaseUrl: string;
   /** Stops the server and drops its database. Its scratch directory is the caller's, and goes
    *  with it. */
   stop(): Promise<void>;
@@ -60,6 +63,11 @@ export interface DispatchStackOptions {
    * `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
+  /**
+   * Settings of the server's own beyond the stack's, such as `DISPATCH_WRITING_CHECK=on`. They
+   * are laid over the stack's environment, so a name the stack sets is the caller's to change.
+   */
+  readonly env?: Readonly<Record<string, string>>;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -145,6 +153,7 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
         DISPATCH_PORT: String(port),
         DISPATCH_SERVER_URL: url,
         DISPATCH_WEB_DIST: WEB_DIST,
+        ...options.env,
       },
       stdout: out,
       stderr: out,
@@ -154,9 +163,95 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });
-    return { url, token, stop };
+    return { url, token, databaseUrl: databaseUrl.toString(), stop };
   } catch (error) {
     await stop();
     throw error;
   }
+}
+
+/** A stand-in for the writing check's reader, which a stack's server calls in place of its model. */
+export interface StandInReader {
+  /** The base URL the server appends `/chat/completions` to. */
+  readonly url: string;
+  /** How many calls the server made to it. */
+  calls(): number;
+  stop(): void;
+}
+
+/** One candidate the reader sends its model, as its user message carries it. */
+interface ReaderCandidate {
+  readonly id: string;
+  readonly text: string;
+}
+
+/**
+ * Starts a stand-in for the writing check's reader on a loopback port. It speaks the protocol of
+ * the Azure deployment the reader calls (`internal/dispatch/writingcheck/reader`): a streamed
+ * Chat Completions reply whose text is the reader's verdict schema, `{"vacuous": [{id, rewrite}]}`.
+ * It names as vacuous every candidate whose text holds `phrase`, with a rewrite, and no other.
+ * A stack starts with it through {@link detectorOnWith}.
+ */
+export function startStandInReader(phrase: string): StandInReader {
+  let calls = 0;
+  const server = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: async (request) => {
+      if (request.method !== "POST" || new URL(request.url).pathname !== "/chat/completions") {
+        return Response.json({ error: { message: "not the reader's route" } }, { status: 404 });
+      }
+      calls += 1;
+      const body = (await request.json()) as {
+        readonly messages?: readonly { readonly role: string; readonly content: unknown }[];
+      };
+      const user = body.messages?.find((message) => message.role === "user")?.content;
+      const text =
+        typeof user === "string"
+          ? user
+          : Array.isArray(user)
+            ? user.map((part: { readonly text?: unknown }) => String(part.text ?? "")).join("")
+            : "";
+      const { candidates } = JSON.parse(text) as {
+        readonly candidates: readonly ReaderCandidate[];
+      };
+      const reply = JSON.stringify({
+        vacuous: candidates
+          .filter((candidate) => candidate.text.includes(phrase))
+          .map((candidate) => ({ id: candidate.id, rewrite: "Say what the problem is." })),
+      });
+      const chunk = (delta: Record<string, unknown>, finish: string | null): string =>
+        `data: ${JSON.stringify({
+          id: "chatcmpl-stand-in",
+          object: "chat.completion.chunk",
+          created: 1,
+          model: "stand-in",
+          choices: [{ index: 0, delta, finish_reason: finish }],
+        })}\n\n`;
+      return new Response(
+        `${chunk({ role: "assistant", content: reply }, null)}${chunk({}, "stop")}data: [DONE]\n\n`,
+        { headers: { "Content-Type": "text/event-stream" } }
+      );
+    },
+  });
+  return {
+    url: `http://127.0.0.1:${server.port}`,
+    calls: () => calls,
+    stop: () => {
+      server.stop(true);
+    },
+  };
+}
+
+/**
+ * The server settings of a stack whose writing check runs its detector, which the bundle ships
+ * off, with `reader` as its reader: both test-only settings, under the test hooks they need.
+ */
+export function detectorOnWith(reader: StandInReader): Readonly<Record<string, string>> {
+  return {
+    DISPATCH_WRITING_CHECK: "on",
+    DISPATCH_TEST_HOOKS: "1",
+    DISPATCH_TEST_WRITING_CHECK_DETECTOR: "on",
+    DISPATCH_TEST_WRITING_CHECK_READER_URL: reader.url,
+  };
 }

@@ -133,6 +133,13 @@ type testServerOptions struct {
 	// dashboardEntry is the entry chunk of the dashboard build the server serves; empty is a
 	// server with no dashboard, as the Go test rigs are.
 	dashboardEntry string
+	// writingCheck is the writing check the server runs (INFRA-3231); nil is the check on with
+	// the bundle's structure rules and no model, as a deployment with DISPATCH_WRITING_CHECK=on
+	// and no model group runs it.
+	writingCheck *WritingCheck
+	// writingCheckOff runs the server with the writing check turned off, for a test about the
+	// server with the check off.
+	writingCheckOff bool
 	// buildCommit is the commit the server says it was built from (Deps.BuildCommit), which its
 	// list validators name; empty is a build nothing stamped, as every `go test` binary is.
 	buildCommit string
@@ -238,6 +245,10 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 	if options.identity != nil {
 		people = options.identity
 	}
+	writingCheck := options.writingCheck
+	if writingCheck == nil && !options.writingCheckOff {
+		writingCheck = NewWritingCheck(WritingCheckConfig{Enabled: true})
+	}
 	deps, err := NewDeps(DepsInput{
 		Store:                  database,
 		Identity:               people,
@@ -263,6 +274,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		Answerer:               options.answerer,
 		Files:                  options.files,
 		DashboardEntry:         options.dashboardEntry,
+		WritingCheck:           writingCheck,
 		BuildCommit:            options.buildCommit,
 	})
 	if err != nil {

@@ -37,12 +37,12 @@ const COMMAND_LINE = "!cat missing.txt";
  *  with the rest. */
 const OUTPUT = "cat: missing.txt: No such file or directory";
 
-/** What the plugin publishes once the command has run: the person's line, what it printed as a
- *  fenced block, and the sentence a command that did not exit 0 ends with. It reaches the view
- *  twice - this frame, and the session's reply on Dispatch, which every message to a session
- *  gets (`postTypedInputReply` in `packages/pi-envoy/extensions/envoy.ts`) - and the reader
- *  must meet it once. */
-const REPORT = `${COMMAND_LINE}\n\n\`\`\`\n${OUTPUT}\n\`\`\`\n\nThe command ended with exit status 1.`;
+/** What the plugin publishes once the command has run: the person's line and what it printed,
+ *  each as a fenced block, and the sentence a command that did not exit 0 ends with. It reaches
+ *  the view twice - this frame, and the session's reply on Dispatch, which every message to a
+ *  session gets (`postTypedInputReply` in `packages/pi-envoy/extensions/envoy.ts`) - and the
+ *  reader must meet it once. */
+const REPORT = `\`\`\`\n${COMMAND_LINE}\n\`\`\`\n\n\`\`\`\n${OUTPUT}\n\`\`\`\n\nThe command ended with exit status 1.`;
 
 /** The person's second message, whose mark is followed by a space. The session runs the trimmed
  *  command, as the CLI does, and opens its report with the line as the person sent it, that
@@ -51,7 +51,7 @@ const REPORT = `${COMMAND_LINE}\n\n\`\`\`\n${OUTPUT}\n\`\`\`\n\nThe command ende
  *  trimmed `!ls` would leave the view drawing this line twice. */
 const SPACED_LINE = "! ls";
 const SPACED_OUTPUT = "one.txt";
-const SPACED_REPORT = `${SPACED_LINE}\n\n\`\`\`\n${SPACED_OUTPUT}\n\`\`\``;
+const SPACED_REPORT = `\`\`\`\n${SPACED_LINE}\n\`\`\`\n\n\`\`\`\n${SPACED_OUTPUT}\n\`\`\``;
 
 /** One `!` exchange as the wire carries it: the person's line, and the report the session
  *  answers it with - in its frame, and in its reply on Dispatch. */

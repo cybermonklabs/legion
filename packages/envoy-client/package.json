@@ -154,6 +154,10 @@
       "bun": "./src/stream-topics.ts",
       "default": "./dist/stream-topics.js"
     },
+    "./test/dispatch-stack": {
+      "types": "./test/dispatch-stack.ts",
+      "bun": "./test/dispatch-stack.ts"
+    },
     "./test/envoy-stack": {
       "types": "./test/envoy-stack.ts",
       "bun": "./test/envoy-stack.ts"

@@ -82,6 +82,9 @@ func Run(ctx context.Context, req Request) (Result, error) {
 	if req.System != "" {
 		opts = append(opts, aisdk.WithSystem(req.System))
 	}
+	if req.Temperature != nil {
+		opts = append(opts, aisdk.WithTemperature(*req.Temperature))
+	}
 	if req.Final != nil {
 		final, err := finalOutput(req.Final)
 		if err != nil {
@@ -422,6 +425,7 @@ func (r *run) stepFinished(state aisdk.OnStepFinishState) {
 		Blocks: blocksOf(state.Content, r.kind),
 		Usage:  priced(state.Usage, r.req.Model.Price),
 		Finish: string(state.FinishReason.Unified),
+		Model:  state.Response.ModelID,
 	}
 	r.mu.Lock()
 	r.steps = append(r.steps, step)

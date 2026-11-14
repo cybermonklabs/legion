@@ -72,6 +72,7 @@ import type {
   UpdateIssueInput,
   Version,
   WhoamiResponse,
+  WritingCheckOverride,
 } from "@legion/contracts";
 import {
   answerNotKept,
@@ -84,6 +85,7 @@ import {
   IDEMPOTENCY_REPLAYED_HEADER,
   type IdempotencyLandedCode,
   retriesUnderKey,
+  WRITING_CHECK_REFUSED,
 } from "@legion/contracts";
 import { withoutTrailingSlashes } from "@legion/contracts/trailing-slash";
 
@@ -117,7 +119,10 @@ export class DispatchServiceError extends Error {
     message: string,
     readonly candidates?: DispatchServiceErrorShape["candidates"],
     readonly current?: DispatchServiceErrorShape["current"],
-    readonly mismatches?: DispatchServiceErrorShape["mismatches"]
+    readonly mismatches?: DispatchServiceErrorShape["mismatches"],
+    /** A `WRITING_CHECK_REFUSED` refusal's findings: each sentence the check refused, the rule it
+     *  breaks, the request field it stands in and how to fix it. */
+    readonly findings?: DispatchServiceErrorShape["findings"]
   ) {
     super(message);
   }
@@ -155,6 +160,44 @@ export class DispatchGatewayError extends DispatchServiceError {
     this.transient = transientStatus(status);
     this.mayHaveReachedDispatch = reachesDispatch(status);
   }
+}
+
+/** Whether Dispatch's writing check refused the write (`422 WRITING_CHECK_REFUSED`): nothing was
+ *  written, and the error's `findings` name each sentence, its rule and a rewrite. */
+export function isWritingCheckRefusal(error: unknown): error is DispatchServiceError {
+  return (
+    error instanceof DispatchServiceError &&
+    error.fromDispatch &&
+    error.code === WRITING_CHECK_REFUSED
+  );
+}
+
+/** The writing check's override a plugin's second send of its own text carries: none on the
+ *  first send, `generated` on the one after a refusal (`writeGenerated`). */
+export type GeneratedOverride = { readonly override_writing_check?: "generated" };
+
+/**
+ * Writes text a plugin generated rather than an agent wrote - a `!command`'s report, a slash
+ * command's output, a plugin's own error reply, AskGate's decision record - under Dispatch's
+ * writing check (INFRA-3231, R14). The first send carries no override, and only where the check
+ * refused it (`422 WRITING_CHECK_REFUSED`) is it sent again with
+ * `override_writing_check: "generated"`, which Dispatch writes and counts as generated. A first
+ * send never carries the field because a server that has no writing check decodes each request
+ * with `DisallowUnknownFields` and answers a field it does not know `400 INVALID_JSON`, and a
+ * plugin release can reach a host before that server does. `write` makes one send with the
+ * override it is given; each call is a request of its own, so a keyed write gives the second
+ * send a key of its own, since Dispatch keeps the refusal under the first send's key. Any other
+ * failure, of either send, is thrown as it came.
+ */
+export async function writeGenerated<T>(
+  write: (override: GeneratedOverride) => Promise<T>
+): Promise<T> {
+  try {
+    return await write({});
+  } catch (error) {
+    if (!isWritingCheckRefusal(error)) throw error;
+  }
+  return await write({ override_writing_check: "generated" });
 }
 
 /**
@@ -1253,7 +1296,12 @@ export class DispatchClient {
    */
   async requestApproval(
     artifactID: string,
-    input: { actor: Actor; summary: string; include_verification?: boolean }
+    input: {
+      actor: Actor;
+      summary: string;
+      include_verification?: boolean;
+      override_writing_check?: WritingCheckOverride;
+    }
   ): Promise<ApprovalRequestResponse & { recorded: boolean }> {
     const answer = await this.#jsonAnswer<ApprovalRequestResponse>(
       "POST",
@@ -1754,6 +1802,9 @@ export class DispatchClient {
     form.set("name", input.name);
     if (input.summary !== undefined) form.set("summary", input.summary);
     if (input.actor !== undefined) form.set("actor", JSON.stringify(input.actor));
+    if (input.override_writing_check !== undefined) {
+      form.set("override_writing_check", input.override_writing_check);
+    }
     form.set("file", input.file, input.name);
     return this.#form("POST", path, form, key);
   }
@@ -2134,7 +2185,8 @@ export class DispatchClient {
           error.error,
           error.candidates,
           error.current,
-          error.mismatches
+          error.mismatches,
+          error.findings
         );
       }
       const quoted = excerpt(text, this.token);

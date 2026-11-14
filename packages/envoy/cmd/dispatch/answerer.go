@@ -45,10 +45,12 @@ type answererConfig struct {
 // resolveAnswerer reads DISPATCH_ANSWERER and the settings of the place it names, and refuses,
 // naming the setting, every shape the answerer could not be built from or would silently ignore:
 // a place other than azure or endpoint; a setting of the group the chosen place does not read;
-// the shared Azure sign-in with neither model service on Azure; and, under each place, a setting
-// that is missing or malformed. embedderPlace is where meaning search embeds, since the embedder
-// and the answerer share that sign-in: a deployment may embed on Bedrock and answer on Azure, and
-// then the answerer is what reads the three. It calls nothing and reads no file, so a model
+// the shared Azure sign-in with no reader of it; and, under each place, a setting that is missing
+// or malformed. The shared sign-in has three readers: the embedder when embedderPlace is azure,
+// the answerer when it is azure, and the writing check's model when any of its
+// DISPATCH_WRITING_CHECK_AZURE_* settings is set (writingCheckReadsSignIn). A deployment may
+// embed on Bedrock and answer on Azure, or run the writing check's model alone on Azure, and the
+// three are then read by whichever reads them. It calls nothing and reads no file, so a model
 // service that is down, or a token file that is not written yet, never refuses boot.
 func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, error) {
 	place := strings.TrimSpace(env.get("DISPATCH_ANSWERER"))
@@ -65,9 +67,9 @@ func resolveAnswerer(env settingValues, embedderPlace string) (answererConfig, e
 		if set := settingsSet(env, azureChatSettingPrefix); len(set) > 0 {
 			return answererConfig{}, fmt.Errorf("%s set, but %s: the DISPATCH_AZURE_CHAT_* settings are read only with DISPATCH_ANSWERER=azure", strings.Join(set, ", "), chosen)
 		}
-		if embedderPlace != embed.PlaceAzure {
+		if embedderPlace != embed.PlaceAzure && !writingCheckReadsSignIn(env) {
 			if set := readAzureSignIn(env).set; len(set) > 0 {
-				return answererConfig{}, fmt.Errorf("%s set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure: the shared Azure sign-in is read by whichever of them is azure", strings.Join(set, ", "))
+				return answererConfig{}, fmt.Errorf("%s set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure and no DISPATCH_WRITING_CHECK_AZURE_* setting is set: the shared Azure sign-in is read by the embedder or the answerer that is azure, and by the writing check's model", strings.Join(set, ", "))
 			}
 		}
 	}

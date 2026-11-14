@@ -597,7 +597,7 @@ describe("executeDispatchTool", () => {
         "- --body is required (string)",
         "- unknown flag --message",
         "- in_reply_to must be a full message id (uuid), a dispatch://KEY/message/<id> reference, or a block of one (dispatch://KEY/message/<id>#b-<block id>)",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'",
       ].join("\n")
     );
@@ -842,6 +842,7 @@ describe("executeDispatchTool", () => {
       "urgency",
       "anchor",
       "images",
+      "override_writing_check",
     ] as const;
     const pictureDirectory = makeDirectory("ask-images");
     const picture = path.join(pictureDirectory, "shot.png");
@@ -914,6 +915,10 @@ describe("executeDispatchTool", () => {
           expect(body.question).toBe(
             "Look at this\n\n![shot.png](dispatch://DSP-41/artifact/shot-png@v1)"
           ),
+      },
+      override_writing_check: {
+        args: { issue: "DSP-41", question: "Choose", override_writing_check: true },
+        assert: ({ body }) => expect(body.override_writing_check).toBe("agent"),
       },
     };
     const askSpec = dispatchToolSpecs.find((spec) => spec.name === "dispatch_ask");
@@ -3645,6 +3650,66 @@ describe("executeDispatchTool", () => {
     expect(result.details).toEqual({ issue: "LEGION-13" });
     expect(followedAsk(result.details)).toBeNull();
     expect(requests).toEqual([{ body: expect.objectContaining({ force: true }) }]);
+    // `--force` means a likely duplicate and nothing else: it never sets the writing check's
+    // override (INFRA-3231).
+    expect(requests[0]?.body).not.toHaveProperty("override_writing_check");
+  });
+
+  // `dispatch send-to-agent` names no issue and no acting session: a send-to-agent body has no
+  // person reader, so Dispatch's writing check does not read it (INFRA-3231). The override still
+  // rides on its body when the agent sets it. Each call mints its own Idempotency-Key, so a
+  // resend is never answered with what Dispatch stored under the first call's key.
+  test("dispatch_send_to_agent names no issue, carries the override, and keys each call anew", async () => {
+    const requests: Array<{
+      readonly url: URL;
+      readonly key: string | null;
+      readonly body: unknown;
+    }> = [];
+    const fetchImpl = async (url: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+      requests.push({
+        url: new URL(String(url)),
+        key: new Headers(init?.headers).get("Idempotency-Key"),
+        body: JSON.parse(String(init?.body)),
+      });
+      return response(
+        {
+          id: "message-9",
+          deliveries: [{ attempt: 1, state: "sent", delivery: "aside" }],
+        },
+        201
+      );
+    };
+    const send = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_send_to_agent",
+        args: {
+          session: "session-other",
+          body: "DSP-1: read the rota.",
+          delivery: "aside",
+          ...args,
+        },
+        cwd: "/workspace",
+        host: "omp",
+        sessionId: "session-42",
+        config,
+        // LEGION_ISSUE is not added: the call names no issue, and its strict schema takes none.
+        env: { LEGION_ISSUE: "DSP-1" },
+        exec: repoExec("owner/repo"),
+        fetchImpl: fetchImpl as typeof fetch,
+      });
+
+    await send({});
+    await send({ override_writing_check: true });
+
+    expect(requests.map(({ url }) => `${url.pathname}${url.search}`)).toEqual([
+      "/api/v1/agents/session-other/messages",
+      "/api/v1/agents/session-other/messages",
+    ]);
+    expect(requests[0]?.body).not.toHaveProperty("override_writing_check");
+    expect(requests[1]?.body).toMatchObject({ override_writing_check: "agent" });
+    expect(requests[0]?.key).not.toBeNull();
+    expect(requests[1]?.key).not.toBeNull();
+    expect(requests[1]?.key).not.toBe(requests[0]?.key);
   });
 
   // A pod reaches Dispatch at its in-cluster address, which nobody outside the cluster can open:
@@ -5070,6 +5135,84 @@ describe("executeDispatchTool", () => {
       status: "done",
       message: "message-7",
     });
+  });
+
+  // The writing check's override (INFRA-3231) rides on both writes of a close: the reason's
+  // message and the PATCH, so a forced close forces its note too.
+  test("dispatch_issue_update sends the override on the reason's message and on the close", async () => {
+    const server = closingServer({
+      message: () => response({ id: "message-7", issue_key: "ACME-175" }),
+      patch: () =>
+        response({
+          key: "ACME-175",
+          title: "x",
+          status: "done",
+          labels: [],
+          route: null,
+          external_links: [],
+        }),
+    });
+
+    await executeDispatchTool({
+      tool: "dispatch_issue_update",
+      args: {
+        issue: "ACME-175",
+        status: "done",
+        reason: "Shipped in owner/repo#7.",
+        override_writing_check: true,
+      },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-42",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: server.fetchImpl,
+      writeRetry,
+    });
+
+    expect(server.requests[1]?.body).toMatchObject({ override_writing_check: "agent" });
+    expect(server.requests[2]?.body).toMatchObject({
+      status: "done",
+      override_writing_check: "agent",
+    });
+  });
+
+  test("a reason the writing check refuses keeps the issue open and the refusal's findings", async () => {
+    const findings = [
+      {
+        field: "body",
+        rule: "semicolon",
+        text: "It shipped; it works.",
+        rewrite: "Write two sentences.",
+      },
+    ];
+    const server = closingServer({
+      message: () =>
+        new Response(
+          JSON.stringify({
+            code: "WRITING_CHECK_REFUSED",
+            error: "The writing check refused this write.",
+            findings,
+            override_field: "override_writing_check",
+          }),
+          { status: 422, headers: { "Content-Type": "application/json" } }
+        ),
+      patch: () => {
+        throw new Error("the close must not be sent");
+      },
+    });
+
+    const refused = await closeCall(server.fetchImpl).catch((error: unknown) => error);
+
+    expect(refused).toMatchObject({
+      name: "DispatchServiceError",
+      code: "WRITING_CHECK_REFUSED",
+      status: 422,
+      findings,
+      message: expect.stringContaining("The writing check refused this write."),
+    });
+    expect(server.requests.map(({ method }) => method)).toEqual(["GET", "POST"]);
   });
 
   test("dispatch_issue_update leaves the issue open when the reason cannot be posted", async () => {
@@ -8163,6 +8306,25 @@ describe("executeDispatchTool", () => {
       ].join("\n")
     );
     expect(retracted.details).toMatchObject({ result: "res-2" });
+    expect(posts[0]?.body).not.toHaveProperty("override_writing_check");
+
+    // The writing check reads the reason, so --override-writing-check reaches the retraction too.
+    await executeDispatchTool({
+      tool: "dispatch_result",
+      args: {
+        retract: "res-2",
+        reason: "The reviewer read the tester's run, not their own.",
+        override_writing_check: true,
+      },
+      cwd: "/workspace",
+      host: "omp",
+      sessionId: "session-1",
+      config,
+      env: {},
+      exec: repoExec("owner/repo"),
+      fetchImpl: fetchImpl as typeof fetch,
+    });
+    expect(posts[1]?.body).toMatchObject({ override_writing_check: "agent" });
   });
 
   test("dispatch_request_approval sends its summary and reports the question the Inbox shows", async () => {

@@ -139,6 +139,9 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		"DISPATCH_IDENTITY=header:X-Dispatch-User",
 		"DISPATCH_IDENTITY_HEADER_TRUSTED=1",
 		"DISPATCH_NATS_DISABLED=1",
+		// The writing check on, with the bundle's rules and no model, as a deployment runs it
+		// (INFRA-3231), so its cost is in every measured request.
+		"DISPATCH_WRITING_CHECK=on",
 		"DISPATCH_LISTEN_HOST=127.0.0.1",
 		"DISPATCH_PORT=" + port,
 		"DISPATCH_WEB_DIST=" + t.TempDir(),

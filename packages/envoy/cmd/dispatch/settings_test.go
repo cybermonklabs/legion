@@ -1565,7 +1565,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, azureEmbedEnvironment(withOverrides(azureKeyless, map[string]string{"DISPATCH_AZURE_TENANT_ID": ""})), "DISPATCH_AZURE_TENANT_ID missing")
 			refusedWith(t, azureChatEnvironment(map[string]string{"DISPATCH_AZURE_TENANT_ID": ""}), "DISPATCH_AZURE_TENANT_ID missing")
-			refusedWith(t, map[string]string{"DISPATCH_AZURE_TENANT_ID": "tenant"}, "DISPATCH_AZURE_TENANT_ID set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure: the shared Azure sign-in is read by whichever of them is azure")
+			refusedWith(t, map[string]string{"DISPATCH_AZURE_TENANT_ID": "tenant"}, "DISPATCH_AZURE_TENANT_ID set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure and no DISPATCH_WRITING_CHECK_AZURE_* setting is set: the shared Azure sign-in is read by the embedder or the answerer that is azure, and by the writing check's model")
 			if embedder := azureEmbedderFor(t, azureKeyless); embedder.Identity() != "azure:embed.example/embed-v-4-0" {
 				t.Errorf("keyless: Identity() = %q", embedder.Identity())
 			}
@@ -2101,6 +2101,10 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_EMBEDDER_OFF": "1"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+	}
+	// The writing check's rows, kept beside the reader they test (writing_check_test.go).
+	for name, test := range writingCheckSettingCases() {
+		cases[name] = test
 	}
 	for _, row := range settings {
 		test, ok := cases[row.Name]

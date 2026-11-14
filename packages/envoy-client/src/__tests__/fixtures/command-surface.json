@@ -121,7 +121,7 @@
       "text": [
         "dispatch ask was not called: 1 problem",
         "- artifact spec and anchor.artifact plan.md name two documents; name the document once",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch ask --issue DSP-1 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
@@ -138,7 +138,7 @@
       "text": [
         "dispatch ask was not called: 1 problem",
         "- dispatch ask opens the ask on the issue unless anchor quotes a document, so artifact spec would be dropped: add --anchor-json '{\"artifact\":\"spec\",\"quote\":\"<exact text>\"}' to ask about a passage of it, or drop --artifact",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --anchor-json, --anchor-json-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch ask --issue DSP-1 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
@@ -247,7 +247,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment posts on the issue unless quote anchors it in a document, so document spec would be dropped: add --quote to comment on a passage of it, or name only the issue",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -264,7 +264,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- issue DSP-2 and ref dispatch://DSP-1 name two owners; --ref dispatch://DSP-1 alone acts on DSP-1, and --issue DSP-2 alone acts on DSP-2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -281,7 +281,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- artifact is required when quote is supplied",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -299,7 +299,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to and reply_to_ask cannot both be set",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -316,7 +316,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1 names a block of an ask, but a comment reply answers a block of a comment (dispatch://KEY/comment/<id>#b-<block id>); answer it with dispatch comment --reply-to-ask 'dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -333,7 +333,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- reply_to_ask dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1 names a block of a comment, but reply_to_ask answers a part of the ask it names (dispatch://KEY/ask/<id>#b-<block id>); answer it with dispatch comment --reply-to 'dispatch://DSP-1/comment/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -350,7 +350,7 @@
       "text": [
         "dispatch comment was not called: 1 problem",
         "- dispatch comment acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --occurrence, --body, --body-file, --reply-to, --reply-to-file, --reply-to-ask, --reply-to-ask-file, --turn, --turn-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch comment --issue DSP-1 --body 'Looks good.'"
       ]
     },
@@ -409,7 +409,7 @@
       "text": [
         "dispatch doc-edit was not called: 1 problem",
         "- artifact plan.md and ref dispatch://DSP-1/artifact/spec name two documents; --ref dispatch://DSP-1/artifact/spec alone names spec, and --issue DSP-1 --artifact plan.md names plan.md",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch doc-edit --issue DSP-1 --artifact spec --ops-json '[{\"op\":\"delete_column\",\"block\":\"table-123\",\"index\":1}]' --precondition-json '{\"blocks\":[{\"id\":\"table-123\",\"token\":\"sha256:current-table-token\"}]}'"
       ]
     },
@@ -431,7 +431,7 @@
       "text": [
         "dispatch doc-edit was not called: 1 problem",
         "- dispatch doc-edit acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --ops-json, --ops-json-file, --precondition-json, --precondition-json-file, --summary, --summary-file, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch doc-edit --issue DSP-1 --artifact spec --ops-json '[{\"op\":\"delete_column\",\"block\":\"table-123\",\"index\":1}]' --precondition-json '{\"blocks\":[{\"id\":\"table-123\",\"token\":\"sha256:current-table-token\"}]}'"
       ]
     },
@@ -595,7 +595,7 @@
       "text": [
         "dispatch edit-ask was not called: 1 problem",
         "- dispatch://DSP-1/artifact/spec/ask/01234567-0000-4000-8000-000000000001 names an ask through its document, which Dispatch does not address; name it dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001",
-        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --help, --dry-run",
+        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch edit-ask --ask 01234567-0000-4000-8000-000000000001 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
@@ -611,7 +611,7 @@
       "text": [
         "dispatch edit-ask was not called: 1 problem",
         "- ask must be a bare ask id or a dispatch://.../ask/<id> reference",
-        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --help, --dry-run",
+        "- Allowed flags: --ask, --ask-file, --question, --question-file, --option, --options-json, --clear-options, --multiple, --no-multiple, --urgency, --urgency-file, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch edit-ask --ask 01234567-0000-4000-8000-000000000001 --question 'Release 4.2 ships Friday. Tuesday'\\''s plan change makes its migration drop the sessions.legacy_token column, and nobody has reviewed that change. Shipped unreviewed, a wrong drop signs out the 1,240 users still on legacy tokens. Held for review, 4.2 ships Monday. Ship Friday unreviewed, or hold to Monday? Recommendation: hold to Monday; no user waits on 4.2, and 1,240 forced sign-ins cost more than three days.' --option 'Hold to Monday: 4.2 ships three days late, with the column drop reviewed.' --option 'Ship Friday: On time; a wrong drop signs out 1,240 users.'"
       ]
     },
@@ -1028,7 +1028,7 @@
       "text": [
         "dispatch message was not called: 1 problem",
         "- in_reply_to dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1 names a block of an ask, but a message reply answers a block of a message (dispatch://KEY/message/<id>#b-<block id>); answer it with dispatch comment --reply-to-ask 'dispatch://DSP-1/ask/01234567-0000-4000-8000-000000000001#b-p-1'",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'"
       ]
     },
@@ -1045,7 +1045,7 @@
       "text": [
         "dispatch message was not called: 1 problem",
         "- in_reply_to must be a full message id (uuid), a dispatch://KEY/message/<id> reference, or a block of one (dispatch://KEY/message/<id>#b-<block id>)",
-        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --body, --body-file, --in-reply-to, --in-reply-to-file, --image, --clear-images, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch message --issue DSP-1 --body 'Implementation started.'"
       ]
     },
@@ -1519,7 +1519,7 @@
       "text": [
         "dispatch resolve-ask was not called: 1 problem",
         "- ask must be a bare ask id or a dispatch://.../ask/<id> reference",
-        "- Allowed flags: --ask, --ask-file, --kind, --kind-file, --reason, --reason-file, --help, --dry-run",
+        "- Allowed flags: --ask, --ask-file, --kind, --kind-file, --reason, --reason-file, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch resolve-ask --ask 01234567-0000-4000-8000-000000000001 --kind retracted --reason 'A newer question supersedes this one.'"
       ]
     },
@@ -1727,13 +1727,24 @@
         "delivery": "aside",
         "session": "<id>"
       },
-      "requests": [],
-      "outcome": "error",
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/agents/01234567-0000-4000-8000-000000000001/messages",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "body": "DSP-1: the rota is nowhere written down. Please write it up.",
+            "delivery": "aside"
+          }
+        }
+      ],
+      "outcome": "result",
       "text": [
-        "dispatch send-to-agent was not called: 1 problem",
-        "- issue is required; supply issue or set LEGION_ISSUE",
-        "- Allowed flags: --session, --session-file, --body, --body-file, --delivery, --delivery-file, --in-reply-to, --in-reply-to-file, --help, --dry-run",
-        "- Example: dispatch send-to-agent --session 01234567-0000-4000-8000-000000000001 --body 'DSP-1: the rota is nowhere written down. Please write it up.' --delivery aside"
+        "Sent message 01234567-0000-4000-8000-000000000001 to session 01234567-0000-4000-8000-000000000001; Dispatch recorded no delivery attempt for it. dispatch read --message 01234567-0000-4000-8000-000000000001 reads the conversation back."
       ]
     },
     {
@@ -1749,7 +1760,7 @@
       "text": [
         "dispatch suggest was not called: 1 problem",
         "- dispatch suggest acts on the live document, so the version ref dispatch://DSP-1/artifact/spec@v2 names would be dropped: drop its @v2",
-        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --replace-with, --replace-with-file, --body, --body-file, --occurrence, --help, --dry-run",
+        "- Allowed flags: --issue, --issue-file, --project, --project-file, --artifact, --artifact-file, --ref, --ref-file, --quote, --quote-file, --replace-with, --replace-with-file, --body, --body-file, --occurrence, --override-writing-check, --no-override-writing-check, --help, --dry-run",
         "- Example: dispatch suggest --issue DSP-1 --artifact spec --quote 'old wording' --replace-with 'new wording'"
       ]
     },

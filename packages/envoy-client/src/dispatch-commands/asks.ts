@@ -299,6 +299,7 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
     resolveDocument,
     writePictures,
     issue,
+    writingOverride,
   } = context;
   const anchorArgs = asObject(args.anchor);
   const owner = documentOwner();
@@ -324,6 +325,7 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
     ...(multiple === undefined ? {} : { multiple }),
     ...(urgency === undefined ? {} : { urgency }),
     ...(anchored === undefined ? {} : { anchor: anchored }),
+    ...writingOverride,
     actor,
   };
   const ask =
@@ -370,7 +372,7 @@ export async function askCommand(context: CommandContext): Promise<DispatchToolR
 
 /** `dispatch edit-ask`: reword an open ask, or change its options, urgency or multiple. */
 export async function editAskCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input } = context;
+  const { args, client, actor, input, writingOverride } = context;
   const question = optionalString(args, "question");
   const options = args.options;
   const multiple = optionalBoolean(args, "multiple");
@@ -381,6 +383,7 @@ export async function editAskCommand(context: CommandContext): Promise<DispatchT
     ...(Array.isArray(options) ? { options: options as NonNullable<EditAskInput["options"]> } : {}),
     ...(multiple === undefined ? {} : { multiple }),
     ...(urgency === undefined ? {} : { urgency }),
+    ...writingOverride,
     actor,
   });
   return {
@@ -391,12 +394,13 @@ export async function editAskCommand(context: CommandContext): Promise<DispatchT
 
 /** `dispatch resolve-ask`: close an ask nobody needs to answer, with the reason. */
 export async function resolveAskCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input } = context;
+  const { args, client, actor, input, writingOverride } = context;
   const kind = stringArg(args, "kind") as "retracted" | "resolved";
   const { id } = await resolveAskArgument(input.tool, args, client, input.sessionId);
   const ask = await client.resolveAsk(id, {
     kind,
     reason: stringArg(args, "reason"),
+    ...writingOverride,
     actor,
   });
   if (ask.resolution === undefined) throw new Error("resolved ask is missing its resolution");

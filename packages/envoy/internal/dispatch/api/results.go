@@ -69,6 +69,7 @@ type resolvedCheck struct {
 
 // checkResultInput is the body POST /api/v1/issues/{key}/results takes.
 type checkResultInput struct {
+	writingCheckOverride
 	Actor           *model.Actor `json:"actor"`
 	Check           string       `json:"check" required:"true"`
 	Role            string       `json:"role" required:"true"`
@@ -109,6 +110,9 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := input.refusal(); err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	issueKey := r.PathValue("key")

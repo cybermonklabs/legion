@@ -229,6 +229,9 @@ type bootConfig struct {
 	// or DISPATCH_CHAT_* settings of the place it names), checked whole; an empty Place is no
 	// model configured, which the server says at boot rather than refusing to start.
 	Answerer answererConfig
+	// WritingCheck is the writing check (DISPATCH_WRITING_CHECK and the settings beside it),
+	// checked whole; newWritingCheck builds it, its reader's model included where one is set.
+	WritingCheck writingCheckConfig
 }
 
 func main() {
@@ -486,6 +489,13 @@ func main() {
 		slog.Error("dispatch: build the answerer", "error", err)
 		os.Exit(1)
 	}
+	// The writing check (INFRA-3231): its reader is a model of its own with a quota of its own,
+	// never the answerer's. A shape it could not build from refuses the boot.
+	writingCheck, err := newWritingCheck(boot.WritingCheck)
+	if err != nil {
+		slog.Error("dispatch: build the writing check", "error", err)
+		os.Exit(1)
+	}
 
 	built := routes.AppContextOptions{
 		SigningKey:     signingKey,
@@ -506,6 +516,7 @@ func main() {
 		AgentStream:    agentStream,
 		Files:          fileStore,
 		Lifetime:       ctx,
+		WritingCheck:   writingCheck,
 	}
 	// Set only when configured: a nil *oidc.LazyVerifier in the interface field would read as a
 	// configured verifier, and every JWT-shaped bearer would be sent to it.
@@ -578,7 +589,10 @@ func main() {
 	//     start, with or without NATS) and the display tree fill (texttreefill.Run, every hour
 	//     from a tick at start, whose first pass of a display parser version runs until every
 	//     stored text has a tree at it), each recording its passes in duty_passes like the timers
-	//     above; each tick sends its statements whether or not anything is owed.
+	//     above; each tick sends its statements whether or not anything is owed. The writing
+	//     check's event sweep (api.RunWritingCheckEventSweep, every day from a tick at start)
+	//     polls too, with no lease and no duty_passes row: its pass is one delete by age, which
+	//     every process may run.
 	//
 	// The shared listener is one pglisten.Hub per process, on one held connection of the store's
 	// listener pool, carrying every woken loop's channel and the document rooms' room-sync
@@ -897,6 +911,11 @@ func main() {
 		maintenanceInterval = boot.MaintenanceSweepInterval
 	}
 	go api.RunMaintenanceSweep(ctx, database.Pool, maintenanceInterval, leases, background.ResumeDeliveries)
+	// The writing check's decisions past their 90 days, once a day in every process, the first
+	// pass at start, with no lease: the delete by age is the same whichever process runs it. It
+	// runs whether the check is on or off, so rows a deployment wrote before it turned the check
+	// off still age out.
+	go api.RunWritingCheckEventSweep(ctx, database)
 	handler := dispatchHandler(routesHandler, met, database, natsClient, outboxPublisher, fileStore, buildCommit, announcer, issuers{signIn: signIn, serviceTokens: serviceTokens})
 	server := newHTTPServer(handler, time.Now)
 	// The server serves on the socket it inherited (DISPATCH_LISTEN_FD) or binds its address, and
@@ -1237,6 +1256,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, err
 	}
 	boot.Answerer, err = resolveAnswerer(env, boot.Embedder.Place)
+	if err != nil {
+		return bootConfig{}, err
+	}
+	boot.WritingCheck, err = resolveWritingCheck(env, boot.TestHooksEnabled)
 	if err != nil {
 		return bootConfig{}, err
 	}

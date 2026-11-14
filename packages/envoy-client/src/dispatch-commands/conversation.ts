@@ -61,8 +61,17 @@ export async function resolveCommentCommand(context: CommandContext): Promise<Di
 
 /** `dispatch comment`: post a comment, a reply in a thread, or a reply under an ask. */
 export async function commentCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, documentOwner, resolveDocument, writePictures, issue } =
-    context;
+  const {
+    args,
+    client,
+    actor,
+    input,
+    documentOwner,
+    resolveDocument,
+    writePictures,
+    issue,
+    writingOverride,
+  } = context;
   const artifactReference = optionalString(args, "artifact");
   const owner = documentOwner();
   const resolved =
@@ -92,6 +101,7 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
     ...(replyToBlock === undefined ? {} : { reply_to_block: replyToBlock }),
     ...(replyToAsk === undefined ? {} : { ask_id: replyToAsk }),
     ...(requestedTurn === undefined ? {} : { turn: requestedTurn }),
+    ...writingOverride,
     actor,
   };
   const comment =
@@ -149,7 +159,8 @@ export async function commentCommand(context: CommandContext): Promise<DispatchT
 
 /** `dispatch suggest`: propose a replacement for a passage of a document. */
 export async function suggestCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, documentOwner, resolveDocument, issue } = context;
+  const { args, client, actor, input, documentOwner, resolveDocument, issue, writingOverride } =
+    context;
   const resolved = await resolveDocument(documentOwner(), stringArg(args, "artifact"));
   const anchored = anchor(resolved.artifact, args);
   if (anchored === undefined) throw new Error("quote is required");
@@ -158,6 +169,7 @@ export async function suggestCommand(context: CommandContext): Promise<DispatchT
     ...(body === undefined ? {} : { body }),
     anchor: anchored,
     replace_with: stringArg(args, "replace_with"),
+    ...writingOverride,
     actor,
   };
   const comment =
@@ -179,7 +191,8 @@ function conversationReadBack(messageId: string): string {
 
 /** `dispatch message`: post on the issue's conversation, or answer a direct message. */
 export async function messageCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, owner, pictures, postWithPictures, issue } = context;
+  const { args, client, actor, input, owner, pictures, postWithPictures, issue, writingOverride } =
+    context;
   const target = messageInReplyTo(args);
   const inReplyTo = target?.id;
   const written = stringArg(args, "body");
@@ -209,7 +222,7 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
     // frame handed to the session twice cannot post a second answer.
     const reply = await client.messageReply(
       inReplyTo,
-      { body, attempt: 1, actor },
+      { body, attempt: 1, ...writingOverride, actor },
       { followUp: true }
     );
     // Text this session already posted in the conversation (its first reply or an earlier
@@ -262,6 +275,7 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
     body,
     ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
     ...(target?.block === undefined ? {} : { in_reply_to_block: target.block }),
+    ...writingOverride,
     actor,
   });
   const messageRef = dispatchChildRef(dispatchIssueRef(issueKey), "message", message.id);
@@ -282,7 +296,7 @@ export async function messageCommand(context: CommandContext): Promise<DispatchT
 /** `dispatch send-to-agent`: one message into a session's own conversation, which stands on no
  *  issue, so the call names the session rather than an owner. */
 export async function sendToAgentCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client } = context;
+  const { args, client, writingOverride } = context;
   const session = stringArg(args, "session");
   const inReplyTo = optionalString(args, "in_reply_to");
   // The route answers once the first attempt has settled, so its state is what says whether
@@ -291,6 +305,7 @@ export async function sendToAgentCommand(context: CommandContext): Promise<Dispa
     body: stringArg(args, "body"),
     delivery: stringArg(args, "delivery") as MessageDeliveryMode,
     ...(inReplyTo === undefined ? {} : { in_reply_to: inReplyTo }),
+    ...writingOverride,
   });
   // Go marshals an empty delivery slice as `null`, so the route table's type is nullable;
   // either way there is no attempt to read, which the `undefined` branch below already says.

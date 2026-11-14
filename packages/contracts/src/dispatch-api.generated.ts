@@ -2890,6 +2890,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/writing-check": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The writing check as this process runs it: {enabled, rules, rules_left_out, detector, model, reader_calls, bundle_model_id}. rules are the structure rules it applies; rules_left_out each rule it does not apply, {id, reason}; detector {on, reason}, reason saying why it is off or runs with no model; model the reader's {endpoint_host, deployment, api_version, tokens_per_minute}, or null where none is configured, never a key or a token; reader_calls the reader calls this process made since it started; bundle_model_id the model id the bundle was measured with, empty while it pins none. Any caller Dispatch admits reads it. */
+    get: operations["getApiV1WritingCheck"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/writing-check/counts": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One UTC day of the writing check's decisions, ?day=YYYY-MM-DD (default today): {day, total, outcomes, overrides, routes}, each a count by outcome (refused, forced, clean, the exemptions and the reader's fail-open outcomes), by override_writing_check value, and by "<method> <route>". A day that is not YYYY-MM-DD is 400 INVALID_QUERY. Rows are kept 90 days. */
+    get: operations["getApiV1WritingCheckCounts"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -3028,6 +3062,7 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       expected_answer_at?: string | null;
       expected_edited_at: string | null;
+      override_writing_check?: string;
       selected?: string[] | null;
       text?: null | string;
     };
@@ -3037,6 +3072,7 @@ export interface components {
     ApprovalRequestInput: {
       actor?: components["schemas"]["Actor"] | null;
       include_verification?: boolean;
+      override_writing_check?: string;
       summary?: null | string;
     };
     ApprovalRequestResponse: {
@@ -3769,6 +3805,7 @@ export interface components {
     };
     CheckResultRetractionInput: {
       actor?: components["schemas"]["Actor"] | null;
+      override_writing_check?: string;
       reason: string;
     };
     ClaimIssueInput: {
@@ -3863,6 +3900,7 @@ export interface components {
       attempt: number;
       body?: null | string;
       error?: null | string;
+      override_writing_check?: string;
       reply_to_block?: null | string;
       target?: null | string;
     };
@@ -3932,12 +3970,14 @@ export interface components {
       delivery: string;
       in_reply_to?: null | string;
       in_reply_to_block?: null | string;
+      override_writing_check?: string;
     };
     CreateAgentTokenInput: {
       name: string;
       scopes?: null | string[];
     };
     CreateArtifactReviewInput: {
+      override_writing_check?: string;
       reason?: null | string;
       state: string;
     };
@@ -3947,12 +3987,14 @@ export interface components {
       kind?: string;
       multiple?: null | boolean;
       options?: components["schemas"]["AskOption"][] | null;
+      override_writing_check?: string;
       question: string;
       urgency?: string;
     };
     CreateBroadcastInput: {
       body: string;
       delivery: string;
+      override_writing_check?: string;
       session_ids: string[] | null;
     };
     CreateCommentDeliveryInput: {
@@ -3971,6 +4013,7 @@ export interface components {
             target: string;
           }[]
         | null;
+      override_writing_check?: string;
       reply_to?: null | string;
       reply_to_block?: null | string;
       suggestion?: {
@@ -4004,6 +4047,7 @@ export interface components {
       external?: string;
       force?: boolean;
       labels?: string[] | null;
+      override_writing_check?: string;
       parent?: null | string;
       priority?: number | null;
       project?: string;
@@ -4017,6 +4061,7 @@ export interface components {
       delivery?: null | string;
       in_reply_to?: null | string;
       in_reply_to_block?: null | string;
+      override_writing_check?: string;
       target?: null | string;
       urgency?: null | string;
     };
@@ -4039,6 +4084,7 @@ export interface components {
     };
     CreateVersionInput: {
       actor?: components["schemas"]["Actor"] | null;
+      override_writing_check?: string;
       summary: string;
     };
     CreatedAgentToken: {
@@ -4141,6 +4187,7 @@ export interface components {
     DeclineAskInput: {
       actor?: components["schemas"]["Actor"] | null;
       note?: null | string;
+      override_writing_check?: string;
     };
     DeliveryComponent: {
       parent: null | string;
@@ -4540,6 +4587,7 @@ export interface components {
     EditArtifactInput: {
       actor?: components["schemas"]["Actor"] | null;
       ops?: components["schemas"]["EditOp"][] | null;
+      override_writing_check?: string;
       precondition?: components["schemas"]["EditPrecondition"] | null;
       summary?: string;
     };
@@ -4555,6 +4603,7 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       multiple?: null | boolean;
       options?: null | components["schemas"]["AskOption"][];
+      override_writing_check?: string;
       question?: null | string;
       urgency?: null | string;
     };
@@ -4566,6 +4615,7 @@ export interface components {
       base_revision?: null | number;
       blocks?: components["schemas"]["CarriedBlock"][] | null;
       body: string;
+      override_writing_check?: string;
     };
     EditLostError: {
       code: string;
@@ -5199,6 +5249,7 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       content?: null | string;
       name: string;
+      override_writing_check?: string;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
       summary?: string;
@@ -5270,6 +5321,7 @@ export interface components {
       body?: null | string;
       error?: null | string;
       in_reply_to_block?: null | string;
+      override_writing_check?: string;
     };
     MessageReplyResult: {
       author: components["schemas"]["Actor"];
@@ -5621,6 +5673,7 @@ export interface components {
     };
     RebuildArtifactInput: {
       markdown?: null | string;
+      override_writing_check?: string;
     };
     RecordCheckResultInput: {
       actor?: components["schemas"]["Actor"] | null;
@@ -5630,6 +5683,7 @@ export interface components {
       failed?: number;
       negative_control?: string;
       observed?: string;
+      override_writing_check?: string;
       role: string;
       run?: string;
       screenshots?: string[] | null;
@@ -5779,6 +5833,7 @@ export interface components {
     ResolveAskInput: {
       actor?: components["schemas"]["Actor"] | null;
       kind: string;
+      override_writing_check?: string;
       reason: string;
     };
     ResultCommitStands: {
@@ -6051,6 +6106,7 @@ export interface components {
       external_links?: null | components["schemas"]["ExternalLink"][];
       labels?: null | string[];
       labels_add?: null | string[];
+      override_writing_check?: string;
       parent?: string | null;
       priority?: number | null;
       rank?: components["schemas"]["IssueRankInput"] | null;
@@ -6151,6 +6207,55 @@ export interface components {
       kind: string;
       owner: components["schemas"]["SearchOwner"];
       snippet: string;
+    };
+    WritingCheckCounts: {
+      day: string;
+      outcomes: {
+        [key: string]: number;
+      } | null;
+      overrides: {
+        [key: string]: number;
+      } | null;
+      routes: {
+        [key: string]: number;
+      } | null;
+      total: number;
+    };
+    WritingCheckDetector: {
+      on: boolean;
+      reason: string;
+    };
+    WritingCheckFinding: {
+      field: string;
+      rewrite: string;
+      rule: string;
+      text: string;
+    };
+    WritingCheckModel: {
+      api_version: string;
+      deployment: string;
+      endpoint_host: string;
+      tokens_per_minute: number;
+    };
+    WritingCheckRefusal: {
+      code: string;
+      error: string;
+      findings: components["schemas"]["WritingCheckFinding"][] | null;
+      override_field: string;
+    };
+    WritingCheckRuleLeftOut: {
+      id: string;
+      reason: string;
+    };
+    WritingCheckState: {
+      bundle_model_id: string;
+      detector: components["schemas"]["WritingCheckDetector"];
+      enabled: boolean;
+      model: components["schemas"]["WritingCheckModel"] | null;
+      /** Format: int64 */
+      reader_calls: number;
+      rules: string[] | null;
+      rules_left_out: components["schemas"]["WritingCheckRuleLeftOut"][] | null;
     };
   };
   responses: never;
@@ -6286,6 +6391,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the writing check's override, "agent" or "generated", as the JSON body's override_writing_check field */
+          override_writing_check?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -6299,6 +6406,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactUploadResponse"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6442,6 +6558,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["MessageWithTrees"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -6907,6 +7032,15 @@ export interface operations {
           "application/json": components["schemas"]["ApprovalRequestResponse"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -6980,6 +7114,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7164,6 +7307,15 @@ export interface operations {
           };
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7214,6 +7366,15 @@ export interface operations {
             | components["schemas"]["EditPreconditionError"]
             | components["schemas"]["EditLostError"]
             | components["schemas"]["AmbiguousTargetError"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7331,6 +7492,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactRebuildReport"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7435,6 +7605,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["ArtifactReview"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7575,6 +7754,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Version"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7720,6 +7908,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -7756,6 +7953,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7832,6 +8038,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AskWithTrees"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -7980,6 +8195,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -8080,6 +8304,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["BroadcastCreated"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8218,6 +8451,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWithTrees"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -8449,6 +8691,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CommentWriteResponse"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9404,6 +9655,15 @@ export interface operations {
           "application/json": components["schemas"]["IssueDuplicateError"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9511,6 +9771,15 @@ export interface operations {
           };
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9581,6 +9850,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the writing check's override, "agent" or "generated", as the JSON body's override_writing_check field */
+          override_writing_check?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -9596,6 +9867,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactUploadResponse"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9721,6 +10001,15 @@ export interface operations {
             | components["schemas"]["AmbiguousTargetError"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -9794,6 +10083,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Version"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9907,6 +10205,15 @@ export interface operations {
           "application/json": components["schemas"]["AskWithTrees"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10110,6 +10417,15 @@ export interface operations {
           "application/json": components["schemas"]["CommentWriteResponse"] & {
             advice?: components["schemas"]["WriteAdvice"];
           };
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -10439,6 +10755,15 @@ export interface operations {
           };
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -10587,6 +10912,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CheckResultRecorded"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -11693,6 +12027,15 @@ export interface operations {
           "application/json": components["schemas"]["MessageReplyResult"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12294,6 +12637,8 @@ export interface operations {
           file: string;
           /** @description the artifact's name, trimmed */
           name?: string;
+          /** @description the writing check's override, "agent" or "generated", as the JSON body's override_writing_check field */
+          override_writing_check?: string;
           /** @description what this version changed, trimmed */
           summary?: string;
         };
@@ -12309,6 +12654,15 @@ export interface operations {
           "application/json": components["schemas"]["ArtifactUploadResponse"] & {
             advice?: components["schemas"]["DocumentWriteAdvice"];
           };
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12434,6 +12788,15 @@ export interface operations {
             | components["schemas"]["AmbiguousTargetError"];
         };
       };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
+        };
+      };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
       default: {
         headers: {
@@ -12542,6 +12905,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["Version"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -12876,6 +13248,15 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CheckResultRetraction"];
+        };
+      };
+      /** @description Unprocessable Entity */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckRefusal"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13506,6 +13887,71 @@ export interface operations {
       };
     };
   };
+  getApiV1WritingCheck: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckState"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1WritingCheckCounts: {
+    parameters: {
+      query?: {
+        day?: string;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["WritingCheckCounts"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
 }
 
 export type AcceptSuggestionResponse = components["schemas"]["AcceptSuggestionResponse"];
@@ -13866,6 +14312,13 @@ export type WhoamiUser = components["schemas"]["WhoamiUser"];
 export type WorkUnderNoPriority = components["schemas"]["WorkUnderNoPriority"];
 export type WriteAdvice = components["schemas"]["WriteAdvice"];
 export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
+export type WritingCheckCounts = components["schemas"]["WritingCheckCounts"];
+export type WritingCheckDetector = components["schemas"]["WritingCheckDetector"];
+export type WritingCheckFinding = components["schemas"]["WritingCheckFinding"];
+export type WritingCheckModel = components["schemas"]["WritingCheckModel"];
+export type WritingCheckRefusal = components["schemas"]["WritingCheckRefusal"];
+export type WritingCheckRuleLeftOut = components["schemas"]["WritingCheckRuleLeftOut"];
+export type WritingCheckState = components["schemas"]["WritingCheckState"];
 
 /** Every schema name whose exported type the hand-written split owns, which
  * `dispatch-api-owned.ts` holds to the shape this module declares for it. */

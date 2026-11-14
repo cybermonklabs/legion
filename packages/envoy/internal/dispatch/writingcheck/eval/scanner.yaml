@@ -1,0 +1,189 @@
+# The description file of the writing check's detector (the vacuous verb phrase), valid against
+# scanner.schema.json beside it. Its commit history is its version history. A field marked
+# pending waits for the freeze or the final test; `writing-check validate` lists each one.
+schema_version: 1
+name: dispatch-writing-check-vacuous-verb-phrase
+use:
+  purpose: gate
+  note: >-
+    The detector refuses an agent write to Dispatch that holds a vacuous verb phrase. It gates
+    only once its final test bounds 1 - precision over the writes it refuses at 5% or below;
+    until then the bundle ships it off. The method's weekly live scoring is not built here.
+owner:
+  pending: true
+  reason: The owner is named when the bundle is frozen.
+definition:
+  version: 1
+  frozen: false
+  outcome: >-
+    A person reads a sentence an agent wrote in Dispatch and cannot tell what happened, what
+    will happen or what is asked, so the person asks the agent what it means or decides on a
+    wrong reading.
+  proxy: >-
+    A sentence of an agent write holds a verb phrase whose clause states no fact the verb
+    stands for: no value, holder, date, amount or observed event.
+  opportunity: One prose sentence of the text of one agent write to Dispatch.
+  final_when: A sentence is final when Dispatch records the event of its write; an edit is a new write.
+  decision_rule:
+    - Exclusions first. A verb inside a quotation, code, an identifier, a person's own words, or used in its literal sense, or a word that is not a finite verb, is not vacuous.
+    - The general test. Remove the verb phrase and ask what literally happens. When the clause or its two sentences of context give the fact the verb stands for, it is not vacuous; when they do not, it is vacuous.
+    - The three named shapes (a finite form of name, show or pay with an object that states no value, holder, date or amount) refine the general test.
+    - Unresolved. When the evidence cannot settle the case (a pronoun whose value lies outside the context, a word that may be a verb or a noun), the sentence is unresolved, neither a failure nor a pass.
+  evidence_cutoff: >-
+    The write itself and the thread before it as they stood when Dispatch recorded the write. No
+    reply, later edit or later status is evidence.
+  exclusions:
+    - Quotations and block quotes.
+    - Code - fenced blocks, inline code, commands, log lines and test output.
+    - Identifiers - test, function and file names, flags and keys.
+    - Words a person wrote.
+    - Literal senses - a screen that displays a thing, a payer who pays money, a person who gives a thing its name.
+    - Mathematics, where show means prove.
+    - Nouns, adjectives and participles with no finite verb of their own.
+  boundary_cases:
+    - case: The verb name is followed by the values, as in "The check names two files, a.go and b.go."
+      ruling: not vacuous
+      reason: The clause states the values the verb stands for.
+    - case: The verb name in the sense "holds the name of" with no value, as in "No task text names the failing method."
+      ruling: vacuous
+      reason: The reader still cannot tell which method fails.
+    - case: A screen or a log shows a thing, as in "The build log shows exit status 2."
+      ruling: not vacuous
+      reason: A display surface displaying an observed value is the literal sense.
+    - case: A change pays for itself, with no amount or recipient.
+      ruling: vacuous
+      reason: No amount and no recipient is stated, so no payment can be checked.
+    - case: The object is a pronoun whose value lies outside the two sentences of context.
+      ruling: unresolved
+      reason: The evidence the scanner may read cannot settle whether the value is stated.
+    - case: A participle without a finite verb of its own, as in "the gates named above".
+      ruling: not vacuous
+      reason: Version 1 judges finite verbs only.
+error_analysis:
+  sample_sha256: a5294a7aa614e476da3a6b551a47b91cab297fb8a608fe05e9b671ebf3cf697b
+  unit: one prose sentence of an agent write, drawn by seed from the development data
+  size: 110
+  sessions_or_issues: 90
+  count_unit: issues
+  failure_kinds:
+    - {code: IL, kind: "an invented label or ordinary words with a private meaning, with no gloss", count: 50}
+    - {code: LS, kind: a sentence of more than 25 words, count: 48}
+    - {code: FR, kind: a fragment with no finite verb used as a sentence, count: 32}
+    - {code: VV, kind: "a vacuous verb phrase, any verb", count: 21}
+    - {code: PA, kind: a passive with no agent, count: 19}
+    - {code: CN, kind: an undefined code name or bare identifier used as a noun, count: 18}
+    - {code: EMPH, kind: emphasis by a bold sentence or capitals, count: 12}
+    - {code: MET, kind: a thing given an action it cannot do, count: 9}
+    - {code: TG, kind: telegraphic grammar with dropped verbs or articles, count: 8}
+    - {code: NS, kind: a stack of four or more nouns, count: 7}
+    - {code: EI, kind: an empty intensifier or sincerity word, count: 3}
+    - {code: GR, kind: ungrammatical or garden-path syntax, count: 3}
+    - {code: VQ, kind: a vague quantity with no threshold, count: 1}
+    - {code: MU, kind: a number with no unit, count: 1}
+  reads_since_last_new_kind: 44
+eligible_population:
+  pending: true
+  reason: >-
+    The final test is drawn at the freeze from the agent writes after the second time cut whose
+    groups are in neither other set; its labelable part is named once the labeller passes.
+bootstrap_seed:
+  pending: true
+  reason: The seed is taken from the freeze commit.
+serves_top:
+  pending: true
+  reason: The top measure's registration is not yet on the eval platform.
+bundle_digest:
+  pending: true
+  reason: The bundle is not frozen; `writing-check digest` computes the digest at the freeze.
+  command: writing-check digest
+manifests:
+  development:
+    file: development.jsonl
+    sha256: ed1fd4f275e331bea7d0bee6d6b8c971abd02c8288ff8ba1b23cd795cc1c18d3
+    dataset_version: writing-check split, first cut at event 259424
+    cases: 316479
+    writes: 159812
+    groups: 688
+    group_key: group (root issue, document, and near copies at word 5-gram Jaccard 0.9)
+    label_source: model labeller (writing-check label); labels are provisional until it passes validate-labeller
+  calibration:
+    file: calibration.jsonl
+    sha256: 99e067b8de16b07eba2e34ae3cc24aed2ca56054d730d995dfd83f9dbcf9a7ab
+    dataset_version: writing-check split, events 259424 to before 353466
+    cases: 14397
+    writes: 7612
+    groups: 768
+    group_key: group (root issue, document, and near copies at word 5-gram Jaccard 0.9)
+    label_source: model labeller (writing-check label); labels are provisional until it passes validate-labeller
+  final_test:
+    pending: true
+    reason: Drawn at the freeze from the final pool (groups first seen at event 353466 or later).
+final_test:
+  pending: true
+  reason: The final test is read once, by `writing-check score --final-test`, after the freeze.
+baseline:
+  description: >-
+    Six regular expressions, one for each phrase row of the plain-words skill (land, unblock,
+    name, pay, carry, show); a write is refused when any sentence matches. The majority class
+    (refuse nothing) is the second baseline.
+  code: internal/dispatch/writingcheck/baseline
+repeatability:
+  pending: true
+  reason: The reader is run three times on the calibration set at the freeze.
+comparability_bars:
+  insufficient_evidence_max: 0.10
+  not_applicable_max: 0.10
+  execution_coverage_min: 0.90
+  note: The method's defaults. The extraction coverage floor is set at the freeze from an independent read of the calibration set.
+audit_sample_size:
+  pending: true
+  reason: The weekly audit is not built; R11's two readings and the daily counts stand in.
+ceilings:
+  pending: true
+  reason: Twice the 95th percentiles of latency and tokens on the calibration set, set at the freeze.
+acceptance_bar:
+  pending: true
+  reason: The recall floor is set from the calibration set and committed before the final-test run.
+  precision_floor: 0.95
+  confidence: 0.95
+  note: >-
+    1 - precision over the refused writes is bounded at 5% with 95% confidence, composed as the
+    labeller's bound plus the scanner's bound against the labels, each at 97.5%.
+reader_model:
+  pending: true
+  reason: The model id is pinned in the bundle (BundleModelID) at the freeze.
+  kind: openai-chat
+  deadline: 2s
+  max_output_tokens: 4096
+  effort: none sent
+  candidate_cap: 24
+summarizer:
+  used: false
+  note: The reader reads Dispatch write bodies, not transcripts.
+labellers:
+  pending: true
+  reason: The labeller has not yet passed writing-check validate-labeller (183 agreeing planted cases and none disagreeing).
+validate_task: writing-check validate
+reproduce_task: writing-check reproduce
+kpi:
+  pending: true
+  reason: The KPI is registered with the frozen definition.
+schedule:
+  live: false
+  note: >-
+    The method's weekly live scoring is not built. R11's two readings (before the merge and 7
+    days after the deploy, by writing-check reading) and the server's daily counts stand in.
+alert_route:
+  pending: true
+  reason: No live scoring runs, so no run can fail or be missed yet.
+rule_costs:
+  manifest_sha256: a8a58b9cb8bbc5cd0228c83ead18cba27dd16035757b086f480c9795fb61f7a0
+  seed: 3231
+  writes: 600
+  ceiling: 0.05
+  rules:
+    - {id: semicolon, share: 0.622, enabled: false}
+    - {id: phrasal-verb, share: 0.0, enabled: true}
+    - {id: nominalization, share: 0.0, enabled: true}
+    - {id: long-sentence, share: 0.791, enabled: false}
+    - {id: dangling-conjunction, share: 0.0, enabled: true}

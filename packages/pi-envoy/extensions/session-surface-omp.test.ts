@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import * as path from "node:path";
+import { shellCommandLine } from "@legion/contracts";
 import {
   type Block,
   type Cleanup,
@@ -831,7 +832,7 @@ test.skipIf(skip)(
       frameText(each.message)
     );
     expect(published).toContain("printf hi");
-    expect(published).not.toContain("printf hi\n\n```\nhi\n```");
+    expect(published).not.toContain(`${shellCommandLine("printf hi")}\n\n\`\`\`\nhi\n\`\`\``);
     expect(conversation(turn.request)).not.toContain(SHELL_HEADING);
   },
   120_000
@@ -848,21 +849,23 @@ test.skipIf(skip)(
 
     const sent = await session.send("!printf hi");
     const reply = await session.reply(sent, "the reply to the person's command");
-    expect(reply).toBe("!printf hi\n\n```\nhi\n```");
+    const report = `${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``;
+    expect(reply).toBe(report);
 
     // The live view: one user message, keyed on the Dispatch message it answers.
     const published = await framesFor(session, sent, "the frame of `!printf hi`");
     expect(published).toHaveLength(1);
     const message = published[0]?.message ?? {};
     expect(message.role).toBe("user");
-    expect(frameText(message)).toBe("!printf hi\n\n```\nhi\n```");
+    expect(frameText(message)).toBe(report);
 
     // No turn ran for it, and the model reads the command with the next turn.
     expect(session.turns.length).toBe(turnsBefore);
     const request = await probe(session);
     const messages = messagesOf(request);
     expect(messages.filter((each) => each.includes(SHELL_HEADING))).toHaveLength(1);
-    expect(conversation(request)).toContain("!printf hi\\n\\n```\\nhi\\n```");
+    // The conversation is read as JSON, so the report's line breaks are escaped in it.
+    expect(conversation(request)).toContain(JSON.stringify(report).slice(1, -1));
     // No prompt carries the person's line: the host was handed nothing for it, so the only copy
     // of the line in the conversation is the one inside the command's own report.
     expect(conversation(request).split("!printf hi").length - 1).toBe(1);
@@ -894,11 +897,13 @@ test.skipIf(skip)(
     const session = await shellSession();
     const sent = await session.send("! printf hi");
     const reply = await session.reply(sent, "the reply to `! printf hi`");
-    expect(reply).toStartWith("! printf hi\n\n");
-    expect(reply).toBe("! printf hi\n\n```\nhi\n```");
+    expect(reply).toStartWith(`${shellCommandLine("! printf hi")}\n\n`);
+    expect(reply).toBe(`${shellCommandLine("! printf hi")}\n\n\`\`\`\nhi\n\`\`\``);
     const published = await framesFor(session, sent, "the frame of `! printf hi`");
     expect(published).toHaveLength(1);
-    expect(frameText(published[0]?.message ?? {})).toBe("! printf hi\n\n```\nhi\n```");
+    expect(frameText(published[0]?.message ?? {})).toBe(
+      `${shellCommandLine("! printf hi")}\n\n\`\`\`\nhi\n\`\`\``
+    );
   },
   120_000
 );
@@ -910,7 +915,7 @@ test.skipIf(skip)(
     const session = await shellSession();
     const sent = await session.send("!pwd -P");
     expect(await session.reply(sent, "the reply to `!pwd -P`")).toBe(
-      `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
+      `${shellCommandLine("!pwd -P")}\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
     );
   },
   120_000
@@ -925,7 +930,7 @@ test.skipIf(skip)(
     const command = `!printf '%s|%s|%s|%s' "$OMPCODE" "$CLAUDECODE" "$GIT_EDITOR" "$GPG_TTY"`;
     const sent = await session.send(command);
     expect(await session.reply(sent, "the reply to the command reading the host's variables")).toBe(
-      `${command}\n\n\`\`\`\n1|1|true|not a tty\n\`\`\``
+      `${shellCommandLine(command)}\n\n\`\`\`\n1|1|true|not a tty\n\`\`\``
     );
   },
   120_000
@@ -953,11 +958,11 @@ test.skipIf(skip)(
     const command = `!printf '%s|%s' "\${GIT_DIR-unset}" "\${LEGION_SURFACE_DOTENV-unset}"`;
     const sent = await session.send(command);
     expect(await session.reply(sent, "the reply to the command reading the two")).toBe(
-      `${command}\n\n\`\`\`\nunset|unset\n\`\`\``
+      `${shellCommandLine(command)}\n\n\`\`\`\nunset|unset\n\`\`\``
     );
     const slept = await session.send("!sleep 600");
     expect(await session.reply(slept, "the reply to `!sleep 600` under the `.env` limit")).toBe(
-      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
+      `${shellCommandLine("!sleep 600")}\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
   },
   120_000
@@ -980,7 +985,7 @@ test.skipIf(skip)(
     });
     const sent = await session.send("!pwd -P");
     expect(await session.reply(sent, "the reply to `!pwd -P` under a profile")).toBe(
-      `!pwd -P\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
+      `${shellCommandLine("!pwd -P")}\n\n\`\`\`\n${realpathSync(session.workspace)}\n\`\`\``
     );
   },
   120_000
@@ -994,12 +999,11 @@ test.skipIf(skip)(
     const turnsBefore = session.turns.length;
 
     const sent = await session.send("!printf aside", { mode: "aside" });
-    expect(await session.reply(sent, "the reply to the person's Aside")).toBe(
-      "!printf aside\n\n```\naside\n```"
-    );
+    const report = `${shellCommandLine("!printf aside")}\n\n\`\`\`\naside\n\`\`\``;
+    expect(await session.reply(sent, "the reply to the person's Aside")).toBe(report);
     const published = await framesFor(session, sent, "the frame of the Aside's command");
     expect(published).toHaveLength(1);
-    expect(frameText(published[0]?.message ?? {})).toBe("!printf aside\n\n```\naside\n```");
+    expect(frameText(published[0]?.message ?? {})).toBe(report);
     expect(session.turns.length).toBe(turnsBefore);
   },
   120_000
@@ -1013,7 +1017,7 @@ test.skipIf(skip)(
     const session = await shellSession();
     const sent = await session.send("!true");
     expect(await session.reply(sent, "the reply to `!true`")).toBe(
-      "!true\n\nThe command printed nothing."
+      `${shellCommandLine("!true")}\n\nThe command printed nothing.`
     );
   },
   120_000
@@ -1027,12 +1031,11 @@ test.skipIf(skip)(
   async () => {
     const session = await shellSession();
     const sent = await session.send("!printf 'a\\0b'");
-    expect(await session.reply(sent, "the reply to the command printing a NUL")).toBe(
-      "!printf 'a\\0b'\n\n```\nab\n```"
-    );
+    const report = `${shellCommandLine("!printf 'a\\0b'")}\n\n\`\`\`\nab\n\`\`\``;
+    expect(await session.reply(sent, "the reply to the command printing a NUL")).toBe(report);
     const published = await framesFor(session, sent, "the frame of the command printing a NUL");
     expect(published).toHaveLength(1);
-    expect(frameText(published[0]?.message ?? {})).toBe("!printf 'a\\0b'\n\n```\nab\n```");
+    expect(frameText(published[0]?.message ?? {})).toBe(report);
   },
   120_000
 );
@@ -1042,8 +1045,7 @@ test.skipIf(skip)(
   async () => {
     const session = await shellSession();
     const sent = await session.send("!exit 3");
-    const answer =
-      "!exit 3\n\nThe command printed nothing.\n\nThe command ended with exit status 3.";
+    const answer = `${shellCommandLine("!exit 3")}\n\nThe command printed nothing.\n\nThe command ended with exit status 3.`;
     expect(await session.reply(sent, "the reply to `!exit 3`")).toBe(answer);
     const published = await framesFor(session, sent, "the frame of `!exit 3`");
     expect(published).toHaveLength(1);
@@ -1065,7 +1067,7 @@ test.skipIf(skip)(
       session.reply(sent, "the reply to `!sleep 600`")
     );
     expect(reply).toBe(
-      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
+      `${shellCommandLine("!sleep 600")}\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
   },
   120_000
@@ -1080,10 +1082,10 @@ test.skipIf(skip)(
     const first = await session.send("!sleep 600");
     const second = await session.send("!printf hi");
     expect(await session.reply(second, "the reply to the second command")).toBe(
-      "!printf hi\n\nThe command was not run: this session is still running !sleep 600."
+      `${shellCommandLine("!printf hi")}\n\nThe command was not run: this session is still running !sleep 600.`
     );
     expect(await session.reply(first, "the reply to the command still running")).toBe(
-      `!sleep 600\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
+      `${shellCommandLine("!sleep 600")}\n\nThe command printed nothing.\n\nThe command was stopped after ${SHELL_LIMIT_MS} ms.`
     );
   },
   120_000
@@ -1097,7 +1099,7 @@ test.skipIf(skip)(
     const session = await shellSession();
     const command = "!printf 'a%.0s' $(seq 1 20000)";
     const sent = await session.send(command);
-    const cut = `${command}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
+    const cut = `${shellCommandLine(command)}\n\n\`\`\`\n${"a".repeat(SHELL_OUTPUT_MAX)}\n\`\`\`\n\nThe output was cut at ${SHELL_OUTPUT_MAX} characters.`;
     expect(await session.reply(sent, "the reply to the long command")).toBe(cut);
     const published = await framesFor(session, sent, "the frame of the long command");
     expect(published).toHaveLength(1);
@@ -1117,7 +1119,7 @@ test.skipIf(skip)(
     const session = await shellSession();
     const sent = await session.send("!!printf hi");
     const reply = await session.reply(sent, "the reply to `!!printf hi`");
-    expect(reply).toStartWith("!!printf hi\n\n```\n");
+    expect(reply).toStartWith(`${shellCommandLine("!!printf hi")}\n\n\`\`\`\n`);
     expect(reply).toContain("!printf");
     expect(reply).toEndWith("The command ended with exit status 127.");
 
@@ -1141,7 +1143,7 @@ test.skipIf(skip)(
     expect(await session.reply(sent, "the BTW's reply")).toBe("The model's answer.");
     expect(
       messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
-    ).not.toContain("!printf hi\n\n```\nhi\n```");
+    ).not.toContain(`${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``);
     await session.settled();
   },
   120_000
@@ -1166,7 +1168,7 @@ test.skipIf(skip)(
     expect(session.replied(sent)).toBe(false);
     expect(
       messageFrames(session.frames.slice(from)).map((each) => frameText(each.message))
-    ).not.toContain("!printf hi\n\n```\nhi\n```");
+    ).not.toContain(`${shellCommandLine("!printf hi")}\n\n\`\`\`\nhi\n\`\`\``);
     expect(
       session.requests.some((request) =>
         request.path.startsWith(`/api/v1/messages/${sent.messageID}/deliveries/`)

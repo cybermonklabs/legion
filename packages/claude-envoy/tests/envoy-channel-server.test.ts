@@ -591,6 +591,8 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
         body: {
           actor: { kind: "session", id: "ses_claude" },
           attempt: 1,
+          // The plugin's own error text, posted as generated: with no override on its first send,
+          // which this Dispatch takes.
           error: "Invalid Dispatch targeted delivery frame",
         },
       },

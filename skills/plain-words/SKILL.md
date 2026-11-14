@@ -16,16 +16,18 @@ Run this over your text before you send it. It takes a minute and it is not opti
    evasion and the question comes again.
 2. Start from what happens, not from a setting, a flag or a name: the reader can reach the setting
    from the behaviour, not the reverse.
-3. Define each term where you first use it, in literal words. No analogy: the reader cannot tell
-   which part of one is true.
+3. Call a thing by the word the reader uses for it. A common word has its plain sense only. Where
+   the reader has no word for a thing, describe the thing in words the reader uses. Never make up
+   a name, and never keep a word by defining it. No analogy: the reader cannot tell which part of
+   one is true.
 
 ## Before you send
 
 A fresh session that has only what the reader has removes what the reader does not need, and lists
-every term it cannot define. Fix each listed term. A reviewer that reads only to approve has not
-done this step, and an instruction alone did not make it happen, so the two lists are what show it
-ran. The check runs on the text going to the reader, never on the instructions you give that
-session or on what it sends back, which would never end.
+every word the reader does not use. Fix each listed word. A reviewer that reads only to approve
+has not done this step, and an instruction alone did not make it happen, so the two lists are what
+show it ran. The check runs on the text going to the reader, never on the instructions you give
+that session or on what it sends back, which would never end.
 
 ## The test
 
@@ -68,9 +70,6 @@ shouted twice, and a reader who sees three of them stops seeing any.
 
 Plain verbs that describe a real action stay: merge, delete, send, read, measure, kill a process by
 pid, repoint a link. The rule is against phrases that sound like an action and name none.
-
-A term of art stays when it is the literal name of the thing: a merge queue merges, a garbage
-collector collects, a sweep sweeps.
 
 ## Where this fits
 

@@ -249,6 +249,15 @@ export interface SessionContext {
 export interface CommandContext extends SessionContext {
   readonly client: DispatchClient;
   readonly actor: Actor;
+  /**
+   * The writing check's override on every write whose text Dispatch reads: the agent's own call
+   * to send a refused text through (`--override-writing-check`), always as "agent", spread into
+   * each such write's input. This executor never sends "generated", the plugins' mark for text
+   * they generate themselves. A resend under the override is a new call, so it carries a new
+   * Idempotency-Key (`DispatchClient`'s `#send` mints one per call): the refusal Dispatch stored
+   * under the old key is not replayed to it.
+   */
+  readonly writingOverride: { readonly override_writing_check?: "agent" };
   /** The call's owner, an issue reference resolved to the issue's key. */
   readonly owner: Owner | null;
   /** The owner, refused when the call names none. */

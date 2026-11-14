@@ -150,7 +150,7 @@ func TestResolveBootConfigRefusesEveryEmbedderShapeItCannotUse(t *testing.T) {
 	for _, variable := range readAzureSignIn(envGetter(nil)).missing {
 		cases = append(cases,
 			refusal{variable + " with neither place azure", signInEnvironment(map[string]string{variable: "x"}),
-				[]string{variable + " set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure: the shared Azure sign-in is read by whichever of them is azure"}},
+				[]string{variable + " set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure and no DISPATCH_WRITING_CHECK_AZURE_* setting is set: the shared Azure sign-in is read by the embedder or the answerer that is azure, and by the writing check's model"}},
 			refusal{variable + " under bedrock", signInEnvironment(map[string]string{"DISPATCH_EMBEDDER": "bedrock", variable: "x"}),
 				[]string{variable + " set, but neither DISPATCH_EMBEDDER nor DISPATCH_ANSWERER is azure"}},
 		)

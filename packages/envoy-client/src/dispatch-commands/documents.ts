@@ -377,7 +377,8 @@ async function refuseRemovingOpenDecisionBlocks(
 
 /** `dispatch doc-edit`: apply one batch of block operations to a live document. */
 export async function docEditCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, linkBase, documentOwner, resolveDocument } = context;
+  const { args, client, actor, input, linkBase, documentOwner, resolveDocument, writingOverride } =
+    context;
   const resolved = await resolveDocument(documentOwner(), optionalString(args, "artifact"));
   const ops = args.ops as EditOp[];
   const summary = optionalString(args, "summary");
@@ -388,6 +389,7 @@ export async function docEditCommand(context: CommandContext): Promise<DispatchT
     ops,
     ...(summary === undefined ? {} : { summary }),
     ...(precondition === undefined ? {} : { precondition }),
+    ...writingOverride,
     actor,
   });
   const retyped = ops.filter((operation) => operation.op === "retype").length;
@@ -578,7 +580,16 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
 
 /** `dispatch request-approval`: ask the human to approve this version of a document. */
 export async function requestApprovalCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, ownerArguments, documentOwner, resolveDocument } = context;
+  const {
+    args,
+    client,
+    actor,
+    input,
+    ownerArguments,
+    documentOwner,
+    resolveDocument,
+    writingOverride,
+  } = context;
   const artifactReference =
     optionalString(args, "artifact") ??
     (ownerArguments.ref?.kind === "spec" || ownerArguments.ref?.kind === "artifact"
@@ -591,6 +602,7 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
     actor,
     summary: stringArg(args, "summary"),
     ...(includeVerification ? { include_verification: true } : {}),
+    ...writingOverride,
   });
   // One line per requirement of the spec with no check, or the one line saying the spec
   // marks none, as Dispatch names them; never a missing plan task, since the plan comes
@@ -852,13 +864,18 @@ export const goBlankPattern =
 
 /** `dispatch artifact`: upload a document, a picture or a file to an issue or a project. */
 export async function artifactCommand(context: CommandContext): Promise<DispatchToolResult> {
-  const { args, client, actor, input, documentOwner, issue } = context;
+  const { args, client, actor, input, documentOwner, issue, writingOverride } = context;
   const summary = optionalString(args, "summary");
   const name = stringArg(args, "name");
   const content = optionalString(args, "content");
   const path = optionalString(args, "path");
   // What every create carries, whatever it stores under the name.
-  const options = { name, ...(summary === undefined ? {} : { summary }), actor };
+  const options = {
+    name,
+    ...(summary === undefined ? {} : { summary }),
+    ...writingOverride,
+    actor,
+  };
   const artifactOwner = documentOwner();
   // The server's own `blank`: a body carrying no content, or content Go's
   // `strings.TrimSpace` empties - the `blank :=` line of jsonArtifactUpload in

@@ -24,6 +24,7 @@ import (
 
 // checkResultRetractionInput is the body POST /api/v1/results/{id}/retract takes.
 type checkResultRetractionInput struct {
+	writingCheckOverride
 	Actor  *model.Actor `json:"actor"`
 	Reason string       `json:"reason" required:"true"`
 }
@@ -61,6 +62,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !requireUUIDPath(w, r, "result") {
+		return
+	}
+	// The reason is sentences every later reader of the result reads, so the writing check reads
+	// it, after the input is known good and before the transaction opens.
+	if !s.writingCheck(w, r, actor, input) {
 		return
 	}
 	resultID := r.PathValue("id")
