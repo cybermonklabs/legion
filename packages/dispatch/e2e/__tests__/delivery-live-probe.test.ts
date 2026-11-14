@@ -688,10 +688,10 @@ test(
 // six busy loops on two CPUs, the lowest of 74 runs of the 1 s timer measured 988.8 ms. The upper
 // bound follows the module's rule, three times the largest reading of its kind under load: the
 // largest accept-to-close of a correct 1 s timer, in 74 runs under six busy loops on two CPUs on
-// 2026-11-14, was 1 031.7 ms, so the bound is 3 200 ms, three times that rounded up to the next
-// 100 ms. So the row catches a timer set well short, one set several times too long and one left
-// at the 45 s default; it does not catch one set between about 0.5 s and about 3 s, such as 2 s
-// for 1 s, which held 1 987-2 029 ms.
+// 2026-11-14, was 1 031.7 ms, three times which is 3 095.1 ms; the bound is 3 200 ms, which keeps
+// over 100 ms above that. So the row catches a timer set well short, one set several times too
+// long and one left at the 45 s default; it does not catch one set between about 0.5 s and about
+// 3 s, such as 2 s for 1 s, which held 1 987-2 029 ms.
 const heldUnderMs = 3_200;
 
 test(
