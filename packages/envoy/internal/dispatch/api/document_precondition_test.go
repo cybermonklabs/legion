@@ -417,3 +417,50 @@ func TestDocumentEditPreconditionRejectsWriterAfterDurableAppendRace(t *testing.
 		t.Fatalf("race document = %q, want writer only", got.Markdown)
 	}
 }
+
+// A `replace` that writes blocks is a conditional edit like any other (INFRA-1520 R9): a `blocks`
+// precondition naming the matched block's current token takes it, the blocks it adds need no token
+// of their own, having no earlier version to name, and a stale token for that block refuses it with
+// nothing written. A `replace` that parses to one paragraph answers the same way.
+func TestDocumentEditBlockPreconditionCoversAReplaceThatWritesBlocks(t *testing.T) {
+	for _, test := range []struct{ name, with, want string }{
+		{
+			name: "a with that writes blocks",
+			with: "Here is the plan:\n\n- first\n- second",
+			want: "guard\n\nHere is the plan:\n\n- first\n- second\n",
+		},
+		{name: "a with of one paragraph", with: "rewritten", want: "guard\n\nrewritten\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			handler, _, _ := preconditionTestHandler(t)
+			issue := createInteractionIssue(t, handler, "TEST", "Conditional replace", "guard\n\ntarget")
+			blocks := readDocumentPreconditionBlocks(t, handler, issue.PrimaryArtifactID)
+			if len(blocks) != 2 {
+				t.Fatalf("blocks = %#v, want guard and target", blocks)
+			}
+			target := blocks[1]
+			stale := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+				"ops":          []map[string]string{{"op": "replace", "find": "target", "with": test.with}},
+				"precondition": map[string]any{"blocks": []map[string]string{{"id": target.ID, "token": "sha256:" + strings.Repeat("0", 64)}}},
+			}, "alice")
+			if stale.Code != http.StatusConflict || !strings.Contains(stale.Body.String(), `"code":"PRECONDITION_FAILED"`) {
+				t.Fatalf("stale token: status=%d body=%s, want 409 PRECONDITION_FAILED", stale.Code, stale.Body.String())
+			}
+			t.Logf("the precondition sent named %s with a stale token, and the answer was %s", target.ID, stale.Body.String())
+			if got := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID); got.Markdown != "guard\n\ntarget\n" {
+				t.Fatalf("the refused edit left %q, want the document unchanged", got.Markdown)
+			}
+			applied := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+				"ops":          []map[string]string{{"op": "replace", "find": "target", "with": test.with}},
+				"precondition": map[string]any{"blocks": []map[string]string{{"id": target.ID, "token": target.Token}}},
+			}, "alice")
+			if applied.Code != http.StatusOK {
+				t.Fatalf("current token: status=%d body=%s", applied.Code, applied.Body.String())
+			}
+			t.Logf("the precondition sent named %s at its current token, and the answer was %s", target.ID, applied.Body.String())
+			if got := readDocumentPrecondition(t, handler, issue.PrimaryArtifactID); got.Markdown != test.want {
+				t.Fatalf("the conditional edit wrote %q, want %q", got.Markdown, test.want)
+			}
+		})
+	}
+}

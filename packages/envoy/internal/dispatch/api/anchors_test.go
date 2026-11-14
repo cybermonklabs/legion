@@ -656,8 +656,13 @@ func TestSuggestionAcceptRefusals(t *testing.T) {
 			edited := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
 				"ops": []map[string]any{{"op": "replace", "find": test.quote, "with": test.replaceWith}},
 			}, "alice")
-			if edited.Code != http.StatusBadRequest || !strings.Contains(edited.Body.String(), `"code":"INVALID_OP"`) {
-				t.Fatalf("the same text through the edit route: status=%d body=%s", edited.Code, edited.Body.String())
+			// A `replace` writes the blocks its `with` names now, so the edit route refuses this
+			// text where the accept refuses it, for the same reason: the code block the ask's
+			// question would hold. It answered INVALID_OP while a replacement was inline.
+			if edited.Code != http.StatusBadRequest || !strings.Contains(edited.Body.String(), `"code":"`+test.code+`"`) ||
+				!strings.Contains(edited.Body.String(), test.reason) {
+				t.Fatalf("the same text through the edit route: status=%d body=%s, want 400 %s naming %s",
+					edited.Code, edited.Body.String(), test.code, test.reason)
 			}
 			if after, err := documentService.Text(context.Background(), issue.PrimaryArtifactID); err != nil || after != before {
 				t.Fatalf("document after the refused edit = %q (%v), want it unchanged", after, err)

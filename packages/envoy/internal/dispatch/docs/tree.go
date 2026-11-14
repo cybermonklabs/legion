@@ -119,8 +119,13 @@ func opensDocument(tree *pmdoc.Node, position int) bool {
 	if position == 0 {
 		return true
 	}
+	// Only position 1 can be the start of a first top-level textblock's text, and reading the
+	// textblock walks the document, which every replace would pay for otherwise.
+	if position != 1 {
+		return false
+	}
 	at, ok := pmdoc.ContainingTextblock(tree, position)
-	return ok && position == 1 && len(at.Ancestors) == 1
+	return ok && len(at.Ancestors) == 1
 }
 
 // parseReplacing parses markdown a caller writes over live, the document it replaces whole (nil

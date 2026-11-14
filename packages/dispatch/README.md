@@ -522,6 +522,31 @@ lists blocks while `GET /api/v1/references?to=<document>&kind=part_of` lists non
 `documents=<n> indexed=<n> not_indexed=<n>`, then each not-indexed document's reference. A document
 with no blocks counts as indexed, since it owes no nodes.
 
+`e2e/acceptance/replace-blocks.sh` drives what `doc-edit`'s `replace` does with a `with` that
+names blocks: a list written over a paragraph's whole text, a list written over the text of a
+nested list item, the refusals in a heading, in a table cell and for a `with` opening with the
+matched item's own marker, and the markdown each edit answers with. It takes the first three
+inputs, with `PROJECT` optional (unset, it makes a project of its own), and writes one issue in
+that project. It is the one driver that can start its own server: given `DATABASE_URL`, a
+loopback database of the run's own, it starts `bun run dispatch:local` and stops it again from
+its own trap. That command truncates and reseeds the database it is given, so before anything
+starts the run asks the server the connection string reaches, through `psql`, which database it
+is (`current_database()`) and which port it answers on (`inet_server_port()`), and asks the same
+through `LEGION_TEST_PG_DSN` where that is set. It refuses a connection string it gets no answer
+through, and a database of the same name as the shared one on a server it cannot prove is
+another: two names that differ pass, and two equal names pass only where both servers answered a
+port and the ports differ. It parses neither string itself, so the database it judges is the one
+libpq connects to, however the string spells it; it reads `DATABASE_URL` with no `PG*` variable
+set, as the instance reads it.
+The connection string the run is given must carry everything libpq needs to connect — host, port,
+user, password and TLS settings among them — since the run unsets every `PG*` variable before it
+starts the instance, so none survives into it.
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U legion_test dispatch_local_replace
+DATABASE_URL=postgres://legion_test@127.0.0.1:5433/dispatch_local_replace?sslmode=disable \
+  bash packages/dispatch/e2e/acceptance/replace-blocks.sh
+```
 `e2e/acceptance/create-document.sh` drives the command line's own create, the one that makes a
 document from a title with no file and no text, through the same real CLI. It takes `DISPATCH_URL`,
 the bearer and `DISPATCH_DEFAULT_ASSIGNEE`, a person who has signed in to that server: the bearer
@@ -559,7 +584,7 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All five source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
+All six source `e2e/acceptance/lib.sh`, the preamble they share: it refuses an unset input or a
 missing command with exit 2, and reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE`
 without printing it, unsetting both so no process the script starts inherits it.
 

@@ -1,0 +1,5 @@
+kind: Changed
+body: 'dispatch doc-edit''s replace writes the blocks its with names: the text is parsed as an insert''s markdown is and fitted where the match sits, and a match in a heading, in any cell of a table, or in a typed block whose rule cannot hold them is refused with the document unchanged. Every edit answers with the markdown of the blocks it wrote, and a batch whose result drops a block an open ask points at is refused.'
+time: 2026-11-11T05:35:07.778904024Z
+custom:
+    Issue: pr3516

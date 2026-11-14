@@ -18964,6 +18964,9 @@
                 "type": "null"
               }
             ]
+          },
+          "written": {
+            "type": "string"
           }
         },
         "required": [
@@ -18972,7 +18975,8 @@
           "lost_ops",
           "token",
           "unchanged_ops",
-          "version"
+          "version",
+          "written"
         ],
         "type": "object"
       },

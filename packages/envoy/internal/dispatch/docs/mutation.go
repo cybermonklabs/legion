@@ -893,43 +893,116 @@ func placeList(places []string) string {
 	return strings.Join(places[:len(places)-1], ", ") + " and " + places[len(places)-1]
 }
 
+// refuseDroppedAskBlocks refuses a write whose result holds no block for an open ask of the
+// document: a question a person can still answer is not lost to a write. This is the
+// whole-document reading - every open ask row whose block the written tree does not hold - and it
+// serves the writers that replace the document whole, an upload repairing one (ReplaceText) and a
+// rebuild (RebuildDocument), where every open ask row of the document is that write's own. Those
+// two call it directly and nothing gates it: the tree they hand it is the whole document they
+// write, so no set of dropped blocks narrows what it reads. An edit batch is held to its own
+// blocks instead (refuseBatchDroppedAskBlocks), which the gate of that route, droppedAskBlocks,
+// narrows to the blocks the batch dropped itself. A person's own editor is held to neither:
+// settlement retracts the ask of a block that leaves the document there.
 func (s *Service) refuseDroppedAskBlocks(ctx context.Context, artifactID string, target *pmdoc.Node) error {
+	open, err := s.openAskBlocks(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+	for id := range askBlockIDs(target) {
+		delete(open, id)
+	}
+	return refuseLostAskBlocks(open)
+}
+
+// refuseBatchDroppedAskBlocks refuses an edit batch for the open asks of the blocks the batch
+// dropped itself, dropped being its gate's own set (droppedAskBlocks). This is the edit route's
+// reading (ApplyOps, applyOpsUnconditional): a document can carry an open ask row whose block went
+// before this batch ran, and a batch that did not touch that block is not the write that lost it,
+// so refusing on it would name the caller a block they never wrote, with advice they cannot act
+// on.
+func (s *Service) refuseBatchDroppedAskBlocks(ctx context.Context, artifactID string, dropped map[string]struct{}) error {
+	open, err := s.openAskBlocks(ctx, artifactID)
+	if err != nil {
+		return err
+	}
+	for id := range open {
+		if _, batch := dropped[id]; !batch {
+			delete(open, id)
+		}
+	}
+	return refuseLostAskBlocks(open)
+}
+
+// openAskBlocks is the block id of each open ask of the document.
+func (s *Service) openAskBlocks(ctx context.Context, artifactID string) (map[string]struct{}, error) {
 	rows, err := s.queryFrom(ctx).Query(ctx, `
 		select block_id from asks
 		where block_artifact_id = $1 and state = 'open' and block_id is not null
 	`, artifactID)
 	if err != nil {
-		return fmt.Errorf("read open ask blocks: %w", err)
+		return nil, fmt.Errorf("read open ask blocks: %w", err)
 	}
 	defer rows.Close()
 	open := map[string]struct{}{}
 	for rows.Next() {
 		var blockID string
 		if err := rows.Scan(&blockID); err != nil {
-			return fmt.Errorf("scan open ask block: %w", err)
+			return nil, fmt.Errorf("scan open ask block: %w", err)
 		}
 		open[blockID] = struct{}{}
 	}
 	if err := rows.Err(); err != nil {
-		return fmt.Errorf("read open ask blocks: %w", err)
+		return nil, fmt.Errorf("read open ask blocks: %w", err)
 	}
-	pmdoc.Walk(target, func(node *pmdoc.Node) bool {
-		if node.Type == "ask" {
-			if blockID, ok := node.Attrs[pmdoc.BlockIDAttr].(string); ok {
-				delete(open, blockID)
-			}
-		}
-		return true
-	})
-	if len(open) == 0 {
+	return open, nil
+}
+
+// refuseLostAskBlocks names the blocks a write loses whose asks are open, or nil where it loses
+// none, and says what to do before the write.
+func refuseLostAskBlocks(lost map[string]struct{}) error {
+	if len(lost) == 0 {
 		return nil
 	}
-	blockIDs := make([]string, 0, len(open))
-	for blockID := range open {
+	blockIDs := make([]string, 0, len(lost))
+	for blockID := range lost {
 		blockIDs = append(blockIDs, blockID)
 	}
 	sort.Strings(blockIDs)
-	return fmt.Errorf("replacement removes open ask blocks %s", strings.Join(blockIDs, ", "))
+	if len(blockIDs) == 1 {
+		return fmt.Errorf(
+			"this write removes the open decision block %s, whose question a person can still answer; "+
+				"answer or resolve its ask, or remove the block in the document editor, before this write",
+			blockIDs[0],
+		)
+	}
+	return fmt.Errorf(
+		"this write removes the open decision blocks %s, whose questions a person can still answer; "+
+			"answer or resolve each ask, or remove the blocks in the document editor, before this write",
+		strings.Join(blockIDs, ", "),
+	)
+}
+
+// droppedAskBlocks is each ask block before held that after does not, which is what a batch owes
+// the asks table a read for: the question of a block the edit's result no longer holds may be one
+// a person can still answer (refuseBatchDroppedAskBlocks). Both trees are already in hand, so a
+// batch that drops none answers from memory and sends no statement. An ask block carrying no id is
+// passed over, as the open asks are read by block id and no row can point at none.
+func droppedAskBlocks(before, after *pmdoc.Node) map[string]struct{} {
+	kept := askBlockIDs(after)
+	var dropped map[string]struct{}
+	pmdoc.WalkAskBlocks(before, func(id string) {
+		if id == "" {
+			return
+		}
+		if _, held := kept[id]; held {
+			return
+		}
+		if dropped == nil {
+			dropped = map[string]struct{}{}
+		}
+		dropped[id] = struct{}{}
+	})
+	return dropped
 }
 
 // Text returns the rendered document the caller sees (readDocument).
@@ -1566,14 +1639,8 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 				mutationErr = err
 				return
 			}
-			next := batch.tree
-			pmdoc.EnsureBlockIDs(next)
-			if err := validateEditedAskBlocks(tree, next); err != nil {
-				mutationErr = &ErrInvalidAskBlock{Reason: err}
-				return
-			}
 			var written pmdoc.ValidDocument
-			if outcome, written, mutationErr = batch.outcome(len(ops)); mutationErr != nil {
+			if outcome, written, mutationErr = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); mutationErr != nil {
 				return
 			}
 			mutationErr = recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
@@ -1604,6 +1671,36 @@ func (s *Service) ApplyOps(ctx context.Context, artifactID string, ops []model.E
 	return outcome, nil
 }
 
+// finishBatch is the tail both edit routes run once their batch has applied (ApplyOps,
+// applyOpsUnconditional): the block ids the result still lacks, the two ask rules it is held to,
+// and the outcome the route answers with, read back where the batch changed the document. tree is
+// the document the batch started from, the one this edit stamped the missing ask block ids on, and
+// the document returned is the one the route stores.
+func (s *Service) finishBatch(ctx context.Context, artifactID string, tree *pmdoc.Node, batch editBatch, ops int) (EditOutcome, pmdoc.ValidDocument, error) {
+	next := batch.tree
+	pmdoc.EnsureBlockIDs(next)
+	if err := validateEditedAskBlocks(tree, next); err != nil {
+		return EditOutcome{}, pmdoc.ValidDocument{}, &ErrInvalidAskBlock{Reason: err}
+	}
+	if dropped := droppedAskBlocks(batch.beforeTree, next); len(dropped) > 0 {
+		if err := s.refuseBatchDroppedAskBlocks(ctx, artifactID, dropped); err != nil {
+			return EditOutcome{}, pmdoc.ValidDocument{}, &ErrInvalidAskBlock{Reason: err}
+		}
+	}
+	outcome, written, err := batch.outcome(ops)
+	if err != nil {
+		return EditOutcome{}, pmdoc.ValidDocument{}, err
+	}
+	// A batch that left the document as it was wrote nothing to read back, so it pays for no
+	// render of the document.
+	if outcome.Changed {
+		if outcome.Written, err = batch.readBack(written); err != nil {
+			return EditOutcome{}, pmdoc.ValidDocument{}, err
+		}
+	}
+	return outcome, written, nil
+}
+
 // applyOpsUnconditional preserves the precondition-free edit path's existing
 // validation and live-mutation behavior. Its mutate callback below reads and writes applyLive's
 // own fork, never the live room directly: applyLive refuses an unjoined context (errUnjoined) and
@@ -1632,13 +1729,8 @@ func (s *Service) applyOpsUnconditional(ctx context.Context, artifactID string, 
 		if err != nil {
 			return err
 		}
-		next := batch.tree
-		pmdoc.EnsureBlockIDs(next)
-		if err := validateEditedAskBlocks(tree, next); err != nil {
-			return &ErrInvalidAskBlock{Reason: err}
-		}
 		var written pmdoc.ValidDocument
-		if outcome, written, err = batch.outcome(len(ops)); err != nil {
+		if outcome, written, err = s.finishBatch(ctx, artifactID, tree, batch, len(ops)); err != nil {
 			return err
 		}
 		return recordInsertedText(ctx, artifactID, "", fragment, since, batch.writes, func() error {
