@@ -232,9 +232,10 @@ first. What outlives the consumer is the place in the stream the
 session had reached: before each delete the listener records that place on a lane of the stream
 only it reads, `notifications.envoy.resume.<session_id>`, which the stream keeps for its 72 hours,
 which no session may follow and which the publish route refuses. A session that comes back is
-given a new consumer starting where the old one stopped — at the resume point its own plugin
-kept, or at that record when the plugin has none, as after a `/clear` or a fresh install — so it
-is handed what was published while it was away, each message once.
+given a new consumer starting where the old one stopped: at the lower of the resume point its own
+plugin kept and that record, or at the record alone when the plugin has none, as after a `/clear`
+or a fresh install, and never past the stream's end. So it is handed what was published while it
+was away, each message once.
 
 - **What comes this way:** the session's inbox, `notifications.agent.<session_id>` (direct
   messages, Dispatch deliveries, and the forwards of role messages to a role it holds), and the
