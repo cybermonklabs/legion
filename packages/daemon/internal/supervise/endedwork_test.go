@@ -553,7 +553,7 @@ func TestARelaunchRecordsAReportOlderThanTheCutTurnAsNoReport(t *testing.T) {
 // than dropping the subagent for an unknown. The control is the same subagent reported after the
 // turn began: the record holds a report of the last turn, and the sentence names the subagent and
 // says nothing of a missing report.
-func TestARelaunchOfAnIdleProcessKeepsWhatItsOlderReportSaw(t *testing.T) {
+func TestARelaunchRecordsTheWorkAnOlderReportSawOfAProcessThatDiesIdle(t *testing.T) {
 	const saysLastTurnGone = "So the subagents and background jobs of that turn are gone too."
 	for _, row := range []struct {
 		name string
