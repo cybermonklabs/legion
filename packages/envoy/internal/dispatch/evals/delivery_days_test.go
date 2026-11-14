@@ -24,8 +24,9 @@ const (
 	unmappedRepo = "acme/zeta"
 )
 
-// seedAttribution writes, on attributionDay, the delivery history of k15 over three projects:
-// ALPHA (acme/alpha, the deploy repository), BETA (acme/beta) and GAMMA (no repository, no row).
+// seedAttribution writes, on attributionDay, the delivery history of the attribution rule over
+// three projects: ALPHA (acme/alpha, the deploy repository), BETA (acme/beta) and GAMMA (no
+// repository, no row).
 //
 //   - acme/alpha#1 names BETA-1, so it counts for BETA although its repository is ALPHA's;
 //   - acme/alpha#2 names no issue, so it counts for ALPHA through its repository;
@@ -203,7 +204,7 @@ func allFacts(rows []DayRow) []string {
 	return facts
 }
 
-// TestEachDeliveryAndCIRowCountsForTheProjectD1Names (k15): over seedAttribution's day, a pull
+// TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo: over seedAttribution's day, a pull
 // request counts for its issue's project and one with no issue for its repository's, with
 // via_repository 1; the deploy that ships both counts in both; the deploys that ship none count for
 // the deploy repository's project; the CI run counts for its repository's project; the pull
@@ -213,7 +214,7 @@ func allFacts(rows []DayRow) []string {
 // ALPHA: ALPHA's acme/alpha rows of the pull-request evals, which held it alone, become zero rows
 // rather than going, and its items of the day that it no longer holds are deleted; written again,
 // the moved day rewrites nothing.
-func TestEachDeliveryAndCIRowCountsForTheProjectD1Names(t *testing.T) {
+func TestEachDeliveryAndCIRowCountsForTheProjectItIsAttributedTo(t *testing.T) {
 	r := newRig(t)
 	settings := seedAttribution(t, r)
 	ctx := t.Context()

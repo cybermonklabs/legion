@@ -37,7 +37,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWholeWhenADaemonN
 	}
 	seedTree(t, seeded, child, tree)
 
-	whole, err := ComputeProject(t.Context(), pool, project, seeded.now)
+	whole, _, err := ComputeProject(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project whole: %v", err)
 	}
@@ -60,7 +60,7 @@ func TestEveryIssueComputedAloneHoldsTheFactsTheProjectComputedWholeWhenADaemonN
 		}
 	}
 	for _, key := range seeded.fixture.Keys {
-		alone, err := Compute(t.Context(), pool, project, []string{key}, seeded.now)
+		alone, _, err := computeKeys(t.Context(), pool, project, []string{key}, nil, seeded.now)
 		if err != nil {
 			t.Fatalf("compute %s on its own: %v", key, err)
 		}

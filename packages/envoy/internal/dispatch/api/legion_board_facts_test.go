@@ -71,7 +71,7 @@ func TestTheBoardCarriesOneStoredEntryPerIssueLegionWorked(t *testing.T) {
 	// them: a seed that answers fifteen proves the rule and not the check.
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Trees: 5, Now: now})
 	nameLegionDaemon(t, handler, fixture.Project, "http://legion-legion.internal:13370")
-	rows, err := legionfacts.ComputeProject(t.Context(), database.Pool, fixture.Project, now)
+	rows, _, err := legionfacts.ComputeProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestACardsWaitingReasonEqualsTheStoredRowsWithAndWithoutAnAdmissionBlock(t 
 
 			// The stored rows as the facts consumer writes them, which is the one computation of
 			// a waiting_reason (legionfacts.ComputeProject).
-			rows, err := legionfacts.ComputeProject(t.Context(), database.Pool, "INFRA", now)
+			rows, _, err := legionfacts.ComputeProject(t.Context(), database.Pool, "INFRA", now)
 			if err != nil {
 				t.Fatalf("compute the project's facts: %v", err)
 			}

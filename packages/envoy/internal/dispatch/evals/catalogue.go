@@ -109,15 +109,12 @@ func control(series Series) Series {
 	return series
 }
 
-// everyCut is the cuts every Legion series is stored in (metrics.CutSeries).
-var everyCut = []metrics.Scope{metrics.ScopeAll, metrics.ScopeRoots, metrics.ScopeChildren}
-
-// inCuts is each of series in each of scopes, named as the cut stores it; only the all cut of a
-// primary series is primary.
-func inCuts(scopes []metrics.Scope, series ...Series) []Series {
-	cut := make([]Series, 0, len(series)*len(scopes))
+// inCuts is each of series in each of the cuts every Legion series is stored in (metrics.Cuts),
+// named as the cut stores it; only the all cut of a primary series is primary.
+func inCuts(series ...Series) []Series {
+	cut := make([]Series, 0, len(series)*len(metrics.Cuts))
 	for _, one := range series {
-		for _, scope := range scopes {
+		for _, scope := range metrics.Cuts {
 			stored := one
 			stored.Series = metrics.CutSeries(one.Series, scope)
 			stored.IsPrimary = one.IsPrimary && scope == metrics.ScopeAll
@@ -131,7 +128,7 @@ func inCuts(scopes []metrics.Scope, series ...Series) []Series {
 func perRole(roles ...string) []Series {
 	series := make([]Series, len(roles))
 	for i, role := range roles {
-		series[i] = headline(role, "hours", AggQuantile)
+		series[i] = headline(role, unitHours, AggQuantile)
 	}
 	return series
 }
@@ -142,10 +139,13 @@ const (
 	unitHours   = "hours"
 	unitRatio   = "ratio"
 	unitIssues  = "issues"
+	unitDeploys = "deploys"
+	unitRounds  = "rounds"
 )
 
-// timing is the one series of a CI eval: the minutes of each timed result, with each outcome
-// counted beside them.
+// timing is the one series of an eval of minutes: every value of each day timed, folded as a
+// quantile (the lead times, the time to restore, and the CI evals, whose parts count each outcome
+// beside their minutes).
 var timing = primary(headline(measures.SeriesMinutes, unitMinutes, AggQuantile))
 
 // catalogue is every computed eval, in the order a project's `evals-md` holds their sections.
@@ -162,10 +162,10 @@ var catalogue = []catalogueEntry{
 				{Mode: "A deploy that ships pull requests of two projects counts once in each project, so the projects' counts add up to more than the deployment's count.", Guard: "The Delivery page counts each deploy once for the whole deployment."},
 			},
 			Unit: "deploys/day", Direction: DirectionHigherBetter,
-			Target: new(20.0), TargetInclusive: true, TargetJudges: []string{"deploys.per_day"},
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldDeployFrequency",
+			Target: new(measures.DefaultTargets.DeploysPerDay), TargetInclusive: true, TargetJudges: []string{measures.SeriesDeploys + ".per_day"},
+			Kind: KindDelivery, Source: SourceFoldDeployFrequency,
 		},
-		series: []Series{primary(headline(measures.SeriesDeploys, "deploys", AggSum))},
+		series: []Series{primary(headline(measures.SeriesDeploys, unitDeploys, AggSum))},
 	},
 	{
 		definition: Definition{
@@ -179,8 +179,8 @@ var catalogue = []catalogueEntry{
 				{Mode: "A deploy that shipped two broken pull requests could count twice.", Guard: "Each share counts a deploy once, whatever number of flags name it."},
 			},
 			Unit: unitRatio, Direction: DirectionLowerBetter,
-			Target: new(0.05), TargetInclusive: false, TargetJudges: []string{"per_deploy.rate"},
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate",
+			Target: new(measures.DefaultTargets.ChangeFailureRate), TargetInclusive: false, TargetJudges: []string{measures.SeriesPerDeploy + ".rate"},
+			Kind: KindDelivery, Source: SourceFoldChangeFailureRate,
 		},
 		series: []Series{
 			primary(headline(measures.SeriesPerDeploy, unitRatio, AggRatio)),
@@ -200,9 +200,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "A median hides one long outage among short ones.", Guard: "The day rows store every recovery time, not only the median."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldTimeToRestore",
+			Kind: KindDelivery, Source: SourceFoldTimeToRestore,
 		},
-		series: []Series{primary(headline(measures.SeriesMinutes, unitMinutes, AggQuantile))},
+		series: []Series{timing},
 	},
 	{
 		definition: Definition{
@@ -215,10 +215,10 @@ var catalogue = []catalogueEntry{
 				{Mode: "One slow pull request sets the maximum for the whole window.", Guard: "The target judges the median beside the maximum."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Target: new(45.0), TargetInclusive: false, TargetJudges: []string{"minutes.max", "minutes.median"},
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldLeadTime",
+			Target: new(measures.DefaultTargets.MergeToProductionMinutes), TargetInclusive: false, TargetJudges: []string{measures.SeriesMinutes + ".max", measures.SeriesMinutes + ".median"},
+			Kind: KindDelivery, Source: SourceFoldLeadTime,
 		},
-		series: []Series{primary(headline(measures.SeriesMinutes, unitMinutes, AggQuantile))},
+		series: []Series{timing},
 	},
 	{
 		definition: Definition{
@@ -232,9 +232,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "A pull request that has not deployed yet is left out.", Guard: "Dispatch builds the merge day again when the run that ships the pull request lands."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldLeadTime",
+			Kind: KindDelivery, Source: SourceFoldLeadTime,
 		},
-		series: []Series{primary(headline(measures.SeriesMinutes, unitMinutes, AggQuantile))},
+		series: []Series{timing},
 	},
 	{
 		definition: Definition{
@@ -247,9 +247,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "A pull request that has not deployed yet is left out.", Guard: "Dispatch builds the merge day again when the run that ships the pull request lands."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldLeadTime",
+			Kind: KindDelivery, Source: SourceFoldLeadTime,
 		},
-		series: []Series{primary(headline(measures.SeriesMinutes, unitMinutes, AggQuantile))},
+		series: []Series{timing},
 	},
 	{
 		definition: Definition{
@@ -262,10 +262,10 @@ var catalogue = []catalogueEntry{
 				{Mode: "A pull request that waits for days does not move the median.", Guard: "The 90th percentile shows the slow end."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Target: new(60.0), TargetInclusive: false, TargetJudges: []string{"minutes.median"},
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldLeadTime",
+			Target: new(measures.DefaultTargets.OpenedToMergeMedianMinutes), TargetInclusive: false, TargetJudges: []string{measures.SeriesMinutes + ".median"},
+			Kind: KindDelivery, Source: SourceFoldLeadTime,
 		},
-		series: []Series{primary(headline(measures.SeriesMinutes, unitMinutes, AggQuantile))},
+		series: []Series{timing},
 	},
 	{
 		definition: Definition{
@@ -278,8 +278,8 @@ var catalogue = []catalogueEntry{
 				{Mode: "A run that is still running counts in neither part of the share.", Guard: "Dispatch builds the day again when the run concludes."},
 			},
 			Unit: unitRatio, Direction: DirectionHigherBetter,
-			Target: new(0.9), TargetInclusive: true, TargetJudges: []string{"runs.rate"},
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess",
+			Target: new(measures.DefaultTargets.DeployRunSuccessRate), TargetInclusive: true, TargetJudges: []string{measures.SeriesRuns + ".rate"},
+			Kind: KindDelivery, Source: SourceFoldDeployRunSuccess,
 		},
 		series: []Series{primary(headline(measures.SeriesRuns, unitRatio, AggRatio))},
 	},
@@ -294,8 +294,8 @@ var catalogue = []catalogueEntry{
 				{Mode: "A window that ends in the past reads the count of its last day, not the count now.", Guard: "Today's row is written again at each refresh, so a window that ends today reads the newest count."},
 			},
 			Unit: unitIssues, Direction: DirectionLowerBetter,
-			Target: new(0.0), TargetInclusive: true, TargetJudges: []string{"issues.value"},
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery.ListUnownedP0",
+			Target: new(float64(measures.DefaultTargets.UnownedP0)), TargetInclusive: true, TargetJudges: []string{SeriesUnownedP0 + ".value"},
+			Kind: KindDelivery, Source: SourceListUnownedP0,
 		},
 		series: []Series{primary(headline(SeriesUnownedP0, unitIssues, AggLast))},
 	},
@@ -310,7 +310,7 @@ var catalogue = []catalogueEntry{
 				{Mode: "A window with few merged pull requests gives a share of a small count.", Guard: "The day rows keep the count of pull requests beside the count of rework."},
 			},
 			Unit: unitRatio, Direction: DirectionLowerBetter,
-			Kind: KindDelivery, Source: SourceComputedPrefix + "delivery/measures.FoldReworkShare",
+			Kind: KindDelivery, Source: SourceFoldReworkShare,
 		},
 		series: []Series{primary(headline(measures.SeriesPRs, unitRatio, AggRatio))},
 	},
@@ -326,7 +326,7 @@ var catalogue = []catalogueEntry{
 				{Mode: "A run whose jobs Dispatch has not stored counts in `minutes` and adds nothing to the job series.", Guard: "Each job series counts its own results, so its count shows how many runs it covers."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindCI, Source: SourceComputedPrefix + "delivery/measures.FoldTiming",
+			Kind: KindCI, Source: SourceFoldTiming,
 		},
 		series: []Series{timing, func() Series {
 			jobs := control(headline(SeriesJobs, unitMinutes, AggQuantile))
@@ -345,7 +345,7 @@ var catalogue = []catalogueEntry{
 				{Mode: "The eval follows one job name from the delivery settings, so a renamed job stops being counted.", Guard: "A change of the settings rebuilds every day of the delivery and CI evals."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindCI, Source: SourceComputedPrefix + "delivery/measures.FoldTiming",
+			Kind: KindCI, Source: SourceFoldTiming,
 		},
 		series: []Series{timing},
 	},
@@ -360,7 +360,7 @@ var catalogue = []catalogueEntry{
 				{Mode: "The eval follows one job name from the delivery settings, so a renamed job stops being counted.", Guard: "A change of the settings rebuilds every day of the delivery and CI evals."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindCI, Source: SourceComputedPrefix + "delivery/measures.FoldTiming",
+			Kind: KindCI, Source: SourceFoldTiming,
 		},
 		series: []Series{timing},
 	},
@@ -375,7 +375,7 @@ var catalogue = []catalogueEntry{
 				{Mode: "A production job that is still running is not counted.", Guard: "Dispatch builds the day again when the job concludes."},
 			},
 			Unit: unitMinutes, Direction: DirectionLowerBetter,
-			Kind: KindCI, Source: SourceComputedPrefix + "delivery/measures.FoldTiming",
+			Kind: KindCI, Source: SourceFoldTiming,
 		},
 		series: []Series{timing},
 	},
@@ -391,9 +391,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "An issue with no worker event has no work time and is left out.", Guard: "The count `n` says how many issues the median covers."},
 			},
 			Unit: unitHours, Direction: DirectionLowerBetter,
-			Kind: KindLegion, Source: SourceComputedPrefix + "legion/metrics.FoldWorkTime",
+			Kind: KindLegion, Source: SourceFoldWorkTime,
 		},
-		series: inCuts(everyCut, primary(headline(metrics.SeriesHours, unitHours, AggQuantile))),
+		series: inCuts(primary(headline(metrics.SeriesHours, unitHours, AggQuantile))),
 	},
 	{
 		definition: Definition{
@@ -407,9 +407,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "The idle segment is the hours that no other segment claimed, which is not idle time by role.", Guard: "legion-idle-time reads the roles' own claim states."},
 			},
 			Unit: unitHours, Direction: DirectionLowerBetter,
-			Kind: KindLegion, Source: SourceComputedPrefix + "legion/metrics.FoldPhaseTime",
+			Kind: KindLegion, Source: SourceFoldPhaseTime,
 		},
-		series: inCuts(everyCut, perRole("architect", "planner", "implementer", "tester", "reviewer", "merger", "no_role")...),
+		series: inCuts(perRole("architect", "planner", "implementer", "tester", "reviewer", "merger", "no_role")...),
 	},
 	{
 		definition: Definition{
@@ -422,9 +422,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "A role with no claim observation counts as not working, so before the daemon records claim states every hour would read as idle.", Guard: "The eval reads \"no data\" for a window that starts before the project's first claim observation."},
 			},
 			Unit: unitHours, Direction: DirectionLowerBetter,
-			Kind: KindLegion, Source: SourceComputedPrefix + "legion/metrics.FoldIdleTime",
+			Kind: KindLegion, Source: SourceFoldIdleTime,
 		},
-		series: inCuts(everyCut, perRole("architect", "planner", "implementer", "tester", "reviewer", "merger")...),
+		series: inCuts(perRole("architect", "planner", "implementer", "tester", "reviewer", "merger")...),
 	},
 	{
 		definition: Definition{
@@ -437,9 +437,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "Flow analysis version 1 measured slot wait by another rule, so its 39.3 percent does not compare with this value.", Guard: "The method states both rules and why the rule changed."},
 			},
 			Unit: unitHours, Direction: DirectionLowerBetter,
-			Kind: KindLegion, Source: SourceComputedPrefix + "legion/metrics.FoldSlotWait",
+			Kind: KindLegion, Source: SourceFoldSlotWait,
 		},
-		series: inCuts(everyCut, primary(headline(metrics.SeriesHours, unitHours, AggQuantile))),
+		series: inCuts(primary(headline(metrics.SeriesHours, unitHours, AggQuantile))),
 	},
 	{
 		definition: Definition{
@@ -451,11 +451,11 @@ var catalogue = []catalogueEntry{
 				{Mode: "Before the daemon's observations of an issue, its rounds and send-backs come from Dispatch's statuses, where `needs_review` is both reviewing and accepting.", Guard: "From the first observation on, the daemon's own phases replace the statuses."},
 				{Mode: "A send-back for a red check counts as rework, although the change itself can be right.", Guard: "`hours_after_first_review` shows how much work the send-backs cost."},
 			},
-			Unit: "rounds", Direction: DirectionLowerBetter,
-			Kind: KindLegion, Source: SourceComputedPrefix + "legion/metrics.FoldRework",
+			Unit: unitRounds, Direction: DirectionLowerBetter,
+			Kind: KindLegion, Source: SourceFoldRework,
 		},
-		series: inCuts(everyCut,
-			primary(headline(metrics.SeriesReviewRounds, "rounds", AggQuantile)),
+		series: inCuts(
+			primary(headline(metrics.SeriesReviewRounds, unitRounds, AggQuantile)),
 			headline(metrics.SeriesSentBack, unitRatio, AggRatio),
 			headline(metrics.SeriesHoursAfterFirstReview, unitHours, AggQuantile),
 		),
@@ -472,9 +472,9 @@ var catalogue = []catalogueEntry{
 				{Mode: "More filings are neither better nor worse, so a target could reward the wrong thing.", Guard: "The eval has no direction and no target."},
 			},
 			Unit: unitIssues,
-			Kind: KindLegion, Source: SourceComputedPrefix + "legion/metrics.FoldSplitting",
+			Kind: KindLegion, Source: SourceFoldSplitting,
 		},
-		series: inCuts(everyCut,
+		series: inCuts(
 			headline(metrics.FilingSeries(metrics.ClassInTreeAtDesign), unitIssues, AggSum),
 			headline(metrics.FilingSeries(metrics.ClassInTreeLater), unitIssues, AggSum),
 			headline(metrics.FilingSeries(metrics.ClassOutOfTree), unitIssues, AggSum),

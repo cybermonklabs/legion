@@ -20,7 +20,7 @@ func hour(after float64) time.Time {
 
 // newIssue is an issue of a fixture, with the maps the builders below write into.
 func newIssue(key string) *Issue {
-	return &Issue{Key: key, Title: key + " title", FirstRoleEvent: map[string]time.Time{}, Observed: map[string][]Mark{}}
+	return &Issue{Key: key, FirstRoleEvent: map[string]time.Time{}, Observed: map[string][]Mark{}}
 }
 
 // under names the issue's parent.

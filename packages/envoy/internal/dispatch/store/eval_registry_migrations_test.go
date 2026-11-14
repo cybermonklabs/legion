@@ -2,14 +2,12 @@ package store
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"slices"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // evalProject is the project every eval below belongs to, and evalID the eval whose rows the
@@ -25,10 +23,7 @@ const evalRecorder = `{"kind":"session","id":"ses_eval_writer"}`
 // migratedEvalStore is a store carrying every migration, with evalProject in it.
 func migratedEvalStore(t *testing.T) *Store {
 	t.Helper()
-	store := openEmptyTestStore(t)
-	if err := store.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
+	store := migratedEmptyStore(t)
 	if _, err := store.Pool.Exec(context.Background(),
 		`insert into projects (key, name) values ($1, 'Evals')`, evalProject); err != nil {
 		t.Fatalf("seed the project: %v", err)
@@ -109,11 +104,10 @@ func evalAt(day, hour int) time.Time {
 // when err is no such error: what a check that wants a write refused reads of the refusal.
 func refusal(t *testing.T, err error, what string) (code, constraint string) {
 	t.Helper()
-	var pgError *pgconn.PgError
-	if !errors.As(err, &pgError) {
+	if code, constraint = sqlState(err); code == "" {
 		t.Fatalf("%s was stored (err %v); want it refused", what, err)
 	}
-	return pgError.Code, pgError.ConstraintName
+	return code, constraint
 }
 
 // insertReading stores one reading of evalID's `minutes` series at measured, with value (nil for

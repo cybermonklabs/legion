@@ -115,7 +115,7 @@ func reading(series string, value float64, at time.Time) map[string]any {
 	return map[string]any{"series": series, "row_kind": "sample", "row_key": "run-" + fmt.Sprint(value), "value": value, "measured_at": at.Format(time.RFC3339Nano)}
 }
 
-// TestEveryEvalRouteAnswersTheEnvelope (k7): each of the four reads, with a window, a compare
+// TestEveryEvalRouteAnswersTheEnvelope: each of the four reads, with a window, a compare
 // range, a limit and an offset, and each of the two writes answers {items, total, limit, offset},
 // and a page of the reads holds the row the writes made.
 func TestEveryEvalRouteAnswersTheEnvelope(t *testing.T) {
@@ -186,7 +186,7 @@ func holdsPRSize(t *testing.T, body []byte) bool {
 	})
 }
 
-// TestTheEvalRoutesRefuseWithStableCodes (k7, k4, k9): each bad request is refused with its stable
+// TestTheEvalRoutesRefuseWithStableCodes: each bad request is refused with its stable
 // code, a readings write refused for a row names the row by its index, and no refused write
 // stores a reading or a version. Each of the four reads refuses a query key its route shape does
 // not declare, naming it (the old `scope` among them, and a key another eval route takes), and so
@@ -294,7 +294,7 @@ func TestTheEvalRoutesRefuseWithStableCodes(t *testing.T) {
 	}
 }
 
-// TestAReadingsBatchRepeatedUnderItsKeyIsWrittenOnce (k4): a batch of three under one key stores
+// TestAReadingsBatchRepeatedUnderItsKeyIsWrittenOnce: a batch of three under one key stores
 // three readings; the repeat under that key stores none and is answered the first answer, marked
 // replayed; the same batch under a fresh key stores three more, the negative control; and a
 // correction stores a new reading and leaves the one it replaces stored, superseded, and out of the
@@ -349,7 +349,7 @@ func TestAReadingsBatchRepeatedUnderItsKeyIsWrittenOnce(t *testing.T) {
 		afterFirst, afterRepeat, afterFresh, count())
 }
 
-// TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce (k3, k5): readings under a slug no eval holds
+// TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce: readings under a slug no eval holds
 // register exactly one eval with the caller as owner, no target and state active; the register
 // write then adds the target, the unit, the direction, the name and the method, the items route
 // still answers every reading logged before it, and the eval's read answers the method's text. A
@@ -359,7 +359,7 @@ func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
 	now := time.Now().UTC()
-	today := utcDayOf(now)
+	today := measures.Midnight(now)
 	window := url.Values{"from": {today.Format(time.RFC3339)}, "to": {today.AddDate(0, 0, 1).Format(time.RFC3339)}}.Encode()
 	// Each reading is measured at today's start, in the window whatever the minute of the day.
 	for index, value := range []float64{0.8, 0.9} {
@@ -432,7 +432,7 @@ func TestAReadingUnderAnUnknownSlugRegistersItsEvalOnce(t *testing.T) {
 	t.Logf("deploy-frequency's deploys before the reading %s, after it %s; its items answer the reading %d time(s)", before, after, answered.Total)
 }
 
-// TestAnEvalsVersionsAreAnsweredNewestFirst (k1, k5): a register write, a definition change and a
+// TestAnEvalsVersionsAreAnsweredNewestFirst: a register write, a definition change and a
 // target change each write a version, a write that changes nothing writes none, and the eval's read
 // answers the versions newest first, the newest with the window's values and its verdict, and the
 // method its section holds.
@@ -459,7 +459,7 @@ func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
 	register("v4", map[string]any{"doc_text": method}, http.StatusCreated)
 
 	now := time.Now().UTC()
-	today := utcDayOf(now)
+	today := measures.Midnight(now)
 	logged := evalRequest(t, handler, http.MethodPost, "/api/v1/projects/EVL/evals/review-time/readings", map[string]any{
 		"readings": []any{reading("minutes", 10, today), reading("minutes", 15, today), reading("minutes", 40, today)},
 	}, "minutes")
@@ -494,10 +494,10 @@ func TestAnEvalsVersionsAreAnsweredNewestFirst(t *testing.T) {
 		detail.Total, numbers, targets, *minutes.Window["median"], *newest.Verdict.Met, *detail.DocText)
 }
 
-// TestAProjectScopedCredentialWritesNoOtherProjectsEval (k3's negative control): a broker token
-// scoped to one project is refused 403 PROJECT_SCOPE for a readings write and a register write of
-// another project's eval, and neither stores a row; the same readings write in its own project is
-// answered by the handler.
+// TestAProjectScopedCredentialWritesNoOtherProjectsEval, the negative control of the writes'
+// project scope: a broker token scoped to one project is refused 403 PROJECT_SCOPE for a readings
+// write and a register write of another project's eval, and neither stores a row; the same
+// readings write in its own project is answered by the handler.
 func TestAProjectScopedCredentialWritesNoOtherProjectsEval(t *testing.T) {
 	rig := newBrokerTokenRig(t)
 	caller := newBrokerCaller(t)
@@ -627,33 +627,18 @@ func seedEvalHistories(t *testing.T, database *store.Store, deps Deps, days int)
 }
 
 // writeLegionEvals stores what the server derives from project's Legion history, as of now: the
-// facts of every issue (legionfacts.ComputeProject, as the facts consumer computes them), the
-// filings metric 4 classes (metrics.ProjectFilings), and the project's Legion day rows of every
-// UTC day from the day of from to now's, written as the refresher writes them.
+// facts of every issue and the filings metric 4 classes (legionfacts.ComputeProject, as the facts
+// consumer computes them), and the project's Legion day rows of every UTC day from the day of
+// from to now's, written as the refresher writes them.
 func writeLegionEvals(t *testing.T, database *store.Store, registry *evals.Store, project string, from, now time.Time) {
 	t.Helper()
 	ctx := t.Context()
-	rows, err := legionfacts.ComputeProject(ctx, database.Pool, project, now)
+	rows, filings, err := legionfacts.ComputeProject(ctx, database.Pool, project, now)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", project, err)
 	}
 	if _, err := legionfacts.WriteProject(ctx, database.Pool, legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts of %s: %v", project, err)
-	}
-	population, err := metrics.ReadProject(ctx, database.Pool, nil, project, now)
-	if err != nil {
-		t.Fatalf("read the population of %s: %v", project, err)
-	}
-	var filings []legionfacts.Filing
-	seen := map[string]bool{}
-	for _, filed := range metrics.ProjectFilings(population) {
-		if !seen[filed.Key] {
-			seen[filed.Key] = true
-			filings = append(filings, legionfacts.Filing{
-				Project: project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer, FilerIssue: filed.FilerIssue,
-				FilerPhase: filed.FilerPhase, Class: filed.Class, RootKey: filed.Root,
-			})
-		}
 	}
 	if err := legionfacts.WriteFilings(ctx, database.Pool, legionfacts.FilingsWrite{Project: project, Filings: filings, Whole: true}); err != nil {
 		t.Fatalf("write the filings of %s: %v", project, err)
@@ -662,7 +647,7 @@ func writeLegionEvals(t *testing.T, database *store.Store, registry *evals.Store
 	if err != nil {
 		t.Fatalf("read the first observations of %s: %v", project, err)
 	}
-	for day := utcDayOf(from); day.Before(now); day = day.AddDate(0, 0, 1) {
+	for day := measures.Midnight(from); day.Before(now); day = day.AddDate(0, 0, 1) {
 		if err := registry.WriteLegionDay(ctx, project, day, since, testServerBuild); err != nil {
 			t.Fatalf("write the Legion rows of %s: %v", day.Format(time.DateOnly), err)
 		}
@@ -674,7 +659,7 @@ func nearly(got *float64, want, tolerance float64) bool {
 	return got != nil && math.Abs(*got-want) <= tolerance
 }
 
-// TestTheEvalReadsFoldTheStoredDayRows (k7's one fold, k11, k12, R12, R16): over a project with
+// TestTheEvalReadsFoldTheStoredDayRows (R12, R16): over a project with
 // written day rows, the list read answers for one window the numbers the delivery routes answer
 // (GET /api/v1/delivery/measures and /pipeline, which build the same parts from the population and
 // fold them through the same folds), and the Legion evals answer the numbers the base head's

@@ -15,6 +15,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/evals/evalfixture"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
+	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -85,8 +86,6 @@ func (p plannedIssue) end() time.Time { return p.stretch[p.reached] }
 // history names and the readings' row keys draw from.
 type infraHistory struct {
 	issues []plannedIssue
-	// firstObserved is the earliest opening the sampler saw.
-	firstObserved time.Time
 }
 
 // newRand is the random source of one part of the load: one PCG stream per part, so a change to
@@ -100,11 +99,6 @@ func newRand(seed uint64, part string) *rand.Rand {
 // lasting is a log-normal duration around median: most near it, a few far longer.
 func lasting(rng *rand.Rand, median time.Duration, sigma float64) time.Duration {
 	return time.Duration(float64(median) * math.Exp(sigma*rng.NormFloat64()))
-}
-
-// sessionActor is the actor JSON of role's session working issue, carrying its title.
-func sessionActor(role, issue string) string {
-	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":"Legion %s · %s"}}`, role, issue, role, issue)
 }
 
 // helperActor is the actor JSON of helper session n, whose title Legion does not read as one of
@@ -274,13 +268,7 @@ func planInfra(spec Spec) infraHistory {
 			assigned--
 		}
 	}
-	history := infraHistory{issues: planned}
-	for _, issue := range planned {
-		if issue.observed && (history.firstObserved.IsZero() || issue.opened.Before(history.firstObserved)) {
-			history.firstObserved = issue.opened
-		}
-	}
-	return history
+	return infraHistory{issues: planned}
 }
 
 // plannedEvent is one event of the history, compact, so the whole log can be put in time order
@@ -371,7 +359,7 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 		Repos, Project, creator, Repos[0]); err != nil {
 		return infraHistory{}, fmt.Errorf("map INFRA's repositories: %w", err)
 	}
-	if err := copyIssues(ctx, pool, spec, history); err != nil {
+	if err := copyIssues(ctx, pool, history); err != nil {
 		return infraHistory{}, err
 	}
 	if err := copyEvents(ctx, pool, spec, history); err != nil {
@@ -390,15 +378,14 @@ func writeInfra(ctx context.Context, pool *store.Pool, spec Spec) (infraHistory,
 }
 
 // copyRows writes rows into table's columns with one COPY.
-func copyRows(ctx context.Context, pool *store.Pool, table string, columns []string, rows pgx.CopyFromSource) (int64, error) {
-	written, err := pool.CopyFrom(ctx, pgx.Identifier{table}, columns, rows)
-	if err != nil {
-		return 0, fmt.Errorf("copy the rows of %s: %w", table, err)
+func copyRows(ctx context.Context, pool *store.Pool, table string, columns []string, rows pgx.CopyFromSource) error {
+	if _, err := pool.CopyFrom(ctx, pgx.Identifier{table}, columns, rows); err != nil {
+		return fmt.Errorf("copy the rows of %s: %w", table, err)
 	}
-	return written, nil
+	return nil
 }
 
-func copyIssues(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
+func copyIssues(ctx context.Context, pool *store.Pool, history infraHistory) error {
 	rows := make([][]any, len(history.issues))
 	creator := helperActor(0)
 	for i, issue := range history.issues {
@@ -415,7 +402,7 @@ func copyIssues(ctx context.Context, pool *store.Pool, spec Spec, history infraH
 			route = new("session:s-" + current + "-" + issue.key)
 		}
 		if issue.claimed {
-			claimedBy = new(sessionActor(current, issue.key))
+			claimedBy = new(legiontest.SessionActor(current, issue.key))
 			claimedAt = &issue.stretch[issue.reached-1]
 		}
 		updated := issue.end()
@@ -427,10 +414,9 @@ func copyIssues(ctx context.Context, pool *store.Pool, spec Spec, history infraH
 			issue.opened, updated, issue.closed, int32(issue.events), fmt.Sprintf("%08d", issue.number), issue.priority,
 			claimedBy, claimedAt}
 	}
-	_, err := copyRows(ctx, pool, "issues", []string{"key", "project_key", "number", "title", "status", "parent_key", "repo",
+	return copyRows(ctx, pool, "issues", []string{"key", "project_key", "number", "title", "status", "parent_key", "repo",
 		"route", "created_by", "created_at", "updated_at", "closed_at", "last_seq", "rank", "priority", "claimed_by",
 		"claimed_at"}, pgx.CopyFromRows(rows))
-	return err
 }
 
 // eventSource streams the planned events into COPY, building each row's JSON as it goes, so the
@@ -456,7 +442,7 @@ func (s *eventSource) Values() ([]any, error) {
 		if event.filing {
 			owner = s.history.issues[issue.parent].key
 		}
-		actorJSON = sessionActor(roles[event.role], owner)
+		actorJSON = legiontest.SessionActor(roles[event.role], owner)
 	}
 	var payload string
 	switch event.kind {
@@ -487,9 +473,8 @@ func (s *eventSource) Err() error { return nil }
 // copyEvents writes the event log in time order. An event is written as published, since every
 // one of them is history a live server published long ago, and none asks to be notified again.
 func copyEvents(ctx context.Context, pool *store.Pool, spec Spec, history infraHistory) error {
-	_, err := copyRows(ctx, pool, "events", []string{"issue_key", "seq", "type", "actor", "payload", "notify", "published_at", "created_at"},
+	return copyRows(ctx, pool, "events", []string{"issue_key", "seq", "type", "actor", "payload", "notify", "published_at", "created_at"},
 		&eventSource{history: history, events: planEvents(spec, history)})
-	return err
 }
 
 // copyHandoffs writes the handoff of each stretch a worked issue finished that writes one.
@@ -502,12 +487,11 @@ func copyHandoffs(ctx context.Context, pool *store.Pool, history infraHistory) e
 				continue
 			}
 			at := issue.stretch[r+1].Add(-time.Minute)
-			rows = append(rows, []any{issue.key, phase, int32(1), text(issue.key+"/"+phase, 400), sessionActor(roles[r], issue.key), at})
+			rows = append(rows, []any{issue.key, phase, int32(1), text(issue.key+"/"+phase, 400), legiontest.SessionActor(roles[r], issue.key), at})
 		}
 	}
 	slices.SortStableFunc(rows, func(a, b []any) int { return a[5].(time.Time).Compare(b[5].(time.Time)) })
-	_, err := copyRows(ctx, pool, "handoffs", []string{"issue_key", "phase", "version", "body", "author", "created_at"}, pgx.CopyFromRows(rows))
-	return err
+	return copyRows(ctx, pool, "handoffs", []string{"issue_key", "phase", "version", "body", "author", "created_at"}, pgx.CopyFromRows(rows))
 }
 
 // copyObservations writes what the sampler saw of each observed issue: the phase as each stretch
@@ -539,6 +523,5 @@ func copyObservations(ctx context.Context, pool *store.Pool, history infraHistor
 		}
 	}
 	slices.SortStableFunc(rows, func(a, b []any) int { return a[4].(time.Time).Compare(b[4].(time.Time)) })
-	_, err := copyRows(ctx, pool, "legion_observations", []string{"project", "issue_key", "field", "value", "observed_at"}, pgx.CopyFromRows(rows))
-	return err
+	return copyRows(ctx, pool, "legion_observations", []string{"project", "issue_key", "field", "value", "observed_at"}, pgx.CopyFromRows(rows))
 }

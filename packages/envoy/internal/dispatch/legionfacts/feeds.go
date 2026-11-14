@@ -464,10 +464,11 @@ func readChangePage(ctx context.Context, q Querier, after int64, limit int) (fee
 	repos, refs := make([]string, 0, len(changes)), make([]string, 0, len(changes))
 	for _, change := range changes {
 		page.position = change.Seq
-		if change.Kind == settingsChange && change.Repo != "" {
+		if change.Kind == delivery.ChangeKindSettings && change.Repo != "" {
 			page.remapped = true
 		}
-		if change.Kind != pullRequestChange {
+		// A pull request's merge time is the one delivery fact an issue's facts read.
+		if change.Kind != delivery.ChangeKindPullRequest {
 			continue
 		}
 		repos = append(repos, change.Repo)

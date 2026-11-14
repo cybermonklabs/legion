@@ -89,7 +89,7 @@ func TestATreeObservationMovesAChildAndRecomputesBothRoots(t *testing.T) {
 	stored := run.rows(t)
 	strayed := outside(changed, stated)
 
-	whole, err := ComputeProject(t.Context(), run.database.Pool, run.fixture.Project, run.at)
+	whole, _, err := ComputeProject(t.Context(), run.database.Pool, run.fixture.Project, run.at)
 	if err != nil {
 		t.Fatalf("compute the project whole: %v", err)
 	}

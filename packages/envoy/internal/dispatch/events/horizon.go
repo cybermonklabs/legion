@@ -374,6 +374,24 @@ func (h *Horizon) Await(ctx context.Context) (int64, error) {
 	}
 }
 
+// SafeOrAwait is H as Safe reads it, or as Await takes it where Safe answers 0. A Safe of 0 is a
+// horizon that has proven nothing yet, which is every first pass of a process, since one snapshot
+// never proves its own newest id: a pass that reads the events up to H takes one this way rather
+// than read no event at all.
+func (h *Horizon) SafeOrAwait(ctx context.Context) (int64, error) {
+	safe, err := h.Safe(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("read the event log's safe horizon: %w", err)
+	}
+	if safe > 0 {
+		return safe, nil
+	}
+	if safe, err = h.Await(ctx); err != nil {
+		return 0, fmt.Errorf("await the event log's safe horizon: %w", err)
+	}
+	return safe, nil
+}
+
 // Pending reports whether an observed id stands above H (a gap a reader must re-read for).
 func (h *Horizon) Pending() bool {
 	h.mu.Lock()

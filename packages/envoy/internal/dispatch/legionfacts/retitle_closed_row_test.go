@@ -75,7 +75,7 @@ func TestARetitleThatTakesWorkFromAClosedIssueRewritesItsRow(t *testing.T) {
 	if !has {
 		t.Fatalf("%s lost its row", target)
 	}
-	fresh, err := Compute(t.Context(), run.database.Pool, run.fixture.Project, []string{target}, run.at)
+	fresh, _, err := computeKeys(t.Context(), run.database.Pool, run.fixture.Project, []string{target}, nil, run.at)
 	if err != nil {
 		t.Fatalf("compute %s on its own: %v", target, err)
 	}

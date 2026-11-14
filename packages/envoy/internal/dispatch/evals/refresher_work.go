@@ -1,6 +1,7 @@
 package evals
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // refresher_work.go is what one refresher pass does with what its feeds read (refresher.go has the
@@ -49,17 +51,6 @@ import (
 // release, on an issue that is a P0 or whose priority moved) rewrites the project's unowned-p0
 // row of today; and one that moves an issue's repository or its parent rewrites the days of the
 // filings of that issue and of every issue below it, whose repository resolves through it.
-
-// The delivery_changes kinds the refresher reads a day from (delivery.Change.Kind).
-const (
-	changePullRequest  = "pull_request"
-	changeRun          = "run"
-	changeRunJob       = "run_job"
-	changeSettings     = "settings"
-	changeIssueFacts   = "issue_facts"
-	changeIssueFilings = "issue_filings"
-	changeEvalReadings = "eval_readings"
-)
 
 // refresh is one pass's state: the build and the day it writes as, the projects and the delivery
 // settings it read, the first input day of each project's series it has read, each project's
@@ -125,7 +116,7 @@ func (r *refresh) load(ctx context.Context) error {
 				"project", project, "error", err)
 		}
 	}
-	if r.projects, err = r.store.readProjects(ctx); err != nil {
+	if r.projects, err = r.store.Projects(ctx); err != nil {
 		return err
 	}
 	r.known = map[string]bool{}
@@ -197,32 +188,32 @@ func (w *pageWork) restartAll() {
 // (a pull request number or a run id that is no number) names nothing.
 func (w *pageWork) addChange(change delivery.Change) {
 	switch change.Kind {
-	case changePullRequest:
+	case delivery.ChangeKindPullRequest:
 		if number, err := strconv.Atoi(change.Ref); err == nil {
 			w.prs[PullRequestMember(change.Repo, number)] = pullRequestRef{repo: change.Repo, number: number}
 		}
-	case changeRun, changeRunJob:
+	case delivery.ChangeKindRun, delivery.ChangeKindRunJob:
 		if id, err := strconv.ParseInt(change.Ref, 10, 64); err == nil {
 			w.runs[RunMember(change.Repo, id)] = runRef{repo: change.Repo, id: id}
 		}
-	case changeSettings:
+	case delivery.ChangeKindSettings:
 		w.settings = true
 		w.restart[walkDelivery] = true
 		if change.Repo != "" {
 			w.restart[walkLegion] = true
 		}
-	case changeIssueFacts:
+	case delivery.ChangeKindIssueFacts:
 		w.issues[[2]string{change.Repo, change.Ref}] = true
-	case changeIssueFilings:
+	case delivery.ChangeKindIssueFilings:
 		for _, at := range []*time.Time{change.TOld, change.TNew} {
 			if at != nil {
 				if w.filings[change.Repo] == nil {
 					w.filings[change.Repo] = map[time.Time]bool{}
 				}
-				w.filings[change.Repo][utcMidnight(*at)] = true
+				w.filings[change.Repo][measures.Midnight(*at)] = true
 			}
 		}
-	case changeEvalReadings:
+	case delivery.ChangeKindEvalReadings:
 		if w.logged[change.Repo] == nil {
 			w.logged[change.Repo] = map[string]bool{}
 		}
@@ -326,7 +317,7 @@ func (r *refresh) page(ctx context.Context, safe int64, limit int) (bool, error)
 	if err := r.apply(ctx, work); err != nil {
 		return false, err
 	}
-	if err := r.store.commitPage(ctx, positions, work.restarts(r.projects), r.build, r.now); err != nil {
+	if err := r.commitPage(ctx, positions, work.restarts(r.projects)); err != nil {
 		return false, err
 	}
 	return full, nil
@@ -685,7 +676,7 @@ func (r *refresh) writeUnowned(ctx context.Context, project string) error {
 // fillLogged writes the zero rows of project's logged evals ids names (every one where ids is nil)
 // from each series' first day to today (fillLoggedZeros), recorded where it wrote any.
 func (r *refresh) fillLogged(ctx context.Context, project string, ids []string) error {
-	filled, err := r.store.fillLoggedZeros(ctx, project, ids, r.today, r.build)
+	filled, err := r.fillLoggedZeros(ctx, project, ids)
 	if err != nil {
 		return err
 	}
@@ -801,9 +792,9 @@ func (r *refresh) fillGaps(ctx context.Context) error {
 	}
 	r.lowered = nil
 	for _, key := range slices.SortedFunc(maps.Keys(gaps), func(a, b walkKey) int {
-		return strings.Compare(a.family+" "+a.project, b.family+" "+b.project)
+		return cmp.Or(strings.Compare(a.family, b.family), strings.Compare(a.project, b.project))
 	}) {
-		if err := r.store.insertZeroRows(ctx, gaps[key], r.build); err != nil {
+		if err := r.insertZeroRows(ctx, gaps[key]); err != nil {
 			return err
 		}
 	}
@@ -864,13 +855,13 @@ func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key
 			return false, err
 		}
 		if start == nil {
-			return false, r.store.recordWalk(ctx, key, r.build, r.today.AddDate(0, 0, 1), r.now)
+			return false, r.recordWalk(ctx, key, r.today.AddDate(0, 0, 1))
 		}
 		next = start
 	}
 	if next.After(r.today) {
 		if begun {
-			return false, r.store.recordWalk(ctx, key, r.build, *next, r.now)
+			return false, r.recordWalk(ctx, key, *next)
 		}
 		return false, nil
 	}
@@ -883,7 +874,7 @@ func (r *refresh) walkDays(ctx context.Context, walks map[walkKey]walkState, key
 			return false, err
 		}
 	}
-	if err := r.store.recordWalk(ctx, key, r.build, last.AddDate(0, 0, 1), r.now); err != nil {
+	if err := r.recordWalk(ctx, key, last.AddDate(0, 0, 1)); err != nil {
 		return false, err
 	}
 	return last.Before(r.today), nil
@@ -932,7 +923,7 @@ func earliestOf(earliest *time.Time, first map[string]time.Time) *time.Time {
 	if earliest == nil {
 		return nil
 	}
-	day := utcMidnight(*earliest)
+	day := measures.Midnight(*earliest)
 	return &day
 }
 
@@ -973,5 +964,5 @@ func (r *refresh) walkDaily(ctx context.Context, walks map[walkKey]walkState, ke
 	if err := write(ctx); err != nil {
 		return err
 	}
-	return r.store.recordWalk(ctx, key, r.build, r.today.AddDate(0, 0, 1), r.now)
+	return r.recordWalk(ctx, key, r.today.AddDate(0, 0, 1))
 }

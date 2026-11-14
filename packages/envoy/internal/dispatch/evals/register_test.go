@@ -75,7 +75,7 @@ func TestTwoRegisterWritesAtOnceLandAsTheNextTwoVersions(t *testing.T) {
 		t.Fatalf("begin the holder: %v", err)
 	}
 	defer holder.Rollback(t.Context())
-	if _, err := holder.Exec(t.Context(), `select pg_advisory_xact_lock(hashtext('eval:' || $1))`, first.Definition.EvalID); err != nil {
+	if err := lockEval(t.Context(), holder, first.Definition.EvalID); err != nil {
 		t.Fatalf("hold the eval's lock: %v", err)
 	}
 	target := 10.0

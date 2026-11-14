@@ -32,7 +32,7 @@ func sourceFunction(t *testing.T, source string) (string, string) {
 	return named[:dot], named[dot+1:]
 }
 
-// TestEveryCatalogueSourceNamesAnExportedFunctionOfTheServer (k5): the function each computed
+// TestEveryCatalogueSourceNamesAnExportedFunctionOfTheServer: the function each computed
 // eval's source names is an exported function, with no receiver, that go/parser finds declared
 // in the server source of the package directory the source names; and the eval's method names
 // that function, so a reader of the section is sent to the code that is the eval's rule.

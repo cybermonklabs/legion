@@ -41,7 +41,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 	// The one session's first event, on the issue its own title names: the issue carries Legion
 	// phase work from here on.
 	writeRoleEvent(t, seeded, session, worked, seeded.now.Add(-2*time.Hour))
-	rows, err := ComputeProject(t.Context(), pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestAnIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 	// The same session writes next on another issue, under that issue's title. Its newest title
 	// is what the rule reads, so the work goes with it and the issue it left has none.
 	writeRoleEvent(t, seeded, session, other, seeded.now.Add(-time.Hour))
-	moved, err := ComputeProject(t.Context(), pool, project, seeded.now)
+	moved, _, err := ComputeProject(t.Context(), pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts again: %v", err)
 	}

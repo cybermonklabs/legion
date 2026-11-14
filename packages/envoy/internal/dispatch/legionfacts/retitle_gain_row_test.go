@@ -43,7 +43,7 @@ func TestAClosedIssueThatGainsPhaseWorkOnNoIssueGetsItsRow(t *testing.T) {
 	run.pass(t)
 	run.at = run.at.Add(time.Minute)
 	run.pass(t)
-	fresh, err := Compute(t.Context(), run.database.Pool, run.fixture.Project, []string{gain}, run.at)
+	fresh, _, err := computeKeys(t.Context(), run.database.Pool, run.fixture.Project, []string{gain}, nil, run.at)
 	if err != nil {
 		t.Fatalf("compute %s on its own: %v", gain, err)
 	}

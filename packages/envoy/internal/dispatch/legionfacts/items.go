@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/dispatch/legion/metrics"
 )
 
 // items.go turns the stored rows into the rows an eval's issue list serves (dispatch://INFRA-2915,
@@ -18,7 +16,7 @@ import (
 const ItemRowKind = "issue"
 
 // ItemSource names where a row's columns came from: this package, which computes each row
-// (Compute and ComputeProject) and writes it to issue_facts. One name stands for every row,
+// (computeKeys and ComputeProject) and writes it to issue_facts. One name stands for every row,
 // because a row written for one issue and a row written by a sweep are the one computation.
 const ItemSource = "legionfacts"
 
@@ -85,7 +83,7 @@ type ItemRow struct {
 }
 
 // ItemRows turns stored facts rows into the items rows an eval's issue list serves: one row per
-// issue, in the order the rows were given, which is the key order Compute and ComputeProject
+// issue, in the order the rows were given, which is the key order computeKeys and ComputeProject
 // answer in.
 //
 // The measured time is when the facts were measured: a closed issue's close, the moment its
@@ -143,28 +141,18 @@ func itemColumns(row Row) map[string]any {
 	for phase, hours := range row.HoursByPhase {
 		columns[ColumnHoursPrefix+phase] = hours
 	}
+	// A bar's columns: its hours under the bar's own, and each of its five segments under
+	// `_<segment>`, by the segment's own name (metrics.Segment).
 	for role, bar := range row.Bars {
-		for name, hours := range barColumns(bar) {
-			columns[ColumnBarPrefix+role+name] = hours
+		columns[ColumnBarPrefix+role] = bar.Hours
+		for segment, hours := range bar.Segments.ByName() {
+			columns[ColumnBarPrefix+role+"_"+string(segment)] = hours
 		}
 	}
 	for role, hours := range row.IdleByRole {
 		columns[ColumnIdlePrefix+role] = hours
 	}
 	return columns
-}
-
-// barColumns is one bar's numbers by the suffix of their column: "" for the bar's hours, and
-// `_<segment>` for each of its five segments, by the segment's own name (metrics.Segment).
-func barColumns(bar metrics.BarPart) map[string]float64 {
-	return map[string]float64{
-		"": bar.Hours,
-		"_" + string(metrics.SegmentWaitingOnPerson):   bar.Segments.WaitingOnPerson,
-		"_" + string(metrics.SegmentInATurn):           bar.Segments.InATurn,
-		"_" + string(metrics.SegmentCIWait):            bar.Segments.CIWait,
-		"_" + string(metrics.SegmentWaitingOnChildren): bar.Segments.WaitingOnChildren,
-		"_" + string(metrics.SegmentIdle):              bar.Segments.Idle,
-	}
 }
 
 // The columns an items row reads of the issue itself, which no stored row holds: its title and

@@ -81,8 +81,9 @@ func storedDayRows(t *testing.T, pool *store.Pool, project string) []evals.DayRo
 	return stored
 }
 
-// checkDayRowPartition is k16 over rows, one project's: for every eval, series and day, the rows
-// of its repositories add up to its all-repositories row (n, sum, num, den, every count and
+// checkDayRowPartition is the repository partition over rows, one project's: for every eval,
+// series and day, the rows of its repositories add up to its all-repositories row (n, sum, num,
+// den, every count and
 // via_repository; sums within 1e-9 of each other, relative to the larger), and their samples, put
 // together, are its samples. A repository's row with no all-repositories row beside it, or an
 // all-repositories row with no repository's row, fails too: every counted row is in one
@@ -424,7 +425,7 @@ func compareDayRowsWithRoutes(t *testing.T, handler http.Handler, registry *eval
 // pull request counts for one project (Spec.OneProject: each names an issue of DELIV or none, and
 // every repository is DELIV's), so the project's day rows hold every row the deployment-wide
 // delivery routes count, the day rows of every day of the history are written; their partition by
-// repository is checked (k16); and for evalDaysWindows seeded windows of 1 to 84 whole days, the
+// repository is checked; and for evalDaysWindows seeded windows of 1 to 84 whole days, the
 // rows of each cut, read by evals.Store.DayWindow, folded by the folds the routes answer through,
 // equal the routes' answers (compareDayRowsWithRoutes): integers exact, floats within 1e-9. Then
 // one day's rows of the first window are deleted, and the same comparison must differ.
@@ -513,8 +514,9 @@ func TestADeployShippingBothProjectsCountsOnceDeploymentWideAndOnceInEachProject
 	}
 	registry := evals.New(database, deps.Docs, deps.Events)
 
-	// The projects each deploy ships, by D1 over the fixture's own containment: a pull request's
-	// issue's project, or the project every repository of the history is mapped to.
+	// The projects each deploy ships, by the attribution rule over the fixture's own containment:
+	// a pull request's issue's project, or the project every repository of the history is mapped
+	// to.
 	issueProject := map[string]string{}
 	for project, keys := range fixture.Issues {
 		for _, key := range keys {

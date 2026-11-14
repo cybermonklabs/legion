@@ -50,7 +50,7 @@ const (
 
 	// ViaSeed, ViaRegister, ViaReading and ViaSettings say how a version was written: by the
 	// seeded catalogue, by the register write, by a first reading under a slug no eval held,
-	// and by a settings write.
+	// and by a settings write, which the column's check allows and no write of this package makes.
 	ViaSeed     = "seed"
 	ViaRegister = "register"
 	ViaReading  = "reading"
@@ -65,6 +65,26 @@ const (
 	AggMax          = "max"
 	AggLast         = "last"
 	AggWeightedMean = "weighted_mean"
+)
+
+// The sources of the seeded catalogue's computed evals: SourceComputedPrefix and the one function
+// each folds through. The catalogue names them, computedFolds and computedHeadlines are keyed by
+// them, and api's items route answers each one's rows, so a source is spelled once.
+const (
+	SourceFoldDeployFrequency   = SourceComputedPrefix + "delivery/measures.FoldDeployFrequency"
+	SourceFoldDeployRunSuccess  = SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess"
+	SourceFoldLeadTime          = SourceComputedPrefix + "delivery/measures.FoldLeadTime"
+	SourceFoldReworkShare       = SourceComputedPrefix + "delivery/measures.FoldReworkShare"
+	SourceFoldChangeFailureRate = SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate"
+	SourceFoldTimeToRestore     = SourceComputedPrefix + "delivery/measures.FoldTimeToRestore"
+	SourceFoldTiming            = SourceComputedPrefix + "delivery/measures.FoldTiming"
+	SourceListUnownedP0         = SourceComputedPrefix + "delivery.ListUnownedP0"
+	SourceFoldWorkTime          = SourceComputedPrefix + "legion/metrics.FoldWorkTime"
+	SourceFoldPhaseTime         = SourceComputedPrefix + "legion/metrics.FoldPhaseTime"
+	SourceFoldIdleTime          = SourceComputedPrefix + "legion/metrics.FoldIdleTime"
+	SourceFoldSlotWait          = SourceComputedPrefix + "legion/metrics.FoldSlotWait"
+	SourceFoldRework            = SourceComputedPrefix + "legion/metrics.FoldRework"
+	SourceFoldSplitting         = SourceComputedPrefix + "legion/metrics.FoldSplitting"
 )
 
 // RegistryActor is who the server's own writes to `evals-md` are by: the section a registration

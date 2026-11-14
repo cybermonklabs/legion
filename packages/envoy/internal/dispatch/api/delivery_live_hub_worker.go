@@ -289,9 +289,9 @@ const (
 )
 
 // readEvalsView is an evals view's read: the list read of GET /api/v1/projects/{key}/evals, through
-// the functions the route calls (parseEvalListQuery, loadProject, readEvalList), from the query
-// the route would be sent: the view's own, and its window's from and to, a preset's ending now.
-// So the body is the route's for the same query, byte for byte.
+// the function the route answers with (readProjectEvalList), from the query the route would be
+// sent: the view's own, and its window's from and to, a preset's ending now. So the body is the
+// route's for the same query, byte for byte.
 //
 // It names no issue and no session, and reads no delivery settings: what moves it is a write of
 // its project's readings, versions or day rows, each of which the change log carries (touchedBy).
@@ -306,19 +306,16 @@ func (h *deliveryHub) readEvalsView(ctx context.Context, spec deliveryLiveSpec, 
 	query := maps.Clone(spec.query)
 	query.Set("from", from.Format(time.RFC3339Nano))
 	query.Set("to", to.Format(time.RFC3339Nano))
-	request, err := parseEvalListQuery(query, evalListQueryKeys)
+	answer, err := h.server.readProjectEvalList(ctx, query, spec.project, now)
 	if err != nil {
-		return nil, err
-	}
-	if _, err := h.server.loadProject(ctx, h.server.deps.Store.Pool, spec.project); err != nil {
+		// Of the refusals readProjectEvalList answers, loadProject's alone is PROJECT_NOT_FOUND.
 		var refusal *apiError
 		if errors.As(err, &refusal) && refusal.code == evalsNoProjectCode {
 			return nil, errEvalsNoProject
 		}
 		return nil, err
 	}
-	request.projects = []string{spec.project}
-	return h.server.readEvalList(ctx, request, now)
+	return answer, nil
 }
 
 // readPipelineView is a Pipeline section's read: the delivery settings and the runs, jobs and

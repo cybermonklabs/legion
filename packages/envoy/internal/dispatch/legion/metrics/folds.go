@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -76,8 +77,8 @@ const (
 	CountChildren = "children"
 )
 
-// cuts are the three cuts every Legion series is stored in.
-var cuts = []Scope{ScopeAll, ScopeRoots, ScopeChildren}
+// Cuts are the three cuts every Legion series is stored in, the all cut first.
+var Cuts = []Scope{ScopeAll, ScopeRoots, ScopeChildren}
 
 // CutSeries is series as cut stores it: series itself for the all cut, `<series>:roots` and
 // `<series>:children` for the other two.
@@ -88,10 +89,25 @@ func CutSeries(series string, cut Scope) string {
 	return series + ":" + string(cut)
 }
 
+// SplitCutSeries is CutSeries the other way: a stored Legion series' name before its cut, and
+// the cut, which is how the eval folds and the items route read a series name.
+func SplitCutSeries(name string) (string, Scope) {
+	for _, cut := range [...]Scope{ScopeRoots, ScopeChildren} {
+		if base, found := strings.CutSuffix(name, ":"+string(cut)); found {
+			return base, cut
+		}
+	}
+	return name, ScopeAll
+}
+
+// FilingSeriesPrefix begins the name of each of legion-splitting's filing series before its cut
+// (FilingSeries), which is how a reader of the name tells a filing series and its class.
+const FilingSeriesPrefix = "filed:"
+
 // FilingSeries is legion-splitting's series of one class of filing, by filing day:
 // `filed:<class>`.
 func FilingSeries(class string) string {
-	return "filed:" + class
+	return FilingSeriesPrefix + class
 }
 
 // InCut is whether an item counts in cut: every item in the all cut, a root in the roots cut and
@@ -107,47 +123,17 @@ func InCut(cut Scope, root bool) bool {
 	return true
 }
 
-// countPart is a count's part: N and Sum the items counted, as the delivery builders build one.
-func countPart(day time.Time, series string, count int, counts map[string]float64) measures.DayPart {
-	sum := float64(count)
-	return measures.DayPart{Series: series, Day: day, N: count, Sum: &sum, Counts: counts}
-}
-
-// sharePart is a share's part: numerator over denominator, N the items the denominator counts.
-func sharePart(day time.Time, series string, numerator, denominator int) measures.DayPart {
-	num, den := float64(numerator), float64(denominator)
-	return measures.DayPart{Series: series, Day: day, N: denominator, Num: &num, Den: &den}
-}
-
-// samplesPart is a sample series' part: every value, their count, their sum and the largest.
-// The sum is taken in the order of values, which is the order the issues were given in.
-func samplesPart(day time.Time, series string, values []float64, counts map[string]float64) measures.DayPart {
-	part := measures.DayPart{Series: series, Day: day, N: len(values), Samples: values, Counts: counts}
-	if part.Samples == nil {
-		part.Samples = []float64{}
-	}
-	sum := 0.0
-	for _, value := range values {
-		sum += value
-		if part.Max == nil || value > *part.Max {
-			part.Max = new(value)
-		}
-	}
-	part.Sum = &sum
-	return part
-}
-
 // perIssue is one sample part of series per cut: value of every finished issue in the cut.
 func perIssue(day time.Time, series string, finished []IssueFacts, value func(IssueFacts) float64) []measures.DayPart {
-	parts := make([]measures.DayPart, 0, len(cuts))
-	for _, cut := range cuts {
+	parts := make([]measures.DayPart, 0, len(Cuts))
+	for _, cut := range Cuts {
 		values := make([]float64, 0, len(finished))
 		for _, facts := range finished {
 			if InCut(cut, facts.Root) {
 				values = append(values, value(facts))
 			}
 		}
-		parts = append(parts, samplesPart(day, CutSeries(series, cut), values, nil))
+		parts = append(parts, measures.SamplesPart(day, CutSeries(series, cut), values, nil))
 	}
 	return parts
 }
@@ -156,15 +142,15 @@ func perIssue(day time.Time, series string, finished []IssueFacts, value func(Is
 // finished on it: in each cut, the work time of each issue that has one (an issue with no first
 // worker event has none, and metric 1 leaves it out).
 func WorkTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
-	parts := make([]measures.DayPart, 0, len(cuts))
-	for _, cut := range cuts {
+	parts := make([]measures.DayPart, 0, len(Cuts))
+	for _, cut := range Cuts {
 		hours := make([]float64, 0, len(finished))
 		for _, facts := range finished {
 			if InCut(cut, facts.Root) && facts.StartedAt != nil {
 				hours = append(hours, facts.WorkHours)
 			}
 		}
-		parts = append(parts, samplesPart(day, CutSeries(SeriesHours, cut), hours, nil))
+		parts = append(parts, measures.SamplesPart(day, CutSeries(SeriesHours, cut), hours, nil))
 	}
 	return parts
 }
@@ -175,8 +161,8 @@ func WorkTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 // issues (metric 2); the bar's five segments, summed over the issues that hold hours on it, and
 // how many those are (CountIssues) are its counts.
 func PhaseTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
-	parts := make([]measures.DayPart, 0, len(cuts)*len(bars))
-	for _, cut := range cuts {
+	parts := make([]measures.DayPart, 0, len(Cuts)*len(bars))
+	for _, cut := range Cuts {
 		for _, bar := range bars {
 			values := make([]float64, 0, len(finished))
 			var segments Segments
@@ -192,7 +178,7 @@ func PhaseTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 					holding++
 				}
 			}
-			parts = append(parts, samplesPart(day, CutSeries(bar.Role, cut), values, barCounts(segments, holding)))
+			parts = append(parts, measures.SamplesPart(day, CutSeries(bar.Role, cut), values, barCounts(segments, holding)))
 		}
 	}
 	return parts
@@ -200,32 +186,28 @@ func PhaseTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 
 // barCounts is a bar's segments and the issues holding hours on it, as its part's counts.
 func barCounts(segments Segments, issues int) map[string]float64 {
-	return map[string]float64{
-		string(SegmentWaitingOnPerson):   segments.WaitingOnPerson,
-		string(SegmentInATurn):           segments.InATurn,
-		string(SegmentCIWait):            segments.CIWait,
-		string(SegmentWaitingOnChildren): segments.WaitingOnChildren,
-		string(SegmentIdle):              segments.Idle,
-		CountIssues:                      float64(issues),
+	counts := make(map[string]float64, len(segmentsInOrder)+1)
+	for segment, hours := range segments.ByName() {
+		counts[string(segment)] = hours
 	}
+	counts[CountIssues] = float64(issues)
+	return counts
 }
 
 // segmentsOf is the five segments a bar's part counts.
 func segmentsOf(counts map[string]float64) Segments {
-	return Segments{
-		WaitingOnPerson:   counts[string(SegmentWaitingOnPerson)],
-		InATurn:           counts[string(SegmentInATurn)],
-		CIWait:            counts[string(SegmentCIWait)],
-		WaitingOnChildren: counts[string(SegmentWaitingOnChildren)],
-		Idle:              counts[string(SegmentIdle)],
+	var segments Segments
+	for _, segment := range segmentsInOrder {
+		*segments.hoursOf(segment) = counts[string(segment)]
 	}
+	return segments
 }
 
 // IdleTimeDay is legion-idle-time's parts of one UTC day from the facts of the issues that
 // finished on it: in each cut, one part per role holding every issue's idle hours in that role
 // (IssueFacts.IdleByRole, idleByRole), zero where it had none.
 func IdleTimeDay(day time.Time, finished []IssueFacts) []measures.DayPart {
-	parts := make([]measures.DayPart, 0, len(cuts)*(len(bars)-1))
+	parts := make([]measures.DayPart, 0, len(Cuts)*(len(bars)-1))
 	for _, bar := range bars {
 		if bar.Role == barNoRole {
 			continue
@@ -249,7 +231,7 @@ func ReworkDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 	parts = append(parts, perIssue(day, SeriesHoursAfterFirstReview, finished, func(facts IssueFacts) float64 {
 		return facts.ImplementingHoursAfterFirstReview + facts.TestingHoursAfterFirstReview
 	})...)
-	for _, cut := range cuts {
+	for _, cut := range Cuts {
 		sentBack, issues := 0, 0
 		for _, facts := range finished {
 			if !InCut(cut, facts.Root) {
@@ -260,7 +242,7 @@ func ReworkDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 				sentBack++
 			}
 		}
-		parts = append(parts, sharePart(day, CutSeries(SeriesSentBack, cut), sentBack, issues))
+		parts = append(parts, measures.RatioPart(day, CutSeries(SeriesSentBack, cut), sentBack, issues, nil))
 	}
 	return parts
 }
@@ -271,8 +253,8 @@ func ReworkDay(day time.Time, finished []IssueFacts) []measures.DayPart {
 // finished with their children, and the work time of each of those roots that has one, those
 // with children apart from those with none (metric 4).
 func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []measures.DayPart {
-	parts := make([]measures.DayPart, 0, len(cuts)*(len(classes)+1)+3*2)
-	for _, cut := range cuts {
+	parts := make([]measures.DayPart, 0, len(Cuts)*(len(classes)+1)+3*2)
+	for _, cut := range Cuts {
 		byClass := make(map[string]int, len(classes))
 		for _, filing := range filed {
 			if InCut(cut, filing.Root == filing.Key) {
@@ -280,7 +262,7 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 			}
 		}
 		for _, class := range classes {
-			parts = append(parts, countPart(day, CutSeries(FilingSeries(class), cut), byClass[class], nil))
+			parts = append(parts, measures.CountPart(day, CutSeries(FilingSeries(class), cut), byClass[class], nil))
 		}
 		count := 0
 		for _, facts := range finished {
@@ -288,7 +270,7 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 				count++
 			}
 		}
-		parts = append(parts, countPart(day, CutSeries(SeriesFinished, cut), count, nil))
+		parts = append(parts, measures.CountPart(day, CutSeries(SeriesFinished, cut), count, nil))
 	}
 	roots, children := 0, 0
 	withChildren, withoutChildren := []float64{}, []float64{}
@@ -309,9 +291,9 @@ func SplittingDay(day time.Time, finished []IssueFacts, filed []IssueFiling) []m
 	}
 	for _, cut := range []Scope{ScopeAll, ScopeRoots} {
 		parts = append(parts,
-			countPart(day, CutSeries(SeriesRoots, cut), roots, map[string]float64{CountChildren: float64(children)}),
-			samplesPart(day, CutSeries(SeriesHoursWithChildren, cut), withChildren, nil),
-			samplesPart(day, CutSeries(SeriesHoursWithoutChildren, cut), withoutChildren, nil),
+			measures.CountPart(day, CutSeries(SeriesRoots, cut), roots, map[string]float64{CountChildren: float64(children)}),
+			measures.SamplesPart(day, CutSeries(SeriesHoursWithChildren, cut), withChildren, nil),
+			measures.SamplesPart(day, CutSeries(SeriesHoursWithoutChildren, cut), withoutChildren, nil),
 		)
 	}
 	return parts
@@ -330,60 +312,21 @@ type SampleFold struct {
 
 // foldSamples folds the parts of series among parts, nil when they hold none.
 func foldSamples(parts []measures.DayPart, series string) *SampleFold {
-	var merged []float64
-	sum, held := 0.0, false
-	for _, part := range parts {
-		if part.Series != series {
-			continue
-		}
-		held = true
-		merged = append(merged, part.Samples...)
-		sum += valueOrZero(part.Sum)
-	}
-	if !held {
+	return sampleFoldOf(parts, series, measures.FoldSeries(parts, series))
+}
+
+// sampleFoldOf is the fold of series among parts, given those parts added up
+// (measures.FoldSeries), nil when they hold none.
+func sampleFoldOf(parts []measures.DayPart, series string, folded measures.Folded) *SampleFold {
+	if folded.Parts == 0 {
 		return nil
 	}
-	fold := &SampleFold{N: len(merged), Sum: round(sum)}
+	merged := measures.MergedSamples(parts, series)
+	fold := &SampleFold{N: len(merged), Sum: round(folded.Sum)}
 	if len(merged) > 0 {
-		slices.Sort(merged)
 		fold.Median, fold.P90 = new(quantile(merged, 0.5)), new(quantile(merged, 0.9))
 	}
 	return fold
-}
-
-// counted is the parts of series among parts added up: whether any was of it, their summed
-// value (Sum), numerator and denominator, and each named count summed.
-type counted struct {
-	held          bool
-	sum, num, den float64
-	counts        map[string]float64
-}
-
-func countSeries(parts []measures.DayPart, series string) counted {
-	var c counted
-	for _, part := range parts {
-		if part.Series != series {
-			continue
-		}
-		c.held = true
-		c.sum += valueOrZero(part.Sum)
-		c.num += valueOrZero(part.Num)
-		c.den += valueOrZero(part.Den)
-		for name, count := range part.Counts {
-			if c.counts == nil {
-				c.counts = map[string]float64{}
-			}
-			c.counts[name] += count
-		}
-	}
-	return c
-}
-
-func valueOrZero(value *float64) float64 {
-	if value == nil {
-		return 0
-	}
-	return *value
 }
 
 // FoldWorkTime is legion-work-time over parts, cut by cut (computed:legion/metrics.FoldWorkTime):
@@ -457,20 +400,14 @@ func FoldPhaseTime(parts []measures.DayPart, cut Scope) *PhaseTimeFold {
 	var whole, idle float64
 	for _, bar := range bars {
 		series := CutSeries(bar.Role, cut)
-		samples := foldSamples(parts, series)
+		added := measures.FoldSeries(parts, series)
+		samples := sampleFoldOf(parts, series, added)
 		if samples == nil {
 			continue
 		}
-		var segments Segments
-		issues := 0.0
-		for _, part := range parts {
-			if part.Series == series {
-				segments.addSegments(segmentsOf(part.Counts))
-				issues += part.Counts[CountIssues]
-			}
-		}
+		segments := segmentsOf(added.Counts)
 		folded := BarFold{
-			N: samples.N, Issues: int(issues), Hours: round(segments.total()),
+			N: samples.N, Issues: int(added.Counts[CountIssues]), Hours: round(segments.total()),
 			MedianPerIssue: samples.Median, Segments: rounded(segments),
 		}
 		whole += folded.Hours
@@ -514,10 +451,10 @@ func FoldRework(parts []measures.DayPart, cut Scope) *ReworkFold {
 		ReviewRounds:          foldSamples(parts, CutSeries(SeriesReviewRounds, cut)),
 		HoursAfterFirstReview: foldSamples(parts, CutSeries(SeriesHoursAfterFirstReview, cut)),
 	}
-	if sent := countSeries(parts, CutSeries(SeriesSentBack, cut)); sent.held {
-		fold.SentBack = &ShareFold{Num: int(sent.num), Den: int(sent.den)}
-		if sent.den > 0 {
-			fold.SentBack.Share = new(round(sent.num / sent.den))
+	if sent := measures.FoldSeries(parts, CutSeries(SeriesSentBack, cut)); sent.Parts > 0 {
+		fold.SentBack = &ShareFold{Num: int(sent.Num), Den: int(sent.Den)}
+		if sent.Den > 0 {
+			fold.SentBack.Share = new(round(sent.Num / sent.Den))
 		}
 	}
 	if fold.ReviewRounds == nil && fold.SentBack == nil && fold.HoursAfterFirstReview == nil {
@@ -589,7 +526,7 @@ func FoldSplitting(parts []measures.DayPart, cut Scope) *SplittingFold {
 				continue
 			}
 			held = true
-			if count := int(valueOrZero(part.Sum)); count > 0 {
+			if count := int(measures.ValueOrZero(part.Sum)); count > 0 {
 				fold.Filed[class] += count
 				week(part.Day).Filed[class] += count
 			}
@@ -601,21 +538,21 @@ func FoldSplitting(parts []measures.DayPart, cut Scope) *SplittingFold {
 			continue
 		}
 		held = true
-		if count := int(valueOrZero(part.Sum)); count > 0 {
+		if count := int(measures.ValueOrZero(part.Sum)); count > 0 {
 			fold.Finished += count
 			week(part.Day).Finished += count
 		}
 	}
-	if roots := countSeries(parts, CutSeries(SeriesRoots, cut)); roots.held {
+	if roots := measures.FoldSeries(parts, CutSeries(SeriesRoots, cut)); roots.Parts > 0 {
 		held = true
 		fold.Roots = &RootsFold{
-			FinishedRoots:        int(roots.sum),
-			Children:             int(roots.counts[CountChildren]),
+			FinishedRoots:        int(roots.Sum),
+			Children:             int(roots.Counts[CountChildren]),
 			HoursWithChildren:    foldSamples(parts, CutSeries(SeriesHoursWithChildren, cut)),
 			HoursWithoutChildren: foldSamples(parts, CutSeries(SeriesHoursWithoutChildren, cut)),
 		}
-		if roots.sum > 0 {
-			fold.Roots.ChildrenPerRoot = new(round(roots.counts[CountChildren] / roots.sum))
+		if roots.Sum > 0 {
+			fold.Roots.ChildrenPerRoot = new(round(roots.Counts[CountChildren] / roots.Sum))
 		}
 	}
 	if !held {

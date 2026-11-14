@@ -35,24 +35,24 @@ type seriesFold func(parts []measures.DayPart, days Range, series []string) map[
 // computedFolds is each computed eval's fold, by its source: the exported function the source
 // names, read out as statistics.
 var computedFolds = map[string]seriesFold{
-	SourceComputedPrefix + "delivery/measures.FoldDeployFrequency":   oneSeries(measures.SeriesDeploys, deployFrequencyStatistics),
-	SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess":  oneSeries(measures.SeriesRuns, deployRunSuccessStatistics),
-	SourceComputedPrefix + "delivery/measures.FoldLeadTime":          oneSeries(measures.SeriesMinutes, leadTimeStatistics),
-	SourceComputedPrefix + "delivery/measures.FoldReworkShare":       oneSeries(measures.SeriesPRs, reworkShareStatistics),
-	SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate": changeFailureRateStatistics,
-	SourceComputedPrefix + "delivery/measures.FoldTimeToRestore":     oneSeries(measures.SeriesMinutes, timeToRestoreStatistics),
-	SourceComputedPrefix + "delivery/measures.FoldTiming":            oneSeries(measures.SeriesMinutes, timingStatistics),
+	SourceFoldDeployFrequency:   oneSeries(measures.SeriesDeploys, deployFrequencyStatistics),
+	SourceFoldDeployRunSuccess:  oneSeries(measures.SeriesRuns, deployRunSuccessStatistics),
+	SourceFoldLeadTime:          oneSeries(measures.SeriesMinutes, leadTimeStatistics),
+	SourceFoldReworkShare:       oneSeries(measures.SeriesPRs, reworkShareStatistics),
+	SourceFoldChangeFailureRate: changeFailureRateStatistics,
+	SourceFoldTimeToRestore:     oneSeries(measures.SeriesMinutes, timeToRestoreStatistics),
+	SourceFoldTiming:            oneSeries(measures.SeriesMinutes, timingStatistics),
 	// unowned-p0's day row is the count at the day's last refresh, which delivery.ListUnownedP0
 	// counts; a window reads its newest day's, the `last` fold.
-	SourceComputedPrefix + "delivery.ListUnownedP0": oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
+	SourceListUnownedP0: oneSeries(SeriesUnownedP0, func(parts []measures.DayPart, _ Range) Statistics {
 		return aggStatistics(AggLast, parts, SeriesUnownedP0)
 	}),
-	SourceComputedPrefix + "legion/metrics.FoldWorkTime":  byCut(metrics.FoldWorkTime, workTimeStatistics),
-	SourceComputedPrefix + "legion/metrics.FoldPhaseTime": byCut(metrics.FoldPhaseTime, phaseTimeStatistics),
-	SourceComputedPrefix + "legion/metrics.FoldIdleTime":  byCut(metrics.FoldIdleTime, idleTimeStatistics),
-	SourceComputedPrefix + "legion/metrics.FoldSlotWait":  byCut(metrics.FoldSlotWait, slotWaitStatistics),
-	SourceComputedPrefix + "legion/metrics.FoldRework":    byCut(metrics.FoldRework, reworkStatistics),
-	SourceComputedPrefix + "legion/metrics.FoldSplitting": byCut(metrics.FoldSplitting, splittingStatistics),
+	SourceFoldWorkTime:  byCut(metrics.FoldWorkTime, workTimeStatistics),
+	SourceFoldPhaseTime: byCut(metrics.FoldPhaseTime, phaseTimeStatistics),
+	SourceFoldIdleTime:  byCut(metrics.FoldIdleTime, idleTimeStatistics),
+	SourceFoldSlotWait:  byCut(metrics.FoldSlotWait, slotWaitStatistics),
+	SourceFoldRework:    byCut(metrics.FoldRework, reworkStatistics),
+	SourceFoldSplitting: byCut(metrics.FoldSplitting, splittingStatistics),
 }
 
 // Every catalogue eval's source has its fold: checked once, when the package starts.
@@ -101,7 +101,7 @@ func FoldStatistics(definition Definition, series []Series, parts []measures.Day
 func HeadlineStatistic(definition Definition, series Series) string {
 	if definition.Computed() {
 		if headline, held := computedHeadlines[definition.Source]; held {
-			base, _ := SplitCut(series.Series)
+			base, _ := metrics.SplitCutSeries(series.Series)
 			return headline(base)
 		}
 	}
@@ -124,25 +124,25 @@ func HeadlineStatistic(definition Definition, series Series) string {
 // and the series' name before its cut: a statistic the fold states of that series
 // (TestEveryCatalogueSeriesIsStatedByItsHeadline holds each to it).
 var computedHeadlines = map[string]func(series string) string{
-	SourceComputedPrefix + "delivery/measures.FoldDeployFrequency":   stated("per_day"),
-	SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess":  stated("rate"),
-	SourceComputedPrefix + "delivery/measures.FoldLeadTime":          stated("median"),
-	SourceComputedPrefix + "delivery/measures.FoldReworkShare":       stated("rate"),
-	SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate": stated("rate"),
-	SourceComputedPrefix + "delivery/measures.FoldTimeToRestore":     stated("median"),
-	SourceComputedPrefix + "delivery/measures.FoldTiming":            stated("median"),
-	SourceComputedPrefix + "delivery.ListUnownedP0":                  stated("value"),
-	SourceComputedPrefix + "legion/metrics.FoldWorkTime":             stated("median"),
-	SourceComputedPrefix + "legion/metrics.FoldPhaseTime":            stated("median_per_issue"),
-	SourceComputedPrefix + "legion/metrics.FoldIdleTime":             stated("median"),
-	SourceComputedPrefix + "legion/metrics.FoldSlotWait":             stated("median"),
-	SourceComputedPrefix + "legion/metrics.FoldRework": func(series string) string {
+	SourceFoldDeployFrequency:   stated("per_day"),
+	SourceFoldDeployRunSuccess:  stated("rate"),
+	SourceFoldLeadTime:          stated("median"),
+	SourceFoldReworkShare:       stated("rate"),
+	SourceFoldChangeFailureRate: stated("rate"),
+	SourceFoldTimeToRestore:     stated("median"),
+	SourceFoldTiming:            stated("median"),
+	SourceListUnownedP0:         stated("value"),
+	SourceFoldWorkTime:          stated("median"),
+	SourceFoldPhaseTime:         stated("median_per_issue"),
+	SourceFoldIdleTime:          stated("median"),
+	SourceFoldSlotWait:          stated("median"),
+	SourceFoldRework: func(series string) string {
 		if series == metrics.SeriesSentBack {
 			return "share"
 		}
 		return "median"
 	},
-	SourceComputedPrefix + "legion/metrics.FoldSplitting": func(series string) string {
+	SourceFoldSplitting: func(series string) string {
 		if series == metrics.SeriesHoursWithChildren || series == metrics.SeriesHoursWithoutChildren {
 			return "median"
 		}
@@ -177,7 +177,7 @@ func byCut[F any](fold func([]measures.DayPart, metrics.Scope) F, read func(F, s
 		cuts := map[metrics.Scope]F{}
 		folded := make(map[string]Statistics, len(names))
 		for _, name := range names {
-			base, cut := SplitCut(name)
+			base, cut := metrics.SplitCutSeries(name)
 			answer, done := cuts[cut]
 			if !done {
 				answer = fold(parts, cut)
@@ -187,17 +187,6 @@ func byCut[F any](fold func([]measures.DayPart, metrics.Scope) F, read func(F, s
 		}
 		return folded
 	}
-}
-
-// SplitCut is a stored Legion series' name before its cut, and the cut (metrics.CutSeries): how
-// the folds and the items route read a series name.
-func SplitCut(name string) (string, metrics.Scope) {
-	for _, cut := range []metrics.Scope{metrics.ScopeRoots, metrics.ScopeChildren} {
-		if base, found := strings.CutSuffix(name, ":"+string(cut)); found {
-			return base, cut
-		}
-	}
-	return name, metrics.ScopeAll
 }
 
 // blank is a Statistics naming each of names with no figure.
@@ -341,8 +330,10 @@ func idleTimeStatistics(fold map[string]metrics.SampleFold, role string) Statist
 // median_per_issue and five segments, and idle_share, its cut's idle hours over its hours, which
 // every bar of the cut states so a judge can name it on any.
 func phaseTimeStatistics(fold *metrics.PhaseTimeFold, role string) Statistics {
-	stats := blank("n", "issues", "hours", "median_per_issue", string(metrics.SegmentWaitingOnPerson), string(metrics.SegmentInATurn),
-		string(metrics.SegmentCIWait), string(metrics.SegmentWaitingOnChildren), string(metrics.SegmentIdle), "idle_share")
+	stats := blank("n", "issues", "hours", "median_per_issue", "idle_share")
+	for segment := range (metrics.Segments{}).ByName() {
+		stats[string(segment)] = nil
+	}
 	if fold == nil {
 		return stats
 	}
@@ -352,9 +343,9 @@ func phaseTimeStatistics(fold *metrics.PhaseTimeFold, role string) Statistics {
 		return stats
 	}
 	stats["n"], stats["issues"], stats["hours"], stats["median_per_issue"] = new(float64(bar.N)), new(float64(bar.Issues)), new(bar.Hours), bar.MedianPerIssue
-	stats[string(metrics.SegmentWaitingOnPerson)], stats[string(metrics.SegmentInATurn)] = new(bar.Segments.WaitingOnPerson), new(bar.Segments.InATurn)
-	stats[string(metrics.SegmentCIWait)], stats[string(metrics.SegmentWaitingOnChildren)] = new(bar.Segments.CIWait), new(bar.Segments.WaitingOnChildren)
-	stats[string(metrics.SegmentIdle)] = new(bar.Segments.Idle)
+	for segment, hours := range bar.Segments.ByName() {
+		stats[string(segment)] = new(hours)
+	}
 	return stats
 }
 
@@ -384,7 +375,7 @@ func reworkStatistics(fold *metrics.ReworkFold, base string) Statistics {
 // `roots`, issues (the finished roots), children and children_per_root; and
 // `hours_with_children` and `hours_without_children`, n, median and p90.
 func splittingStatistics(fold *metrics.SplittingFold, base string) Statistics {
-	if class, filed := strings.CutPrefix(base, "filed:"); filed {
+	if class, filed := strings.CutPrefix(base, metrics.FilingSeriesPrefix); filed {
 		stats := blank("issues")
 		if fold != nil {
 			stats["issues"] = new(float64(fold.Filed[class]))
@@ -457,20 +448,18 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 	default:
 		stats = blank("value", "n")
 	}
+	folded := measures.FoldSeries(parts, series)
+	if folded.Parts == 0 {
+		return stats
+	}
 	var n int
-	var sum, num, den float64
-	var samples []float64
 	var largest, last *float64
 	var lastAt *time.Time
-	held := false
 	for _, part := range parts {
 		if part.Series != series {
 			continue
 		}
-		held = true
 		n += part.N
-		sum, num, den = sum+valueOr(part.Sum), num+valueOr(part.Num), den+valueOr(part.Den)
-		samples = append(samples, part.Samples...)
 		if part.Max != nil && (largest == nil || *part.Max > *largest) {
 			largest = part.Max
 		}
@@ -478,25 +467,21 @@ func aggStatistics(agg string, parts []measures.DayPart, series string) Statisti
 			last, lastAt = part.LastValue, part.LastAt
 		}
 	}
-	if !held {
-		return stats
-	}
 	stats["n"] = new(float64(n))
 	switch agg {
 	case AggSum:
-		stats["sum"] = new(sum)
+		stats["sum"] = new(folded.Sum)
 	case AggRatio, AggWeightedMean:
 		name := "rate"
 		if agg == AggWeightedMean {
 			name = "mean"
 		}
-		if den != 0 {
-			stats[name] = new(num / den)
+		if folded.Den != 0 {
+			stats[name] = new(folded.Num / folded.Den)
 		}
 	case AggQuantile:
-		stats["sum"], stats["max"] = new(sum), largest
-		if len(samples) > 0 {
-			slices.Sort(samples)
+		stats["sum"], stats["max"] = new(folded.Sum), largest
+		if samples := measures.MergedSamples(parts, series); len(samples) > 0 {
 			stats["median"], stats["p90"] = new(measures.Quantile(samples, 0.5)), new(measures.Quantile(samples, 0.9))
 		}
 	case AggMax:

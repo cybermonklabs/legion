@@ -7,7 +7,6 @@ import (
 	"unicode"
 
 	"github.com/sjawhar/envoy/internal/contracts"
-	"github.com/sjawhar/envoy/internal/dispatch/evals"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -122,7 +121,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	seeded, err := evals.New(s.deps.Store, s.deps.Docs, s.deps.Events).EnsureTx(documentCtx, tx, project.Key)
+	seeded, err := s.registry().EnsureTx(documentCtx, tx, project.Key)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return

@@ -89,7 +89,7 @@ func corpus(t *testing.T) *store.Store {
 // filing, and the facts and the folds of the evals over it are the ones the rules describe.
 func TestReadProjectGathersEveryFactTheRulesRead(t *testing.T) {
 	database := corpus(t)
-	population, err := ReadProject(t.Context(), database.Pool, nil, "INFRA", after(24))
+	population, err := ReadProject(t.Context(), database.Pool, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -164,7 +164,7 @@ func TestADaemonsTreeFieldNamesTheRootWhereAReadCarriedOne(t *testing.T) {
 	`, after(-1)); err != nil {
 		t.Fatalf("seed the other root: %v", err)
 	}
-	population, err := ReadProject(ctx, database.Pool, nil, "INFRA", after(24))
+	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestADaemonsTreeFieldNamesTheRootOfAnIssueTheReadDoesNotReach(t *testing.T)
 	exec(`insert into legion_observations (project, issue_key, field, value, observed_at)
 		values ('INFRA', 'INFRA-7', $1, '"INFRA-8"'::jsonb, $2)`, legion.FieldTree, after(2))
 
-	population, err := ReadIssues(ctx, database.Pool, nil, "INFRA", []string{"INFRA-2"}, nil, after(24))
+	population, err := ReadIssues(ctx, database.Pool, "INFRA", []string{"INFRA-2"}, nil, after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}
@@ -261,7 +261,7 @@ func TestOnlyAnAskOpenedByASessionOfTheIssuesOwnTreeMakesItWaitOnAPerson(t *test
 	event("INFRA-2", 10, "ask.opened", session("Legion implementer · INFRA-9"), `{"id":"ask-3"}`, after(8))
 	event("INFRA-2", 11, "ask.answered", `{"kind":"user","id":"alice"}`, `{"id":"ask-3"}`, after(9))
 
-	population, err := ReadProject(ctx, database.Pool, nil, "INFRA", after(24))
+	population, err := ReadProject(ctx, database.Pool, "INFRA", after(24))
 	if err != nil {
 		t.Fatalf("read the population: %v", err)
 	}

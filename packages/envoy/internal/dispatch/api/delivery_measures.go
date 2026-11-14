@@ -93,9 +93,9 @@ func deliveryMeasuresCompute(settings delivery.DeliverySettings, pop deliveryPop
 // any population pull request first, whenever that pull request merged and whatever the facets
 // (pop.windowShipped, delivery.Deploys.ShippedBy), so deploys_with_prs belongs to the deploy, not
 // to the window or the filter, and is the rule the deploy-frequency eval's day rows count by
-// (measures.DeployFrequencyDay). It replaced the rule that counted only the pull requests merged
-// inside the window (dispatch://INFRA-2916), which left out a deploy that shipped only pull
-// requests merged before the window. The measures route and the timeline both answer through it,
+// (measures.DeployFrequencyDay). Counting only the pull requests merged inside the window would
+// leave out a deploy that shipped only pull requests merged before the window. The measures route
+// and the timeline both answer through it,
 // so the two never disagree. measures.Compute builds the window's rows into day parts with the
 // day builders and folds them with the folds the delivery evals read stored parts with, one fold
 // per measure.

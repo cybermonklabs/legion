@@ -163,7 +163,7 @@ func TestTwoFirstWritesOfOneSlugRegisterItOnce(t *testing.T) {
 		t.Fatalf("begin the holder: %v", err)
 	}
 	defer holder.Rollback(t.Context())
-	if _, err := holder.Exec(t.Context(), `select pg_advisory_xact_lock(hashtext('eval:' || $1))`, evalID); err != nil {
+	if err := lockEval(t.Context(), holder, evalID); err != nil {
 		t.Fatalf("hold the eval's lock: %v", err)
 	}
 
@@ -310,7 +310,7 @@ func TestACorrectionSupersedesTheReadingItReplacesAndMovesItsDayRow(t *testing.T
 func TestAReadingUnderAComputedSlugIsStoredAndFoldedIntoNoDayRow(t *testing.T) {
 	r := newRig(t)
 	if _, err := r.registry.Register(t.Context(), Registration{
-		Project: r.project, Slug: "deploy-frequency", Via: ViaSeed, Caller: RegistryActor,
+		Project: r.project, Slug: "deploy-frequency", Caller: RegistryActor,
 		Kind: Set(KindDelivery), Source: Set("computed:delivery/measures.Compute"), Unit: Set("deploys/day"),
 		Series: []SeriesChange{{Series: "deploys", Agg: Set(AggSum)}},
 	}); err != nil {

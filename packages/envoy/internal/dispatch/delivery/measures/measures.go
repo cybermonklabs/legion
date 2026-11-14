@@ -12,6 +12,7 @@ import (
 	"maps"
 	"math"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
@@ -31,6 +32,22 @@ type PR struct {
 	DeployRunID   *int64
 	DeployedAt    *time.Time // the production job's CompletedAt (delivery.Apply.CompletedAt)
 	Rework        bool
+}
+
+// PROf is pr as the day builders read it, shipped by apply, the production apply that first ships
+// it (delivery.ContainingRun), nil where none does yet: what the delivery and CI day rows and the
+// eval items route build of one stored pull request. pr carries its opening and its merge; a
+// partial row has no lead time to count, and its caller leaves it out.
+func PROf(pr delivery.DeliveryPullRequest, apply *delivery.Apply) PR {
+	measured := PR{
+		ID: pr.Repo + "#" + strconv.Itoa(pr.Number), CreatedAt: *pr.CreatedAt, MergedAt: *pr.MergedAt,
+		FirstCommitAt: pr.FirstCommitAt, Rework: pr.Rework,
+	}
+	if apply != nil {
+		runID, completedAt := apply.RunID, apply.CompletedAt
+		measured.DeployRunID, measured.DeployedAt = &runID, &completedAt
+	}
+	return measured
 }
 
 // Run is one deploy-workflow run on main started in the window (the store query applies the
@@ -205,7 +222,9 @@ func cancelled(run Run) bool {
 	return run.Conclusion != nil && *run.Conclusion == delivery.DeliveryRunConclusionCancelled
 }
 
-func midnight(t time.Time) time.Time {
+// Midnight is the UTC midnight of the UTC day t is on: the day a day part, a day row and an eval
+// window's day are of.
+func Midnight(t time.Time) time.Time {
 	t = t.UTC()
 	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
 }
@@ -213,8 +232,8 @@ func midnight(t time.Time) time.Time {
 // windowDays is the UTC midnight of every day window covers, oldest first, and always at least
 // one: a window ending exactly at midnight covers none of the day that starts then.
 func windowDays(window Window) []time.Time {
-	first := midnight(window.From)
-	last := midnight(window.To)
+	first := Midnight(window.From)
+	last := Midnight(window.To)
 	if last.Equal(window.To) {
 		last = last.Add(-day)
 	}
@@ -242,9 +261,9 @@ func windowDays(window Window) []time.Time {
 // of those shipped a pull request in CountWithPRs. A deploy shipped a pull request when it is the
 // first shipping apply of any population pull request, whenever that pull request merged
 // (Run.ShippedPRs): with_prs is the deploy's own, so the delivery routes and the day rows count
-// one deploy alike in every window that holds it. This replaced the rule that counted only the
-// pull requests merged inside the window (dispatch://INFRA-2916), under which a deploy that shipped
-// only pull requests merged before a window counted as one with none in that window.
+// one deploy alike in every window that holds it. Counting only the pull requests merged inside
+// the window would count a deploy that shipped only pull requests merged before a window as one
+// with none in that window.
 func DeployFrequencyDay(day time.Time, runs []Run) []DayPart {
 	successful, withPRs := 0, 0
 	for _, run := range runs {
@@ -255,7 +274,7 @@ func DeployFrequencyDay(day time.Time, runs []Run) []DayPart {
 			}
 		}
 	}
-	return []DayPart{countPart(day, SeriesDeploys, successful, map[string]float64{CountWithPRs: float64(withPRs)})}
+	return []DayPart{CountPart(day, SeriesDeploys, successful, map[string]float64{CountWithPRs: float64(withPRs)})}
 }
 
 // DeployRunSuccessDay is deploy-run-success's part of one UTC day, from the deploy runs started
@@ -275,7 +294,7 @@ func DeployRunSuccessDay(day time.Time, runs []Run) []DayPart {
 			cancelledRuns++
 		}
 	}
-	return []DayPart{ratioPart(day, SeriesRuns, reached, concludedRuns, map[string]float64{CountCancelled: float64(cancelledRuns)})}
+	return []DayPart{RatioPart(day, SeriesRuns, reached, concludedRuns, map[string]float64{CountCancelled: float64(cancelledRuns)})}
 }
 
 // MergeToProductionDay is merge-to-production's part of one UTC day, from the population pull
@@ -331,7 +350,7 @@ func leadTimeDay(day time.Time, prs []PR, minutesOf func(PR) (float64, bool)) []
 			minutes = append(minutes, value)
 		}
 	}
-	return []DayPart{samplesPart(day, SeriesMinutes, minutes, nil)}
+	return []DayPart{SamplesPart(day, SeriesMinutes, minutes, nil)}
 }
 
 // ReworkShareDay is rework-share's part of one UTC day, from the population pull requests merged
@@ -343,7 +362,7 @@ func ReworkShareDay(day time.Time, prs []PR) []DayPart {
 			rework++
 		}
 	}
-	return []DayPart{ratioPart(day, SeriesPRs, rework, len(prs), nil)}
+	return []DayPart{RatioPart(day, SeriesPRs, rework, len(prs), nil)}
 }
 
 // JudgedFlag is a Flag whose broken PR is a population PR, with the two PRs it names as the
@@ -359,9 +378,9 @@ type JudgedFlag struct {
 // deployed, the day it merged.
 func (f JudgedFlag) Day() time.Time {
 	if f.Broken.DeployedAt != nil {
-		return midnight(*f.Broken.DeployedAt)
+		return Midnight(*f.Broken.DeployedAt)
 	}
-	return midnight(f.Broken.MergedAt)
+	return Midnight(f.Broken.MergedAt)
 }
 
 // judgeFlags is each of flags whose broken PR is among prs, with its two PRs: a flag counts
@@ -434,11 +453,11 @@ func ChangeFailureRateDay(day time.Time, prs []PR, runs []Run, flags []JudgedFla
 		}
 	}
 	return []DayPart{
-		ratioPart(day, SeriesPerDeploy, len(confirmedDeploys), successful, map[string]float64{
+		RatioPart(day, SeriesPerDeploy, len(confirmedDeploys), successful, map[string]float64{
 			CountPending: float64(len(pendingDeploys)), CountRejected: float64(len(rejectedDeploys)),
 		}),
-		ratioPart(day, SeriesUpperBound, confirmedOrPending, successful, nil),
-		ratioPart(day, SeriesPerPR, confirmed, len(prs), map[string]float64{
+		RatioPart(day, SeriesUpperBound, confirmedOrPending, successful, nil),
+		RatioPart(day, SeriesPerPR, confirmed, len(prs), map[string]float64{
 			CountPending: float64(pending), CountRejected: float64(rejected), CountReverts: float64(reverts),
 		}),
 	}
@@ -454,7 +473,7 @@ func TimeToRestoreDay(day time.Time, flags []JudgedFlag) []DayPart {
 			minutes = append(minutes, minutesBetween(*flag.Broken.DeployedAt, *flag.Fix.DeployedAt))
 		}
 	}
-	return []DayPart{samplesPart(day, SeriesMinutes, minutes, nil)}
+	return []DayPart{SamplesPart(day, SeriesMinutes, minutes, nil)}
 }
 
 // The delivery measures' folds: each answers its eval's number from any set of its parts.
@@ -463,16 +482,16 @@ func TimeToRestoreDay(day time.Time, flags []JudgedFlag) []DayPart {
 // shipped a pull request, in total and per day of window (dora.ts:169-174, 253); nil when parts
 // hold no SeriesDeploys part.
 func FoldDeployFrequency(parts []DayPart, window Window) *DeployFrequency {
-	deploys := foldSeries(parts, SeriesDeploys)
-	if deploys.parts == 0 {
+	deploys := FoldSeries(parts, SeriesDeploys)
+	if deploys.Parts == 0 {
 		return nil
 	}
 	windowDays := float64(window.To.Sub(window.From)) / float64(day)
-	withPRs := deploys.counts[CountWithPRs]
+	withPRs := deploys.Counts[CountWithPRs]
 	return &DeployFrequency{
-		SuccessfulDeploys: int(deploys.sum),
+		SuccessfulDeploys: int(deploys.Sum),
 		DeploysWithPRs:    int(withPRs),
-		PerDay:            deploys.sum / windowDays,
+		PerDay:            deploys.Sum / windowDays,
 		WithPRsPerDay:     withPRs / windowDays,
 	}
 }
@@ -481,14 +500,14 @@ func FoldDeployFrequency(parts []DayPart, window Window) *DeployFrequency {
 // those reached production, the cancelled runs, and the summed reached over the summed concluded,
 // nil when none concluded (dora.ts:258); nil when parts hold no SeriesRuns part.
 func FoldDeployRunSuccess(parts []DayPart) *DeployRunSuccess {
-	runs := foldSeries(parts, SeriesRuns)
-	if runs.parts == 0 {
+	runs := FoldSeries(parts, SeriesRuns)
+	if runs.Parts == 0 {
 		return nil
 	}
 	return &DeployRunSuccess{
-		Concluded:         int(runs.den),
-		ReachedProduction: int(runs.num),
-		Cancelled:         int(runs.counts[CountCancelled]),
+		Concluded:         int(runs.Den),
+		ReachedProduction: int(runs.Num),
+		Cancelled:         int(runs.Counts[CountCancelled]),
 		Rate:              runs.share(),
 	}
 }
@@ -498,7 +517,7 @@ func FoldDeployRunSuccess(parts []DayPart) *DeployRunSuccess {
 // percentile and maximum of their minutes, the merge of every part's samples (dora.ts:48-56,
 // pipeline.ts:21-29), unrounded; the three are nil when no part holds a sample.
 func FoldLeadTime(parts []DayPart) LeadTimeCell {
-	sorted := mergedSamples(parts, SeriesMinutes)
+	sorted := MergedSamples(parts, SeriesMinutes)
 	cell := LeadTimeCell{N: len(sorted)}
 	if len(sorted) == 0 {
 		return cell
@@ -512,7 +531,7 @@ func FoldLeadTime(parts []DayPart) LeadTimeCell {
 // FoldReworkShare is rework-share over parts: the summed rework pull requests over the summed
 // pull requests; nil when parts count none.
 func FoldReworkShare(parts []DayPart) *float64 {
-	return foldSeries(parts, SeriesPRs).share()
+	return FoldSeries(parts, SeriesPRs).share()
 }
 
 // FoldChangeFailureRate is change-fail-rate over parts: the flags counted against pull requests
@@ -520,33 +539,33 @@ func FoldReworkShare(parts []DayPart) *float64 {
 // denominator is (the measures panel's rates are never null); nil when parts hold none of its
 // three series.
 func FoldChangeFailureRate(parts []DayPart) *ChangeFailureRate {
-	perDeploy := foldSeries(parts, SeriesPerDeploy)
-	upperBound := foldSeries(parts, SeriesUpperBound)
-	perPR := foldSeries(parts, SeriesPerPR)
-	if perDeploy.parts+upperBound.parts+perPR.parts == 0 {
+	perDeploy := FoldSeries(parts, SeriesPerDeploy)
+	upperBound := FoldSeries(parts, SeriesUpperBound)
+	perPR := FoldSeries(parts, SeriesPerPR)
+	if perDeploy.Parts+upperBound.Parts+perPR.Parts == 0 {
 		return nil
 	}
-	reverts := int(perPR.counts[CountReverts])
+	reverts := int(perPR.Counts[CountReverts])
 	return &ChangeFailureRate{
 		PerPR: FlagCounts{
-			Confirmed: int(perPR.num),
-			Pending:   int(perPR.counts[CountPending]),
-			Rejected:  int(perPR.counts[CountRejected]),
+			Confirmed: int(perPR.Num),
+			Pending:   int(perPR.Counts[CountPending]),
+			Rejected:  int(perPR.Counts[CountRejected]),
 			Reverts:   reverts,
-			Total:     int(perPR.den),
-			Rate:      valueOrZero(perPR.share()),
+			Total:     int(perPR.Den),
+			Rate:      ValueOrZero(perPR.share()),
 		},
 		PerDeploy: DeployFlagCounts{
 			FlagCounts: FlagCounts{
-				Confirmed: int(perDeploy.num),
-				Pending:   int(perDeploy.counts[CountPending]),
-				Rejected:  int(perDeploy.counts[CountRejected]),
+				Confirmed: int(perDeploy.Num),
+				Pending:   int(perDeploy.Counts[CountPending]),
+				Rejected:  int(perDeploy.Counts[CountRejected]),
 				Reverts:   reverts,
-				Total:     int(perDeploy.den),
-				Rate:      valueOrZero(perDeploy.share()),
+				Total:     int(perDeploy.Den),
+				Rate:      ValueOrZero(perDeploy.share()),
 			},
-			ConfirmedOrPending: int(upperBound.num),
-			UpperBoundRate:     valueOrZero(upperBound.share()),
+			ConfirmedOrPending: int(upperBound.Num),
+			UpperBoundRate:     ValueOrZero(upperBound.share()),
 		},
 	}
 }
@@ -554,7 +573,7 @@ func FoldChangeFailureRate(parts []DayPart) *ChangeFailureRate {
 // FoldTimeToRestore is failed-deploy-recovery over parts: the median of every part's minutes
 // (dora.ts:206-213, 251), whose MedianMinutes is nil when no part holds a sample.
 func FoldTimeToRestore(parts []DayPart) TimeToRestore {
-	sorted := mergedSamples(parts, SeriesMinutes)
+	sorted := MergedSamples(parts, SeriesMinutes)
 	if len(sorted) == 0 {
 		return TimeToRestore{}
 	}
@@ -602,7 +621,7 @@ type deliveryRows struct {
 func deliveryDays(prs []PR, runs []Run, flags []Flag, window Window) []*deliveryRows {
 	byDay := map[time.Time]*deliveryRows{}
 	rowsOn := func(t time.Time) *deliveryRows {
-		d := midnight(t)
+		d := Midnight(t)
 		if byDay[d] == nil {
 			byDay[d] = &deliveryRows{day: d}
 		}
@@ -669,7 +688,7 @@ func Compute(prs []PR, runs []Run, flags []Flag, window Window) Result {
 		ChangeFailureRate: FoldChangeFailureRate(changeFailure),
 		TimeToRestore:     FoldTimeToRestore(restore),
 		// The panel's share reads 0 for a window with no pull request (dora.ts:215).
-		ReworkShare:      valueOrZero(FoldReworkShare(rework)),
+		ReworkShare:      ValueOrZero(FoldReworkShare(rework)),
 		DeployRunSuccess: *FoldDeployRunSuccess(success),
 		Daily:            DailySeries(frequency, success, window),
 	}

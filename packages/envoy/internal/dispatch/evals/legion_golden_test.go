@@ -114,8 +114,8 @@ const (
 	goldenShare = 1e-9
 )
 
-// TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports (k6's and k14's oracle): over the
-// history the golden reports were recorded over, with its facts and filings stored as the facts
+// TestTheLegionFoldsOfTheStoredDayRowsAnswerTheBaseHeadsReports, the Legion evals' oracle: over
+// the history the golden reports were recorded over, with its facts and filings stored as the facts
 // consumer stores them, every day's Legion rows are written; then for each window of the golden
 // files and each cut, the six folds over the window's stored rows, read as the eval routes read
 // them (DayWindow), answer every number the base head's report answered at the matching scope:
@@ -197,14 +197,14 @@ func seedGoldenLegionHistory(t *testing.T, r rig) ([]goldenReports, string, Legi
 	pool := r.database.Pool
 	fixture := legiontest.Seed(t, pool, legiontest.Spec{Project: spec.Project, Trees: spec.Trees, Now: spec.Now})
 	project := fixture.Project
-	rows, err := legionfacts.ComputeProject(ctx, pool, project, spec.Now)
+	rows, filings, err := legionfacts.ComputeProject(ctx, pool, project, spec.Now)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", project, err)
 	}
 	if _, err := legionfacts.WriteProject(ctx, pool, legionfacts.ProjectWrite{Project: project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts of %s: %v", project, err)
 	}
-	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: project, Filings: projectFilings(t, project, spec.Now, r), Whole: true}); err != nil {
+	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: project, Filings: filings, Whole: true}); err != nil {
 		t.Fatalf("write the filings of %s: %v", project, err)
 	}
 	since, err := r.registry.ReadLegionSince(ctx, project)
@@ -221,30 +221,6 @@ func goldenLegionDays(windows []goldenReports) (first, last time.Time) {
 		first, last = minTime(first, window.Window.From), maxTime(last, window.Window.To)
 	}
 	return first, last
-}
-
-// projectFilings is every filing a Legion session of project made, as the facts consumer's whole
-// read writes them (legionfacts' filingsOf): metric 4's rows over the project's whole population,
-// one per filed issue.
-func projectFilings(t *testing.T, project string, now time.Time, r rig) []legionfacts.Filing {
-	t.Helper()
-	population, err := metrics.ReadProject(t.Context(), r.database.Pool, nil, project, now)
-	if err != nil {
-		t.Fatalf("read the population of %s: %v", project, err)
-	}
-	var filings []legionfacts.Filing
-	seen := map[string]bool{}
-	for _, filed := range metrics.ProjectFilings(population) {
-		if seen[filed.Key] {
-			continue
-		}
-		seen[filed.Key] = true
-		filings = append(filings, legionfacts.Filing{
-			Project: project, Issue: filed.Key, FiledAt: filed.At, FilerRole: filed.Filer, FilerIssue: filed.FilerIssue,
-			FilerPhase: filed.FilerPhase, Class: filed.Class, RootKey: filed.Root,
-		})
-	}
-	return filings
 }
 
 func maxTime(a, b time.Time) time.Time {

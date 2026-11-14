@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -23,7 +21,7 @@ type MergedRows struct {
 	// ListPullRequestsInWindow lists them.
 	PullRequests []DeliveryPullRequest
 	// ApplyRuns is every deploy run on main of the deploy repository that GitHub created at or
-	// after from (ListRuns), unbounded past to: a pull request merged just before to may first
+	// after from (listRuns), unbounded past to: a pull request merged just before to may first
 	// ship after it, so bounding the read to [from, to) would read it as waiting. A production job
 	// on another branch ships no pull request. ApplyJobs is their jobs: the jobs a deploy is judged
 	// by (Production.JudgedJobNames), which judge each run as its every job would, or every job.
@@ -43,7 +41,7 @@ func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 // before it.
 func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, createdBefore *time.Time, everyJob bool) (MergedRows, error) {
 	var rows MergedRows
-	err := readSideBySide(ctx,
+	err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
 			rows.PullRequests, err = ListPullRequestsInWindow(ctx, pool, from, to)
 			return err
@@ -78,7 +76,7 @@ func ReadApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySetti
 
 // readApplyRows is ReadApplyRows, with createdBefore and everyJob as readMergedRows takes them.
 func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, createdBefore *time.Time, everyJob bool) (ApplyRows, error) {
-	runs, err := listRunsCreated(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
+	runs, err := listRuns(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
 	if err != nil {
 		return ApplyRows{}, err
 	}
@@ -88,7 +86,7 @@ func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySetti
 	}
 	var jobs map[int64][]DeliveryRunJob
 	if everyJob {
-		jobs, err = ListEveryRunJobForRuns(ctx, pool, settings.DeployRepo, runIDs)
+		jobs, err = listEveryRunJobForRuns(ctx, pool, settings.DeployRepo, runIDs)
 	} else {
 		jobs, err = ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
 	}
@@ -149,7 +147,7 @@ type Deploys struct {
 // holds no deploy, or since is not before from.
 func ReadDeploys(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time) (Deploys, error) {
 	production := settings.Production()
-	started, err := ListRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, production.JudgedJobNames())
+	started, err := listRunsWithJobsStartedIn(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", "", from, to, production.JudgedJobNames())
 	if err != nil {
 		return Deploys{}, err
 	}
@@ -216,34 +214,17 @@ type CIRows struct {
 // deployJobNames is every job name the deploy cards follow.
 func ReadCIRows(ctx context.Context, pool *store.Pool, deployRepo string, from, to time.Time, deployJobNames []string) (CIRows, error) {
 	var rows CIRows
-	err := readSideBySide(ctx,
+	err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
-			rows.Checks, err = ListRunsWithEveryJobStartedIn(ctx, pool, deployRepo, DeliveryRunKindPRChecks, "", "pull_request", from, to)
+			rows.Checks, err = listRunsWithEveryJobStartedIn(ctx, pool, deployRepo, DeliveryRunKindPRChecks, "", "pull_request", from, to)
 			return err
 		},
 		func(ctx context.Context) (err error) {
-			rows.Deploys, err = ListRunsWithJobsStartedIn(ctx, pool, deployRepo, DeliveryRunKindDeploy, "main", "push", from, to, deployJobNames)
+			rows.Deploys, err = listRunsWithJobsStartedIn(ctx, pool, deployRepo, DeliveryRunKindDeploy, "main", "push", from, to, deployJobNames)
 			return err
 		})
 	if err != nil {
 		return CIRows{}, err
 	}
 	return rows, nil
-}
-
-// readSideBySide runs reads at once and answers the first error. Each runs on a hold mark of its
-// own (store.ForConcurrentRead), so it takes one connection of the pool and one read's open cursor
-// refuses no other; none holds a lock or opens a transaction, so none waits on another. A caller
-// that holds a connection is refused (store.ErrNestedAcquire) before any read starts.
-func readSideBySide(ctx context.Context, reads ...func(ctx context.Context) error) error {
-	group, groupCtx := errgroup.WithContext(ctx)
-	for _, read := range reads {
-		readCtx, err := store.ForConcurrentRead(groupCtx)
-		if err != nil {
-			_ = group.Wait()
-			return err
-		}
-		group.Go(func() error { return read(readCtx) })
-	}
-	return group.Wait()
 }

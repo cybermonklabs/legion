@@ -46,7 +46,7 @@ type DayPart struct {
 	ViaRepository int
 }
 
-// The series the delivery and CI evals' parts are stored under (the plan's seeded catalogue).
+// The series the delivery and CI evals' parts are stored under (the seeded catalogue's).
 const (
 	// SeriesDeploys is deploy-frequency's: the successful deploys (a sum).
 	SeriesDeploys = "deploys"
@@ -78,20 +78,23 @@ const (
 	CountReverts   = "reverts"
 )
 
-// countPart is a sum's part: count rows, with counts beside them.
-func countPart(day time.Time, series string, count int, counts map[string]float64) DayPart {
+// CountPart is a sum's part: count rows, with counts beside them. The part helpers and the fold
+// helpers below are exported because the Legion builders and folds (legion/metrics) and a logged
+// eval's fold (evals) build and add up their parts by the same rules.
+func CountPart(day time.Time, series string, count int, counts map[string]float64) DayPart {
 	sum := float64(count)
 	return DayPart{Series: series, Day: day, N: count, Sum: &sum, Counts: counts}
 }
 
-// ratioPart is a share's part: numerator over denominator, N the rows the denominator counts.
-func ratioPart(day time.Time, series string, numerator, denominator int, counts map[string]float64) DayPart {
+// RatioPart is a share's part: numerator over denominator, N the rows the denominator counts.
+func RatioPart(day time.Time, series string, numerator, denominator int, counts map[string]float64) DayPart {
 	num, den := float64(numerator), float64(denominator)
 	return DayPart{Series: series, Day: day, N: denominator, Num: &num, Den: &den, Counts: counts}
 }
 
-// samplesPart is a quantile's part: every value of the day, with their count, sum and largest.
-func samplesPart(day time.Time, series string, samples []float64, counts map[string]float64) DayPart {
+// SamplesPart is a quantile's part: every value of the day, with their count, sum and largest.
+// The sum is taken in the order of samples.
+func SamplesPart(day time.Time, series string, samples []float64, counts map[string]float64) DayPart {
 	part := DayPart{Series: series, Day: day, N: len(samples), Samples: samples, Counts: counts}
 	if part.Samples == nil {
 		part.Samples = []float64{}
@@ -107,45 +110,45 @@ func samplesPart(day time.Time, series string, samples []float64, counts map[str
 	return part
 }
 
-// folded is one series' parts added up: how many parts were of the series, and their sums,
-// numerators, denominators and counts.
-type folded struct {
-	parts         int
-	sum, num, den float64
-	counts        map[string]float64
+// Folded is one series' parts added up: how many parts were of the series (Parts, which is 0
+// where none was), and their sums, numerators, denominators and counts.
+type Folded struct {
+	Parts         int
+	Sum, Num, Den float64
+	Counts        map[string]float64
 }
 
-// foldSeries adds up the parts of series among parts.
-func foldSeries(parts []DayPart, series string) folded {
-	var f folded
+// FoldSeries adds up the parts of series among parts, in the order parts are given.
+func FoldSeries(parts []DayPart, series string) Folded {
+	var f Folded
 	for _, part := range parts {
 		if part.Series != series {
 			continue
 		}
-		f.parts++
-		f.sum += valueOrZero(part.Sum)
-		f.num += valueOrZero(part.Num)
-		f.den += valueOrZero(part.Den)
+		f.Parts++
+		f.Sum += ValueOrZero(part.Sum)
+		f.Num += ValueOrZero(part.Num)
+		f.Den += ValueOrZero(part.Den)
 		for name, count := range part.Counts {
-			if f.counts == nil {
-				f.counts = map[string]float64{}
+			if f.Counts == nil {
+				f.Counts = map[string]float64{}
 			}
-			f.counts[name] += count
+			f.Counts[name] += count
 		}
 	}
 	return f
 }
 
 // share is the summed numerator over the summed denominator, nil when the denominator is 0.
-func (f folded) share() *float64 {
-	if f.den == 0 {
+func (f Folded) share() *float64 {
+	if f.Den == 0 {
 		return nil
 	}
-	return new(f.num / f.den)
+	return new(f.Num / f.Den)
 }
 
-// mergedSamples is every sample of series among parts, sorted: the one list a quantile reads.
-func mergedSamples(parts []DayPart, series string) []float64 {
+// MergedSamples is every sample of series among parts, sorted: the one list a quantile reads.
+func MergedSamples(parts []DayPart, series string) []float64 {
 	var merged []float64
 	for _, part := range parts {
 		if part.Series == series {
@@ -166,7 +169,8 @@ func partsByDay(parts []DayPart) map[string][]DayPart {
 	return byDay
 }
 
-func valueOrZero(value *float64) float64 {
+// ValueOrZero is *value, 0 where value is nil: a part's Sum, Num or Den as a fold adds it.
+func ValueOrZero(value *float64) float64 {
 	if value == nil {
 		return 0
 	}

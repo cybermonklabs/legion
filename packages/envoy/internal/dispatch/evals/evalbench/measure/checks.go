@@ -284,11 +284,6 @@ func show(value *float64) string {
 	return fmt.Sprintf("%.10g", *value)
 }
 
-// readingColumns is what the items route reads of a reading (evals.Store.Items).
-const readingColumns = `id::text, eval_id, series, row_key, row_kind, col, value, value_absent_reason, unit, n, n_unit,
-	ci_low, ci_high, ci_level, attributes, links, measured_at, recorded_at, recorded_by, source, note,
-	coalesce(replaces::text, ''), superseded_at`
-
 // k2 runs the six statements of k2 over the readings of one logged eval and one row kind in a
 // 28-day window (the plan's "The checks"), the index list, the two refusals and the two controls.
 func (c *headChecks) k2() {
@@ -299,12 +294,12 @@ func (c *headChecks) k2() {
 	args := func(w window) []string {
 		return []string{quote(evalID), quote(w.from.Format(time.RFC3339)), quote(w.to.Format(time.RFC3339)), quote(rowKind)}
 	}
-	windowRead := `select ` + readingColumns + ` from eval_readings
+	windowRead := `select ` + evals.ReadingColumns + ` from eval_readings
 		where eval_id = $1 and superseded_at is null and measured_at >= $2 and measured_at < $3 and row_kind = $4
 		order by measured_at desc, id`
 	compareRead := `(` + windowRead + `) union all (` + strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(strings.ReplaceAll(windowRead,
 		"$4", "$8"), "$3", "$7"), "$2", "$6"), "$1", "$5") + `)`
-	antiJoin := `select ` + readingColumns + ` from eval_readings r
+	antiJoin := `select ` + evals.ReadingColumns + ` from eval_readings r
 		where r.eval_id = $1 and r.measured_at >= $2 and r.measured_at < $3 and r.row_kind = $4
 		  and not exists (select 1 from eval_readings s where s.replaces = r.id)
 		order by r.measured_at desc, r.id`
@@ -440,21 +435,12 @@ func (c *headChecks) explainDropped(ctx context.Context, text string, params []s
 	if index == "" {
 		return c.explain.explain(ctx, text, params)
 	}
-	tx, err := c.explain.conn.Begin(ctx)
-	if err != nil {
-		return "", 0, err
-	}
-	defer func() {
-		_ = tx.Rollback(ctx)
-		_, _ = c.explain.conn.Exec(ctx, `deallocate all`)
-	}()
-	if _, err := tx.Exec(ctx, `drop index `+index); err != nil {
-		return "", 0, fmt.Errorf("drop %s: %w", index, err)
-	}
-	if _, err := tx.Exec(ctx, "prepare evalbench_explained as "+text); err != nil {
-		return "", 0, fmt.Errorf("prepare: %w", err)
-	}
-	return c.explain.planOf(ctx, tx, "explain (analyze, buffers) execute evalbench_explained("+strings.Join(params, ", ")+")")
+	return c.explain.explainAfter(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `drop index `+index); err != nil {
+			return fmt.Errorf("drop %s: %w", index, err)
+		}
+		return nil
+	}, text, params)
 }
 
 // insertRolledBack runs one insert in a transaction it rolls back, with index dropped first where

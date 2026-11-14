@@ -431,14 +431,14 @@ func (h *deliveryHub) markDirtyLocked(g *hubGeneration, view *deliveryView, now 
 // delivery view with it.
 func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool {
 	switch change.Kind {
-	case "issue_facts":
+	case delivery.ChangeKindIssueFacts:
 		// One issue's stored Legion facts, which the Legion board is the one reader of
 		// (legionfacts.Read). No other kind of view reads a facts row, so a board that shows the
 		// issue is woken and every delivery view is left: the sweep rewrites every open issue's
 		// row every legionfacts.SweepEvery, and a timeline, measures or pipeline answer cannot
 		// move when one does.
 		return view.spec.kind == legionBoardView && view.showsIssue(change.Ref, false)
-	case "eval_readings", "eval_versions", "eval_days":
+	case delivery.ChangeKindEvalReadings, delivery.ChangeKindEvalVersions, delivery.ChangeKindEvalDays:
 		// One eval's readings, a new version of its definition, or its day rows: what the evals
 		// view of the eval's project reads (readEvalList), and what no other view reads at all.
 		// The change's repo holds that project (migrations 20261113082200 to 20261113082202).
@@ -448,7 +448,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		// fact, a filing) was logged: a view woken by the input would read the rows before the
 		// rewrite, and the eval_days change of the rewrite is what wakes it.
 		return view.spec.kind == evalsView && view.spec.project == change.Repo
-	case "issue_filings":
+	case delivery.ChangeKindIssueFilings:
 		// One filing of a Legion session. No view reads a filing: the refresher does, and
 		// rewrites the day's Legion rows, whose eval_days change marks the evals view; the
 		// Legion board reads the stored facts (legionfacts.Read) and the daemon's state; and
@@ -471,9 +471,9 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 	some := func(in func(time.Time) bool) bool { return slices.ContainsFunc(times, in) }
 	atOrAfterFrom := func(t time.Time) bool { return !t.Before(from) }
 	switch change.Kind {
-	case "session_group", "settings":
+	case delivery.ChangeKindSessionGroup, delivery.ChangeKindSettings:
 		return true
-	case "pull_request":
+	case delivery.ChangeKindPullRequest:
 		switch view.spec.kind {
 		case deliveryLiveTimeline, deliveryLiveMeasures:
 			// The timeline's waiting line reads merges before the window, and the measures'
@@ -483,7 +483,7 @@ func (view *deliveryView) touchedBy(change delivery.Change, now time.Time) bool 
 		default:
 			return some(atOrAfterFrom)
 		}
-	case "run", "run_job":
+	case delivery.ChangeKindRun, delivery.ChangeKindRunJob:
 		switch change.RunKind {
 		case string(delivery.DeliveryRunKindPRChecks):
 			return view.spec.kind == deliveryLivePipeline && (len(times) == 0 || some(atOrAfterFrom))

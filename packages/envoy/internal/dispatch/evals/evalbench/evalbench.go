@@ -1,5 +1,5 @@
 // Package evalbench loads the fixture at INFRA's stated rate that the eval registry's measurement
-// Job reads (dispatch://INFRA-2916, T15: checks k2, k8, k13 and k16), and names what the
+// Job reads (dispatch://INFRA-2916, checks k2, k8, k13 and k16), and names what the
 // measurement reads of it: the project, its repositories, its logged evals and the windows of
 // the first paint.
 //
@@ -43,7 +43,7 @@ import (
 // Project is the project of INFRA's size; its key is the one the measurement reads.
 const Project = "INFRA"
 
-// The stated rate: dispatch://INFRA-2916's plan, T15, after INFRA's measured volumes.
+// The stated rate: dispatch://INFRA-2916's plan, after INFRA's measured volumes.
 const (
 	issues         = 13103
 	issueDays      = 365
@@ -54,7 +54,6 @@ const (
 	reworkShare    = 0.2
 	runDays        = 200
 	deployRuns     = 20
-	deployJobs     = 8
 	checkRuns      = 60
 	checkJobs      = 40
 	readings       = 2_800_000
@@ -190,7 +189,7 @@ func Load(ctx context.Context, database *store.Store, spec Spec, logf func(forma
 // checkSchema refuses a database of the wrong head: this head's mode needs the tables the base
 // lacks, and the base mode refuses a database that holds them.
 func checkSchema(ctx context.Context, pool *store.Pool, base bool) error {
-	held, err := heldTables(ctx, pool, evalfixture.BaseLacks)
+	held, err := evalfixture.ExistingTables(ctx, pool, evalfixture.BaseLacks)
 	if err != nil {
 		return err
 	}
@@ -207,24 +206,6 @@ func checkSchema(ctx context.Context, pool *store.Pool, base bool) error {
 		return fmt.Errorf("this head's mode writes into this head's schema, and the database lacks %s (a database of the base head takes -base)", strings.Join(missing, ", "))
 	}
 	return nil
-}
-
-// heldTables is those of tables the database holds.
-func heldTables(ctx context.Context, pool *store.Pool, tables []string) ([]string, error) {
-	rows, err := pool.Query(ctx, `select name from unnest($1::text[]) as name where to_regclass(name) is not null`, tables)
-	if err != nil {
-		return nil, fmt.Errorf("read which tables the database holds: %w", err)
-	}
-	defer rows.Close()
-	var held []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("read which tables the database holds: %w", err)
-		}
-		held = append(held, name)
-	}
-	return held, rows.Err()
 }
 
 // checkEmpty refuses a database that holds a project, an issue or a delivery row: the load's
@@ -262,7 +243,7 @@ func resetConsumers(ctx context.Context, pool *store.Pool, base bool) error {
 
 // count reads how many rows each of countedTables holds, those the database has.
 func count(ctx context.Context, pool *store.Pool) (Counts, error) {
-	held, err := heldTables(ctx, pool, countedTables)
+	held, err := evalfixture.ExistingTables(ctx, pool, countedTables)
 	if err != nil {
 		return nil, err
 	}

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -80,7 +81,7 @@ func requireTheListRead(t *testing.T, handler http.Handler, project string, body
 // `return true`, which would mark every timeline, measures and pipeline view.
 func TestAnEvalChangeTouchesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
-	today := utcDayOf(now)
+	today := measures.Midnight(now)
 	hourAgo, dayAgo := now.Add(-time.Hour), now.Add(-24*time.Hour)
 
 	views := []struct {
@@ -221,7 +222,7 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 	createTestProject(t, rig.handler, "INFRA")
 	createTestProject(t, rig.handler, "OTHER")
 	now := rig.clock.Now()
-	today := utcDayOf(now)
+	today := measures.Midnight(now)
 
 	// The timeline is read first, so its read sets the hub's verdict and every later first answer
 	// is followed by it.
@@ -337,7 +338,7 @@ func TestAnEvalWriteRecomputesTheEvalsViewsOfItsProjectAlone(t *testing.T) {
 		if _, err := rig.database.Pool.Exec(t.Context(), `
 			insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, counts, built_by)
 			values ('INFRA', 'INFRA/deploy-frequency', 'deploys', '', $1, true, 1, 1, '{"with_prs": 1}', 'test')
-		`, utcDayOf(merged)); err != nil {
+		`, measures.Midnight(merged)); err != nil {
 			t.Fatalf("write deploy-frequency's day row: %v", err)
 		}
 	}, []string{"eval_days"}, []string{"a", "b"})
@@ -371,7 +372,7 @@ func TestAnEvalsViewsSnapshotIsTheListRead(t *testing.T) {
 	rig := newHubRig(t, nil)
 	createTestProject(t, rig.handler, "INFRA")
 	now := rig.clock.Now()
-	today := utcDayOf(now)
+	today := measures.Midnight(now)
 	// Readings of a logged eval on two days, so the window folds day rows of its own.
 	logged := evalRequest(t, rig.handler, http.MethodPost, "/api/v1/projects/INFRA/evals/review-time/readings",
 		map[string]any{"readings": []any{reading("minutes", 10, now.Add(-time.Hour)), reading("minutes", 25, now.Add(-49*time.Hour))}}, "snapshot-readings")
@@ -424,14 +425,14 @@ func TestAnEvalsViewsSnapshotIsTheListRead(t *testing.T) {
 	requireTheListRead(t, rig.handler, "NEWP", snapshot.Body, "")
 }
 
-// TestAReadingReachesAnEvalsPageOverTheLiveSocket (k10): a page subscribed to its project's evals
+// TestAReadingReachesAnEvalsPageOverTheLiveSocket: a page subscribed to its project's evals
 // over GET /ws/live is sent the list read as its snapshot, and, after one readings write and with
 // no second subscription, the delta that lands its body on the route's answer.
 func TestAReadingReachesAnEvalsPageOverTheLiveSocket(t *testing.T) {
 	rig := newLiveSocketRig(t, testServerOptions{}, nil)
 	createTestProject(t, rig.handler, "INFRA")
 	now := time.Now().UTC()
-	today := utcDayOf(now)
+	today := measures.Midnight(now)
 	window := evalsDays(today.AddDate(0, 0, -27), today.AddDate(0, 0, 1))
 
 	client := rig.dial(t, asUser("alice"))

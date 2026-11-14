@@ -10,24 +10,12 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // refresher_reads.go holds the refresher's reads of where each item a change names stands, and its
 // two writes of zero rows. Each is one statement.
-
-// readProjects is every project's key, in key order.
-func (s *Store) readProjects(ctx context.Context) ([]string, error) {
-	rows, err := s.database.Pool.Query(ctx, `select key from projects order by key`)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects: %w", err)
-	}
-	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the projects: %w", err)
-	}
-	return keys, nil
-}
 
 // eventPage is what one page of the event log names: where the events cursor now stands, whether
 // the page was full, the projects whose count of unowned P0 issues an event can have moved, and
@@ -157,7 +145,7 @@ func collectDays(rows pgx.Rows, at map[string]*time.Time) error {
 	var member string
 	var moment time.Time
 	_, err := pgx.ForEachRow(rows, []any{&member, &moment}, func() error {
-		day := utcMidnight(moment)
+		day := measures.Midnight(moment)
 		at[member] = &day
 		return nil
 	})
@@ -214,7 +202,7 @@ func collectHeld(rows pgx.Rows, what string) ([]heldMember, error) {
 	var held []heldMember
 	var one heldMember
 	if _, err := pgx.ForEachRow(rows, []any{&one.project, &one.member, &one.day, &one.shippedBy}, func() error {
-		one.day = utcMidnight(one.day)
+		one.day = measures.Midnight(one.day)
 		held = append(held, one)
 		return nil
 	}); err != nil {
@@ -253,7 +241,7 @@ func (s *Store) legionItemDays(ctx context.Context, issues [][2]string) ([]proje
 	if _, err := pgx.ForEachRow(rows, []any{&project, &closed, &held}, func() error {
 		for _, at := range []*time.Time{closed, held} {
 			if at != nil {
-				days = append(days, projectDay{project: project, day: utcMidnight(*at)})
+				days = append(days, projectDay{project: project, day: measures.Midnight(*at)})
 			}
 		}
 		return nil
@@ -285,7 +273,7 @@ func (s *Store) subtreeFilingDays(ctx context.Context, keys []string) ([]project
 	var project string
 	var filed time.Time
 	if _, err := pgx.ForEachRow(rows, []any{&project, &filed}, func() error {
-		days = append(days, projectDay{project: project, day: utcMidnight(filed)})
+		days = append(days, projectDay{project: project, day: measures.Midnight(filed)})
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read the filings below %d issues: %w", len(keys), err)
@@ -323,7 +311,7 @@ func (s *Store) firstDays(ctx context.Context, project string, rows []DayRow) (m
 	var id string
 	var day time.Time
 	if _, err := pgx.ForEachRow(read, []any{&id, &day}, func() error {
-		first[id] = utcMidnight(day)
+		first[id] = measures.Midnight(day)
 		return nil
 	}); err != nil {
 		return nil, fmt.Errorf("read the first days of %s's series: %w", project, err)
@@ -363,14 +351,14 @@ func (s *Store) legionInputStart(ctx context.Context, project string) (*time.Tim
 }
 
 // insertZeroRows writes each of rows that no stored row has the key of (insertMissingDays), in one
-// transaction.
-func (s *Store) insertZeroRows(ctx context.Context, rows []DayRow, builtBy string) error {
-	tx, err := s.database.Pool.Begin(ctx)
+// transaction, as the pass's build.
+func (r *refresh) insertZeroRows(ctx context.Context, rows []DayRow) error {
+	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the zero rows of %s: %w", rows[0].ProjectKey, err)
 	}
 	defer tx.Rollback(ctx)
-	if err := insertMissingDays(ctx, tx, rows, builtBy); err != nil {
+	if err := insertMissingDays(ctx, tx, rows, r.build); err != nil {
 		return err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -380,14 +368,14 @@ func (s *Store) insertZeroRows(ctx context.Context, rows []DayRow, builtBy strin
 }
 
 // fillLoggedZeros writes, for each series of project's logged evals (every one where ids is nil,
-// else those of ids that are logged), the zero row of every day from the series' first day to
-// through that holds no all-repositories row of it, in one statement, and answers how many it
-// wrote. A series' first day is its first stored row's, which a reading's write made (T4's
+// else those of ids that are logged), the zero row of every day from the series' first day to the
+// pass's today that holds no all-repositories row of it, in one statement, and answers how many it
+// wrote. A series' first day is its first stored row's, which a readings write made (its
 // increment, days.go), and the zero row is the row that write leaves where every value is taken
 // away: n 0, a zero sum, numerator and denominator, no sample, no maximum and no last value, so a
 // later reading of that day adds to it as to any row. A day that holds a row keeps it.
-func (s *Store) fillLoggedZeros(ctx context.Context, project string, ids []string, through time.Time, builtBy string) (int64, error) {
-	rows, err := s.database.Pool.Query(ctx, `select eval_id from evals_current where project_key = $1 and source = $2 order by eval_id`,
+func (r *refresh) fillLoggedZeros(ctx context.Context, project string, ids []string) (int64, error) {
+	rows, err := r.store.database.Pool.Query(ctx, `select eval_id from evals_current where project_key = $1 and source = $2 order by eval_id`,
 		project, SourceLogged)
 	if err != nil {
 		return 0, fmt.Errorf("read the logged evals of %s: %w", project, err)
@@ -402,7 +390,7 @@ func (s *Store) fillLoggedZeros(ctx context.Context, project string, ids []strin
 	if len(logged) == 0 {
 		return 0, nil
 	}
-	tag, err := s.database.Pool.Exec(ctx, `
+	tag, err := r.store.database.Pool.Exec(ctx, `
 		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, num, den, samples, built_by)
 		select first.project_key, first.eval_id, first.series, '', day::date, first.listed, 0, 0, 0, 0, '{}', $4
 		from (
@@ -415,7 +403,7 @@ func (s *Store) fillLoggedZeros(ctx context.Context, project string, ids []strin
 		cross join generate_series(first.first_day::timestamp, $3::date::timestamp, interval '1 day') as day
 		order by first.eval_id, first.series, day
 		on conflict (project_key, eval_id, series, repo, day) do nothing
-	`, project, logged, through, builtBy)
+	`, project, logged, r.today, r.build)
 	if err != nil {
 		return 0, fmt.Errorf("write the zero rows of %s's logged evals: %w", project, err)
 	}

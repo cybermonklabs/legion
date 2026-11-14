@@ -169,12 +169,9 @@ func ProjectFacts(population *Population) map[string]IssueFacts {
 	return out
 }
 
-// factsOf is one issue's facts, computed once: ProjectFacts answers them for every issue with
-// Legion phase work, which legionfacts stores and the Legion evals' day builders fold.
+// factsOf is one issue's facts: ProjectFacts answers them for every issue with Legion phase work,
+// which legionfacts stores and the Legion evals' day builders fold.
 func (c *computation) factsOf(issue *Issue) IssueFacts {
-	if held, computed := c.facts[issue.Key]; computed {
-		return held
-	}
 	population, key := c.population, issue.Key
 	spent, _ := c.issueParts(issue)
 	parts := map[string]float64{}
@@ -214,7 +211,6 @@ func (c *computation) factsOf(issue *Issue) IssueFacts {
 		first, last := bars[0].From, bars[len(bars)-1].To
 		facts.WorkFirstAt, facts.WorkLastAt = &first, &last
 	}
-	c.facts[key] = facts
 	return facts
 }
 
@@ -229,13 +225,21 @@ type IssueFiling struct {
 }
 
 // ProjectFilings is every filing the population read (Population.Filed), each classified by the
-// rule metric 4 classifies it by. The class and the filer's phase read the filer's own issue, so
-// the population must hold that issue's timeline: ReadProject and ReadIssues both read the
-// filers of the filings they read.
+// rule metric 4 classifies it by, one per filed issue: issue_filings holds one row per filed
+// issue, so a filed issue that somehow carries two `issue.created` events by Legion sessions keeps
+// the first, in the order the population read them, and a second row of one key in one write
+// cannot fail the whole write. The class and the filer's phase read the filer's own issue, so the
+// population must hold that issue's timeline: ReadProject and ReadIssues both read the filers of
+// the filings they read.
 func ProjectFilings(population *Population) []IssueFiling {
 	c := newComputation(population)
 	filings := make([]IssueFiling, 0, len(population.Filed))
+	seen := make(map[string]bool, len(population.Filed))
 	for _, filed := range population.Filed {
+		if seen[filed.Key] {
+			continue
+		}
+		seen[filed.Key] = true
 		filings = append(filings, IssueFiling{FiledIssue: c.classify(filed), Root: c.treeRoot(filed.Key)})
 	}
 	return filings

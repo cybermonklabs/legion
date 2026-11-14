@@ -325,20 +325,15 @@ func fenceLength(text string) int {
 }
 
 // registrationSentence is the method a section holds until someone writes one: one sentence
-// saying who registered the eval, through which write, and when.
+// saying who registered the eval, through which write (a reading, ViaReading, or a register
+// write), and when.
 func registrationSentence(via string, actor model.Actor, at time.Time) string {
-	when := at.UTC().Format("2006-01-02 15:04:05") + " UTC"
+	when := at.UTC().Format(time.DateTime) + " UTC"
 	who := describeActor(actor)
-	switch via {
-	case ViaReading:
+	if via == ViaReading {
 		return "This eval was registered by a reading that " + who + " logged at " + when + ", and no one has written its method yet."
-	case ViaSeed:
-		return "This eval was registered by the seeded catalogue at " + when + ", and no one has written its method yet."
-	case ViaSettings:
-		return "This eval was registered by a settings write of " + who + " at " + when + ", and no one has written its method yet."
-	default:
-		return "This eval was registered by a register write of " + who + " at " + when + ", and no one has written its method yet."
 	}
+	return "This eval was registered by a register write of " + who + " at " + when + ", and no one has written its method yet."
 }
 
 // describeActor names an actor in prose: its kind and id, and the person it acts for where its

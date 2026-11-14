@@ -153,21 +153,19 @@ func TestEveryLiveKindDeclaresItsBehaviourOnItsEntry(t *testing.T) {
 			t.Errorf("%s: its unconfigured refusal has no code or no message", kind)
 		}
 		// A view of the deployment's delivery rows names no project; every other view names the
-		// one project it shows. Only a view that shows the daemon's state is marked by the
-		// sampler's read of it (dirtyLegionBoard), and such a view names its project.
+		// one project it shows.
 		if classes.project == classes.delivery {
 			t.Errorf("%s: project=%v and delivery=%v: a view reads one project's rows or the deployment's",
 				kind, classes.project, classes.delivery)
-		}
-		if classes.daemon && !classes.project {
-			t.Errorf("%s: daemon with no project: the sampler's read of a daemon marks the views of its project", kind)
 		}
 	}
 	if deliveryLiveKinds[legionBoardView].unownedP0 {
 		t.Error("the Legion board shows no unowned P0 list, so a P0 write must not mark it by itself")
 	}
-	if !deliveryLiveKinds[legionBoardView].daemon || deliveryLiveKinds[evalsView].daemon {
-		t.Error("the Legion board shows its daemon's state and an evals view does not, so the sampler's read marks the board alone")
+	// The Legion board is the one view that shows its daemon's state, which the sampler's read of
+	// that daemon marks by the board's project (dirtyLegionBoard), so the board names its project.
+	if !deliveryLiveKinds[legionBoardView].project {
+		t.Error("the Legion board names no project, so the sampler's read of its daemon marks no board")
 	}
 }
 

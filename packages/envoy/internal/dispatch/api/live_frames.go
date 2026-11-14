@@ -264,10 +264,6 @@ type deliveryLiveClasses struct {
 	// project is whether a subscribed view of this kind names the project it shows: the Legion
 	// board and the evals list are each one project's.
 	project bool
-	// daemon is whether the view shows its project's Legion daemon state, so the sampler's read of
-	// that daemon marks it (dirtyLegionBoard). The Legion board does; an evals view names its
-	// project too, but reads the registry's rows, which the change log marks (touchedBy).
-	daemon bool
 	// unownedP0 is whether the view shows the unowned P0 list, so a write of a P0 issue moves it
 	// even where its own population does not name the issue.
 	unownedP0 bool
@@ -356,7 +352,6 @@ var deliveryLiveKinds = map[string]deliveryLiveClasses{
 		},
 		out:                 []string{"computed_at"},
 		project:             true,
-		daemon:              true,
 		unconfigured:        legion.ErrNoSettings,
 		unconfiguredCode:    legionNotConfiguredCode,
 		unconfiguredMessage: legionNotConfiguredMessage,

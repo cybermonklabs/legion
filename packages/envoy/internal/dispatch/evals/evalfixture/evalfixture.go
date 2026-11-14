@@ -37,6 +37,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/deliverytest"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/legion/legiontest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -125,7 +126,7 @@ func WindowsOf(history legiontest.Fixture) (Windows, error) {
 		return Windows{}, errors.New("the history holds no observation or no finished issue, so no window falls on either side of the first observation")
 	}
 	boundary := nextMidnight(history.FirstObserved)
-	before := Window{From: dayOf(history.FirstFinished), To: boundary}
+	before := Window{From: measures.Midnight(history.FirstFinished), To: boundary}
 	if !before.From.Before(history.FirstObserved) {
 		return Windows{}, fmt.Errorf("the first issue finished on %s, the day of the first observation (%s), so no window starts on a day with input before it",
 			before.From.Format(time.DateOnly), history.FirstObserved.Format(time.RFC3339))
@@ -133,7 +134,7 @@ func WindowsOf(history legiontest.Fixture) (Windows, error) {
 	if before.To.Sub(before.From) > maxWindow {
 		before.From = before.To.Add(-maxWindow)
 	}
-	after := Window{From: boundary, To: dayOf(history.To).AddDate(0, 0, 1)}
+	after := Window{From: boundary, To: measures.Midnight(history.To).AddDate(0, 0, 1)}
 	if after.To.Sub(after.From) > maxWindow {
 		after.To = after.From.Add(maxWindow)
 	}
@@ -177,7 +178,7 @@ func WriteBase(ctx context.Context, pool *store.Pool, project string, issues int
 	if err := requireTables(ctx, pool, LegionTables); err != nil {
 		return LegionResult{}, fmt.Errorf("-base writes into the base head's schema: %w", err)
 	}
-	held, err := existingTables(ctx, pool, []string{"eval_days"})
+	held, err := ExistingTables(ctx, pool, []string{"eval_days"})
 	if err != nil {
 		return LegionResult{}, err
 	}
@@ -330,7 +331,7 @@ func SettleNumbers(ctx context.Context, pool *store.Pool, projects []string) err
 
 // requireTables refuses a database that lacks any of tables, naming each it lacks.
 func requireTables(ctx context.Context, pool *store.Pool, tables []string) error {
-	held, err := existingTables(ctx, pool, tables)
+	held, err := ExistingTables(ctx, pool, tables)
 	if err != nil {
 		return err
 	}
@@ -346,8 +347,9 @@ func requireTables(ctx context.Context, pool *store.Pool, tables []string) error
 	return nil
 }
 
-// existingTables is those of tables the database holds in its search path.
-func existingTables(ctx context.Context, pool *store.Pool, tables []string) ([]string, error) {
+// ExistingTables is those of tables the database holds in its search path: what this package's
+// modes and evalbench's schema checks read a database's head by.
+func ExistingTables(ctx context.Context, pool *store.Pool, tables []string) ([]string, error) {
 	rows, err := pool.Query(ctx, `select name from unnest($1::text[]) as name where to_regclass(name) is not null`, tables)
 	if err != nil {
 		return nil, fmt.Errorf("read which tables the database holds: %w", err)
@@ -364,15 +366,9 @@ func existingTables(ctx context.Context, pool *store.Pool, tables []string) ([]s
 	return held, rows.Err()
 }
 
-// dayOf is the UTC midnight of the day at is on.
-func dayOf(at time.Time) time.Time {
-	at = at.UTC()
-	return time.Date(at.Year(), at.Month(), at.Day(), 0, 0, 0, 0, time.UTC)
-}
-
 // nextMidnight is the first UTC midnight at or after at.
 func nextMidnight(at time.Time) time.Time {
-	day := dayOf(at)
+	day := measures.Midnight(at)
 	if day.Before(at) {
 		day = day.AddDate(0, 0, 1)
 	}

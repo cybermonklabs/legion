@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"iter"
 	"slices"
 	"strings"
 	"time"
@@ -47,19 +48,44 @@ type Segments struct {
 	Idle              float64 `json:"idle"`
 }
 
-// add books a segment's time onto the bar.
-func (s *Segments) add(segment Segment, spent time.Duration) {
+// segmentsInOrder is the five segments in the precedence's order, idle last.
+var segmentsInOrder = [...]Segment{SegmentWaitingOnPerson, SegmentInATurn, SegmentCIWait, SegmentWaitingOnChildren, SegmentIdle}
+
+// hoursOf is the field of s that holds segment's hours, nil for a name that is no segment: the one
+// table from a segment's name to its field.
+func (s *Segments) hoursOf(segment Segment) *float64 {
 	switch segment {
 	case SegmentWaitingOnPerson:
-		s.WaitingOnPerson += hours(spent)
+		return &s.WaitingOnPerson
 	case SegmentInATurn:
-		s.InATurn += hours(spent)
+		return &s.InATurn
 	case SegmentCIWait:
-		s.CIWait += hours(spent)
+		return &s.CIWait
 	case SegmentWaitingOnChildren:
-		s.WaitingOnChildren += hours(spent)
+		return &s.WaitingOnChildren
 	case SegmentIdle:
-		s.Idle += hours(spent)
+		return &s.Idle
+	}
+	return nil
+}
+
+// ByName is each of the bar's five segments and its hours, in the precedence's order with idle
+// last: the names a bar's day part counts its segments under (barCounts), and an items row's
+// columns and a phase-time eval's statistics name them by.
+func (s Segments) ByName() iter.Seq2[Segment, float64] {
+	return func(yield func(Segment, float64) bool) {
+		for _, segment := range segmentsInOrder {
+			if !yield(segment, *s.hoursOf(segment)) {
+				return
+			}
+		}
+	}
+}
+
+// add books a segment's time onto the bar.
+func (s *Segments) add(segment Segment, spent time.Duration) {
+	if field := s.hoursOf(segment); field != nil {
+		*field += hours(spent)
 	}
 }
 

@@ -41,7 +41,7 @@ import (
 // still running; the day is built again when the run that settles them lands. change-fail-rate and
 // failed-deploy-recovery get no rows: no failure source exists, so they read "no data".
 //
-// Attribution (D1, root R27). A pull request counts for the project of the issue it names
+// Attribution. A pull request counts for the project of the issue it names
 // (issues.project_key). One that names no issue, or an issue no row holds, counts for the project
 // its repository is mapped to in repo_projects. A deploy run counts for every project the pull
 // requests it ships count for, once in each however many of a project's it ships; a run that ships
@@ -68,7 +68,7 @@ import (
 // project, and one row of each such series per repository the family's rows are in, built from
 // that repository's rows alone: the pull request's repository, the run's. So every row counted is
 // in one repository's rows, and the repositories' rows of a series partition its all-repositories
-// row (k16): their n, sum, num, den, counts and via_repository add up to its own, and their samples
+// row: their n, sum, num, den, counts and via_repository add up to its own, and their samples
 // are its samples. A family a project holds no row of that day writes no row: the explicit zero
 // rows of a series from its first input day on are the refresher's (ZeroDeliveryDay,
 // ProjectDay.WithZeros).
@@ -234,12 +234,6 @@ type DeliveryDay struct {
 	checkJobs, pushJobs map[int64][]delivery.DeliveryRunJob
 }
 
-// utcMidnight is the UTC midnight of the UTC day t is on.
-func utcMidnight(t time.Time) time.Time {
-	t = t.UTC()
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
-}
-
 // ReadDeliveryDay reads the delivery and CI rows of the UTC day day is on, under settings, and
 // attributes each to its projects. Its reads are the delivery routes' for a window of that day:
 // the day's deploys and the rows before the day their shipped sets read (delivery.ReadDeploys);
@@ -258,7 +252,7 @@ func (s *Store) ReadDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 // created from its own start to now again.
 func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliverySettings, day time.Time, applyRows *delivery.ApplyRows) (DeliveryDay, error) {
 	pool := s.database.Pool
-	day = utcMidnight(day)
+	day = measures.Midnight(day)
 	end := day.AddDate(0, 0, 1)
 	production := settings.Production()
 	read := DeliveryDay{Day: day, cards: measures.DeployCards(settings)}
@@ -321,19 +315,15 @@ func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 			continue
 		}
 		apply := delivery.ContainingRun(pr, settings.DeployRepo, applies)
-		measured := measures.PR{
-			ID: pr.Repo + "#" + strconv.Itoa(pr.Number), CreatedAt: *pr.CreatedAt, MergedAt: *pr.MergedAt,
-			FirstCommitAt: pr.FirstCommitAt, Rework: pr.Rework,
+		entry := dayPR{
+			pr: measures.PROf(pr, apply), repo: pr.Repo, member: PullRequestMember(pr.Repo, pr.Number),
+			counted: attribute(pr),
 		}
-		entry := dayPR{repo: pr.Repo, member: PullRequestMember(pr.Repo, pr.Number), counted: attribute(pr)}
 		if apply != nil {
-			runID, completedAt := apply.RunID, apply.CompletedAt
-			measured.DeployRunID, measured.DeployedAt = &runID, &completedAt
-			if run, found := applyRuns[runID]; found {
-				entry.deploy = &dayItem{member: RunMember(run.Repo, run.RunID), day: utcMidnight(run.StartedAt)}
+			if run, found := applyRuns[apply.RunID]; found {
+				entry.deploy = &dayItem{member: RunMember(run.Repo, run.RunID), day: measures.Midnight(run.StartedAt)}
 			}
 		}
-		entry.pr = measured
 		read.prs = append(read.prs, entry)
 	}
 	shipped := deploys.ShippedBy(merged, settings)
@@ -346,7 +336,7 @@ func (s *Store) readDeliveryDay(ctx context.Context, settings delivery.DeliveryS
 			repo: run.Repo, member: RunMember(run.Repo, run.RunID),
 		}
 		for _, pr := range shipped[run.RunID] {
-			deploy.ships = append(deploy.ships, dayItem{member: PullRequestMember(pr.Repo, pr.Number), day: utcMidnight(*pr.MergedAt)})
+			deploy.ships = append(deploy.ships, dayItem{member: PullRequestMember(pr.Repo, pr.Number), day: measures.Midnight(*pr.MergedAt)})
 		}
 		// Once in each project its pull requests count for, through an issue where any of that
 		// project's did.
@@ -588,7 +578,7 @@ func (d DeliveryDay) Rows(project string) ProjectDay {
 // zero rows the refresher writes for a series from its first input day on, on a day with no input
 // (ProjectDay.WithZeros). pr-ci's job series have none: a job with no result that day has no part.
 func ZeroDeliveryDay(settings delivery.DeliverySettings, project string, day time.Time) ProjectDay {
-	d := DeliveryDay{Day: utcMidnight(day), cards: measures.DeployCards(settings)}
+	d := DeliveryDay{Day: measures.Midnight(day), cards: measures.DeployCards(settings)}
 	return ProjectDay{Project: project, Day: d.Day, Rows: d.buildFamilies(project, "", familyRows{}, true)}
 }
 
@@ -705,7 +695,7 @@ func (s *Store) WriteProjectDay(ctx context.Context, day ProjectDay, builtBy str
 // the delivery and the Legion writes of one day leave each other's rows and members as they are.
 // what names the rows in a refusal.
 func (s *Store) writeProjectDay(ctx context.Context, what string, day ProjectDay, slugs, families []string, builtBy string) error {
-	date := utcMidnight(day.Day)
+	date := measures.Midnight(day.Day)
 	evalIDs := make([]string, len(slugs))
 	for i, slug := range slugs {
 		evalIDs[i] = EvalID(day.Project, slug)
@@ -780,7 +770,7 @@ func (s *Store) WriteUnownedP0Day(ctx context.Context, project string, day time.
 		return fmt.Errorf("begin the unowned-p0 row of %s: %w", project, err)
 	}
 	defer tx.Rollback(ctx)
-	evalID, date := EvalID(project, SlugUnownedP0), utcMidnight(day)
+	evalID, date := EvalID(project, SlugUnownedP0), measures.Midnight(day)
 	var now time.Time
 	var stored *float64
 	var storedAt *time.Time
@@ -893,11 +883,11 @@ func writeDayRows(ctx context.Context, tx pgx.Tx, rows []DayRow, builtBy, confli
 	sums, nums, dens, maxes, lastValues := make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count), make([]*float64, count)
 	samples, counts := make([]*string, count), make([]string, count)
 	for i, row := range rows {
-		projects[i], evals[i], series[i], repos[i], days[i], listed[i] = row.ProjectKey, row.EvalID, row.Series, row.Repo, utcMidnight(row.Day), row.Listed
+		projects[i], evals[i], series[i], repos[i], days[i], listed[i] = row.ProjectKey, row.EvalID, row.Series, row.Repo, measures.Midnight(row.Day), row.Listed
 		ns[i], via[i] = int32(row.N), int32(row.ViaRepository)
 		sums[i], nums[i], dens[i], maxes[i], lastValues[i], lastAts[i] = row.Sum, row.Num, row.Den, row.Max, row.LastValue, row.LastAt
 		samples[i] = floatArray(row.Samples)
-		encoded, err := json.Marshal(nonNilCounts(row.Counts))
+		encoded, err := json.Marshal(NonNilCounts(row.Counts))
 		if err != nil {
 			return fmt.Errorf("encode the counts of a day row of %s: %w", row.EvalID, err)
 		}
@@ -938,7 +928,9 @@ func floatArray(values []float64) *string {
 	return &encoded
 }
 
-func nonNilCounts(counts map[string]float64) map[string]float64 {
+// NonNilCounts is a day row's counts as it is stored and answered: {} where it holds none, never
+// null.
+func NonNilCounts(counts map[string]float64) map[string]float64 {
 	if counts == nil {
 		return map[string]float64{}
 	}

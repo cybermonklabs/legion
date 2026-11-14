@@ -151,13 +151,13 @@ func TestTheFactsOfNamedIssuesAreTheFactsOfTheWholeProject(t *testing.T) {
 	keys, otherTree := fixture.Keys[:perTree], fixture.Keys[perTree:]
 
 	startedProject := time.Now()
-	project, err := ReadProject(t.Context(), database.Pool, nil, fixture.Project, now)
+	project, err := ReadProject(t.Context(), database.Pool, fixture.Project, now)
 	projectRead := time.Since(startedProject)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}
 	startedIssues := time.Now()
-	named, err := ReadIssues(t.Context(), database.Pool, nil, fixture.Project, keys, nil, now)
+	named, err := ReadIssues(t.Context(), database.Pool, fixture.Project, keys, nil, now)
 	issuesRead := time.Since(startedIssues)
 	if err != nil {
 		t.Fatalf("read the named issues: %v", err)

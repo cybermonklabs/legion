@@ -10,6 +10,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -210,7 +211,7 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 	if err := r.load(ctx); err != nil {
 		return r.report, time.Time{}, err
 	}
-	safe, err := safeHorizon(ctx, deps.Horizon)
+	safe, err := deps.Horizon.SafeOrAwait(ctx)
 	if err != nil {
 		return r.report, time.Time{}, err
 	}
@@ -242,28 +243,10 @@ func (s *Store) refresh(ctx context.Context, deps RefresherDeps, sched refresher
 // newRefresh is the state of one pass that builds as build, as of now, batch days of each walk.
 func (s *Store) newRefresh(build string, now time.Time, batch int) *refresh {
 	return &refresh{
-		store: s, build: build, now: now, today: utcMidnight(now), batch: batch,
+		store: s, build: build, now: now, today: measures.Midnight(now), batch: batch,
 		report: refreshed{days: map[builtDay]bool{}},
 		first:  map[walkKey]map[string]time.Time{}, since: map[string]LegionSince{},
 	}
-}
-
-// safeHorizon is the highest event id at or below which every event is final (events.Horizon). A
-// safe of 0 is a horizon that has proven nothing yet, which is every first pass of a process, since
-// one snapshot never proves its own newest id: such a pass takes a horizon with Await instead of
-// reading no event at all, as the Legion facts consumer's does.
-func safeHorizon(ctx context.Context, horizon *events.Horizon) (int64, error) {
-	safe, err := horizon.Safe(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("read the event log's safe horizon: %w", err)
-	}
-	if safe > 0 {
-		return safe, nil
-	}
-	if safe, err = horizon.Await(ctx); err != nil {
-		return 0, fmt.Errorf("await the event log's safe horizon: %w", err)
-	}
-	return safe, nil
 }
 
 // pruneSlack is how long after the oldest change passes its retention the loop runs the pass that
@@ -343,8 +326,8 @@ func (s *Store) changesHead(ctx context.Context) (feedCursor, error) {
 // ran as of, and begins again each walk the page's changes call for, in one transaction: the days
 // the page named are written before it, so a crash between the two reads the same changes again,
 // and a walk the changes begin again is recorded with the cursor that passed them.
-func (s *Store) commitPage(ctx context.Context, cursors map[string]feedCursor, restarts []walkKey, build string, now time.Time) error {
-	tx, err := s.database.Pool.Begin(ctx)
+func (r *refresh) commitPage(ctx context.Context, cursors map[string]feedCursor, restarts []walkKey) error {
+	tx, err := r.store.database.Pool.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin the eval day-row refresher's cursors: %w", err)
 	}
@@ -357,7 +340,7 @@ func (s *Store) commitPage(ctx context.Context, cursors map[string]feedCursor, r
 		insert into eval_days_cursor (name, position, at, updated_at)
 		select name, position, at, $4 from unnest($1::text[], $2::bigint[], $3::timestamptz[]) as given(name, position, at)
 		on conflict (name) do update set position = excluded.position, at = excluded.at, updated_at = excluded.updated_at
-	`, refresherCursors, positions, ats, now); err != nil {
+	`, refresherCursors, positions, ats, r.now); err != nil {
 		return fmt.Errorf("move the eval day-row refresher's cursors: %w", err)
 	}
 	if len(restarts) > 0 {
@@ -371,7 +354,7 @@ func (s *Store) commitPage(ctx context.Context, cursors map[string]feedCursor, r
 			order by family, project
 			on conflict (family, project_key) do update
 			set built_by = excluded.built_by, next_day = null, updated_at = excluded.updated_at
-		`, families, projects, build, now); err != nil {
+		`, families, projects, r.build, r.now); err != nil {
 			return fmt.Errorf("begin %d walks of the day rows again: %w", len(restarts), err)
 		}
 	}
@@ -406,7 +389,7 @@ func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
 	if _, err := pgx.ForEachRow(rows, []any{&key.family, &key.project, &state.build, &state.next}, func() error {
 		kept := state
 		if state.next != nil {
-			next := utcMidnight(*state.next)
+			next := measures.Midnight(*state.next)
 			kept.next = &next
 		}
 		walks[key] = kept
@@ -417,14 +400,14 @@ func (s *Store) readWalks(ctx context.Context) (map[walkKey]walkState, error) {
 	return walks, nil
 }
 
-// recordWalk records that the walk key under build has built every day before next.
-func (s *Store) recordWalk(ctx context.Context, key walkKey, build string, next, now time.Time) error {
-	if _, err := s.database.Pool.Exec(ctx, `
+// recordWalk records that the walk key under the pass's build has built every day before next.
+func (r *refresh) recordWalk(ctx context.Context, key walkKey, next time.Time) error {
+	if _, err := r.store.database.Pool.Exec(ctx, `
 		insert into eval_days_walks (family, project_key, built_by, next_day, updated_at)
 		values ($1, $2, $3, $4, $5)
 		on conflict (family, project_key) do update
 		set built_by = excluded.built_by, next_day = excluded.next_day, updated_at = excluded.updated_at
-	`, key.family, key.project, build, next, now); err != nil {
+	`, key.family, key.project, r.build, next, r.now); err != nil {
 		return fmt.Errorf("record the %s walk of %q through %s: %w", key.family, key.project, next.Format(time.DateOnly), err)
 	}
 	return nil

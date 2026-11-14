@@ -164,7 +164,7 @@ func ShownDays(end time.Time, dayCount int) []string {
 
 // WindowStart is midnight UTC of the first of the dayCount days ending on end's (pipeline.py:60-63).
 func WindowStart(end time.Time, dayCount int) time.Time {
-	return midnight(end).AddDate(0, 0, -(dayCount - 1))
+	return Midnight(end).AddDate(0, 0, -(dayCount - 1))
 }
 
 // roundTo is Python's round(x, places), which the prototype's collector applies: it rounds the
@@ -197,14 +197,14 @@ func timingPart(day time.Time, series string, samples []sample) DayPart {
 			minutes = append(minutes, *result.minutes)
 		}
 	}
-	return samplesPart(day, series, minutes, counts)
+	return SamplesPart(day, series, minutes, counts)
 }
 
 // cellOf is series' parts folded into one Cell (pipeline.py:80-92): the median and p90 of the
 // merge of their minutes to one decimal, each outcome summed, and the success rate to four.
 func cellOf(parts []DayPart, series string) Cell {
-	sorted := mergedSamples(parts, series)
-	counts := foldSeries(parts, series).counts
+	sorted := MergedSamples(parts, series)
+	counts := FoldSeries(parts, series).Counts
 	result := Cell{
 		N:         len(sorted),
 		Success:   int(counts[CountSuccess]),
@@ -229,18 +229,26 @@ func FoldTiming(parts []DayPart) Cell {
 }
 
 // timingByDay is parts on each shown day folded alone by fold, and the shown days' parts folded
-// together (pipeline.py:95-106): a part of a day not shown is dropped, and the last day is
-// partial.
+// together (pipeline.py:95-106), by foldShownDays.
 func timingByDay(parts []DayPart, days []string, fold func([]DayPart) Cell) Timing {
+	perDay, total := foldShownDays(parts, days, fold, func(day string, partial bool, cell Cell) Day {
+		return Day{Day: day, Partial: partial, Cell: cell}
+	})
+	return Timing{Days: perDay, Total: total}
+}
+
+// foldShownDays is parts on each shown day folded alone by fold, each as dayOf states it, and the
+// shown days' parts folded together: a part of a day not shown is dropped, and the last day is
+// partial.
+func foldShownDays[C, D any](parts []DayPart, days []string, fold func([]DayPart) C, dayOf func(day string, partial bool, cell C) D) ([]D, C) {
 	byDay := partsByDay(parts)
-	timing := Timing{Days: make([]Day, len(days))}
+	perDay := make([]D, len(days))
 	var shown []DayPart
 	for i, d := range days {
-		timing.Days[i] = Day{Day: d, Partial: i == len(days)-1, Cell: fold(byDay[d])}
+		perDay[i] = dayOf(d, i == len(days)-1, fold(byDay[d]))
 		shown = append(shown, byDay[d]...)
 	}
-	timing.Total = fold(shown)
-	return timing
+	return perDay, fold(shown)
 }
 
 // onShownDays is each shown day's UTC midnight and the rows whose time is on it, oldest first; a
@@ -559,17 +567,12 @@ func DeployJobs(runs []delivery.DeliveryRun, jobsByRun map[int64][]delivery.Deli
 }
 
 // leadTimeByDay is parts on each shown day folded alone by FoldLeadTime, and the shown days' parts
-// folded together: a part of a day not shown is dropped, and the last day is partial.
+// folded together, by foldShownDays.
 func leadTimeByDay(parts []DayPart, days []string) LeadTimeTiming {
-	byDay := partsByDay(parts)
-	timing := LeadTimeTiming{Days: make([]LeadTimeDay, len(days))}
-	var shown []DayPart
-	for i, d := range days {
-		timing.Days[i] = LeadTimeDay{Day: d, Partial: i == len(days)-1, LeadTimeCell: FoldLeadTime(byDay[d])}
-		shown = append(shown, byDay[d]...)
-	}
-	timing.Total = FoldLeadTime(shown)
-	return timing
+	perDay, total := foldShownDays(parts, days, FoldLeadTime, func(day string, partial bool, cell LeadTimeCell) LeadTimeDay {
+		return LeadTimeDay{Day: day, Partial: partial, LeadTimeCell: cell}
+	})
+	return LeadTimeTiming{Days: perDay, Total: total}
 }
 
 // LeadTimes is the two lead-time cards (pipeline.ts:31-58), each PR on its UTC merge day:

@@ -87,9 +87,9 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 					t.Errorf("%s, ListRunJobs(%d) under a %s = %q, want %q", when, id, plan, got, want)
 				}
 			}
-			every, err := ListEveryRunJobForRuns(ctx, planned, "acme/widgets", runs)
+			every, err := listEveryRunJobForRuns(ctx, planned, "acme/widgets", runs)
 			if err != nil {
-				t.Fatalf("ListEveryRunJobForRuns: %v", err)
+				t.Fatalf("listEveryRunJobForRuns: %v", err)
 			}
 			named, err := ListRunJobsForRuns(ctx, planned, "acme/widgets", runs, []string{"test / unit", "deploy", "setup"})
 			if err != nil {
@@ -97,7 +97,7 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 			}
 			for _, id := range runs {
 				if got := names(every[id]); !slices.Equal(got, want) {
-					t.Errorf("%s, ListEveryRunJobForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
+					t.Errorf("%s, listEveryRunJobForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
 				}
 				if got, want := names(named[id]), []string{"setup", "deploy", "test / unit"}; !slices.Equal(got, want) {
 					t.Errorf("%s, ListRunJobsForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
@@ -172,7 +172,7 @@ func TestPullRequestsMergedTogetherComeBackInOneOrder(t *testing.T) {
 	check("after a pull request was written again unchanged")
 }
 
-// TestRunsStartedTogetherComeBackInOneOrder: ListRunsStartedIn answers runs that started in one
+// TestRunsStartedTogetherComeBackInOneOrder: listRunsStartedIn answers runs that started in one
 // instant by run id, which decides the Pipeline's last failing run of a job.
 func TestRunsStartedTogetherComeBackInOneOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
@@ -189,16 +189,16 @@ func TestRunsStartedTogetherComeBackInOneOrder(t *testing.T) {
 	check := func(when string) {
 		t.Helper()
 		for i, planned := range pools {
-			runs, err := ListRunsStartedIn(ctx, planned, "acme/widgets", DeliveryRunKindDeploy, "", "", from, to)
+			runs, err := listRunsStartedIn(ctx, planned, "acme/widgets", DeliveryRunKindDeploy, "", "", from, to)
 			if err != nil {
-				t.Fatalf("ListRunsStartedIn: %v", err)
+				t.Fatalf("listRunsStartedIn: %v", err)
 			}
 			got := make([]int64, len(runs))
 			for j, run := range runs {
 				got[j] = run.RunID
 			}
 			if !slices.Equal(got, want) {
-				t.Errorf("%s, ListRunsStartedIn under a %s = %v, want %v", when, storetest.Plans[i], got, want)
+				t.Errorf("%s, listRunsStartedIn under a %s = %v, want %v", when, storetest.Plans[i], got, want)
 			}
 		}
 	}

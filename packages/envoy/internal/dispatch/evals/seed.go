@@ -156,13 +156,9 @@ func (s *Store) SeedEveryProject(ctx context.Context, leases duty.Leases) {
 // seedEveryProject is one pass of the boot seed: Ensure of each project in turn, each in a
 // transaction of its own, so one project's failure leaves the others seeded.
 func (s *Store) seedEveryProject(ctx context.Context) error {
-	rows, err := s.database.Pool.Query(ctx, `select key from projects order by key`)
+	projects, err := s.Projects(ctx)
 	if err != nil {
-		return fmt.Errorf("read the projects: %w", err)
-	}
-	projects, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return fmt.Errorf("read the projects: %w", err)
+		return err
 	}
 	var failed []error
 	var total Seeded

@@ -37,13 +37,28 @@ import (
 type Change struct {
 	Seq     int64
 	At      time.Time
-	Kind    string // "pull_request" | "run" | "run_job" | "session_group" | "settings" | "issue_facts" | "eval_readings" | "eval_versions" | "eval_days" | "issue_filings"
+	Kind    string // one of the ChangeKind constants
 	RunKind string // "deploy" | "pr_checks" | "" for the rest
 	Repo    string
 	Ref     string
 	TOld    *time.Time
 	TNew    *time.Time
 }
+
+// The kinds of delivery change (Change.Kind), each the kind a table's trigger logs through
+// delivery_change_log, so a reader of the log compares with these rather than spell one again.
+const (
+	ChangeKindPullRequest  = "pull_request"
+	ChangeKindRun          = "run"
+	ChangeKindRunJob       = "run_job"
+	ChangeKindSessionGroup = "session_group"
+	ChangeKindSettings     = "settings"
+	ChangeKindIssueFacts   = "issue_facts"
+	ChangeKindEvalReadings = "eval_readings"
+	ChangeKindEvalVersions = "eval_versions"
+	ChangeKindEvalDays     = "eval_days"
+	ChangeKindIssueFilings = "issue_filings"
+)
 
 // ChangeRetention is how long delivery_changes keeps a row: a page away longer reads its window once.
 const ChangeRetention = 24 * time.Hour

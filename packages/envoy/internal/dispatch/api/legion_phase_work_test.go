@@ -61,7 +61,7 @@ func TestTheLiveBoardReadsPhaseWorkAsTheOneReadDoesAfterARename(t *testing.T) {
 	if err := json.Unmarshal(snapshot.Body, &live); err != nil {
 		t.Fatalf("read the live board: %v", err)
 	}
-	population, err := metrics.ReadProject(t.Context(), rig.database.Pool, nil, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), rig.database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}

@@ -31,7 +31,7 @@ func TestEachStoredRowNamesTheRepositoryTheIssuePageResolves(t *testing.T) {
 	`, project)
 	exec("give one issue a repository of its own", `update issues set repo = 'acme/gadgets' where key = $1`, own)
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", project, err)
 	}

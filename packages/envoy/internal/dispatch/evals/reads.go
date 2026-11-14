@@ -29,6 +29,20 @@ type Range struct {
 	To   time.Time
 }
 
+// Projects is every project's key, in key order: the projects the refresher and the boot seed
+// walk, and the ones a cross-project read reads where its caller names none.
+func (s *Store) Projects(ctx context.Context) ([]string, error) {
+	rows, err := s.database.Pool.Query(ctx, `select key from projects order by key`)
+	if err != nil {
+		return nil, fmt.Errorf("read the projects: %w", err)
+	}
+	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the projects: %w", err)
+	}
+	return keys, nil
+}
+
 // Current reads one page of a project's evals through evals_current, ordered by slug, with each
 // eval's current series: every eval of the project, or those of one kind where kind is not "".
 // Its three statements (the count, the page and the page's series) read one snapshot, in a
@@ -351,7 +365,7 @@ func (s *Store) Items(ctx context.Context, evalID, series, rowKind, row string, 
 	}
 	limitAt, offsetAt := strconv.Itoa(len(args)+1), strconv.Itoa(len(args)+2)
 	rows, err := s.database.Pool.Query(ctx, `
-		select `+readingColumns+` from eval_readings where `+filter+`
+		select `+ReadingColumns+` from eval_readings where `+filter+`
 		order by measured_at desc, id limit $`+limitAt+` offset $`+offsetAt, append(args, limit, offset)...)
 	if err != nil {
 		return Page[Reading]{}, fmt.Errorf("read the readings of %s: %w", evalID, err)

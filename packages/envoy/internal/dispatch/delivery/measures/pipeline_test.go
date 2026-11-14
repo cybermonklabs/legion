@@ -300,8 +300,8 @@ func TestFailingJobsStopAtNow(t *testing.T) {
 
 // TestAFailingJobsLastRunIsTheSameInEveryRunOrder: of the runs that completed in one instant, a
 // failing job's last run is the one with the higher run id, in every order the runs are listed in
-// (ListRunsStartedIn answers runs that started together by run id, but runs that completed together
-// can have started apart).
+// (delivery's listRunsStartedIn answers runs that started together by run id, but runs that
+// completed together can have started apart).
 func TestAFailingJobsLastRunIsTheSameInEveryRunOrder(t *testing.T) {
 	var c ciRuns
 	// Runs 8 and 9 both complete at 10:30 on Oct 2; run 9 started earlier. Run 7 completes first.

@@ -89,14 +89,6 @@ const (
 // cursorNames is the three in one list, which is how a pass reads and writes them.
 var cursorNames = []string{eventsCursor, observationsCursor, changesCursor}
 
-// pullRequestChange is the delivery_changes kind this loop keeps: a pull request's row, whose
-// merge time is the one delivery fact an issue's facts read.
-const pullRequestChange = "pull_request"
-
-// settingsChange is the delivery_changes kind a repository's mapping logs, naming the repository
-// (migration 20261113170752), which moves the repository a stored row resolves to (readChangePage).
-const settingsChange = "settings"
-
 // Deps is what Run needs of the server.
 type Deps struct {
 	// Pool is the database the facts are computed from and written to.
@@ -217,7 +209,7 @@ func run(ctx context.Context, deps Deps, sched schedule) {
 // that moment, which is what holds a stored row within Freshness of the clock.
 func pass(ctx context.Context, deps Deps, sched schedule) ([]string, time.Time, error) {
 	now := sched.now()
-	safe, err := safeHorizon(ctx, deps.Horizon)
+	safe, err := deps.Horizon.SafeOrAwait(ctx)
 	if err != nil {
 		return nil, time.Time{}, err
 	}
@@ -232,24 +224,6 @@ func pass(ctx context.Context, deps Deps, sched schedule) ([]string, time.Time, 
 			return changed, now.Add(sched.every), nil
 		}
 	}
-}
-
-// safeHorizon is the highest event id at or below which every event is final (events.Horizon).
-// A safe of 0 is a horizon that has proven nothing yet, which is every first pass of a process,
-// since one snapshot never proves its own newest id: such a pass takes a horizon with Await
-// instead of reading no event at all.
-func safeHorizon(ctx context.Context, horizon *events.Horizon) (int64, error) {
-	safe, err := horizon.Safe(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("read the event log's safe horizon: %w", err)
-	}
-	if safe > 0 {
-		return safe, nil
-	}
-	if safe, err = horizon.Await(ctx); err != nil {
-		return 0, fmt.Errorf("await the event log's safe horizon: %w", err)
-	}
-	return safe, nil
 }
 
 // passPage is one page of one pass: it reads where each feed stands, reads a page of each,
@@ -395,14 +369,14 @@ type projectPass struct {
 // computeProjectWork computes the rows and the filings one project owes and answers them as the
 // writes of that project (ProjectWrite, FilingsWrite): the rows and the filings, the sets the
 // pass stated for them, and whether the pass read the project whole. A backfill reads the whole
-// project (computeWhole) and the keys its feeds named are left out of the call, because the
+// project (ComputeProject) and the keys its feeds named are left out of the call, because the
 // whole project already holds them: its stated set is the project itself, and its filings are
 // every filing a Legion session of the project made. Every other project is computed over the
 // rows its changes touch (rowsToCompute) and the filings those rows and its moved filings name
 // (filingsToCompute), and no row or filing outside those sets is written or deleted.
 func computeProjectWork(ctx context.Context, pool *store.Pool, project string, work *projectWork, now time.Time) (projectPass, error) {
 	if work.backfill {
-		rows, filings, err := computeWhole(ctx, pool, project, now)
+		rows, filings, err := ComputeProject(ctx, pool, project, now)
 		if err != nil {
 			return projectPass{}, err
 		}

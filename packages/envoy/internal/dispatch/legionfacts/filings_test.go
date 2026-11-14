@@ -89,7 +89,7 @@ func TestTheConsumerStoresEachLegionFilingAsMetricsClassesItAndMovesItsRootWithI
 // what the roots cut keeps a filing by: exactly where its filed issue is the root of its tree.
 func compareFilings(t *testing.T, run *consumer, project, when string, stored map[string]Filing) {
 	t.Helper()
-	population, err := metrics.ReadProject(t.Context(), run.database.Pool, nil, project, run.at)
+	population, err := metrics.ReadProject(t.Context(), run.database.Pool, project, run.at)
 	if err != nil {
 		t.Fatalf("%s: read the history of %s: %v", when, project, err)
 	}
@@ -127,12 +127,18 @@ func (c *consumer) filings(t *testing.T) map[string]Filing {
 	return c.filingsOf(t, c.fixture.Project)
 }
 
-// filingsOf is every stored filing of project, by filed issue.
+// filingsOf is every stored filing of project, by filed issue: the filings a Legion session of
+// the project made, wherever the filed issue lives, read by the stored filings' one read
+// (readFilings).
 func (c *consumer) filingsOf(t *testing.T, project string) map[string]Filing {
 	t.Helper()
-	stored, err := ReadFilings(t.Context(), c.database.Pool, project)
+	read, err := readFilings(t.Context(), c.database.Pool, project, `where project_key = $1`, project)
 	if err != nil {
 		t.Fatalf("read the stored filings of %s: %v", project, err)
+	}
+	stored := make(map[string]Filing, len(read))
+	for _, filing := range read {
+		stored[filing.Issue] = filing
 	}
 	return stored
 }

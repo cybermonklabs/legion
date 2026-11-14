@@ -183,8 +183,9 @@ func scanSeries(row pgx.Row) (Series, error) {
 	return series, nil
 }
 
-// readingColumns is the column list scanReading reads from eval_readings.
-const readingColumns = `id::text, eval_id, series, row_key, row_kind, col, value, value_absent_reason, unit, n, n_unit,
+// ReadingColumns is the column list scanReading reads from eval_readings: what every read of a
+// reading selects, the items read's among them, which evalbench's checks explain as it is sent.
+const ReadingColumns = `id::text, eval_id, series, row_key, row_kind, col, value, value_absent_reason, unit, n, n_unit,
 	ci_low, ci_high, ci_level, attributes, links, measured_at, recorded_at, recorded_by, source, note,
 	coalesce(replaces::text, ''), superseded_at`
 

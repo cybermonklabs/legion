@@ -69,7 +69,6 @@ type BarPart struct {
 // by the bar it falls on (tablePhase).
 type FiledIssue struct {
 	Key   string    `json:"key"`
-	Title string    `json:"title"`
 	At    time.Time `json:"at"`
 	Class string    `json:"class"`
 	// Filer is the role that filed it and the issue that role was working, or the controller.
@@ -97,8 +96,6 @@ type computation struct {
 	roots     map[string]string
 	workTimes map[string]workTimeRow
 	barSpans  map[string][]Span
-	// facts is each issue's facts (factsOf), computed once.
-	facts map[string]IssueFacts
 }
 
 // newComputation is an empty computation over population, with its memoised maps made: what
@@ -111,7 +108,6 @@ func newComputation(population *Population) *computation {
 		roots:      map[string]string{},
 		workTimes:  map[string]workTimeRow{},
 		barSpans:   map[string][]Span{},
-		facts:      map[string]IssueFacts{},
 	}
 }
 
@@ -473,7 +469,7 @@ func firstReview(issue *Issue, timeline phaseTimeline) (time.Time, bool) {
 // out of the tree.
 func (c *computation) classify(filed Filed) FiledIssue {
 	row := FiledIssue{
-		Key: filed.Key, Title: filed.Title, At: filed.At,
+		Key: filed.Key, At: filed.At,
 		Filer: filed.Filer.Role, FilerIssue: filed.Filer.Issue,
 	}
 	if filed.Filer.Controller {

@@ -145,7 +145,7 @@ func wholeDayFrom(at *time.Time) *time.Time {
 	if at == nil {
 		return nil
 	}
-	day := utcMidnight(*at)
+	day := measures.Midnight(*at)
 	if day.Before(*at) {
 		day = day.AddDate(0, 0, 1)
 	}
@@ -175,7 +175,7 @@ type LegionDay struct {
 // (legionfacts.ReadFilingsIn) and the repository each of those issues resolves to now
 // (legionfacts.ReadRepos, one read of them all).
 func (s *Store) ReadLegionDay(ctx context.Context, project string, day time.Time) (LegionDay, error) {
-	start := utcMidnight(day)
+	start := measures.Midnight(day)
 	end := start.AddDate(0, 0, 1)
 	pool := s.database.Pool
 	closed, err := legionfacts.ReadClosedIn(ctx, pool, project, start, end)
@@ -220,7 +220,7 @@ func (d LegionDay) Rows(since LegionSince) ProjectDay {
 		return byRepo[repo]
 	}
 	for _, row := range d.closed {
-		facts := issueFacts(row)
+		facts := row.Facts()
 		repo := d.repos[row.Issue]
 		all.finished = append(all.finished, facts)
 		if repo != "" {
@@ -229,7 +229,7 @@ func (d LegionDay) Rows(since LegionSince) ProjectDay {
 		result.Members = append(result.Members, Member{Family: KindLegion, RowKey: row.Issue, Repo: repo})
 	}
 	for _, filing := range d.filed {
-		one := issueFiling(filing)
+		one := filing.IssueFiling()
 		all.filed = append(all.filed, one)
 		if repo := d.repos[filing.Issue]; repo != "" {
 			repoInput(repo).filed = append(repoInput(repo).filed, one)
@@ -280,7 +280,7 @@ func legionRows(project, repo, slug string, parts []measures.DayPart) []DayRow {
 // first input day on, on a day with no input (ProjectDay.WithZeros). A slug of no Legion eval has
 // none, and neither has the children cut of legion-splitting's root figures, which no day holds.
 func ZeroLegionDay(project string, day time.Time, slugs ...string) ProjectDay {
-	result := ProjectDay{Project: project, Day: utcMidnight(day)}
+	result := ProjectDay{Project: project, Day: measures.Midnight(day)}
 	for _, slug := range slugs {
 		if build, ok := legionBuilders[slug]; ok {
 			result.Rows = append(result.Rows, legionRows(project, "", slug, build(result.Day, nil, nil))...)
@@ -310,30 +310,4 @@ func (s *Store) WriteLegionDay(ctx context.Context, project string, day time.Tim
 		return err
 	}
 	return s.WriteLegionProjectDay(ctx, read.Rows(since), builtBy)
-}
-
-// issueFacts is a stored row as the day builders read it: the facts metrics.ProjectFacts computed
-// of the issue, which the row holds column for column.
-func issueFacts(row legionfacts.Row) metrics.IssueFacts {
-	return metrics.IssueFacts{
-		OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt, PhaseHours: row.HoursByPhase, WorkHours: row.WorkHours,
-		ReviewRounds: row.ReviewRounds, Root: row.RootKey == row.Issue, Tree: row.RootKey, TreeDepth: row.TreeDepth,
-		SlotHours: row.SlotHours, WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt,
-		ParkedHours: row.ParkedHours, QueuedHours: row.QueuedHours, StartedAt: row.StartedAt, MergedAt: row.MergedAt,
-		Bars: row.Bars, SentBack: row.SentBack, ImplementingHoursAfterFirstReview: row.ImplementingAfterFirstReview,
-		TestingHoursAfterFirstReview: row.TestingAfterFirstReview, Children: row.Children,
-		SlotWaitHours: row.SlotWaitHours, IdleByRole: row.IdleByRole,
-	}
-}
-
-// issueFiling is a stored filing as the splitting builder reads it: the row metric 4's table names
-// it by and the filed issue's tree root.
-func issueFiling(filing legionfacts.Filing) metrics.IssueFiling {
-	return metrics.IssueFiling{
-		FiledIssue: metrics.FiledIssue{
-			Key: filing.Issue, At: filing.FiledAt, Class: filing.Class, Filer: filing.FilerRole,
-			FilerIssue: filing.FilerIssue, FilerPhase: filing.FilerPhase,
-		},
-		Root: filing.RootKey,
-	}
 }

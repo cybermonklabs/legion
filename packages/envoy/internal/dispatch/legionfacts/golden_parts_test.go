@@ -100,7 +100,7 @@ func TestEveryStoredPartEqualsTheWindowAggregationsPartAtTheBaseHead(t *testing.
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{
 		Project: golden.Spec.Project, Trees: golden.Spec.Trees, Now: golden.Spec.Now,
 	})
-	rows, err := ComputeProject(t.Context(), database.Pool, fixture.Project, golden.Spec.Now)
+	rows, _, err := ComputeProject(t.Context(), database.Pool, fixture.Project, golden.Spec.Now)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", fixture.Project, err)
 	}

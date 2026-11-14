@@ -593,7 +593,7 @@ func TestTheSweepsPaceHoldsTheFreshnessRequirement(t *testing.T) {
 			project := run.fixture.Project
 
 			started := time.Now()
-			rows, err := ComputeProject(t.Context(), run.database.Pool, project, run.at)
+			rows, _, err := ComputeProject(t.Context(), run.database.Pool, project, run.at)
 			if err != nil {
 				t.Fatalf("compute the project's facts: %v", err)
 			}

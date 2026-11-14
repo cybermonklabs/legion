@@ -38,7 +38,7 @@ func TestEveryFactEqualsTheIndependentReadingOfTheRequirement(t *testing.T) {
 	now := time.Date(2026, 11, 11, 12, 0, 0, 0, time.UTC)
 	fixture := legiontest.Seed(t, database.Pool, legiontest.Spec{Project: "LEGION", Now: now})
 
-	population, err := metrics.ReadProject(t.Context(), database.Pool, nil, fixture.Project, now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {
 		t.Fatalf("read the project's population: %v", err)
 	}

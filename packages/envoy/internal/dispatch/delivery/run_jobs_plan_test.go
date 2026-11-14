@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // The run jobs read names the jobs it reads in SQL, and the name is a key of the read and not a
@@ -33,7 +35,7 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	}
 	named := []string{"production / production-apply", "staging / staging-apply"}
 
-	plan, raw := analyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, named)
+	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, runJobsNamedForRunsQuery, "acme/widgets", runs, named)
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"delivery_run_jobs"}) {
 		t.Fatalf("the run jobs read reads %v; want delivery_run_jobs alone:\n%s", read, raw)
 	}
@@ -60,11 +62,11 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 	if none, err := ListRunJobsForRuns(ctx, pool, "acme/widgets", runs, nil); err != nil || len(none) != 0 {
 		t.Errorf("ListRunJobsForRuns with no name = %v, %v; want no job and no error", none, err)
 	}
-	every, err := ListEveryRunJobForRuns(ctx, pool, "acme/widgets", runs)
+	every, err := listEveryRunJobForRuns(ctx, pool, "acme/widgets", runs)
 	if err != nil {
-		t.Fatalf("ListEveryRunJobForRuns: %v", err)
+		t.Fatalf("listEveryRunJobForRuns: %v", err)
 	}
 	if got := len(every[runs[0]]); got != len(held) {
-		t.Errorf("ListEveryRunJobForRuns' run %d holds %d jobs, want all %d", runs[0], got, len(held))
+		t.Errorf("listEveryRunJobForRuns' run %d holds %d jobs, want all %d", runs[0], got, len(held))
 	}
 }

@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 )
 
 // A logged eval's day rows are kept by the readings write, in its transaction, by increment: the
@@ -65,8 +67,7 @@ func dayKeysOf(reading Reading) ([]dayKey, dayPart, bool) {
 	if reading.Value == nil {
 		return nil, dayPart{}, false
 	}
-	measured := reading.MeasuredAt.UTC()
-	day := time.Date(measured.Year(), measured.Month(), measured.Day(), 0, 0, 0, 0, time.UTC)
+	day := measures.Midnight(reading.MeasuredAt)
 	keys := []dayKey{{series: reading.Series, day: day}}
 	if repo, ok := reading.Attributes["repo"].(string); ok && repo != "" {
 		keys = append(keys, dayKey{series: reading.Series, repo: repo, day: day})
@@ -180,7 +181,7 @@ func writeDays(ctx context.Context, w *writeTx, definition Definition, series ma
 // replaced reading was the row's last and no reading the write adds was measured at or after it.
 func applyParts(row DayRow, change dayChange) (DayRow, bool) {
 	samples := slices.Clone(row.Samples)
-	num, den := valueOr(row.Num), valueOr(row.Den)
+	num, den := measures.ValueOrZero(row.Num), measures.ValueOrZero(row.Den)
 	lastValue, lastAt := row.LastValue, row.LastAt
 	var replacedLast *time.Time
 	for _, part := range change.removed {
@@ -249,11 +250,4 @@ func newestStanding(ctx context.Context, tx pgx.Tx, evalID string, key dayKey) (
 	}
 	at = at.UTC()
 	return &value, &at, nil
-}
-
-func valueOr(value *float64) float64 {
-	if value == nil {
-		return 0
-	}
-	return *value
 }

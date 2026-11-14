@@ -34,7 +34,7 @@ import (
 // (`run`) and, for pr-ci, each job's figures (`job`); and the open P0 issues with no owner (`issue`,
 // delivery.ListUnownedP0). A delivery or CI row is answered where the project's day rows counted
 // it (eval_day_members, evals.Store.CountedIn), so the items are the rows the numbers fold, under
-// the attribution the day rows made (D1).
+// the attribution the day rows made (evals' delivery_days.go, "Attribution").
 //
 // A row of the compare range carries range `compare`. The page runs across the row kinds in the
 // order above, each range's after the window's, and a row kind's rows in its own order.
@@ -93,45 +93,29 @@ const (
 	evalSortFailures = "failures"
 )
 
-// evalItemsRequest is one items read: the window and compare range, the filters and the page.
+// evalItemsRequest is one items read: what every eval read reads of its query (the window and
+// compare range, the repositories and the page), and the filters and the order.
 type evalItemsRequest struct {
-	ranges  evalRanges
+	evalReadQuery
 	series  string
 	rowKind string
 	row     string
 	sort    string
-	repos   []string
-	limit   int
-	offset  int
 }
 
 // parseEvalItemsQuery reads the items route's query; a key the route does not take
 // (undeclaredQueryKey) and a malformed key are 400 INVALID_QUERY naming it.
 func parseEvalItemsQuery(query url.Values) (evalItemsRequest, error) {
-	if err := undeclaredQueryKey(query, evalItemsQueryKeys); err != nil {
+	read, err := parseEvalReadQuery(query, evalItemsQueryKeys)
+	if err != nil {
 		return evalItemsRequest{}, err
 	}
-	invalid := func(err error) (evalItemsRequest, error) {
-		return evalItemsRequest{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
-	}
-	ranges, err := parseEvalRanges(query)
-	if err != nil {
-		return invalid(err)
-	}
-	repos, err := parseEvalRepos(query)
-	if err != nil {
-		return invalid(err)
-	}
-	limit, offset, err := parseEvalPage(query)
-	if err != nil {
-		return invalid(err)
-	}
 	request := evalItemsRequest{
-		ranges: ranges, series: query.Get("series"), rowKind: query.Get("row_kind"), row: query.Get("row"),
-		sort: query.Get("sort"), repos: repos, limit: limit, offset: offset,
+		evalReadQuery: read, series: query.Get("series"), rowKind: query.Get("row_kind"), row: query.Get("row"),
+		sort: query.Get("sort"),
 	}
 	if request.sort != "" && request.sort != evalSortMedian && request.sort != evalSortFailures {
-		return invalid(fmt.Errorf("sort %q is neither %s nor %s", request.sort, evalSortMedian, evalSortFailures))
+		return evalItemsRequest{}, invalidEvalQuery(fmt.Errorf("sort %q is neither %s nor %s", request.sort, evalSortMedian, evalSortFailures))
 	}
 	return request, nil
 }
@@ -170,20 +154,20 @@ var (
 // evalComputedItems is the row kinds each computed eval answers beside its readings and its day
 // rows, by the source it names: the rows its fold counts.
 var evalComputedItems = map[string][]evalItemKind{
-	evals.SourceComputedPrefix + "delivery/measures.FoldDeployFrequency":   {deployItems},
-	evals.SourceComputedPrefix + "delivery/measures.FoldDeployRunSuccess":  {deployItems},
-	evals.SourceComputedPrefix + "delivery/measures.FoldLeadTime":          {pullRequestItems},
-	evals.SourceComputedPrefix + "delivery/measures.FoldReworkShare":       {pullRequestItems},
-	evals.SourceComputedPrefix + "delivery/measures.FoldTimeToRestore":     {pullRequestItems},
-	evals.SourceComputedPrefix + "delivery/measures.FoldChangeFailureRate": {pullRequestItems, deployItems},
-	evals.SourceComputedPrefix + "delivery/measures.FoldTiming":            {{evalRowRun, (*server).runItemRows}, {evalRowJob, (*server).jobItemRows}},
-	evals.SourceComputedPrefix + "delivery.ListUnownedP0":                  {{evalRowIssue, (*server).unownedItemRows}},
-	evals.SourceComputedPrefix + "legion/metrics.FoldWorkTime":             {legionItems},
-	evals.SourceComputedPrefix + "legion/metrics.FoldPhaseTime":            {legionItems},
-	evals.SourceComputedPrefix + "legion/metrics.FoldIdleTime":             {legionItems},
-	evals.SourceComputedPrefix + "legion/metrics.FoldSlotWait":             {legionItems},
-	evals.SourceComputedPrefix + "legion/metrics.FoldRework":               {legionItems},
-	evals.SourceComputedPrefix + "legion/metrics.FoldSplitting":            {legionItems},
+	evals.SourceFoldDeployFrequency:   {deployItems},
+	evals.SourceFoldDeployRunSuccess:  {deployItems},
+	evals.SourceFoldLeadTime:          {pullRequestItems},
+	evals.SourceFoldReworkShare:       {pullRequestItems},
+	evals.SourceFoldTimeToRestore:     {pullRequestItems},
+	evals.SourceFoldChangeFailureRate: {pullRequestItems, deployItems},
+	evals.SourceFoldTiming:            {{evalRowRun, (*server).runItemRows}, {evalRowJob, (*server).jobItemRows}},
+	evals.SourceListUnownedP0:         {{evalRowIssue, (*server).unownedItemRows}},
+	evals.SourceFoldWorkTime:          {legionItems},
+	evals.SourceFoldPhaseTime:         {legionItems},
+	evals.SourceFoldIdleTime:          {legionItems},
+	evals.SourceFoldSlotWait:          {legionItems},
+	evals.SourceFoldRework:            {legionItems},
+	evals.SourceFoldSplitting:         {legionItems},
 }
 
 // evalItemSource is one row kind of one range as the page reads it: the rows from skip on, at
@@ -378,7 +362,7 @@ func dayItemRow(project, slug string, day evals.DayRow, label string) evalItemRo
 		Cols: map[string]any{
 			"series": day.Series, "repo": day.Repo, "day": date, "listed": day.Listed, "n": day.N, "sum": day.Sum,
 			"num": day.Num, "den": day.Den, "max": day.Max, "last_value": day.LastValue, "last_at": day.LastAt,
-			"counts": nonNilCounts(day.Counts), "via_repository": day.ViaRepository, "built_by": day.BuiltBy,
+			"counts": evals.NonNilCounts(day.Counts), "via_repository": day.ViaRepository, "built_by": day.BuiltBy,
 		},
 		MeasuredAt: day.Day,
 		Source:     "eval_days",
@@ -386,13 +370,6 @@ func dayItemRow(project, slug string, day evals.DayRow, label string) evalItemRo
 		Links:      []evals.Link{},
 		Range:      label,
 	}
-}
-
-func nonNilCounts(counts map[string]float64) map[string]float64 {
-	if counts == nil {
-		return map[string]float64{}
-	}
-	return counts
 }
 
 // evalItemsPath is the items route of one eval.
@@ -409,8 +386,8 @@ func evalItemsPath(project, slug string) string {
 // row carries its issue's title and priority (legionfacts.WithIssues).
 func (s *server) legionItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	pool := s.deps.Store.Pool
-	base, cut := evals.SplitCut(read.request.series)
-	class, filedSeries := strings.CutPrefix(base, "filed:")
+	base, cut := metrics.SplitCutSeries(read.request.series)
+	class, filedSeries := strings.CutPrefix(base, metrics.FilingSeriesPrefix)
 	splitting := read.entry.Definition.Slug == evals.SlugLegionSplitting
 	var items []legionfacts.ItemRow
 	if splitting && (read.request.series == "" || filedSeries) {
@@ -517,14 +494,8 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 		if pr.CreatedAt == nil || pr.MergedAt == nil || !members[evals.PullRequestMember(pr.Repo, pr.Number)] {
 			continue
 		}
-		measured := measures.PR{
-			ID: pr.Repo + "#" + strconv.Itoa(pr.Number), CreatedAt: *pr.CreatedAt, MergedAt: *pr.MergedAt,
-			FirstCommitAt: pr.FirstCommitAt, Rework: pr.Rework,
-		}
-		if apply := delivery.ContainingRun(pr, settings.DeployRepo, applies); apply != nil {
-			measured.DeployRunID, measured.DeployedAt = &apply.RunID, &apply.CompletedAt
-		}
-		day, one := utcDayOf(*pr.MergedAt), []measures.PR{measured}
+		measured := measures.PROf(pr, delivery.ContainingRun(pr, settings.DeployRepo, applies))
+		day, one := measures.Midnight(*pr.MergedAt), []measures.PR{measured}
 		rows = append(rows, evalItemRow{
 			RowKey:  measured.ID,
 			RowKind: evalRowPullRequest,
@@ -634,21 +605,24 @@ func (s *server) runItemRows(ctx context.Context, read evalItemsRead) ([]evalIte
 	if isCard {
 		runs, jobs = ci.Deploys.Runs, ci.Deploys.Jobs
 	}
+	cardIndex := -1
+	if isCard {
+		cardIndex = slices.IndexFunc(cards, func(c measures.DeployJobCard) bool { return c.CardID == card })
+	}
 	var rows []evalItemRow
 	for _, run := range runs {
 		if !members[evals.RunMember(run.Repo, run.RunID)] {
 			continue
 		}
-		day, one := utcDayOf(run.StartedAt), []delivery.DeliveryRun{run}
+		day, one := measures.Midnight(run.StartedAt), []delivery.DeliveryRun{run}
 		var parts []measures.DayPart
 		extra := map[string]any{}
 		if isCard {
-			index := slices.IndexFunc(cards, func(c measures.DeployJobCard) bool { return c.CardID == card })
-			if index < 0 {
+			if cardIndex < 0 {
 				continue
 			}
 			parts = measures.DeployJobsDay(day, one, jobs, cards)[card]
-			extra["job"] = strings.Join(cards[index].JobNames, " or ")
+			extra["job"] = strings.Join(cards[cardIndex].JobNames, " or ")
 		} else {
 			parts = slices.DeleteFunc(measures.PRChecksDay(day, one, jobs), func(part measures.DayPart) bool {
 				return part.Series != measures.SeriesMinutes
@@ -781,10 +755,7 @@ func (s *server) failingJobRows(ctx context.Context, read evalItemsRead) ([]eval
 		return nil, err
 	}
 	runs := slices.DeleteFunc(ci.Checks.Runs, func(run delivery.DeliveryRun) bool { return !members[evals.RunMember(run.Repo, run.RunID)] })
-	rollup := ""
-	if settings.PRChecksRollupJobName != nil {
-		rollup = *settings.PRChecksRollupJobName
-	}
+	rollup := deref(settings.PRChecksRollupJobName)
 	var rows []evalItemRow
 	for _, job := range measures.FailingJobs(runs, ci.Checks.Jobs, end, rollup) {
 		if read.request.series != "" && read.request.series != measures.JobSeriesPrefix+job.Name {

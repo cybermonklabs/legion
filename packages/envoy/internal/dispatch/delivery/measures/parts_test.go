@@ -93,8 +93,8 @@ func TestAShareFoldsTheSummedNumeratorOverTheSummedDenominator(t *testing.T) {
 // shipped a pull request, and divides each by the window's days.
 func TestACountFoldsTheSumOfTheDays(t *testing.T) {
 	parts := []DayPart{
-		countPart(foldDays[0], SeriesDeploys, 3, map[string]float64{CountWithPRs: 1}),
-		countPart(foldDays[1], SeriesDeploys, 5, map[string]float64{CountWithPRs: 4}),
+		CountPart(foldDays[0], SeriesDeploys, 3, map[string]float64{CountWithPRs: 1}),
+		CountPart(foldDays[1], SeriesDeploys, 5, map[string]float64{CountWithPRs: 4}),
 	}
 	got := FoldDeployFrequency(parts, Window{From: foldDays[0], To: foldDays[1].Add(day)})
 	if got == nil || *got != (DeployFrequency{SuccessfulDeploys: 8, DeploysWithPRs: 5, PerDay: 4, WithPRsPerDay: 2.5}) {
@@ -107,7 +107,7 @@ func TestACountFoldsTheSumOfTheDays(t *testing.T) {
 // with no rows, reads zero counts, and a share over its zero denominator still reads no value.
 func TestNoPartsReadNoValueAndAZeroPartReadsZero(t *testing.T) {
 	window := Window{From: foldDays[0], To: foldDays[0].Add(day)}
-	other := []DayPart{countPart(foldDays[0], "elsewhere", 4, nil), ratioPart(foldDays[0], "elsewhere", 1, 2, nil)}
+	other := []DayPart{CountPart(foldDays[0], "elsewhere", 4, nil), RatioPart(foldDays[0], "elsewhere", 1, 2, nil)}
 	for name, parts := range map[string][]DayPart{"no part": nil, "another series' parts": other} {
 		if got := FoldDeployFrequency(parts, window); got != nil {
 			t.Errorf("%s: FoldDeployFrequency = %+v, want nil", name, got)

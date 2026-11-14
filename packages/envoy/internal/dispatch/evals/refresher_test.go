@@ -24,7 +24,7 @@ import (
 var refresherNow = deliverytest.DefaultNow.Add(12 * time.Hour)
 
 // refresherToday is refresherNow's UTC day.
-var refresherToday = utcMidnight(refresherNow)
+var refresherToday = measures.Midnight(refresherNow)
 
 // refresherRig is one test's refresher over a database of its own: the registry rig, the event
 // horizon a pass reads the log through, the moment and the build its passes run as, and the days
@@ -93,14 +93,13 @@ func (r *refresherRig) seedHistories(t *testing.T) (deliverytest.Fixture, legion
 	ctx, pool := t.Context(), r.database.Pool
 	deliveries := deliverytest.Seed(t, pool, deliverytest.Spec{Days: 5})
 	legion := legiontest.Seed(t, pool, legiontest.Spec{Trees: 6, Now: deliverytest.DefaultNow})
-	rows, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliverytest.DefaultNow)
+	rows, filings, err := legionfacts.ComputeProject(ctx, pool, legion.Project, deliverytest.DefaultNow)
 	if err != nil {
 		t.Fatalf("compute the facts of %s: %v", legion.Project, err)
 	}
 	if _, err := legionfacts.WriteProject(ctx, pool, legionfacts.ProjectWrite{Project: legion.Project, Rows: rows, Whole: true}); err != nil {
 		t.Fatalf("write the facts of %s: %v", legion.Project, err)
 	}
-	filings := projectFilings(t, legion.Project, deliverytest.DefaultNow, r.rig)
 	if err := legionfacts.WriteFilings(ctx, pool, legionfacts.FilingsWrite{Project: legion.Project, Filings: filings, Whole: true}); err != nil {
 		t.Fatalf("write the filings of %s: %v", legion.Project, err)
 	}
@@ -358,7 +357,7 @@ func TestTheFirstPassWalksEveryFamilyFromItsFirstInputDayWithZeroRows(t *testing
 			t.Errorf("%s holds no all-repositories row", name)
 			continue
 		}
-		if want := utcMidnight(series.first); !days[0].Equal(want) {
+		if want := measures.Midnight(series.first); !days[0].Equal(want) {
 			t.Errorf("%s's first row is of %s, want its first input day %s", name, days[0].Format(time.DateOnly), want.Format(time.DateOnly))
 		}
 		if missing, gap := contiguous(days, refresherToday); gap {
@@ -465,7 +464,7 @@ func TestTheTickPrunesChangesOlderThanTheirRetention(t *testing.T) {
 		t.Errorf("after the pass the log keeps %v of the three changes, want the one 23 hours 59 minutes old", kept)
 	}
 	want := keptAt.Add(delivery.ChangeRetention + pruneSlack)
-	if midnight := utcMidnight(r.now).AddDate(0, 0, 1); midnight.Before(want) {
+	if midnight := measures.Midnight(r.now).AddDate(0, 0, 1); midnight.Before(want) {
 		want = midnight
 	}
 	if !next.Equal(want) {

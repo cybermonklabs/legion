@@ -503,7 +503,7 @@ func TestTheBoardAndTheMetricsPutAnIssueInTheSameTree(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, nil, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -600,7 +600,7 @@ func TestTheBoardClimbsThroughAnIssueWithOnlyPhaseWork(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, nil, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -674,7 +674,7 @@ func TestTheBoardAndTheMetricsStopBelowAnIssueThatIsNoLegionIssue(t *testing.T) 
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, nil, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}
@@ -789,7 +789,7 @@ func TestTheMetricsClimbThroughPhaseWorkWhereNothingClosed(t *testing.T) {
 	seedLegionRead(t, database, "INFRA", now.Add(-time.Minute), "")
 
 	board := legionBoardOf(t, handler, "INFRA")
-	population, err := metrics.ReadProject(t.Context(), database.Pool, nil, "INFRA", now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, "INFRA", now)
 	if err != nil {
 		t.Fatalf("read the metrics population: %v", err)
 	}

@@ -320,9 +320,9 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	if err != nil {
 		t.Fatalf("ListPullRequestsInWindow: %v", err)
 	}
-	deployRuns, err := ListRuns(ctx, pool, waitingRepo, DeliveryRunKindDeploy, "main", epoch)
+	deployRuns, err := listRuns(ctx, pool, waitingRepo, DeliveryRunKindDeploy, "main", epoch, nil)
 	if err != nil {
-		t.Fatalf("ListRuns: %v", err)
+		t.Fatalf("listRuns: %v", err)
 	}
 	ids := make([]int64, len(deployRuns))
 	for i, run := range deployRuns {
@@ -330,9 +330,9 @@ func waitingSets(t *testing.T, ctx context.Context, pool *store.Pool, at time.Ti
 	}
 	// The timeline reads every job of these runs and every other reader their production jobs
 	// alone; containment must answer the same deploys from either.
-	every, err := ListEveryRunJobForRuns(ctx, pool, waitingRepo, ids)
+	every, err := listEveryRunJobForRuns(ctx, pool, waitingRepo, ids)
 	if err != nil {
-		t.Fatalf("ListEveryRunJobForRuns: %v", err)
+		t.Fatalf("listEveryRunJobForRuns: %v", err)
 	}
 	judged, err := ListRunJobsForRuns(ctx, pool, waitingRepo, ids, production.JudgedJobNames())
 	if err != nil {

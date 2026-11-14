@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
@@ -103,7 +104,7 @@ func TestTheMedianRankLeavesOutAJobWithNoTimedResult(t *testing.T) {
 	if registered.Code != http.StatusCreated {
 		t.Fatalf("set pr-ci's job min_n to 0: status %d, body %s", registered.Code, registered.Body.String())
 	}
-	today := utcDayOf(time.Now())
+	today := measures.Midnight(time.Now())
 	if _, err := database.Pool.Exec(t.Context(), `
 		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, samples, counts, built_by)
 		values ('EVL', 'EVL/pr-ci', 'job:lint', '', $1, false, 0, '{}', '{"cancelled": 1}', 'test'),
@@ -129,7 +130,7 @@ func TestTheMedianRankLeavesOutAJobWithNoTimedResult(t *testing.T) {
 func TestAnItemsLinkKeepsItsRepository(t *testing.T) {
 	handler, database := newTestHandlerWithStore(t)
 	createTestProject(t, handler, "EVL")
-	today := utcDayOf(time.Now())
+	today := measures.Midnight(time.Now())
 	if _, err := database.Pool.Exec(t.Context(), `
 		insert into eval_days (project_key, eval_id, series, repo, day, listed, n, sum, samples, counts, built_by)
 		values ('EVL', 'EVL/deploy-frequency', 'deploys', 'acme/web', $1, true, 2, 2, null, '{}', 'test'),

@@ -1,5 +1,5 @@
 // Command measure is the instrument of the eval registry's measurement Job (dispatch://INFRA-2916,
-// T15: k2, k8, k13 and k16), run by evalbench/run.sh against a server booted on the evalbench
+// checks k2, k8, k13 and k16), run by evalbench/run.sh against a server booted on the evalbench
 // fixture. It prints one RESULT line per measurement and a FAIL line for each one that misses its
 // budget or its rule, and exits 1 when any did.
 //

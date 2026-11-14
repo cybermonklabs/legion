@@ -504,15 +504,16 @@ func (h *deliveryHub) onNotify(g *hubGeneration, channel, payload string) {
 
 // dirtyLegionBoard marks the board of the project a read of a Legion daemon just recorded. The
 // sampler announces every read, failed or not: the header carries the read itself, so a board
-// whose daemon stopped answering moves as surely as one whose issues did. A view that names the
-// project and shows no daemon state (an evals view) is left: the sampler reads each daemon once a
-// minute, and nothing such a view shows moves with that read.
+// whose daemon stopped answering moves as surely as one whose issues did. The board is the one
+// view that shows a daemon's state: a view that names the project and shows none (an evals view)
+// is left, since the sampler reads each daemon once a minute and nothing such a view shows moves
+// with that read.
 func (h *deliveryHub) dirtyLegionBoard(g *hubGeneration, project string) {
 	now := h.clock.Now()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	for _, view := range g.views {
-		if view.spec.classes().daemon && view.spec.project == project {
+		if view.spec.kind == legionBoardView && view.spec.project == project {
 			h.markDirtyLocked(g, view, now, deliveryCauseChange)
 		}
 	}

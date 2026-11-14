@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -186,11 +187,7 @@ func (p *population) readEvents(ctx context.Context, db Querier) error {
 // stamped on anything it wrote, whatever issue it wrote it on. A session that stamped none has
 // none.
 func readTitles(ctx context.Context, db Querier, sessions map[string]bool) (map[string]string, error) {
-	named := make([]string, 0, len(sessions))
-	for session := range sessions {
-		named = append(named, session)
-	}
-	slices.Sort(named)
+	named := slices.Sorted(maps.Keys(sessions))
 	titles := make(map[string]string, len(named))
 	if len(named) == 0 {
 		return titles, nil

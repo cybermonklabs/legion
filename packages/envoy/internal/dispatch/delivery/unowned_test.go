@@ -140,7 +140,7 @@ func TestTheUnownedP0ReadsReadTheirPartialIndex(t *testing.T) {
 		{"every project's", unownedP0Query, nil},
 		{"one project's", projectUnownedP0Query, []any{"PINDEX"}},
 	} {
-		plan, raw := analyzedPlan(t, ctx, pool, read.statement, read.arguments...)
+		plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, read.statement, read.arguments...)
 		if explaintest.SeqScansRelation(t, plan, "issues") {
 			t.Fatalf("%s unowned P0 read scans issues sequentially; want a read of issues_open_p0:\n%s", read.name, raw)
 		}
@@ -184,7 +184,7 @@ func TestTheOpenP0KeysReadReadsTheOpenP0Index(t *testing.T) {
 	if _, held := keys["POPEN-3"]; held {
 		t.Fatalf("OpenP0Keys answers %v, which holds the done P0 issue POPEN-3", keys)
 	}
-	plan, raw := analyzedPlan(t, ctx, pool, openP0KeysQuery)
+	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, openP0KeysQuery)
 	if explaintest.SeqScansRelation(t, plan, "issues") {
 		t.Fatalf("the open P0 keys read scans issues sequentially; want a read of issues_open_p0:\n%s", raw)
 	}

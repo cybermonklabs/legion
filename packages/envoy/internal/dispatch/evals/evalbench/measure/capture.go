@@ -214,6 +214,12 @@ var utility = regexp.MustCompile(`(?i)^\s*(begin|commit|rollback|set|show|reset|
 // undone; text with parameters is prepared first and executed with their literals, which plans it
 // as the server's own bound execution was planned.
 func (e *explainer) explain(ctx context.Context, text string, params []string) (string, float64, error) {
+	return e.explainAfter(ctx, nil, text, params)
+}
+
+// explainAfter is explain with first, where it is not nil, run before the statement in the same
+// transaction: a change the rollback undoes, such as a dropped index.
+func (e *explainer) explainAfter(ctx context.Context, first func(ctx context.Context, tx pgx.Tx) error, text string, params []string) (string, float64, error) {
 	if utility.MatchString(text) {
 		return "", 0, errUtility
 	}
@@ -225,6 +231,11 @@ func (e *explainer) explain(ctx context.Context, text string, params []string) (
 		_ = tx.Rollback(ctx)
 		_, _ = e.conn.Exec(ctx, `deallocate all`)
 	}()
+	if first != nil {
+		if err := first(ctx, tx); err != nil {
+			return "", 0, err
+		}
+	}
 	query := "explain (analyze, buffers) " + text
 	if len(params) > 0 {
 		if _, err := tx.Exec(ctx, "prepare evalbench_explained as "+text); err != nil {

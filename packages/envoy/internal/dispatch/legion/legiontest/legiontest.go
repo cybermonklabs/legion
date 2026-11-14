@@ -27,7 +27,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -132,12 +131,6 @@ func (s Spec) spacing() time.Duration {
 	return s.Spacing
 }
 
-// Execer is the database connection Write needs: one that runs a statement. A pool, a connection
-// or a transaction is one.
-type Execer interface {
-	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
-}
-
 // Fixture is what Write wrote, in the terms a caller asserts against.
 type Fixture struct {
 	// Project is the project every issue below belongs to.
@@ -193,10 +186,10 @@ func Seed(t testing.TB, pool *store.Pool, spec Spec) Fixture {
 	return fixture
 }
 
-// Write writes the history spec names into the database q is on and answers what it wrote. The
+// Write writes the history spec names into pool's database and answers what it wrote. The
 // project's row is written where the project has none and kept where it has one, so the history
 // can join a project another history, or a person, made first.
-func Write(ctx context.Context, q Execer, spec Spec) (Fixture, error) {
+func Write(ctx context.Context, pool *store.Pool, spec Spec) (Fixture, error) {
 	if spec.Project == "" {
 		spec.Project = defaultProject
 	}
@@ -227,7 +220,7 @@ func Write(ctx context.Context, q Execer, spec Spec) (Fixture, error) {
 			run.fixture.FirstFinished = *closed
 		}
 	}
-	if err := run.write(ctx, q); err != nil {
+	if err := run.write(ctx, pool); err != nil {
 		return Fixture{}, err
 	}
 	return run.fixture, nil
@@ -284,12 +277,12 @@ type rows struct {
 	prMerged  []time.Time
 }
 
-// session is the actor of a Legion role's session working issue, carrying the title Dispatch
-// learns the session by. Every reader of the phase-work rule resolves a session's newest title
-// (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
+// SessionActor is the actor JSON of a Legion role's session working issue, carrying the title
+// Dispatch learns the session by. Every reader of the phase-work rule resolves a session's newest
+// title (delivery.ResolveSessionTitles) from the session's own events, whose insert records it
 // (migration 20261113090412's trigger, which fires for this package's bare inserts too), so the
-// title belongs on the actor of each event it writes.
-func session(role, issue string) string {
+// title belongs on the actor of each event it writes; evalbench's load writes its sessions so.
+func SessionActor(role, issue string) string {
 	return fmt.Sprintf(`{"kind":"session","id":"s-%s-%s","origin":{"session_title":%q}}`,
 		role, issue, "Legion "+role+" · "+issue)
 }
@@ -364,7 +357,7 @@ func (s *seeding) tree(index int) {
 	// again, so its facts hold two review rounds. It holds a slot of its own, which is what
 	// keeps a reader from taking every slot holder for a root.
 	implemented := s.issue(number+1, "An implemented child", root, 2, at(2), new(at(24)))
-	s.event(implemented, "issue.created", session("architect", root), filing(root), at(2))
+	s.event(implemented, "issue.created", SessionActor("architect", root), filing(root), at(2))
 	s.roleEvent(implemented, "implementer", "comment.created", `{"status":"in_progress"}`, at(4))
 	s.handoff(implemented, "implement", "implementer", at(12))
 	// Under Spec.Parked an even tree's implemented child waits in `icebox` from its implementer's
@@ -398,20 +391,20 @@ func (s *seeding) tree(index int) {
 	// The child a reviewer and a merger took through: a person answered its ask, and it is the
 	// one issue of the tree that reaches all three of the merger's phases.
 	reviewed := s.issue(number+2, "A reviewed child", root, 2, at(5), new(at(40)))
-	s.event(reviewed, "issue.created", session("architect", root), filing(root), at(5))
+	s.event(reviewed, "issue.created", SessionActor("architect", root), filing(root), at(5))
 	s.roleEvent(reviewed, "implementer", "comment.created", `{"status":"in_progress"}`, at(10))
 	// Under Spec.Parked an odd tree's reviewed child is parked in `backlog` for three hours of its
 	// implementing by its tree's architect, as the daemon's parkChild moves a child, and put back.
 	backlog := s.spec.Parked && index%2 == 1
 	if backlog {
-		s.event(reviewed, "issue.updated", session("architect", root), `{"status":"backlog"}`, at(16))
-		s.event(reviewed, "issue.updated", session("architect", root), `{"status":"in_progress"}`, at(19))
+		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"backlog"}`, at(16))
+		s.event(reviewed, "issue.updated", SessionActor("architect", root), `{"status":"in_progress"}`, at(19))
 	}
 	s.roleEvent(reviewed, "reviewer", "comment.created", `{"status":"needs_review"}`, at(26))
 	s.ask(reviewed, "reviewer", at(28), at(31))
 	s.handoff(reviewed, "review", "reviewer", at(33))
 	s.roleEvent(reviewed, "merger", "comment.created", `{}`, at(34))
-	s.event(reviewed, "issue.closed", session("merger", reviewed), `{"status":"done"}`, at(40))
+	s.event(reviewed, "issue.closed", SessionActor("merger", reviewed), `{"status":"done"}`, at(40))
 	if s.spec.Merged {
 		s.pullRequest(reviewed, number+2, at(10), at(39))
 	}
@@ -437,7 +430,7 @@ func (s *seeding) tree(index int) {
 	// to accept and to merge while the child is still open.
 	open := s.issue(number+3, "An open child", root, 2, at(8), nil)
 	s.fixture.Open = append(s.fixture.Open, open)
-	s.event(open, "issue.created", session("architect", root), filing(root), at(8))
+	s.event(open, "issue.created", SessionActor("architect", root), filing(root), at(8))
 	s.roleEvent(open, "implementer", "comment.created", `{"status":"in_progress"}`, at(12))
 	s.event(open, "issue.updated", person, `{"status":"backlog"}`, at(20))
 	s.event(open, "issue.updated", person, `{"status":"in_progress"}`, at(26))
@@ -473,12 +466,12 @@ func (s *seeding) tree(index int) {
 		extra := s.spec.IssueOffset + s.spec.Trees*issuesPerTree + index*filingsPerTree + 1
 		// Into the tree, under the implemented child, after its implementer's first event.
 		later := s.issue(extra, "A follow-up the implementer filed", implemented, 3, at(10), new(at(11)))
-		s.event(later, "issue.created", session("implementer", implemented),
+		s.event(later, "issue.created", SessionActor("implementer", implemented),
 			fmt.Sprintf(`{"status":"triage","parent":%q,"ancestors":[%q,%q]}`, implemented, implemented, root), at(10))
 		s.event(later, "issue.closed", person, `{"status":"done"}`, at(11))
 		// Under no parent at all, so in no tree of the reviewer's.
 		outside := s.issue(extra+1, "An issue the reviewer filed outside the tree", "", 3, at(30), new(at(31)))
-		s.event(outside, "issue.created", session("reviewer", reviewed), `{"status":"triage"}`, at(30))
+		s.event(outside, "issue.created", SessionActor("reviewer", reviewed), `{"status":"triage"}`, at(30))
 		s.event(outside, "issue.closed", person, `{"status":"done"}`, at(31))
 		// By the project's controller, which works no issue.
 		controlled := s.issue(extra+2, "An issue the controller filed", "", 3, at(48), new(at(49)))
@@ -557,7 +550,7 @@ func (s *seeding) event(issue, kind, actor, payload string, at time.Time) {
 // root's architect on a child it filed goes through event instead, because that title names the
 // root and so is no phase work of the child.
 func (s *seeding) roleEvent(issue, role, kind, payload string, at time.Time) {
-	s.event(issue, kind, session(role, issue), payload, at)
+	s.event(issue, kind, SessionActor(role, issue), payload, at)
 	s.carriesPhaseWork(issue)
 }
 
@@ -586,7 +579,7 @@ func askID(issue string) string {
 func (s *seeding) handoff(issue, phase, role string, at time.Time) {
 	s.rows.handoffIssues = append(s.rows.handoffIssues, issue)
 	s.rows.handoffPhases = append(s.rows.handoffPhases, phase)
-	s.rows.handoffAuthors = append(s.rows.handoffAuthors, session(role, issue))
+	s.rows.handoffAuthors = append(s.rows.handoffAuthors, SessionActor(role, issue))
 	s.rows.handoffAt = append(s.rows.handoffAt, at)
 	s.carriesPhaseWork(issue)
 }
@@ -665,9 +658,9 @@ func (s *seeding) waiting(issue, kind string, since, answered time.Time) {
 // table's columns as arrays and unnests them, so a history of thousands of rows costs six round
 // trips (the project's row and the five tables) rather than thousands. The project's row is kept
 // where it exists already.
-func (s *seeding) write(ctx context.Context, q Execer) error {
+func (s *seeding) write(ctx context.Context, pool *store.Pool) error {
 	exec := func(what, statement string, args ...any) error {
-		if _, err := q.Exec(ctx, statement, args...); err != nil {
+		if _, err := pool.Exec(ctx, statement, args...); err != nil {
 			return fmt.Errorf("write the %s of %s: %w", what, s.spec.Project, err)
 		}
 		return nil

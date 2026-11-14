@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -378,22 +377,7 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 			return err
 		})
 	}
-	reads, readsCtx := errgroup.WithContext(ctx)
-	read := func(fn func(ctx context.Context) error) error {
-		readCtx, err := store.ForConcurrentRead(readsCtx)
-		if err != nil {
-			return err
-		}
-		reads.Go(func() error { return fn(readCtx) })
-		return nil
-	}
-	for _, fn := range independent {
-		if err := read(fn); err != nil {
-			_ = reads.Wait()
-			return deliveryPopulation{}, err
-		}
-	}
-	if err := reads.Wait(); err != nil {
+	if err := store.ReadSideBySide(ctx, independent...); err != nil {
 		return deliveryPopulation{}, err
 	}
 	if withMeasures {

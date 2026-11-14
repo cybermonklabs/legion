@@ -36,10 +36,7 @@ import (
 type Registration struct {
 	Project string
 	Slug    string
-	// Via is how the version is written: ViaRegister (the default, for ""), ViaSeed or
-	// ViaSettings. ViaReading is the readings write's own.
-	Via    string
-	Caller model.Actor
+	Caller  model.Actor
 
 	Name            Field[string]
 	Question        Field[string]
@@ -97,11 +94,7 @@ type Registered struct {
 // one eval at once both land, in turn, as the next two versions: each takes the eval's lock
 // (lockEval) before it reads the version it writes after.
 func (s *Store) Register(ctx context.Context, change Registration) (Registered, error) {
-	via := change.Via
-	if via == "" {
-		via = ViaRegister
-	}
-	if err := validateRegistration(change, via); err != nil {
+	if err := validateRegistration(change); err != nil {
 		return Registered{}, err
 	}
 	evalID := EvalID(change.Project, change.Slug)
@@ -119,7 +112,7 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			next = firstDefinition(change.Project, change.Slug, change.Caller)
 		}
 		change.applyTo(&next, w.now)
-		next.WrittenVia, next.WrittenBy = via, change.Caller.Recorded()
+		next.WrittenVia, next.WrittenBy = ViaRegister, change.Caller.Recorded()
 		switch {
 		case change.DocText.Set:
 			held, err := s.holdsMethod(ctx, w, current.DocBlock, change.DocText.Value)
@@ -136,7 +129,7 @@ func (s *Store) Register(ctx context.Context, change Registration) (Registered, 
 			}
 		case !found && next.DocBlock == "":
 			next.DocBlock = uuid.NewString()
-			if err := s.writeMethod(ctx, w, next.Slug, "", next.DocBlock, registrationSentence(via, change.Caller, w.now), RegistryActor); err != nil {
+			if err := s.writeMethod(ctx, w, next.Slug, "", next.DocBlock, registrationSentence(ViaRegister, change.Caller, w.now), RegistryActor); err != nil {
 				return err
 			}
 		}
@@ -330,24 +323,23 @@ func sortedSeries(byName map[string]Series) []Series {
 	return all
 }
 
-// The values each enumerated field may take, as its column's check allows them.
+// Kinds are the kinds an eval may be, as eval_versions' check allows them: the kinds a register
+// write takes and an eval read keeps with `kind`.
+var Kinds = []string{KindDelivery, KindLegion, KindCI, KindExperiment}
+
+// The values each other enumerated field may take, as its column's check allows them.
 var (
-	kinds      = []string{KindDelivery, KindLegion, KindCI, KindExperiment}
 	states     = []string{StateActive, StateStopped, StateReplaced}
 	directions = []string{"", DirectionHigherBetter, DirectionLowerBetter}
-	registerBy = []string{ViaSeed, ViaRegister, ViaSettings}
 	roles      = []string{RoleHeadline, RoleControl}
 	aggs       = []string{AggSum, AggRatio, AggQuantile, AggMax, AggLast, AggWeightedMean}
 )
 
 // validateRegistration refuses a register write whose fields the tables would refuse, or whose
 // links are not links, before any transaction opens.
-func validateRegistration(change Registration, via string) error {
+func validateRegistration(change Registration) error {
 	if !slugPattern.MatchString(change.Slug) {
 		return refusal(CodeSlugInvalid, "slug %q is not lower-case letters, digits and hyphens starting with a letter or a digit", change.Slug)
-	}
-	if !slices.Contains(registerBy, via) {
-		return refusal(CodeFieldInvalid, "written_via %q is not one of %s", via, strings.Join(registerBy, ", "))
 	}
 	if change.DocText.Set && change.DocBlock.Set {
 		return refusal(CodeFieldInvalid, "a register write sets doc_text, whose block it then names in doc_block, or doc_block alone, not both")
@@ -360,7 +352,7 @@ func validateRegistration(change Registration, via string) error {
 		value Field[string]
 		set   []string
 	}{
-		{"kind", change.Kind, kinds},
+		{"kind", change.Kind, Kinds},
 		{"state", change.State, states},
 		{"direction", change.Direction, directions},
 	} {

@@ -50,7 +50,7 @@ func TestALossMetOnALaterPageIsAnswered(t *testing.T) {
 	if _, err := run.deps.Horizon.Await(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	safe, err := safeHorizon(t.Context(), run.deps.Horizon)
+	safe, err := run.deps.Horizon.SafeOrAwait(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -19,7 +19,7 @@ func TestTheItemsRowsCarryTheStoredFactsOfEachIssue(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}

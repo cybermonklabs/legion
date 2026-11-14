@@ -42,7 +42,7 @@ func TestEveryIssueLegionWorkedGetsAStoredRowAndNoOtherIssueDoes(t *testing.T) {
 	seeded := seed(t, 0)
 	project := seeded.fixture.Project
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -89,7 +89,7 @@ func TestEachStoredFactEqualsTheSourceItComesFrom(t *testing.T) {
 		Blocked: []legion.BlockedIssue{{Issue: blocked, BlockedBy: []string{blocker}}},
 	})
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestWriteRewritesNothingThatDidNotMove(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestTheStoredRowsReadBackFieldByField(t *testing.T) {
 	seeded := seed(t, 4)
 	project := seeded.fixture.Project
 
-	rows, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
+	rows, _, err := ComputeProject(t.Context(), seeded.database.Pool, project, seeded.now)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
+	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -85,7 +86,7 @@ func WriteAttribution(ctx context.Context, pool *store.Pool, project string, now
 	if err != nil {
 		return AttributionResult{}, err
 	}
-	day := dayOf(now).AddDate(0, 0, -1)
+	day := measures.Midnight(now).AddDate(0, 0, -1)
 	at := func(minutes int) time.Time { return day.Add(10*time.Hour + time.Duration(minutes)*time.Minute) }
 	issue := fmt.Sprintf("%s-%d", other, offset+1)
 	if err := exec("issue", `

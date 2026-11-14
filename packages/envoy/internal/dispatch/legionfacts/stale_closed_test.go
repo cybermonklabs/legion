@@ -52,7 +52,7 @@ func TestAClosedIssueThatLosesItsPhaseWorkLosesItsStoredRow(t *testing.T) {
 	// The same session writes next on another issue under that issue's title, so the work goes
 	// with it and the closed issue carries none.
 	writeSessionEvent(t, run, session, other, run.at.Add(-time.Hour))
-	computed, err := ComputeProject(t.Context(), run.database.Pool, run.fixture.Project, run.at)
+	computed, _, err := ComputeProject(t.Context(), run.database.Pool, run.fixture.Project, run.at)
 	if err != nil {
 		t.Fatalf("compute the project's facts: %v", err)
 	}

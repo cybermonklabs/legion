@@ -78,7 +78,7 @@ func newSessionTitlesPlanFixture(t *testing.T) (*store.Pool, context.Context) {
 // from a person's actor that shares a session's id.
 func TestTheSessionTitlesReadReadsNoEvents(t *testing.T) {
 	pool, ctx := newSessionTitlesPlanFixture(t)
-	plan, raw := analyzedPlan(t, ctx, pool, resolveSessionTitlesQuery, sessionTitlePlanSessions)
+	plan, raw := explaintest.AnalyzedPlan(t, ctx, pool, resolveSessionTitlesQuery, sessionTitlePlanSessions)
 	if read := scannedRelations(t, plan); !slices.Equal(read, []string{"session_titles"}) {
 		t.Fatalf("the session titles read reads %v; want session_titles alone, and no events:\n%s", read, raw)
 	}

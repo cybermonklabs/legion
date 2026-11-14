@@ -399,8 +399,8 @@ func leftTrees(ctx context.Context, q Querier, project string, keys []string, mo
 //
 // A narrower descent would start from the keys whose Legion standing moved, and the stored
 // rows cannot answer which keys those are. A row is held for an issue that carries Legion
-// phase work (Compute), and the parent whose standing moves commonly carries none and holds no
-// row at all, so there is nothing to read this pass's standing against. A second record of the
+// phase work (computeKeys), and the parent whose standing moves commonly carries none and holds
+// no row at all, so there is nothing to read this pass's standing against. A second record of the
 // standing is what that descent would need, and the wider set needs none: the set is stated
 // before anything is written, and a row inside it is written or deleted only because the
 // computation of that issue said so.

@@ -42,7 +42,7 @@ func runStart(t *testing.T, runs []delivery.DeliveryRun, id int64) time.Time {
 	t.Helper()
 	for _, run := range runs {
 		if run.RunID == id {
-			return utcMidnight(run.StartedAt)
+			return measures.Midnight(run.StartedAt)
 		}
 	}
 	t.Fatalf("no run %d in the history", id)
@@ -151,9 +151,9 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 			}
 			earlier := b
 			earlier.MergedAt = new(b.MergedAt.AddDate(0, 0, -1))
-			if moves := shipper(earlier); moves != nil && moves.RunID != deployA.RunID && !utcMidnight(*earlier.MergedAt).Before(historyStart) {
-				moved.member, movedDay = PullRequestMember(a.Repo, a.Number), utcMidnight(*a.MergedAt)
-				redated.member, redatedDay = PullRequestMember(b.Repo, b.Number), utcMidnight(*b.MergedAt)
+			if moves := shipper(earlier); moves != nil && moves.RunID != deployA.RunID && !measures.Midnight(*earlier.MergedAt).Before(historyStart) {
+				moved.member, movedDay = PullRequestMember(a.Repo, a.Number), measures.Midnight(*a.MergedAt)
+				redated.member, redatedDay = PullRequestMember(b.Repo, b.Number), measures.Midnight(*b.MergedAt)
 			}
 		}
 	}
@@ -231,13 +231,13 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		update delivery_pull_requests set merged_at = $3, created_at = least(created_at, $3::timestamptz - interval '1 hour') where repo = $1 and number = $2
 	`, redatedPR.Repo, redatedPR.Number, newMerge)
 	prs[at(redated.member)] = redatedPR
-	want = union(lines(redatedDay, map[string]bool{main: true}), lines(utcMidnight(newMerge), map[string]bool{main: true}),
+	want = union(lines(redatedDay, map[string]bool{main: true}), lines(measures.Midnight(newMerge), map[string]bool{main: true}),
 		lines(runDay(newDeploy.RunID), deployedThen, runDayProjects(newDeploy.RunID)),
 		lines(runDay(oldDeploy.RunID), shippedThen, runDayProjects(oldDeploy.RunID)))
 	t.Logf("%s moves from run %d (started %s) to run %d (started %s)", redated.member, oldDeploy.RunID, runDay(oldDeploy.RunID).Format(time.DateOnly),
 		newDeploy.RunID, runDay(newDeploy.RunID).Format(time.DateOnly))
 	before = r.expectDays(t, "a pull request merged a day earlier", before, want,
-		[]string{line(walkDelivery, main, redatedDay), line(walkDelivery, main, utcMidnight(newMerge))})
+		[]string{line(walkDelivery, main, redatedDay), line(walkDelivery, main, measures.Midnight(newMerge))})
 
 	// A deploy run of the outage, whose production job failed, now completes it: the run ships the
 	// pull requests merged before its creation that it completes first.
@@ -296,7 +296,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 				continue
 			}
 			touched++
-			want = union(want, lines(utcMidnight(*pr.MergedAt), map[string]bool{projectOf(pr): true}))
+			want = union(want, lines(measures.Midnight(*pr.MergedAt), map[string]bool{projectOf(pr): true}))
 			for _, other := range []int64{then.by[member], now.by[member]} {
 				if other != 0 && other != id {
 					want = union(want, lines(runDay(other), then.projects[other], now.projects[other]))
@@ -325,7 +325,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 		// One that ships a pull request merged on an earlier day than the run started, so that
 		// day is written only because the run shipped it (eval_day_members.shipped_by).
 		if stopped.RunID != 0 || apply.RunID == run.RunID || !slices.ContainsFunc(prs, func(pr delivery.DeliveryPullRequest) bool {
-			return now.by[PullRequestMember(pr.Repo, pr.Number)] == apply.RunID && utcMidnight(*pr.MergedAt).Before(runDay(apply.RunID))
+			return now.by[PullRequestMember(pr.Repo, pr.Number)] == apply.RunID && measures.Midnight(*pr.MergedAt).Before(runDay(apply.RunID))
 		}) {
 			continue
 		}
@@ -346,7 +346,7 @@ func TestEachDeliveryChangeRewritesExactlyItsDays(t *testing.T) {
 	var mergeDays []string
 	for _, pr := range prs {
 		if now.by[PullRequestMember(pr.Repo, pr.Number)] == stopped.RunID {
-			mergeDays = append(mergeDays, line(walkDelivery, projectOf(pr), utcMidnight(*pr.MergedAt)))
+			mergeDays = append(mergeDays, line(walkDelivery, projectOf(pr), measures.Midnight(*pr.MergedAt)))
 		}
 	}
 	t.Logf("run %d (started %s) stops shipping its %d pull requests, merged on %v", stopped.RunID, runDay(stopped.RunID).Format(time.DateOnly), shipped, mergeDays)
@@ -678,7 +678,7 @@ func TestARepositoryRowThatLosesItsLastInputBecomesAZeroRow(t *testing.T) {
 		switch {
 		case !kept:
 			t.Errorf("%s was deleted, want a zero row", key)
-		case row.N != 0 || valueOr(row.Sum) != 0 || valueOr(row.Num) != 0 || valueOr(row.Den) != 0 || row.Max != nil ||
+		case row.N != 0 || measures.ValueOrZero(row.Sum) != 0 || measures.ValueOrZero(row.Num) != 0 || measures.ValueOrZero(row.Den) != 0 || row.Max != nil ||
 			len(row.Samples) != 0 || row.ViaRepository != 0 || slices.ContainsFunc(slices.Collect(maps.Values(row.Counts)), func(count float64) bool { return count != 0 }):
 			t.Errorf("%s holds %s after its last input left, want a zero row", key, rowFacts(row))
 		case before[key].N == 0:

@@ -6,10 +6,9 @@
 // filings made in one (ReadFilingsIn).
 //
 // The computation holds no loop and no lease: facts.go answers the rows and the filings of a key
-// set (computeKeys) or of a whole project (computeWhole), and store.go writes them (WriteProject,
+// set (computeKeys) or of a whole project (ComputeProject), and store.go writes them (WriteProject,
 // WriteFilings). Run is the loop that decides when to call either, under one lease and woken by
-// the feeds a row is computed from (consumer.go). Compute and ComputeProject answer the rows of
-// the same two reads for one call.
+// the feeds a row is computed from (consumer.go).
 //
 // The numbers are the metrics package's: each computation reads a population and calls
 // metrics.ProjectFacts, which is the one computation of the per-issue facts, and the filings are
@@ -102,31 +101,17 @@ type Filing struct {
 	RootKey    string
 }
 
-// Compute answers the rows of the named issues as of now. It reads the population the facts of
-// those issues are computed from (metrics.ReadIssues), which is wider than the keys asked for
-// because an issue's hours read its whole tree, and keeps the rows of the keys alone. A key that
-// carries no Legion phase work gets no row, as it gets no facts entry.
-func Compute(ctx context.Context, pool *store.Pool, project string, keys []string, now time.Time) ([]Row, error) {
-	rows, _, err := computeKeys(ctx, pool, project, keys, nil, now)
-	return rows, err
-}
-
-// ComputeProject answers the rows of every issue of the project with Legion phase work, open or
-// closed, as of now: the sweep's own read (metrics.ReadProject).
-func ComputeProject(ctx context.Context, pool *store.Pool, project string, now time.Time) ([]Row, error) {
-	rows, _, err := computeWhole(ctx, pool, project, now)
-	return rows, err
-}
-
-// computeKeys is Compute with the filings beside the rows: the filings of the filed issues
-// filed names that a Legion session of the project filed, computed over the same population as
-// the rows, which reads each filer's issue with them (metrics.ReadIssues). It is what one pass of
-// the consumer computes for a project it does not read whole.
+// computeKeys answers the rows of the named issues as of now, and the filings of the filed issues
+// filed names that a Legion session of the project filed, computed over one population
+// (metrics.ReadIssues). That population is wider than the keys asked for, because an issue's
+// hours read its whole tree and a filing reads its filer's issue, and the rows of the keys alone
+// are kept: a key that carries no Legion phase work gets no row, as it gets no facts entry. It is
+// what one pass of the consumer computes for a project it does not read whole.
 func computeKeys(ctx context.Context, pool *store.Pool, project string, keys, filed []string, now time.Time) ([]Row, []Filing, error) {
 	if len(keys) == 0 && len(filed) == 0 {
 		return nil, nil, nil
 	}
-	population, err := metrics.ReadIssues(ctx, pool, nil, project, keys, filed, now)
+	population, err := metrics.ReadIssues(ctx, pool, project, keys, filed, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -141,10 +126,11 @@ func computeKeys(ctx context.Context, pool *store.Pool, project string, keys, fi
 	return rows, filingsOf(population, project), nil
 }
 
-// computeWhole is ComputeProject with the filings beside the rows: every filing a Legion
-// session of the project ever made, from the same population (metrics.ReadProject).
-func computeWhole(ctx context.Context, pool *store.Pool, project string, now time.Time) ([]Row, []Filing, error) {
-	population, err := metrics.ReadProject(ctx, pool, nil, project, now)
+// ComputeProject answers the rows of every issue of the project with Legion phase work, open or
+// closed, as of now, and every filing a Legion session of the project ever made, from one
+// population (metrics.ReadProject): the sweep's own read, which the consumer writes whole.
+func ComputeProject(ctx context.Context, pool *store.Pool, project string, now time.Time) ([]Row, []Filing, error) {
+	population, err := metrics.ReadProject(ctx, pool, project, now)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -218,18 +204,25 @@ func rowsOf(ctx context.Context, q Querier, population *metrics.Population, proj
 	return rows, nil
 }
 
+// Facts is row as the Legion day builders read it: the facts metrics.ProjectFacts computed of the
+// issue, which the row holds column for column (rowsOf writes them the other way).
+func (row Row) Facts() metrics.IssueFacts {
+	return metrics.IssueFacts{
+		OpenedAt: row.OpenedAt, ClosedAt: row.ClosedAt, PhaseHours: row.HoursByPhase, WorkHours: row.WorkHours,
+		ReviewRounds: row.ReviewRounds, Root: row.RootKey == row.Issue, Tree: row.RootKey, TreeDepth: row.TreeDepth,
+		SlotHours: row.SlotHours, WorkFirstAt: row.WorkFirstAt, WorkLastAt: row.WorkLastAt,
+		ParkedHours: row.ParkedHours, QueuedHours: row.QueuedHours, StartedAt: row.StartedAt, MergedAt: row.MergedAt,
+		Bars: row.Bars, SentBack: row.SentBack, ImplementingHoursAfterFirstReview: row.ImplementingAfterFirstReview,
+		TestingHoursAfterFirstReview: row.TestingAfterFirstReview, Children: row.Children,
+		SlotWaitHours: row.SlotWaitHours, IdleByRole: row.IdleByRole,
+	}
+}
+
 // filingsOf turns the population's filings into rows, classified by metric 4's own rule
-// (metrics.ProjectFilings). issue_filings holds one row per filed issue, so a filed issue that
-// somehow carries two `issue.created` events by Legion sessions keeps the first, the order the
-// population read them in; a second row of one key in one write would fail the whole write.
+// (metrics.ProjectFilings, one per filed issue).
 func filingsOf(population *metrics.Population, project string) []Filing {
 	filings := []Filing{}
-	seen := map[string]bool{}
 	for _, filed := range metrics.ProjectFilings(population) {
-		if seen[filed.Key] {
-			continue
-		}
-		seen[filed.Key] = true
 		filings = append(filings, Filing{
 			Project:    project,
 			Issue:      filed.Key,
@@ -242,6 +235,18 @@ func filingsOf(population *metrics.Population, project string) []Filing {
 		})
 	}
 	return filings
+}
+
+// IssueFiling is filing as the splitting builder reads it: the row metric 4's table names it by
+// and the filed issue's tree root (filingsOf writes them the other way).
+func (filing Filing) IssueFiling() metrics.IssueFiling {
+	return metrics.IssueFiling{
+		FiledIssue: metrics.FiledIssue{
+			Key: filing.Issue, At: filing.FiledAt, Class: filing.Class, Filer: filing.FilerRole,
+			FilerIssue: filing.FilerIssue, FilerPhase: filing.FilerPhase,
+		},
+		Root: filing.RootKey,
+	}
 }
 
 // reposStatement resolves the repository of every issue its one argument names, by the server's

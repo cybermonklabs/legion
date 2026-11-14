@@ -26,7 +26,7 @@ func TestTheSeededHistoryAnswersFactsForEveryIssueLegionWorked(t *testing.T) {
 	fixture := Seed(t, database.Pool, Spec{Project: "LEGION", Now: now})
 	seeded := time.Since(started)
 
-	population, err := metrics.ReadProject(t.Context(), database.Pool, nil, fixture.Project, now)
+	population, err := metrics.ReadProject(t.Context(), database.Pool, fixture.Project, now)
 	if err != nil {
 		t.Fatalf("read the project: %v", err)
 	}

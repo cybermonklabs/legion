@@ -413,14 +413,9 @@ func runSuggestionRules(ctx context.Context, tx pgx.Tx, rules [3]string, args ..
 // covers the other: without the second, a pass whose gap closed under it would ask for nothing
 // and leave those events to the next commit's wake.
 func suggestionOutcomePass(ctx context.Context, pool *store.Pool, horizon *events.Horizon, schedule suggestionSchedule) (time.Time, error) {
-	safe, err := horizon.Safe(ctx)
+	safe, err := horizon.SafeOrAwait(ctx)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("read the event log's safe horizon: %w", err)
-	}
-	if safe == 0 {
-		if safe, err = horizon.Await(ctx); err != nil {
-			return time.Time{}, fmt.Errorf("await the event log's safe horizon: %w", err)
-		}
+		return time.Time{}, err
 	}
 	next, err := sweepSuggestionOutcomePages(ctx, pool, safe, schedule.page, schedule.settle)
 	if err != nil {

@@ -7,15 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"math"
 	"net/http"
 	"net/url"
 	"reflect"
 	"slices"
 	"strings"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/measures"
@@ -64,9 +61,6 @@ const (
 	// openAPISessionParameter).
 	evalSessionQueryKey = "session"
 )
-
-// evalKinds are the kinds an eval read keeps with `kind`: eval_versions' check.
-var evalKinds = []string{evals.KindDelivery, evals.KindLegion, evals.KindCI, evals.KindExperiment}
 
 // The query keys each eval read declares: the `query` tags of the query struct its route shape
 // names (routeShapes' Params), read once when the package starts. A readings write declares none.
@@ -378,14 +372,8 @@ type evalRanges struct {
 // evalDaysOf is the UTC days [from, to) covers: from the midnight of from's day to the midnight
 // after the day of to's last instant, so a window ending inside a day covers that day.
 func evalDaysOf(from, to time.Time) evals.Range {
-	first := utcDayOf(from)
-	return evals.Range{From: first, To: utcDayOf(to.Add(-time.Nanosecond)).AddDate(0, 0, 1)}
-}
-
-// utcDayOf is the UTC midnight of the day t is on.
-func utcDayOf(t time.Time) time.Time {
-	t = t.UTC()
-	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC)
+	first := measures.Midnight(from)
+	return evals.Range{From: first, To: measures.Midnight(to.Add(-time.Nanosecond)).AddDate(0, 0, 1)}
 }
 
 // parseEvalRanges reads an eval read's window and compare range: from and to as every delivery
@@ -423,23 +411,42 @@ func parseEvalRanges(query url.Values) (evalRanges, error) {
 	return ranges, nil
 }
 
-// parseEvalPage reads an eval read's page: limit, 1 to evalPageMax (evalPageDefault where absent),
-// and offset, from 0.
-func parseEvalPage(query url.Values) (limit, offset int, err error) {
-	limit = evalPageDefault
-	if value, present, valid := parseQueryInt(query, "limit", 1, evalPageMax); present {
-		if !valid {
-			return 0, 0, fmt.Errorf("limit must be one integer from 1 to %d", evalPageMax)
-		}
-		limit = value
+// evalReadQuery is what every eval read reads of its query: the window and the compare range, the
+// repositories whose day rows it folds (repo, none for the project's own rows), and the page.
+type evalReadQuery struct {
+	ranges evalRanges
+	repos  []string
+	limit  int
+	offset int
+}
+
+// parseEvalReadQuery reads what every eval read takes of its query; declared is the keys the
+// reading route takes (evalListQueryKeys, evalsQueryKeys, evalDetailQueryKeys,
+// evalItemsQueryKeys), any other of which is refused (undeclaredQueryKey). A malformed key is 400
+// INVALID_QUERY naming it; the page is limit, 1 to evalPageMax (evalPageDefault where absent), and
+// offset, from 0.
+func parseEvalReadQuery(query url.Values, declared []string) (evalReadQuery, error) {
+	if err := undeclaredQueryKey(query, declared); err != nil {
+		return evalReadQuery{}, err
 	}
-	if value, present, valid := parseQueryInt(query, "offset", 0, math.MaxInt); present {
-		if !valid {
-			return 0, 0, errors.New("offset must be one non-negative integer")
-		}
-		offset = value
+	ranges, err := parseEvalRanges(query)
+	if err != nil {
+		return evalReadQuery{}, invalidEvalQuery(err)
 	}
-	return limit, offset, nil
+	repos, err := parseEvalRepos(query)
+	if err != nil {
+		return evalReadQuery{}, invalidEvalQuery(err)
+	}
+	limit, offset, err := parseOffsetPage(query, evalPageDefault, evalPageMax)
+	if err != nil {
+		return evalReadQuery{}, err
+	}
+	return evalReadQuery{ranges: ranges, repos: repos, limit: limit, offset: offset}, nil
+}
+
+// invalidEvalQuery is err as the 400 INVALID_QUERY an eval read answers a malformed key with.
+func invalidEvalQuery(err error) error {
+	return errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
 }
 
 // parseEvalRepos reads `repo`, repeatable: the repositories whose day rows a read folds in place
@@ -452,16 +459,12 @@ func parseEvalRepos(query url.Values) ([]string, error) {
 	return repos, nil
 }
 
-// evalListRequest is one read of the eval list: the projects it reads, in order; the kind it keeps,
-// "" for every kind; the repositories whose day rows it folds, none for the projects' own rows;
-// the window and the compare range; and the page.
+// evalListRequest is one read of the eval list: what every eval read reads of its query, the
+// projects it reads, in order, and the kind it keeps, "" for every kind.
 type evalListRequest struct {
+	evalReadQuery
 	projects []string
 	kind     string
-	repos    []string
-	ranges   evalRanges
-	limit    int
-	offset   int
 }
 
 // parseEvalListQuery reads the list read's query, every key but `project`, which only the
@@ -469,54 +472,45 @@ type evalListRequest struct {
 // evalsQueryKeys), any other of which is refused (undeclaredQueryKey). A malformed key is 400
 // INVALID_QUERY naming it.
 func parseEvalListQuery(query url.Values, declared []string) (evalListRequest, error) {
-	if err := undeclaredQueryKey(query, declared); err != nil {
+	read, err := parseEvalReadQuery(query, declared)
+	if err != nil {
 		return evalListRequest{}, err
 	}
-	invalid := func(err error) (evalListRequest, error) {
-		return evalListRequest{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "%s", err.Error())
-	}
-	ranges, err := parseEvalRanges(query)
-	if err != nil {
-		return invalid(err)
-	}
-	repos, err := parseEvalRepos(query)
-	if err != nil {
-		return invalid(err)
-	}
-	limit, offset, err := parseEvalPage(query)
-	if err != nil {
-		return invalid(err)
-	}
 	kind := query.Get("kind")
-	if kind != "" && !slices.Contains(evalKinds, kind) {
-		return invalid(fmt.Errorf("kind %q is not one of %s", kind, strings.Join(evalKinds, ", ")))
+	if kind != "" && !slices.Contains(evals.Kinds, kind) {
+		return evalListRequest{}, invalidEvalQuery(fmt.Errorf("kind %q is not one of %s", kind, strings.Join(evals.Kinds, ", ")))
 	}
-	return evalListRequest{kind: kind, repos: repos, ranges: ranges, limit: limit, offset: offset}, nil
+	return evalListRequest{evalReadQuery: read, kind: kind}, nil
 }
 
 // listProjectEvals answers GET /api/v1/projects/{key}/evals: one page of the project's evals
-// (readEvalList); 404 PROJECT_NOT_FOUND for a project no row holds.
+// (readProjectEvalList).
 func (s *server) listProjectEvals(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	request, err := parseEvalListQuery(r.URL.Query(), evalListQueryKeys)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	project := r.PathValue("key")
-	if _, err := s.loadProject(r.Context(), s.deps.Store.Pool, project); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	request.projects = []string{project}
-	answer, err := s.readEvalList(r.Context(), request, time.Now().UTC())
+	answer, err := s.readProjectEvalList(r.Context(), r.URL.Query(), r.PathValue("key"), time.Now().UTC())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	WriteJSON(w, http.StatusOK, answer)
+}
+
+// readProjectEvalList is the body of GET /api/v1/projects/{key}/evals for query, as of now: the
+// list read of project's evals (readEvalList), after the query is read (parseEvalListQuery) and
+// the project is found, 404 PROJECT_NOT_FOUND for a project no row holds (loadProject). The live
+// hub's evals view reads its body through this too, so the two answer one query alike.
+func (s *server) readProjectEvalList(ctx context.Context, query url.Values, project string, now time.Time) (evalListResponse, error) {
+	request, err := parseEvalListQuery(query, evalListQueryKeys)
+	if err != nil {
+		return evalListResponse{}, err
+	}
+	if _, err := s.loadProject(ctx, s.deps.Store.Pool, project); err != nil {
+		return evalListResponse{}, err
+	}
+	request.projects = []string{project}
+	return s.readEvalList(ctx, request, now)
 }
 
 // listEvals answers GET /api/v1/evals: the list read across projects, each item the shape the
@@ -556,13 +550,9 @@ func (s *server) listEvals(w http.ResponseWriter, r *http.Request) {
 // first named, or every project by key where none is named. A name no project holds is 404
 // PROJECT_NOT_FOUND naming it.
 func (s *server) evalProjects(ctx context.Context, named []string) ([]string, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `select key from projects order by key`)
+	keys, err := s.registry().Projects(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("read the projects: %w", err)
-	}
-	keys, err := pgx.CollectRows(rows, pgx.RowTo[string])
-	if err != nil {
-		return nil, fmt.Errorf("read the projects: %w", err)
+		return nil, err
 	}
 	if len(named) == 0 {
 		return keys, nil
@@ -695,7 +685,7 @@ func evalOwnerOf(definition evals.Definition) evalOwner {
 // the window and the compare range, and firsts, each series' first day. A range that starts
 // before a series' first day, or a series with no first day at all, reads "no data": every
 // statistic of that range null, whatever rows the range holds; the per-day array still answers
-// each day that holds a row (R12, D8c).
+// each day that holds a row (R12).
 func evalSeriesOf(entry evals.Entry, rows []evals.WindowRow, firsts map[string]time.Time, ranges evalRanges) []evalSeriesValues {
 	var listed, headline []evals.Series
 	for _, series := range entry.Series {
@@ -849,24 +839,9 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	query := r.URL.Query()
-	if err := undeclaredQueryKey(query, evalDetailQueryKeys); err != nil {
+	read, err := parseEvalReadQuery(r.URL.Query(), evalDetailQueryKeys)
+	if err != nil {
 		s.writeHandlerError(w, err)
-		return
-	}
-	ranges, err := parseEvalRanges(query)
-	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
-		return
-	}
-	repos, err := parseEvalRepos(query)
-	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
-		return
-	}
-	limit, offset, err := parseEvalPage(query)
-	if err != nil {
-		writeError(w, "INVALID_QUERY", http.StatusBadRequest, err.Error())
 		return
 	}
 	ctx := r.Context()
@@ -886,20 +861,20 @@ func (s *server) getProjectEval(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	answer := evalDetailResponse{
-		Items: []evalItem{}, Total: len(versions), Limit: limit, Offset: offset,
-		Window: newEvalRange(ranges.window), Compare: evalCompareRange(ranges.compare),
+		Items: []evalItem{}, Total: len(versions), Limit: read.limit, Offset: read.offset,
+		Window: newEvalRange(read.ranges.window), Compare: evalCompareRange(read.ranges.compare),
 	}
 	// The page's bounds, clamped before they are added: an offset up to math.MaxInt is valid, and
 	// offset+limit would overflow.
-	start := min(offset, len(versions))
-	end := start + min(limit, len(versions)-start)
+	start := min(read.offset, len(versions))
+	end := start + min(read.limit, len(versions)-start)
 	var oldest *time.Time
 	for _, version := range versions[start:end] {
 		if version.Version != entry.Definition.Version {
 			answer.Items = append(answer.Items, evalItem{Definition: version, Owner: evalOwnerOf(version)})
 			continue
 		}
-		newest, folded, err := s.evalItemsOf(ctx, registry, project, []evals.Entry{entry}, repos, ranges)
+		newest, folded, err := s.evalItemsOf(ctx, registry, project, []evals.Entry{entry}, read.repos, read.ranges)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return

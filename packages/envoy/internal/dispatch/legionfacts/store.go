@@ -62,7 +62,7 @@ func WriteProject(ctx context.Context, q Querier, write ProjectWrite) ([]string,
 // stated: what WriteFilings writes in one call, beside the same pass's ProjectWrite. Stated is
 // the filed issues the pass computed filings over, inside which it may delete a stale filing,
 // and Whole says the pass read every filing a Legion session of the project made (a whole read
-// of the project, computeWhole), whose Stated is therefore empty.
+// of the project, ComputeProject), whose Stated is therefore empty.
 type FilingsWrite struct {
 	Project string
 	Filings []Filing
@@ -544,20 +544,6 @@ func deleteStaleFilings(ctx context.Context, q Querier, write FilingsWrite) erro
 		return fmt.Errorf("delete the stale Legion filings of %s: %w", write.Project, err)
 	}
 	return nil
-}
-
-// ReadFilings answers the stored filings of a project, by filed issue: the filings a Legion
-// session of the project made, wherever the filed issue lives.
-func ReadFilings(ctx context.Context, q Querier, project string) (map[string]Filing, error) {
-	read, err := readFilings(ctx, q, project, `where project_key = $1`, project)
-	if err != nil {
-		return nil, err
-	}
-	filings := make(map[string]Filing, len(read))
-	for _, filing := range read {
-		filings[filing.Issue] = filing
-	}
-	return filings, nil
 }
 
 // ReadFilingsIn answers the stored filings a Legion session of the project made from from up to

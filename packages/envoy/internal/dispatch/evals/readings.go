@@ -235,7 +235,7 @@ func lockReplaced(ctx context.Context, tx pgx.Tx, evalID string, rows []Reading)
 		return nil, nil, nil
 	}
 	found, err := tx.Query(ctx, `
-		select `+readingColumns+` from eval_readings where id = any($1::text[]::uuid[]) order by id for update
+		select `+ReadingColumns+` from eval_readings where id = any($1::text[]::uuid[]) order by id for update
 	`, ids)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the readings %s corrects: %w", evalID, err)
@@ -322,7 +322,7 @@ func insertReadings(ctx context.Context, tx pgx.Tx, evalID string, rows []Readin
 			$18::timestamptz[], $19::text[], $20::text[], $21::text[])
 			as r(id, series, row_key, row_kind, col, value, reason, unit, n, n_unit, ci_low, ci_high, ci_level,
 				attributes, links, measured_at, source, note, replaces)
-		returning `+readingColumns,
+		returning `+ReadingColumns,
 		evalID, recordedBy, ids, series, rowKeys, rowKinds, cols, values, reasons, units, ns, nUnits, ciLows, ciHighs,
 		ciLevels, attributes, links, measuredAt, sources, notes, replaces)
 	if err != nil {
