@@ -902,6 +902,17 @@ func ListRunJobs(ctx context.Context, pool *store.Pool, repo string, runID int64
 // key for each run and name it asks for, and never a run's other jobs.
 const runJobsNamedForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2) and name = any($3)`
 
+// runJobsNamedOrFailedForRunsQuery is listRunJobsNamedOrFailedForRuns' read: the jobs named $3 of
+// each run, through the primary key as runJobsNamedForRunsQuery reads them, and each run's failed
+// jobs of any other name, through delivery_run_jobs_failed (migration 20261114154233), the partial
+// index of the failed jobs alone, keyed by the run. `name <> all($3)` leaves a named job that
+// failed to the first part, so no job is answered twice. The failure is written into the
+// statement, not bound, so the planner proves the index's predicate from the statement under a
+// generic plan too; and since the index's predicate states it, Postgres plans no condition for it
+// either, so the plan's index condition of that part is the repository and the run alone.
+const runJobsNamedOrFailedForRunsQuery = runJobsNamedForRunsQuery + ` union all select ` + JobColumns +
+	` from delivery_run_jobs where repo = $1 and run_id = any($2) and conclusion = 'failure' and name <> all($3)`
+
 // everyRunJobForRunsQuery is listEveryRunJobForRuns' read: every job of each run.
 const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_jobs where repo = $1 and run_id = any($2)`
 
@@ -914,7 +925,8 @@ const everyRunJobForRunsQuery = `select ` + JobColumns + ` from delivery_run_job
 // the deploy workflow holds a handful of jobs and a pull-request run dozens, and the read with no
 // name in it cost 660 ms a call at ten times the stated run rate (dispatch://INFRA-2916, R13),
 // where `name = any($3)` keys each run's read to the jobs asked for (runJobsNamedForRunsQuery).
-// No name is no read. listEveryRunJobForRuns is the read for a caller that needs every job a
+// No name is no read. listRunJobsNamedOrFailedForRuns is the read for a caller that needs a run's
+// failed jobs beside the named ones, and listEveryRunJobForRuns for one that needs every job a
 // run ran.
 //
 // Returns a map keyed by run id for a caller to index directly, each run's jobs in ListRunJobs'
@@ -926,12 +938,25 @@ func ListRunJobsForRuns(ctx context.Context, pool *store.Pool, repo string, runI
 	return runJobsByRun(ctx, pool, runIDs, runJobsNamedForRunsQuery, repo, runIDs, names)
 }
 
+// listRunJobsNamedOrFailedForRuns lists, of every run in runIDs on repo, the jobs named names and
+// every job that failed, whatever its name, in one query (runJobsNamedOrFailedForRunsQuery), each
+// run's in ListRunJobs' order: the timeline's read of the deploy runs it lists. It judges each run
+// by its production jobs (Production.JudgedJobNames), as every other reader does, and lists each
+// with its failed jobs and the job that failed first (FailedJobs, RootFailingJob), which keep the
+// jobs whose conclusion is failure alone and so answer from these jobs what they answer from
+// every job. It reads each run's failed jobs through an index that holds no other, so it reads in
+// proportion to the runs' failures, where a read of every job read all of a run's jobs to judge
+// its one production job. names empty reads the failed jobs alone.
+func listRunJobsNamedOrFailedForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64, names []string) (map[int64][]DeliveryRunJob, error) {
+	// A nil list binds as NULL, under which `name <> all($3)` holds for no job; an empty one holds
+	// for every job.
+	return runJobsByRun(ctx, pool, runIDs, runJobsNamedOrFailedForRunsQuery, repo, runIDs, nonNil(names))
+}
+
 // listEveryRunJobForRuns lists every job of every run in runIDs on repo, as ListRunJobsForRuns
-// lists the named ones, for the callers that read every job a run ran: the timeline lists each
-// deploy run it shows with its failed jobs and the job that failed first (FailedJobs,
-// RootFailingJob), and the Pipeline's PR checks time every job of every run and tally every job
-// that failed (measures.PRChecks). No list of names can stand in for those, since the jobs they
-// report are whichever the runs hold.
+// lists the named ones, for the callers that read every job a run ran: the Pipeline's PR checks
+// time every job of every run and tally every job that failed (measures.PRChecks), and the jobs
+// they report are whichever the runs hold, so no list of names can stand in for them.
 func listEveryRunJobForRuns(ctx context.Context, pool *store.Pool, repo string, runIDs []int64) (map[int64][]DeliveryRunJob, error) {
 	return runJobsByRun(ctx, pool, runIDs, everyRunJobForRunsQuery, repo, runIDs)
 }

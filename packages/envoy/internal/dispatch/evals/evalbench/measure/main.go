@@ -7,6 +7,9 @@
 //	measure paint -mode head -database <url> -url <server> -token <token> \
 //	  -server-log <the server's stderr> -pg-log <Postgres's jsonlog file>
 //
+// -mode is head, base or failure-day: failure-day is this head over the fixture with a failure
+// day added to it (evalbench.AddFailureDay), whose paint is the Delivery timeline's alone.
+//
 // wait polls the database until the server's consumers have caught up with the fixture: the
 // Legion facts consumer has read every project whole under the running build and passed every
 // feed's head, and (this head) the day-row refresher has passed both its feeds' heads and walked
@@ -18,13 +21,17 @@
 // gzip size of its body; then `explain (analyze, buffers)` of every statement each read ran, with
 // the parameters the server bound, which Postgres's statement log holds. At this head the reads
 // are GET /api/v1/projects/INFRA/evals at 84 days with an 84-day compare range and at 28 days with
-// none, each with no repository and with one, and an evals view snapshot over /ws/live, followed by
-// k2's six statements and its refusals and controls, k13's named-jobs read and P0 count, k16's
-// hand folds, and the probe of the 84-day compare read's day-row statement (probe.go). At the base
-// head (-mode base) they are the base Delivery page's timeline, measures, pipeline and compare
-// views at 84 days, k8's negative control, and the base statements k13's control names. -info
-// measures the first paint alone and judges no budget, for the round after a
-// Postgres restart that the Job records for information.
+// none, each with no repository and with one, and an evals view snapshot over /ws/live, then the
+// Delivery timeline's first paint (GET /api/v1/delivery/timeline at 84 days with the compare
+// range's GET /api/v1/delivery/measures beside it, and at 28 days), followed by k2's six
+// statements and its refusals and controls, k13's run-jobs rule over every read of the paint, its
+// named-jobs read and P0 count, k16's hand folds, and the probe of the 84-day compare read's
+// day-row statement (probe.go). In mode failure-day they are the Delivery timeline's reads alone,
+// over the same windows, one of which holds the failure day, with k13's run-jobs rule and the
+// failure day the database holds. At the base head (-mode base) they are the base Delivery page's
+// timeline, measures, pipeline and compare views at 84 days, k8's negative control, and the base
+// statements k13's control names. -info measures the first paint alone and judges no budget, for
+// the round after a Postgres restart that the Job records for information.
 //
 // The server runs background loops that touch the database between requests. Each read's
 // statements are told from theirs by a catalogue taken first: every statement the database ran in
@@ -86,13 +93,13 @@ type options struct {
 
 func main() {
 	if len(os.Args) < 2 || (os.Args[1] != "wait" && os.Args[1] != "paint") {
-		fmt.Fprintln(os.Stderr, "usage: measure wait|paint -mode head|base -database <url> -url <server> [flags]")
+		fmt.Fprintln(os.Stderr, "usage: measure wait|paint -mode head|failure-day|base -database <url> -url <server> [flags]")
 		os.Exit(2)
 	}
 	command := os.Args[1]
 	flags := flag.NewFlagSet(command, flag.ExitOnError)
 	var o options
-	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint, or base, the base head's")
+	flags.StringVar(&o.mode, "mode", "head", "head, this head's first paint; failure-day, this head's timeline once a failure day is added; or base, the base head's")
 	flags.StringVar(&o.database, "database", "", "the Postgres URL the server reads, as a superuser (required): the instrument resets pg_stat_statements and sets the statement log")
 	flags.StringVar(&o.url, "url", "", "the server's base URL")
 	flags.StringVar(&o.token, "token", "", "the server's agent token (DISPATCH_AGENT_TOKEN)")
@@ -106,12 +113,12 @@ func main() {
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		os.Exit(2)
 	}
-	if o.mode != "head" && o.mode != "base" {
-		fmt.Fprintf(os.Stderr, "measure: -mode is head or base, not %q\n", o.mode)
+	if o.mode != "head" && o.mode != "base" && o.mode != "failure-day" {
+		fmt.Fprintf(os.Stderr, "measure: -mode is head, failure-day or base, not %q\n", o.mode)
 		os.Exit(2)
 	}
 	if o.database == "" || o.url == "" {
-		fmt.Fprintln(os.Stderr, "usage: measure wait|paint -mode head|base -database <url> -url <server> [flags]: name the database with -database and the server with -url")
+		fmt.Fprintln(os.Stderr, "usage: measure wait|paint -mode head|failure-day|base -database <url> -url <server> [flags]: name the database with -database and the server with -url")
 		os.Exit(2)
 	}
 	r := &report{prefix: "RESULT"}

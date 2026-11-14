@@ -10,6 +10,14 @@
 // pod in a few minutes); -ten-times writes ten times the stated run rate. Every time is relative
 // to -now, the current UTC midnight by default, so a load of the base and one of this head with
 // one -now and one -seed hold the same history at the same times.
+//
+// -failure-day writes a failure day (evalbench.AddFailureDay) into a database this command has
+// loaded, and nothing else: -failure-day-runs failed deploy runs with -failure-day-jobs failed
+// jobs across them, by default INFRA's worst day (36 and 45), on the UTC day -failure-day days
+// before -now's, at -scale and from -seed, as the load it is added to:
+//
+//	go run ./internal/dispatch/evals/evalbench/cmd -database <url> -seed 2916 \
+//	  -now 2026-11-13T00:00:00Z -failure-day 7 -failure-day-runs 36 -failure-day-jobs 45
 package main
 
 import (
@@ -25,6 +33,7 @@ import (
 
 func main() {
 	var spec evalbench.Spec
+	var day evalbench.FailureDay
 	var database, now string
 	flag.StringVar(&database, "database", "", "the Postgres URL to write into (required); the server must have migrated it")
 	flag.Uint64Var(&spec.Seed, "seed", 2916, "the seed of every random draw")
@@ -33,6 +42,9 @@ func main() {
 	flag.BoolVar(&spec.Base, "base", false, "write only the tables of the base head 02a7b3c6, and no reading")
 	flag.StringVar(&spec.BuiltBy, "built-by", "", "the build the logged evals' day rows record: the server's stamped commit")
 	flag.StringVar(&now, "now", "", "the moment every history ends at, RFC 3339; the current UTC midnight by default")
+	flag.IntVar(&day.DaysAgo, "failure-day", 0, "write only a failure day into the loaded database, on the UTC day this many days before -now's, 1 to 84; 0 loads the fixture")
+	flag.IntVar(&day.Runs, "failure-day-runs", 36, "the failure day's failed deploy runs on main at INFRA's stated rate (INFRA's worst day: 36)")
+	flag.IntVar(&day.Jobs, "failure-day-jobs", 45, "the failed jobs across the failure day's runs at INFRA's stated rate, -failure-day-runs to three times it (INFRA's worst day: 45)")
 	flag.Parse()
 	spec.Now = time.Now().UTC().Truncate(24 * time.Hour)
 	if now != "" {
@@ -43,7 +55,7 @@ func main() {
 		spec.Now = at.UTC()
 	}
 	if database == "" {
-		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base] [-now <RFC 3339>]")
+		fmt.Fprintln(os.Stderr, "usage: evalbench -database <url> [-built-by <commit>] [-seed <n>] [-scale <share>] [-ten-times] [-base] [-now <RFC 3339>] [-failure-day <days> [-failure-day-runs <n>] [-failure-day-jobs <m>]]")
 		os.Exit(2)
 	}
 	ctx := context.Background()
@@ -55,6 +67,17 @@ func main() {
 	started := time.Now()
 	logf := func(format string, args ...any) {
 		fmt.Fprintf(os.Stderr, "evalbench: "+format+"\n", args...)
+	}
+	if day.DaysAgo != 0 {
+		logf("adding a failure day of %d failed runs and %d failed jobs at scale %g, %d days before %s, seed %d",
+			day.Runs, day.Jobs, spec.Scale, day.DaysAgo, spec.Now.Format(time.RFC3339), spec.Seed)
+		added, err := evalbench.AddFailureDay(ctx, opened.Pool, spec, day)
+		if err != nil {
+			fail(err)
+		}
+		fmt.Printf("RESULT failure-day day=%s runs=%d jobs=%d failed_jobs=%d seconds=%.0f\n",
+			added.Day.Format(time.DateOnly), added.Runs, added.Jobs, added.FailedJobs, time.Since(started).Seconds())
+		return
 	}
 	logf("loading seed %d at scale %g (ten times the run rate: %t, base: %t), ending at %s",
 		spec.Seed, spec.Scale, spec.TenTimes, spec.Base, spec.Now.Format(time.RFC3339))

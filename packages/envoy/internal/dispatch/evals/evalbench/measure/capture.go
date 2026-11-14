@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -283,6 +284,144 @@ var scannedRelation = regexp.MustCompile(`((?:Parallel )?(?:Seq Scan|Index Scan|
 // namedJobCondition matches a plan whose index condition names the jobs it reads (`name =
 // ANY`): the run-jobs read that names the judged jobs in SQL.
 var namedJobCondition = regexp.MustCompile(`Index Cond: .*\bname = ANY`)
+
+// runJobsScanNode matches a text plan's line that is a scan of delivery_run_jobs, with the index
+// it reads through, if any.
+var runJobsScanNode = regexp.MustCompile(`^(?:->  )?((?:Parallel )?(?:Seq Scan|Index Scan|Index Only Scan|Bitmap Heap Scan|Tid Scan|Tid Range Scan|Sample Scan))(?: Backward)?(?: using (\S+))? on delivery_run_jobs\b`)
+
+// bitmapIndexScanNode matches a text plan's line that is a bitmap index scan, with its index.
+var bitmapIndexScanNode = regexp.MustCompile(`^->  Bitmap Index Scan on (\S+)`)
+
+// jobNameCondition matches an index condition that names the jobs it reads: `name = ANY (…)` or
+// one `name = '…'`.
+var jobNameCondition = regexp.MustCompile(`\bname = (?:ANY \(|')`)
+
+// failedJobsCondition matches an index condition that keeps a run's failed jobs alone.
+var failedJobsCondition = regexp.MustCompile(`\bconclusion = 'failure'`)
+
+// failedJobsPredicate is the predicate, as pg_get_expr writes it, of an index of
+// delivery_run_jobs that holds the failed jobs alone (migration 20261114154233's
+// delivery_run_jobs_failed). Postgres plans no condition its index's predicate implies, so a scan
+// through such an index states no failure in its index condition, and the index says it.
+const failedJobsPredicate = `(conclusion = 'failure'::text)`
+
+// failureIndexes is the indexes of delivery_run_jobs whose predicate is failedJobsPredicate, from
+// the catalog.
+func failureIndexes(ctx context.Context, pool *store.Pool) (map[string]bool, error) {
+	rows, err := pool.Query(ctx, `
+		select c.relname from pg_index i join pg_class c on c.oid = i.indexrelid
+		where i.indrelid = 'delivery_run_jobs'::regclass and pg_get_expr(i.indpred, i.indrelid) = $1
+	`, failedJobsPredicate)
+	if err != nil {
+		return nil, fmt.Errorf("read the indexes of delivery_run_jobs' failed jobs: %w", err)
+	}
+	names, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return nil, fmt.Errorf("read the indexes of delivery_run_jobs' failed jobs: %w", err)
+	}
+	indexes := make(map[string]bool, len(names))
+	for _, name := range names {
+		indexes[name] = true
+	}
+	return indexes, nil
+}
+
+// jobScan is one scan of delivery_run_jobs in a plan, and how each index it reads through keys it:
+// "name" where the index condition names the jobs, "failure" where the condition or the index's
+// own predicate keeps the failed jobs alone, "none" otherwise. A scan through no index is "none".
+type jobScan struct {
+	node string
+	keys []string
+}
+
+// runJobsScans is every scan of delivery_run_jobs in a text plan: an index scan judged by its own
+// index condition and its index, a bitmap heap scan by each bitmap index scan under it. failed is
+// failureIndexes.
+func runJobsScans(plan string, failed map[string]bool) []jobScan {
+	lines := strings.Split(plan, "\n")
+	var scans []jobScan
+	for i, line := range lines {
+		match := runJobsScanNode.FindStringSubmatch(strings.TrimLeft(line, " "))
+		if match == nil {
+			continue
+		}
+		scan := jobScan{node: strings.TrimPrefix(match[0], "->  ")}
+		switch {
+		case strings.HasPrefix(match[1], "Bitmap Heap Scan"):
+			for j := i + 1; j < nodeEnd(lines, i); j++ {
+				if index := bitmapIndexScanNode.FindStringSubmatch(strings.TrimLeft(lines[j], " ")); index != nil {
+					scan.keys = append(scan.keys, indexKey(ownIndexCond(lines, j), index[1], failed))
+				}
+			}
+		case match[2] != "":
+			scan.keys = []string{indexKey(ownIndexCond(lines, i), match[2], failed)}
+		}
+		if len(scan.keys) == 0 {
+			scan.keys = []string{"none"}
+		}
+		scans = append(scans, scan)
+	}
+	return scans
+}
+
+// everyScanKeyed reports whether every index each of scans reads through keys it by the job's
+// name or by its failure.
+func everyScanKeyed(scans []jobScan) bool {
+	for _, scan := range scans {
+		if slices.Contains(scan.keys, "none") {
+			return false
+		}
+	}
+	return true
+}
+
+// indexKey is how one read of delivery_run_jobs through index under cond is keyed (jobScan).
+func indexKey(cond, index string, failed map[string]bool) string {
+	switch {
+	case jobNameCondition.MatchString(cond):
+		return "name"
+	case failedJobsCondition.MatchString(cond) || failed[index]:
+		return "failure"
+	}
+	return "none"
+}
+
+// nodeColumn is the column a text plan's node line's own text starts at, past its arrow: the
+// node's properties and children are indented two columns past it.
+func nodeColumn(line string) int {
+	text := strings.TrimLeft(line, " ")
+	column := len(line) - len(text)
+	if strings.HasPrefix(text, "->  ") {
+		column += len("->  ")
+	}
+	return column
+}
+
+// nodeEnd is the index of the first line past the node at line i's properties and children.
+func nodeEnd(lines []string, i int) int {
+	inner := nodeColumn(lines[i]) + 2
+	end := i + 1
+	for ; end < len(lines); end++ {
+		text := strings.TrimLeft(lines[end], " ")
+		if text != "" && len(lines[end])-len(text) < inner {
+			break
+		}
+	}
+	return end
+}
+
+// ownIndexCond is the index condition of the node at line i, a property line at the node's own
+// indent rather than a child's, or empty where it has none.
+func ownIndexCond(lines []string, i int) string {
+	inner := nodeColumn(lines[i]) + 2
+	for j := i + 1; j < nodeEnd(lines, i); j++ {
+		text := strings.TrimLeft(lines[j], " ")
+		if len(lines[j])-len(text) == inner && strings.HasPrefix(text, "Index Cond: ") {
+			return text
+		}
+	}
+	return ""
+}
 
 // relations is each relation a plan scans, with the scans of it.
 func relations(plan string) map[string][]string {

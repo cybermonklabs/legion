@@ -247,9 +247,9 @@ type deliveryPopulation struct {
 	withWaiting bool
 	waiting     []delivery.WaitingPullRequest
 	// applyRuns is every deploy run on main GitHub created at or after the window's start
-	// (delivery.ReadMergedRows), oldest creation first, and jobsByRun their jobs: every job of
-	// each in the timeline's read (withWaiting), which lists the runs with their failed jobs, and
-	// the production jobs alone in every other (readDeliveryRows).
+	// (delivery.ReadMergedRows), oldest creation first, and jobsByRun their jobs: the production
+	// jobs of each, and in the timeline's read (withWaiting), which lists the runs with their
+	// failed jobs, each of their jobs that failed too (readDeliveryRows).
 	applyRuns []delivery.DeliveryRun
 	jobsByRun map[int64][]delivery.DeliveryRunJob
 	// windowRuns is every deploy run on main started in the window, oldest start first, and
@@ -312,8 +312,9 @@ type deliveryWaitingRow struct {
 // deploy repository's pull requests still waiting at `from` (ListPullRequestsWaitingAt), resolved
 // through the same issue and session lookups so the timeline's waiting line filters them alike;
 // the measures read none. withWaiting is the timeline's read, the one that lists the deploy runs,
-// so it is also the one that reads every job of the runs GitHub created from `from` on; every
-// other read takes their production jobs alone (readDeliveryRows).
+// so it is also the one that reads the failed jobs of the runs GitHub created from `from` on
+// beside their production jobs; every other read takes their production jobs alone
+// (readDeliveryRows).
 func (s *server) readDeliveryPopulation(ctx context.Context, settings delivery.DeliverySettings, from, to time.Time, query url.Values, withWaiting bool) (deliveryPopulation, error) {
 	return s.readDeliveryRows(ctx, settings, from, to, query, withWaiting, true)
 }
@@ -345,7 +346,9 @@ func (s *server) readDeliveryRows(ctx context.Context, settings delivery.Deliver
 		// production jobs alone (delivery.Production.JudgedJobNames says why that judges every
 		// run as its every job would); the timeline lists each deploy run it shows with its
 		// failed jobs and the job that failed first, which can be any job the run holds, so its
-		// read takes every job. The timeline's runs[] list is filtered to [from, to) separately.
+		// read takes every failed job beside them (delivery.FailedJobs and RootFailingJob keep the
+		// failed jobs alone, so they answer from these what they answer from every job). The
+		// timeline's runs[] list is filtered to [from, to) separately.
 		func(ctx context.Context) error {
 			merged, err := delivery.ReadMergedRows(ctx, pool, settings, from, to, withWaiting)
 			pop.prs, pop.applyRuns, pop.jobsByRun = merged.PullRequests, merged.ApplyRuns, merged.ApplyJobs

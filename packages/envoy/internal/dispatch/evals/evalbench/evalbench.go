@@ -27,6 +27,11 @@
 // issues, events, observations and delivery history and the same smaller projects, and no reading
 // (evalfixture.BaseLacks names what the base lacks).
 //
+// AddFailureDay writes, into a database Load filled, a failure day on top of its history: the
+// worst day of deploy failures INFRA's own history has had, 36 failed deploy runs with 45 failed
+// jobs across them, on one day of the first paint's windows (failureday.go), so the Delivery
+// timeline, which reads each deploy run's failed jobs, is measured on the day it reads the most.
+//
 // Scale multiplies every count (issues, events, pull requests, runs a day, the smaller projects'
 // issues, readings) and keeps every span of days and the shape of each row, so a small load in a
 // pod exercises every table and every read the full one does.

@@ -3,7 +3,7 @@
 # envoy-dispatch and a database the evalbench fixture is loaded into.
 #
 #   run.sh migrate <database-url> <envoy-dispatch>
-#   run.sh measure <database-url> <envoy-dispatch> <head|base>
+#   run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base>
 #
 # migrate boots the server once on an empty database, which migrates it, and stops it.
 #
@@ -11,9 +11,10 @@
 # (`measure wait`: the Legion facts read whole and, at this head, every family's day rows written
 # through today by the running build), stops it, starts it again and measures the first paint as
 # the first requests after that restart (`measure paint`). At this head it then greps the read path
-# for a read of events (k13) and prints the query keys of the list route (k16). With
-# EVALBENCH_PG_RESTART set it measures the first paint once more after a Postgres restart, for
-# information, judging no budget.
+# for a read of events (k13) and prints the query keys of the list route (k16). failure-day is this
+# head over the fixture with a failure day added to it (evalbench's -failure-day), whose paint is
+# the Delivery timeline's alone. With EVALBENCH_PG_RESTART set it measures the first paint once
+# more after a Postgres restart, for information, judging no budget.
 #
 # The server runs with no NATS (DISPATCH_NATS_DISABLED=1), no GitHub App and the header identity
 # the Go tests use, and is reached with its agent token. Its build must be stamped
@@ -36,7 +37,7 @@
 set -euo pipefail
 
 usage() {
-  echo "usage: run.sh migrate <database-url> <envoy-dispatch> | run.sh measure <database-url> <envoy-dispatch> <head|base>" >&2
+  echo "usage: run.sh migrate <database-url> <envoy-dispatch> | run.sh measure <database-url> <envoy-dispatch> <head|failure-day|base>" >&2
   exit 2
 }
 [ $# -ge 3 ] || usage
@@ -46,7 +47,7 @@ case "$command" in
   migrate) [ $# -eq 3 ] || usage ;;
   measure)
     [ $# -eq 4 ] || usage
-    case "$mode" in head | base) ;; *) usage ;; esac
+    case "$mode" in head | failure-day | base) ;; *) usage ;; esac
     : "${EVALBENCH_MEASURE:?EVALBENCH_MEASURE must name the built measure command}"
     : "${EVALBENCH_PG_LOG:?EVALBENCH_PG_LOG must name Postgres jsonlog file}"
     ;;

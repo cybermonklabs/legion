@@ -2,13 +2,14 @@
 # farm: it clones the pushed commit, and evalbench/job.sh starts a Postgres 18 of its own with
 # pg_stat_statements preloaded and its data on the Job's volume, builds the generator, the
 # instrument and envoy-dispatch, loads the fixture at INFRA's stated rate and measures the first
-# paint. MODE is head (this commit's first paint, k2, k13, k16) or base (the base head 02a7b3c6's
-# first paint, k8's and k13's negative controls). The log is the evidence: judge it by its RESULT
-# and FAIL lines and its closing VERDICT line, never by the Job's phase. The container exits 0
-# once it has printed that verdict, FAIL lines or not, so a failed check never runs the hour-long
-# measurement again; only a pod that ends before its verdict (a lost machine, an eviction, a failed
-# clone) is retried. Fill the six ${…} variables (and only those, so the script's own $HOME and
-# $COMMIT are left for the shell), then:
+# paint. MODE is head (this commit's first paint, k2, k13, k16, and the Delivery timeline's first
+# paint over the history and again over it with INFRA's worst day of deploy failures added) or base
+# (the base head 02a7b3c6's first paint, k8's and k13's negative controls). The log is the evidence:
+# judge it by its RESULT and FAIL lines and its closing VERDICT line, never by the Job's phase.
+# The container exits 0 once it has printed that verdict, FAIL lines or not, so a failed check
+# never runs the hour-long measurement again; only a pod that ends before its verdict (a lost
+# machine, an eviction, a failed clone) is retried. Fill the six ${…} variables (and only those, so
+# the script's own $HOME and $COMMIT are left for the shell), then:
 #   export COMMIT=<pushed sha> MODE=head SCALE=1 TEN_TIMES=0 OMP_SESSION=<id> OMP_SESSION_TITLE=<title>
 #   python3 -c 'import os, re, sys; sys.stdout.write(re.sub(r"\$\{(COMMIT|MODE|SCALE|TEN_TIMES|OMP_SESSION|OMP_SESSION_TITLE)\}", lambda m: os.environ[m[1]], sys.stdin.read()))' \
 #     < job.yaml > "$TMPDIR/job.yaml"

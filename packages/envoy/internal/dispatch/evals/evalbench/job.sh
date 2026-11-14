@@ -5,10 +5,17 @@
 # fixture loaded, and run.sh's measurement. job.yaml runs it on the build farm; it runs the same in
 # a pod at a small EVALBENCH_SCALE.
 #
-#   job.sh head    this head's first paint, k2, k13 and k16
+#   job.sh head    this head's first paint, k2, k13 and k16; then, with a failure day added to the
+#                  history, the Delivery timeline's first paint again (run.sh's failure-day)
 #   job.sh base    the base head's first paint (k8's and k13's negative controls): envoy-dispatch
 #                  built at EVALBENCH_BASE, its database migrated by it, and the generator's -base
 #                  history, written by this head's generator
+#
+# The failure day is INFRA's worst day of deploy failures (evalbench/failureday.go says where it
+# was read): 36 failed deploy runs on main with 45 failed jobs across them, on the UTC day
+# EVALBENCH_FAILURE_DAY days before the history's end, inside both of the timeline's windows, on
+# top of the history's own runs of that day. The timeline reads each deploy run's failed jobs, so
+# the day it reads the most is that day.
 #
 # Environment:
 #   EVALBENCH_WORK         scratch for everything the run writes (required)
@@ -19,6 +26,9 @@
 #                          EVALBENCH_BASE, made under EVALBENCH_WORK
 #   EVALBENCH_SCALE (1), EVALBENCH_SEED (2916), EVALBENCH_TEN_TIMES (0), EVALBENCH_NOW (the current
 #                          UTC midnight): the generator's -scale, -seed, -ten-times and -now
+#   EVALBENCH_FAILURE_DAY (7; 0 adds none), EVALBENCH_FAILURE_DAY_RUNS (36),
+#   EVALBENCH_FAILURE_DAY_JOBS (45): the generator's -failure-day, -failure-day-runs and
+#                          -failure-day-jobs, at head
 #   EVALBENCH_PGPORT (55432), EVALBENCH_SHARED_BUFFERS (1GB), PGBIN (the newest
 #                          /usr/lib/postgresql/*/bin)
 #   run.sh's EVALBENCH_PORT, EVALBENCH_CATCHUP, EVALBENCH_QUIET and EVALBENCH_CATALOG pass through.
@@ -100,8 +110,9 @@ fi
 sizes() {
   psql "$database_url" -Atc "
     select 'RESULT size when=$1 database=' || pg_size_pretty(pg_database_size(current_database()));
-    select 'RESULT size when=$1 table=' || relname || ' rows_estimate=' || reltuples::bigint || ' total=' || pg_size_pretty(pg_total_relation_size(oid))
-    from pg_class where relkind = 'r' and relname in ('events', 'issues', 'delivery_run_jobs', 'eval_readings', 'eval_days', 'issue_facts', 'session_titles')
+    select 'RESULT size when=$1 ' || case relkind when 'i' then 'index' else 'table' end || '=' || relname || ' rows_estimate=' || reltuples::bigint || ' total=' || pg_size_pretty(pg_total_relation_size(oid))
+    from pg_class where (relkind = 'r' and relname in ('events', 'issues', 'delivery_run_jobs', 'eval_readings', 'eval_days', 'issue_facts', 'session_titles'))
+      or (relkind = 'i' and relname = 'delivery_run_jobs_failed')
     order by relname"
 }
 sizes loaded
@@ -109,5 +120,20 @@ mark "loaded"
 status=0
 "$here/run.sh" measure "$database_url" "$work/bin/envoy-dispatch" "$mode" || status=$?
 sizes measured
+failure_day=${EVALBENCH_FAILURE_DAY:-7}
+if [ "$mode" = head ] && [ "$failure_day" != 0 ]; then
+  # The failure day on top of the history just measured, at its scale and from its seed, and the
+  # timeline's first paint over it: the same windows, one database, before and after the day.
+  if "$work/bin/evalbench" -database "$database_url" -seed "${EVALBENCH_SEED:-2916}" -scale "${EVALBENCH_SCALE:-1}" \
+    -now "$now" -failure-day "$failure_day" -failure-day-runs "${EVALBENCH_FAILURE_DAY_RUNS:-36}" \
+    -failure-day-jobs "${EVALBENCH_FAILURE_DAY_JOBS:-45}"; then
+    mark "added the failure day"
+    "$here/run.sh" measure "$database_url" "$work/bin/envoy-dispatch" failure-day || status=$?
+    sizes failure-day
+  else
+    echo "FAIL job.sh: the failure day was not added, so the timeline over it is not measured"
+    status=1
+  fi
+fi
 mark "job.sh $mode exits $status"
 exit "$status"

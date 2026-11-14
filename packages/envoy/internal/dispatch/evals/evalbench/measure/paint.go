@@ -8,10 +8,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -50,7 +52,9 @@ func (w window) live() map[string]string {
 }
 
 // paintCase is one read of a first paint: a GET (path) or a live view's snapshot (view, of kind),
-// and its budgets, none where zero.
+// and its budgets, none where zero. A read of a group is judged with the group's other reads too,
+// their database time together against groupBudgetMs. delivery marks a read of the Delivery
+// timeline's first paint (timelineCases).
 type paintCase struct {
 	name           string
 	path           string
@@ -58,6 +62,9 @@ type paintCase struct {
 	kind           string
 	budgetMs       float64
 	serverBudgetMs float64
+	group          string
+	groupBudgetMs  float64
+	delivery       bool
 }
 
 // measuredCase is one read as the instrument saw it.
@@ -96,7 +103,7 @@ func gzipSize(body []byte) int {
 
 // headCases are this head's first paint: the list read at 84 days with an 84-day compare range
 // and at 28 days with none, each with no repository and with the deploy repository, and the
-// evals view the page keeps itself current over.
+// evals view the page keeps itself current over; then the Delivery timeline's (timelineCases).
 func headCases(project string, today time.Time) []paintCase {
 	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
 	list := func(w window, compare *window, repo string) string {
@@ -112,13 +119,34 @@ func headCases(project string, today time.Time) []paintCase {
 	}
 	compare := url.Values{"compare_from": {c84.from.Format(time.RFC3339)}, "compare_to": {c84.to.Format(time.RFC3339)}, "limit": {"200"}}
 	repo := evalbench.Repos[0]
-	return []paintCase{
+	return append([]paintCase{
 		{name: "list-84d-compare", path: list(w84, &c84, ""), budgetMs: budget84Ms},
 		{name: "list-84d-compare-repo", path: list(w84, &c84, repo), budgetMs: budget84Ms, serverBudgetMs: budgetServerMs},
 		{name: "list-28d", path: list(w28, nil, ""), budgetMs: budget28Ms},
 		{name: "list-28d-repo", path: list(w28, nil, repo), budgetMs: budget28Ms, serverBudgetMs: budgetServerMs},
 		{name: "view-evals-84d-compare", kind: "evals", budgetMs: budget84Ms,
 			view: map[string]any{"kind": "evals", "project": project, "window": w84.live(), "query": compare.Encode()}},
+	}, timelineCases("", today)...)
+}
+
+// timelineCases are the Delivery timeline's first paint at this head (packages/dispatch/web
+// DeliveryPage.tsx), the reads base mode times at the base head: GET /api/v1/delivery/timeline over
+// the 84-day window with the measures read of the 84-day compare range the page's panel makes
+// beside it (GET /api/v1/delivery/measures), which spec R8 holds to 150 ms together, and the
+// timeline over the 28-day window, held to 60 ms. The timeline reads each deploy run's failed jobs
+// beside its production jobs, so it reads more the more jobs failed: prefix names the history the
+// window holds, none for the history as loaded and "failure-day-" once a failure day is added to it
+// (evalbench.AddFailureDay, mode failure-day).
+func timelineCases(prefix string, today time.Time) []paintCase {
+	w84, c84, w28 := before(today, 84), before(today.AddDate(0, 0, -84), 84), before(today, 28)
+	read := func(route string, w window) string {
+		return route + "?" + url.Values{"from": {w.from.Format(time.RFC3339)}, "to": {w.to.Format(time.RFC3339)}}.Encode()
+	}
+	group := prefix + "timeline-84d-compare"
+	return []paintCase{
+		{name: prefix + "timeline-84d", path: read("/api/v1/delivery/timeline", w84), group: group, groupBudgetMs: budget84Ms, delivery: true},
+		{name: prefix + "measures-compare-84d", path: read("/api/v1/delivery/measures", c84), group: group, groupBudgetMs: budget84Ms, delivery: true},
+		{name: prefix + "timeline-28d", path: read("/api/v1/delivery/timeline", w28), budgetMs: budget28Ms, delivery: true},
 	}
 }
 
@@ -137,7 +165,8 @@ func baseCases(today time.Time) []paintCase {
 }
 
 // paint measures the first paint (the package comment) and, at this head and outside -info,
-// k2, k13 and k16 after it.
+// k2, k13 and k16 after it; in mode failure-day, the timeline's first paint alone, its run-jobs
+// reads and the failure day the database holds.
 func paint(ctx context.Context, r *report, o options) error {
 	database, err := store.Open(ctx, o.database)
 	if err != nil {
@@ -176,8 +205,11 @@ func paint(ctx context.Context, r *report, o options) error {
 	r.result("catalog statements=%d calls=%d db_ms=%.1f", len(backgroundRun), calls(backgroundRun), dbMs(backgroundRun))
 
 	cases := headCases(o.project, today)
-	if o.mode == "base" {
+	switch o.mode {
+	case "base":
 		cases = baseCases(today)
+	case "failure-day":
+		cases = timelineCases("failure-day-", today)
 	}
 	firstLog, err := fileSize(o.pgLog)
 	if err != nil {
@@ -215,9 +247,17 @@ func paint(ctx context.Context, r *report, o options) error {
 	if o.info {
 		return nil
 	}
+	indexes, err := failureIndexes(ctx, pool)
+	if err != nil {
+		return err
+	}
 	if o.mode == "base" {
-		baseControls(r, measured)
+		baseControls(r, measured, indexes)
 		return nil
+	}
+	checkRunJobsReads(r, o, measured, indexes)
+	if o.mode == "failure-day" {
+		return failureDayLine(ctx, r, pool, today)
 	}
 	checkFirstPaintReads(r, measured)
 	checks := &headChecks{r: r, o: o, pool: pool, explain: explain, client: client, today: today}
@@ -436,9 +476,34 @@ func judgePaint(r *report, o options, measured []measuredCase) {
 			r.fail("paint case=%s server_ms=%.0f is over its budget of %.0f ms, or the server logged none", one.name, one.serverMs, one.serverBudgetMs)
 		}
 	}
+	judgeGroups(r, o, measured)
 	r.result("paint-total mode=%s reads=%d db_ms=%.2f plans=%d", o.mode, len(measured), total, plans)
 	if !o.info && plans == 0 {
 		r.fail("paint: no plan examined")
+	}
+}
+
+// judgeGroups prints each group of reads (paintCase.group) with their database time together, in
+// the order the paint met them, and judges it against the group's budget (outside -info).
+func judgeGroups(r *report, o options, measured []measuredCase) {
+	var order []string
+	reads, ms, budgets := map[string][]string{}, map[string]float64{}, map[string]float64{}
+	for _, one := range measured {
+		if one.group == "" {
+			continue
+		}
+		if _, seen := reads[one.group]; !seen {
+			order = append(order, one.group)
+		}
+		reads[one.group] = append(reads[one.group], one.name)
+		ms[one.group] += dbMs(one.own)
+		budgets[one.group] = one.groupBudgetMs
+	}
+	for _, group := range order {
+		r.result("paint-group mode=%s group=%s reads=%s db_ms=%.2f budget_ms=%.0f", o.mode, group, strings.Join(reads[group], ","), ms[group], budgets[group])
+		if !o.info && budgets[group] > 0 && ms[group] > budgets[group] {
+			r.fail("paint-group group=%s db_ms=%.2f is over its budget of %.0f ms", group, ms[group], budgets[group])
+		}
 	}
 }
 
@@ -462,12 +527,16 @@ func eventsRead(text, plan string) (reads, byID bool) {
 	return true, !actorWord.MatchString(text)
 }
 
-// checkFirstPaintReads is k13's first clause: no statement of this head's first paint resolves a
-// session title out of events (eventsRead) or scans issues. A read of events by its id alone is
-// listed for information.
+// checkFirstPaintReads is k13's first clause: no statement of this head's first paint of the evals
+// resolves a session title out of events (eventsRead) or scans issues. A read of events by its id
+// alone is listed for information. The Delivery timeline's reads (paintCase.delivery) are k13's
+// run-jobs rule's (checkRunJobsReads), and not this clause's.
 func checkFirstPaintReads(r *report, measured []measuredCase) {
 	examined, titleReads, idReads, issueScans := 0, 0, 0, 0
 	for _, one := range measured {
+		if one.delivery {
+			continue
+		}
 		for queryID, plan := range one.plans {
 			examined++
 			text := one.statements[queryID]
@@ -497,16 +566,18 @@ var titleRead = regexp.MustCompile(`(?is)\bactor\b.*\bfrom events\b`)
 
 // baseControls is k8's negative control and k13's at the base head: the base's first paint's
 // database time against this head's budget, its statements that read events other than by id
-// (where the base resolves session titles), and its run-jobs reads that name no job. A control
-// that examined nothing shows nothing of the base, so each fails then: k8's with no read
-// measured, k13's with no statement examined or none of them a read of delivery_run_jobs.
+// (where the base resolves session titles), and its run-jobs reads that name no job and read
+// through no index of the failed jobs alone (runJobsScans, the rule checkRunJobsReads holds this
+// head to). A control that examined nothing shows nothing of the base, so each fails then: k8's
+// with no read measured, k13's with no statement examined or none of them a read of
+// delivery_run_jobs.
 //
 // The base's Legion facts consumer resolves session titles with the same statement its timeline
 // does, so that statement is in the background catalogue and out of each read's own time. The
 // control therefore also names every catalogued statement that ran while a read was in flight and
 // reads an event's actor out of events, and states the paint's time with everything in flight
 // beside its own.
-func baseControls(r *report, measured []measuredCase) {
+func baseControls(r *report, measured []measuredCase, failed map[string]bool) {
 	total, inFlight := 0.0, 0.0
 	examined, readsEvents, catalogued, unnamed, jobReads := 0, 0, 0, 0, 0
 	for _, one := range measured {
@@ -518,9 +589,9 @@ func baseControls(r *report, measured []measuredCase) {
 				readsEvents++
 				r.result("k13-control case=%s queryid=%d reads events other than by its id: %s", one.name, queryID, oneLine(one.statements[queryID]))
 			}
-			if _, reads := relations(plan)["delivery_run_jobs"]; reads {
+			if scans := runJobsScans(plan, failed); len(scans) > 0 {
 				jobReads++
-				if !namedJobCondition.MatchString(plan) {
+				if !everyScanKeyed(scans) {
 					unnamed++
 					r.result("k13-control case=%s queryid=%d reads delivery_run_jobs with no job name in its index condition: %s", one.name, queryID, oneLine(one.statements[queryID]))
 				}
@@ -544,4 +615,92 @@ func baseControls(r *report, measured []measuredCase) {
 	case jobReads == 0:
 		r.fail("k13-control: no statement of the base's first paint reads delivery_run_jobs, so the run-jobs control examined nothing")
 	}
+}
+
+// checkRunJobsReads is k13's run-jobs rule at this head, over every read of its first paint, the
+// Delivery timeline's above all, and the rule k13's control holds the base to: each scan of
+// delivery_run_jobs reads through an index its index condition keys by the job's name, or through
+// one that holds the failed jobs alone, by its condition's `conclusion = 'failure'` or by the
+// index's own predicate, which Postgres then plans no condition for (runJobsScans). So no read of
+// the page reads a run's every job, and the timeline's read of the failed ones is in proportion to
+// the failures. A sequential scan of the table is keyed by nothing, whatever its statement names:
+// at a small -scale the planner can read the small table whole for a read that names its jobs,
+// so the rule can fail there on such a read, and the run at INFRA's size is the one that judges
+// it. A paint none of whose timeline reads reads delivery_run_jobs examined nothing of the
+// timeline, so it fails then.
+func checkRunJobsReads(r *report, o options, measured []measuredCase, failed map[string]bool) {
+	examined, jobReads, unkeyed, timelineReads := 0, 0, 0, 0
+	for _, one := range measured {
+		for queryID, plan := range one.plans {
+			examined++
+			scans := runJobsScans(plan, failed)
+			if len(scans) == 0 {
+				continue
+			}
+			jobReads++
+			if one.delivery {
+				timelineReads++
+			}
+			keys := make([]string, len(scans))
+			for i, scan := range scans {
+				keys[i] = scan.node + " by " + strings.Join(scan.keys, "+")
+			}
+			if !everyScanKeyed(scans) {
+				unkeyed++
+				r.fail("k13-control case=%s queryid=%d reads delivery_run_jobs with no job name in its index condition, and not through the failed jobs alone (scans %q): %s", one.name, queryID, keys, oneLine(one.statements[queryID]))
+				continue
+			}
+			r.result("k13-control case=%s queryid=%d reads delivery_run_jobs through %q: %s", one.name, queryID, keys, oneLine(one.statements[queryID]))
+		}
+	}
+	r.result("k13-control mode=%s failed_jobs_indexes=%q statements_examined=%d run_jobs_reads=%d run_jobs_reads_without_a_name=%d timeline_run_jobs_reads=%d",
+		o.mode, slices.Sorted(maps.Keys(failed)), examined, jobReads, unkeyed, timelineReads)
+	if timelineReads == 0 {
+		r.fail("k13-control: no read of the timeline reads delivery_run_jobs, so the run-jobs rule examined nothing of it")
+	}
+}
+
+// failureDayLine prints the failure day the database holds (evalbench.AddFailureDay): the day, its
+// runs and their failed jobs, the day's deploy runs on main with the failed ones and their failed
+// jobs, the history's own included, and whether the timeline's windows hold the day. A failure-day
+// paint over a database with no failure day, or one outside the 84-day window, measured none, so
+// it fails then.
+func failureDayLine(ctx context.Context, r *report, pool *store.Pool, today time.Time) error {
+	var first *time.Time
+	var runs, failedJobs int64
+	if err := pool.QueryRow(ctx, `
+		select min(coalesce(r.created_at, r.started_at)), count(distinct r.run_id), count(j.run_id)
+		from delivery_runs r
+		left join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.conclusion = 'failure'
+		where r.repo = $1 and r.run_id >= $2
+	`, evalbench.Repos[0], evalbench.FailureDayFirstRunID).Scan(&first, &runs, &failedJobs); err != nil {
+		return fmt.Errorf("read the failure day: %w", err)
+	}
+	if first == nil {
+		r.fail("paint-failure-day: the database holds no failure day, so the failure-day paint measured the history as loaded")
+		return nil
+	}
+	day := first.UTC().Truncate(24 * time.Hour)
+	var dayRuns, dayFailedRuns, dayFailedJobs int64
+	if err := pool.QueryRow(ctx, `
+		select count(distinct r.run_id), count(distinct r.run_id) filter (where r.conclusion = 'failure'), count(j.run_id)
+		from delivery_runs r
+		left join delivery_run_jobs j on j.repo = r.repo and j.run_id = r.run_id and j.conclusion = 'failure'
+		where r.repo = $1 and r.kind = 'deploy' and r.head_branch = 'main'
+		  and coalesce(r.created_at, r.started_at) >= $2 and coalesce(r.created_at, r.started_at) < $3
+	`, evalbench.Repos[0], day, day.AddDate(0, 0, 1)).Scan(&dayRuns, &dayFailedRuns, &dayFailedJobs); err != nil {
+		return fmt.Errorf("read the failure day's deploy runs: %w", err)
+	}
+	in84, in28 := holds(before(today, 84), day), holds(before(today, 28), day)
+	r.result("paint-failure-day day=%s added_runs=%d added_failed_jobs=%d day_deploy_runs=%d day_failed_runs=%d day_failed_jobs=%d in_84d_window=%t in_28d_window=%t",
+		day.Format(time.DateOnly), runs, failedJobs, dayRuns, dayFailedRuns, dayFailedJobs, in84, in28)
+	if !in84 {
+		r.fail("paint-failure-day: the failure day %s is outside the 84-day window %s, so the timeline's reads of it measured none", day.Format(time.DateOnly), before(today, 84))
+	}
+	return nil
+}
+
+// holds reports whether w holds the day starting at day.
+func holds(w window, day time.Time) bool {
+	return !day.Before(w.from) && day.Before(w.to)
 }

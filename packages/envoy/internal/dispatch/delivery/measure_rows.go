@@ -24,22 +24,24 @@ type MergedRows struct {
 	// after from (listRuns), unbounded past to: a pull request merged just before to may first
 	// ship after it, so bounding the read to [from, to) would read it as waiting. A production job
 	// on another branch ships no pull request. ApplyJobs is their jobs: the jobs a deploy is judged
-	// by (Production.JudgedJobNames), which judge each run as its every job would, or every job.
+	// by (Production.JudgedJobNames), which judge each run as its every job would, and with them,
+	// for the timeline, each of the run's jobs that failed.
 	ApplyRuns []DeliveryRun
 	ApplyJobs map[int64][]DeliveryRunJob
 }
 
 // ReadMergedRows reads MergedRows for [from, to): the pull requests, and the apply runs followed by
-// their jobs, side by side. everyJob reads every job of each apply run, which the timeline lists
-// each deploy run with (its failed jobs and the job that failed first, FailedJobs and
-// RootFailingJob, can be any job); every other reader judges a run by its production jobs alone.
-func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, everyJob bool) (MergedRows, error) {
-	return readMergedRows(ctx, pool, settings, from, to, nil, everyJob)
+// their jobs, side by side. failedJobs reads each apply run's failed jobs beside its production
+// jobs, which the timeline lists each deploy run with (its failed jobs and the job that failed
+// first, FailedJobs and RootFailingJob, can be any job, and keep the failed ones alone); every
+// other reader judges a run by its production jobs alone.
+func ReadMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, failedJobs bool) (MergedRows, error) {
+	return readMergedRows(ctx, pool, settings, from, to, nil, failedJobs)
 }
 
 // readMergedRows is ReadMergedRows, and with createdBefore set only the apply runs GitHub created
 // before it.
-func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, createdBefore *time.Time, everyJob bool) (MergedRows, error) {
+func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from, to time.Time, createdBefore *time.Time, failedJobs bool) (MergedRows, error) {
 	var rows MergedRows
 	err := store.ReadSideBySide(ctx,
 		func(ctx context.Context) (err error) {
@@ -47,7 +49,7 @@ func readMergedRows(ctx context.Context, pool *store.Pool, settings DeliverySett
 			return err
 		},
 		func(ctx context.Context) error {
-			applies, err := readApplyRows(ctx, pool, settings, from, createdBefore, everyJob)
+			applies, err := readApplyRows(ctx, pool, settings, from, createdBefore, failedJobs)
 			rows.ApplyRuns, rows.ApplyJobs = applies.Runs, applies.Jobs
 			return err
 		})
@@ -74,8 +76,8 @@ func ReadApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySetti
 	return readApplyRows(ctx, pool, settings, from, nil, false)
 }
 
-// readApplyRows is ReadApplyRows, with createdBefore and everyJob as readMergedRows takes them.
-func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, createdBefore *time.Time, everyJob bool) (ApplyRows, error) {
+// readApplyRows is ReadApplyRows, with createdBefore and failedJobs as readMergedRows takes them.
+func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySettings, from time.Time, createdBefore *time.Time, failedJobs bool) (ApplyRows, error) {
 	runs, err := listRuns(ctx, pool, settings.DeployRepo, DeliveryRunKindDeploy, "main", from, createdBefore)
 	if err != nil {
 		return ApplyRows{}, err
@@ -84,12 +86,11 @@ func readApplyRows(ctx context.Context, pool *store.Pool, settings DeliverySetti
 	for i, run := range runs {
 		runIDs[i] = run.RunID
 	}
-	var jobs map[int64][]DeliveryRunJob
-	if everyJob {
-		jobs, err = listEveryRunJobForRuns(ctx, pool, settings.DeployRepo, runIDs)
-	} else {
-		jobs, err = ListRunJobsForRuns(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
+	read := ListRunJobsForRuns
+	if failedJobs {
+		read = listRunJobsNamedOrFailedForRuns
 	}
+	jobs, err := read(ctx, pool, settings.DeployRepo, runIDs, settings.Production().JudgedJobNames())
 	if err != nil {
 		return ApplyRows{}, err
 	}

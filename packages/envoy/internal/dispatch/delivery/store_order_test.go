@@ -28,7 +28,8 @@ func plannedPools(t *testing.T, pool *store.Pool) []*store.Pool {
 }
 
 // TestARunsJobsComeBackInOneOrder: a run's jobs come back by when each started, a job that never
-// started last, then by name, from every job read, the read of some jobs by name included.
+// started last, then by name, from every job read, the read of some jobs by name and the read of
+// the named and the failed ones included.
 func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
@@ -95,12 +96,20 @@ func TestARunsJobsComeBackInOneOrder(t *testing.T) {
 			if err != nil {
 				t.Fatalf("ListRunJobsForRuns: %v", err)
 			}
+			// notify-slack is named and did not fail; deploy is named and failed, and comes back once.
+			namedOrFailed, err := listRunJobsNamedOrFailedForRuns(ctx, planned, "acme/widgets", runs, []string{"notify-slack", "deploy"})
+			if err != nil {
+				t.Fatalf("listRunJobsNamedOrFailedForRuns: %v", err)
+			}
 			for _, id := range runs {
 				if got := names(every[id]); !slices.Equal(got, want) {
 					t.Errorf("%s, listEveryRunJobForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
 				}
 				if got, want := names(named[id]), []string{"setup", "deploy", "test / unit"}; !slices.Equal(got, want) {
 					t.Errorf("%s, ListRunJobsForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
+				}
+				if got := names(namedOrFailed[id]); !slices.Equal(got, want) {
+					t.Errorf("%s, listRunJobsNamedOrFailedForRuns' run %d under a %s = %q, want %q", when, id, plan, got, want)
 				}
 			}
 		}
