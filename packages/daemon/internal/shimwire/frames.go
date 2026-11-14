@@ -40,8 +40,6 @@ const (
 	TypeShutdown               = "shutdown"
 	TypeAdoptWorkingCopy       = "adopt-working-copy"
 	TypeAdoptWorkingCopyResult = "adopt-working-copy-result"
-	TypeRescueUnpushed         = "rescue-unpushed"
-	TypeRescueUnpushedResult   = "rescue-unpushed-result"
 	TypeRPCChunk               = "rpc_chunk"
 	// hello2 is the hello every shim sends since DaemonAPIVersion 8: the boot token and, under a
 	// runtime that enrolls pods with the secrets broker, the pod's key thumbprint and
@@ -576,78 +574,6 @@ type WorkspaceBundle struct {
 	At        time.Time         `json:"at"`
 }
 
-// RescueUnpushed asks the shim, before the daemon replaces its pod, to check every workspace on
-// the pod's disk for work its remote lacks and to push that work to rescue branches on that remote,
-// as the shim's role and with that role's own credential (internal/rescue). WorkspaceTimeoutMs
-// bounds one workspace's check and push, TimeoutMs the whole check. The daemon names the branches
-// and the bounds, never a command or a path. A shim built before this frame forwards it to its
-// agent, which refuses it as a command it does not know; the daemon reads that refusal as a pod it
-// cannot check.
-//
-// The request names two branches. Target is the issue's one rescue branch, `legion/<KEY>-rescue`,
-// which only moves forward; only a shim that knows the field reads it. Branch is the pod's own
-// prefix, `legion/<KEY>-rescue-<first 8 of the pod's uid>`, which an older shim numbers from 1 and
-// reads alone: it ignores Target. The one branch rides in a field of its own because an older shim
-// reports every remote branch whose name starts with `<Branch>-` as its own. With the one branch's
-// name in Branch, it would report every earlier pod's rescue branches
-// (`legion/<KEY>-rescue-<pod>-<n>`) as this pod's.
-type RescueUnpushed struct {
-	ID string `json:"id"`
-	// Branch is the per-pod prefix an older shim numbers from 1.
-	Branch string `json:"branch"`
-	// Target is the issue's one rescue branch. An older daemon sends none.
-	Target             string `json:"target,omitempty"`
-	WorkspaceTimeoutMs int    `json:"workspaceTimeoutMs"`
-	TimeoutMs          int    `json:"timeoutMs"`
-}
-
-// RescueUnpushedResult answers RescueUnpushed: OK with one entry per workspace on the disk, or
-// why the shim could not run the check at all.
-type RescueUnpushedResult struct {
-	ID         string            `json:"id"`
-	OK         bool              `json:"ok"`
-	Error      string            `json:"error,omitempty"`
-	Workspaces []RescueWorkspace `json:"workspaces,omitempty"`
-}
-
-// RescueWorkspace is one workspace's check: Status "clean" (nothing its remote lacks),
-// "rescued" (Branches name the rescue branch with the commit it holds: the branch this check
-// pushed to, or one whose tip already holds the workspace's own work; an older shim names each
-// branch of the request's prefix the remote holds) or "error" (Error says why, and nothing of it
-// is known to be safe).
-type RescueWorkspace struct {
-	Dir      string         `json:"dir"`
-	Status   string         `json:"status"`
-	Branches []RescueBranch `json:"branches,omitempty"`
-	Error    string         `json:"error,omitempty"`
-}
-
-// RescueBranch is one rescue branch the check reports, and the commit it holds. Previous, Pushed
-// and Commits came with the issue's one rescue branch (RescueUnpushed's Target): an older daemon
-// ignores them, and an older shim sends none of them. A shim that knows them reports at least one
-// commit for every branch it reports, and an older shim reports none, so the commit list is what
-// tells the two report shapes apart.
-type RescueBranch struct {
-	Name   string `json:"name"`
-	Commit string `json:"commit"`
-	// Previous is the branch's tip before this check's push, and empty for a branch the push
-	// created.
-	Previous string `json:"previous,omitempty"`
-	// Pushed is whether this check pushed the branch; false is a branch an earlier check pushed.
-	Pushed bool `json:"pushed,omitempty"`
-	// Commits is the work the branch carries: the commits this check's push added, or, for a
-	// branch it did not push, the commits only that branch holds.
-	Commits []RescueCommit `json:"commits,omitempty"`
-}
-
-// RescueCommit is one commit a rescue branch carries.
-type RescueCommit struct {
-	ID string `json:"id"`
-	// Subject is the commit's first line, cut at 200 bytes on a rune boundary, so one long
-	// message cannot grow the report without bound.
-	Subject string `json:"subject,omitempty"`
-}
-
 // RPCChunk is one slice of a logical frame too large for a single line. Data is base64 of the
 // frame's Index-th ChunkPayloadBytes slice; ByteLength is the whole frame's size. See chunks.go.
 type RPCChunk struct {
@@ -681,8 +607,6 @@ func (PromptResult) FrameType() string                 { return TypePromptResult
 func (Shutdown) FrameType() string                     { return TypeShutdown }
 func (AdoptWorkingCopy) FrameType() string             { return TypeAdoptWorkingCopy }
 func (AdoptWorkingCopyResult) FrameType() string       { return TypeAdoptWorkingCopyResult }
-func (RescueUnpushed) FrameType() string               { return TypeRescueUnpushed }
-func (RescueUnpushedResult) FrameType() string         { return TypeRescueUnpushedResult }
 func (RPCChunk) FrameType() string                     { return TypeRPCChunk }
 func (r Raw) FrameType() string                        { return r.Type }
 func (Hello2) FrameType() string                       { return TypeHello2 }
@@ -769,16 +693,6 @@ func (f AdoptWorkingCopy) MarshalJSON() ([]byte, error) {
 func (f AdoptWorkingCopyResult) MarshalJSON() ([]byte, error) {
 	type plain AdoptWorkingCopyResult
 	return marshalFrame(TypeAdoptWorkingCopyResult, plain(f))
-}
-
-func (f RescueUnpushed) MarshalJSON() ([]byte, error) {
-	type plain RescueUnpushed
-	return marshalFrame(TypeRescueUnpushed, plain(f))
-}
-
-func (f RescueUnpushedResult) MarshalJSON() ([]byte, error) {
-	type plain RescueUnpushedResult
-	return marshalFrame(TypeRescueUnpushedResult, plain(f))
 }
 
 func (f RPCChunk) MarshalJSON() ([]byte, error) {
@@ -1175,30 +1089,6 @@ func marshalWorkspaceBundle(b WorkspaceBundle) ([]byte, error) {
 	return append(body, b.Bundle...), nil
 }
 
-// Validate refuses a rescue request the shim would refuse: no id, a branch prefix or a target that
-// is not a legion/ branch name (isLegionBranch), or a bound that is not positive or puts one
-// workspace's bound above the whole check's. An empty target is an older daemon's, which names
-// none.
-func (f RescueUnpushed) Validate() error {
-	switch {
-	case f.ID == "":
-		return fmt.Errorf("%w: rescue-unpushed carries no id", ErrMalformedFrame)
-	case !isLegionBranch(f.Branch):
-		return fmt.Errorf("%w: rescue-unpushed branch %q is not a legion/ branch name", ErrMalformedFrame, f.Branch)
-	case f.Target != "" && !isLegionBranch(f.Target):
-		return fmt.Errorf("%w: rescue-unpushed target %q is not a legion/ branch name", ErrMalformedFrame, f.Target)
-	case f.WorkspaceTimeoutMs <= 0 || f.TimeoutMs <= 0 || f.WorkspaceTimeoutMs > f.TimeoutMs:
-		return fmt.Errorf("%w: rescue-unpushed bounds workspaceTimeoutMs %d, timeoutMs %d", ErrMalformedFrame, f.WorkspaceTimeoutMs, f.TimeoutMs)
-	}
-	return nil
-}
-
-// isLegionBranch is whether name is one of an issue's own branches (legion/...) that no git
-// refspec could misread: the shim pushes to it, so a `:` or a space must not reach the push.
-func isLegionBranch(name string) bool {
-	return strings.HasPrefix(name, "legion/") && !strings.ContainsAny(name, " \t\n:^~?*[\\") && !strings.Contains(name, "..")
-}
-
 // thumbprintShape is a base64url-encoded SHA-256: 43 characters, no padding (RFC 7638).
 var thumbprintShape = regexp.MustCompile(`^[A-Za-z0-9_-]{43}$`)
 
@@ -1342,10 +1232,6 @@ func Decode(line []byte) (Frame, error) {
 		return decodeInto[AdoptWorkingCopy](trimmed)
 	case TypeAdoptWorkingCopyResult:
 		return decodeInto[AdoptWorkingCopyResult](trimmed)
-	case TypeRescueUnpushed:
-		return decodeInto[RescueUnpushed](trimmed)
-	case TypeRescueUnpushedResult:
-		return decodeInto[RescueUnpushedResult](trimmed)
 	case TypeRPCChunk:
 		return decodeInto[RPCChunk](trimmed)
 	case TypeHello2:

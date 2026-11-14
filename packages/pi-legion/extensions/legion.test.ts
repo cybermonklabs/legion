@@ -2519,10 +2519,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(recorded(worker).at(-1)).toEqual({ state: "closed", count: 0, reported: false });
     });
 
-    // INFRA-484: the update task arrives as the daemon's own prompt, which opens the phase as an
-    // assignment does, and `ready_for_update` closes no phase. The turn the worker answers in
-    // must still end: a continuation would do work the pod's replacement throws away, and the
-    // daemon, which waits for a turn to end before it replaces anything, would see none.
+    // INFRA-484: the update message reaches the worker while its phase is open, and
+    // `ready_for_update` closes no phase. The turn the worker answers in must still end: a
+    // continuation would do work the pod's replacement throws away, and before the round's bound
+    // the daemon waits for every turn to end before it replaces the pod.
     test("a ready_for_update answer earns no continuation: the answering turn ends, with the phase still open", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
