@@ -1661,6 +1661,8 @@ jobs:
               - 'packages/envoy/internal/dispatch/texttrees/*'
               - 'packages/envoy/internal/fixtureenv/*'
               - 'packages/envoy/internal/githubappjwt/*'
+              # The fake timer cmd/listener's repair and grant-guard tests share.
+              - 'packages/envoy/internal/kvwatch/kvwatchtest/*'
               - 'packages/envoy/internal/logtest/*'
               - 'packages/envoy/internal/oidc/oidctest/*'
               - 'packages/envoy/internal/pglisten/*'
