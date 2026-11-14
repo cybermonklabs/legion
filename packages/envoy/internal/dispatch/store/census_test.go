@@ -202,6 +202,31 @@ func TestCensusReadsItsStringLiteralsWithStandardConformingStrings(t *testing.T)
 	}
 }
 
+// The census also runs with backslash_quote safe_encoding and client_encoding UTF8 whatever the
+// connection sets, the other two settings under which Postgres reads a text as pgmigrate.Load
+// reads it. With backslash_quote off, Postgres refuses the \' inside the census's E'…' literal
+// (SQLSTATE 22P06), which Load reads as an escaped quote. In SJIS, the second byte of Á (C3 81 in
+// UTF-8) and the backslash after it are one character, so the backslash escapes nothing, the two
+// quotes after it are one quote inside the literal, and the literal never ends. Read as Load reads
+// them, each census answers 0.
+func TestCensusReadsItsTextWithBackslashQuoteSafeEncodingAndClientEncodingUTF8(t *testing.T) {
+	for name, tc := range map[string]struct{ urlSuffix, census string }{
+		"backslash_quote off":  {"&backslash_quote=off", `select length(E'a\'') - 2`},
+		"client_encoding SJIS": {"&client_encoding=SJIS", `select length(E'Á\'') - 2`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, url := migratedToOne(t)
+			report, err := census(context.Background(), url+tc.urlSuffix, withCheck(tc.census), pgmigrate.CensusOptions{})
+			if err != nil {
+				t.Fatalf("census: %v", err)
+			}
+			if got := refusals(report); len(got) != 0 {
+				t.Errorf("refusals = %v, want none: the census was read otherwise than pgmigrate.Load read it", got)
+			}
+		})
+	}
+}
+
 // The census reads every pending migration with standard_conforming_strings on, and the runner
 // applies each one on a connection of its pool, which keeps a session setting from the migration
 // before (inMigrationLockTx gives the connection back with its settings as they are). After a

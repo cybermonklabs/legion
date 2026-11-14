@@ -191,12 +191,19 @@ func Census(ctx context.Context, conn *pgx.Conn, migrations []Migration, version
 		return nil, fmt.Errorf("census: begin read-only transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	// standard_conforming_strings on, whatever the server or the connection sets, makes Postgres
-	// find the census's string literals where Load's check found them (censusTokens): off, a
-	// backslash in '…' escapes the quote after it, and a literal can run on over a call.
-	if _, err := tx.Exec(ctx, "select set_config('statement_timeout', $1, true), set_config('lock_timeout', $2, true), set_config('standard_conforming_strings', 'on', true)",
-		strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10)+"ms", lockTimeoutSetting); err != nil {
-		return nil, fmt.Errorf("census: set timeouts and string syntax: %w", err)
+	// The text settings (textSettings), whatever the server, the database or the connection sets,
+	// make Postgres read the census's text as Load's check read it (censusTokens). With
+	// standard_conforming_strings off, a backslash in '…' escapes the quote after it, and a literal
+	// can run on over a call. With backslash_quote off, Postgres refuses a \' that Load read as an
+	// escaped quote. In another client_encoding, Postgres converts the bytes before it reads them,
+	// and in SJIS a backslash after a UTF-8 character can become part of a character and escape
+	// nothing.
+	set, args := setConfig(true, withTextSettings(
+		setting{"statement_timeout", strconv.FormatInt(options.StatementTimeout.Milliseconds(), 10) + "ms"},
+		setting{"lock_timeout", lockTimeoutSetting},
+	))
+	if _, err := tx.Exec(ctx, set, args...); err != nil {
+		return nil, fmt.Errorf("census: set timeouts and text settings: %w", err)
 	}
 	var schema *string
 	if err := tx.QueryRow(ctx, "select current_schema()").Scan(&schema); err != nil {

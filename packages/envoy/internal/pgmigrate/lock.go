@@ -44,6 +44,76 @@ const lockNotAvailable = "55P03"
 // lockTimeoutSetting is LockTimeout as lock_timeout takes it.
 var lockTimeoutSetting = strconv.FormatInt(LockTimeout.Milliseconds(), 10) + "ms"
 
+// setting is a run-time parameter and the value given to it.
+type setting struct{ name, value string }
+
+// textSettings are the settings under which Postgres reads a text as the census reads it. The
+// census's parser, libpg_query, reads with standard_conforming_strings on, backslash_quote at its
+// default and UTF-8 text, and offers no way to change any of them. Its scanner (scanSQL) reads
+// with standard_conforming_strings on, and so does Load's check of a census (censusTokens). Each
+// setting below changes, when it differs, how Postgres reads the same bytes:
+//
+//   - standard_conforming_strings on: off, a backslash in a plain '…' literal escapes the quote
+//     after it, so the literal runs on to the next quote, and a text the census reads as one
+//     statement can hold a second statement for the server;
+//   - backslash_quote safe_encoding, the default: off, Postgres refuses the \' of an E'…' literal
+//     (SQLSTATE 22P06), which the parser reads as an escaped quote;
+//   - client_encoding UTF8: Postgres converts a text's bytes from the client encoding before it
+//     scans them, and the census reads the text as UTF-8, as pgx sends it. In SJIS, the last byte
+//     of a UTF-8 character and a backslash after it can be one character, so that backslash
+//     escapes nothing.
+//
+// Postgres's scanner (scan.l) takes no other setting: escape_string_warning only warns. Exec,
+// ExecNonTransactional and Census set the three before the text runs, transaction-local or for the
+// session, so each applies whatever a session SET left on a pooled connection, a connection option
+// or a database default says. Each site takes them from this list, so the sites cannot drift.
+var textSettings = []setting{
+	{"standard_conforming_strings", "on"},
+	{"backslash_quote", "safe_encoding"},
+	{"client_encoding", "UTF8"},
+}
+
+// withTextSettings is settings followed by textSettings, in a slice of its own.
+func withTextSettings(settings ...setting) []setting {
+	return append(settings, textSettings...)
+}
+
+// setConfig is a select that gives each of settings its value with set_config, for the current
+// transaction alone when local is true and for the session when it is false, and the select's
+// arguments. Each name and value is a parameter, so no value is written into the text.
+func setConfig(local bool, settings []setting) (string, []any) {
+	var query strings.Builder
+	query.WriteString("select ")
+	args := make([]any, 0, 2*len(settings))
+	for i, s := range settings {
+		if i > 0 {
+			query.WriteString(", ")
+		}
+		fmt.Fprintf(&query, "set_config($%d, $%d, %t)", 2*i+1, 2*i+2, local)
+		args = append(args, s.name, s.value)
+	}
+	return query.String(), args
+}
+
+// currentSettings reads the session's value of each setting that settings names, in the same
+// order, so that a caller that sets them for the session can give each its value back.
+func currentSettings(ctx context.Context, conn *pgx.Conn, settings []setting) ([]setting, error) {
+	reads := make([]string, len(settings))
+	names := make([]any, len(settings))
+	current := make([]setting, len(settings))
+	values := make([]any, len(settings))
+	for i, s := range settings {
+		reads[i] = fmt.Sprintf("current_setting($%d)", i+1)
+		names[i] = s.name
+		current[i].name = s.name
+		values[i] = &current[i].value
+	}
+	if err := conn.QueryRow(ctx, "select "+strings.Join(reads, ", "), names...).Scan(values...); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
+
 // LockTimeoutAttempts is how many times RetryLockTimeouts applies a migration whose lock wait
 // outlasts its lock_timeout before the runner gives up and fails. LockTimeoutRetryPause is how long
 // it waits between attempts, holding nothing: the attempt's transaction has rolled back, so the
@@ -86,10 +156,15 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 
 // Exec is how a runner applies one migration's statements in tx. It first sets tx's lock_timeout
 // to LockTimeout, so every migration a runner applies is bounded whatever the migration's file
-// says, and then runs the statements while a watch reads what tx's backend waits for. A runner
-// calls it once it holds its own advisory lock, never before: a second process's runner waiting
-// for that lock is waiting for the first to finish, which queues no read or write behind it,
-// since nothing but a runner takes that lock.
+// says, and, in the same select, the text settings (textSettings), so Postgres reads the
+// migration's text as the census read it. All four are transaction-local: they end with tx, and
+// they apply whatever the connection's session carries, a setting an earlier migration left on a
+// pooled connection, a connection option or a database default. A setting the migration's own
+// statements change takes effect only after Postgres has read the text, since Postgres reads a
+// migration's whole text before it runs the first statement. Exec then runs the statements while a
+// watch reads what tx's backend waits for. A runner calls it once it holds its own advisory lock,
+// never before: a second process's runner waiting for that lock is waiting for the first to
+// finish, which queues no read or write behind it, since nothing but a runner takes that lock.
 //
 // signIn is the BeforeConnect of the pool tx came from, nil when the pool has none: the watch's
 // own connection signs in as the pool's new connections do. A pool that signs in with a token
@@ -106,8 +181,9 @@ func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(conte
 	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
 		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
 	}
-	if _, err := tx.Exec(ctx, "select set_config('lock_timeout', $1, true)", lockTimeoutSetting); err != nil {
-		return fmt.Errorf("migration %s: set lock_timeout: %w", migration.Name, err)
+	set, args := setConfig(true, withTextSettings(setting{"lock_timeout", lockTimeoutSetting}))
+	if _, err := tx.Exec(ctx, set, args...); err != nil {
+		return fmt.Errorf("migration %s: set lock_timeout and text settings: %w", migration.Name, err)
 	}
 	return execWatched(ctx, tx.Conn(), migration, signIn)
 }

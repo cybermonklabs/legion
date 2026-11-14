@@ -81,18 +81,23 @@ func connect(t *testing.T, ctx context.Context, url string) *pgx.Conn {
 	return conn
 }
 
+// ExecNonTransactional builds the index with lock_timeout at LockTimeout and each text setting at
+// its value (textSettings), whatever the session set, and gives the session each setting back
+// after. The event trigger fails the build where one of the four differs, and the session sets
+// all four to other values first.
 func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	ctx := context.Background()
 	conn := connect(t, ctx, testpg.URL(t))
 	if _, err := conn.Exec(ctx, `create table things (kind text);
 		create function check_build_settings() returns event_trigger language plpgsql as $$
 		begin
-			if current_setting('lock_timeout') <> '5s' or current_setting('standard_conforming_strings') <> 'on' then
+			if current_setting('lock_timeout') <> '5s' or current_setting('standard_conforming_strings') <> 'on'
+				or current_setting('backslash_quote') <> 'safe_encoding' or current_setting('client_encoding') <> 'UTF8' then
 				raise exception 'build ran without its session settings';
 			end if;
 		end $$;
 		create event trigger check_build_settings on ddl_command_start when tag in ('CREATE INDEX') execute function check_build_settings();
-		set lock_timeout = '123ms'; set standard_conforming_strings = off`); err != nil {
+		set lock_timeout = '123ms'; set standard_conforming_strings = off; set backslash_quote = off; set client_encoding = 'SJIS'`); err != nil {
 		t.Fatal(err)
 	}
 	migration := Migration{Name: "0001_index.up.sql", SQL: "create index concurrently if not exists things_kind on things (kind)", NonTransactional: true}
@@ -106,13 +111,16 @@ func TestExecNonTransactionalBuildsAnIndexAndRestoresTimeout(t *testing.T) {
 	if err := conn.QueryRow(ctx, "select indisvalid from pg_index where indexrelid = 'things_kind'::regclass").Scan(&valid); err != nil || !valid {
 		t.Fatalf("index valid = %v, %v", valid, err)
 	}
-	var timeout string
-	if err := conn.QueryRow(ctx, "show lock_timeout").Scan(&timeout); err != nil || timeout != "123ms" {
-		t.Fatalf("lock_timeout = %q, %v", timeout, err)
-	}
-	var stringsSetting string
-	if err := conn.QueryRow(ctx, "show standard_conforming_strings").Scan(&stringsSetting); err != nil || stringsSetting != "off" {
-		t.Fatalf("standard_conforming_strings = %q, %v", stringsSetting, err)
+	for _, restored := range []setting{
+		{"lock_timeout", "123ms"},
+		{"standard_conforming_strings", "off"},
+		{"backslash_quote", "off"},
+		{"client_encoding", "SJIS"},
+	} {
+		var value string
+		if err := conn.QueryRow(ctx, "select current_setting($1)", restored.name).Scan(&value); err != nil || value != restored.value {
+			t.Errorf("%s = %q, %v; want %q, as the session set it", restored.name, value, err, restored.value)
+		}
 	}
 }
 
