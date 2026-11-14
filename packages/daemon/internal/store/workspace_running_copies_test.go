@@ -87,7 +87,8 @@ func runningCopyRows(t *testing.T, s *Store) int {
 // A copy taken while the pod runs round-trips whole — its bytes, the commit the working copy sat
 // on, the heads it carries, the bookmarks that pointed into it, the pod its work came off and the
 // restore id the table gave it — one issue keeps one row however many copies its cadence takes,
-// and the confirmation of a restore deletes the copy its id names and no other.
+// and the confirmation of a restore keeps the copy its id names, and no other, as the restoring
+// pod's own.
 func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -169,37 +170,64 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 	}
 
 	// A launcher holds its report until some connection carries it, so a confirmation of a copy
-	// the cadence has already replaced reaches the daemon with nothing but its id: it deletes
-	// that copy, which is gone, and leaves the newer work for the issue's next pod. Another
-	// issue's copy is no more its business.
+	// the cadence has already replaced reaches the daemon with nothing but its id: it changes
+	// nothing, and the newer work stays as it was for the issue's next pod. Another issue's copy
+	// is no more its business.
 	other := runtime.WorkspaceBundle{Bundle: []byte("PACK another issue's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
 		At: at, PodUID: "pod-of-another-issue"}
 	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", other); err != nil {
 		t.Fatal(err)
 	}
+	current := storedRunningCopy(t, s, "INFRA-1117")
 	for _, id := range []int64{stored.restoreID, ids[0]} {
-		if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", id); err != nil {
+		if err := s.KeepRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", "pod-1", id); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117"); !row.held {
-		t.Fatal("a report of a copy the cadence replaced took the newer copy")
+	if row := storedRunningCopy(t, s, "INFRA-1117"); row.restoreID != current.restoreID || row.sourcePod != current.sourcePod ||
+		row.attemptPod != current.attemptPod || !row.at.Equal(current.at) {
+		t.Fatalf("a report of a copy the cadence replaced left %+v, want the newer copy %+v as it was", row, current)
 	}
-	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-2760"); !row.held {
-		t.Fatal("a report of one issue's copy took another issue's")
+	if row := storedRunningCopy(t, s, "INFRA-2760"); row.sourcePod != other.PodUID {
+		t.Fatalf("a report of one issue's copy rebound another issue's to pod %q", row.sourcePod)
 	}
-	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", ids[1]); err != nil {
+	// The report of the copy pod-2 was sent keeps it as pod-2's own: the same work, named off
+	// that pod, under an id of its own, stamped at the confirmation, with no attempt spent.
+	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", "pod-2", ids[1]); err != nil {
 		t.Fatal(err)
 	}
-	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-1117"); row.held {
-		t.Fatalf("the copy the report named is still held: %+v", row)
+	kept := storedRunningCopy(t, s, "INFRA-1117")
+	if !bytes.Equal(kept.bundle, current.bundle) || kept.sourcePod != "pod-2" || kept.attemptPod != "" ||
+		kept.restoreID == ids[1] || !kept.at.After(current.at) {
+		t.Fatalf("the confirmed copy reads %+v, want %q kept off pod-2 under a new id, stamped after %s, with no attempt",
+			kept, current.bundle, current.at)
 	}
-	// A report the daemon read twice finishes, and so does a delete of an issue holding nothing.
-	if err := s.DeleteRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", ids[1]); err != nil {
+	// A report the daemon read twice names an id the row no longer holds, and changes nothing.
+	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", "pod-2", ids[1]); err != nil {
 		t.Fatalf("a repeated confirmation: %v", err)
 	}
-	if err := s.DeleteRunningWorkspaceCopy(ctx, "INFRA-2760"); err != nil {
-		t.Fatal(err)
+	if row := storedRunningCopy(t, s, "INFRA-1117"); row.restoreID != kept.restoreID || !row.at.Equal(kept.at) {
+		t.Fatalf("a repeated confirmation moved the kept copy to %+v, want %+v", row, kept)
+	}
+	if err := s.KeepRestoredRunningWorkspaceCopy(ctx, "INFRA-1117", "", kept.restoreID); err == nil {
+		t.Fatal("a confirmation naming no pod was accepted")
+	}
+	// pod-2 is answered nothing of its own copy, and the pod after it is sent the work.
+	if restore, err := s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-2", at.Add(time.Hour)); err != nil || restore.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("pod-2 asking again was answered %v (%v), want nothing", restore.Running.Take, err)
+	}
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-3", time.Now().UTC().Add(time.Hour))
+	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend || !bytes.Equal(restore.Running.Bundle.Bundle, kept.bundle) ||
+		restore.Running.Bundle.Release != kept.restoreID {
+		t.Fatalf("the pod after pod-2 was answered %v of %q under %d (%v), want the kept copy sent under %d",
+			restore.Running.Take, restore.Running.Bundle.Bundle, restore.Running.Bundle.Release, err, kept.restoreID)
+	}
+	// The cadence's own delete, of a workspace that bundled to nothing, drops a kept copy as it
+	// drops any other, and a delete of an issue holding nothing finishes.
+	for _, issue := range []string{"INFRA-1117", "INFRA-2760"} {
+		if err := s.DeleteRunningWorkspaceCopy(ctx, issue); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := s.DeleteRunningWorkspaceCopy(ctx, "INFRA-2760"); err != nil {
 		t.Fatalf("a repeated delete: %v", err)
@@ -229,10 +257,10 @@ func TestTheRunningCopyOfAWorkspaceBundleRoundTripsAndLeavesOneRowPerIssue(t *te
 
 // A restore report is read off the session of one issue's launcher, and the restore id is all it
 // says of the copy it restored. A report whose id names another issue's running copy — a launcher
-// that is wrong, or one a role of its pod has taken over — deletes nothing: that copy is the other
+// that is wrong, or one a role of its pod has taken over — changes nothing: that copy is the other
 // issue's work, and the pod that restores it is that issue's next one. The same id reported by the
-// launcher of the copy's own issue drops it.
-func TestARestoreReportNamingAnotherIssuesRunningCopyDeletesNothing(t *testing.T) {
+// launcher of the copy's own issue keeps it as that launcher's pod's own.
+func TestARestoreReportNamingAnotherIssuesRunningCopyChangesNothing(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
 	other := runtime.WorkspaceBundle{Bundle: []byte("PACK another issue's work"), Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661",
@@ -240,18 +268,18 @@ func TestARestoreReportNamingAnotherIssuesRunningCopyDeletesNothing(t *testing.T
 	if err := s.PutRunningWorkspaceCopy(ctx, "INFRA-2760", other); err != nil {
 		t.Fatal(err)
 	}
-	id := storedRunningCopy(t, s, "INFRA-2760").restoreID
-	if err := s.DeleteRestoredWorkspaceCopy(ctx, "INFRA-1117", id); err != nil {
+	stored := storedRunningCopy(t, s, "INFRA-2760")
+	if err := s.KeepRestoredWorkspaceCopy(ctx, "INFRA-1117", "pod-of-INFRA-1117", stored.restoreID); err != nil {
 		t.Fatal(err)
 	}
-	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-2760"); !row.held || row.size != other.Size() {
-		t.Fatalf("a report of INFRA-1117's launcher naming INFRA-2760's copy %d left %+v, want that copy whole", id, row)
+	if row := storedRunningCopy(t, s, "INFRA-2760"); row.restoreID != stored.restoreID || row.sourcePod != other.PodUID || row.size != other.Size() {
+		t.Fatalf("a report of INFRA-1117's launcher naming INFRA-2760's copy %d left %+v, want that copy as it was", stored.restoreID, row)
 	}
-	if err := s.DeleteRestoredWorkspaceCopy(ctx, "INFRA-2760", id); err != nil {
+	if err := s.KeepRestoredWorkspaceCopy(ctx, "INFRA-2760", "pod-of-INFRA-2760", stored.restoreID); err != nil {
 		t.Fatal(err)
 	}
-	if row := heldCopyRow(t, s, runningCopyCopies, "INFRA-2760"); row.held {
-		t.Fatalf("the report of the copy's own issue left %+v, want it dropped", row)
+	if row := storedRunningCopy(t, s, "INFRA-2760"); row.sourcePod != "pod-of-INFRA-2760" || row.restoreID == stored.restoreID {
+		t.Fatalf("the report of the copy's own issue left %+v, want it kept as the reporting pod's copy under a new id", row)
 	}
 }
 
@@ -293,16 +321,17 @@ func TestARunningCopyLeavesTheIssueReleasableWhileItIsIdle(t *testing.T) {
 		t.Fatalf("view = %+v, want the unrestored release bundle to hold the pod", view)
 	}
 
-	// The restore of that release bundle lifts the hold, and the running copy is still there:
-	// the confirmation of one copy's restore deletes that copy and no other.
-	if err := st.DeleteRestoredWorkspaceBundle(ctx, rootIssue, 7); err != nil {
+	// The restore of that release bundle lifts the hold, and the running copy is still there as
+	// it was: it is the newer work, taken off another pod after the bundle, so the confirmation
+	// keeps it in place of the bundle's (KeepRestoredWorkspaceBundle).
+	if err := st.KeepRestoredWorkspaceBundle(ctx, rootIssue, "pod-that-restored-it", 7); err != nil {
 		t.Fatal(err)
 	}
 	if view := idleViewOf(t, st, rootIssue); view.BundleUnrestored {
 		t.Fatalf("view = %+v, want the confirmed release bundle gone from it", view)
 	}
-	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held {
-		t.Fatal("the running copy went with the release bundle's confirmation")
+	if row := storedRunningCopy(t, st, rootIssue); string(row.bundle) != "PACK the work after the release" || row.sourcePod != runningPodUID {
+		t.Fatalf("after the release bundle's confirmation the running copy holds %q off %q, want the newer copy as it was", row.bundle, row.sourcePod)
 	}
 }
 

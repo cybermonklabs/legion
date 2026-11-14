@@ -13,7 +13,7 @@
 -- The record is no delete: a restore that failed keeps its work here, the launcher's notice names
 -- the bundle and the release that saved it, and the issue's pod stays held
 -- (workflow.IdleHoldBundleUnrestored) until the issue's work is over. A restore the launcher
--- confirms deletes the row (store.DeleteRestoredWorkspaceBundle), and the issue's next release
+-- confirms deletes the row (store.KeepRestoredWorkspaceBundle), and the issue's next release
 -- writes a row of its own with no attempt on it, so the pair is cleared by that save's upsert.
 --
 -- The columns are nullable and nothing is backfilled: the table itself is added by the migrations

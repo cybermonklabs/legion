@@ -20,8 +20,8 @@ import (
 // The boundary is what a late restore report is routed on. A launcher holds its report until some
 // connection carries it, so one can reach a daemon that has restarted since the send, and the id
 // is all it carries: an id below this one names the release bundle of that release
-// (DeleteRestoredWorkspaceBundle), an id at or above it names a running copy
-// (DeleteRestoredRunningWorkspaceCopy). The space is positive because the launcher refuses a
+// (KeepRestoredWorkspaceBundle), an id at or above it names a running copy
+// (KeepRestoredRunningWorkspaceCopy). The space is positive because the launcher refuses a
 // bundle slice whose release is not (shimwire.LauncherBundle.Validate), so the kind cannot be
 // marked by a sign.
 const MinRunningWorkspaceCopyRestoreID int64 = 1 << 62
@@ -51,7 +51,7 @@ var ErrReleaseBundleSaved = errors.New("an idle release has saved its bundle off
 // only once the release has taken that pod away, so for as long as the bundle's row stands the
 // bundle is its pod's last copy. A release a wake cancels drops its bundle (CancelIssueRelease),
 // which lifts the refusal for the pod that then works on, and a confirmed restore drops it too
-// (DeleteRestoredWorkspaceBundle).
+// (KeepRestoredWorkspaceBundle), keeping its work as the restoring pod's running copy.
 //
 // It is one text, read by the cadence before it asks a shim (ReleaseBundleSavedOff) and written
 // into both of PutRunningWorkspaceCopy's statements, so the two places are one rule.
@@ -80,7 +80,7 @@ func (s *Store) ReleaseBundleSavedOff(ctx context.Context, issue, pod string) (b
 // Each copy the save stores takes a restore id of its own and clears the restore attempt the row
 // carried with the rest of it: it is other work than the copy it replaces, so it is offered to a
 // pod of its own (TakeWorkspaceCopyForRestore), and a report naming the id it replaced
-// deletes nothing.
+// changes nothing (KeepRestoredRunningWorkspaceCopy).
 //
 // A save whose content equals the stored row's moves the time alone and leaves the bytes, the size
 // and the restore id where they are. Equal means the same head, the same tips, the same bookmarks
@@ -215,7 +215,7 @@ var (
 // which the restore sends to the launcher and reads back out of its report: a release bundle's is
 // the release that saved it, a running copy's an id above every release's
 // (MinRunningWorkspaceCopyRestoreID), so a report that reaches the daemon after a restart still
-// says which of the issue's two copies it confirms (DeleteRestoredWorkspaceCopy).
+// says which of the issue's two copies it confirms (KeepRestoredWorkspaceCopy).
 //
 // A refused or superseded copy keeps its bytes for an operator. A release bundle nothing restored
 // holds the issue's pod (workflow.IdleHoldBundleUnrestored) and keeps the work in the database
@@ -323,10 +323,10 @@ func takeCopy(ctx context.Context, tx pgx.Tx, copies copyTable, issue, podUID st
 
 // DeleteRunningWorkspaceCopy drops issue's running copy whatever minute took it. It is the
 // cadence's own delete, of a workspace that bundled to nothing: a copy taken minutes before holds
-// work that has since been pushed, and the next pod must never restore it. Every other path that
-// invalidates what the issue holds drops the copy inside its own transaction, with the release
-// bundle it saves or drops (PutWorkspaceBundle, DeleteWorkspaceBundle, CancelIssueRelease).
-// Deleting one the table does not hold is success, so a retried delete finishes.
+// work that has since been pushed, and the next pod must never restore it. The two writes that
+// invalidate what the issue holds drop the copy inside their own transaction, with the release
+// bundle each saves or drops (PutWorkspaceBundle, DeleteWorkspaceBundle). Deleting one the table
+// does not hold is success, so a retried delete finishes.
 func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, issue string) error {
 	if err := deleteRunningCopy(ctx, s.pool, issue); err != nil {
 		return fmt.Errorf("delete the running workspace copy of %s: %w", issue, err)
@@ -335,59 +335,88 @@ func (s *Store) DeleteRunningWorkspaceCopy(ctx context.Context, issue string) er
 }
 
 // deleteRunningCopy drops issue's running copy whatever minute took it, through db: the pool for
-// the cadence's own delete (DeleteRunningWorkspaceCopy), and the transaction of every write that
-// drops the copy with what it changes (PutWorkspaceBundle, DeleteWorkspaceBundle,
-// CancelIssueRelease). Deleting one the table does not hold is success.
+// the cadence's own delete (DeleteRunningWorkspaceCopy), and the transaction of each write that
+// drops the copy with what it changes (PutWorkspaceBundle, DeleteWorkspaceBundle). Deleting one
+// the table does not hold is success.
 func deleteRunningCopy(ctx context.Context, db execer, issue string) error {
 	_, err := db.Exec(ctx, `delete from workspace_running_copies where issue = $1`, issue)
 	return err
 }
 
-// DeleteRestoredRunningWorkspaceCopy drops issue's running copy of restoreID, which a launcher of a
-// pod of issue has reported restored. The id says which copy, because a launcher holds its report
-// until some connection carries it, so one can reach the daemon after the issue's cadence has taken
-// a copy of its own, and deleting the issue's row on the issue alone would take the newer work.
-// Each save gives the copy it stores an id of its own (PutRunningWorkspaceCopy), so a report of a
-// copy the issue has replaced deletes nothing and the newer copy stays for the issue's next pod.
-// The issue bounds the id to the work of the launcher that reports it: the session the report
-// came over is a pod of issue (the Secret its launcher authenticated with names the issue), and an
-// id of another issue's copy deletes nothing, so a launcher of one issue cannot drop the work
-// another issue's next pod would restore. An id below MinRunningWorkspaceCopyRestoreID is a
-// release's and matches no row here, which is the disjointness the schema keeps. Deleting a row
-// the table no longer holds is success, so a confirmation the daemon read twice finishes.
-func (s *Store) DeleteRestoredRunningWorkspaceCopy(ctx context.Context, issue string, restoreID int64) error {
-	if _, err := s.pool.Exec(ctx, `delete from workspace_running_copies where restore_id = $1 and issue = $2`, restoreID, issue); err != nil {
-		return fmt.Errorf("delete the restored running workspace copy %d of %s: %w", restoreID, issue, err)
+// KeepRestoredRunningWorkspaceCopy keeps issue's running copy of restoreID, which the launcher of
+// the pod of podUID has reported restored, as that pod's own copy of the work: in one statement
+// it names that pod as the row's source, gives the row a restore id of its own and clears its
+// attempt, leaving the work as it is.
+//
+// The copy is kept rather than dropped because from the confirmation on its work is on the
+// restoring pod's disk alone, and none of the three triggers of a running copy need fire for a
+// pod that does nothing: a relaunched agent comes up Ready rather than ending a turn, the cadence
+// copies only an issue in a turn, and the push copy needs a push. Dropped, the work would go with
+// that pod should the cluster end it again before its first turn. Sourced to the restoring pod,
+// the copy is answered nothing to that pod, whose workspace already holds it (the take's source
+// rule, runtime.DecideWorkspaceRestore), and its new id and clear attempt make it offered to the
+// issue's next pod as any copy taken off a running pod is. The pod's own copies replace it as they
+// are taken (PutRunningWorkspaceCopy), an idle release of that pod drops it in the save's own
+// transaction (PutWorkspaceBundle), and a workspace that bundles to nothing drops it
+// (DeleteRunningWorkspaceCopy).
+//
+// The kept copy is stamped with the statement's now() rather than the time the shim took it,
+// for the reason a kept release bundle is (KeepRestoredWorkspaceBundle): the row stands for the
+// restoring pod's workspace as it is once the restore is confirmed, and under the old time a push
+// recorded after it would refuse the kept copy to the next pod
+// (runtime.WorkspaceBundleRefusedPushed) and lose the work again. A push recorded after the
+// confirmation takes a copy of its own off the restoring pod's live roles, so the push rule keeps
+// its meaning.
+//
+// The id says which copy, because a launcher holds its report until some connection carries it,
+// so one can reach the daemon after the issue's cadence has taken a copy of its own, and a row
+// matched on the issue alone would be the newer work. Each save gives the copy it stores an id of
+// its own (PutRunningWorkspaceCopy), and so does this keep, so a report of a copy the issue has
+// replaced, and a confirmation the daemon read twice, change nothing. The issue bounds the id to
+// the work of the launcher that reports it: the session the report came over is a pod of issue
+// (the Secret its launcher authenticated with names the issue), and an id of another issue's copy
+// matches no row, so a launcher of one issue cannot rebind the work of another. An id below
+// MinRunningWorkspaceCopyRestoreID is a release's and matches no row here, which is the
+// disjointness the schema keeps. A report with no pod to name is refused, since the row could not
+// then tell the pod the work is on from the pod that replaces it.
+func (s *Store) KeepRestoredRunningWorkspaceCopy(ctx context.Context, issue, podUID string, restoreID int64) error {
+	if podUID == "" {
+		return fmt.Errorf("the restored running workspace copy %d of %s needs the pod that restored it", restoreID, issue)
+	}
+	if _, err := s.pool.Exec(ctx, `update workspace_running_copies
+		set source_pod_uid = $3, at = now(), restore_id = nextval('workspace_running_copy_restore_ids'),
+			attempt_pod_uid = null, attempt_at = null, attempt_outcome = null
+		where issue = $1 and restore_id = $2`, issue, restoreID, podUID); err != nil {
+		return fmt.Errorf("keep the restored running workspace copy %d of %s as the copy of pod %s: %w", restoreID, issue, podUID, err)
 	}
 	return nil
 }
 
-// DeleteRestoredWorkspaceCopy drops the copy of issue's workspace a pod's launcher reports it
-// restored, routing on the restore id. That id is all such a report carries that is certain of
-// the row: a launcher holds its report until some connection carries it (internal/launcher's
-// bundleRestore.owed), so one can reach a daemon that has restarted since the send, with no
-// memory of what it sent that pod.
+// KeepRestoredWorkspaceCopy keeps the copy of issue's workspace the launcher of the pod of podUID
+// reports it restored as that pod's own running copy, routing on the restore id. That id is all
+// such a report carries that is certain of the row: a launcher holds its report until some
+// connection carries it (internal/launcher's bundleRestore.owed), so one can reach a daemon that
+// has restarted since the send, with no memory of what it sent that pod.
 //
 // The id says which of the two tables the copy is in, because the two draw from disjoint spaces
 // and the schema keeps them so (MinRunningWorkspaceCopyRestoreID). An id at or above the boundary
-// is a running copy's, and that delete names the issue and the id together: the id because the
-// issue's cadence may have taken a newer copy since and that row must stay for the issue's next
-// pod, and the issue because the report is that issue's launcher's and another issue's copy is
-// none of its business. An id below it is the id of the release whose teardown saved the bundle,
-// and that delete names the issue and the release together, which is the same rule: a bundle a
-// later release saved stays.
+// is a running copy's, and that keep names the issue and the id together: the id because the
+// issue's cadence may have taken a newer copy since and that row must stay as it is, and the issue
+// because the report is that issue's launcher's and another issue's copy is none of its business.
+// An id below it is the id of the release whose teardown saved the bundle, and that keep names the
+// issue and the release together, which is the same rule: a bundle a later release saved stays.
 //
-// The rule lives here, beside the two deletes it chooses between, because it is a statement about
+// The rule lives here, beside the two keeps it chooses between, because it is a statement about
 // which table an id names and about nothing else: the daemon wires this method straight onto the
-// runtime's report callback (runtime.WorkspaceBundleRestored), and the sandbox runtime's own
-// tests drive the report through it rather than through a copy of the branch.
+// runtime's report callback (runtime.WorkspaceBundleRestored), and the sandbox runtime's own tests
+// drive the report through it rather than through a copy of the branch.
 //
-// An id of either kind that no row of issue holds deletes nothing, which is the ordinary end of a
-// late report, and the caller is told the delete succeeded, because it did: the row the report
-// confirmed is gone.
-func (s *Store) DeleteRestoredWorkspaceCopy(ctx context.Context, issue string, restoreID int64) error {
+// An id of either kind that no row of issue holds changes nothing, which is the ordinary end of a
+// late report, and the caller is told the keep succeeded, because it did: the work the report
+// confirmed is either kept already or replaced by newer work.
+func (s *Store) KeepRestoredWorkspaceCopy(ctx context.Context, issue, podUID string, restoreID int64) error {
 	if restoreID >= MinRunningWorkspaceCopyRestoreID {
-		return s.DeleteRestoredRunningWorkspaceCopy(ctx, issue, restoreID)
+		return s.KeepRestoredRunningWorkspaceCopy(ctx, issue, podUID, restoreID)
 	}
-	return s.DeleteRestoredWorkspaceBundle(ctx, issue, restoreID)
+	return s.KeepRestoredWorkspaceBundle(ctx, issue, podUID, restoreID)
 }

@@ -137,6 +137,13 @@ type runningCopies struct {
 	mu     sync.Mutex
 	issues map[string]runningCopy
 	run    context.Context
+	// startOwed starts the copy of an issue that was owed while a release's save held the issue's
+	// place and that the save gives back without storing a bundle (hold). It is the daemon's own
+	// start of a copy (workflowRuntime.startOwedCopy), set where the daemon attaches the cadence
+	// (attach), because the save runs in the outbox, which holds this memory and nothing that
+	// starts a copy. nil starts nothing, which is a daemon whose runtime bundles no workspace and
+	// so owes no copy.
+	startOwed func(issue string)
 }
 
 // runUnder makes ctx, the daemon's run, the context every copy is started under from now on.
@@ -144,6 +151,14 @@ func (c *runningCopies) runUnder(ctx context.Context) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.run = ctx
+}
+
+// startsOwedWith makes start what takes a copy owed behind a release's save that stored nothing
+// (runningCopies.startOwed).
+func (c *runningCopies) startsOwedWith(start func(issue string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.startOwed = start
 }
 
 // running is the daemon's run's context, and false before the run has started or once it has
@@ -272,23 +287,34 @@ func (c *runningCopies) overtaken(issue string) bool {
 // copy it was owed can take two copy budgets, which is more than a short `idle_minutes`.
 //
 // Giving the place back is a copy's own give-back (giveBack): it starts the issue's period and
-// prunes as a copy's end does, and it drops any copy that was owed while the save held it. The
-// save is the newer copy of the same workspace, taken while the roles are idle and just before
-// the release stops them, and it drops the issue's running copy as it is stored
-// (store.PutWorkspaceBundle). It is the pod's last copy, so no copy taken off that pod after it is
-// stored at all (takeRunningCopy): it would be a second, later copy of the same work in the other
-// table, which the restore would then offer in place of the bundle and leave the bundle holding
-// the issue's pod.
-func (c *runningCopies) hold(ctx context.Context, issue string) (func(), error) {
+// prunes as a copy's end does. The caller says whether the save stored a bundle, and a copy owed
+// while the save held the place — a push's above all, or a turn's end — goes one of two ways on
+// it. A save that stored its bundle drops it: that bundle is the newer copy of the same workspace,
+// taken while the roles are idle and just before the release stops them, it drops the issue's
+// running copy as it is stored (store.PutWorkspaceBundle), and it is the pod's last copy, so no
+// copy taken off that pod after it is stored at all (takeRunningCopy): it would be a second,
+// later copy of the same work in the other table, which the restore would then offer in place of
+// the bundle and leave the bundle holding the issue's pod. A save that stored none — its bundler
+// failed, the bundle was too large, its write failed, or the workspace held nothing unpushed —
+// leaves the pod with no such last copy, and its release is cancelled or goes on with nothing to
+// restore, so the owed copy is taken as the copy owed behind a copy in flight is (done): the work
+// that asked for it was written after whatever the issue's copy holds, and dropping it would leave
+// an eviction of the pod short of that work. It is started once the place is given back, through
+// the daemon's own start of a copy (startOwed), and takes the place again as any copy does.
+func (c *runningCopies) hold(ctx context.Context, issue string) (func(stored bool), error) {
 	for {
 		c.mu.Lock()
 		held, took := c.take(issue)
 		c.mu.Unlock()
 		if took {
-			return func() {
+			return func(stored bool) {
 				c.mu.Lock()
-				defer c.mu.Unlock()
-				c.giveBack(issue, time.Now())
+				owed := c.giveBack(issue, time.Now()).owed
+				start := c.startOwed
+				c.mu.Unlock()
+				if owed && !stored && start != nil {
+					start(issue)
+				}
 			}, nil
 		}
 		select {
@@ -447,7 +473,7 @@ func (w *workflowRuntime) copyWorkspaceAtPush(issue string) {
 // stop ends it. Nothing waits on it: a copy is a saving against an eviction, never a step of the
 // turn, the tick or the fact that asked for it. claims is the caller's own read of the project's
 // claims where it has one, and nil where it has not. It is how the owed copy is taken too
-// (takeRunningCopy), so a copy owed to a turn's end holds up neither the copy that owed it nor
+// (startOwedCopy), so a copy owed to a turn's end holds up neither the copy that owed it nor
 // anything else. Before the run starts and once it has ended no copy is started at all. noRole is
 // the level the copy logs an issue with no live role to ask at (takeRunningCopy).
 //
@@ -468,6 +494,17 @@ func (w *workflowRuntime) startRunningCopy(issue string, claims []supervise.Clai
 		defer cancel()
 		w.takeRunningCopy(ctx, issue, claims, noRole)
 	}()
+}
+
+// startOwedCopy takes the copy of issue that was owed while a copy in flight or a release's save
+// held the issue's place (runningCopies.done, runningCopies.hold), once that place is given back.
+// The owed copy is a copy like every other: a goroutine of its own and a budget of its own,
+// because nothing of a turn waits for a copy, under the daemon's run and not the context of what
+// held the place, which ends as it gives the place back. It is handed no claims — any the holder
+// was given were read before the work that owed the copy was written, and the role it asks is read
+// as the turn's end reads it — and it logs an issue with no live role at Debug (takeRunningCopy).
+func (w *workflowRuntime) startOwedCopy(issue string) {
+	w.startRunningCopy(issue, nil, slog.LevelDebug)
 }
 
 // takeRunningCopy asks one live role of issue for the git bundle of its workspace's unpushed work
@@ -567,15 +604,9 @@ func (w *workflowRuntime) takeRunningCopy(ctx context.Context, issue string, cla
 		return
 	}
 	defer func() {
-		if !w.copies.done(issue, time.Now()) {
-			return
+		if w.copies.done(issue, time.Now()) {
+			w.startOwedCopy(issue)
 		}
-		// The owed copy is a copy like every other: a goroutine of its own and a budget of its
-		// own, because nothing of a turn waits for a copy, under the daemon's run and not this
-		// copy's context, which is cancelled the moment this call returns. It is handed no
-		// claims — the claims this copy was given were read before the work that owed the copy
-		// was written, and the role it asks is read as the turn's end reads it.
-		w.startRunningCopy(issue, nil, slog.LevelDebug)
 	}()
 	// How long the copy took, read at whichever line is written: the bundler's own build and,
 	// where one was made, the write that stored or dropped the row. A deployment reads it to see

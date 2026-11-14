@@ -2163,13 +2163,18 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // and the bundle is the pod's last copy: no copy taken off the pod after it is stored
 // (takeRunningCopy). A save that found nothing unpushed says the same thing more strongly: there
 // is no unpushed work to put back at all. A write that fails cancels the release, as the save's
-// own does, and the cancel drops both copies in its own transaction (store.CancelIssueRelease).
+// own does, and leaves the running copy as it was, which the cancel keeps
+// (store.CancelIssueRelease): the pod goes on with that copy as the newest of its work outside it.
 //
 // The save takes the issue's place in the workspace cadence's single flight before it asks the
 // shim (runningCopies.hold), waiting out a copy already in flight, and no copy starts while it
 // holds it: the save and a copy both run the shim's bundler in the one workspace, under the one
 // ref prefix `refs/legion-bundle/`, and one run's delete would land inside the other's `git
-// bundle create`. A wait the row's context ends is the row's error, which its lane runs again.
+// bundle create`. A wait the row's context ends is the row's error, which its lane runs again. The
+// place is given back saying whether the save stored its bundle: a copy owed while the save held
+// it — a push recorded in the meantime above all — is dropped behind a stored bundle, the pod's
+// last copy, and taken behind a save that stored none, which leaves the pod to go on with no such
+// copy.
 //
 // A save of a release that is over stores nothing: the bundle of the issue belongs to whichever
 // release the store's mark names, never to a row of one that was cancelled and is still on the
@@ -2195,11 +2200,12 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	if !ok {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, "the runtime bundles no workspace")
 	}
-	release, err := r.copies.hold(ctx, row.Issue)
+	giveBack, err := r.copies.hold(ctx, row.Issue)
 	if err != nil {
 		return fmt.Errorf("release save of %s: waiting for the running copy in flight: %w", row.Issue, err)
 	}
-	defer release()
+	stored := false
+	defer func() { giveBack(stored) }()
 	bundle, err := bundler.BundleWorkspace(ctx, row.Issue, payload.Role)
 	if err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
@@ -2220,6 +2226,7 @@ func (r *outbox) bundleIssueWorkspace(ctx context.Context, row record.OutboxRow,
 	if err := r.trees.PutWorkspaceBundle(ctx, row.Issue, decision.Release, bundle); err != nil {
 		return r.cancelRelease(ctx, row.Issue, payload.Tree, workflow.IdleHoldBundleSave, err.Error())
 	}
+	stored = true
 	return nil
 }
 
@@ -2381,7 +2388,8 @@ func (r *outbox) issueSandboxName(issue string) string {
 // fails leaves the release marked and the lane runs the whole cancel again. A cancel that went
 // on without it left the pod standing with its roles resumed and a copy of their work waiting
 // in the database for the issue's next pod, which would restore it over everything they pushed
-// in between.
+// in between. The issue's running copy stays, as the newest copy of the pod's work outside it
+// (store.CancelIssueRelease).
 func (r *outbox) cancelRelease(ctx context.Context, issue, tree string, hold workflow.IdleHold, why string) error {
 	// The second answer is whether the release that was cancelled suspended no role: such a
 	// release resumes nothing, so the empty set of resumed roles is the whole story rather than

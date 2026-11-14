@@ -4787,7 +4787,8 @@ It never reaches GitHub.
 sjawhar/legion is public and a working copy holds every file that is not ignored, so a save to a branch would publish files no agent chose to push and could start CI; the daemon's database is private and starts nothing.
 A bundle above 40 MiB, or a save that fails, stops the release, and the daemon records that reason.
 Only the pod's own launcher receives the bundle, over the launcher's authenticated connection, in `launcher_bundle` frames each under the 1 MiB frame limit (`shimwire.MaxFrameBytes`), and the launcher restores it in the roles container before any role starts, never in the token-holding `workspace-fetch` container.
-The daemon deletes the bundle once the launcher confirms the restore, and deletes it too, in the cancel's own transaction, when a wake cancels the release.
+Once the launcher confirms the restore, the daemon deletes the bundle's row, which lifts the `bundle_unrestored` hold, and in the same transaction keeps the work as the new pod's running copy ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
+A cancelled release, whether a wake cancelled it or its save failed, deletes its bundle in the cancel's own transaction and keeps the issue's running copy.
 A bundle is offered to one pod and one only: the first pod of the issue that is not the pod the work came off to ask for it, which in an ordinary release is the pod the teardown's next launch made.
 That pod is sent the bundle when it was created after the save, and refused when it was not — a pod the release did not replace, or the replacement itself on a node whose clock runs ahead of the API server's — and either way no later pod is sent it, because the roles of the pod that asked go on working and pushing from the workspace their own fetch provisioned.
 A restore that fails, and a refusal, each keep the work: it is still in the database and no pod has it, so the daemon holds the issue's next pod open rather than release it again over a workspace that never had that work, which is the `bundle_unrestored` hold above, and the work stays there for an operator to carry out of the database by hand.
@@ -4942,6 +4943,19 @@ A tie goes to the release bundle, which was taken while the roles were idle.
 A running copy off the pod a release bundle came off never supersedes that bundle, whatever their times: the bundle is that pod's last copy, so it is the copy offered and the running copy is closed unsent, which also answers any such row a daemon before this rule stored.
 The bytes of a closed copy stay in the database for an operator.
 
+A restore the new pod's launcher confirms keeps the work it put back as that pod's own running copy, whichever kind of copy it was.
+A restored running copy stays in its row, names the new pod as the pod its work is on, and takes a new `restore_id` with no attempt spent.
+A restored release bundle leaves `workspace_bundles` and is written into `workspace_running_copies` in the same transaction, unless the issue's running copy is the newer of the two by the rule above, in which case that copy stays as it is.
+Either way the kept row's `at` is the moment of the confirmation by the database's clock, not the time the work was first taken.
+The new pod's disk is then the only place the work is, and a pod whose agents come up Ready and take no turn takes no copy of its own: neither a turn's end nor the cadence copies it, and only a push would.
+So a second end of that pod from outside before any turn of it, such as an eviction of a `Burstable` pod, still restores the work: the pod after it is sent the kept copy, and the pod that restored it is sent nothing of it, since its own workspace holds the work.
+The confirmation's time is what keeps a push recorded before it, such as GitHub's "Update branch" during a release, from refusing the kept copy under the time rule below; a push recorded after it takes a copy of its own off the new pod's live roles.
+Like any running copy, the kept copy is replaced by the pod's next copy, goes when an idle release of that pod saves its bundle, and goes when the workspace holds nothing unpushed.
+
+A cancelled idle release keeps the issue's running copy and deletes only the release's own bundle.
+A release whose save fails, because the bundler fails or the bundle is over 40 MiB, is cancelled before it replaced the running copy, and the pod goes on idle with that copy as the only copy of its work outside it.
+Keeping it moves nothing back over a push: the pod the roles resume in is the pod the copy came off and is sent nothing of it, and every restore withholds the issue's branch and refuses a running copy taken before the newest push the daemon recorded.
+
 No restore sets the issue's branch `legion/<KEY>` or its rescue branch `legion/<KEY>-rescue`, so no restore can move either branch.
 The daemon sends every copy without the copy's own values of those two bookmarks, so the launcher's `jj bookmark set --allow-backwards` of each bookmark it is sent leaves each of the two where the new pod's fetch from GitHub put it.
 The copy's work comes back as visible commits and as the working copy, which the launcher restores with `jj edit` back to the copy's head, and the role's own `jj bookmark set legion/<KEY> -r @-` then moves the branch forward onto that work, or jj refuses the move as backwards or sideways.
@@ -4973,12 +4987,13 @@ Each time a push moves the issue's `issue_pushes` row the daemon also takes a co
 A push that leaves the row where it was asks for no copy, so a webhook delivered twice neither bundles the workspace again nor discards a copy being built.
 A copy already being built when the push is recorded is not stored, because it read the workspace before the push; the copy the push asked for follows it.
 The release's own save takes the same one place in flight and waits out a copy being built, so no two bundlers ever run in one workspace.
+A copy asked for while the save holds that place, by a push above all, is owed behind it: it is taken as soon as a save that stored no bundle gives the place back, and dropped behind a save that stored one, since that bundle is the pod's last copy.
 The two kinds differ in what an unrestored copy holds back:
 a release bundle no pod has restored holds the issue's pod, which is the `bundle_unrestored` hold ([Idle release](#idle-release)), and a running copy holds no pod at all, since the disk it was taken off still has that work, so an issue that holds one is released when it is idle like any other.
 An operator reads a running copy with the `psql` recipe [Idle release](#idle-release) gives for a release bundle, against the other table:
 `select encode(bundle, 'base64') from workspace_running_copies where issue = '<KEY>'`, since the column is `bundle` there too, and the row's `head` and `bookmarks` mean there what they mean in a release bundle's row.
 The pod's launcher names every copy it restores by the id the slices carry, in lines such as `the bundle of release <id>`, because the launcher the worker image carries predates the running copy.
-An id of 4611686018427387904 (2^62) or more in such a line names no release: it is a running copy's `restore_id`, and `select issue, at, size_bytes from workspace_running_copies where restore_id = <id>` finds its row while the row stands.
+An id of 4611686018427387904 (2^62) or more in such a line names no release: it is a running copy's `restore_id`, and `select issue, at, size_bytes from workspace_running_copies where restore_id = <id>` finds its row until a newer copy replaces it or the confirmation of its restore gives the kept row an id of its own.
 An id below that number is the `issue_releases.id` of the release that saved a release bundle, as before.
 Both copies of an issue go when the issue is done or its tree closes, and both stay through a linger and a park.
 

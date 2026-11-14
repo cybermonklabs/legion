@@ -164,7 +164,7 @@ func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *t
 	rig.noWarnedCopy(t)
 
 	// The pod that replaces the released one is sent the bundle against the second push, and its
-	// launcher's report of the restore drops the row.
+	// launcher's report of the restore moves the row out of the bundle table.
 	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", saved.Add(20*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -180,7 +180,7 @@ func TestASecondPushAfterAnIdleReleaseStillLeavesTheNextPodItsReleaseBundle(t *t
 	if restore.Running.Take != runtime.WorkspaceBundleNone {
 		t.Fatalf("the running copy was answered %v, want none held", restore.Running.Take)
 	}
-	if err := rig.st.DeleteRestoredWorkspaceCopy(ctx, rig.issue.Key, sent.Bundle.Release); err != nil {
+	if err := rig.st.KeepRestoredWorkspaceCopy(ctx, rig.issue.Key, "pod-that-replaces-it", sent.Bundle.Release); err != nil {
 		t.Fatalf("confirm the restore: %v", err)
 	}
 	if rig.bundled(t) {

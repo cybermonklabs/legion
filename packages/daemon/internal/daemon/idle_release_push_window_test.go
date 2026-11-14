@@ -91,7 +91,7 @@ func TestAPushRecordedWhileAReleaseRunsLeavesNoReleaseBundleHoldingTheNextPod(t 
 		t.Fatalf("the next pod was sent %d copies (release bundle %v, running copy %v), want the issue's work once",
 			len(sent), restore.ReleaseBundle.Take, restore.Running.Take)
 	}
-	if err := rig.st.DeleteRestoredWorkspaceCopy(ctx, rig.issue.Key, sent[0].Bundle.Release); err != nil {
+	if err := rig.st.KeepRestoredWorkspaceCopy(ctx, rig.issue.Key, "pod-that-replaces-it", sent[0].Bundle.Release); err != nil {
 		t.Fatalf("confirm the restore: %v", err)
 	}
 

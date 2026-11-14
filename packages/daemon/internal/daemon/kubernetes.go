@@ -496,7 +496,7 @@ func requirements(key string, reservation config.Reservation) (corev1.ResourceRe
 // (repositories.serving, the mapping's own, so a configured rename's mint follows the owner
 // whose installation holds the repository now), with the workflow's mapping as the repositories
 // its repository caches follow (mapped), with the store's own workspace bundles as what a
-// replacement pod's launcher is sent and what its restore drops, and registers its launcher
+// replacement pod's launcher is sent and what its restore keeps, and registers its launcher
 // acceptor on the stream listener. A daemon with no GitHub Apps hands it neither tokens nor a
 // mapping, and sandbox.New's own refusal names what is missing. Boot has already run the cluster
 // check (plan.clusterCheck): Agent Sandbox is installed and no Sandbox of a layout before this
@@ -518,9 +518,11 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// work came off spends it, whether the copy is sent or refused, and nothing is answered
 		// for that copy again.
 		opts.SavedWorkspaceBundle = st.TakeWorkspaceCopyForRestore
-		// Which of the two tables a launcher's restore report names is read off its id, and that
-		// rule belongs to the store that owns both (store.DeleteRestoredWorkspaceCopy).
-		opts.WorkspaceBundleRestored = st.DeleteRestoredWorkspaceCopy
+		// A launcher's restore report keeps the copy it names as the restoring pod's own running
+		// copy, so the work outlives a second end of that pod before its first turn. Which of the
+		// two tables the report names is read off its id, and that rule belongs to the store that
+		// owns both (store.KeepRestoredWorkspaceCopy).
+		opts.WorkspaceBundleRestored = st.KeepRestoredWorkspaceCopy
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
 		// starts, read with the implement App's read-only token for its repository alone; a daemon
 		// with no Apps reads none, and the runtime refuses the start of a role whose launcher names

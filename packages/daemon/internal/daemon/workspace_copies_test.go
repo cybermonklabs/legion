@@ -95,6 +95,9 @@ func newCopyRig(t *testing.T) *copyRig {
 	bundler := &copyBundler{bundle: bundle}
 	rig.w.log = slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	rig.w.copyBundler, rig.w.copyStore = bundler, rig.st
+	// A copy owed behind a release's save that stored no bundle is started by the cadence's own
+	// start, as attach wires it.
+	rig.w.copies.startsOwedWith(rig.w.startOwedCopy)
 	// The copies run under the daemon's run, as attach and run wire them; the test's own end is
 	// that run's.
 	run, stop := context.WithCancel(context.Background())

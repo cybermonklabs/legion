@@ -267,14 +267,17 @@ type Options struct {
 	// repository it no longer names once that cache's retention passes. Required for supervision.
 	Mapped func() []ghrepo.Repository
 	// SavedWorkspaceBundle takes what an issue holds of its workspace for a new pod, and
-	// WorkspaceBundleRestored is the confirmation that drops whichever copy the new pod's
-	// launcher put back. The pair carries the work a release took off a pod's disk, or a cadence
-	// took off a pod the cluster ended without one, back into the pod that replaces it: the
-	// runtime hands that pod's launcher, before any role of the pod starts, the one copy the take
-	// answers it is sent (launchers.restoreWorkspace), and confirms it on the launcher's own
-	// report. The take chooses between the issue's two copies, refuses any copy older than the
-	// newest recorded push of the issue's branch and spends the attempts, in one transaction of
-	// the store's (store.TakeWorkspaceCopyForRestore). The daemon fills both from its store; a
+	// WorkspaceBundleRestored is the confirmation that keeps whichever copy the new pod's
+	// launcher put back as that pod's own running copy, named by the launcher session's pod uid
+	// (store.KeepRestoredWorkspaceCopy). The pair carries the work a release took off a pod's
+	// disk, or a cadence took off a pod the cluster ended without one, back into the pod that
+	// replaces it: the runtime hands that pod's launcher, before any role of the pod starts, the
+	// one copy the take answers it is sent (launchers.restoreWorkspace), and confirms it on the
+	// launcher's own report. The kept copy is answered nothing to that pod and offered to the
+	// pod after it, so the work outlives a second end of the pod before its first turn. The take
+	// chooses between the issue's two copies, refuses a running copy older than the newest
+	// recorded push of the issue's branch and spends the attempts, in one transaction of the
+	// store's (store.TakeWorkspaceCopyForRestore). The daemon fills both from its store; a
 	// runtime given neither restores nothing, which is what a pod whose issue holds no copy does
 	// anyway.
 	SavedWorkspaceBundle    runtime.SavedWorkspaceBundle

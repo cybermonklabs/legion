@@ -42,7 +42,7 @@ type WorkspaceBundle struct {
 	// (store.Store.PutWorkspaceBundle): the bundle itself is the shim's, built in a pod that
 	// knows nothing of the release, and the id is the release's. The restore of the pod that
 	// replaces the released one carries it to the launcher and back, so the report that confirms
-	// a restore names the release whose work it put back and deletes no other
+	// a restore names the release whose work it put back and keeps no other
 	// (internal/runtime/sandbox's restoreReported).
 	Release int64
 	// PodUID is the uid of the pod the work was taken off: the issue pod the save's own
@@ -66,8 +66,8 @@ type WorkspaceBundleTake int
 
 const (
 	// WorkspaceBundleNone: there is nothing to send this pod and nothing was recorded. The issue
-	// was never released, its restore is confirmed, a wake cancelled its release, the copy has
-	// had its one attempt already, or this pod is the one the work was taken off.
+	// was never released, a wake cancelled its release, the copy has had its one attempt already,
+	// or this pod is the one the work was taken off or the one whose restore of it is confirmed.
 	WorkspaceBundleNone WorkspaceBundleTake = iota
 	// WorkspaceBundleSend: this pod takes the copy, and the row records the attempt as its
 	// before a byte of it leaves the daemon.

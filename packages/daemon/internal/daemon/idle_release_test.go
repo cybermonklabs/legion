@@ -53,6 +53,10 @@ type releaseRuntime struct {
 	// and the teardown's own read has already answered, which is where production's second
 	// answer can differ from its first. A test sets it before the drain.
 	beforeAuthorize func()
+	// beforeBundle runs inside the save's BundleWorkspace before it answers, with the issue's
+	// place in the cadence's single flight held (runningCopies.hold): a test sets it to make
+	// something happen while the save is building its bundle.
+	beforeBundle func()
 }
 
 func (r *releaseRuntime) IssuePodRunsConfiguredImage(string) bool {
@@ -72,9 +76,14 @@ func (r *releaseRuntime) IssueSandbox(string) (string, bool) {
 
 func (r *releaseRuntime) BundleWorkspace(_ context.Context, _ string, role claim.Role) (runtime.WorkspaceBundle, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.bundled = append(r.bundled, role)
-	return r.bundle, r.bundleErr
+	hook := r.beforeBundle
+	bundle, err := r.bundle, r.bundleErr
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
+	return bundle, err
 }
 
 func (r *releaseRuntime) SuspendIssue(ctx context.Context, _, _ string, authorize func(context.Context) (bool, error)) error {
@@ -858,8 +867,8 @@ func TestACancelOfAnIssueThatLeftTheWorkflowLetsItsCloseDeleteTheSandbox(t *test
 // and the idle rule would hold every later pod of the issue on it
 // (workflow.IdleHoldBundleUnrestored), as the pass before the restore shows. The push goes through
 // the workflow's push handler as the daemon wires it, with the daemon's store as its record, and
-// the restore's confirmation is the delete the launcher's report runs
-// (store.DeleteRestoredWorkspaceCopy).
+// the restore's confirmation is the keep the launcher's report runs
+// (store.KeepRestoredWorkspaceCopy).
 func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhenIdle(t *testing.T) {
 	rig := newIdleRig(t)
 	ctx := context.Background()
@@ -883,7 +892,7 @@ func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhen
 	}
 
 	// The pod that replaces the released one is sent the bundle against the push it read, and
-	// its launcher's report of the restore drops the row.
+	// its launcher's report of the restore moves the row out of the bundle table.
 	restore, err := rig.st.TakeWorkspaceCopyForRestore(ctx, rig.issue.Key, "pod-that-replaces-it", released.Add(20*time.Minute))
 	if err != nil {
 		t.Fatal(err)
@@ -895,7 +904,7 @@ func TestAReleaseBundleOlderThanARecordedPushIsRestoredAndItsIssueIsReleasedWhen
 	if sent.Take != runtime.WorkspaceBundleSend || string(sent.Bundle.Bundle) != string(bundle.Bundle) {
 		t.Fatalf("the release bundle taken before the push was answered %v with %q, want it sent whole", sent.Take, sent.Bundle.Bundle)
 	}
-	if err := rig.st.DeleteRestoredWorkspaceCopy(ctx, rig.issue.Key, sent.Bundle.Release); err != nil {
+	if err := rig.st.KeepRestoredWorkspaceCopy(ctx, rig.issue.Key, "pod-that-replaces-it", sent.Bundle.Release); err != nil {
 		t.Fatalf("confirm the restore: %v", err)
 	}
 	if rig.bundled(t) {

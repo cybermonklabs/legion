@@ -71,11 +71,11 @@ func leakCheckStore(t *testing.T) (*store.Store, runtime.WorkspaceBundle) {
 
 // withLeakCheckAndStore hands the runtime source as its reader of the leak check and st's saved
 // workspace copies, through the one take and confirmation the daemon wires
-// (store.TakeWorkspaceCopyForRestore, DeleteRestoredWorkspaceCopy).
+// (store.TakeWorkspaceCopyForRestore, KeepRestoredWorkspaceCopy).
 func withLeakCheckAndStore(source LeakCheckReader, st *store.Store) rigOption {
 	return withOptions(func(o *Options) {
 		o.LeakCheck = source
-		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceCopyForRestore, st.DeleteRestoredWorkspaceCopy
+		o.SavedWorkspaceBundle, o.WorkspaceBundleRestored = st.TakeWorkspaceCopyForRestore, st.KeepRestoredWorkspaceCopy
 	})
 }
 

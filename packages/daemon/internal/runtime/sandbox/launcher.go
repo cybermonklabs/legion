@@ -47,9 +47,9 @@ type launchers struct {
 	leakCheckHop time.Duration
 	// saved is the take of whatever an issue holds of its workspace for a new pod, which chooses
 	// between the issue's two copies and spends their attempts in one transaction, and restored
-	// the confirmation that drops the copy a launcher put back: the daemon's store behind both
-	// (Options.SavedWorkspaceBundle, WorkspaceBundleRestored). A launchers built without the pair
-	// restores nothing.
+	// the confirmation that keeps the copy a launcher put back as the running copy of that
+	// launcher's pod: the daemon's store behind both (Options.SavedWorkspaceBundle,
+	// WorkspaceBundleRestored). A launchers built without the pair restores nothing.
 	saved    runtime.SavedWorkspaceBundle
 	restored runtime.WorkspaceBundleRestored
 	log      *slog.Logger
@@ -496,7 +496,7 @@ const restoreFailedLine = "launcher bundle: the pod's launcher could not restore
 // the pod that held the work was running. The launcher applies what it is sent to the workspace
 // before the first role of the pod runs, so every call is from a start that has not been issued
 // yet (start), and it reports what the restore did in a frame of its own, which is what the copy
-// it put back is dropped on (restoreReported).
+// it put back is kept as this pod's own on (restoreReported).
 //
 // Which copy, if either, the pod is sent is the store's one decision, made in the transaction
 // that spends the attempts (store.TakeWorkspaceCopyForRestore, runtime.DecideWorkspaceRestore):
@@ -609,9 +609,9 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 			continue
 		}
 		// Held ends the sequence: the launcher has the whole, digest-checked body and applies it
-		// before its first role runs. The daemon's copy stays until the launcher reports what
-		// the restore itself did (restoreReported) — a restore can still fail, and the work is
-		// then in the daemon's database alone, which is where the launcher's notice says it is,
+		// before its first role runs. The daemon's copy stays as it is until the launcher reports
+		// what the restore itself did (restoreReported) — a restore can still fail, and the work
+		// is then in the daemon's database alone, which is where the launcher's notice says it is,
 		// and where it stays: this send was that copy's one attempt.
 		d.log.Info(reachedLine,
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At,
@@ -622,27 +622,36 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At, "slices", len(frames))
 }
 
-// restoreReported drops the saved copy of this pod's issue workspace that a launcher's report
-// names, once that launcher reports that its restore put the work back. It is the one
-// confirmation a copy is deleted on: a restore that failed, and a pod no role ever started in,
-// leave the work in the daemon's database, where it stays, since that copy's one attempt has been
-// recorded and no pod is sent it again (restoreWorkspace). Nothing else deletes a release bundle,
-// so the issue's close and its tree's close are what end one no pod restored (outbox's
-// dropReleasedWork); a running copy the next cadence replaces.
+// restoreReported keeps the saved copy of this pod's issue workspace that a launcher's report
+// names as this pod's own running copy, once that launcher reports that its restore put the work
+// back. A restore that failed, and a pod no role ever started in, leave the copy as the send left
+// it, with its one attempt recorded, so no pod is sent it again (restoreWorkspace). Nothing else
+// drops a release bundle no pod restored, so the issue's close and its tree's close are what end
+// one (outbox's dropReleasedWork); a running copy no pod restored is replaced by the next copy
+// taken off the pod it came off.
 //
-// The restore id the slices carried is the whole of what the delete reads, and all this hop knows
-// of the copy: a launcher keeps its report until some connection carries it (internal/launcher's
-// bundleRestore.owed), so one can reach the daemon after the issue has saved again, and deleting
-// the issue's row on such a report would take work no pod holds any more. The id says both which
-// kind of copy it is and which row of that kind, because the two kinds draw their ids from
-// disjoint spaces (store.MinRunningWorkspaceCopyRestoreID); which of the two tables it names is
-// read by the store that owns both (store.DeleteRestoredWorkspaceCopy, which the daemon hands
-// this package as runtime.WorkspaceBundleRestored), not here, and a report naming a row either
-// table has replaced deletes nothing.
+// The confirmed copy is kept, not deleted, because from here on the restoring pod's disk is the
+// one place its work is, and a pod that does nothing takes no copy of its own: an agent relaunched
+// in it comes up Ready rather than ending a turn, the cadence copies only an issue in a turn, and
+// the push copy needs a push. The store sources the kept copy to this session's pod, so that pod's
+// own later asks are answered nothing and the pod after it is offered the work, and a second end
+// from outside before any turn of this pod still restores it (store.KeepRestoredWorkspaceCopy).
+// The session's pod is the pod the report is of: a launcher process lives in its pod, and one that
+// restarts there holds no report.
+//
+// The restore id the slices carried is the whole of what the keep reads of the copy, and all this
+// hop knows of it: a launcher keeps its report until some connection carries it (internal/launcher's
+// bundleRestore.owed), so one can reach the daemon after the issue has saved again, and rebinding
+// the issue's row on such a report would take newer work for this pod's. The id says both which
+// kind of copy it is and which row of that kind, because the two kinds draw their ids from disjoint
+// spaces (store.MinRunningWorkspaceCopyRestoreID); which of the two tables it names is read by the
+// store that owns both (store.KeepRestoredWorkspaceCopy, which the daemon hands this package as
+// runtime.WorkspaceBundleRestored), not here, and a report naming a row either table has replaced
+// changes nothing.
 //
 // It runs on the launcher's own frame loop rather than in a goroutine of its own, so a pod whose
-// restore is confirmed has its copy gone before any later frame of that launcher is read; the
-// delete is one indexed row.
+// restore is confirmed has its copy kept before any later frame of that launcher is read; the
+// keep is one indexed row of each table.
 func (d *launchers) restoreReported(s *launcherSession, report shimwire.LauncherRestored) {
 	if d.restored == nil || s.issue == "" {
 		return
@@ -654,13 +663,13 @@ func (d *launchers) restoreReported(s *launcherSession, report shimwire.Launcher
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), apiTimeout)
 	defer cancel()
-	if err := d.restored(ctx, s.issue, report.Release); err != nil {
-		d.log.Warn("launcher bundle: the restored workspace copy could not be dropped from the store",
-			"issue", s.issue, "launcher", s.token, "restore", report.Release, "error", err)
+	if err := d.restored(ctx, s.issue, s.podUID, report.Release); err != nil {
+		d.log.Warn("launcher bundle: the restored workspace copy could not be kept as the restoring pod's own copy in the store",
+			"issue", s.issue, "launcher", s.token, "pod", s.podUID, "restore", report.Release, "error", err)
 		return
 	}
-	d.log.Info("launcher bundle: the pod's launcher restored the issue's saved workspace work, which is dropped from the database",
-		"issue", s.issue, "launcher", s.token, "sequence", report.ID, "restore", report.Release)
+	d.log.Info("launcher bundle: the pod's launcher restored the issue's saved workspace work, which the database keeps as that pod's own copy",
+		"issue", s.issue, "launcher", s.token, "pod", s.podUID, "sequence", report.ID, "restore", report.Release)
 }
 
 // bundleFrames are the slices that carry one saved copy of issue's workspace, with every bookmark

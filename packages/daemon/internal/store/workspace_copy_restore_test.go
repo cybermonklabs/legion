@@ -241,8 +241,11 @@ func TestARunningCopyOlderThanTheNewestRecordedPushIsSentToNoPod(t *testing.T) {
 // all the same. The release took it while the issue's roles were idle, before it stopped them, so
 // a push recorded after it — GitHub's "Update branch", a person's push, a webhook the daemon
 // applied late — holds none of its work, and the bundle is the one place that work is. The
-// launcher's confirmation of the restore then drops it, so the row that would hold the issue's pod
-// (workspaceBundleUnrestored) is gone.
+// launcher's confirmation of the restore then moves it out of the bundle table, so the row that
+// would hold the issue's pod (workspaceBundleUnrestored) is gone, and keeps it as the restoring
+// pod's running copy, stamped at the confirmation: the pod after that one, made by a second end
+// before any turn of the first, is sent the work, and the push recorded before the confirmation
+// refuses it no more than it refused the bundle.
 func TestAReleaseBundleOlderThanTheNewestRecordedPushIsSentAndItsConfirmationLiftsTheHold(t *testing.T) {
 	ctx := context.Background()
 	s := migratedStore(t)
@@ -285,11 +288,20 @@ func TestAReleaseBundleOlderThanTheNewestRecordedPushIsSentAndItsConfirmationLif
 	if !unrestored() {
 		t.Fatal("the bundle reads as restored before any launcher confirmed it")
 	}
-	if err := s.DeleteRestoredWorkspaceCopy(ctx, "INFRA-1117", sent.Bundle.Release); err != nil {
+	if err := s.KeepRestoredWorkspaceCopy(ctx, "INFRA-1117", "pod-after-the-push", sent.Bundle.Release); err != nil {
 		t.Fatal(err)
 	}
 	if unrestored() {
 		t.Fatal("the confirmed restore of the bundle still reads as work no pod has restored, which holds the issue's pod")
+	}
+	restore, err = s.TakeWorkspaceCopyForRestore(ctx, "INFRA-1117", "pod-after-the-second-end", time.Now().UTC().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again := restore.Running; again.Take != runtime.WorkspaceBundleSend || string(again.Bundle.Bundle) != string(saved.Bundle) ||
+		again.Bundle.Head != saved.Head || !maps.Equal(again.Bundle.Bookmarks, saved.Bookmarks) {
+		t.Fatalf("the pod after a second end was answered %v with %q at %s, want the restored bundle's work sent whole and not refused by the push",
+			again.Take, again.Bundle.Bundle, again.Bundle.Head)
 	}
 }
 

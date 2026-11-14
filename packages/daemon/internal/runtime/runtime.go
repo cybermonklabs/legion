@@ -232,9 +232,9 @@ type WorkspaceBundler interface {
 // closed, the newer one's take failed, and the pod given neither.
 //
 // WorkspaceBundleNone, for a copy, is nothing sent and nothing recorded: an issue never released
-// and whose cadence took nothing, one whose restore the launcher confirmed, one whose release a
-// wake cancelled, one whose copy has had its one attempt already, and the pod the work was taken
-// off asking for its own workspace's work back. The runtime calls this at every start of every
+// and whose cadence took nothing, one whose release a wake cancelled, one whose copy has had its
+// one attempt already, and the pod the work was taken off, or the pod that restored it, asking
+// for its own workspace's work back. The runtime calls this at every start of every
 // role, and both the pod a release is stopping and the pod a cadence copies go on starting roles,
 // so such a start is one of those calls; the decision knows that pod by the uid the copy recorded
 // (WorkspaceBundle.PodUID), and the store leaves the row untouched for the pod that replaces it.
@@ -258,20 +258,29 @@ type WorkspaceBundler interface {
 // attempt the same way and send nothing, for the reasons DecideWorkspaceRestore gives.
 type SavedWorkspaceBundle func(ctx context.Context, issue, podUID string, podCreated time.Time) (WorkspaceRestore, error)
 
-// WorkspaceBundleRestored is the runtime's confirmation that the pod replacing the released one
-// has put the issue's saved work back: its launcher ran the restore and reported that it
-// succeeded, naming by its restore id the copy it put back. It drops that copy and no other, and
-// it is called only on that report.
+// WorkspaceBundleRestored is the runtime's confirmation that the pod of podUID, the pod replacing
+// the one the work came off, has put the issue's saved work back: its launcher ran the restore and
+// reported that it succeeded, naming by its restore id the copy it put back. It keeps that copy
+// and no other as the running copy of that pod (store.Store.KeepRestoredWorkspaceCopy), and it is
+// called only on that report.
+//
+// The copy is kept rather than dropped because the restoring pod's disk is from then on the one
+// place the work is, and a pod that does nothing takes no copy of its own: an agent relaunched
+// there comes up Ready rather than ending a turn, the cadence copies only an issue in a turn, and
+// the push copy needs a push. Kept as that pod's copy, the work is answered nothing to that pod,
+// whose workspace holds it (DecideWorkspaceRestore's source rule), and is offered to the pod after
+// it, so a second end from outside before any turn of the restoring pod still restores it.
 //
 // The id is all the runtime passes on of the copy, and all it knows: a launcher holds its report
 // until some connection carries it, so a report can reach a daemon that has restarted since the
 // send, and the id the slices carried is the only thing in it that is certain of its copy. The
 // daemon routes on it, since the two kinds of copy draw their ids from disjoint spaces
 // (store.MinRunningWorkspaceCopyRestoreID): one names a release's bundle, the other a running
-// copy, and one of neither kind deletes nothing — a copy whose issue has saved again since is
-// another row, and the work it holds stays for the issue's next pod. issue is the issue of the pod
-// whose launcher reported, and the daemon deletes no copy of any other issue on that report.
-type WorkspaceBundleRestored func(ctx context.Context, issue string, restore int64) error
+// copy, and one of neither kind changes nothing — a copy whose issue has saved again since is
+// another row, and the work it holds stays as it is. issue is the issue of the pod whose launcher
+// reported, and the daemon changes no copy of any other issue on that report; podUID is that
+// launcher session's own pod, the one the work is now on.
+type WorkspaceBundleRestored func(ctx context.Context, issue, podUID string, restore int64) error
 
 // RegistrationDeadline is the registration deadline's base Boot×RegistrationIntervals bound plus
 // grace: the supervisor's armRegistration calls it with ProvisionBound before a claim's hello and

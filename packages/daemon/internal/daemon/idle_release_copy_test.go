@@ -128,32 +128,33 @@ func TestTheWorkOfAFinishedIssueLeavesNoReleaseBundleAndNoRunningCopy(t *testing
 
 // A launcher holds the report of its restore until some connection carries it, so a report can
 // reach a daemon that has restarted since the send, carrying nothing but the id the slices named.
-// That id is what the delete is routed on, and it says which of the two tables the copy is in:
-// the two draw from disjoint spaces (store.MinRunningWorkspaceCopyRestoreID). A report of one
-// kind must leave the other kind's row alone — the issue can hold both, and each is the only copy
-// of its own work. The routing is the store's own (store.DeleteRestoredWorkspaceCopy), which is
-// what the daemon hands the runtime (sandboxRuntime) and what the sandbox runtime's own restore
-// tests drive their reports through.
-func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
+// That id is what the keep is routed on, and it says which of the two tables the copy is in: the
+// two draw from disjoint spaces (store.MinRunningWorkspaceCopyRestoreID). A report of one kind
+// must leave the other kind's row alone — the issue can hold both, and each is the only copy of
+// its own work. The routing is the store's own (store.KeepRestoredWorkspaceCopy), which is what
+// the daemon hands the runtime (sandboxRuntime) and what the sandbox runtime's own restore tests
+// drive their reports through.
+func TestALateRestoreReportKeepsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	ctx := context.Background()
 	pool := isolatedOutboxPool(t)
 	st := outboxTreeStore(t, pool, "LEGION-208")
-	const issue, release = "LEGION-208", int64(11)
-	restored := st.DeleteRestoredWorkspaceCopy
+	const issue, release, restoring = "LEGION-208", int64(11), "pod-that-replaced-it"
+	restored := st.KeepRestoredWorkspaceCopy
 
+	// Whole seconds, which the store keeps exactly.
 	saved := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the release saved"), Head: "abc",
-		At: time.Now().UTC(), PodUID: "pod-being-released"}
+		At: time.Now().UTC().Truncate(time.Second).Add(-time.Hour), PodUID: "pod-being-released"}
 	if err := st.PutWorkspaceBundle(ctx, issue, release, saved); err != nil {
 		t.Fatalf("save the release's bundle: %v", err)
 	}
 	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work the cadence copied"), Head: "abc",
-		At: time.Now().UTC(), PodUID: "pod-still-running"}
+		At: saved.At.Add(time.Minute), PodUID: "pod-still-running"}
 	if err := st.PutRunningWorkspaceCopy(ctx, issue, taken); err != nil {
 		t.Fatalf("take the running copy: %v", err)
 	}
 	// The copy's own restore id, as the slices carry it to the launcher and the report brings it
 	// back: above every id a release holds, which is what the routing reads.
-	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, "pod-that-replaced-it", time.Now().UTC().Add(time.Hour))
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, issue, restoring, time.Now().UTC().Add(time.Hour))
 	sent := restore.Running.Bundle
 	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend {
 		t.Fatalf("the pod that replaced the one the copy came off was answered %v (%v), want the copy", restore.Running.Take, err)
@@ -162,12 +163,17 @@ func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 		t.Fatalf("the running copy's restore id is %d, want it at or above %d", sent.Release, store.MinRunningWorkspaceCopyRestoreID)
 	}
 
-	// The report of the running copy drops that row and leaves the release's bundle whole.
-	if err := restored(ctx, issue, sent.Release); err != nil {
-		t.Fatalf("drop the restored running copy: %v", err)
+	// The report of the running copy keeps that row as the restoring pod's own, and leaves the
+	// release's bundle whole.
+	if err := restored(ctx, issue, restoring, sent.Release); err != nil {
+		t.Fatalf("keep the restored running copy: %v", err)
 	}
-	if _, held := runningCopyOf(t, st, issue); held {
-		t.Fatal("after the report of the running copy the store holds it, want it dropped")
+	if again, err := st.TakeWorkspaceCopyForRestore(ctx, issue, restoring, time.Now().UTC().Add(time.Hour)); err != nil ||
+		again.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the restoring pod asking again was answered %v of the running copy (%v), want nothing: the copy is its own", again.Running.Take, err)
+	}
+	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != taken.Size() {
+		t.Fatalf("after the report of the running copy the store holds %+v, want its %d bytes kept", facts, taken.Size())
 	}
 	size, held, err := st.WorkspaceBundleSize(ctx, issue)
 	if err != nil || !held || size != len(saved.Bundle) {
@@ -176,29 +182,32 @@ func TestALateRestoreReportDropsOnlyTheSavedWorkItsIdNames(t *testing.T) {
 	}
 
 	// A second cadence took another copy before the release's own report arrived, and that
-	// report takes the bundle alone.
-	if err := st.PutRunningWorkspaceCopy(ctx, issue, taken); err != nil {
+	// report moves the bundle alone: the copy is the newer work and stays as it is.
+	newer := taken
+	newer.Bundle, newer.At = []byte("PACK the work the cadence copied next"), taken.At.Add(time.Minute)
+	if err := st.PutRunningWorkspaceCopy(ctx, issue, newer); err != nil {
 		t.Fatalf("take the running copy again: %v", err)
 	}
-	if err := restored(ctx, issue, release); err != nil {
-		t.Fatalf("drop the restored release bundle: %v", err)
+	if err := restored(ctx, issue, restoring, release); err != nil {
+		t.Fatalf("keep the restored release bundle: %v", err)
 	}
 	if _, held, err := st.WorkspaceBundleSize(ctx, issue); err != nil || held {
-		t.Fatalf("after the report of the release the store holds the bundle = %t (%v), want it dropped", held, err)
+		t.Fatalf("after the report of the release the store holds the bundle = %t (%v), want it gone", held, err)
 	}
-	if _, held := runningCopyOf(t, st, issue); !held {
-		t.Fatal("after the report of the release the store no longer holds the running copy, want the newer copy kept")
+	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(newer.At) {
+		t.Fatalf("after the report of the release the store holds the running copy %+v, want the newer copy of %d bytes taken %s kept",
+			facts, newer.Size(), newer.At)
 	}
 
 	// A report of either kind that no row holds — a copy its issue has saved over, a release
-	// whose bundle is already gone — deletes nothing and fails nothing.
-	if err := restored(ctx, issue, release); err != nil {
+	// whose bundle is already gone — changes nothing and fails nothing.
+	if err := restored(ctx, issue, restoring, release); err != nil {
 		t.Fatalf("a repeated report of the release: %v", err)
 	}
-	if err := restored(ctx, issue, store.MinRunningWorkspaceCopyRestoreID); err != nil {
+	if err := restored(ctx, issue, restoring, sent.Release); err != nil {
 		t.Fatalf("a report of a running copy the issue has replaced: %v", err)
 	}
-	if _, held := runningCopyOf(t, st, issue); !held {
-		t.Fatal("after the reports of rows the store no longer holds the running copy, want it kept")
+	if facts, held := runningCopyOf(t, st, issue); !held || facts.Size != newer.Size() || !facts.At.Equal(newer.At) {
+		t.Fatalf("after the reports of rows the store holds the running copy %+v, want the newer copy as it was", facts)
 	}
 }

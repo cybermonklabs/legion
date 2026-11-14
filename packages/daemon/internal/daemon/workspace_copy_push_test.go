@@ -181,6 +181,50 @@ func TestAReleaseSaveWaitsForTheRunningCopyBundlerInFlightBeforeItBundles(t *tes
 	}
 }
 
+// A push recorded while a release's save holds the issue's place owes a copy behind the save, and
+// a save that stores no bundle still has that copy taken once it gives the place back. The save's
+// bundler failed — the launcher is gone — so the release is cancelled and the pod goes on idle with
+// no bundle; the copy the push asked for is then the one copy of the pod's work since the push,
+// and dropped with the save it would leave an eviction of that idle pod nothing newer than what
+// the issue held before. Only a save that stored its bundle drops it: that bundle is the pod's
+// last copy.
+func TestAPushCopyOwedWhileAReleaseSaveHeldThePlaceIsTakenWhenTheSaveStoresNoBundle(t *testing.T) {
+	rig := newCopyRig(t)
+	ctx := context.Background()
+	apply := rig.pushEngine(t)
+	// Whole seconds, which the store keeps exactly.
+	atPush := copyRigBundle
+	atPush.Bundle, atPush.At = []byte("PACK the workspace after the push"), time.Now().UTC().Truncate(time.Second)
+	rig.bundler.answers(atPush, nil)
+	rig.rt.bundleErr = errors.New("the launcher is gone")
+	rig.rt.beforeBundle = func() {
+		// The push lands while the save holds the issue's place, and its copy is refused the
+		// place and owed behind it.
+		apply("c0", "c2", time.Now().UTC())
+		if !testwait.Holds(testwait.Bounded(t, 30*time.Second, time.Second), testwait.Poll, func() bool {
+			rig.w.copies.mu.Lock()
+			defer rig.w.copies.mu.Unlock()
+			return rig.w.copies.issues[rig.issue.Key].owed
+		}) {
+			t.Fatalf("the push's copy was never owed behind the save; the daemon logged:\n%s", rig.logs.String())
+		}
+	}
+
+	rig.w.releaseIdlePods(ctx)
+	rig.drain(t)
+	if rig.marked(t) || rig.bundled(t) {
+		t.Fatalf("after a save whose bundler failed the release is marked = %t and the store holds a bundle = %t, want the release cancelled with no bundle",
+			rig.marked(t), rig.bundled(t))
+	}
+	stored := rig.awaitCopy(t, len(atPush.Bundle))
+	if !stored.At.Equal(atPush.At) {
+		t.Fatalf("the stored copy was taken at %s, want the push's copy taken at %s", stored.At, atPush.At)
+	}
+	if asked := rig.bundler.reads(); len(asked) != 1 {
+		t.Fatalf("the cadence's bundler was asked %v, want the one copy the push owed", asked)
+	}
+}
+
 // The copies a turn's end and a push start are given no context by the callbacks that start them,
 // so they run under the daemon's run: its end ends a copy in flight at once rather than at the
 // copy's budget, and the copy is not reported as a failed save against a store that is closing.

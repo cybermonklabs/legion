@@ -552,17 +552,18 @@ func TestACancelKeepsTheMarkUntilItsResumesAreQueued(t *testing.T) {
 	}
 }
 
-// Both saved copies of a cancelled release's workspace go in the cancel's own transaction, with
-// the resumes and the mark: the bundle the release saved and the copy its cadence took while the
-// pod ran. The pod that work came off is the pod the resumes bring back, with the work in its own
-// workspace, so each row is a second copy of a live disk's work: left behind, either would wait
-// for whatever pod the issue made next — an eviction's, an update round's, a park and unpark's —
-// to restore it over everything those roles pushed in the meantime, and the bundle would hold the
-// issue's pod until then (workflow.IdleHoldBundleUnrestored).
+// The bundle a cancelled release saved goes in the cancel's own transaction, with the resumes and
+// the mark. The pod that work came off is the pod the resumes bring back, with the work in its own
+// workspace, so the row is a second copy of a live disk's work: left behind, it would hold the
+// issue's pod (workflow.IdleHoldBundleUnrestored) until whatever pod the issue made next restored
+// it. The issue's running copy stays: the pod it came off is the pod the roles resume in, which
+// the take answers nothing of it, and every restore withholds the issue's branch and refuses a
+// running copy older than the newest recorded push, so for the pod after that one it is the
+// newest copy of this pod's work.
 //
 // One transaction is what makes that true of a cancel that fails too: a resume the store cannot
-// queue leaves the mark standing and both copies with it, so the row's retry runs the whole cancel
-// again rather than going on with one copy already gone and the other kept.
+// queue leaves the mark standing and the bundle with it, so the row's retry runs the whole cancel
+// again rather than going on with the bundle already gone and the resumes never queued.
 func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T) {
 	const first, boundary, last = 18, 20, 22
 	st := migratedStore(t)
@@ -599,9 +600,6 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	if row := heldCopyRow(t, st, releaseBundleCopies, rootIssue); !row.held {
 		t.Fatal("after a cancel that failed the store holds no bundle, want it kept with the mark")
 	}
-	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held {
-		t.Fatal("after a cancel that failed the store holds no running copy, want it kept with the mark")
-	}
 
 	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
 		t.Fatalf("carry the cancel out: %v", err)
@@ -609,8 +607,48 @@ func TestACancelDeletesTheBundleItsReleaseSavedInTheSameTransaction(t *testing.T
 	if row := heldCopyRow(t, st, releaseBundleCopies, rootIssue); row.held {
 		t.Fatalf("after the cancel the store holds the bundle %+v, want it deleted with the mark", row)
 	}
-	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); row.held {
-		t.Fatalf("after the cancel the store holds the running copy %+v, want it deleted with the mark", row)
+	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held || row.size != taken.Size() {
+		t.Fatalf("after the cancel the store holds the running copy %+v, want the %d bytes it had kept", row, taken.Size())
+	}
+}
+
+// A release whose save failed before it replaced the issue's running copy — a bundler that could
+// not build the bundle, a bundle too large to carry — is cancelled, and the cancel keeps that
+// copy. The pod goes on idle with its roles resumed, and the copy is the only copy of its work
+// outside it: an eviction of that idle pod brings a pod that is sent the copy, where a cancel that
+// deleted it would leave that pod nothing to restore. The pod the copy came off, the one the
+// roles resume in, is answered nothing of it.
+func TestACancelledReleaseKeepsTheRunningCopyItsFailedSaveLeft(t *testing.T) {
+	const first, boundary, last = 18, 20, 22
+	st := migratedStore(t)
+	ctx := context.Background()
+	openRunningTree(t, st)
+	// The copy the turn's end took before the pod went quiet.
+	taken := runtime.WorkspaceBundle{Bundle: []byte("PACK the work of the last turn"),
+		Head: "f2f134541b30dfa5160a5d1ce5e17b76c967c661", At: time.Now().UTC().Add(-30 * time.Minute), PodUID: "pod-being-released"}
+	if err := st.PutRunningWorkspaceCopy(ctx, rootIssue, taken); err != nil {
+		t.Fatalf("take the running copy: %v", err)
+	}
+	markRelease(t, st, first, boundary, last, 0, claim.RoleArchitect)
+	releasedClaim(t, st, claim.RoleArchitect)
+
+	// The save stored nothing, and the release is cancelled.
+	if _, _, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow); err != nil {
+		t.Fatalf("carry the cancel out: %v", err)
+	}
+	if releaseMarked(t, st) {
+		t.Fatal("the cancel left the release marked")
+	}
+	if row := heldCopyRow(t, st, runningCopyCopies, rootIssue); !row.held || row.size != taken.Size() {
+		t.Fatalf("after the cancel the store holds the running copy %+v, want the %d bytes the failed save left", row, taken.Size())
+	}
+	restore, err := st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-being-released", time.Now().UTC())
+	if err != nil || restore.Running.Take != runtime.WorkspaceBundleNone {
+		t.Fatalf("the pod the roles resume in was answered %v of its own copy (%v), want nothing", restore.Running.Take, err)
+	}
+	restore, err = st.TakeWorkspaceCopyForRestore(ctx, rootIssue, "pod-after-an-eviction", time.Now().UTC().Add(time.Minute))
+	if err != nil || restore.Running.Take != runtime.WorkspaceBundleSend || string(restore.Running.Bundle.Bundle) != string(taken.Bundle) {
+		t.Fatalf("the pod after an eviction was answered %v of %q (%v), want the copy sent", restore.Running.Take, restore.Running.Bundle.Bundle, err)
 	}
 }
 
