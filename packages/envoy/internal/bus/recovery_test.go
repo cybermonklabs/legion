@@ -1,9 +1,5 @@
 package bus_test
 
-// Every test here captures the default slog handler (captureLogs, stream_config_test.go) or sets
-// NATS_NKEY_SEED with t.Setenv, both process-wide, so none of them is parallel
-// (dispatch://INFRA-1075).
-
 import (
 	"encoding/json"
 	"errors"
@@ -49,6 +45,7 @@ func subscribeAllNotifications(client *bus.Client, handler natsgo.MsgHandler, op
 
 // TestSubOK_NoSubscription verifies SubOK is false when no subscription exists.
 func TestSubOK_NoSubscription(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -62,6 +59,7 @@ func TestSubOK_NoSubscription(t *testing.T) {
 }
 
 func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
+	// Serial: its assertion is a time (the publish returns within 6 s, its bounded reconnect).
 	// Publish routes each topic to its transport (bus.UsesCoreTransport), so both cases are the
 	// one call a caller makes.
 	cases := []struct {
@@ -114,6 +112,7 @@ func TestPublishBoundsReconnectWhenNATSUnavailable(t *testing.T) {
 }
 
 func TestCoreSubscriptionRestoresAfterConnectionRecovery(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -135,7 +134,7 @@ func TestCoreSubscriptionRestoresAfterConnectionRecovery(t *testing.T) {
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "core role subscription to recover", func() bool {
+	waitFor(t, busWait, "core role subscription to recover", func() bool {
 		if err := publisher.Publish("notifications.role.recovery", []byte("recovered")); err != nil {
 			t.Fatalf("publish to recovered core role lane: %v", err)
 		}
@@ -151,6 +150,7 @@ func TestCoreSubscriptionRestoresAfterConnectionRecovery(t *testing.T) {
 // the recovery bound delivers, and CoreSubOK must report the replacement: read from the returned
 // handle, a recovered lane would read inactive forever.
 func TestCoreSubOKReportsTheReplacementAfterTheClientReplacesAClosedConnection(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {
@@ -174,11 +174,11 @@ func TestCoreSubOKReportsTheReplacementAfterTheClientReplacesAClosedConnection(t
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "the client to bind a replacement core subscription", client.CoreSubOK)
+	waitFor(t, busWait, "the client to bind a replacement core subscription", client.CoreSubOK)
 	if returned.IsValid() {
 		t.Fatal("the handle SubscribeCore returned is still valid after its connection closed; the test proves nothing")
 	}
-	waitFor(t, 5*time.Second, "the replacement core subscription to deliver", func() bool {
+	waitFor(t, busWait, "the replacement core subscription to deliver", func() bool {
 		if err := publisher.Publish(subject, []byte("recovered")); err != nil {
 			t.Fatalf("publish: %v", err)
 		}
@@ -194,6 +194,7 @@ func TestCoreSubOKReportsTheReplacementAfterTheClientReplacesAClosedConnection(t
 // in that window must restore the role lane though the durable still refuses the bind: the role
 // lane is a queue member a role message can be handed to, and nothing else re-subscribes it.
 func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -210,7 +211,7 @@ func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
 	}
 
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "core role subscription to recover beside a durable that refuses the bind", func() bool {
+	waitFor(t, busWait, "core role subscription to recover beside a durable that refuses the bind", func() bool {
 		if err := publisher.Publish("notifications.role.held-durable", []byte("recovered")); err != nil {
 			t.Fatalf("publish to the core role lane: %v", err)
 		}
@@ -232,6 +233,7 @@ func TestACoreSubscriptionRecoversWhileTheJetStreamOneCannotBind(t *testing.T) {
 // Recovery keeps retrying the durable's restore, and does not run the hooks again for a connection
 // they already moved to. The refused restore is a failure, so it stays an ERROR.
 func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
+	// Serial: it captures the default slog handler (captureBusLogs), a process-wide swap.
 	for _, tc := range []struct {
 		name      string
 		reconnect func(*bus.Client) error
@@ -296,6 +298,9 @@ func TestReconnectHooksRunWhileTheDurableCannotBind(t *testing.T) {
 // reconnect's run. Two events between runs, two runs, never two at once: a recovery that read the
 // hooks as due while the reconnect's run was still in progress started a third, alongside it.
 func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
+	// Serial: it captures the default slog handler (captureBusLogs), a process-wide swap, and the
+	// recovery's second attempt must land inside the hook's 3 s run (hookTakes), a wall-clock
+	// window.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -360,6 +365,7 @@ func TestReconnectHooksRunOneAtATimeOnceForEachEventBetweenRuns(t *testing.T) {
 // what it last followed, until the next connection event. Here the hooks fail once after an
 // in-place reconnect and run again with no other connection event.
 func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *testing.T) {
+	// Serial: it waits on a whole-process goroutine dump (goroutinetest.Live).
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -417,6 +423,8 @@ func TestAFailedRunOfTheReconnectHooksRunsAgainWithoutAnotherConnectionEvent(t *
 // connection's own recovery finds the first still running, and before the first looked again the
 // client stayed on a closed connection for good.
 func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
+	// Serial: the closed connection's recovery must start inside the second the test sleeps
+	// before it lets the first recovery end, a wall-clock window.
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -461,6 +469,7 @@ func TestAConnectionThatClosesAsARecoveryEndsIsRecovered(t *testing.T) {
 // registration left to its bind in flight is the design working, not a failure, so nothing on the
 // way logs an ERROR.
 func TestAnInPlaceReconnectDoesNotWaitForABindInFlight(t *testing.T) {
+	// Serial: it captures the default slog handler (captureBusLogs), a process-wide swap.
 	_, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
 	client, err := bus.ConnectOwningStream([]string{proxy.url()})
@@ -571,7 +580,7 @@ func waitOutHeldDurable(t *testing.T, client *bus.Client, uri string) {
 	// has: nats-server applies the new interest on the consumer's own goroutine afterwards
 	// (updateDeliveryInterest), so until the consumer reports itself push-bound, the consumer info a
 	// second bind reads says it is free, and that bind succeeds.
-	waitFor(t, 10*time.Second, "the durable to be push-bound to the other task", func() bool {
+	waitFor(t, busWait, "the durable to be push-bound to the other task", func() bool {
 		info, err := holderJS.ConsumerInfo(bus.Stream, consumer)
 		return err == nil && info.PushBound
 	})
@@ -585,6 +594,7 @@ func waitOutHeldDurable(t *testing.T, client *bus.Client, uri string) {
 }
 
 func TestCoreSubscriptionsShareQueueGroup(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	first, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -625,13 +635,14 @@ func TestCoreSubscriptionsShareQueueGroup(t *testing.T) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush queue test messages: %v", err)
 	}
-	waitFor(t, 5*time.Second, "one queue delivery per role event", func() bool {
+	waitFor(t, busWait, "one queue delivery per role event", func() bool {
 		return received.Load() == 3
 	})
 }
 
 // TestSubOK_AfterSubscribe verifies SubOK is true after subscribing.
 func TestSubOK_AfterSubscribe(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -656,6 +667,7 @@ func TestSubOK_AfterSubscribe(t *testing.T) {
 // triggers recovery and the subscription is restored. After recovery,
 // messages flow normally through the restored subscription.
 func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -686,7 +698,7 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 	// goroutine, so the fall is a state recovery concurrently leaves and only the rise can be read
 	// without racing it. Waiting for the rise is waiting for recovery to end: new connection,
 	// resubscribed.
-	waitFor(t, 30*time.Second, "SubOK to become true after recovery", client.SubOK)
+	waitFor(t, busWait, "SubOK to become true after recovery", client.SubOK)
 
 	// Publish a message through the recovered connection and verify delivery.
 	// This proves the subscription is functional after recovery — no Publish call
@@ -697,7 +709,7 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 		t.Fatalf("publish after recovery: %v", err)
 	}
 
-	waitFor(t, 5*time.Second, "message delivered after recovery", func() bool {
+	waitFor(t, busWait, "message delivered after recovery", func() bool {
 		return received.Load() >= 1
 	})
 }
@@ -705,6 +717,7 @@ func TestRecovery_ClosedTriggersWithoutPublish(t *testing.T) {
 // TestRecovery_AtMostOneSubscription verifies that after recovery, only one
 // subscription callback is active (no duplicate message delivery).
 func TestRecovery_AtMostOneSubscription(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -723,11 +736,11 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 
 	// Trigger recovery by closing the underlying connection.
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "first recovery", client.SubOK)
+	waitFor(t, busWait, "first recovery", client.SubOK)
 
 	// Trigger recovery again.
 	client.Conn.Close()
-	waitFor(t, 30*time.Second, "second recovery", client.SubOK)
+	waitFor(t, busWait, "second recovery", client.SubOK)
 
 	// Reset counter and publish a single message.
 	received.Store(0)
@@ -738,7 +751,7 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 	}
 
 	// Wait for delivery.
-	waitFor(t, 5*time.Second, "message delivered", func() bool {
+	waitFor(t, busWait, "message delivered", func() bool {
 		return received.Load() >= 1
 	})
 
@@ -754,6 +767,7 @@ func TestRecovery_AtMostOneSubscription(t *testing.T) {
 // do not spawn competing retry goroutines. The atomic recovering flag ensures
 // at most one recovery goroutine runs at a time.
 func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -776,7 +790,7 @@ func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
 	// doesn't accumulate stale subscriptions or leak goroutines.
 	for range 3 {
 		client.Conn.Close()
-		waitFor(t, 30*time.Second, "recovery between rapid closes", client.SubOK)
+		waitFor(t, busWait, "recovery between rapid closes", client.SubOK)
 	}
 
 	// After all recovery cycles, publish and verify single delivery.
@@ -787,7 +801,7 @@ func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	waitFor(t, 5*time.Second, "delivery after recovery cycles", func() bool {
+	waitFor(t, busWait, "delivery after recovery cycles", func() bool {
 		return received.Load() >= 1
 	})
 	time.Sleep(2 * time.Second)
@@ -797,6 +811,7 @@ func TestRecovery_ConcurrentRecoverySerializes(t *testing.T) {
 }
 
 func TestStreamSubjectsIncludesDispatchEvents(t *testing.T) {
+	t.Parallel()
 	for _, subject := range bus.StreamSubjects() {
 		if subject == "notifications.dispatch.>" {
 			return
@@ -806,6 +821,7 @@ func TestStreamSubjectsIncludesDispatchEvents(t *testing.T) {
 }
 
 func TestConnectedReportsLiveConnection(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -819,6 +835,7 @@ func TestConnectedReportsLiveConnection(t *testing.T) {
 }
 
 func TestReconnectHookRunsAfterReconnect(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -848,6 +865,7 @@ func TestReconnectHookRunsAfterReconnect(t *testing.T) {
 // follows: a KV watcher's subscription survives the outage, so the hook is what tells its cache it
 // stopped following the bucket, and the reconnect hook's read starts after that.
 func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -870,13 +888,14 @@ func TestDisconnectHookRunsBeforeTheReconnectHook(t *testing.T) {
 			if got != want {
 				t.Fatalf("hook ran %q, want %q next", got, want)
 			}
-		case <-time.After(5 * time.Second):
+		case <-time.After(busWait):
 			t.Fatalf("the %s hook did not run", want)
 		}
 	}
 }
 
 func TestJetStreamPublishDeduplicatesAStableEnvelopeDestination(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -916,6 +935,7 @@ func TestJetStreamPublishDeduplicatesAStableEnvelopeDestination(t *testing.T) {
 // The retained copy is not a replay for a pane: a pane subscribes over core NATS and gets only what
 // is published while it is subscribed.
 func TestJetStreamPublishRetainsLegionIssueNotices(t *testing.T) {
+	t.Parallel()
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -967,6 +987,8 @@ func TestJetStreamPublishRetainsLegionIssueNotices(t *testing.T) {
 // connection goes through it: the first, and at least the two the raced close dials, each handed
 // the server's address as the URL spells it.
 func TestAClosedConnectionIsReplacedOnceAndCloseLeavesNoneOpen(t *testing.T) {
+	// Serial: it unsets NATS_NKEY_SEED and NATS_NKEY_SEED_FILE (unsetNkeyEnvironment) and
+	// captures the default slog handler (captureBusLogs), both process-wide.
 	t.Run("direct", func(t *testing.T) { closedConnectionIsReplacedOnce(t, nil) })
 	t.Run("through a SOCKS5 proxy", func(t *testing.T) {
 		var proxy *testsocks5.Server
@@ -1100,6 +1122,7 @@ func closedConnectionIsReplacedOnce(t *testing.T, through func(uri string) []bus
 // sees the close, so the test polls its connection list rather than reading it once: on main the
 // replacement stays listed for good, and the poll runs out.
 func TestARefusedStartLeavesNoConnectionOpen(t *testing.T) {
+	// Serial: it captures the default slog handler (captureBusLogs), a process-wide swap.
 	srv, uri := testnats.Start(t)
 	connections := serverConnections(t, srv)
 	logs := captureBusLogs(t)

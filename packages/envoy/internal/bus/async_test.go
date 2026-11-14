@@ -200,7 +200,7 @@ func TestAWindowAnswersNoRespondersOnACurrentConnectionAsNotAcknowledged(t *test
 // server that has gone silent leaves it, is ErrNotAcknowledged once the acknowledgement's 5 s run
 // out, not ErrUnavailable: the connection never read as lost.
 func TestAWindowAnswersAnUnacknowledgedPublishOnACurrentConnectionAsNotAcknowledged(t *testing.T) {
-	t.Parallel()
+	// Serial: the answer must come inside 15 s, the acknowledgement's 5 s plus slack.
 	server, url := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{url})
 	if err != nil {
@@ -219,8 +219,8 @@ func TestAWindowAnswersAnUnacknowledgedPublishOnACurrentConnectionAsNotAcknowled
 		if !errors.Is(err, bus.ErrNotAcknowledged) || !errors.Is(err, natsgo.ErrAsyncPublishTimeout) || errors.Is(err, bus.ErrUnavailable) {
 			t.Fatalf("a publish never acknowledged on a current connection answered %v, want ErrNotAcknowledged wrapping nats.ErrAsyncPublishTimeout, not ErrUnavailable", err)
 		}
-	case <-time.After(busWait):
-		t.Fatal("the publish was never answered")
+	case <-time.After(15 * time.Second):
+		t.Fatal("the publish was not answered within 15s, its acknowledgement's 5s and slack")
 	}
 	if !client.Connected() {
 		t.Fatal("the client lost its connection while frozen; the test proves nothing about a current one")

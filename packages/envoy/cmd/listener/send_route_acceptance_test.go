@@ -148,7 +148,7 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 // identical request before the cut, which answers 200 — without it a rig that refused every send
 // (a bad body, an unregistered target) would pass this test with a 503 of a different kind.
 func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the send is refused 503 within 4 s).
 	const target = "ses_cut_bus_target"
 	// The relay the reconnect test uses (reconnect_shutdown_test.go): cut below closes every live
 	// link and refuses every connection after it, as the hub's virtual machine being recreated
@@ -241,7 +241,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 // in the warm session cache, so its read is not what is under test. The negative control is the
 // identical request before the freeze, answered 200 on the same rig.
 func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (each answer lands within 4 s, the budget and scheduling).
 	const (
 		target = "ses_frozen_bus_target"
 		sender = "ses_frozen_bus_sender_with_no_interest_record"
@@ -741,7 +741,7 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 // it in one thing only — the bucket no longer answers — so a rig that refused every send could
 // not produce the pair.
 func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the send is refused inside sendRequestBudget).
 	const target = "ses_unanswered_store_read"
 	const sender = "ses_unanswered_store_sender"
 	_, observer := trailingListeners(t)

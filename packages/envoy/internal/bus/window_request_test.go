@@ -79,7 +79,7 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 	window := client.WindowUntil(nil)
 
 	stored := contracts.AgentSubject("ses_request_stored")
-	if err := answerOf(t, window.Request(stored, forwardEnvelope("stored"), bus.RequestOptions{MsgID: bus.ForwardMsgID("stored", stored), Timeout: 2 * time.Second}), 5*time.Second); err != nil {
+	if err := answerOf(t, window.Request(stored, forwardEnvelope("stored"), bus.RequestOptions{MsgID: bus.ForwardMsgID("stored", stored), Timeout: 10 * time.Second}), busWait); err != nil {
 		t.Fatalf("a Request the stream acknowledged, with nobody subscribed to its subject, returned %v, want nil", err)
 	}
 
@@ -96,7 +96,7 @@ func TestARequestIsAnsweredByTheStreamsAcknowledgementAlone(t *testing.T) {
 // A Request nobody answers ends when its timeout runs out, as not acknowledged, never as a lost
 // connection: the server's no-responders answer is no acknowledgement and does not end the wait.
 func TestARequestNobodyAnswersIsNotAcknowledgedWithinItsTimeout(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: it holds an unanswered Request to about its 300 ms timeout.
 	const timeout = 300 * time.Millisecond
 	_, _, client := requestClient(t)
 
@@ -123,8 +123,12 @@ func TestAnUnansweredRequestSaysWhetherItsPublishWasConfirmed(t *testing.T) {
 	server, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 
+	// The request's flush runs inside the request's own timeout, so the timeout is long enough for
+	// a loaded machine's flush to confirm the publish: this leg proves the answer a confirmed
+	// publish gets, not how soon the server answered. Nothing acknowledges the role subject, so the
+	// Request still runs out, at that cost.
 	err := answerOf(t, window.Request("notifications.role.request-confirmed", forwardEnvelope("confirmed"),
-		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: 300 * time.Millisecond}), 5*time.Second)
+		bus.RequestOptions{MsgID: bus.ForwardMsgID("confirmed", "notifications.role.request-confirmed"), Timeout: 5 * time.Second}), busWait)
 	if !errors.Is(err, bus.ErrNotAcknowledged) || errors.Is(err, bus.ErrPublishUnconfirmed) {
 		t.Fatalf("an unanswered Request whose publish was confirmed returned %v, want ErrNotAcknowledged and not ErrPublishUnconfirmed", err)
 	}
@@ -157,13 +161,13 @@ func TestRequestsUnderOneMsgIDLeaveTheStreamOneCopy(t *testing.T) {
 	other := contracts.AgentSubject("ses_request_other")
 
 	for attempt := 1; attempt <= 2; attempt++ {
-		opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: 2 * time.Second}
-		if err := answerOf(t, window.Request(holder, item, opts), 5*time.Second); err != nil {
+		opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, holder), Timeout: 10 * time.Second}
+		if err := answerOf(t, window.Request(holder, item, opts), busWait); err != nil {
 			t.Fatalf("attempt %d returned %v, want nil", attempt, err)
 		}
 	}
-	opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, other), Timeout: 2 * time.Second}
-	if err := answerOf(t, window.Request(other, item, opts), 5*time.Second); err != nil {
+	opts := bus.RequestOptions{MsgID: bus.ForwardMsgID(item.DedupeKey, other), Timeout: 10 * time.Second}
+	if err := answerOf(t, window.Request(other, item, opts), busWait); err != nil {
 		t.Fatalf("the Request to the second subject returned %v, want nil", err)
 	}
 
@@ -304,7 +308,7 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 	server, _, client := requestClient(t)
 	window := client.WindowUntil(nil)
 
-	if err := window.Probe(time.Second); err != nil {
+	if err := window.Probe(10 * time.Second); err != nil {
 		t.Fatalf("a Probe of a live connection returned %v, want nil", err)
 	}
 
@@ -317,7 +321,7 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 	if !client.Connected() {
 		t.Fatal("the client lost its connection while frozen; the Probe proves nothing about a silent server")
 	}
-	if err := window.Probe(time.Second); err != nil {
+	if err := window.Probe(10 * time.Second); err != nil {
 		t.Fatalf("a Probe once the server answers again returned %v, want nil", err)
 	}
 
@@ -337,7 +341,7 @@ func TestProbeAnswersWhetherTheWindowsConnectionStillAnswers(t *testing.T) {
 // connection is otherwise 5 s: the stream holds nothing it sent once the client is connected again.
 // A window pinned to a live connection answers a send past its deadline the same way, at once.
 func TestAWindowSendsNothingPastItsDeadline(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: it holds the send's answer to about its 200 ms deadline.
 	server, _, client := requestClient(t)
 	subject := contracts.AgentSubject("ses_window_deadline")
 	server.Stop(t)

@@ -56,25 +56,11 @@ import (
 // alone.
 const promptShutdown = 3 * time.Second
 
-// eventFeedWait bounds a read of a frame the event feed owes, here the events_start that opens an
-// events subscription (openLiveEvents). It is a give-up bound and never a measurement: that frame
-// waits for the relay's first cursor, which waits for a horizon proven after its own read
-// (api.server.firstRelayCursor, events.Horizon.Await), and a horizon is proven from
-// pg_snapshot_xmin, the oldest transaction id open anywhere on the Postgres instance. Nothing
-// bounds that wait: Horizon.Await bounds only observations that fail (horizonAwaitFailFor, ten
-// seconds), and an observation taken behind another database's open transaction does not fail, it
-// waits for that transaction to end. So no number here can be read off the server's own wait, and
-// no number a loaded instance cannot exceed exists. What keeps the read prompt is the instance,
-// not this bound, which only turns a hang into a failure that names itself. It is the number the
-// API package's own feed waits carry (internal/dispatch/api/live_events_test.go's eventFeedWait,
-// dispatch://INFRA-1075).
-const eventFeedWait = 30 * time.Second
-
 // bootWait bounds a wait for a process this package started to serve: waitHealthy's wait for the
 // listening line and a 200 from /healthz, and registry_test's waits for a line a boot writes
-// before it serves. Like eventFeedWait it is a give-up bound and never a measurement: no test
-// here asserts anything about how long a boot takes, and the boot's cost is not this package's
-// to choose. Dispatch opens its pool and runs the migration pass over every migration of the set
+// before it serves. It is a give-up bound and never a measurement: no test here asserts anything
+// about how long a boot takes, and the boot's cost is not this package's to choose. Dispatch
+// opens its pool and runs the migration pass over every migration of the set
 // (224 of them) before it serves, and a test's database is a clone that already holds them all,
 // so the pass reads the version table once per migration and applies none: that pass alone took
 // 13.2 s of a 15.5 s boot on an idle two-core box, and 28.0 s of a 29.9 s boot on CI's envoy-go

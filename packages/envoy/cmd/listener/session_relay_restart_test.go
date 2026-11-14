@@ -48,7 +48,7 @@ func failCreates(t *testing.T, rig *relayRig, sessionID string, n int) <-chan st
 	return failed
 }
 
-// awaitCreateFailure waits up to 10 s for the next failure failCreates reports.
+// awaitCreateFailure waits up to listenerWait for the next failure failCreates reports.
 func awaitCreateFailure(t *testing.T, failed <-chan struct{}) {
 	t.Helper()
 	select {
@@ -283,7 +283,7 @@ func awaitPulled(t *testing.T, consumers *bus.SessionConsumers, sessionIDs []str
 // (relayRestartLimit) and their calls' timeout starts only once they hold it, so none times out
 // waiting, and none leaves its consumer missing.
 func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
-	t.Parallel()
+	// Serial: every session's backlog must arrive within 10 s of the restart (wall clock).
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	const machineID = "relay-burst"
@@ -324,7 +324,7 @@ func TestSessionConsumerBurstOfRestartsDeliversEveryBacklog(t *testing.T) {
 	})
 	startedAt := time.Now()
 	got := map[string][]burstFrame{}
-	deadline := time.After(listenerWait)
+	deadline := time.After(10 * time.Second)
 	var last time.Time
 	for received := range burstSessions * perSession {
 		select {

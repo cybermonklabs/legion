@@ -1,8 +1,5 @@
 package bus
 
-// Every test here sets NATS_NKEY_SEED with t.Setenv, which panics the process beside t.Parallel,
-// so none of them is parallel (dispatch://INFRA-1075).
-
 import (
 	"errors"
 	"strings"
@@ -24,6 +21,7 @@ const grantedTopic = "notifications.lxspec.granted"
 // agent subject and of a team topic and no other lane, so the lane of any other captured topic
 // takes core NATS.
 func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCapture(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		topic string
 		core  bool
@@ -59,6 +57,7 @@ func TestUsesCoreTransportForRoleLanesAndEveryNotificationTheStreamDoesNotCaptur
 // StreamCaptures reads each stream subject as a literal prefix and `.>`; a subject of any other
 // shape needs a matcher that splits tokens.
 func TestEveryStreamSubjectIsALiteralPrefixAndWildcard(t *testing.T) {
+	t.Parallel()
 	for _, subject := range streamCarriedSubjects {
 		prefix, ok := strings.CutSuffix(subject, ".>")
 		if !ok || prefix == "" || strings.ContainsAny(prefix, "*>") {
@@ -72,6 +71,8 @@ func TestEveryStreamSubjectIsALiteralPrefixAndWildcard(t *testing.T) {
 // the fix the publish went to JetStream, which never answers it while a core subscriber holds the
 // subject, so it failed at its five-second acknowledgement deadline.
 func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T) {
+	// Serial: its assertion is a time (the publish answers within 1 s, against JetStream's 5 s
+	// acknowledgement deadline).
 	uri := testnats.URL(t)
 	client, err := ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -138,6 +139,7 @@ func TestAnAdHocTopicIsPublishedOverCoreNATSAndReachesItsSubscriber(t *testing.T
 // A publish to an ad-hoc topic the server denies the publisher is a refusal naming the subject, not
 // a five-second wait: a listener whose grant leaves the topic out reports that at once.
 func TestAnAdHocPublishNATSDeniesReturnsTheDenial(t *testing.T) {
+	// Serial: it sets NATS_NKEY_SEED with t.Setenv, which panics the process beside t.Parallel.
 	seed, public := testnats.User(t)
 	uri := testnats.StartNkeyGranted(t, public, grantedTopic, "_INBOX.>").URL
 	t.Setenv("NATS_NKEY_SEED", seed)

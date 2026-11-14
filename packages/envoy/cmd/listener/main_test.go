@@ -424,7 +424,7 @@ func (clock *listenerAcknowledgementClock) CancelAll() {
 // Before team topics were stored the route published them over core NATS, which hands a message
 // only to whoever holds the subject at that moment, so this message would have reached nobody.
 func TestPublishHandlerStoresATeamTopicNoSessionIsConnectedFor(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the publish answers within 1 s).
 	const topic = "notifications.team.deploy-squad"
 	harness := newListenerDeliveryHarness(t)
 	client := harness.client
@@ -1730,7 +1730,7 @@ func TestAdminInterestsHandler_RowsCarryALiveSessionsHeartbeat(t *testing.T) {
 // still hold the row: the heartbeat, not the row's older updated_at. The read comes more than one
 // TTL after the session left, past the default retention, so only WithLastSeenRetention keeps it.
 func TestAdminInterestsHandler_RowsCarryAnExpiredSessionsLastHeartbeat(t *testing.T) {
-	t.Parallel()
+	// Serial: heartbeat's read must land inside the 1 s session TTL.
 	const (
 		expired    = "ses_heartbeat_expired"
 		sessionTTL = time.Second
@@ -2734,7 +2734,7 @@ type bindOutcome struct {
 // The replacement polls the durable while the old task holds it, so it binds within one interval of
 // the old task's exit rather than at the end of a backoff that grows with each attempt.
 func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the replacement binds within 500 ms of the release).
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-on-release"
 	old, _ := durableHeldElsewhere(t, uri, consumer)
@@ -2781,7 +2781,7 @@ func TestBindListenerDurableBindsWithinOneIntervalOfRelease(t *testing.T) {
 // bind's own refusal, and the holder keeps its binding: the bind never deletes the durable to take
 // it (TestBoundDurableConsumerIsNotStolen).
 func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
-	t.Parallel()
+	// Serial: the attempt count needs the first bind attempt to end inside the 200 ms deadline.
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-deadline"
 	old, holder := durableHeldElsewhere(t, uri, consumer)
@@ -2817,7 +2817,7 @@ func TestBindListenerDurableGivesUpAtTheDeadline(t *testing.T) {
 // A signal during the wait ends the bind at once, without waiting for the next attempt, so the
 // listener's ordered shutdown starts while ECS's stop timeout still runs.
 func TestBindListenerDurableStopsWhenTheContextEnds(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the bind returns within 500 ms of the context's end).
 	uri := testnats.URL(t)
 	const consumer = "listener-bind-cancelled"
 	durableHeldElsewhere(t, uri, consumer)
@@ -2931,9 +2931,9 @@ func TestTheStoresFollowAConnectionReplacedWhileTheDurableIsHeld(t *testing.T) {
 
 func TestStartListenerSubscriptionMigratesLegacyDurableConsumer(t *testing.T) {
 	// Serial: it binds a durable consumer after closing the connection that held it, and that
-	// bind races at random (dispatch://INFRA-985, which owns the race itself). This branch made
-	// every other test of the package parallel; this one stays serial so the sweep does not make
-	// a known random failure more likely (dispatch://INFRA-1075).
+	// bind races at random (dispatch://INFRA-985, which owns the race itself). Run beside the
+	// package's parallel tests, that race would lose more often, so this test stays serial
+	// (dispatch://INFRA-1075).
 	_, uri := testnats.Start(t)
 	legacyConn := testnats.Connect(t, uri)
 	legacyJS, err := legacyConn.JetStream()
@@ -3529,7 +3529,7 @@ func TestListenerDeliveryHandler_NoHolderKeepsARoleAndExceptsAnAgent(t *testing.
 // the fan-out counts that recipient skipped and reports nothing of it, and the one exception it
 // publishes is the incapable subscriber's refusal (session.SessionEntry.ConsumerRelaysStored).
 func TestListenerDeliveryHandler_FanoutRefusesUnadvertisedDeliveryMode(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the capability refusal completes within 4 s).
 	harness := newListenerDeliveryHarness(t)
 	const (
 		topic     = "notifications.github.owner.repo.issue.1"
@@ -4447,7 +4447,7 @@ func TestRunSelfHealthMonitor_RetriesPastTransientFailures(t *testing.T) {
 // exactly twenty probes, ten minutes at the
 // production interval.
 func TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection(t *testing.T) {
-	t.Parallel()
+	// Serial: twenty probes at a 1 ms interval must end within 2 s.
 	stuck := errors.New("nats: outbound buffer limit exceeded")
 	var probes atomic.Int32
 	probe := func() error { probes.Add(1); return stuck }
@@ -4471,8 +4471,8 @@ func TestRunSelfHealthMonitor_TerminatesAfterSustainedDisconnection(t *testing.T
 		if got != 20 {
 			t.Fatalf("the monitor terminated after %d disconnected probes, want exactly 20", got)
 		}
-	case <-time.After(listenerWait):
-		t.Fatal("the monitor never terminated a disconnected probe that never recovered")
+	case <-time.After(2 * time.Second):
+		t.Fatal("the monitor did not terminate within 2s a disconnected probe that never recovered: twenty probes at a 1 ms interval, so its disconnected probes do not follow the interval")
 	}
 	select {
 	case <-done:
@@ -4761,7 +4761,7 @@ func TestRunSelfHealthMonitor_RebuildsTerminalWatcher(t *testing.T) {
 // deleted one after another, and each rebuild repairs its fault. No fault outlives its recovery,
 // so the monitor must not count them as one persistent failure and terminate the listener.
 func TestRunSelfHealthMonitor_KeepsRunningThroughFaultsEachRebuildRepairs(t *testing.T) {
-	t.Parallel()
+	// Serial: the faults land on a 50 ms wall-clock schedule and four rebuilds must fit in 1.4 s.
 	const interval = 100 * time.Millisecond
 	faults := []error{
 		errors.New("ci KV watcher stopped"),
@@ -5258,11 +5258,14 @@ func TestTheDriftCorrectionWritesADurableOnlyWhenThePolicyChangesIt(t *testing.T
 			t.Fatalf("unsubscribe %s: %v", consumer, err)
 		}
 	}
+	// settle waits for the creates the observer's handler, on a goroutine of its own, has still to
+	// count, and then keeps a 200 ms quiet window for a create past them.
 	settle := func(creates *atomic.Int32, want int32, what string) {
 		t.Helper()
 		if err := observer.Flush(); err != nil {
 			t.Fatalf("flush: %v", err)
 		}
+		waitFor(t, listenerWait, fmt.Sprintf("%s: %d consumer create requests counted", what, want), func() bool { return creates.Load() >= want })
 		time.Sleep(200 * time.Millisecond)
 		if got := creates.Swap(0); got != want {
 			t.Fatalf("%s: %d consumer create requests, want %d", what, got, want)

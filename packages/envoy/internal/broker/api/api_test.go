@@ -1001,7 +1001,7 @@ func TestCreateRequestWithMaxGrantNeedsLifetime(t *testing.T) {
 // its person what to fix, rather than an opaque 500; and the broker logs it at ERROR for its
 // operator, naming the secret and the error's class, never the stored value.
 func TestAFailedMintIs502MintFailed(t *testing.T) {
-	t.Parallel()
+	// Serial: it swaps the standard logger's output (policytest.CaptureLog).
 	logged := policytest.CaptureLog(t)
 	ts := newTestServerWith(t, func(d *api.Deps) {
 		d.Machine.Minters = map[string]requests.Minter{

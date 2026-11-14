@@ -588,6 +588,9 @@ func TestPromptControlByteInsideBracketedPasteDrainsThroughEnd(t *testing.T) {
 func TestPromptJobStopDuringQuietWindowDoesNotHang(t *testing.T) {
 	t.Parallel()
 	s := newPromptShell(t)
+	// The Ctrl-Z must land inside the quiet window that QUIET_READY opens, so the helper holds
+	// that first window open until it comes rather than for its 200 ms (pasteGapDeciseconds).
+	s.env = "AGENT_SECRETS_JOB_HOLD_QUIET=1 "
 	s.start(false, false)
 	s.send("headtail\r")
 	s.wait("QUIET_READY")
@@ -805,8 +808,10 @@ func TestPromptJobPasteThatNeverEndsIsGivenUp(t *testing.T) {
 // since the last input, restarted at each read, so a slow paste is drained however long it takes and
 // its lines never reach the shell. The helper shortens the bound; the lines arrive well inside it but
 // for longer than it in all.
+// Serial: it measures a quiet window of wall-clock time. Its lines arrive 100 ms apart and each has
+// to land inside the one-second paste bound the helper sets, which a parallel test's load would
+// stretch a gap past.
 func TestPromptJobLongPasteDrainsWhileInputKeepsArriving(t *testing.T) {
-	t.Parallel()
 	s := newPromptShell(t)
 	s.env = "AGENT_SECRETS_JOB_PASTE_BOUND=1s "
 	s.start(false, false)

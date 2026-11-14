@@ -89,7 +89,7 @@ func TestDrainLetsAnInFlightDeliveryFinish(t *testing.T) {
 // A drain that cannot finish closes the connection at its deadline, so a handler that never
 // returns cannot keep a shutting-down process alive.
 func TestDrainClosesTheConnectionAtItsDeadline(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (Drain returns within 2 s, about its 200 ms deadline).
 	client := connectWithHeldHandler(t)
 	started := time.Now()
 	err := client.Drain(200 * time.Millisecond)
@@ -219,7 +219,7 @@ func TestAPublishAfterDrainDoesNotReconnect(t *testing.T) {
 // A delivery subscription whose handler outlasts the deadline does not hold the drain: Drain waits
 // for the subscriptions it drains only until the deadline, then closes the connection.
 func TestDrainClosesAtItsDeadlineWhileADeliverySubscriptionDrains(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (Drain returns within 2 s, about its 300 ms deadline).
 	_, uri := startNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -255,7 +255,8 @@ func TestDrainClosesAtItsDeadlineWhileADeliverySubscriptionDrains(t *testing.T) 
 // reconnecting reaches the server, so a drained subscription would keep its server-side SUB (a
 // reconnect re-sends it) and the drain would only run out its deadline.
 func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (Drain returns within 1 s while reconnecting, against its
+	// 5 s deadline).
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri})
 	if err != nil {
@@ -283,7 +284,8 @@ func TestDrainWhileReconnectingClosesAtOnce(t *testing.T) {
 // budget, would spend it on a subscription that delivers nothing yet. Drain returns once the
 // connection has drained, and the close ends the bind, which binds nothing.
 func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (Drain returns within 2 s with a bind in flight, against
+	// the 10 s JetStream waits a lost bind request out, and the bind ends within 2 s of the close).
 	_, uri := startNATS(t)
 	proxy := startRelayProxy(t, uri)
 	client, err := bus.ConnectOwningStream([]string{proxy.url()})
@@ -347,7 +349,7 @@ func TestDrainDoesNotWaitForABindInFlight(t *testing.T) {
 // delivery in its handler finish, and returns once the connection has drained. Closing the
 // connection there would end Drain at once on the CLOSED event and cut the delivery off.
 func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
-	t.Parallel()
+	// Serial: Drain's 5 s deadline covers the test's own waits, and its return is bounded at 2 s.
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(t)})
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -439,7 +441,8 @@ func TestDrainKeepsAConnectionThatReconnectedBeforeIt(t *testing.T) {
 // and marks the connection draining again as soon as the close empties its subscriptions; whether a
 // reader of the state misses it is a race, so the test runs it several times.
 func TestDrainEndsWhenTheConnectionClosesWhileNATSDrainsIt(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: Drain returns within 1 s of the close, against nats.go's
+	// 5 s wait.
 	uri := testnats.URL(t)
 	for attempt := 1; attempt <= 10; attempt++ {
 		client, err := bus.Connect([]string{uri})

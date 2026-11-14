@@ -1,8 +1,5 @@
 package bus_test
 
-// Every test here captures the default slog handler (captureLogs, stream_config_test.go), a
-// process-wide swap, so none of them is parallel (dispatch://INFRA-1075).
-
 import (
 	"context"
 	"errors"
@@ -31,6 +28,7 @@ func stoppedNATS(t *testing.T) (*testnats.Server, string) {
 // reconciles the stream on its first connection: before WithConnectInBackground the constructor
 // failed, which ended envoy-dispatch's boot.
 func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnection(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConnectInBackground())
 	if err != nil {
@@ -42,12 +40,12 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's first connection", client.Connected)
+	waitFor(t, busWait, "the client's first connection", client.Connected)
 	js, err := testnats.Connect(t, uri).JetStream()
 	if err != nil {
 		t.Fatalf("JetStream context: %v", err)
 	}
-	waitFor(t, 15*time.Second, "the stream the client owns", func() bool {
+	waitFor(t, busWait, "the stream the client owns", func() bool {
 		_, err := js.StreamInfo(bus.Stream)
 		return err == nil
 	})
@@ -60,6 +58,7 @@ func TestAnOwningClientMadeWhileTheServerIsDownCreatesTheStreamOnItsFirstConnect
 // for this client's own work. The stream alone proves less: another writer can leave it holding
 // what the test asks of it.
 func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithConnectInBackground())
 	if err != nil {
@@ -74,7 +73,7 @@ func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *tes
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the client's hooks to cover a connection event", func() bool {
+	waitFor(t, busWait, "the client's hooks to cover a connection event", func() bool {
 		return client.HookedConnectionEvents() >= 1
 	})
 	if _, err := client.JS().StreamInfo(bus.Stream); err != nil {
@@ -86,6 +85,7 @@ func TestHookedConnectionEventsCountsTheFirstReconcileOfABackgroundClient(t *tes
 // has connected. The JetStream bind cannot reach the server before then, so it fails and its
 // registration stays for the first connection to bind; the core subscription is sent by nats.go
 // as it connects, and SubscribeCore returns at once rather than waiting out the outage.
+// Serial: its assertion is a time (SubscribeCore returns within subscribesAtOnce).
 func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	owner, err := bus.ConnectOwningStream([]string{uri})
@@ -119,8 +119,8 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 		if err != nil {
 			t.Fatalf("a core subscription before the first connection: %v", err)
 		}
-	case <-time.After(busWait):
-		t.Fatal("SubscribeCore waited for a connection the server cannot give")
+	case <-time.After(subscribesAtOnce):
+		t.Fatalf("SubscribeCore had not returned within %s: it waited for a connection the server cannot give", subscribesAtOnce)
 	}
 
 	srv.Start(t)
@@ -144,6 +144,12 @@ func TestSubscriptionsMadeBeforeTheFirstConnectionDeliverAfterIt(t *testing.T) {
 	})
 }
 
+// subscribesAtOnce is how soon SubscribeCore must return while the client has never connected:
+// "at once", with room for a loaded machine. It is the subject of the row above, so it keeps its
+// own number rather than busWait's minute, under which a SubscribeCore that blocked on a bounded
+// wait for the connection (a flush's or a connect's timeout) would pass.
+const subscribesAtOnce = 5 * time.Second
+
 // shortAcknowledgementClock bounds a publish's wait to its own duration, so a test sees the
 // deadline pass without waiting out the five seconds a publish has.
 type shortAcknowledgementClock time.Duration
@@ -154,6 +160,7 @@ func (c shortAcknowledgementClock) WithTimeout(parent context.Context, _ time.Du
 
 // A publish before the client's first connection waits within its own deadline and then fails, as
 // one does while the client reconnects; the same client publishes once its server answers.
+// Serial: its assertion is a time (the publish fails within 2 s, about its 300 ms deadline).
 func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T) {
 	srv, uri := stoppedNATS(t)
 	client, err := bus.ConnectOwningStream([]string{uri},
@@ -190,6 +197,7 @@ func TestAPublishBeforeTheFirstConnectionFailsWithinItsOwnDeadline(t *testing.T)
 // subscription made on it before it connects relays once it has: envoy-dispatch's agent
 // conversation relay takes its viewers' subscriptions on it while the bus is down.
 func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testing.T) {
+	t.Parallel()
 	srv, uri := stoppedNATS(t)
 	conn, err := bus.Dial("background-dial-test", []string{uri}, lookupOf(nil), bus.WithConnectInBackground())
 	if err != nil {
@@ -206,9 +214,9 @@ func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testi
 	}
 
 	srv.Start(t)
-	waitFor(t, 15*time.Second, "the connection's first connection", conn.IsConnected)
+	waitFor(t, busWait, "the connection's first connection", conn.IsConnected)
 	publisher := testnats.Connect(t, uri)
-	waitFor(t, 15*time.Second, "the relayed message", func() bool {
+	waitFor(t, busWait, "the relayed message", func() bool {
 		_ = publisher.Publish(subject, []byte("frame"))
 		_ = publisher.Flush()
 		return relayed.Load() > 0
@@ -218,6 +226,8 @@ func TestDialInTheBackgroundRelaysACoreSubscriptionMadeBeforeItConnects(t *testi
 // A configuration error still fails each constructor with WithConnectInBackground, before any
 // dial: a seed that is not one, a server that is not this machine's, a SOCKS5 setting that is not
 // an address. Only an unreachable or refusing server waits for the background.
+// Serial: it unsets NATS_NKEY_SEED and NATS_NKEY_SEED_FILE (unsetNkeyEnvironment), process-wide,
+// and its assertion is a time (each refusal comes within 1 s, before any dial).
 func TestConfigurationErrorsStillFailTheConstructorInTheBackground(t *testing.T) {
 	unsetNkeyEnvironment(t)
 	local := []string{"nats://127.0.0.1:1"}
@@ -273,6 +283,8 @@ func TestConfigurationErrorsStillFailTheConstructorInTheBackground(t *testing.T)
 // otherwise does on a second refusal, and logs the refusal at ERROR once a minute, not once an
 // attempt. nats.go reports no refusal before a connection has first connected, so without the
 // client's own report the process would sit refused with nothing in its log.
+// Serial: it unsets NATS_NKEY_SEED and NATS_NKEY_SEED_FILE (unsetNkeyEnvironment) and captures
+// the default slog handler (captureBusLogs), both process-wide.
 func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 	unsetNkeyEnvironment(t)
 	_, allowed := testnats.User(t)
@@ -315,6 +327,7 @@ func TestARefusedCredentialIsLoggedOnceAMinuteAndRetried(t *testing.T) {
 // declared lost within seconds with WithSilentCutDetection, and reconnects once the traffic
 // moves again. With nats.go's defaults (a ping every two minutes, two outstanding) the client
 // would read connected for minutes into the cut.
+// Serial: its assertion is a time (the cut is noticed within 5 s).
 func TestASilentCutIsNoticedWithinSecondsAndHealsWhenTrafficResumes(t *testing.T) {
 	srv, uri := testnats.Start(t)
 	client, err := bus.Connect([]string{uri}, bus.WithSilentCutDetection())

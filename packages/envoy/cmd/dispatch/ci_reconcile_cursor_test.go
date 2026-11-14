@@ -250,10 +250,7 @@ func cycleCompleted(passes []map[string]string) int {
 // space, so a field is what is left and right of the first `=` of each word.
 func ciReconcilePasses(output string) []map[string]string {
 	var passes []map[string]string
-	for line := range strings.Lines(output) {
-		if !strings.Contains(line, `msg="ci reconcile pass"`) {
-			continue
-		}
+	for _, line := range ciReconcilePassLines(output) {
 		fields := map[string]string{}
 		for _, word := range strings.Fields(line) {
 			key, value, ok := strings.Cut(word, "=")
@@ -265,6 +262,18 @@ func ciReconcilePasses(output string) []map[string]string {
 		passes = append(passes, fields)
 	}
 	return passes
+}
+
+// ciReconcilePassLines is every "ci reconcile pass" line the process has logged, oldest first,
+// as it was written: the line ciReconcilePasses answers as fields at the same index.
+func ciReconcilePassLines(output string) []string {
+	var lines []string
+	for line := range strings.Lines(output) {
+		if strings.Contains(line, `msg="ci reconcile pass"`) {
+			lines = append(lines, line)
+		}
+	}
+	return lines
 }
 
 // waitForCIReconcilePasses waits for the pass lines the process has logged to satisfy enough,

@@ -227,7 +227,8 @@ func TestALoginBetweenARefusalAndItsLineIsAnOrdinaryRetry(t *testing.T) {
 // Real time, at the production backoff: the rig serves the helper on a real unix socket and pins
 // each caller through SO_PEERPIDFD, which no synctest bubble can hold.
 func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: the session must sign within 1 s of the login, a span
+	// of real time the package's parallel rigs and helper subprocesses would stretch.
 	r := newRig(t, "", func(r *rig) {
 		r.srv.EnrollRetryMin = time.Second
 		r.srv.EnrollRetryMax = time.Minute

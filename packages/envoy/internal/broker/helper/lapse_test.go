@@ -250,7 +250,8 @@ func TestASessionThatEndsWhileItsLapsedRevokeRetriesStillRevokesIt(t *testing.T)
 // test cannot pass by arriving after the session enrolled again: a register that does not wait
 // answers while the gate is still shut, and the test fails.
 func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
-	t.Parallel()
+	// Serial: registerWaitBlocked reads the whole process's goroutine dump
+	// (blockedInRegisterReply), which a parallel test's own waiting register would match.
 	r, lapsed, _ := lapseRig(t, failAlways)
 	gate, open := testGate(t)
 	r.fake.mu.Lock()
@@ -272,7 +273,8 @@ func TestRegisterWaitWaitsForTheReEnrollmentAfterALapse(t *testing.T) {
 // revoked before the next enrollment (the fake answers an unrevoked id's key with that same id),
 // and the session ends under a third id with no lapsed id left on it or on its record.
 func TestASecondLapseWaitsAgainAndRevokesBothLapsedIDs(t *testing.T) {
-	t.Parallel()
+	// Serial: registerWaitBlocked reads the whole process's goroutine dump
+	// (blockedInRegisterReply), which a parallel test's own waiting register would match.
 	r, first, state := lapseRig(t, failAlways)
 	renewGate, releaseRenew := testGate(t)
 	r.fake.mu.Lock()
@@ -442,7 +444,8 @@ func freshEnrollment(t *testing.T, replies <-chan registerAnswer, stale ...strin
 // that goroutine by name in the goroutine dump, a "[select" header over a ").registerReply("
 // frame, so a rename of registerReply must be made here too. A name that no longer matches never
 // lets the test pass: TestRegisterWaitWaitsForTheReEnrollmentAfterALapse then fails after about
-// 10 s.
+// 10 s. The dump is the whole process's, so every test that reads it is serial: a register
+// another test has waiting would match it before the caller's own call waits.
 func blockedInRegisterReply() bool {
 	for _, g := range goroutinetest.Traces() {
 		header, _, _ := strings.Cut(g, "\n")

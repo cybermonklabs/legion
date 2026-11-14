@@ -36,11 +36,13 @@ import (
 // holds across the restart, as a Service's is: BROKER_PUBLIC_URL and AGENT_SECRETS_URL both name
 // it, so a proof's htu is as good after the restart as before, and while no broker runs the
 // forwarder refuses every connection at once. The outage runs from the first broker's exit
-// until the survivor's renewer has met it: the renewal it makes a third of a lease after its
-// last one, which no broker is there to serve, and which it prints. Everything else an outage
-// longer than a lease carries - the lease itself, and the gap no broker served - is taken away
-// on the database's clock rather than waited out (the stop below says how, and why the shortest
-// lease config.Load accepts is 91 s).
+// until the survivor's renewer has met it and backed off to its longest wait: the renewal it
+// makes a third of a lease after its last one, which no broker is there to serve, then the
+// failed retries it waits 2, 4 and 8 s between, until it prints the 10 s wait its backoff is
+// capped at, as it does in an outage longer than a lease. Everything else such an outage
+// carries - the lease itself, and the gap no broker served - is taken away on the database's
+// clock rather than waited out (the stop below says how, and why the shortest lease
+// config.Load accepts is 91 s).
 //
 // Four pods of one service, enrolled by its launcher and granted its agent-tier secret with no
 // approver, prove one thing each. The survivor is the outage itself: keyed by `agent-secrets
@@ -56,8 +58,10 @@ import (
 // another service account's, is refused POD_IDENTITY_MISMATCH and moves its lease not at all. The
 // broker's log line is read last, so that against a broker without the fix the test fails on the
 // refusal the pods met rather than on a missing line.
+//
+// Serial: its assertion is a time (the renewer renews within a third of a lease of the restart,
+// and the test reads that lease within 2 s of the renewal).
 func TestABrokerOutageLongerThanALease(t *testing.T) {
-	t.Parallel()
 	databaseURL := storetest.URL(t)
 	issuer := oidctest.New(t)
 	podKey := issuer.PublishKey(t, "signing-key")
@@ -171,6 +175,12 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	// is the renewer meeting the outage, the one thing the outage below waits for.
 	const renewRetrying = "; retrying in "
 	renewFailures := func() int { return strings.Count(renewer.Output.String(), renewRetrying) }
+	// renewCapped is how many of those lines name leasetime.RenewBackoffMax, the cap the
+	// renewer's backoff grows to when no --retry-cap shortens it: each is a failed renewal
+	// after which the renewer waits its longest.
+	renewCapped := func() int {
+		return strings.Count(renewer.Output.String(), renewRetrying+leasetime.RenewBackoffMax.String()+"\n")
+	}
 	fetch := func(when string) {
 		t.Helper()
 		started := time.Now()
@@ -242,6 +252,7 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 		}
 	}
 	failedBefore := renewFailures()
+	cappedBefore := renewCapped()
 	front.route("")
 	first.Terminate(t)
 	if err := first.AwaitExit(t, 30*time.Second); err != nil {
@@ -291,6 +302,28 @@ func TestABrokerOutageLongerThanALease(t *testing.T) {
 	}
 	renewerRunning("during the outage")
 	t.Logf("the survivor's renewer met the outage %s after the first broker exited", time.Since(stopped).Round(time.Millisecond))
+	// Nor does the outage end before the renewer has backed off to its cap, as it has by the
+	// end of one longer than a lease: a renewer whose wait after a failure doubled past
+	// leasetime.RenewBackoffMax would still be in that wait when the second broker serves, and
+	// renew later than the third of a lease (2) allows. The forwarder refuses each retry at once,
+	// and each waits the backoff the failure before it printed, so the line naming the cap comes
+	// once the waits short of it (2, 4 and 8 s) have passed; the deadline adds
+	// leasetime.RenewClientTimeout on top, as above.
+	var toCap time.Duration
+	for wait := leasetime.RenewBackoffInitial; wait < leasetime.RenewBackoffMax; wait = leasetime.NextBackoff(wait) {
+		toCap += wait
+	}
+	metAt, cappedBy := time.Now(), toCap+leasetime.RenewClientTimeout
+	for renewCapped() == cappedBefore {
+		renewerRunning("during the outage")
+		if time.Since(metAt) > cappedBy {
+			t.Fatalf("the survivor's renewer did not back off to its %s cap within %s of meeting the outage:\n%s",
+				leasetime.RenewBackoffMax, cappedBy, renewer.Output.String())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	renewerRunning("during the outage")
+	t.Logf("the survivor's renewer backed off to its %s cap %s after the first broker exited", leasetime.RenewBackoffMax, time.Since(stopped).Round(time.Millisecond))
 
 	t.Log("--- a second broker serves the same database at the same address")
 	restarted := serve()

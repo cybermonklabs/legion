@@ -719,7 +719,8 @@ func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
 // than the day between refreshes still sees each refreshed before it lapses: the loop refreshes
 // at half the time left, rescheduled when a login installs one.
 func TestAShortLivedCredentialIsRefreshedBeforeItLapses(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time: the refresh must land between half the credential's
+	// two-second life and its expiry.
 	f := newFakeBroker(t)
 	f.mu.Lock()
 	f.loginLifetime = 2 * time.Second

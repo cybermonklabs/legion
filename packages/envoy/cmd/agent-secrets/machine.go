@@ -86,7 +86,7 @@ func cmdMachineLogin(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		time.Sleep(backoff)
-		backoff = nextBackoff(backoff, retryCap)
+		backoff = nextBackoff(backoff)
 	}
 }
 

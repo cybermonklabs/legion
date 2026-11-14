@@ -1,8 +1,5 @@
 package bus
 
-// Every test here captures the default slog handler (captureLogs, stream_config_test.go), a
-// process-wide swap, so none of them is parallel (dispatch://INFRA-1075).
-
 import (
 	"errors"
 	"fmt"
@@ -144,6 +141,7 @@ func restoredLog(t *testing.T, logs *capturedLogs) string {
 // keeper periods the setting program's keeper puts the three copies and the byte limit back and
 // logs both, and the stream keeps its id, on every run.
 func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	const id = "deployed-id"
@@ -195,6 +193,7 @@ func TestTheKeeperEndsTheMixedSettingsRaceAtThreeCopiesTheByteLimitAndTheID(t *t
 // and logs it, and a pass of the first program's keeper, whose binary does not compile the subject,
 // leaves it there.
 func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	const added = "notifications.newer.>"
 	limited := parseConnectOptions([]ConnectOption{WithStreamMaxBytes(keeperByteLimit)}).streamConfig()
@@ -244,6 +243,7 @@ func TestEachReleasesKeeperAddsBackItsOwnSubjectAConcurrentWriteTookAway(t *test
 // forces that order through the keeper's read. Its next pass, on the stream the start moved them
 // off, restores the byte limit with no role lane in the list.
 func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	roleLane := contracts.RoleTopicPrefix + ">"
 	legacy := *streamCfg
@@ -284,6 +284,7 @@ func TestTheKeeperNeverPutsBackARoleLaneAStartMovedOffTheStream(t *testing.T) {
 // lacks and that overlap none deployed: it keeps every deployed subject, a foreign one, a widened
 // one and a narrowed one included.
 func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name          string
 		deployed, own []string
@@ -307,6 +308,7 @@ func TestTheKeepersSubjectsAddOnlyItsOwnThatOverlapNothingDeployed(t *testing.T)
 // adds its new subject once and leaves the first's wide subject in place, and from then on neither
 // keeper sends an update, with both new subjects in the list.
 func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
+	t.Parallel()
 	js := streamTestJetStream(t)
 	alpha := parseConnectOptions([]ConnectOption(nil)).streamConfig()
 	alpha.Subjects = append(slices.Clone(streamCarriedSubjects), "notifications.alpha.>")
@@ -344,6 +346,7 @@ func TestTwoKeepersWithDifferentSubjectListsNeverSwitchTheStream(t *testing.T) {
 // over the passes after. The removed subject comes back at the end of the list, and the foreign
 // subject stays: the keeper only adds subjects.
 func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval))
@@ -397,6 +400,7 @@ func TestTheKeeperRestoresWhatAnOperatorTookAwayAndKeepsAForeignSubject(t *testi
 // nothing, and a start with that setting writes nothing. Once an operator lowers the limit below
 // the setting, the keeper raises it back to the setting and logs it.
 func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	settings := []ConnectOption{WithReplicas(3), WithStreamMaxBytes(keeperByteLimit), WithKeepInterval(testKeepInterval)}
@@ -444,6 +448,7 @@ func TestTheKeeperKeepsAnOperatorsRaiseOfTheByteLimitAndRaisesALowerOne(t *testi
 // for a feature it has not configured, is skipped: the keeper creates nothing, updates nothing and
 // logs nothing about it.
 func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	cluster, js := startClusterJetStream(t)
 	logs := captureLogs(t)
 	const listed, unlisted, missing = "envoy_keeper_listed", "envoy_keeper_unlisted", "envoy_keeper_missing"
@@ -505,6 +510,7 @@ func TestTheKeeperRaisesTheBucketsItsProgramNamesBackToTheirCopies(t *testing.T)
 // it never lowers either, and raises no bucket it names, at one copy as well. The update count is
 // read from the API subject itself.
 func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
+	t.Parallel()
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3), WithStreamMaxBytes(keeperByteLimit))
 	testnats.AwaitSettledStream(t, js, Stream)
@@ -536,7 +542,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 	if _, err := js.UpdateStream(&info.Config); err != nil {
 		t.Fatalf("update the stream: %v", err)
 	}
-	deadline := time.Now().Add(keepWait)
+	deadline := time.Now().Add(busWait)
 	for updates.Load() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("the watch did not see an update sent to the stream")
@@ -550,6 +556,7 @@ func TestAKeeperWithTheDefaultSettingsSendsNoUpdate(t *testing.T) {
 // so the update fails as a pass in flight at a shutdown does, and the keeper logs no failure for
 // it. Once the client stops, the stream stays at one copy.
 func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	for _, stop := range []struct {
 		name string
 		stop func(*Client)
@@ -608,6 +615,7 @@ func TestStoppingTheClientStopsItsKeeper(t *testing.T) {
 // races it on most runs; with the gate the replaced subject never comes back over many periods, and
 // no keeper pass fails on a stream not reconciled yet.
 func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testing.T) {
+	// Serial: it captures the default slog handler (captureLogs), a process-wide swap.
 	const replaced, replacing = "notifications.github.*", "notifications.github.>"
 	srv, uri := testnats.Start(t)
 	deploy := testnats.Connect(t, uri)
@@ -669,6 +677,7 @@ func TestTheKeeperOfABackgroundClientRunsNoPassBeforeItsFirstReconcile(t *testin
 
 // An owning client that connects in the background and stops before its server ever answered
 // started no keeper, and Close and Drain return at once rather than wait for one.
+// Serial: its assertion is a time (Close and Drain return within stopsAtOnce).
 func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *testing.T) {
 	for _, stop := range []struct {
 		name string
@@ -692,8 +701,8 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 			}()
 			select {
 			case <-stopped:
-			case <-time.After(busWait):
-				t.Fatalf("%s of a client that never connected did not return within %s", stop.name, busWait)
+			case <-time.After(stopsAtOnce):
+				t.Fatalf("%s of a client that never connected did not return within %s", stop.name, stopsAtOnce)
 			}
 			client.mu.Lock()
 			started := client.keeperDone != nil
@@ -705,12 +714,19 @@ func TestStoppingABackgroundClientBeforeItsFirstConnectionStartsNoKeeper(t *test
 	}
 }
 
+// stopsAtOnce is how soon Close and Drain of a client that never connected must return: "at
+// once", with room for a loaded machine. It is the subject of the row above, so it keeps its
+// own number rather than busWait's minute, under which a stop that waited on its background
+// connect or on a stream call's timeout would pass.
+const stopsAtOnce = 10 * time.Second
+
 // The keeper names the consumer cap it raised, with the deployed value and the new one, so an
 // operator who lowered the cap reads what put it back within a period instead of finding it
 // raised with nothing saying so. A stream already at the cap has it named for nothing, and so
 // has a stream with no cap on a server that caps no such stream itself, which the keeper leaves
 // as it is.
 func TestRestoredFieldsNamesTheConsumerCapTheKeeperRaised(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name     string
 		deployed int

@@ -277,9 +277,8 @@ func TestADispatchStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 
 // `redeliver-webhooks` with ENVOY_NATS_REPLICAS=3 raises the R1 webhook redelivery bucket an
 // earlier sweep at the default created to three copies, as the server's sweeper does.
-// Serial: it swaps process-wide state, the default slog logger the start's own lines are read
-// out of (connectDispatchStream's logtest.SetDefault), which the whole process shares.
 func TestRedeliverWebhooksRaisesAnR1RedeliveryBucketToTheReplicaSetting(t *testing.T) {
+	t.Parallel()
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.URL())
 	t.Cleanup(conn.Close)

@@ -5,6 +5,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strconv"
 	"testing"
 	"time"
@@ -119,6 +120,12 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 			t.Errorf("the pass that read %s reports %s = %q, want %q: %v", head, want.field, pass[want.field], want.value, pass)
 		}
 	}
+	// The line carries those fields, with records, in the order the pass first wrote them: a
+	// field added to the line is written after the fields already there (cireconcile/counts.go,
+	// report), so a change of that order is a change to every reader of the line.
+	if line := ciReconcilePassLines(process.Output.String())[at]; !ciReconcilePassFieldOrder.MatchString(line) {
+		t.Errorf("the pass that read %s wrote its first eight fields out of their order, want %s: %s", head, ciReconcilePassFieldOrder, line)
+	}
 	// That head's record is changed once in the life of this process: the pass that first reads
 	// the head whole writes the run, the verdict and the suite into it, and every pass after
 	// that reads the same two listings -- the stand-in answers no ETag, so nothing is
@@ -132,6 +139,10 @@ func TestTheCIReconcilePassRunsInTheDispatchProcess(t *testing.T) {
 	}
 	process.WaitForOutput(t, `msg="dispatch duty: leased pass ran" lease=ci-reconcile`)
 }
+
+// ciReconcilePassFieldOrder is the head of a pass line with its first eight fields in the order
+// the pass writes them, whatever their values.
+var ciReconcilePassFieldOrder = regexp.MustCompile(`msg="ci reconcile pass" list_pages=\S+ heads=\S+ head_requests=\S+ heads_not_modified=\S+ records=\S+ mappings_skipped=\S+ heads_too_large=\S+ rate_limited=\S+`)
 
 // ciReconcilePassOfHead is the index of the first pass that read exactly the one head named,
 // which is the pass that names it as both the first and the last head it reached, and -1 while

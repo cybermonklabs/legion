@@ -25,7 +25,8 @@ func proxiedLookup(address string) func(string) (string, bool) {
 // never answers the SOCKS5 greeting holds the dial open: the client closes it at the connect's
 // one-second deadline, not at the bus's five-second connect timeout.
 func TestAProxiedDialEndsAtTheConnectsDeadline(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the dial must end near the 1 s deadline, not at the 5 s
+	// connect timeout).
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen for the silent proxy: %v", err)

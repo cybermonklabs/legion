@@ -740,10 +740,10 @@ func minDuration(a, b time.Duration) time.Duration {
 const retryCap = 10 * time.Second
 
 // nextBackoff advances the backoff a poll loop of this package keeps: two seconds, doubling to
-// limit. The renewer's own step is leasetime's, which the broker's lease bound walks it by
+// retryCap. The renewer's own step is leasetime's, which the broker's lease bound walks it by
 // (renewLoop).
-func nextBackoff(cur, limit time.Duration) time.Duration {
-	return min(2*cur, limit)
+func nextBackoff(cur time.Duration) time.Duration {
+	return min(2*cur, retryCap)
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,7 +1222,7 @@ func cmdExec(args []string, stdout, stderr io.Writer) int {
 				return 1
 			}
 			state, grantID, detail = status.State, status.GrantID, status.Detail
-			backoff = nextBackoff(backoff, retryCap)
+			backoff = nextBackoff(backoff)
 		}
 	}
 	switch state {

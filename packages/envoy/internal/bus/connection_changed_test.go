@@ -19,7 +19,7 @@ import (
 // connection event that woke it before the connection was connected: about 5 over the outage and
 // nats.go's reconnect wait of up to 1.1 s, where a 10 ms poll would pass some 300 times.
 func TestAPublishWaitingForAReconnectWakesOnTheReconnect(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the publish returns within 100 ms of the reconnect).
 	const outage = 2 * time.Second
 	server, url := testnats.Start(t)
 	client, err := Connect([]string{url})
@@ -88,7 +88,8 @@ func TestAPublishWaitingForAReconnectWakesOnTheReconnect(t *testing.T) {
 // ends. A publish waiting for the reconnect still returns once the connection is connected: its
 // wait reads the connection's own status again every reconnectRecheck, with the event still queued.
 func TestAPublishWaitingForAReconnectWhoseEventIsDelayedStillReturns(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (the publish returns within reconnectRecheck and 500 ms of
+	// the reconnect).
 	server, url := testnats.Start(t)
 	client, err := Connect([]string{url})
 	if err != nil {

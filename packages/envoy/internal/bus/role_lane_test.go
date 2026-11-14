@@ -1,7 +1,7 @@
 package bus_test
 
-// Every test here sets NATS_NKEY_SEED with t.Setenv, which panics the process beside t.Parallel,
-// so none of them is parallel (dispatch://INFRA-1075).
+// Every test here but TestClientCountsSlowConsumers sets NATS_NKEY_SEED with t.Setenv, which
+// panics the process beside t.Parallel, so those are serial (dispatch://INFRA-1075).
 
 import (
 	"os"
@@ -38,8 +38,8 @@ func requireRoleMessage(t *testing.T, uri string, received <-chan string) {
 		if got != topic {
 			t.Fatalf("the role lane received %s, want %s", got, topic)
 		}
-	case <-time.After(busWait):
-		t.Fatal("the role lane received nothing")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the role lane received nothing within 5s")
 	}
 }
 
@@ -100,6 +100,7 @@ func TestRoleLaneWithNeitherQueueGroupGrantedIsAnError(t *testing.T) {
 // A client counts each slow consumer its connection reports: a core subscription narrowed to one
 // pending message, its handler held, falls behind at the third message.
 func TestClientCountsSlowConsumers(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	client, err := bus.Connect([]string{uri})
 	if err != nil {
@@ -129,5 +130,5 @@ func TestClientCountsSlowConsumers(t *testing.T) {
 	if err := publisher.Flush(); err != nil {
 		t.Fatalf("flush the publishes: %v", err)
 	}
-	waitFor(t, 10*time.Second, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
+	waitFor(t, busWait, "the client to count the slow consumer", func() bool { return client.SlowConsumers() == 1 })
 }

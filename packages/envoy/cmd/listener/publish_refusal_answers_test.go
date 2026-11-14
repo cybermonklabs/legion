@@ -52,7 +52,7 @@ func (kv stalledRoleKV) Get(key string) (nats.KeyValueEntry, error) {
 // call ended the request, and answering after it that the resolution waited the call out. A
 // lookup's same case is TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering's.
 func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (a 500 ms window after sendRequestBudget).
 	const (
 		role   = "reviewer"
 		holder = "ses_unanswered_holder"
@@ -140,7 +140,7 @@ func TestARoleResolutionWhoseStoreCallDoesNotAnswerAnswersInsideTheBudget(t *tes
 // connected throughout, so nothing but the stalled role-bucket call can end the lookup. A lookup
 // releases nothing, so the claim read is the only role-bucket call it makes.
 func TestARoleLookupWhoseStoreDoesNotAnswerIsRefusedAsTheBusNotAnswering(t *testing.T) {
-	t.Parallel()
+	// Serial: its assertion is a time (a 500 ms window after sendRequestBudget).
 	const (
 		role   = "reviewer"
 		holder = "ses_lookup_unanswered_holder"
