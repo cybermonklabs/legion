@@ -4162,8 +4162,9 @@ Each item below names a status and code, then its meaning.
 cd packages/envoy
 ./scripts/dev-postgres.sh --throwaway   # prints DATABASE_URL=postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable
 export DISPATCH_TEST_DATABASE_URL='postgres://postgres@127.0.0.1:55433/dispatch?sslmode=disable'
-go test -timeout 20m -skip '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/routes$')
+go test -timeout 20m -skip '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' $(go list ./internal/dispatch/... ./cmd/dispatch/... | grep -v '/internal/dispatch/routes$' | grep -v '/internal/dispatch/events$')
 go test ./internal/dispatch/routes/
+go test ./internal/dispatch/events/
 go test -run '^TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument$' ./cmd/dispatch/
 go vet ./...
 ```

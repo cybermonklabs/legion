@@ -430,7 +430,7 @@ A file that already writes `// No t.Parallel: <reason>` keeps that form; every o
 The reason is the true one, named for what the test does: a test whose reason no longer holds is independent, and it calls `t.Parallel()` instead.
 A table test's rows follow the same rules one by one: a row that is independent calls `t.Parallel()` inside its `t.Run`, and a row that is not carries a `// Serial:` line of its own.
 
-Serial tests of one binary still meet every other binary's transactions, which is why CI gives `internal/dispatch/routes` and `cmd/dispatch`'s `TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument`, the two whose horizon waits other packages' transactions held past their deadlines, Postgres services of their own (the `envoy-go` job's `postgres_routes` and `postgres_shutdown` in `.github/workflows/ci.yaml`).
+Serial tests of one binary still meet every other binary's transactions, which is why CI gives `internal/dispatch/routes`, `internal/dispatch/events` and `cmd/dispatch`'s `TestSIGTERMWithOpenStreamsExitsPromptlyAndSettlesTheOwedDocument`, the three whose horizon waits other packages' transactions held past their deadlines, Postgres services of their own (the `envoy-go` job's `postgres_routes`, `postgres_events` and `postgres_shutdown` in `.github/workflows/ci.yaml`).
 
 ## A Go test that opens a NATS client
 

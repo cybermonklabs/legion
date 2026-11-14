@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for `postgres-service-settings.sh`: the read-back of a job's Postgres service settings
-# that thirteen steps of ci.yaml call. A server on all five settings passes and prints them; a
+# that fourteen steps of ci.yaml call. A server on all five settings passes and prints them; a
 # server off any of them fails the step, naming the service and every setting that is off; a
 # setting docker cannot read, an empty container id and a wrong call each fail it by name.
 #
@@ -93,10 +93,10 @@ check "names the service, the container and the setting" \
 check "stops there, printing no read-back line" "$(is "$(contains "$out" '^postgres_shutdown: c0ffee:')" false)"
 
 echo "case: an empty container id, a service the job does not declare"
-run -- "" postgres_routes
+run -- "" postgres_events
 check "exits 1" "$(is "$status" 1)"
 check "names the label and says why the id is empty" \
-  "$(contains "$out" '^::error::postgres_routes: the container id is empty')"
+  "$(contains "$out" '^::error::postgres_events: the container id is empty')"
 check "asks docker nothing" "$(is "$calls" "")"
 
 echo "case: a call without two arguments"
