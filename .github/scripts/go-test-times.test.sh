@@ -131,6 +131,31 @@ run --compare "$base" "$base"
 check "two equal streams exit 0" "$(is "$status" 0)"
 check "two equal streams find no regression" "$(contains "$out" 'does not pass at the head: 0')"
 
+# A skip under a name the baseline does not hold: a test this change added, or one it renamed,
+# that skips at the head. Nothing else disagrees here - no test stopped passing - so a comparison
+# that matched skips by name alone would pass these two streams; the skip is the head's, so it is
+# counted, named as no baseline test, and fails the comparison. A head-only test that passes is
+# still attributed rather than counted.
+new_base="$work/new-skip-base.json"
+new_head="$work/new-skip-head.json"
+{
+  event pass pkg/a TestKept 1
+  event pass pkg/a "" 1
+} > "$new_base"
+{
+  event pass pkg/a TestKept 1
+  event skip pkg/a TestNewAndSkipped 0
+  event pass pkg/a TestAddedOnMain 1
+  event pass pkg/a "" 2
+} > "$new_head"
+run --compare "$new_base" "$new_head"
+check "a skip under a name the baseline lacks exits 1" "$(is "$status" 1)"
+check "nothing stopped passing, so the skip alone fails it" "$(contains "$out" 'does not pass at the head: 0')"
+check "that skip is counted" "$(contains "$out" 'skips at the head and did not at the baseline: 1')"
+check "that skip is named as no baseline test" "$(contains "$out" 'pkg/a TestNewAndSkipped  \[not in the baseline\]')"
+check "a head-only test that passes is no skip" "$(is "$(grep -c 'TestAddedOnMain  \[not in the baseline\]' <<<"$out")" 0)"
+check "both head-only tests are still attributed" "$(contains "$out" "at the head only (another change's, or renamed): 2")"
+
 # ---------------------------------------------------------------- refusals
 run --compare "$base" "$head" "$stream"
 check "--compare with another path is refused" "$(is "$status" 2)"

@@ -2326,15 +2326,22 @@ done
 orphan_alive=no
 kill -0 "$orphan_hb" 2>/dev/null && orphan_alive=yes
 orphan_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
-# The heartbeat is a session of its own (setsid), so the kube patch it was making when it stopped
-# is a process of its group: once that group holds nothing, no patch of this run can land any
-# more. One that still runs patches at every cycle, and the fake sleep makes a cycle cost nothing,
-# so the patches below are counted around its end and not around a stretch of clock; the 10 s is a
-# backstop for a heartbeat that never stops, which the counts then catch.
+# The heartbeat is a session of its own (setsid), so the wait below ends once nothing of that
+# group is left, with 10 s as the backstop for a group that never empties. That group does not
+# hold the patch the heartbeat was last making: kube() runs `timeout 300 kubectl ...` (cluster.sh's
+# kube), and timeout puts each call in a process group of its own, as the fake kubectl's own note
+# says. The counts need no wait for such a patch either: the heartbeat stops at the head of its
+# loop, once the patch before it has returned, and the fake logs a call as it starts, so every
+# patch the heartbeat made is in the first count. What the second count is for is a renewer
+# still alive: one in the heartbeat's group, which the wait outlasts, or one restarted under a
+# fresh setsid, which no wait on that group sees. So the second count comes a fixed second after
+# the wait, the window the counts had before it: under FAKE_FAST_SLEEP=60 a live renewer's cycle
+# costs nothing, so it patches many times in that second.
 for ((i = 0; i < 500; i++)); do
   kill -0 -- "-$orphan_hb" 2>/dev/null || break
   sleep 0.02
 done
+sleep 1
 orphan_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 run_cluster down --namespace "$ns"
 [ "$orphan_alive" = no ] ||
@@ -2416,21 +2423,26 @@ for ((i = 0; i < 200; i++)); do
   sleep 0.1
 done
 sampler_lines=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
-# The sampler is a session of its own (setsid) and its eight role loops are in its group, so once
-# that group holds nothing, no loop of it can append again. A loop that outlived it appends an
-# error line every 5 s, which the count below catches inside the 10 s backstop this wait gives a
-# group that never empties.
+# The sampler is a session of its own (setsid) and its eight role loops are in its group, so the
+# wait below ends once nothing of that group is left, with 10 s as the backstop for a group that
+# never empties. That is not the end of every process a loop starts: find_pod's lookup runs
+# through kube(), `timeout 300 kubectl ...`, and timeout puts each call in a process group of its
+# own. Nor is it the end of a loop restarted under a fresh setsid, which no wait on that group
+# sees. A loop that is still alive appends an error line every 5 s - its sleep is a real one
+# here, since FAKE_FAST_SLEEP names 60 alone - so the second count comes a fixed 6 s after the
+# wait, the window the counts had before it, which holds at least one append of such a loop.
 for ((i = 0; i < 500; i++)); do
   kill -0 -- "-$sampler_pid" 2>/dev/null || break
   sleep 0.02
 done
+sleep 6
 sampler_lines_after=$(wc -l <"$sampler_dir/cgroup.jsonl" 2>/dev/null || echo 0)
 run_cluster down --namespace "$ns"
 [ "$sampler_alive" = no ] ||
   fail "the sampler daemon (pid $sampler_pid) still runs 20 s after the last command of its run ended and its heartbeat stopped: its eight kubectl execs stay open and it appends an error line of each to cgroup.jsonl every 5 s for ever"
 [ ! -f "$sampler_dir/sampler.pid" ] || fail "the sampler that stopped left its pidfile $sampler_dir/sampler.pid"
 [ "$sampler_lines_after" = "$sampler_lines" ] ||
-  fail "cgroup.jsonl grew by $((sampler_lines_after - sampler_lines)) lines after the sampler was gone: a role loop of it still samples"
+  fail "cgroup.jsonl grew by $((sampler_lines_after - sampler_lines)) lines in the 6 s after the sampler was gone: a role loop of it still samples"
 unset FAKE_FAST_SLEEP
 pass "the sampler stops once no heartbeat of its run is alive, with the kubectl exec of every role loop, and removes its pidfile"
 
@@ -3524,6 +3536,16 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   # for a .rc nothing can hand it. The wait's poll is a fast sleep here, so what it waits
   # out is that grace and not a poll: a wait that kept no bound of its own would end at its
   # first poll after the SIGKILL, which is at once.
+  #
+  # The grace is 3 s for this sub-case alone, where the sub-cases above take 1. killed_took is
+  # whole seconds, as the fake's record of the SIGKILL is: at 1, a wait that ended at once still
+  # reads 1 whenever the SIGKILL and its next poll fall either side of a second boundary, and
+  # passes. At 3 such a wait reads 0 or 1 and fails, while one that keeps its grace reads at
+  # least 3: it counts its due from an EPOCHSECONDS taken after the fake recorded the SIGKILL,
+  # and ends at the first poll whose EPOCHSECONDS reaches it. With the poll a fast sleep the
+  # SIGKILL still falls due once, at the first poll a grace after the TERM, so the count below
+  # stays one, and the two graces cost this sub-case about 4 s more than 1 s ones would.
+  RUNNER_STOP_GRACE_SECONDS=3
   export FAKE_RC_UNTIL_KILL=1 FAKE_RUNNER_EXEC_FAIL_AT_KILL=1 FAKE_FAST_SLEEP="2 $RUNNER_POLL_SECONDS"
   rm -f -- "$unreach_fail" "$fake/runner-stops" "$fake/runner-kills" "$fake/runner-kill-times" "$fake/rc-kill-polls"
   kills=$(kill_tries)
@@ -3555,6 +3577,7 @@ kill_tries() { grep -c -- 'kill -KILL' "$fake/kubectl.log" || true; }
   grep -qF 'no exit status was read from the runner pod' "$unreach_out" ||
     fail "that wait's note does not say that no exit status was read from the runner pod it could not reach: $(cat "$unreach_out")"
   unset FAKE_RC_UNTIL_KILL FAKE_RUNNER_EXEC_FAIL_AT_KILL
+  RUNNER_STOP_GRACE_SECONDS=1
   export FAKE_FAST_SLEEP=2
   rm -f -- "$unreach_fail"
   # The disk watcher's TERM, between an act that failed and its next nap: the watcher took the
@@ -3702,13 +3725,16 @@ done
 unreach_hb_alive=no
 kill -0 "$unreach_hb" 2>/dev/null && unreach_hb_alive=yes
 unreach_patches=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
-# As in (o): the heartbeat's own session holds whatever patch it was making, so the counts below
-# are taken around the end of that group, with 10 s for one that never ends and whose patches
-# the count then catches.
+# As in (o): the wait below ends once nothing of the heartbeat's own group is left, with 10 s as
+# the backstop for a group that never empties, and every patch the heartbeat made is in the
+# first count already. A renewer still alive, in that group or restarted under a fresh setsid,
+# patches many times a second here (the step's heartbeat sleeps its 60 s as a fast sleep), so
+# the second count comes a fixed second after the wait, the window the counts had before it.
 for ((i = 0; i < 500; i++)); do
   kill -0 -- "-$unreach_hb" 2>/dev/null || break
   sleep 0.02
 done
+sleep 1
 unreach_patches_after=$(grep -c "patch configmap dispatch-loadtest-lock" "$fake/kubectl.log" || true)
 [ "$unreach_hb_alive" = no ] ||
   fail "the heartbeat daemon (pid $unreach_hb) still runs 5 s after the step command it outlived ended: a run no command drives keeps its lock fresh"

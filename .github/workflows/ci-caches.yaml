@@ -222,11 +222,20 @@ jobs:
       # package's and the natslive build of internal/testnats among them. It runs each binary
       # with `-run '^$'`, which matches no test, rather than `go test -c -o /dev/null`: measured
       # on 2026-11-08, a job restoring a `-c -o /dev/null` fill still spent about 70 s of its unit
-      # step on work this step had done, because what `go test` reuses is the cached result of the
-      # run action, which only a run writes - the compile and link alone leave it unwritten. So
-      # the fill does what the job does, to the last action, and starts no test: `-run '^$'` runs
-      # each binary, which prints `ok … [no tests to run]` and touches no Postgres and no
-      # container image, which a cache fill has no reason to start (dispatch://INFRA-1075).
+      # step on work this step had done. No stored test result is reused either way: the job
+      # passes -count=1, which turns go test's result cache off, so all a fill can hand it is
+      # build actions. What a `-c` fill leaves out is one of them per package, the compile of its
+      # test main: `go test` compiles the test main of a binary it runs with -dwarf=false, since
+      # it deletes that binary afterwards, and `go test -c` compiles it with DWARF for the file it
+      # writes, so the two are different actions to the build cache. Measured with go1.27.3 on
+      # internal/dispatch/text, each fill into an empty build cache: after a `-c -o /dev/null`
+      # fill, `go test -count=1 -run '^$'` compiled the package's test main again before it
+      # linked, and after a `-run '^$'` fill it compiled nothing and only linked (a link is no
+      # cache entry under either fill). That the 70 s was test-main compiles and nothing else was
+      # not measured. So the fill does what the job does, to the last cached action, and starts
+      # no test: `-run '^$'` runs each binary, which prints `ok … [no tests to run]` and touches
+      # no Postgres and no container image, which a cache fill has no reason to start
+      # (dispatch://INFRA-1075).
       - name: Build the test binary of every package of the envoy module
         if: steps.go-envoy-test.outputs.cache-hit != 'true'
         run: |

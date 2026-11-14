@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Rank the tests and packages of a `go test -json` stream, and compare two streams.
 
-ci.yaml's envoy-go job writes one stream per `go test` step to $RUNNER_TEMP/go-test-json and
-uploads the directory as `envoy-go-test-json-<run attempt>` (dispatch://INFRA-1075). This reads
-those streams, from .json files, a directory of them, or the artifact's .zip, and prints:
+ci.yaml's envoy-go job writes one stream per `go test` call of its unit step to
+$RUNNER_TEMP/go-test-json and uploads the directory as `envoy-go-test-json-<run attempt>`, and
+envoy-go-checks and the race lane's jobs each upload theirs as `<job>-test-json-<run attempt>`
+(dispatch://INFRA-1075). This reads those streams, from .json files, a directory of them, or an
+artifact's .zip, and prints:
 
   * every package's seconds, slowest first;
   * every leaf test's seconds, slowest first. A leaf is a test with no subtests of its own: no
@@ -14,9 +16,11 @@ those streams, from .json files, a directory of them, or the artifact's .zip, an
     exception list is read against.
 
   --compare <baseline> <head> prints what the two streams disagree about: a (package, test) that
-  passed at the baseline and does not pass at the head, one that skips at the head and did not at
-  the baseline, and the tests each stream alone holds. A test the head alone holds is another
-  change's, which the comparison attributes rather than counting against this one.
+  passed at the baseline and does not pass at the head, every test that skips at the head and
+  did not skip at the baseline - one the baseline does not hold included, so a test renamed by
+  this change that now skips is named too - and the tests each stream alone holds. A test the head
+  alone holds is another change's, which the comparison attributes rather than counting against
+  this one, unless it skips.
 
 It reports and nothing in CI runs it: a gate on test times is the next rung of STRATEGY.md's
 enforcement ladder, and nothing has measured an instruction failing here yet.
@@ -139,9 +143,13 @@ def compare(baseline: Stream, head: Stream) -> int:
         key for key, action in baseline.status.items()
         if action == "pass" and head.status.get(key) != "pass"
     )
+    # Every head skip whose name the baseline does not skip, whether the baseline ran it or holds
+    # no test of that name at all: a test this change renamed, and that now skips, is one the
+    # baseline does not hold, and leaving those out would let a skip this change added pass for
+    # another change's test.
     newly_skipped = sorted(
         key for key, action in head.status.items()
-        if action == "skip" and baseline.status.get(key) not in (None, "skip")
+        if action == "skip" and baseline.status.get(key) != "skip"
     )
     only_head = sorted(key for key in head.status if key not in baseline.status)
     only_baseline = sorted(key for key in baseline.status if key not in head.status)
@@ -155,7 +163,8 @@ def compare(baseline: Stream, head: Stream) -> int:
 
     print(f"\nskips at the head and did not at the baseline: {len(newly_skipped)}")
     for package, test in newly_skipped:
-        print(f"  {package} {test}")
+        new = "  [not in the baseline]" if (package, test) not in baseline.status else ""
+        print(f"  {package} {test}{new}")
 
     print(f"\nat the head only (another change's, or renamed): {len(only_head)}")
     for package, test in only_head:

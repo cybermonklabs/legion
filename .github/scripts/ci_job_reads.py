@@ -171,6 +171,21 @@ def setup_go(job, gomod, workflow=CI):
     return reads((gomod, f"{at(job, 'actions/setup-go', workflow)} go-version-file"))
 
 
+# The read-back of a job's Postgres service settings: one script, which every ci.yaml job whose
+# service starts on the lane's disposable settings runs from a step of this name
+# (.github/scripts/postgres-service-settings.sh's head says why it is a script).
+SETTINGS_SCRIPT = ".github/scripts/postgres-service-settings.sh"
+SETTINGS_STEP = "Read the disposable service's settings back"
+
+
+def service_settings(job, *steps):
+    """The script the job's read-back step runs, or each of `steps` where the job has more than
+    one service and a step for each."""
+    steps = steps or (SETTINGS_STEP,)
+    runs = "runs it" if len(steps) == 1 else "each run it"
+    return reads((SETTINGS_SCRIPT, " and ".join(at(job, step) for step in steps) + f" {runs}"))
+
+
 CI_SELF = reads((CI, "a job reads its own definition"))
 # ci.yaml's docs job and docs-pages.yaml's build job both call docs-site.yaml, which holds the
 # steps. The gate stays on ci.yaml's docs job, whose if: the docs filter gates, and every step
@@ -368,11 +383,11 @@ RULES = {
     f"{ENVOY}/internal/dispatch/docs/history_fold_test.go": reads(
         (f"{ENVOY}/internal/dispatch/pmdoc/testdata/fixtures.json", "internal/dispatch/docs/history_fold_test.go:478")),
     f"{ENVOY}/internal/dispatch/pmdoc/update_test.go": [
-        Read(g, "internal/dispatch/pmdoc/update_test.go:236-238 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
+        Read(g, "internal/dispatch/pmdoc/update_test.go:316-320 bun run gen/<script> (imports @legion/proof-editor)") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/pmdoc/render_readback_test.go": [
         Read(g, "internal/dispatch/pmdoc/render_readback_test.go:34 bun run gen/differential.ts") for g in PMDOC_GEN],
     f"{ENVOY}/internal/dispatch/store/search_text_test.go": reads(
-        (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:102-120 walks every .md under packages/envoy (infra included)")),
+        (f"{ENVOY}/**", "internal/dispatch/store/search_text_test.go:84-111 walks every .md under packages/envoy (infra included)")),
     f"{ENVOY}/internal/dispatch/text/whitespace_fixture_test.go": reads(
         (f"{FIX}/go-unicode-isspace.json", "internal/dispatch/text/whitespace_fixture_test.go:34 os.ReadFile (goSpaceFixturePath :17, ../../../../contracts/fixtures)")),
     f"{ENVOY}/internal/smoke/rdsbundle_test.go": [
@@ -443,8 +458,9 @@ def json_stream_script(command: str, stream: str) -> str:
     """A test step whose one go command writes its `go test -json` stream to a file under
     $RUNNER_TEMP/go-test-json and replays it to the log: the package result lines of a green run,
     the whole stream of a red one (ci.yaml's envoy-go unit step says why). The race lane's
-    envoy-go-race and envoy-go-race-api are what is left of this shape; envoy-go's unit step runs
-    eight calls and builds its own (UNIT_TEST_SCRIPT)."""
+    envoy-go-race and envoy-go-race-api, and envoy-go-checks' display-tree fixture check, are the
+    steps of this shape; envoy-go's unit step runs eight calls and builds its own
+    (UNIT_TEST_SCRIPT)."""
     return f"""\
 mkdir -p "$RUNNER_TEMP/go-test-json"
 s=0
@@ -459,11 +475,11 @@ exit $s"""
 
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-checks' pack
 # step, envoy-smoke's schema step, the tag steps below, and every step that writes a `go test
-# -json` stream - envoy-go's unit step, which writes the streams of seven of its eight calls, and
-# the race lane's envoy-go-race and envoy-go-race-api - since neither -json nor the redirect that
-# keeps the stream is a form the check reduces. envoy-go-race-docs is pinned for a reason of its
-# own: its two lines make a directory and run the package under .github/scripts/race_memory.py
-# (RACE_DOCS_SCRIPT below).
+# -json` stream - envoy-go's unit step, which writes the streams of seven of its eight calls,
+# envoy-go-checks' display-tree fixture check, and the race lane's envoy-go-race and
+# envoy-go-race-api - since neither -json nor the redirect that keeps the stream is a form the
+# check reduces. envoy-go-race-docs is pinned for a reason of its own: its two lines make a
+# directory and run the package under .github/scripts/race_memory.py (RACE_DOCS_SCRIPT below).
 PACK_STEP = "Pack envoy binaries"
 PACK_SCRIPT = """\
 pids=()
@@ -482,10 +498,14 @@ for arch in $(jq -r '.envoy[]' ../../.github/go-release-targets.json); do
   tar czf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz" -C "$out" envoy-listener THIRD_PARTY_NOTICES
   tar tzvf "../../out/pr-artifacts/legion-envoy-$arch.tar.gz"
 done"""
-# The fixture check's `-run` and its `-args --check` are not flags the simple form reduces, and
-# they move no closure: the whole pmdoc package compiles, whichever test the run selects.
+# The fixture check writes a `go test -json` stream (json_stream_script), and its `-run` and its
+# `-args --check` are not flags the simple form reduces either. None of them moves the closure:
+# the whole pmdoc package compiles, whichever test the run selects. Its -timeout is the call's
+# own, from the step's measured time (ci.yaml's comment on the step).
 FIXTURE_STEP = "Check the web app's display-tree fixture is up to date"
-FIXTURE_SCRIPT = "go test -count=1 -run TestWebDisplayFixture ./internal/dispatch/pmdoc/ -args --check"
+FIXTURE_SCRIPT = json_stream_script(
+    "go test -json -count=1 -timeout 1m -run TestWebDisplayFixture ./internal/dispatch/pmdoc/ -args --check",
+    "web-fixture.json")
 SCHEMA_STEP = "The envoy-infra plugin's schema carries the version and the download URL it was built with"
 SCHEMA_SCRIPT = (
     'url=$(GITHUB_REPOSITORY=cybermonklabs/legion ../../../.github/scripts/repo-paths.sh plugin_download_url)\n'
@@ -611,17 +631,19 @@ class RaceJob(NamedTuple):
 # reading of the branch rather than of one pair is the same rule applied to every measurement
 # taken, and it is what makes the number settle, since a later pair moves it only by reading
 # higher than every pair before it. Each -timeout is the smallest whole minute at which that
-# call's slowest package takes at most half of it: internal/bus 446.9 s -> 15m,
-# internal/dispatch/api 793.0 s -> 27m (run 43129905604, attempt 1), and
-# internal/dispatch/docs 1651.0 s -> 56m. Each figure is read from that job's own
-# `go test -json` artifact (dispatch://INFRA-1075, check 6224bb0e).
+# call's slowest package takes at most half of it: internal/bus 452.963 s -> 16m (run
+# 42863916685, job 129997210948), internal/dispatch/api 812.770 s -> 28m (attempt 2 of run
+# 43099751798, job 130805659979), and internal/dispatch/docs 1651.0 s -> 56m (run 43174763194,
+# job 131036282782). Each figure is read from that job's own `go test -json` artifact, the
+# largest of every workflow_dispatch run of ci.yaml on this branch (dispatch://INFRA-1075, check
+# 6224bb0e).
 ENVOY_RACE_LANE = (
     RaceJob("envoy-go-race",
             "Race-test delivery, the store, the bus, the listener, the registry store, the session cache and kvwatch",
-            "15m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
+            "16m", (RacePackage("internal/dispatch/delivery", tree=True), RacePackage("internal/dispatch/store", tree=True),
                     RacePackage("internal/bus"), RacePackage("cmd/listener"), RacePackage("internal/store"),
                     RacePackage("internal/session"), RacePackage("internal/kvwatch", tree=True))),
-    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "27m", (RacePackage("internal/dispatch/api"),)),
+    RaceJob("envoy-go-race-api", "Race-test the Dispatch API", "28m", (RacePackage("internal/dispatch/api"),)),
     RaceJob("envoy-go-race-docs", "Race-test the document service", "56m", (RacePackage("internal/dispatch/docs"),)),
 )
 RACE_JOBS = {job.job: job for job in ENVOY_RACE_LANE}
@@ -918,12 +940,11 @@ mkdir -p "$RUNNER_TEMP/go-test-json" "$RUNNER_TEMP/go-test-logs"
 # -timeout 18m. A call's limit is the smallest whole minute at which its slowest
 # package takes at most half of it, measured on the largest reading this branch
 # has of that package (dispatch://INFRA-1075). This call's slowest package is
-# internal/dispatch/pmdoc at 511.6 s, read on attempt 2 of the pair at ebc96918
-# (run 43120324547, job 130874347417), which is 47.4 per cent of 18m and would be
-# 50.2 per cent of 17m, the limit this call carried until that reading. The limit
-# leaves 568.4 s above that package's own time, far over the 60 s of pmdoc's
-# perCallReportMargin, which is the floor a package that reads the test binary's
-# deadline sets for itself.
+# internal/dispatch/pmdoc at 513.5 s (run 42993788046, job 130432829161), which is
+# 47.5 per cent of 18m and would be 50.3 per cent of 17m, the limit this call
+# carried when that run read it. The limit leaves 566.5 s above that package's own
+# time, far over the 60 s of pmdoc's perCallReportMargin, which is the floor a
+# package that reads the test binary's deadline sets for itself.
 lead="{UNIT_TEST_LEAD_TEXT}"
 rest=$(go list ./... | grep -Ev '{UNIT_TEST_PATTERN}' | grep -vxF "$lead")
 printf '%s\\n%s\\n' "$lead" "$rest" | xargs go test -json -count=1 -p 8 -parallel 12 -skip '{SHUTDOWN_PATTERN}' -timeout 18m > "$RUNNER_TEMP/go-test-json/unit.json" &
@@ -974,7 +995,7 @@ impossible=$!
 # DISPATCH_TEST_DATABASE_URL names 5435 on this call and nowhere else, as the two
 # calls below name 5433 and 5434. The package list above leaves the package out.
 #
-# -timeout 10m, from the call's own measured times rather than from its CPU. The
+# -timeout 11m, from the call's own measured times rather than from its CPU. The
 # first arithmetic took the half rule on 120 s - 63.8 s of CPU at about half a core -
 # and 4m was too small: the call measured 159.7 s and 183.2 s on two runs and then
 # ran past 240 s on a slower one, where go killed it mid-test ("panic: test timed out
@@ -1002,9 +1023,10 @@ routes=$!
 # has been blown by a sibling's clone before - so 5434 is named on this call and
 # nowhere else. The package list above skips this test by name, which is unique in the
 # module (dispatch://INFRA-1075). -timeout 3m, from this package's largest reading and
-# the run it came from, which are in the table on this job; two earlier pairs read it
-# at 58.3 s and 63.0 s, which 2m would hold, so the limit follows the largest reading
-# rather than the smallest.
+# the run it came from, which are in the table on this job. 2m would hold the 58.3 s
+# an earlier pair read, but not the 63.0 s of another or the 61.7 s of the pair at
+# 84ca8f33, each over half of it, so the limit follows the largest reading rather
+# than the smallest.
 DISPATCH_TEST_DATABASE_URL={SHUTDOWN_DSN} go test -json -count=1 -timeout 3m -run '{SHUTDOWN_PATTERN}' ./{SHUTDOWN_PACKAGE}/ > "$RUNNER_TEMP/go-test-json/shutdown.json" 2> "$RUNNER_TEMP/go-test-logs/shutdown.log" &
 shutdown=$!
 # internal/testnats runs its server in the test process, so the package list above
@@ -1256,7 +1278,7 @@ GATES = [
     ) + envoy_client_dep("scripts/e2e/lib/nats-stream.ts:16-18, operator-dispatch.ts:16-21, envoy-bridge.ts:11; "
                          "scripts/dispatch/ask-census.ts:10-15 (tsc -p scripts/dispatch)")
       + install_jj("test") + install_omp("test") + setup_go("test", f"{DAEMON}/go.mod")
-      + biome(at("test", "Lint the Dispatch census script")) + bun_job("test") + CI_SELF),
+      + biome(at("test", "Lint the Dispatch census script")) + bun_job("test") + service_settings("test") + CI_SELF),
 
 
     # The job ci.yaml gates is docs, and the steps it runs are docs-site.yaml's (at_docs).
@@ -1575,9 +1597,12 @@ GATES = [
     ], reads=reads(
         (".github/actions/pull-test-images/**", at("envoy-go", "Pull test container images")),
         (TAGGED_TESTS, f"{at('envoy-go', UNIT_TEST_STEP)} takes the -run of its natslive calls from it"),
-    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go") + CI_SELF),
+    ) + setup_go("envoy-go", f"{ENVOY}/go.mod") + bun_job("envoy-go")
+      + service_settings("envoy-go", SETTINGS_STEP, "Read the routes service's settings back",
+                         "Read the shutdown service's settings back", "Read the pgmigrate service's settings back")
+      + CI_SELF),
 
-    # envoy-go's fast half: its format and generated-code checks, the seven shell-script tests
+    # envoy-go's fast half: its format and generated-code checks, the eleven shell-script tests
     # and the build and pack of the envoy commands (ci.yaml's comment on envoy-go-checks says why
     # they are split out). Its gofmt step reads the whole module, so no closure stands for it.
     gate("envoy_go_checks", "envoy-go-checks", runs=[
@@ -1652,10 +1677,10 @@ GATES = [
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", exact=[race_step(RACE_JOBS["envoy-go-race"])],
-         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
+         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + service_settings("envoy-go-race") + CI_SELF),
 
     gate("envoy_go_race_api", "envoy-go-race-api", exact=[race_step(RACE_JOBS["envoy-go-race-api"])],
-         reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + CI_SELF),
+         reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + service_settings("envoy-go-race-api") + CI_SELF),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -1663,7 +1688,7 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-    ) + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod") + service_settings("envoy-go-race-docs") + CI_SELF),
 
     # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
     # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
@@ -1672,7 +1697,8 @@ GATES = [
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
         ]),
-    ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod") + CI_SELF),
+    ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod") + service_settings("envoy-go-docs-finalizers")
+      + CI_SELF),
 
     gate("dispatch_memory", "dispatch-memory", exact=[
         pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [
@@ -1680,7 +1706,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-memory", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("dispatch-memory", f"{ENVOY}/go.mod") + service_settings("dispatch-memory") + CI_SELF),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [
@@ -1688,7 +1714,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + service_settings("dispatch-multiprocess") + CI_SELF),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
@@ -1704,7 +1730,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('broker-multiprocess', BROKER_MP_STEP)} takes its -run from it"),
-    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + service_settings("broker-multiprocess") + CI_SELF),
 
     gate("airlock_lean", AIRLOCK_JOB, exact=[
         pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
@@ -1792,7 +1818,7 @@ GATES = [
         ("packages/pi-shared/src/**", "packages/pi-envoy and packages/claude-envoy import @legion/pi-shared/*"),
         ("packages/contracts/**", at(STALL, "Build contracts for the stall suites")),
         (BROKER_CLIENT_SRC, f"{at(STALL, 'Stall test of claude-envoy')} runs packages/claude-envoy/bin/envoy-channel.ts, whose bun build loads six of @legion/broker-client's seven modules through packages/envoy-client/src/broker-credential.ts:21-22"),
-    ) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL) + CI_SELF),
+    ) + setup_go(STALL, f"{ENVOY}/go.mod") + bun_job(STALL) + service_settings(STALL) + CI_SELF),
 
     gate("go_notices", "lint", step=NOTICES_STEP, runs=go_notices_runs(), reads=reads(
         (NOTICES_LOOPS, f"{at('lint', NOTICES_STEP)} runs it; it holds the loops"),
