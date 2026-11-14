@@ -66,7 +66,27 @@
 # no version, so each uv pip install and uv build of a local source here passes
 # evidence/build-constraints.txt, hashed too, as -b. ioc-concord is built once into
 # IOC_CONCORD_WHEEL, because uv run takes no build constraint and a wheel needs no build,
-# and it depends on no package.
+# and it depends on no package. The mas-lab environment and the ioc-concord wheel carry a
+# stamp of the sha256 of the files and the clone commit they were built from, and a cache
+# whose stamp differs is built again, so a venv or a wheel that predates the hashed files
+# is never used.
+#
+# uv enforces the lock itself. env.sh exports, into the environment every row runs in, the
+# variables IOC_ENV_ENFORCED names: UV_REQUIRE_HASHES=1, under which uv pip install, uv pip
+# sync and uv build refuse any package with no hash, whatever -c or -r a command names;
+# UV_BUILD_CONSTRAINT, the hashed evidence/build-constraints.txt, which uv pip install, uv
+# build, uv tool run and uvx build every local source under; and PIP_REQUIRE_HASHES=1 for
+# pip. check.sh reserves these names, so no row assigns, unsets or re-points them, with one
+# exception it reads by its conditions: uv refuses every local source path under
+# UV_REQUIRE_HASHES=1 (a directory has no hash), so a uv pip install of local sources
+# alone, with -b of the hashed build constraint and -c of a hashed lock, is written with
+# the visible prefix UV_REQUIRE_HASHES=0; env.sh writes the same prefix on its own two
+# mas-lab installs, and evidence/concord-build-run.sh on its one. uv still checks every
+# hash that -c and -b carry there; a dependency the local package would fetch from an
+# index that its -c file does not list installs unchecked. uv run --with, uv tool run and
+# uvx read no UV_REQUIRE_HASHES, and uv run reads no UV_BUILD_CONSTRAINT either: what they
+# fetch is check.sh's reader's to hold, as check.sh's install-pinned header records with
+# the measured table.
 #
 # It needs uv, git, jq, gh, python3 and dispatch, and it needs the three clones, which it
 # clones at the commits sources.json pins when they are missing. It refuses, with a line
@@ -122,8 +142,31 @@ ioc_env_caches() {
     # uv checks every hash a lock, a constraints file or a build constraints file carries,
     # unless this is set; no run of the replay sets it.
     unset UV_NO_VERIFY_HASHES
+    ioc_env_enforce || return 1
     mkdir -p "$UV_CACHE_DIR" "$PIP_CACHE_DIR" "$HF_HOME" "$XDG_CACHE_HOME" ||
         ioc_env_refuse "the caches" "mkdir under $IOC_CACHE failed"
+}
+
+# The variables uv and pip enforce the locks by, exported into every row's environment.
+# check.sh reads this list for the names it reserves, so the two cannot drift.
+IOC_ENV_ENFORCED="UV_REQUIRE_HASHES UV_BUILD_CONSTRAINT PIP_REQUIRE_HASHES"
+
+ioc_env_enforce() {
+    export UV_REQUIRE_HASHES=1 PIP_REQUIRE_HASHES=1 UV_BUILD_CONSTRAINT="$IOC_EVID/build-constraints.txt"
+    [ -s "$UV_BUILD_CONSTRAINT" ] ||
+        ioc_env_refuse "UV_BUILD_CONSTRAINT" "$UV_BUILD_CONSTRAINT, the hashed build constraint, is missing" || return 1
+    local name
+    for name in $IOC_ENV_ENFORCED; do
+        [ -n "${!name:-}" ] || ioc_env_refuse "$name" "it is not exported" || return 1
+    done
+}
+
+# ioc_env_stamp <commit> <file>...; the sha256 of each file and the clone commit a cache
+# was built from, one line, which the cache keeps beside it.
+ioc_env_stamp() {
+    local commit="$1"
+    shift
+    printf '%s %s\n' "$commit" "$(sha256sum "$@" | cut -d' ' -f1 | tr '\n' ' ')"
 }
 
 # ioc_env_is_refusal <file>; true when what a dispatch read printed is Dispatch's refusal
@@ -239,18 +282,31 @@ ioc_env_maslab() {
     export IOC_MASLAB_PY="$IOC_MASLAB_VENV/bin/python" IOC_MASLAB_CTL="$IOC_MASLAB_VENV/bin/mas-ctl"
     export IOC_MASLAB_WHEEL_CTL="$IOC_MASLAB_WHEEL_VENV/bin/mas-ctl"
     local clone="$IOC_CLONES/mas-lab" constraints="$IOC_EVID/tm-constraints.txt" build="$IOC_EVID/build-constraints.txt"
+    local stamp="$IOC_MASLAB_VENV/.ioc-built-from" want
     [ -s "$constraints" ] ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$constraints, the pinned dependencies of mas-lab, is missing" || return 1
     [ -s "$build" ] ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$build, the pinned build environment, is missing" || return 1
-    if ! { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; }; then
-        uv venv --allow-existing "$IOC_MASLAB_VENV" >&2 ||
-            ioc_env_refuse "IOC_MASLAB_VENV" "uv venv $IOC_MASLAB_VENV failed" || return 1
+    want="$(ioc_env_stamp "$(git -C "$clone" rev-parse HEAD)" "$constraints" "$build")"
+    # A venv that imports mas.lab is reused only when it was built from these same files
+    # and this same clone commit; any other, one of evidence/tm-load.sh's among them, is
+    # built again from nothing.
+    if ! { [ "$(cat "$stamp" 2>/dev/null)" = "$want" ] && [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] &&
+        "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; }; then
+        uv venv --clear "$IOC_MASLAB_VENV" >&2 ||
+            ioc_env_refuse "IOC_MASLAB_VENV" "uv venv --clear $IOC_MASLAB_VENV failed" || return 1
+        # uv refuses a local source under UV_REQUIRE_HASHES=1, so these two installs, of
+        # local sources alone under the hashed -c and -b, clear it, visibly, as a row does.
         (
             cd "$clone" || exit 1
-            VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" ./runtime ./ctl ./library-standard >&2 &&
-                VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" -e ./ctl -e ./lab/components/core >&2
+            UV_REQUIRE_HASHES=0 VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" ./runtime ./ctl ./library-standard >&2 &&
+                UV_REQUIRE_HASHES=0 VIRTUAL_ENV="$IOC_MASLAB_VENV" uv pip install -c "$constraints" -b "$build" -e ./ctl -e ./lab/components/core >&2
         ) || ioc_env_refuse "IOC_MASLAB_VENV" "uv pip install from $clone failed" || return 1
+        printf '%s\n' "$want" >"$stamp"
+        # The two schema rows install into this second one; a run that rebuilt the first
+        # starts the second from nothing as well.
+        uv venv --clear "$IOC_MASLAB_WHEEL_VENV" >&2 ||
+            ioc_env_refuse "IOC_MASLAB_WHEEL_VENV" "uv venv --clear $IOC_MASLAB_WHEEL_VENV failed" || return 1
     fi
     { [ -x "$IOC_MASLAB_VENV/bin/mas-ctl" ] && "$IOC_MASLAB_VENV/bin/python" -c 'import mas.lab' >/dev/null 2>&1; } ||
         ioc_env_refuse "IOC_MASLAB_VENV" "$IOC_MASLAB_VENV holds no mas-ctl that imports mas.lab" || return 1
@@ -263,18 +319,22 @@ ioc_env_maslab() {
 
 # ioc-concord, built once into a wheel under evidence/build-constraints.txt. The tc-run
 # rows run it with uv run --with, which takes no build constraint, so they run this one
-# build rather than building the source again per row; a wheel needs no build.
+# build rather than building the source again per row; a wheel needs no build. The wheel
+# is reused only when its stamp names this build constraint and this clone commit.
 ioc_env_concord() {
-    local dir="$IOC_CACHE/wheels" build="$IOC_EVID/build-constraints.txt"
+    local dir="$IOC_CACHE/wheels" build="$IOC_EVID/build-constraints.txt" want
     export IOC_CONCORD_WHEEL="$dir/ioc_concord-0.1.0-py3-none-any.whl"
     [ -s "$build" ] ||
         ioc_env_refuse "IOC_CONCORD_WHEEL" "$build, the pinned build environment, is missing" || return 1
-    if [ ! -s "$IOC_CONCORD_WHEEL" ]; then
+    want="$(ioc_env_stamp "$(git -C "$ACCORD_SRC" rev-parse HEAD)" "$build")"
+    if [ ! -s "$IOC_CONCORD_WHEEL" ] || [ "$(cat "$IOC_CONCORD_WHEEL.built-from" 2>/dev/null)" != "$want" ]; then
+        rm -f "$IOC_CONCORD_WHEEL" "$IOC_CONCORD_WHEEL.built-from"
         uv build --wheel --python 3.12 -b "$build" --out-dir "$dir" "$ACCORD_SRC/packages/ioc-concord" >&2 ||
             ioc_env_refuse "IOC_CONCORD_WHEEL" "uv build of $ACCORD_SRC/packages/ioc-concord failed" || return 1
+        [ -s "$IOC_CONCORD_WHEEL" ] && printf '%s\n' "$want" >"$IOC_CONCORD_WHEEL.built-from"
     fi
     [ -s "$IOC_CONCORD_WHEEL" ] ||
-        ioc_env_refuse "IOC_CONCORD_WHEEL" "the build wrote no $IOC_CONCORD_WHEEL, the version 0.1.0 the tc-install-1 row reads"
+        ioc_env_refuse "IOC_CONCORD_WHEEL" "the build wrote no $IOC_CONCORD_WHEEL, the version 0.1.0 the tc-run rows run"
 }
 
 # The shapes graph, assembled the way the scope clone's own verification.py assembles it:

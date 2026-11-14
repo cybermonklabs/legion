@@ -307,7 +307,7 @@ case_result "a reference to a block at a version Dispatch does not hold is refus
 # --constraint, -r or --requirement anywhere in a pip install exempted the whole command,
 # so `uv pip install -c c.txt requests` passed install-pinned with requests unpinned. The
 # honest form beside it, a local path installed under the same constraints file, passes;
-# it names a build constraint with -b, since a local source path is built (case 61).
+# it names the hashed build lock with -b, since a local source path is built (case 61).
 dir="$(fresh constraint-beside-package)"
 sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt requests; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
 grep -qF 'uv pip install -c c.txt requests' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
@@ -316,9 +316,9 @@ grep -qF 'uv pip install -c c.txt requests' "$dir/repo/docs/research/internet-of
 }
 case_result "a package beside a constraints file is held to its own version" install-pinned "$(fixture_run "$dir" --replay)"
 dir="$(fresh constraint-beside-local)"
-sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt -b b.txt .\/local; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
-grep -qF 'uv pip install -c c.txt -b b.txt ./local' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
-    printf 'FAIL the form uv pip install -c c.txt -b b.txt ./local could not be planted\n'
+sed -i "s/\"command\":\"printf 'ran once/\"command\":\"true || uv pip install -c c.txt -b \$IOC_EVID\/build-constraints.txt .\/local; printf 'ran once/" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF 'uv pip install -c c.txt -b $IOC_EVID/build-constraints.txt ./local' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the form uv pip install -c c.txt -b $IOC_EVID/build-constraints.txt ./local could not be planted\n'
     exit 1
 }
 out="$(fixture_run "$dir" --replay)"
@@ -856,39 +856,94 @@ admitted_read expect-status-last-prefix "IOC_EXPECT_STATUS=1 cat /nonexistent-io
 # build-system requires = ["hatchling"] with no version, so at 5466ea605d a uv pip install
 # of a local source path fetched whatever hatchling was newest, and so did a uv run --with
 # of one, which takes no build constraint at all. A uv pip install of a local source path
-# is now pinned only with -b on the same command, and a uv run --with of one is refused;
-# a built wheel needs no build and passes. plant_install <name> <command> plants one form
-# after true ||, so that nothing of it runs and only the reading of the command is read.
-plant_install() {
-    dir="$(fresh "$1")"
-    sed -i "s#\"command\":\"printf 'ran once#\"command\":\"true || $2; printf 'ran once#" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
-    grep -qF "true || $2; printf" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
-        printf 'FAIL the form %s could not be planted\n' "$2"
-        exit 1
-    }
+# is now pinned only with -b of the hashed build lock on the same command, and a uv run
+# --with of one is refused; a built wheel needs no build and passes. install_refused
+# <name> <install> and install_passes <name> <install> plant the install after true ||
+# with planted_run, so that nothing of it runs and only the reading of the command is
+# read, and ask install-pinned for its verdict.
+install_refused() {
+    planted_run "$1" "true || $2; printf 'ran once\\n'"
+    case_result "install-pinned refuses: $2" install-pinned "$PLANTED_OUT"
 }
-plant_install build-unpinned "uv pip install -c c.txt ./local"
-case_result "a uv pip install of a local source path with no build constraint is refused" install-pinned "$(fixture_run "$dir" --replay)"
-plant_install build-pinned "uv pip install -c c.txt -b b.txt ./local"
-honest_result "a uv pip install of a local source path with -b passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
-plant_install run-source "uv run --no-project --with ./local python -c 1"
-case_result "a uv run --with of a local source path is refused" install-pinned "$(fixture_run "$dir" --replay)"
-plant_install run-wheel "uv run --no-project --with ./local/pkg-0.1.0-py3-none-any.whl python -c 1"
-honest_result "a uv run --with of a built wheel passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
+install_passes() {
+    planted_run "$1" "true || $2; printf 'ran once\\n'"
+    honest_result "install-pinned passes: $2" install-pinned "$PLANTED_OUT"
+}
+install_refused build-unpinned "uv pip install -c c.txt ./local"
+install_passes build-pinned "uv pip install -c c.txt -b \"\$IOC_EVID/build-constraints.txt\" ./local"
+install_refused run-source "uv run --no-project --with ./local python -c 1"
+install_passes run-wheel "uv run --no-project --with ./local/pkg-0.1.0-py3-none-any.whl python -c 1"
 
 # 62. A version is not enough: an install that resolves a package from an index reads a
 # committed hashed lock. At cb6bb33c25 a pinned registry package passed install-pinned on
 # its version alone, though the index may serve another file under that version and the
 # package's own dependencies float. A pinned install that names no lock, or names a file
 # under $IOC_EVID whose requirements carry no hash, is refused; the same install reading
-# evidence/ioc-venv.lock, which the fixture carries, passes.
-plant_install no-lock "uv pip install --python x rdflib==7.6.0"
-case_result "a pinned registry install that reads no lock is refused" install-pinned "$(fixture_run "$dir" --replay)"
-plant_install unhashed-lock "uv pip install --python x -r \$IOC_EVID/ioc-venv.in"
-printf 'rdflib==7.6.0\n' >"$dir/repo/docs/research/internet-of-cognition/evidence/ioc-venv.in"
-case_result "a registry install whose requirements file under evidence/ carries no hash is refused" install-pinned "$(fixture_run "$dir" --replay)"
-plant_install hashed-lock "uv pip install --python x -c \$IOC_EVID/ioc-venv.lock rdflib==7.6.0"
-honest_result "a pinned registry install that reads the hashed lock passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
+# evidence/ioc-venv.lock, which the fixture carries beside the unhashed ioc-venv.in,
+# passes.
+install_refused no-lock "uv pip install --python x rdflib==7.6.0"
+install_refused unhashed-lock "uv pip install --python x -r \"\$IOC_EVID/ioc-venv.in\""
+install_passes hashed-lock "uv pip install --python x -c \"\$IOC_EVID/ioc-venv.lock\" rdflib==7.6.0"
+
+# 63-65 come from the eighth review of the pull request. Each fault of 63 and 64 passed
+# install-pinned at 8bad53ad40. The assignments of 65 were refused there too, by the closed
+# list of assigned names, under another message, and its honest form is new.
+#
+# 63. Naming a lock exempts nothing it does not hold. At 8bad53ad40 one hashed -c or -r
+# anywhere on the command passed every registry package beside it, so a package the lock
+# never listed was fetched from today's index with no hash. Each package a command names
+# is now looked up in the locks it names, at its exact version; uvx, which checks no hash
+# of a -c file, is held to the same lookup. The honest forms name packages their lock
+# holds at that version.
+install_refused tm-lock-plus-package "uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./runtime requests==2.32.3"
+install_refused tm-lock-package "uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" requests==2.32.3"
+install_refused venv-lock-package "uv pip install -r \"\$IOC_EVID/ioc-venv.lock\" requests==2.32.3"
+install_refused build-lock-package "uv pip install -c \"\$IOC_EVID/build-constraints.txt\" requests==2.32.3"
+install_refused uvx-lock-package "uvx -c \"\$IOC_EVID/ioc-venv.lock\" pyflakes==3.2.0 --version"
+install_passes tm-lock-held "uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./runtime click==8.5.1"
+install_passes venv-lock-held "uv pip install -r \"\$IOC_EVID/ioc-venv.lock\" rdflib==7.6.0"
+install_passes build-lock-held "uv pip install -c \"\$IOC_EVID/build-constraints.txt\" hatchling==1.33.0"
+install_passes tool-lock-held "uv tool run -c \"\$IOC_EVID/ioc-venv.lock\" --from pyshacl==0.40.2 pyshacl --version"
+
+# 64. A build is held to the hashed build lock in every spelling. At 8bad53ad40 any -b
+# passed, uv build was not read, a local source under uv tool run, uvx or pipx run was
+# passed, and --editable=PATH and -ePATH were read as options; each built with whatever
+# hatchling was newest. -b is now the hashed $IOC_EVID/build-constraints.txt itself, uv
+# build names it, a local source under a runner that checks no hash of its build is
+# refused, and an option under which uv would check no hash is refused by name.
+install_refused build-tm-lock "uv pip install -b \"\$IOC_EVID/tm-constraints.txt\" ./local"
+install_refused build-requirements "uv pip install -b requirements.txt ./local"
+install_refused uv-build-bare "uv build --wheel ./local"
+install_refused uv-build-other-b "uv build --wheel -b b.txt ./local"
+install_refused tool-run-source "uv tool run --from \"\$IOC_CLONES/cognition-protocols/packages/ioc-concord\" python -c 1"
+install_refused uvx-source "uvx --from ./pkg pkg"
+install_refused pipx-source "pipx run --spec ./pkg pkg"
+install_refused editable-equals "uv pip install --editable=./ctl"
+install_refused editable-joined "uv pip install -e./ctl"
+install_refused no-require-hashes "uv pip install --no-require-hashes -c \"\$IOC_EVID/ioc-venv.lock\" rdflib==7.6.0"
+install_passes build-lock "uv pip install -b \"\$IOC_EVID/build-constraints.txt\" ./local"
+install_passes uv-build-lock "uv build --wheel -b \"\$IOC_EVID/build-constraints.txt\" ./local"
+install_passes uvx-wheel "uvx --from ./pkg-0.1.0-py3-none-any.whl pkg"
+install_passes editable-equals-lock "uv pip install -b \"\$IOC_EVID/build-constraints.txt\" --editable=./ctl"
+install_passes editable-joined-lock "uv pip install -b \"\$IOC_EVID/build-constraints.txt\" -e./ctl"
+
+# 65. uv enforces the lock itself: env.sh exports UV_REQUIRE_HASHES=1, UV_BUILD_CONSTRAINT
+# and PIP_REQUIRE_HASHES=1 into every row's environment, and the three are reserved, so no
+# row assigns, unsets or re-points them. uv refuses every local source path under
+# UV_REQUIRE_HASHES=1, so one form clears it, visibly, as UV_REQUIRE_HASHES=0 before a uv
+# pip install of local sources alone with -b of the hashed build lock and -c of a hashed
+# lock. Each of its three conditions broken, one at a time, is refused by name, and so are
+# another value, a statement of its own, and an assignment to the other two names; the
+# four real rows' form passes.
+EXEMPT='UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only as UV_REQUIRE_HASHES=0 before a uv pip install of local sources alone with -b .IOC_EVID/build-constraints.txt and -c of a hashed lock: '
+refused_read exempt-registry "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local requests==2.32.3; printf 'ran once\\n'" "${EXEMPT}a package it installs is no local source path"
+refused_read exempt-no-build "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it names no -b .IOC_EVID/build-constraints.txt"
+refused_read exempt-no-lock "true || UV_REQUIRE_HASHES=0 uv pip install -c c.txt -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" "${EXEMPT}it names no hashed lock with -c"
+refused_read exempt-other-value "true || UV_REQUIRE_HASHES=false uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'" 'UV_REQUIRE_HASHES=false, which clears uv.s hash check, admitted only .*: its value is not 0'
+refused_read exempt-statement "UV_REQUIRE_HASHES=0; printf 'ran once\\n'" 'UV_REQUIRE_HASHES=0, which clears uv.s hash check, admitted only .*: it is no prefix'
+refused_read build-constraint-assigned "true || UV_BUILD_CONSTRAINT=b.txt uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" ./local; printf 'ran once\\n'" 'UV_BUILD_CONSTRAINT=b.txt, an assignment to UV_BUILD_CONSTRAINT, a name the gate records with'
+refused_read pip-hashes-assigned "true || PIP_REQUIRE_HASHES=0 pip install ./local; printf 'ran once\\n'" 'PIP_REQUIRE_HASHES=0, an assignment to PIP_REQUIRE_HASHES, a name the gate records with'
+admitted_read exempt-honest "true || UV_REQUIRE_HASHES=0 uv pip install -c \"\$IOC_EVID/tm-constraints.txt\" -b \"\$IOC_EVID/build-constraints.txt\" ./local; printf 'ran once\\n'"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then

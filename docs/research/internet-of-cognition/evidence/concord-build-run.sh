@@ -17,9 +17,12 @@ printf '%s\n' "our tree: $ROOT, read at 9542c6fbbecd184ccee73523ab3defa39d6cf23a
 
 # -b, the pinned build environment of ioc-concord, was added on 2026-11-14 after the run
 # that wrote concord-run.txt, so that a rerun fetches no unpinned hatchling; that
-# transcript's heading and uv's lines for this install predate it.
-sec '$ uv pip install --python venv/bin/python -b $IOC_EVID/build-constraints.txt $IOC_CLONES/cognition-protocols/packages/ioc-concord'
-uv pip install --python venv/bin/python -b "$HERE/build-constraints.txt" "$CP/packages/ioc-concord" 2>&1
+# transcript's heading and uv's lines for this install predate it. env.sh exports
+# UV_REQUIRE_HASHES=1, under which uv refuses every local source path, since a directory
+# has no hash; so this one install of a local source clears it, and uv still checks every
+# hash the -c lock and the -b build constraint carry. ioc-concord depends on no package.
+sec '$ UV_REQUIRE_HASHES=0 uv pip install --python venv/bin/python -c $IOC_EVID/ioc-venv.lock -b $IOC_EVID/build-constraints.txt $IOC_CLONES/cognition-protocols/packages/ioc-concord'
+UV_REQUIRE_HASHES=0 uv pip install --python venv/bin/python -c "$HERE/ioc-venv.lock" -b "$HERE/build-constraints.txt" "$CP/packages/ioc-concord" 2>&1
 
 sec '$ ./venv/bin/python -c "import ioc_concord, sys; print(ioc_concord.__version__); print(sys.version.split()[0])"'
 $PY -c "import ioc_concord, sys; print(ioc_concord.__version__); print(sys.version.split()[0])"

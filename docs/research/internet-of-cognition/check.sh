@@ -472,7 +472,7 @@ prepare_env() {
 #   group                             28  { list; }, whose status is its last command's
 #   subshell                           2  ( list ), whose status is its last command's
 #   for loop                          12  for NAME in words; do list; done
-#   assignment before a command       22  NAME=value, set in that command's environment
+#   assignment before a command       23  NAME=value, set in that command's environment
 #   assignment alone                   6  NAME=value with no command word
 #   command substitution in a word    13  $( ) in a word, its code admitted by this table
 #   assigns ACCORD_MODEL_DIR          10  a name the rows assign
@@ -480,6 +480,7 @@ prepare_env() {
 #   assigns GOFLAGS                    1  a name the rows assign
 #   assigns GOMODCACHE                 1  a name the rows assign
 #   assigns IOC_EXPECT_STATUS          9  the declared status, the last prefix of one command
+#   assigns UV_REQUIRE_HASHES          4  0, before a uv pip install of local sources alone
 #   assigns VIRTUAL_ENV                3  a name the rows assign
 #   assigns W                          1  a name the rows assign
 #   assigns c                          3  a name the rows assign
@@ -560,14 +561,17 @@ prepare_env() {
 #
 # The names the gate records with, which no row may touch. The list below is the reader's
 # RESERVED, which reader_py builds from PROGRAM_VARIABLES and RUNNER_PREFIXES, the two
-# variables the shims and the runner are written from; --admitted holds these lines as it
-# holds the table, and fails a name the runner or a shim records with that no prefix
-# covers. A row is refused by name when it assigns one, alone, before a command, in an
-# argument such as export's, or as a for loop's variable; when it reads one other than
-# IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's words or a
-# redirection target, such as >"$__ioc_failed", a program variable as a command word
-# excepted; and when it passes one to printf as an argument of its own. A word is read
-# without its quotes, so a quoted pattern that holds a reserved name is refused too.
+# variables the shims and the runner are written from, and from env.sh's IOC_ENV_ENFORCED,
+# the variables env.sh exports for uv and pip to enforce the locks by; --admitted holds
+# these lines as it holds the table, and fails a name the runner or a shim records with
+# that no prefix covers. A row is refused by name when it assigns one, alone, before a
+# command, in an argument such as export's, or as a for loop's variable; when it reads one
+# other than IOC_EXPECT_STATUS with $ in an argument, an assignment, a for loop's words or
+# a redirection target, such as >"$__ioc_failed", a program variable as a command word
+# excepted; and when it passes one to printf as an argument of its own. The one other
+# assignment admitted is UV_REQUIRE_HASHES=0 before the install the install-pinned header
+# below names. A word is read without its quotes, so a quoted pattern that holds a
+# reserved name is refused too.
 #
 #   reserved name                         what it is
 #   __ioc*                                a name the runner or a shim records with
@@ -577,7 +581,10 @@ prepare_env() {
 #   IOC_MASLAB_CTL                        a program variable, which points at its shim
 #   IOC_MASLAB_WHEEL_CTL                  a program variable, which points at its shim
 #   IOC_TC_PY                             a program variable, which points at its shim
-#   IOC_EXPECT_STATUS                     the declared status, written only before one command
+#   IOC_EXPECT_STATUS                     the declared status, the last prefix of one command
+#   UV_REQUIRE_HASHES                     a variable uv or pip enforces the locks by
+#   UV_BUILD_CONSTRAINT                   a variable uv or pip enforces the locks by
+#   PIP_REQUIRE_HASHES                    a variable uv or pip enforces the locks by
 #
 # What the table is checked against. The classifier is a parser of the forms the rows use,
 # so a spelling it misreads into an admitted entry, one that no row writes, is outside what
@@ -854,38 +861,69 @@ github_budget() {
 #   - for Go (go run, go install), the module, then @v and a full major.minor.patch, or a
 #     Go pseudo-version, or a commit hash.
 # A wildcard, a partial version, a tag such as latest or next, a comparison (>=, ~=, ^, ~)
-# or any other spelling is no version. A local path, a variable of this deliverable that
-# names one (IOC_...), and a constraints or requirements file are pinned. A constraints
-# or requirements file pins what it lists and nothing more: every other package of the
-# same pip install is held to its own version or is a local path. An option of a runner
-# the reader does not know, a package written as any other variable, and a command it
-# cannot open are refused.
+# or any other spelling is no version. A local path and a variable of this deliverable
+# that names one (IOC_...) are pinned. An option of a runner the reader does not know, a
+# package written as any other variable, and a command it cannot open are refused.
 #
-# A version is not enough: an install that resolves a package from an index reads a lock.
-# The command names, as $IOC_EVID/<file>, a committed file of evidence/ every requirement
-# of which carries a hash, with -c or -r for pip install and uv pip install, with -c or
-# --constraints for uvx and uv tool, and as the file uv pip sync installs; any other such
-# install is refused as "an install that reads no lock", and so is a requirements file
-# that is no hashed lock. uv run, pipx run, npx, bunx and npm exec take no lock, so a
+# Two guarantees hold the lock, uv's first and this reader's second. uv's: env.sh exports
+# UV_REQUIRE_HASHES=1, UV_BUILD_CONSTRAINT (the hashed evidence/build-constraints.txt) and
+# PIP_REQUIRE_HASHES=1 into every row's environment, and the reader reserves the three
+# names, so no row assigns, unsets or re-points them. Measured with uv 0.13.5 and the three
+# set, once with a package no lock hashes (requests==2.32.3, or setuptools as a build
+# backend) and once with a local build under an unhashed -b:
+#
+#   spelling                   package no lock hashes       build under an unhashed -b
+#   uv pip install -c/-r/-e/-b refused: "all requirements  refused: "all requirements
+#                              must have a hash"            must have a hash" (the local
+#                                                           source itself has none)
+#   uv pip sync                refused: the same            refused: the same
+#   uv build                   refused: "no trusted hash    refused: "No solution found
+#                              was provided for setuptools" when resolving: hatchling"
+#   uv run --with              installed, no refusal        built, no refusal; uv run reads
+#                                                           no UV_BUILD_CONSTRAINT at all
+#   uv tool run --from         installed, no refusal        built, no refusal
+#   uvx                        installed, no refusal        built, no refusal
+#   pip install                refused: "Hashes are         refused: "Can't verify hashes
+#                              required in --require-hashes for these file:// requirements"
+#                              mode"
+#
+# uvx and uv tool run check no hash a -c file carries either (a wrong hash for owlrl in
+# -c passed), and uv run --with of a wheel checks no hash: the wheel has none to check.
+# Under UV_REQUIRE_HASHES=1 uv refuses every local source path, since a directory has no
+# hash, so one install is written with the visible prefix UV_REQUIRE_HASHES=0, and the
+# classifier admits it there alone: before a uv pip install whose every package is a local
+# source path, that names -b "$IOC_EVID/build-constraints.txt" and -c of a hashed lock
+# under evidence/. uv still checks every hash its -c and -b files carry; what it leaves
+# unchecked is a dependency the local package would fetch from an index that its -c file
+# does not list. The mas-lab installs read the hashed tm-constraints.txt, which lists all
+# 24 of theirs, and ioc-concord has none.
+#
+# The reader's guarantee, which holds for every spelling uv does not enforce and stands
+# behind uv for the rest. Each package a command names from an index is looked up in the
+# hashed locks the command names, $IOC_EVID/<file> with -c or -r for pip install and uv pip
+# install and with -c or --constraints for uvx and uv tool, and evidence/ioc-venv.lock for
+# uv run, which takes no lock: a package no named lock holds at that exact version is
+# refused by name, whatever other file the command names, and an install that names no
+# lock is refused as "an install that reads no lock", as is a requirements file that is no
+# hashed lock and a uv pip sync of one. pipx run, npx, bunx and npm exec take no lock, so a
 # package they would resolve from an index is refused; go run and go install are left to
 # go, which checks each module against go.sum or the checksum database. The locks are
 # evidence/ioc-venv.lock, all 71 packages of IOC_VENV, evidence/tm-constraints.txt, the 24
 # third-party packages of the mas-lab environments, and evidence/build-constraints.txt,
 # each resolved as the index stood at 2026-11-12T07:55:56Z, the instant sources.json
-# records, and each hash is checked by uv.
+# records.
 #
 # A build backend is an install. A local path that is no wheel is built, and its build
 # backend and that backend's dependencies are fetched like any package: every local
 # package of this replay declares build-system requires = ["hatchling"] with no version.
-# So a pip install or uv pip install of a local source path is pinned only when the same
-# command names a build constraint, -b or --build-constraints, which here is always
-# evidence/build-constraints.txt, the seven packages of hatchling's build environment
-# each at ==version and hashed; and since uv run takes no build constraint, a uv run
-# --with of a local source path is refused. A wheel, a path ending in .whl or a variable
-# env.sh sets to one (WHEEL_VARIABLES, IOC_CONCORD_WHEEL), needs no build and is pinned
-# as a local path is. What the reader cannot see of a local package is the dependencies
-# it resolves from an index: the mas-lab installs read them from the hashed
-# tm-constraints.txt, and ioc-concord has none.
+# So a pip install, a uv pip install (-e and --editable in every spelling) and a uv build
+# of a local source path name -b "$IOC_EVID/build-constraints.txt", the seven packages of
+# hatchling's build environment each at ==version and hashed, and any other -b is refused;
+# uv run, uv tool run, uvx and pipx run check no hash of a build, so a local source path
+# under any of them is refused. A wheel, a path ending in .whl or a variable env.sh sets to
+# one (WHEEL_VARIABLES, IOC_CONCORD_WHEEL), builds nothing and passes. An option under
+# which uv would check no hash (--no-require-hashes, --no-verify-hashes, --no-build-
+# isolation) is refused by name.
 #
 # Every word in command position is read, and one this reader cannot resolve fails the
 # row and is named. Command position is the first word of a command after its assignments
@@ -933,6 +971,9 @@ github_budget() {
 # and RUNNER_PREFIXES, written from the two variables above program_shims.
 reader_py() {
     local v
+    # env.sh's IOC_ENV_ENFORCED, the variables uv and pip enforce the locks by, which the
+    # reader reserves; env.sh read for its functions defines it and prepares nothing.
+    env_functions || return 1
     printf 'PROGRAM_VARIABLES = {'
     for v in $PROGRAM_VARIABLES; do
         printf '"%s": "%s", ' "${v%%:*}" "${v#*:}"
@@ -941,7 +982,11 @@ reader_py() {
     for v in $RUNNER_PREFIXES; do
         printf '"%s", ' "$v"
     done
-    printf ')\n'
+    printf ')\nENFORCED = ('
+    for v in $IOC_ENV_ENFORCED; do
+        printf '"%s", ' "$v"
+    done
+    printf ')\nLOCKS_DIR = %s\n' "$(python3 -c 'import json, sys; print(json.dumps(sys.argv[1]))' "$EVIDENCE/evidence")"
     cat <<'PYREADER'
 import json, os, re, shlex, sys
 
@@ -966,32 +1011,123 @@ def wheel(arg):
 
 # An install that resolves a package from an index reads a committed lock: a file under
 # evidence/, named on the command as $IOC_EVID/<file>, every requirement of which carries
-# a hash. The install reader reads the file from the directory IOC_LOCKS names, which
-# unpinned_installs sets to this tree's evidence/; with none set, no file is a lock.
+# a hash, read from LOCKS_DIR, this tree's evidence/. Every package the command names is
+# looked up in the locks it names, at that exact version; naming a lock exempts nothing
+# it does not hold.
 NO_LOCK = " (an install that reads no lock: name a hashed lock under $IOC_EVID)"
+NOT_HELD = " (a package no lock the command names holds at that version)"
 LOCKS = {}
 
-def hashed_lock(path):
+def normalized(name):
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+def lock_packages(path):
+    # {normalized name: version} of a hashed lock named as $IOC_EVID/<file>, or None for
+    # any other path, a file that is missing and a file one of whose requirements carries
+    # no hash.
     m = re.fullmatch(r"\$\{?IOC_EVID\}?/([A-Za-z0-9_][A-Za-z0-9._-]*)", path or "")
-    root = os.environ.get("IOC_LOCKS", "")
-    if m is None or not root:
-        return False
+    if m is None:
+        return None
     name = m.group(1)
     if name not in LOCKS:
-        entries, hashed = 0, 0
+        held, hashed, current = {}, set(), None
         try:
-            current = False
-            for line in open(os.path.join(root, name)):
-                if re.match(r"^[A-Za-z0-9]", line):
-                    entries += 1
-                    current = False
-                if "--hash=sha256:" in line and not current and entries:
-                    hashed += 1
-                    current = True
+            for line in open(os.path.join(LOCKS_DIR, name)):
+                pin = re.match(r"^([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^]]*\])?==([^ ;\\]+)", line)
+                if pin:
+                    current = normalized(pin.group(1))
+                    held[current] = pin.group(2)
+                elif re.match(r"^[A-Za-z0-9]", line):
+                    current = None
+                    held[""] = ""
+                if "--hash=sha256:" in line and current:
+                    hashed.add(current)
         except OSError:
-            entries = 0
-        LOCKS[name] = entries > 0 and hashed == entries
+            held = {}
+        LOCKS[name] = held if held and "" not in held and hashed == set(held) else None
     return LOCKS[name]
+
+def hashed_lock(path):
+    return lock_packages(path) is not None
+
+def held(package, locks):
+    # True when package, name==version, is held at that version by one of locks.
+    m = re.fullmatch(r"([A-Za-z0-9][A-Za-z0-9._-]*)(?:\[[^]]*\])?==(.+)", package)
+    return m is not None and any(lock.get(normalized(m.group(1))) == m.group(2) for lock in locks)
+
+# A build backend is an install: every local source is built under the hashed
+# evidence/build-constraints.txt itself, named with -b, and no other -b is a build lock.
+BAD_BUILD = " (a build constraint that is not the hashed $IOC_EVID/build-constraints.txt)"
+NO_BUILD = " (a local source path built with no build constraint; pass -b $IOC_EVID/build-constraints.txt)"
+
+def build_lock(value):
+    return re.fullmatch(r"\$\{?IOC_EVID\}?/build-constraints\.txt", value or "") is not None and hashed_lock(value)
+
+def read_build(label, sources, builds):
+    # The one build rule: each -b is the hashed build lock, and a command that builds a
+    # local source names it.
+    problems = [label + " -b " + b + BAD_BUILD for b in builds if not build_lock(b)]
+    if sources and not any(build_lock(b) for b in builds):
+        problems.append(label + " " + sources[0] + NO_BUILD)
+    return problems
+
+# The options under which uv or pip would check no hash, or build outside its isolated,
+# constrained environment; a row passes none of them.
+UNENFORCED = {"--no-require-hashes", "--no-verify-hashes", "--no-build-isolation", "--no-build-isolation-package"}
+PIP_VALUE = {"-b", "--build-constraint", "--build-constraints", "-c", "--constraint", "-r", "--requirement",
+             "--python", "-p", "--target", "--prefix", "--index-url", "--extra-index-url", "-e", "--editable"}
+
+def pip_words(rest):
+    # The words of a pip install, uv pip install or uv pip sync after its subcommand:
+    # (packages, locks, unlocked requirements files, -b values, options uv would enforce
+    # nothing under). -e and --editable take a path in every spelling: -e PATH, -ePATH,
+    # --editable PATH and --editable=PATH.
+    packages, locks, unlocked, builds, flags, j = [], [], [], [], [], 0
+    while j < len(rest):
+        a = rest[j]
+        if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
+            break
+        key, value = a.split("=", 1)[0], option_value(a)
+        if a.startswith("-e") and not a.startswith("--") and a != "-e":
+            key, value = "-e", a[2:]
+        if value is None and key in PIP_VALUE:
+            value = rest[j + 1] if j + 1 < len(rest) else ""
+            j += 1
+        if key in ("-b", "--build-constraint", "--build-constraints"):
+            builds.append(value)
+        elif key in ("-c", "--constraint", "-r", "--requirement"):
+            pins = lock_packages(value)
+            if pins is not None:
+                locks.append(pins)
+            elif key in ("-r", "--requirement"):
+                unlocked.append(value)
+        elif key in ("-e", "--editable"):
+            packages.append(value)
+        elif key in UNENFORCED:
+            flags.append(key)
+        elif not a.startswith("-"):
+            packages.append(a)
+        j += 1
+    return packages, locks, unlocked, builds, flags
+
+def hash_exemption(words):
+    # None when words, the command after a prefix UV_REQUIRE_HASHES=0, is the one form the
+    # prefix is admitted before, or the condition it breaks: a uv pip install whose every
+    # package is a local source path, with -b of the hashed build lock and -c of a hashed
+    # lock. uv refuses every local source under UV_REQUIRE_HASHES=1, since a directory has
+    # no hash, and still checks every hash the -c and -b files carry.
+    if words[:3] != ["uv", "pip", "install"]:
+        return "it prefixes no uv pip install"
+    packages, locks, unlocked, builds, flags = pip_words(words[3:])
+    if not packages or any(not local(p) for p in packages):
+        return "a package it installs is no local source path"
+    if not any(build_lock(b) for b in builds):
+        return "it names no -b $IOC_EVID/build-constraints.txt"
+    if not locks:
+        return "it names no hashed lock with -c"
+    if unlocked or flags:
+        return "it names a file or an option uv would check no hash under"
+    return None
 
 def py_ok(arg):
     return local(arg) or PY_PIN.match(arg) is not None
@@ -1017,9 +1153,11 @@ PROGRAMS = ("awk", "cat", "cd", "cmp", "cp", "curl", "cut", "dispatch", "echo", 
 # The names the rows assign, alone, before a command or as a for loop's variable. Each is
 # an entry "assigns <name>" of ADMITTED, and an assignment or a loop to any other name is
 # refused by name, the shell's own names among them. IOC_EXPECT_STATUS is admitted as the
-# last prefix of one command word alone.
+# last prefix of one command word alone, and UV_REQUIRE_HASHES as the prefix 0 of the one
+# install hash_exemption reads.
 ASSIGNED_NAMES = ("ACCORD_MODEL_DIR", "GOCACHE", "GOFLAGS", "GOMODCACHE", "IOC_EXPECT_STATUS",
-                  "VIRTUAL_ENV", "W", "c", "f", "g", "m", "n", "o", "p", "r")
+                  "UV_REQUIRE_HASHES", "VIRTUAL_ENV", "W", "c", "f", "g", "m", "n", "o", "p", "r")
+HASH_EXEMPT = "UV_REQUIRE_HASHES"
 
 # uv run runs the program its arguments name, as xargs does, and exits with its status.
 # The programs the rows run with it are each an entry "uv run <program>" of ADMITTED; any
@@ -1111,18 +1249,22 @@ def foreign_character(text):
     return None
 
 # The names the gate records with, which no row may touch: every name of the runner, which
-# starts with one of RUNNER_PREFIXES, the program variables, and the declared status. A
-# row may write the declared status only as the last prefix of one command, and a
-# program variable only as a command word.
+# starts with one of RUNNER_PREFIXES, the program variables, the declared status, and the
+# variables uv and pip enforce the locks by, ENFORCED, env.sh's IOC_ENV_ENFORCED. A row
+# may write the declared status only as the last prefix of one command, UV_REQUIRE_HASHES
+# only as the prefix 0 of the install hash_exemption reads, and a program variable only as
+# a command word.
 EXPECT_STATUS = "IOC_EXPECT_STATUS"
 RESERVED = {
     **{prefix + "*": "a name the runner or a shim records with" for prefix in RUNNER_PREFIXES},
     **{name: "a program variable, which points at its shim" for name in PROGRAM_VARIABLES},
-    EXPECT_STATUS: "the declared status, written only before one command",
+    EXPECT_STATUS: "the declared status, the last prefix of one command",
+    **{name: "a variable uv or pip enforces the locks by" for name in ENFORCED},
 }
 
 def reserved(name):
-    return name.startswith(RUNNER_PREFIXES) or name in PROGRAM_VARIABLES or name == EXPECT_STATUS
+    return (name.startswith(RUNNER_PREFIXES) or name in PROGRAM_VARIABLES or name == EXPECT_STATUS
+            or name in ENFORCED)
 
 READS = re.compile(r"\$\{?([A-Za-z_][A-Za-z0-9_]*)")
 SETS = re.compile(r"(?<![A-Za-z0-9_])([A-Za-z_][A-Za-z0-9_]*)(?:\[[^]]*\])?\+?=")
@@ -1178,8 +1320,9 @@ ADMITTED = {
     "assignment alone": "NAME=value with no command word",
     "command substitution in a word": "$( ) in a word, its code admitted by this table",
     # Assigned names.
-    **{"assigns " + name: ("the declared status, the last prefix of one command" if name == EXPECT_STATUS
-                           else "a name the rows assign") for name in ASSIGNED_NAMES},
+    **{"assigns " + name: {EXPECT_STATUS: "the declared status, the last prefix of one command",
+                           HASH_EXEMPT: "0, before a uv pip install of local sources alone"}.get(name, "a name the rows assign")
+       for name in ASSIGNED_NAMES},
     # Command words.
     **{"program " + name: "wrapped in a function that records its status" for name in PROGRAMS},
     **{"variable $" + name: "a program variable, whose shim records its status" for name in PROGRAM_VARIABLES},
@@ -1506,9 +1649,13 @@ def option_value(word):
     return word.split("=", 1)[1] if "=" in word else None
 
 def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=(), lock_by=()):
-    # lock_by names the options whose value may be a hashed lock, which a package this
-    # runner resolves from an index must read; None exempts a runner, go alone, whose
-    # modules go itself checks against go.sum or the checksum database.
+    # lock_by names the options whose value may be a hashed lock: each package this runner
+    # resolves from an index is held at its exact version by a lock the command names, or
+    # it is refused; None exempts a runner, go alone, whose modules go itself checks
+    # against go.sum or the checksum database. uv tool run, uvx and pipx check no hash of
+    # what they install or build (measured, see the header), so a local source path under
+    # a Python runner, which it would build, is refused, and a wheel, which builds
+    # nothing, passes.
     problems, pins, i = [], {}, 0
     while i < len(rest):
         word = rest[i]
@@ -1524,14 +1671,26 @@ def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=(), lock_by=())
         elif word not in flag_opts and key not in flag_opts:
             return [name + " " + word + " (an option this reader does not know)"]
         i += 1
+    python = ok is py_ok
+    locks = [] if lock_by is None else [p for k in lock_by for v in pins.get(k, []) for p in [lock_packages(v)] if p is not None]
+
+    def read(label, value):
+        if not ok(value):
+            problems.append(label + " " + value)
+        elif local(value):
+            if python and not wheel(value):
+                problems.append(label + " " + value + " (a local source path " + name + " would build, checking no hash of its build environment)")
+        elif lock_by is not None and not locks:
+            problems.append(label + " " + value + NO_LOCK)
+        elif lock_by is not None and not held(value, locks):
+            problems.append(label + " " + value + NOT_HELD)
+
     for key in ("--with", "--with-editable"):
         for value in pins.get(key, []):
-            if not py_ok(value):
-                problems.append(name + " " + key + " " + value)
-    locked = lock_by is None or any(hashed_lock(v) for k in lock_by for v in pins.get(k, []))
-    for value in pins.get("--with", []):
-        if py_ok(value) and not local(value) and not locked:
-            problems.append(name + " --with " + value + NO_LOCK)
+            read(name + " " + key, value)
+    for value in pins.get("--with-requirements", []):
+        if not hashed_lock(value):
+            problems.append(name + " --with-requirements " + value + NO_LOCK)
     package = rest[i] if i < len(rest) else ""
     source = None
     for key in pinned_by:
@@ -1542,10 +1701,8 @@ def read_runner(name, rest, value_opts, flag_opts, ok, pinned_by=(), lock_by=())
         problems.append(name + " (no package this reader can find)")
     elif target.startswith("$") and not local(target):
         problems.append(name + " " + target + " (a package this reader cannot read)")
-    elif not ok(target):
-        problems.append(name + " " + target)
-    elif not local(target) and not locked:
-        problems.append(name + " " + target + NO_LOCK)
+    else:
+        read(name, target)
     return problems
 
 def read_command(command, depth=0):
@@ -1607,15 +1764,17 @@ def read_command(command, depth=0):
                 # uv run fetches each --with, which every one of them must pin. Its options
                 # are read from UV_RUN_OPTIONS, the classifier's own table, so --python's
                 # value is no program, and an option the table does not hold is refused.
-                # uv run takes no build constraint, so a --with that is a local source
-                # path, which uv run would build with whatever build backend is newest, is
-                # refused; a built wheel needs no build. It takes no lock either, so a
-                # --with uv run resolves from an index is refused too.
+                # uv run reads neither UV_REQUIRE_HASHES nor UV_BUILD_CONSTRAINT (measured,
+                # see the header), so a --with that is a local source path, which it would
+                # build with whatever build backend is newest, is refused, a built wheel
+                # passes, and a package from an index passes only when evidence/ioc-venv.lock
+                # holds it at that version.
                 try:
                     options, _ = uv_run_program(w[i + 2:])
                 except Refused as why:
                     found.append(str(why))
                     options = []
+                lock = [p for p in [lock_packages("$IOC_EVID/ioc-venv.lock")] if p is not None]
                 for key, value in options:
                     if key != "--with":
                         continue
@@ -1623,8 +1782,29 @@ def read_command(command, depth=0):
                         found.append("uv run " + key + " " + value)
                     elif local(value) and not wheel(value):
                         found.append("uv run " + key + " " + value + " (a local source path uv run builds with no build constraint; run a wheel built under one)")
-                    elif not local(value):
-                        found.append("uv run " + key + " " + value + NO_LOCK)
+                    elif not local(value) and not held(value, lock):
+                        found.append("uv run " + key + " " + value + " (a package evidence/ioc-venv.lock does not hold at that version)")
+            elif name == "uv" and nxt == "build":
+                # uv build checks every hash of its build environment under UV_REQUIRE_HASHES
+                # and UV_BUILD_CONSTRAINT (measured); the reader holds its -b to the hashed
+                # build lock, which it must name, and refuses an option uv would check no
+                # hash under.
+                rest, j, sources, builds = w[i + 2:], 0, [], []
+                while j < len(rest):
+                    a = rest[j]
+                    key, value = a.split("=", 1)[0], option_value(a)
+                    if value is None and key in ("-b", "--build-constraint", "--build-constraints", "-o", "--out-dir",
+                                                 "--python", "-p", "--package", "-c", "--constraints"):
+                        value = rest[j + 1] if j + 1 < len(rest) else ""
+                        j += 1
+                    if key in ("-b", "--build-constraint", "--build-constraints"):
+                        builds.append(value)
+                    elif key in UNENFORCED:
+                        found.append("uv build " + key + " (an option under which uv checks no hash)")
+                    elif not a.startswith("-"):
+                        sources.append(a)
+                    j += 1
+                found += read_build("uv build", sources or ["."], builds)
             elif name == "uv" and nxt == "add":
                 found.append("uv add (a form that installs and that this reader does not read)")
             elif name == "pipx" and nxt == "run":
@@ -1638,60 +1818,37 @@ def read_command(command, depth=0):
                 found.append(name + " " + nxt + " (a form that installs and that this reader does not read)")
             elif name == "go" and nxt in ("run", "install"):
                 found += read_runner("go " + nxt, w[i + 2:], GO_VALUE, GO_FLAG, go_ok, (), None)
-            elif name == "pip" and nxt == "sync":
-                # A sync installs exactly the files it names, so each must be a hashed lock;
-                # the value of --python or -p names an interpreter and no file.
-                rest, j = w[i + 2:], 0
-                while j < len(rest):
-                    a = rest[j]
-                    if a in ("--python", "-p"):
-                        j += 1
-                    elif not a.startswith("-") and not hashed_lock(a):
-                        found.append("pip sync " + a + NO_LOCK)
-                    j += 1
-            elif name == "pip" and nxt == "install":
-                # Every argument is read. A constraints or requirements file pins what it
-                # lists and nothing else, so only the file it names is exempt; every other
-                # package is held to its own version or is a local path. A package resolved
-                # from an index is read from a hashed lock: the command names one under
-                # $IOC_EVID with -c or -r, and a requirements file that is no hashed lock is
-                # refused. A local path that is no wheel is built, and its build backend is
-                # fetched like any package, so the command must name a build constraint
-                # with -b.
-                rest, j, sources, build_pinned = w[i + 2:], 0, [], False
-                registry, locked, unlocked = [], False, []
-                while j < len(rest):
-                    a = rest[j]
-                    key = a.split("=", 1)[0]
-                    if a[:1] in (">", "<") or re.match(r"[0-9]*[<>]", a):
-                        break
-                    value = option_value(a)
-                    if value is None and key in ("-b", "--build-constraint", "--build-constraints", "-c",
-                                                 "--constraint", "-r", "--requirement", "--python", "-p",
-                                                 "--target", "--prefix", "--index-url", "--extra-index-url"):
-                        value = rest[j + 1] if j + 1 < len(rest) else ""
-                        j += 1
-                    if key in ("-b", "--build-constraint", "--build-constraints"):
-                        build_pinned = True
-                    elif key in ("-c", "--constraint", "-r", "--requirement"):
-                        if hashed_lock(value):
-                            locked = True
-                        elif key in ("-r", "--requirement"):
-                            unlocked.append(value)
-                    elif a.startswith("-"):
-                        pass
+            elif name == "pip" and nxt in ("install", "sync"):
+                # Every argument is read, in every spelling of -e and --editable, by
+                # pip_words. A sync installs exactly the files it names, so each must be a
+                # hashed lock. Every package an install names from an index is held at its
+                # exact version by a hashed lock the command names, with -c or -r, or it
+                # is refused by name, whatever other file the command names; a
+                # requirements file that is no hashed lock is refused. A local path that is
+                # no wheel is built, and its build backend is fetched like any package, so
+                # the command names the hashed build lock with -b, and any other -b is
+                # refused. An option under which uv would check no hash is refused.
+                label = "pip " + nxt
+                packages, locks, unlocked, builds, flags = pip_words(w[i + 2:])
+                sources = []
+                for a in flags:
+                    found.append(label + " " + a + " (an option under which uv checks no hash)")
+                for a in unlocked:
+                    found.append(label + " -r " + a + NO_LOCK)
+                for a in packages:
+                    if nxt == "sync":
+                        if not hashed_lock(a):
+                            found.append(label + " " + a + NO_LOCK)
                     elif not py_ok(a):
-                        found.append("pip install " + a)
-                    elif local(a) and not wheel(a):
-                        sources.append(a)
-                    elif not local(a):
-                        registry.append(a)
-                    j += 1
-                if sources and not build_pinned:
-                    found.append("pip install " + sources[0] + " (a local source path built with no build constraint; pass one with -b)")
-                if not locked:
-                    for a in registry[:1] + ["-r " + v for v in unlocked]:
-                        found.append("pip install " + a + NO_LOCK)
+                        found.append(label + " " + a)
+                    elif local(a):
+                        if not wheel(a):
+                            sources.append(a)
+                    elif not locks:
+                        found.append(label + " " + a + NO_LOCK)
+                    elif not held(a, locks):
+                        found.append(label + " " + a + NOT_HELD)
+                found += read_build(label, sources, builds)
     return found
 
 
@@ -1897,9 +2054,10 @@ def classify_word(words):
     # The class of a simple command's command word: ("program", name), ("variable",
     # name), ("condition", word), or ("none",) for a command of assignments alone, each
     # admitted through admit, with the index of the command word. Every other word is
-    # refused, and so is an assignment to a name the gate records with, but for the
-    # declared status written as the last prefix of a command word, and an assignment to a
-    # name ASSIGNED_NAMES does not hold.
+    # refused. An assignment is admitted only to a name ASSIGNED_NAMES holds. An assignment
+    # to a name the gate records with is refused, with two exceptions: the declared status
+    # written as the last prefix of a command word, and UV_REQUIRE_HASHES=0 written before
+    # the one install hash_exemption reads.
     i = 0
     while i < len(words) and ASSIGNMENT.match(words[i]):
         i += 1
@@ -1914,7 +2072,12 @@ def classify_word(words):
             # bash expands prefixes from left to right, so a substitution in a later one
             # would run with the status already declared.
             raise Refused(word + ", " + EXPECT_STATUS + " before another prefix, whose substitution would run with the status declared")
-        if reserved(name) and name != EXPECT_STATUS:
+        if name == HASH_EXEMPT:
+            why = "it is no prefix" if i == len(words) else (
+                "its value is not 0" if word != HASH_EXEMPT + "=0" else hash_exemption(words[i:]))
+            if why:
+                raise Refused(word + ", which clears uv's hash check, admitted only as UV_REQUIRE_HASHES=0 before a uv pip install of local sources alone with -b $IOC_EVID/build-constraints.txt and -c of a hashed lock: " + why)
+        elif reserved(name) and name != EXPECT_STATUS:
             raise Refused(word + ", an assignment to " + name + ", a name the gate records with")
         admit("assigns " + name, word + ", an assignment to " + name + ", a name the evaluator does not admit")
         refuse_touch(word, "an assignment", sets=False)
@@ -2141,8 +2304,9 @@ PYREADER
 }
 
 unpinned_installs() {
-    # The install reader reads each lock a command names from this tree's evidence/.
-    claims | IOC_LOCKS="$EVIDENCE/evidence" python3 -c "$(reader_py)" installs
+    # The install reader reads each lock a command names from this tree's evidence/,
+    # LOCKS_DIR, which reader_py writes into it.
+    claims | python3 -c "$(reader_py)" installs
 }
 
 # ---------------------------------------------------------------- --admitted
@@ -3359,8 +3523,9 @@ fixture_build() {
     cp "$EVIDENCE/check.sh" "$evidence/check.sh"
     # env.sh is read for its functions alone: --citations clones a repository by its rule.
     cp "$EVIDENCE/env.sh" "$evidence/env.sh"
-    # The hashed lock of IOC_VENV, which a planted install may read.
-    cp "$EVIDENCE/evidence/ioc-venv.lock" "$evidence/evidence/ioc-venv.lock"
+    # The hashed locks, which a planted install may read, and ioc-venv.in, which is none.
+    cp "$EVIDENCE/evidence/ioc-venv.lock" "$EVIDENCE/evidence/ioc-venv.in" "$EVIDENCE/evidence/tm-constraints.txt" \
+        "$EVIDENCE/evidence/build-constraints.txt" "$evidence/evidence/"
 
     cat >"$dir/repo/packages/daemon/internal/api/handoff.go" <<'GO'
 package api
