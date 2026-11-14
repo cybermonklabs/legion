@@ -184,16 +184,16 @@ func provisioningRefusal(w http.ResponseWriter) {
 // repository cache do (INFRA-1254, INFRA-513).
 // Four installations, one per case, so no case's mints or cached leases reach another's:
 //
-//   - one granted the implement App's whole set: the one request names the reading set, and
-//     that token is served;
+//   - one granted the implement App's whole set: the one request names the reading set and no
+//     repository, and that token is served;
 //   - one not granted Actions: the mint asks for what the installation is granted of the reading
 //     set, so the one request leaves actions out and the adapter is served that token, with no
 //     second call;
 //   - one that refuses the reading request: the refusal is returned as it came and nothing else
 //     is minted. It once fell back to the App's own write token for that owner, from when a
 //     request named the repository and a 422 could mean the installation did not reach it; no
-//     request names a repository now (INFRA-2543), so a 422 is a permission the account has not
-//     granted, which a wider request is refused for just the same;
+//     request names a repository now (INFRA-2543), so that write token would reach the owner's
+//     whole installation, and a refused reading lease fails the mint rather than hand it out;
 //   - one in GitHub's trouble (a 500): the error is returned as it came, with no second mint and
 //     nothing logged.
 func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
@@ -215,8 +215,8 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	readingSet := map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
 	withoutActions := map[string]string{"contents": "read", "pull_requests": "read", "metadata": "read"}
 	// writeSet is what the implement App's write token asks for (appauth's writePermissions),
-	// which is what the fallback mint carries and what each installation below is granted, bar
-	// the one its own case takes a permission from.
+	// which is what each installation below is granted, bar the one its own case takes a
+	// permission from.
 	writeSet := map[string]string{"actions": "write", "checks": "read", "contents": "write",
 		"metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"}
 	withoutActionsGranted := map[string]string{"checks": "read", "contents": "write",
@@ -248,8 +248,8 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 				mintedToken(w, "narrowed-lease", permissions)
 			}},
 		// An installation that refuses the narrowed read — a grant that changed between the
-		// permissions read and the exchange reaches the adapter as a 422 — and mints the App's
-		// own write token.
+		// permissions read and the exchange reaches the adapter as a 422 — and would mint the
+		// App's own write token if asked, which the adapter never does.
 		provisioningInstallation{id: refusedInstallation, owner: refusedOwner, granted: writeSet,
 			answer: func(w http.ResponseWriter, permissions map[string]string) {
 				if allRead(permissions) {
@@ -269,7 +269,8 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo })
 	ctx := context.Background()
 
-	// The request carries the reading permissions, and that token is what a pod clones with.
+	// The request carries the reading permissions and no repository, and that token is what a pod
+	// clones with.
 	token, err := adapter.Token(ctx, readingRepo)
 	if err != nil || token != "reading-lease" {
 		t.Fatalf("the token for %s = %q, %v; want the reading lease", readingRepo, token, err)

@@ -209,15 +209,16 @@ func TestABootWaitsOutAGitHubRequestThatNeverAnswers(t *testing.T) {
 	}
 }
 
-// A definitive answer (the App's key refused) is refused at once, naming it: no retry changes it.
+// A definitive answer (the App's key refused) is refused at once, naming it and the owner the
+// boot minted for (workflowConfig's mapping, acme): no retry changes it.
 func TestABootRefusesADefinitiveGitHubAnswerAtOnce(t *testing.T) {
 	quickAppMints(t)
 	tokens, standIn := appTokens(t, func(w http.ResponseWriter, r *http.Request, _ string, _ int) {
 		http.Error(w, `{"message":"A JSON web token could not be decoded"}`, http.StatusUnauthorized)
 	})
 	err := bootsOrExits(t, workflowConfig(t, workflowNATS(t)), tokens, 60*time.Second)
-	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot") || !strings.Contains(err.Error(), "(401)") {
-		t.Fatalf("boot = %v, want the refusal naming the implement mint and GitHub's 401", err)
+	if err == nil || !strings.Contains(err.Error(), "mint implement GitHub App token at boot for acme: ") || !strings.Contains(err.Error(), "(401)") {
+		t.Fatalf("boot = %v, want the refusal naming the implement mint, the owner acme and GitHub's 401", err)
 	}
 	if got := standIn.Discoveries(); !maps.Equal(got, map[string]int{"1": 1}) {
 		t.Errorf("installation discoveries by App = %v, want the implement App's one: a 401 is not asked again", got)

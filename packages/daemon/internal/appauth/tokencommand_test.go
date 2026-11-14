@@ -349,11 +349,11 @@ func TestTokenModeARepositoryOutsideTheInstallationsListIsNotInstalled(t *testin
 
 // A narrowing the broker refuses is ErrNarrowingRefused, the refusal key mode gives, and the
 // mapping's installation read is the one source of its own answer: it runs the command and reads
-// GitHub however recently a narrowing was refused for that owner's read scope (listInstallation,
-// ForgetNarrowingRefusal). Served from the Manager's memory instead, an operator who fixes what
-// the broker refused and saves the mapping inside the five minutes a refusal is remembered for
-// would be told the check failed, while the bundle refreshes behind it kept that memory alive
-// (INFRA-513).
+// GitHub however recently a narrowing was refused for the read scope it asks under
+// (listInstallation, ForgetNarrowingRefusal). Served from the Manager's memory instead, an
+// operator who fixes what the broker refused and saves the mapping inside the five minutes a
+// refusal is remembered for would be told the check failed, while the bundle refreshes behind it
+// kept that memory alive (INFRA-513).
 func TestTheInstallationReadAsksPastARememberedNarrowingRefusal(t *testing.T) {
 	now := time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC)
 	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
@@ -588,6 +588,75 @@ func TestTokenModeCommandEnvironmentAndDeadline(t *testing.T) {
 	var transient *TransientError
 	if _, err := slow.runTokenCommand(ctx, slow.apps.Implement, mintRequest{role: Implement, owner: "acme"}); !errors.As(err, &transient) {
 		t.Fatalf("a command past its deadline = %v, want a transient error", err)
+	}
+}
+
+// A token command is given the daemon's own environment but no variable of the LEGION_GITHUB_
+// namespace the daemon inherited. The daemon sets LEGION_GITHUB_OWNER and LEGION_GITHUB_READ_ONLY
+// for every run — a write mint's, a read mint's and the release of every installation AppLogin
+// reads — and those two are the only names of the namespace the command sees, so a variable of
+// it that the daemon does not set, inherited from whatever started the daemon, reaches no
+// command and narrows no release.
+func TestTokenModeACommandSeesNoLegionGitHubVariableButTheTwoItIsTold(t *testing.T) {
+	now := time.Date(2026, 11, 13, 12, 0, 0, 0, time.UTC)
+	broker := newFakeBroker(t, []string{"acme"}, now.Add(time.Hour))
+	seen := filepath.Join(t.TempDir(), "env")
+	// What the daemon inherited: both names it sets, and one more of their namespace that it
+	// sets not at all.
+	t.Setenv("LEGION_GITHUB_OWNER", "inherited-owner")
+	t.Setenv("LEGION_GITHUB_READ_ONLY", "inherited-flag")
+	t.Setenv("LEGION_GITHUB_INHERITED", "inherited-value")
+	// Each run writes a line that opens it and then its whole environment, and answers as the
+	// broker does.
+	const opened = "==== a run of the token command ===="
+	broker.command = fmt.Sprintf(`{ printf '%%s\n' %q; env; } >>%q; exec %q`, opened, seen, broker.command)
+	github := &fakeTokenGitHub{slug: "legion-implementer", appID: "12345"}
+	var stderr bytes.Buffer
+	tokens := tokenModeManager(github.serve(t), broker, &now, &stderr)
+	t.Cleanup(tokens.Close)
+
+	if _, err := tokens.Token(context.Background(), Implement, "acme"); err != nil {
+		t.Fatalf("Token: %v", err)
+	}
+	if _, err := tokens.ReadToken(context.Background(), Implement, "acme"); err != nil {
+		t.Fatalf("ReadToken: %v", err)
+	}
+	if _, err := tokens.AppLogin(context.Background(), Implement); err != nil {
+		t.Fatalf("AppLogin: %v", err)
+	}
+
+	data, err := os.ReadFile(seen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runs [][]string
+	for _, line := range strings.Split(string(data), "\n") {
+		switch {
+		case line == opened:
+			runs = append(runs, []string{})
+		case strings.HasPrefix(line, "LEGION_GITHUB_") && len(runs) > 0:
+			runs[len(runs)-1] = append(runs[len(runs)-1], line)
+		}
+	}
+	for i, want := range []struct {
+		run  string
+		seen []string
+	}{
+		{"the write mint's", []string{"LEGION_GITHUB_OWNER=acme", "LEGION_GITHUB_READ_ONLY="}},
+		{"the read mint's", []string{"LEGION_GITHUB_OWNER=acme", "LEGION_GITHUB_READ_ONLY=1"}},
+		{"the release of every installation's", []string{"LEGION_GITHUB_OWNER=", "LEGION_GITHUB_READ_ONLY="}},
+	} {
+		if i >= len(runs) {
+			t.Fatalf("the command ran %d times, want a run for the write mint, the read mint and AppLogin", len(runs))
+		}
+		got := runs[i]
+		slices.Sort(got)
+		if !slices.Equal(got, want.seen) {
+			t.Errorf("%s run saw %q of the LEGION_GITHUB_ namespace, want %q alone", want.run, got, want.seen)
+		}
+	}
+	if len(runs) != 3 {
+		t.Errorf("the command ran %d times, want three", len(runs))
 	}
 }
 

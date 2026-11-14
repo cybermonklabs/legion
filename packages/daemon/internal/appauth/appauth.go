@@ -98,9 +98,12 @@ func refusalBody(response *http.Response) []byte {
 
 // responseBound caps what the daemon reads of every GitHub answer but a token exchange's, which
 // is longer and has a bound of its own (exchangeAnswerBound): the installation discovery, the
-// grant read, the two identity lookups and one page of an installation's repositories. GitHub
-// has already acted by the time the answer arrives, so the bound is far above any answer it
-// makes rather than a limit the daemon expects to meet.
+// grant read, the two identity lookups, token mode's viewer and App reads (viewerLogin,
+// checkAppID) and one page of an installation's repositories. GitHub has already acted by the
+// time the answer arrives, so the bound is above any answer it makes rather than a limit the
+// daemon expects to meet. The longest of them is a page of the listing (listInstallation, 100
+// repositories a page), which a read lease now fills since it names no repository: about 530 KB
+// at the size exchangeAnswerBound cites, half this bound.
 const responseBound = 1 << 20
 
 // exchangeAnswerBound caps what a token exchange reads of GitHub's answer, the longest answer
@@ -132,7 +135,9 @@ func readBody(response *http.Response, what string, limit int64) ([]byte, error)
 	return body, nil
 }
 
-// Tokens mints a GitHub installation token for an App on one owner account.
+// Tokens mints a GitHub installation token for an App on one owner account. Every token reaches
+// its owner's whole installation at the permissions asked for, and names no repository at all:
+// the owner alone keys its lease, its command run and its refusal memory (INFRA-2543).
 type Tokens interface {
 	// Token is the write token for owner: the App role's installation token on that account,
 	// holding the write permissions the App's roles use (writePermissions). It reaches every
@@ -141,19 +146,18 @@ type Tokens interface {
 	// before anything is minted, since there is no account to mint on.
 	Token(ctx context.Context, role AppRole, owner string) (Lease, error)
 	// ReadToken is the App's installation token for owner narrowed to reading: contents, pull
-	// requests, Actions and metadata read. Two callers ask for it and no role's bundle does:
-	// a controller, which works no repository and holds one for every owner its App is
-	// installed on (ControllerCredential), and the Kubernetes runtime's provisioning token,
-	// one of the implement App for the issue's own owner, which every issue pod's
-	// workspace-fetch and every repository cache clones with (implementTokens,
-	// internal/daemon). A workflow role's directories hold that owner's own lease at the
-	// role's permissions instead (Token, GitHubCredential, INFRA-2543).
-	// An App on token_command gets what its command's
-	// read-only release holds instead, which the command decides: the secrets broker's is the
-	// same four (its readOnlyPermissions). With a key of its own the mint asks for what the
-	// installation is granted of those four and leaves the rest out (exchangeGranted), so an
-	// installation whose account has not granted the App Actions gets the other three rather
-	// than nothing. An owner with no name is refused before anything is minted, as Token's is.
+	// requests, Actions and metadata read. Two callers ask for it and no role's bundle does: a
+	// controller, which works no repository and holds one for every owner its App is installed
+	// on (ControllerCredential), and the Kubernetes runtime's provisioning token, one of the
+	// implement App for the issue's own owner, which every issue pod's workspace-fetch and
+	// every repository cache clones with (implementTokens, internal/daemon). A workflow role's
+	// directories hold that owner's own lease at the role's permissions instead (Token,
+	// GitHubCredential, INFRA-2543). An App on token_command gets what its command's read-only
+	// release holds instead, which the command decides: the secrets broker's is the same four
+	// (its readOnlyPermissions). With a key of its own the mint asks for what the installation
+	// is granted of those four and leaves the rest out (exchangeGranted), so an installation
+	// whose account has not granted the App Actions gets the other three rather than nothing.
+	// An owner with no name is refused before anything is minted, as Token's is.
 	ReadToken(ctx context.Context, role AppRole, owner string) (Lease, error)
 }
 
@@ -506,10 +510,11 @@ func (m *Manager) lease(ctx context.Context, request mintRequest) (Lease, error)
 // 422 as a TransientError alone (exchange.go), and token mode returns its trouble before it
 // builds the refusal (mintFromCommand), so excluding it here is a guard for a later producer. It
 // is the one predicate every caller that acts on a refusal reads — a Manager deciding what to
-// remember (refusals), a bundle deciding which directories it holds (credential.go's dirEntry)
-// and the controller route's answer (internal/api) — so that none of them reads a rate limit as
-// an answer about what an installation grants. The daemon's provisioning adapter reads it no
-// longer: it returns every error of its mint as it came (internal/daemon's implementTokens).
+// remember (refusals), a bundle deciding which directories it holds (credential.go's dirEntry),
+// the leak check's token (internal/daemon's leakCheckToken) and the controller route's answer
+// (internal/api) — so that none of them reads a rate limit as an answer about what an
+// installation grants. The daemon's provisioning adapter reads it no longer: it returns every
+// error of its mint as it came (internal/daemon's implementTokens).
 func NarrowingRefused(err error) bool {
 	var trouble *TransientError
 	return errors.Is(err, ErrNarrowingRefused) && !errors.As(err, &trouble)

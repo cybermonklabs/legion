@@ -11,8 +11,9 @@ package appauth
 // one entry per installation of the App the release covers. The command's environment names what
 // the daemon wants: TokenCommandOwner, the account whose installation token it needs ("" for every
 // installation the command may release), and TokenCommandReadOnly, "1" for a read-only token
-// (ReadToken) and "" otherwise. An operator's command maps each onto the flag `agent-secrets`
-// narrows the release by:
+// (ReadToken) and "" otherwise; no other variable of their namespace reaches the command, whatever
+// the daemon inherited (tokenCommandNamespace). An operator's command maps each onto the flag
+// `agent-secrets` narrows the release by:
 //
 //	agent-secrets <NAME> ${LEGION_GITHUB_OWNER:+--github-owner "$LEGION_GITHUB_OWNER"} ${LEGION_GITHUB_READ_ONLY:+--github-read-only} -- sh -c 'printf %s "$<NAME>"'
 //
@@ -59,6 +60,12 @@ const (
 	// read-only token (ReadToken), and empty otherwise.
 	TokenCommandReadOnly = "LEGION_GITHUB_READ_ONLY"
 )
+
+// tokenCommandNamespace is the namespace of the variables the daemon sets in a token_command's
+// environment, TokenCommandOwner and TokenCommandReadOnly. A variable of it the daemon inherited
+// never reaches the command: execTokenCommand drops every one before it sets its own, so the
+// command reads no value the daemon did not mean, nor any name of it the daemon does not set.
+const tokenCommandNamespace = "LEGION_GITHUB_"
 
 // releaseLimit bounds what a token_command may print: a release of a few installations is a few
 // kilobytes.
@@ -200,10 +207,11 @@ func (m *Manager) execTokenCommand(ctx context.Context, app config.GitHubApp, re
 	if request.read {
 		readOnlyValue = "1"
 	}
-	// Both are set, empty where the daemon asks nothing by them, so a value the daemon inherited
-	// never reads as one it meant.
+	// Every variable of the daemon's namespace it inherited is dropped (tokenCommandNamespace),
+	// and both of its own are set, empty where the daemon asks nothing by them, so a value the
+	// daemon inherited never reads as one it meant.
 	command.Env = append(slices.DeleteFunc(runtime.WithoutNATSSeeds(os.Environ()), func(entry string) bool {
-		return strings.HasPrefix(entry, TokenCommandOwner+"=") || strings.HasPrefix(entry, TokenCommandReadOnly+"=")
+		return strings.HasPrefix(entry, tokenCommandNamespace)
 	}), TokenCommandOwner+"="+request.owner, TokenCommandReadOnly+"="+readOnlyValue)
 	stdout := &boundedBuffer{limit: releaseLimit, overflow: cancel}
 	var stderr bytes.Buffer
@@ -359,9 +367,9 @@ const brokerNoInstallation = "has no installation on"
 
 // brokerNarrowingRefused is the secrets broker's refusal of a narrowing GitHub answered 422
 // (packages/envoy/internal/broker/secrets/minterr.go, ErrMintNarrowingRefused), carried the same
-// way: a repository the request names that the installation does not reach, which is the key
-// mode's ErrNarrowingRefused by another road. The broker's text never quotes GitHub's own and
-// never a token.
+// way: a permission of the read-only release the installation is not granted, which is the key
+// mode's ErrNarrowingRefused by another road. The command is told no repository, so none is among
+// what the broker refuses. The broker's text never quotes GitHub's own and never a token.
 const brokerNarrowingRefused = "the narrowing cannot be served"
 
 // mintFromCommand is mint in token mode: the command's release for the request's owner, narrowed
@@ -562,13 +570,15 @@ func (m *Manager) installedFromCommand(ctx context.Context, role AppRole, repo g
 // listInstallation reads whether repo is among the repositories of its owner's installation,
 // under that owner's read lease; refused reports a 401, a token GitHub no longer honours.
 //
-// The listing is the whole answer. No lease names a repository any longer (INFRA-2543), so
-// GitHub refuses none, and the one thing that says whether the App reaches this repository is
-// the installation's own list of them, read page by page. An owner the App has no installation
-// on mints nothing and is not installed (ErrNotInstalled); every other failure is a failure.
+// The listing is the whole answer. No token request names a repository any longer
+// (INFRA-2543), so neither GitHub nor the broker refuses one, and the one thing that says
+// whether the App reaches this repository is the installation's own list of them, read page by
+// page under the owner's read release. An owner the App has no installation on mints nothing
+// and is not installed (ErrNotInstalled); every other failure is a failure, a refused narrowing
+// among them.
 //
 // The read is that answer's one source, so it drops whatever the Manager remembers of that
-// owner's read scope first (ForgetNarrowingRefusal) and mints: the mapping's check is made
+// scope's refusal first (ForgetNarrowingRefusal) and mints: the mapping's check is made
 // precisely when an operator has changed something — the App's installation above all — and a
 // refusal served from the five minutes one is remembered for would fail the check for an
 // account the App was just installed on (lease, narrowingRefusalWindow, INFRA-513). A refusal

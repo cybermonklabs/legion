@@ -331,7 +331,7 @@ func appLoginsAtBoot(ctx context.Context, apps appauth.Logins, log *slog.Logger)
 // each App's installation is granted of the role's set and says on stderr what it left out
 // (appauth's exchangeGranted), so a permission an account has not approved no longer stops the
 // boot: what does is an App with no installation on the owner, an installation granted none of
-// the set at all, or GitHub's own trouble lasting past the retries.
+// the set at all, an answer the mint refuses, or GitHub's own trouble lasting past the retries.
 func mintAtBoot(ctx context.Context, tokens appauth.Tokens, owner string, log *slog.Logger) error {
 	return bootprobe.Run(ctx, "GitHub App tokens mint", appMintRetry, log, appAttempt(func(ctx context.Context) error {
 		for _, role := range appauth.Roles {

@@ -54,7 +54,8 @@ They resolve that App's key on the driver, from the operator's `LEGION_E2E_REVIE
 
 The daemon runs the command with `sh -c` whenever it needs a lease: at boot, and again once fewer
 than 20 minutes remain on a lease it holds.
-Its environment is the daemon's, less the NATS seeds, with two variables the daemon sets:
+Its environment is the daemon's, less the NATS seeds and every variable whose name starts
+`LEGION_GITHUB_`, with two variables the daemon sets:
 `LEGION_GITHUB_OWNER`, the account whose installation token the daemon wants (empty for every
 installation the command may release, which the boot's read of the App's login asks for), and
 `LEGION_GITHUB_READ_ONLY`, `1` for a read-only token and empty otherwise.

@@ -517,9 +517,9 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 		// answered for that bundle again.
 		opts.SavedWorkspaceBundle, opts.WorkspaceBundleRestored = st.TakeWorkspaceBundleForRestore, st.DeleteRestoredWorkspaceBundle
 		// The shared public leak check each pod's launcher is pushed before any role of the pod
-		// starts, read with the implement App's read-only token for its repository alone; a daemon
-		// with no Apps reads none, and the runtime refuses the start of a role whose launcher names
-		// a tag with the cause that says so.
+		// starts, read with the implement App's read lease on the check's owner (leakCheckToken);
+		// a daemon with no Apps reads none, and the runtime refuses the start of a role whose
+		// launcher names a tag with the cause that says so.
 		opts.LeakCheck = leakCheckSource(apps, githubAPI)
 		if apps != nil {
 			installations, ok := apps.(appauth.OwnerInstallations)
@@ -563,9 +563,10 @@ func sandboxRuntime(rc *rest.Config, opts sandbox.Options, repos func() []ghrepo
 // That last one once fell back to the owner's own write token, since a request naming a
 // repository the installation did not reach was refused with the same 422 as a permission it
 // was not granted, and a pod that could not clone was worth a wider token. No request names a
-// repository any longer (INFRA-2543): a 422 is now a permission the account has not granted the
-// App, which a wider request is refused for just the same, so the fallback could only hand out
-// the widest credential this issue narrows and never fix a clone.
+// repository any longer (INFRA-2543), so the owner's write token now reaches every repository of
+// the owner's installation: a fallback would answer a refused reading lease with the widest
+// credential the daemon holds, handed to the process that provisions a pod. A refused reading
+// lease fails the mint instead.
 //
 // It is the one token source the Sandbox runtime's three mint sites share (runtime/sandbox's
 // provision, its gh credential refresh and its repository cache Secret), so the repository a

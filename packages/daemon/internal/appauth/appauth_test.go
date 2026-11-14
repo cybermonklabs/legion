@@ -1189,31 +1189,86 @@ func TestTokenAsksForNoRepositoryAndTheAppsWritePermissions(t *testing.T) {
 }
 
 // A read mint asks for the four reads a role and a controller need of a repository that is not
-// their own issue's — nothing writable — and names no repository either: the lease reaches every
-// repository the owner's installation holds, and reading is the whole of what holds it.
+// their own issue's — nothing writable — and names no repository either, for either App: the
+// lease reaches every repository the owner's installation holds, and reading is the whole of
+// what holds it.
 func TestReadTokenAsksForTheFourReadsAndNoRepository(t *testing.T) {
+	for _, tc := range []struct {
+		role AppRole
+		slug string
+	}{
+		{Implement, "legion-implementer"},
+		{Review, "legion-reviewer"},
+	} {
+		t.Run(string(tc.role), func(t *testing.T) {
+			now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
+			var stderr bytes.Buffer
+			github := &keyModeGitHub{owners: []string{"acme"}, slug: tc.slug}
+			github.answer = func(exchange int, body accessTokensBody) (int, string) {
+				return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
+			}
+			tokens := keyModeManager(t, github, &now, &stderr)
+
+			if _, err := tokens.ReadToken(context.Background(), tc.role, "acme"); err != nil {
+				t.Fatalf("ReadToken: %v", err)
+			}
+
+			asked := github.exchanges()
+			if len(asked) != 1 {
+				t.Fatalf("%d exchanges, want the one mint", len(asked))
+			}
+			want := map[string]string{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}
+			if !maps.Equal(asked[0].Permissions, want) {
+				t.Errorf("the %s App's read request named permissions %v, want exactly %v", tc.role, asked[0].Permissions, want)
+			}
+			if text := github.exchangeTexts()[0]; strings.Contains(text, "repositor") {
+				t.Errorf("the request body is %s, want the four reads and no repository", text)
+			}
+		})
+	}
+}
+
+// No request this daemon sends names a repository, for either App, for a write lease or a read
+// one: the App's installation is the whole of what a token reaches (INFRA-2543). A body naming
+// `repositories` or `repository_ids` would narrow the token GitHub mints, which is the narrowing
+// INFRA-2543 took away, so every body sent is read for both, and for any key but the
+// permissions.
+func TestNoMintEverNamesARepositoryToGitHub(t *testing.T) {
 	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
 	var stderr bytes.Buffer
-	github := &keyModeGitHub{owners: []string{"acme"}, slug: "legion-reviewer"}
+	github := &keyModeGitHub{owners: []string{"acme", "sjawhar"}, slug: "legion-implementer"}
 	github.answer = func(exchange int, body accessTokensBody) (int, string) {
-		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion", "nats-server")
+		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion")
 	}
 	tokens := keyModeManager(t, github, &now, &stderr)
 
-	if _, err := tokens.ReadToken(context.Background(), Review, "acme"); err != nil {
-		t.Fatalf("ReadToken: %v", err)
+	for _, role := range Roles {
+		for _, owner := range []string{"acme", "sjawhar"} {
+			if _, err := tokens.Token(context.Background(), role, owner); err != nil {
+				t.Fatalf("the %s App's write mint for %s: %v", role, owner, err)
+			}
+			if _, err := tokens.ReadToken(context.Background(), role, owner); err != nil {
+				t.Fatalf("the %s App's read mint for %s: %v", role, owner, err)
+			}
+		}
 	}
 
-	asked := github.exchanges()
-	if len(asked) != 1 {
-		t.Fatalf("%d exchanges, want the one mint", len(asked))
+	texts := github.exchangeTexts()
+	if len(texts) != 8 {
+		t.Fatalf("%d exchanges, want the two Apps' write and read mints for each of the two owners", len(texts))
 	}
-	want := map[string]string{"actions": "read", "contents": "read", "metadata": "read", "pull_requests": "read"}
-	if !maps.Equal(asked[0].Permissions, want) {
-		t.Errorf("the read request named permissions %v, want exactly %v", asked[0].Permissions, want)
-	}
-	if text := github.exchangeTexts()[0]; strings.Contains(text, "repositor") {
-		t.Errorf("the request body is %s, want the four reads and no repository", text)
+	for i, text := range texts {
+		var keys map[string]json.RawMessage
+		if err := json.Unmarshal([]byte(text), &keys); err != nil {
+			t.Errorf("exchange %d carried %s, which is no JSON object: %v", i+1, text, err)
+			continue
+		}
+		if _, named := keys["permissions"]; !named || len(keys) != 1 {
+			t.Errorf("exchange %d carried %s, want an object whose one key is permissions", i+1, text)
+		}
+		if strings.Contains(text, "repositories") || strings.Contains(text, "repository_ids") {
+			t.Errorf("exchange %d carried %s, want a body that names no repository", i+1, text)
+		}
 	}
 }
 
@@ -1375,41 +1430,6 @@ func TestNoMintWithoutAnOwnerEverReachesGitHub(t *testing.T) {
 				t.Errorf("%d exchanges, want none: a mint with no account has no installation to ask", len(asked))
 			}
 		})
-	}
-}
-
-// No request this daemon sends names a repository, for either App, for a write lease or a read
-// one: the App's installation is the whole of what a token reaches (INFRA-2543). A body naming
-// `repositories` or `repository_ids` would narrow the token GitHub mints, which is the narrowing
-// this issue took away, so every body sent is read for both.
-func TestNoMintEverNamesARepositoryToGitHub(t *testing.T) {
-	now := time.Date(2026, 11, 6, 12, 0, 0, 0, time.UTC)
-	var stderr bytes.Buffer
-	github := &keyModeGitHub{owners: []string{"acme", "sjawhar"}, slug: "legion-implementer"}
-	github.answer = func(exchange int, body accessTokensBody) (int, string) {
-		return http.StatusOK, mintedFor(fmt.Sprintf("ghs_%d", exchange), now.Add(time.Hour), body.Permissions, "legion", "nats-server")
-	}
-	tokens := keyModeManager(t, github, &now, &stderr)
-
-	for _, role := range Roles {
-		for _, owner := range []string{"acme", "sjawhar"} {
-			if _, err := tokens.Token(context.Background(), role, owner); err != nil {
-				t.Fatalf("the %s App's write mint for %s: %v", role, owner, err)
-			}
-			if _, err := tokens.ReadToken(context.Background(), role, owner); err != nil {
-				t.Fatalf("the %s App's read mint for %s: %v", role, owner, err)
-			}
-		}
-	}
-
-	texts := github.exchangeTexts()
-	if len(texts) != 8 {
-		t.Fatalf("%d exchanges, want the two Apps' write and read mints for each of the two owners", len(texts))
-	}
-	for i, text := range texts {
-		if strings.Contains(text, "repositories") || strings.Contains(text, "repository_ids") {
-			t.Errorf("exchange %d carried %s, want a body that names no repository", i+1, text)
-		}
 	}
 }
 
