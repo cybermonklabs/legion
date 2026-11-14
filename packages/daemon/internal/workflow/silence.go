@@ -122,11 +122,11 @@ type phaseWorkerReading struct {
 //
 // It reads in batches, never per claim: the project's wait rows with no end
 // (record.Store.StandingWaits); then, only for the keys of those claims and for mergers, since no
-// other claim can be held or waiting, their issues and those issues' roots (IssuesOf), the roots'
-// gates (Gates) and, for the claims with a wait row, their phases rows (PhasesOf) and their
-// claims (RoleClaims). A sweep that judges neither costs the one read of the waits. A key whose
-// issue or root the record does not hold is answered nothing, as the handlers pass it over
-// (phaseWorkerRecord).
+// other claim can be held or waiting, what the two rules read of each (readWaitTermsOf): their
+// issues and those issues' roots, the roots' gates and, for the claims with a wait row, their
+// phases rows and their claims. A sweep that judges neither costs the one read of the waits. A
+// key whose issue or root the record does not hold is answered nothing, as the handlers pass it
+// over (phaseWorkerRecord).
 func (e *Engine) QuietByDesign(ctx context.Context, tx pgx.Tx, keys []record.RoleRunKey) (map[claim.Token]struct{}, error) {
 	quiet := make(map[claim.Token]struct{})
 	if len(keys) == 0 {
@@ -145,69 +145,21 @@ func (e *Engine) QuietByDesign(ctx context.Context, tx pgx.Tx, keys []record.Rol
 		waiting[wait.Token] = struct{}{}
 	}
 	var judged []record.RoleRunKey
-	var issueKeys, waitingIssues []string
-	var waitingTokens []claim.Token
 	for _, key := range keys {
-		_, waits := waiting[key.Token]
-		if !waits && key.Role != claim.RoleMerger {
-			continue
-		}
-		judged = append(judged, key)
-		issueKeys = append(issueKeys, key.Issue)
-		if waits {
-			waitingIssues = append(waitingIssues, key.Issue)
-			waitingTokens = append(waitingTokens, key.Token)
+		if _, waits := waiting[key.Token]; waits || key.Role == claim.RoleMerger {
+			judged = append(judged, key)
 		}
 	}
 	if len(judged) == 0 {
 		return quiet, nil
 	}
-	issues, err := e.store.IssuesOf(ctx, tx, e.cfg.Project, issueKeys)
-	if err != nil {
-		return nil, err
-	}
-	byKey := make(map[string]record.Issue, len(issues))
-	for _, issue := range issues {
-		byKey[issue.Key] = issue
-	}
-	var roots, unread []string
-	for _, issue := range issues {
-		roots = append(roots, issue.Tree)
-		if _, read := byKey[issue.Tree]; !read {
-			unread = append(unread, issue.Tree)
-		}
-	}
-	rooted, err := e.store.IssuesOf(ctx, tx, e.cfg.Project, unread)
-	if err != nil {
-		return nil, err
-	}
-	for _, root := range rooted {
-		byKey[root.Key] = root
-	}
-	gates, err := e.store.Gates(ctx, tx, roots)
-	if err != nil {
-		return nil, err
-	}
-	phases, err := e.store.PhasesOf(ctx, tx, waitingIssues)
-	if err != nil {
-		return nil, err
-	}
-	claims, err := e.store.RoleClaims(ctx, tx, waitingTokens)
+	terms, err := readWaitTermsOf(ctx, tx, e.store, e.cfg.Project, e.cfg.Steps, judged, waiting)
 	if err != nil {
 		return nil, err
 	}
 	for _, key := range judged {
-		issue, found := byKey[key.Issue]
-		if !found {
-			continue
-		}
-		root, found := byKey[issue.Tree]
-		if !found {
-			continue
-		}
-		gate := record.TreeGate{Steps: e.cfg.Steps, Rows: gates[issue.Tree]}
-		row := record.PhaseRowOf(phases[key.Issue], key.Role)
-		if quietByDesign(issue, root, gate, key.Role, record.RoleRun{Claim: claims[key.Token]}, row) {
+		read, found := terms[key.Token]
+		if found && quietByDesign(read.issue, read.root, read.gate, key.Role, read.run, read.row) {
 			quiet[key.Token] = struct{}{}
 		}
 	}

@@ -1545,4 +1545,50 @@ package api
 // that reading and no head's for good, which is why this line is a reading and never the rule.
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
-const DaemonAPIVersion = 111
+//
+// 125: dispatch://INFRA-2040 -- a phase worker declares that it waits on something outside its
+// own work, until a time it names, and the record shows each wait that stands. Two claim routes
+// are added, each authenticated by the registration's secret as `POST /legion/v1/claims/activity`
+// is and held to the session the claim records. `POST /legion/v1/claims/wait` (`api.WaitRequest`:
+// `claimToken`, `sessionId`, `secret`, `waitingOn`, and `wakeAt`, an RFC 3339 instant from one
+// minute to 24 hours after the daemon records the declaration) answers `{wait: {id, waitingOn,
+// wakeAt, declaredAt}}` (`api.WaitResponse`), or refuses with `WAIT_TEXT_REQUIRED`,
+// `WAIT_TOO_SOON` or `WAIT_TOO_FAR` (400), or `WAIT_NOT_OPEN_PHASE` or `WAIT_HELD_BY_DESIGN_GATE`
+// (409), and records nothing. `POST /legion/v1/claims/wait-news` (`api.WaitNewsRequest`: the
+// claim, its session, its secret and the `waitId` the declaration's answer named) answers
+// `{ended}`, with `round` beside it while the claim's update round is open, during which a report
+// ends nothing (`api.WaitNewsResponse`). Each refuses a stale plugin's claim with the
+// stale-contract 409 as every claim route does (refuseIfStaleClaim), and neither refuses a caller
+// by a contract of its own: a plugin below 125 knows neither route and sends neither.
+// Every claim view of `GET /legion/v1/state` gains `wait` (`api.WaitView`, the four keys the
+// declaration's answer named) while its worker's wait stands (workflow.WaitStands): declared and
+// not ended, in the session, phase, generation and phase entry it was declared at, of a claim
+// whose role works its issue's open phase, and not a merger the design gate holds. A wait row
+// with no end that no longer stands — a fresh session, a phase that moved — shows on no claim.
+// So `read_record`, which is the state's issue record, carries it, and the operator's plain
+// `legion state` prints one `waits:` line naming each.
+// `GET /legion/v1/state` authenticates nobody, so a caller from a pod whose claims record a
+// contract below 125 is served every claim view without the key (api's stateFor, withoutWait), as
+// a caller below 111, the entry right above, is served the issues without their tree's measure
+// (withoutQuietTime), and every older band as that entry lists it; the seventeen compose, and
+// every reader from 125 on takes the key as optional (`packages/contracts/src/legion-api.ts`). A
+// plugin from 58 to 124 does not refuse it, since every answer-side schema of
+// `packages/contracts` has stripped a key it does not name since sjawhar/legion#2788. The strip
+// is still what serves such a caller: a reader that did not ask for the key is not given it, and a
+// plugin built before #2788 is strict and would refuse the whole body for it.
+// The change carries two store migrations beside it: `20261114044457_claim_waits`, the table
+// that keeps each wait apart from the claim's per-launch columns so a relaunch keeps it, and
+// `20261114080300_outbox_kinds_with_the_wait_due`, the outbox kind of a wait's time. Neither is
+// part of this number: a migration moves the daemon's own record, and the shapes a caller reads
+// are the two routes and the key above.
+// (This change declares 125, the lowest number above the base's 111 that no open pull request
+// declared. Read on 2026-11-14 against main at b994309153eba441588f393cabf50d0200684c49,
+// .github/scripts/check-daemon-api-contract.sh, run as CI runs it on a tree declaring the base's
+// own 111, refused it and named 125, passing over 112 (#2731), 113 (#3575), 114 (#3730), 115
+// (#3937), 116 (#3715), 117 (#3711), 118 (#3659), 119 (#3712), 120 (#3993), 121 (#3519), 122
+// (#2230), 123 (#3793) and 124 (#4021). Each of those is the number that head declared at that
+// reading and no head's for good. Read the base's own number and every open head again at the
+// last push rather than from this line, as
+// docs/solutions/legion/daemon-api-contract-collision-renumber-when-the-release-declaring-the-number-lacks-your-shapes.md
+// says.)
+const DaemonAPIVersion = 125

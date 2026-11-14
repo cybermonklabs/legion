@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 111,
-    "caller": 111
+    "daemon": 125,
+    "caller": 125
   },
   "admission": {
     "cap": 3,
@@ -192,6 +192,12 @@
               "argsBytes": 128,
               "argsHash": "9b2e45c0d1f8a673",
               "startedAt": "2026-09-22T09:17:12Z"
+            },
+            "wait": {
+              "id": "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685",
+              "waitingOn": "the review of LEGION-207's pull request",
+              "wakeAt": "2026-09-22T11:00:00Z",
+              "declaredAt": "2026-09-22T09:17:05.123456Z"
             }
           },
           "pass": 3,

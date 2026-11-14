@@ -232,6 +232,16 @@ const legionPendingTaskView = z.object({
   lastSendError: nonEmptyString.optional(),
 });
 
+/** `api.WaitView` — one wait as the daemon recorded it: the id it minted, what the wait waits on
+ * (trimmed), when its time comes, and when the daemon recorded the declaration, to the
+ * microsecond. */
+const legionWait = z.object({
+  id: nonEmptyString,
+  waitingOn: nonEmptyString,
+  wakeAt: timestamp,
+  declaredAt: timestamp,
+});
+
 /** `api.ClaimView` — `session` is empty until the claim's agent registers one, `locator` is
  * absent while no process runs (queued, suspended, failed, retired), `capabilities` is absent
  * until a session of the claim reports on `claims/ready` (the controller's never does), and
@@ -307,6 +317,13 @@ const legionClaimView = z.object({
    * with no such key at all (the daemon's `withoutLeakCheckCause`), so every reader takes it as
    * optional. */
   leakCheckCause: nonEmptyString.optional(),
+  /** The wait the claim's worker declared (`POST /legion/v1/claims/wait`) while it stands: the
+   * same four keys the declaration's answer named. Absent for a claim with no wait that stands:
+   * one that declared none, one whose wait ended, and one whose wait has no end yet but no longer
+   * stands — a fresh session, or a phase that moved. A caller in a pod whose plugin declares a
+   * contract below 125 is served the state with no such key at all (the daemon's `withoutWait`),
+   * so every reader takes it as optional. */
+  wait: legionWait.optional(),
 });
 
 /** `api.HandoffRecordView` — the Dispatch handoff record a worker's completion of its current
@@ -1161,16 +1178,6 @@ export const LegionWaitRequest = z.strictObject({
 });
 
 export type LegionWaitRequestBody = z.output<typeof LegionWaitRequest>;
-
-/** `api.WaitView` — one wait as the daemon recorded it: the id it minted, what the wait waits on
- * (trimmed), when its time comes, and when the daemon recorded the declaration, to the
- * microsecond. */
-const legionWait = z.object({
-  id: nonEmptyString,
-  waitingOn: nonEmptyString,
-  wakeAt: timestamp,
-  declaredAt: timestamp,
-});
 
 /** `api.WaitResponse`, the body `POST /legion/v1/claims/wait` answers once the wait is recorded.
  * A claim keeps one standing wait: a new declaration ends the one it replaces. */

@@ -207,7 +207,7 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 			Role: claim.RoleImplementer, State: supervise.StateSuspended, Session: "ses_implementer_711"},
 	}, stranded...)
 
-	got, err := Project(context.Background(), nil, store, "LEGION", nil, claims, stranded, nil, projectedAt)
+	got, err := Project(context.Background(), nil, store, "LEGION", nil, claims, stranded, nil, nil, projectedAt)
 	if err != nil {
 		t.Fatalf("Project: %v", err)
 	}

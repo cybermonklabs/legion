@@ -2655,7 +2655,16 @@ func (s *source) State(ctx context.Context, tx pgx.Tx) (api.State, []supervise.C
 	if err != nil {
 		return api.State{}, nil, err
 	}
-	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, stranded, s.reports(), now)
+	// Each wait that stands, judged here for the same reason and in the same snapshot: whether a
+	// wait stands is the daemon's one rule over the record (workflow.WaitStands), and a claim
+	// carries its wait on its view only while it does, so a wait row with no end that no longer
+	// stands — a fresh session, a phase that moved — shows on no claim. It is read in batches for
+	// the whole project, never per claim.
+	waits, err := workflow.StandingWaitsNow(ctx, tx, records, s.project, s.gatedSteps)
+	if err != nil {
+		return api.State{}, nil, err
+	}
+	state, err := projection.Project(ctx, tx, records, s.project, s.gatedSteps, claims, stranded, waits, s.reports(), now)
 	if err != nil {
 		return api.State{}, nil, err
 	}

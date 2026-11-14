@@ -1674,6 +1674,73 @@ func TestPlainStateSummarizesTheAgentsInAToolCall(t *testing.T) {
 	}
 }
 
+// An operator reading plain `legion state` is told which phase workers declared a wait that
+// stands: each by issue and role with the wait's id, its time, when the daemon recorded the
+// declaration and what it waits on, read from each claim view's `wait`, which the daemon serves
+// only while the wait stands. A claim with no wait is in none, and with no wait standing the line
+// says so. The body the daemon's own golden test writes carries one, on LEGION-208's
+// implementer, and the line names it from that body too.
+func TestPlainStateNamesEachStandingWait(t *testing.T) {
+	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
+		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
+	implementerWait := `"wait":{"id":"wait-208","waitingOn":"the review of LEGION-207's pull request",` +
+		`"wakeAt":"2026-09-23T03:00:00Z","declaredAt":"2026-09-23T01:14:00.123456Z"}`
+	testerWait := `"wait":{"id":"wait-209","waitingOn":"CI on the rebased head","wakeAt":"2026-09-23T02:30:00Z",` +
+		`"declaredAt":"2026-09-23T01:20:00Z"}`
+	// LEGION-209 is listed first and its tester's wait is the sooner, so the line's order is the
+	// issue's and the role's, never the order the body lists them in nor the waits' times.
+	waiting := `{"LEGION-209":{"key":"LEGION-209","generation":1,"phase":"testing","status":"testing",` +
+		`"workers":{"tester":{"claim":{"session":"ses_t","state":"ready","pluginContract":0,` + testerWait + `},"rounds":0}}},` +
+		`"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+		`"architect":{"session":"ses_a","state":"ready","pluginContract":0},` +
+		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0,` + implementerWait + `},"rounds":1}}}}`
+	quiet := `{"LEGION-208":{"key":"LEGION-208","generation":1,"phase":"implementing","status":"in_progress",` +
+		`"architect":{"session":"ses_a","state":"ready","pluginContract":0},` +
+		`"workers":{"implementer":{"claim":{"session":"ses_i","state":"working","pluginContract":0},"rounds":1}}}}`
+	golden, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "daemon-api", "state.json"))
+	if err != nil {
+		t.Fatalf("read the state fixture: %v", err)
+	}
+	for _, tc := range []struct {
+		name, served, want string
+	}{
+		{
+			name:   "two waits that stand, beside a claim with none",
+			served: "{" + daemon + `,"issues":` + waiting + "}",
+			want: "waits: 2 — LEGION-208 implementer wait wait-208 until 2026-09-23T03:00:00Z, declared 2026-09-23T01:14:00Z: " +
+				"\"the review of LEGION-207's pull request\"; LEGION-209 tester wait wait-209 until 2026-09-23T02:30:00Z, " +
+				"declared 2026-09-23T01:20:00Z: \"CI on the rebased head\"\n",
+		},
+		{name: "no wait stands", served: "{" + daemon + `,"issues":` + quiet + "}", want: "waits: none\n"},
+		{name: "no issues", served: "{" + daemon + `,"issues":{}}`, want: "waits: none\n"},
+		{
+			name:   "the body the daemon's golden test writes",
+			served: string(golden),
+			want: "waits: 1 — LEGION-208 implementer wait 5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685 until 2026-09-22T11:00:00Z, " +
+				"declared 2026-09-22T09:17:05Z: \"the review of LEGION-207's pull request\"\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(tc.served))
+			}))
+			defer server.Close()
+			t.Chdir(t.TempDir())
+			t.Setenv("LEGION_DAEMON_URL", server.URL)
+			t.Setenv("LEGION_ISSUE", "")
+
+			var out, errb bytes.Buffer
+			if code := run(context.Background(), []string{"legion", "state"}, &out, &errb); code != 0 {
+				t.Fatalf("legion state = %d, stderr %q", code, errb.String())
+			}
+			if !strings.Contains(out.String(), tc.want) {
+				t.Fatalf("legion state printed %q, want the line %q", out.String(), tc.want)
+			}
+		})
+	}
+}
+
 // An operator reading plain `legion state` is told how many production checks are open and the
 // oldest: its issue, pull request and merge commit, the role working it, the look it is on with
 // what woke it and when, and when its next look is due — read from each issue record's `check`,

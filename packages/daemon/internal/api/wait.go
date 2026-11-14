@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -30,6 +31,13 @@ type WaitView struct {
 	WaitingOn  string    `json:"waitingOn"`
 	WakeAt     time.Time `json:"wakeAt"`
 	DeclaredAt time.Time `json:"declaredAt"`
+}
+
+// WaitViewOf is wait as a claim view shows it while it stands (ClaimView.Wait): the same four
+// facts the declaration's answer named, read back from the record, which kept both times to the
+// microsecond the answer gave.
+func WaitViewOf(wait record.ClaimWait) *WaitView {
+	return &WaitView{ID: wait.ID, WaitingOn: wait.WaitingOn, WakeAt: wait.WakeAt.UTC(), DeclaredAt: wait.DeclaredAt.UTC()}
 }
 
 // WaitResponse is the body POST /legion/v1/claims/wait answers once the wait is recorded.

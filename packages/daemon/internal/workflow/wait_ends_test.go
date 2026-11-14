@@ -504,3 +504,47 @@ func TestAWaitTheGateHoldsWithNoClosingIsLeftForItsTime(t *testing.T) {
 		t.Fatalf("the time of a wait the gate holds was logged as a time that came: %q", lines)
 	}
 }
+
+// What the state shows on each claim is the waits that stand now (StandingWaitsNow), read for the
+// whole project at once, and never a wait row merely because it has no end: a claim whose
+// relaunch put it in a fresh session, written outside any fact, keeps a row with no end until the
+// next fact's reconciler ends it, and that row stands no longer the moment the session commits.
+// The answer is keyed by the claim that declared each wait, and carries the wait as recorded.
+func TestStandingWaitsNowAnswersOnlyTheWaitsThatStand(t *testing.T) {
+	r := newWaitRig(t, config.DesignGateRootIssues.Steps())
+	r.tree(phase.Testing)
+	r.issue(waitChild, phase.Implementing)
+	standing := r.waiting(waitRoot, claim.RoleTester)
+	stale := r.waiting(waitChild, claim.RoleImplementer)
+	read := func() map[claim.Token]record.ClaimWait {
+		t.Helper()
+		var waits map[claim.Token]record.ClaimWait
+		seedRecord(t, r.pool, func(tx pgx.Tx) error {
+			var err error
+			waits, err = StandingWaitsNow(context.Background(), tx, record.NewStore(), "LEGION", r.engine.cfg.Steps)
+			return err
+		})
+		return waits
+	}
+	if waits := read(); len(waits) != 2 || waits[standing.Token].ID != standing.ID || waits[stale.Token].ID != stale.ID {
+		t.Fatalf("the waits that stand = %+v, want the tester's %s and the implementer's %s", waits, standing.ID, stale.ID)
+	}
+
+	if _, err := r.pool.Exec(context.Background(), `update claims set session = 'ses-implementer-fresh' where token = $1`,
+		string(stale.Token)); err != nil {
+		t.Fatalf("relaunch the implementer in a fresh session: %v", err)
+	}
+	if ended := r.wait(stale.ID); !ended.EndedAt.IsZero() {
+		t.Fatalf("wait %s ended with cause %q before any fact applied, want a row with no end", stale.ID, ended.EndCause)
+	}
+
+	waits := read()
+	if _, shown := waits[stale.Token]; shown || len(waits) != 1 {
+		t.Fatalf("the waits that stand = %+v, want the tester's alone: the implementer runs a fresh session", waits)
+	}
+	got := waits[standing.Token]
+	if got.ID != standing.ID || got.WaitingOn != standing.WaitingOn || !got.WakeAt.Equal(standing.WakeAt) ||
+		!got.DeclaredAt.Equal(standing.DeclaredAt) || got.Issue != waitRoot || got.Role != claim.RoleTester {
+		t.Fatalf("the tester's wait = %+v, want it as recorded, %+v", got, standing)
+	}
+}

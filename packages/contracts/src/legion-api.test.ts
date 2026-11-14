@@ -1090,6 +1090,44 @@ test("a claim carries the leak check's cause beside its failure", () => {
   expect(LegionOperatorClaimsResponse.safeParse(listing).success).toBeFalse();
 });
 
+// Contract 125: a claim whose worker declared a wait that stands carries it on its view of the
+// state, which is what `read_record` reads an issue's record from: the id the daemon minted, what
+// the wait waits on, its time, and when the daemon recorded the declaration, to the microsecond.
+// The schema must name the key, since a key it does not name is stripped and the seat never sees
+// it: the golden carries it on LEGION-208's implementer alone, and this reads it before the parse
+// and after. A daemon narrows it away for a caller below 125 (`api.withoutWait`), so a claim
+// without it parses, and a wait with no text — which the daemon never records — is refused.
+test("a claim carries its standing wait", () => {
+  const state = fixture("state.json") as {
+    issues: Record<string, { workers: Record<string, { claim: { wait?: unknown } }> }>;
+  };
+  const waiting = state.issues["LEGION-208"]?.workers.implementer?.claim;
+  if (waiting === undefined) {
+    throw new Error("state fixture lacks LEGION-208's implementer");
+  }
+  const wait = {
+    id: "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685",
+    waitingOn: "the review of LEGION-207's pull request",
+    wakeAt: "2026-09-22T11:00:00Z",
+    declaredAt: "2026-09-22T09:17:05.123456Z",
+  };
+  expect(waiting.wait).toEqual(wait);
+  const parsed = LegionStateResponse.parse(state);
+  expect(parsed.issues["LEGION-208"]?.workers.implementer?.claim.wait).toEqual(wait);
+  const carrying = Object.entries(parsed.issues).flatMap(([key, issue]) => [
+    ...(issue.architect?.wait === undefined ? [] : [`${key} architect`]),
+    ...Object.entries(issue.workers)
+      .filter(([, worker]) => worker?.claim.wait !== undefined)
+      .map(([role]) => `${key} ${role}`),
+  ]);
+  expect(carrying).toEqual(["LEGION-208 implementer"]);
+
+  waiting.wait = { ...wait, waitingOn: "" };
+  expect(LegionStateResponse.safeParse(state).success).toBeFalse();
+  waiting.wait = undefined;
+  expect(LegionStateResponse.safeParse(state).error?.issues ?? []).toEqual([]);
+});
+
 // The mark of the narrowing, the last key of contract 75: the body the daemon serves a caller at
 // or above the contract carries the two numbers — the contract the daemon declares and the one
 // the caller's own pod records — and the body it narrows for a caller below it carries no such

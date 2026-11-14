@@ -747,6 +747,14 @@ type ClaimView struct {
 	// cause word the launch chooses, and this key says which check refused it, from the first
 	// refused try on.
 	LeakCheckCause string `json:"leakCheckCause,omitempty"`
+	// Wait is the wait the claim's worker declared (POST /legion/v1/claims/wait) while it stands
+	// — its id, what it waits on, when its time comes and when the daemon recorded the
+	// declaration — and is absent for a claim with no wait that stands: one that declared none,
+	// one whose wait ended, and one whose wait row has no end yet but no longer stands, a fresh
+	// session or a phase that moved (workflow.WaitStands). It is no field of the claim record:
+	// the wait is kept apart from the claim's per-launch columns so a relaunch keeps it, and the
+	// state's source judges the project's waits and hands those that stand to the projection.
+	Wait *WaitView `json:"wait,omitempty"`
 }
 
 // ClaimFailureView is the failure record a claim carries as a claim view shows it: Cause is the
@@ -829,8 +837,9 @@ func PendingTaskViewOf(d *supervise.Delivery) *PendingTaskView {
 // ClaimViewOf is c as every agent surface shows it: the one place a claim record becomes the
 // view `read_record` and `read_state` carry, so what those surfaces serve of a claim is decided
 // here and nowhere else (ClaimRecordFields names the decision for each field of the record). The
-// capability report is not of the claim — it is what the claim's session last reported — so its
-// caller sets it beside this.
+// capability report is not of the claim — it is what the claim's session last reported — and
+// neither is the wait that stands (WaitViewOf), which is kept apart from the claim record and
+// judged against the issue's, so the caller sets each beside this.
 func ClaimViewOf(c supervise.Claim) ClaimView {
 	return ClaimView{
 		Session:           c.Session,

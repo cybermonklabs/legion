@@ -374,6 +374,15 @@ func populatedState(t *testing.T) State {
 							// The call this worker is in: a start the daemon received and no end,
 							// which is what a turn that has stopped moving leaves behind.
 							Step: StepViewOf(implementerStep),
+							// The wait this worker declared earlier in the turn it is in, which
+							// stands: what it waits on, when its time comes, and when the daemon
+							// recorded the declaration, to the microsecond the record keeps.
+							Wait: &WaitView{
+								ID:         "5e2b7c41-9d36-4a8f-b0c2-7e14d9a3f685",
+								WaitingOn:  "the review of LEGION-207's pull request",
+								WakeAt:     time.Date(2026, 9, 22, 11, 0, 0, 0, time.UTC),
+								DeclaredAt: time.Date(2026, 9, 22, 9, 17, 5, 123456000, time.UTC),
+							},
 						},
 						HandoffCommit: "",
 						// Three passes through the stretch, two of them ended by a review that

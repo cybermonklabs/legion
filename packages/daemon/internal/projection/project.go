@@ -28,14 +28,18 @@ import (
 // the gated steps and the released wakes over the store and this package may not read
 // internal/workflow: it is what says an issue's work has stopped on its worker rather than on
 // its place in a queue (whyStates), and the caller reads it in the same transaction, so the
-// state is still one snapshot. Nil is nothing stranded. reports is each claim's latest
-// capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
-// the view carries the reporting process's, for a reader to compare with the locator's — and a
-// claim with none shows no capabilities. Nil is no reports. The role whose phase entry and given
-// entry each issue's view carries is the role that works its current phase (phase.RoleFor). now
-// is the instant the held rows are read at (record.Store.HeldRows) and their waits are measured
-// from.
-func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
+// state is still one snapshot. Nil is nothing stranded. waits is every wait of the project's
+// claims that stands now, by claim (workflow.StandingWaitsNow), handed in for the same reason:
+// whether a wait stands is the daemon's one rule over the record (workflow.WaitStands), which this
+// package may not read, and the caller reads it in the same transaction. A claim in it carries its
+// wait (api.ClaimView.Wait) and no other claim carries one; nil is no wait. reports is each
+// claim's latest capability report, by claim (LEGION-663): a claim with one shows it whatever its
+// incarnation — the view carries the reporting process's, for a reader to compare with the
+// locator's — and a claim with none shows no capabilities. Nil is no reports. The role whose phase
+// entry and given entry each issue's view carries is the role that works its current phase
+// (phase.RoleFor). now is the instant the held rows are read at (record.Store.HeldRows) and their
+// waits are measured from.
+func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, stranded []supervise.Claim, waits map[claim.Token]record.ClaimWait, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
 		return api.State{}, err
@@ -103,6 +107,12 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 		view := api.ClaimViewOf(current)
 		if report, reported := reports[current.Token]; reported {
 			view.Capabilities = api.CapabilityReportViewOf(report)
+		}
+		// The wait the claim's worker declared, only while it stands: a wait row with no end that
+		// no longer stands — a fresh session, a phase that moved — is in no entry of waits, so no
+		// reader takes such a claim for waiting.
+		if wait, stands := waits[current.Token]; stands {
+			view.Wait = api.WaitViewOf(wait)
 		}
 		claimViews[current.Token] = view
 	}

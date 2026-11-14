@@ -193,6 +193,46 @@ func WaitStandsNow(ctx context.Context, tx pgx.Tx, store record.Store, steps []r
 	return wait, stands, nil
 }
 
+// StandingWaitsNow is WaitStandsNow for every claim of project at once: each wait that stands
+// now, by the token of the claim that declared it. It is what the state shows on each claim
+// (internal/projection's Project, which may not read this package and is handed it), so a wait
+// row with no end that no longer stands — a claim that runs a fresh session, a phase that moved
+// in a pass no fact's reconciler has followed yet, a merger the design gate holds — is in no
+// entry, and no reader of the state takes that claim for waiting.
+//
+// It reads in batches, never per claim: the project's wait rows with no end
+// (record.Store.StandingWaits), and then, for those claims alone, what the rule reads of each
+// (readWaitTermsOf). A project where no worker waits costs the one read of the rows. project is
+// the Dispatch project, whose claim token the rows are kept under (claim.ProjectToken), and
+// steps the steps the deployment gates.
+func StandingWaitsNow(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep) (map[claim.Token]record.ClaimWait, error) {
+	token, err := claim.ProjectToken(project)
+	if err != nil {
+		return nil, err
+	}
+	unended, err := store.StandingWaits(ctx, tx, token)
+	if err != nil || len(unended) == 0 {
+		return nil, err
+	}
+	keys := make([]record.RoleRunKey, len(unended))
+	waiting := make(map[claim.Token]struct{}, len(unended))
+	for i, wait := range unended {
+		keys[i] = record.RoleRunKey{Token: wait.Token, Issue: wait.Issue, Role: wait.Role, Generation: wait.Generation}
+		waiting[wait.Token] = struct{}{}
+	}
+	terms, err := readWaitTermsOf(ctx, tx, store, project, steps, keys, waiting)
+	if err != nil {
+		return nil, err
+	}
+	standing := make(map[claim.Token]record.ClaimWait, len(terms))
+	for token, read := range terms {
+		if wait, stands := read.stands(); stands {
+			standing[token] = wait
+		}
+	}
+	return standing, nil
+}
+
 // waitTerms is what the rule over a wait reads of the record (WaitStands, WaitEndCause): the
 // wait's issue, the issue's tree root, the wait's role's phases row, the run of the claim that
 // declared it, and the tree's design gate under the steps the deployment gates.
@@ -236,6 +276,77 @@ func readWaitTerms(ctx context.Context, tx pgx.Tx, store record.Store, steps []r
 	}
 	return &waitTerms{issue: *issue, root: *root, row: record.PhaseRowOf(rows, wait.Role),
 		run: record.RoleRun{Claim: claims[wait.Token]}, gate: record.TreeGate{Steps: steps, Rows: gates}}, nil
+}
+
+// readWaitTermsOf is readWaitTerms for a batch: what the rule over a wait (WaitStands) and the
+// design gate's hold (HeldByDesignGate) read of each of keys, by token, in tx, in the same few
+// reads whatever the number of keys — the keys' issues and those issues' roots (IssuesOf), the
+// roots' gates (Gates), and, for the keys whose claims waiting names (a claim with a wait row
+// that has no end), their phases rows (PhasesOf) and their claims (RoleClaims). A key of any
+// other claim is read with the zero phases row and no claim, since no wait of it can stand, which
+// is all the hold reads of a merger. A key whose issue or root the record does not hold is in no
+// entry. project is the Dispatch project the keys' issues are of, and steps the steps the
+// deployment gates.
+func readWaitTermsOf(ctx context.Context, tx pgx.Tx, store record.Store, project string, steps []record.DesignStep,
+	keys []record.RoleRunKey, waiting map[claim.Token]struct{},
+) (map[claim.Token]waitTerms, error) {
+	var issueKeys, waitingIssues []string
+	var waitingTokens []claim.Token
+	for _, key := range keys {
+		issueKeys = append(issueKeys, key.Issue)
+		if _, waits := waiting[key.Token]; waits {
+			waitingIssues = append(waitingIssues, key.Issue)
+			waitingTokens = append(waitingTokens, key.Token)
+		}
+	}
+	issues, err := store.IssuesOf(ctx, tx, project, issueKeys)
+	if err != nil {
+		return nil, err
+	}
+	byKey := make(map[string]record.Issue, len(issues))
+	for _, issue := range issues {
+		byKey[issue.Key] = issue
+	}
+	var roots, unread []string
+	for _, issue := range issues {
+		roots = append(roots, issue.Tree)
+		if _, read := byKey[issue.Tree]; !read {
+			unread = append(unread, issue.Tree)
+		}
+	}
+	rooted, err := store.IssuesOf(ctx, tx, project, unread)
+	if err != nil {
+		return nil, err
+	}
+	for _, root := range rooted {
+		byKey[root.Key] = root
+	}
+	gates, err := store.Gates(ctx, tx, roots)
+	if err != nil {
+		return nil, err
+	}
+	phases, err := store.PhasesOf(ctx, tx, waitingIssues)
+	if err != nil {
+		return nil, err
+	}
+	claims, err := store.RoleClaims(ctx, tx, waitingTokens)
+	if err != nil {
+		return nil, err
+	}
+	terms := make(map[claim.Token]waitTerms, len(keys))
+	for _, key := range keys {
+		issue, found := byKey[key.Issue]
+		if !found {
+			continue
+		}
+		root, found := byKey[issue.Tree]
+		if !found {
+			continue
+		}
+		terms[key.Token] = waitTerms{issue: issue, root: root, row: record.PhaseRowOf(phases[key.Issue], key.Role),
+			run: record.RoleRun{Claim: claims[key.Token]}, gate: record.TreeGate{Steps: steps, Rows: gates[issue.Tree]}}
+	}
+	return terms, nil
 }
 
 // waitDeclared applies one intake.WaitDeclared, a phase worker's declaration of a wait, deciding
