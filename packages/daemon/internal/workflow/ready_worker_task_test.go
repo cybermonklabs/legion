@@ -97,6 +97,33 @@ func TestAReadyWorkerThatDoesNotHoldTheIssuesPhaseIsGivenNothing(t *testing.T) {
 	}
 }
 
+// R2: a phase worker whose claim becomes ready while its issue stands at admitted is given
+// nothing. Admitted is the architect's own phase (phase.RoleFor), and the architect's ready never
+// reaches this path (claimReady sends it the catch-up instead), so a worker's ready there finds a
+// phase no phase worker holds.
+func TestArchitectUnchangedByAReadyWorkerOfAnIssueAtAdmitted(t *testing.T) {
+	for _, role := range []claim.Role{claim.RolePlanner, claim.RoleImplementer} {
+		t.Run(string(role), func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, record.Issue{Key: "LEGION-209", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Tree: "LEGION-209", Project: "LEGION", Title: "a root writing its design", Phase: phase.Admitted, Generation: 1,
+				Status: "in_progress", Rank: "U", HandedOver: true})
+			seedSlot(t, pool, record.Slot{Issue: "LEGION-209", Index: 0})
+			seedPhaseWorker(t, pool, "LEGION-209", role, "")
+
+			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "supervise:"+string(role)+":2:ready",
+				intake.ClaimReady{Issue: "LEGION-209", Role: role, Launch: 2},
+				testEngine(config.DesignGateRootIssues, nil), admissionStub{}); err != nil {
+				t.Fatalf("apply the ready: %v", err)
+			}
+
+			if got := superviseRequests(t, pool, "start"); !sameCounts(got, map[string]int{}) {
+				t.Fatalf("the ready queued starts %v, want none: no phase worker works admitted", got)
+			}
+		})
+	}
+}
+
 // A failed claim's notices name both of the causes the claim recorded — why its process last died
 // and why its last start failed — since the architect reading them has no other way to learn
 // either (dispatch://INFRA-714 R6).

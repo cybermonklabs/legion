@@ -1091,61 +1091,97 @@ func strandedSummary(stranded []api.StrandedClaim, suspended api.Suspenders) str
 	return fmt.Sprintf("claims nothing will wake: %d — %s", len(stranded), strings.Join(groups, "; "))
 }
 
-// entryBehind is one issue whose role has not been given the work its phase entry names: the
-// issue, the role of its current phase (phase.RoleFor, the role the state's two numbers are
-// of), the entry that role's phases row stands on and the entry it was given.
+// entryBehind is one issue the plain state names for its phase entry: the issue, the role it is
+// named for, the entry the phases row of the role of its current phase stands on and the entry
+// that role was given (phase.RoleFor, the role the state's two numbers are of), and, for a root's
+// architect, the arms the state names for it.
 type entryBehind struct {
 	issue string
 	role  legionclaim.Role
-	entry int64
-	given int64
+	// numbered is whether entry and given are role's own, which they are for every row but the
+	// architect of a root past the phases its architect works, where they are that phase's
+	// worker's and the line leaves them off the architect.
+	numbered     bool
+	entry, given int64
+	// arms is every arm of the daemon's architect-stalled reading the state names for this root
+	// (api.Issue.ArchitectStalls), and empty for a role whose two numbers differ, which the
+	// difference names instead.
+	arms []record.ArchitectStallArm
 }
 
-// entriesBehind is every issue of the state whose two entry numbers differ
-// (api.Issue.PhaseEntry and GivenEntry), by issue key. An issue whose current phase names no
-// phase worker role carries neither number, so it is never named here: the projection writes
-// them only where phase.RoleFor names a role, and that is the role this reads back for the
-// line.
+// entriesBehind is every issue of the state the plain line names, by issue key: a root the state
+// names an arm of the architect-stalled reading for (api.Issue.ArchitectStalls), as its
+// architect, and an issue whose phase worker has not been given the work its phase entry names
+// (api.Issue.PhaseEntry and GivenEntry). The daemon reads the arms by the predicates its own wake
+// uses and serves them whether or not the controller was told, so this reads no arm of its own.
+// A root a phase worker works is named twice where both hold: once as its architect, for the
+// arms, and once as that worker, for its numbers.
+//
+// The numbers are named for a role a phase worker works. A role of the architect's — a root at
+// admitted or accepting, or a child at admitted, which phase.RoleFor names the architect's phase —
+// is named for the arms alone: every root reads as behind for the moments between a transition
+// and its delivery, so the difference alone would name a healthy root at every read. An issue
+// whose current phase names no role at all carries neither number and is never named for them:
+// the projection writes them only where phase.RoleFor names a role, and that is the role this
+// reads back for the line.
 func entriesBehind(issues map[string]api.Issue) []entryBehind {
 	var behind []entryBehind
 	for _, key := range slices.Sorted(maps.Keys(issues)) {
 		issue := issues[key]
-		if issue.PhaseEntry == issue.GivenEntry {
+		role := phase.RoleFor(issue.Phase)
+		if len(issue.ArchitectStalls) > 0 {
+			row := entryBehind{issue: key, role: legionclaim.RoleArchitect, arms: issue.ArchitectStalls}
+			if role == legionclaim.RoleArchitect {
+				row.numbered, row.entry, row.given = true, issue.PhaseEntry, issue.GivenEntry
+			}
+			behind = append(behind, row)
+		}
+		if role == "" || role == legionclaim.RoleArchitect || issue.PhaseEntry == issue.GivenEntry {
 			continue
 		}
-		behind = append(behind, entryBehind{issue: key, role: phase.RoleFor(issue.Phase),
-			entry: issue.PhaseEntry, given: issue.GivenEntry})
+		behind = append(behind, entryBehind{issue: key, role: role, numbered: true, entry: issue.PhaseEntry, given: issue.GivenEntry})
 	}
 	return behind
 }
 
 // entrySummary is the one line an operator reads for the roles that have not been given the work
-// their phase entry names: how many, and each by issue and role with the two numbers. A
-// difference here is one of four things. An entry raised seconds ago, which the next pass
-// closes: the daemon sends that entry's work on every admission pass and on a sweep of its own
-// each minute (admit's resumeSlottedWorkers). An issue waiting for its admission slot, whose
-// start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe) and which
-// the pass passes over, since it reads the slotted issues alone — every issue in the waiting
-// line is named here, and its difference stands for as long as it waits, which is hours on a
-// full cap. A claim whose worker is still working an earlier entry's task, which the pass passes
-// over while that delivery is worked: a start the slot held back reaches its worker mid-turn, so
-// the difference reads for the rest of that turn and closes on the first pass after the task is
-// retired. Or a role the pass skips and sends nothing to at all (admit's owedEntryRoles, which
-// states each skip), whose difference stands until something outside that pass moves it.
+// their phase entry names and for the roots a wake names: how many, and each by issue and role
+// with the two numbers where they are that role's, a root with the words of each arm the state
+// names for it (record.ArchitectStallArm.Words, the words the wake's reason begins with). For a
+// role a phase worker works, a difference here is one of four things. An entry raised seconds ago,
+// which the next pass closes: the daemon sends that entry's work on every admission pass and on a
+// sweep of its own each minute (admit's resumeSlottedWorkers). An issue waiting for its admission
+// slot, whose start row the outbox holds unclaimable until the slot comes (workflow.StartOrOwe)
+// and which the pass passes over, since it reads the slotted issues alone — every issue in the
+// waiting line is named here, and its difference stands for as long as it waits, which is hours
+// on a full cap. A claim whose worker is still working an earlier entry's task, which the pass
+// passes over while that delivery is worked: a start the slot held back reaches its worker
+// mid-turn, so the difference reads for the rest of that turn and closes on the first pass after
+// the task is retired. Or a role the pass skips and sends nothing to at all (admit's
+// owedEntryRoles, which states each skip), whose difference stands until something outside that
+// pass moves it.
 //
 // The daemon's own "a role was behind the entry its phases row names" log line names the roles
 // that pass sends the work to and no others, so a difference of that last kind is read here and
-// nowhere else.
+// nowhere else. A root is named for the arms the state serves instead (entriesBehind).
 func entrySummary(issues map[string]api.Issue) string {
 	behind := entriesBehind(issues)
 	if len(behind) == 0 {
-		return "roles not given their phase entry: none"
+		return "roles not given their phase entry, and roots a wake names: none"
 	}
 	named := make([]string, len(behind))
 	for i, row := range behind {
-		named[i] = fmt.Sprintf("%s %s: entry %d, given %d", row.issue, row.role, row.entry, row.given)
+		parts := make([]string, 0, 2+len(row.arms))
+		if row.numbered {
+			parts = append(parts, fmt.Sprintf("entry %d", row.entry), fmt.Sprintf("given %d", row.given))
+		}
+		for _, arm := range row.arms {
+			parts = append(parts, arm.Words())
+		}
+		named[i] = fmt.Sprintf("%s %s: %s", row.issue, row.role, strings.Join(parts, ", "))
 	}
-	return fmt.Sprintf("roles not given their phase entry: %d — %s", len(behind), strings.Join(named, "; "))
+	return fmt.Sprintf("roles not given their phase entry, and roots a wake names: %d — %s",
+		len(behind), strings.Join(named, "; "))
 }
 
 // wakesWaitingSummary is the line an operator reads for the wakes the daemon's pacing is holding

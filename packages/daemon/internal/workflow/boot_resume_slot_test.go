@@ -102,3 +102,48 @@ func TestTheBootsResumeRunsPastAReviewAndWaitsWhereTheIssueHoldsNoRow(t *testing
 		t.Fatalf("the runnable row of %s carries task %q, want the %q the boot wrote it with", unslotted, after[0].task, waiting[0].task)
 	}
 }
+
+// The boot's resume by rule leaves a root's architect alone, at admitted as in accepting, though
+// phase.RoleFor answers the architect for both (dispatch://INFRA-2614, R2). The architect's claim
+// is started with its tree by admission and sent the work of its entry by admission's sweep, so
+// the phase owners the boot reads (suspendedPhaseOwners) name no architect, and the boot writes
+// no start for one whatever source suspended its claim. The control is a phase worker of a
+// running tree, which the same boot resumes.
+func TestTheBootsResumeReadsRoleForAndStartsNoArchitectAtAdmittedOrAccepting(t *testing.T) {
+	pool := migratedPool(t)
+	project, err := claim.ProjectToken("LEGION")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const admitted, accepting, working = "LEGION-210", "LEGION-211", "LEGION-212"
+	for _, seeded := range []struct {
+		key   string
+		stand phase.Phase
+		role  claim.Role
+	}{
+		{admitted, phase.Admitted, claim.RoleArchitect},
+		{accepting, phase.Accepting, claim.RoleArchitect},
+		{working, phase.Implementing, claim.RoleImplementer},
+	} {
+		seedIssue(t, pool, record.Issue{Key: seeded.key, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion",
+			Tree: seeded.key, Project: "LEGION", Title: "a root in " + string(seeded.stand), Phase: seeded.stand, Generation: 1,
+			Status: "in_progress", Rank: seeded.key})
+		seedTreeLifecycle(t, pool, seeded.key)
+		seedRuleSuspendedOwner(t, pool, project, seeded.key, seeded.role)
+	}
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	now := engine.now()
+
+	if _, err := intake.ApplyFact(t.Context(), pool, "daemon", "boot:LEGION:1", intake.DaemonBooted{Boot: 1}, engine, admissionStub{}); err != nil {
+		t.Fatalf("apply the boot: %v", err)
+	}
+
+	for _, root := range []string{admitted, accepting} {
+		if rows := oneStartRowsOf(t, pool, root, now); len(rows) != 0 {
+			t.Fatalf("the start rows of %s after the boot = %+v, want none: the boot's resume reads no architect as a phase owner", root, rows)
+		}
+	}
+	if rows := oneStartRowsOf(t, pool, working, now); len(rows) != 1 || rows[0].role != claim.RoleImplementer {
+		t.Fatalf("the start rows of %s after the boot = %+v, want the one resume of its implementer: the control that the boot ran", working, rows)
+	}
+}

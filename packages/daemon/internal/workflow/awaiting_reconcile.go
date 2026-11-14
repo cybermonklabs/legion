@@ -429,10 +429,8 @@ func waitSubject(asks []record.RootAsk, steps []record.DesignStep, gates map[rec
 // owed says whether the architect has not yet taken the work it was last given, and how: a start
 // still queued for it, no claim yet, a claim still starting, or a task it has not confirmed.
 func owed(run record.RoleRun) (string, bool) {
-	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" {
-			return "has a start still queued", true
-		}
+	if queuedStart(run) {
+		return "has a start still queued", true
 	}
 	held := run.Claim
 	switch {
@@ -445,6 +443,18 @@ func owed(run record.RoleRun) (string, bool) {
 		return "has not taken its task yet", true
 	}
 	return "", false
+}
+
+// queuedStart says whether a start of the role still waits in the outbox, which is one arm of
+// owed and the only one the sweep's own reading keeps for a role with no claim at all
+// (ArchitectStartPending).
+func queuedStart(run record.RoleRun) bool {
+	for _, queued := range run.Queued {
+		if queued.Request.Op == "start" {
+			return true
+		}
+	}
+	return false
 }
 
 // answeredSince names a person's act the record already holds that Dispatch recorded after waiting
@@ -535,6 +545,17 @@ func (e *Engine) tellInPlace(ctx context.Context, tx pgx.Tx, root record.Issue, 
 // counts, so each takes its own place in the waiting line and starts at its own slot
 // (record.Waiting's LineFirstPhase), in the same admission pass that resumed this root.
 //
+// The resume hands the architect work it was not on, so it raises the architect's phase entry and
+// writes this task as the work of that entry (EnterArchitect), and the start carries the number
+// (record.SuperviseRequest.Entry) as a phase worker's start does. That is what makes a resume
+// survivable: the entry and this task live on the record, so a start row that reaches no claim
+// leaves the architect's claim below that entry, and the entry sweep sends it that entry's work.
+// The raise marks the task as one to send as written (record.PhaseRow.EntryVerbatim), so that work
+// is this text (SendArchitectStart): it names the answer and no kept decision, so nothing it says
+// can have been told by another start. Both callers get it — the promotion of an answered root
+// (admit's record.LineAnswered branch) and tellInPlace, which gives a live architect this task
+// where it stands.
+//
 // The resume starts the root's architect, which is a movement of the issue
 // (record.Store.MarkIssueMoved, the rule in dispatchIssue). It is marked here rather than at
 // either caller, so that both of them carry it: the promotion of a root a person answered
@@ -564,8 +585,12 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 		return err
 	}
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
+	entry, err := e.EnterArchitect(ctx, tx, root, task, true)
+	if err != nil {
+		return err
+	}
 	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
-		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task,
+		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task, Entry: entry,
 	}); err != nil {
 		return err
 	}

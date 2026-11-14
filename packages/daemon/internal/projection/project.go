@@ -32,9 +32,10 @@ import (
 // capability report, by claim (LEGION-663): a claim with one shows it whatever its incarnation —
 // the view carries the reporting process's, for a reader to compare with the locator's — and a
 // claim with none shows no capabilities. Nil is no reports. The role whose phase entry and given
-// entry each issue's view carries is the role that works its current phase (phase.RoleFor). now
-// is the instant the held rows are read at (record.Store.HeldRows) and their waits are measured
-// from.
+// entry each issue's view carries is the role that works its current phase (phase.RoleFor), and
+// the two handshake times beside them are that role's claim's, but for a tree's own root, whose
+// times are its architect's claim's in every phase (supervise.Claim.Handshake). now is the instant
+// the held rows are read at (record.Store.HeldRows) and their waits are measured from.
 func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, steps []record.DesignStep, claims []supervise.Claim, stranded []supervise.Claim, reports map[claim.Token]capabilities.Report, now time.Time) (api.State, error) {
 	issues, err := s.Issues(ctx, tx)
 	if err != nil {
@@ -81,14 +82,16 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 	}
 
 	// The entry each claim was last queued a task of, by the issue and role the claim holds
-	// (supervise.Claim.GivenEntry): the number an issue's view shows beside the entry its phases
-	// row names. It is keyed by issue and role rather than by claim token because the token on
-	// the phases row can be empty, for a role no claim was ever created for, or stale, from a
-	// claim an earlier run retired, where the claim of this issue and this role is the one the
-	// admission pass weighs (admit's resumeSlottedWorkers).
-	givenEntries := make(map[issueRole]int64, len(claims))
+	// (supervise.Claim.GivenEntry), and beside it the claim's handshake of the last entry it was
+	// queued a task of (supervise.Claim.Handshake): the numbers and the two times an issue's view
+	// shows beside the entry its phases row names. They are keyed by issue and role rather than by
+	// claim token because the token on the phases row can be empty, for a role no claim was ever
+	// created for, or stale, from a claim an earlier run retired, where the claim of this issue and
+	// this role is the one the admission pass weighs (admit's resumeSlottedWorkers). One claim
+	// stands per issue and role (claim.NewToken), so one entry holds both readings of it.
+	entries := make(map[issueRole]roleEntry, len(claims))
 	for _, current := range claims {
-		givenEntries[issueRole{issue: current.Issue, role: current.Role}] = current.GivenEntry
+		entries[issueRole{issue: current.Issue, role: current.Role}] = roleEntry{given: current.GivenEntry, handshake: current.Handshake}
 	}
 
 	claimViews := make(map[claim.Token]api.ClaimView, len(claims))
@@ -175,6 +178,10 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			if !live {
 				continue
 			}
+			// The architect is the issue's architect and no worker of its `workers` map, so no
+			// phase view is built for it. Its row is read all the same: the entry below is
+			// read off `phases` by the role that works the issue's phase (phase.RoleFor), which
+			// is the architect for a root at admitted.
 			if item.Role == claim.RoleArchitect {
 				view.Architect = &claimView
 				continue
@@ -194,21 +201,37 @@ func Project(ctx context.Context, tx pgx.Tx, s record.Store, project string, ste
 			}
 			view.Workers[item.Role] = worker
 		}
-		// The entry the role of this issue's current phase stands on, and the entry that role was
-		// given: the pair a reader tells a role holding the work its row names from one the daemon
-		// has still to send that work to (api.Issue.PhaseEntry). A phase that names no phase worker
-		// role carries neither number — a root at admitted whose design gate has never opened is at
-		// work (record.AtWork) and phase.RoleFor names no role for that phase, so the admission
-		// pass passes it over and a difference written for it would stand for ever — and no row of
-		// a role the issue has moved past is read, since that role keeps its entry and is sent
-		// nothing.
+		// The entry the role of this issue's current phase stands on and the entry that role was
+		// given: what a reader tells a role holding the work its row names from one the daemon has
+		// still to send that work to (api.Issue.PhaseEntry and GivenEntry). A root carries them as
+		// a child does, since phase.RoleFor answers the architect for admitted and accepting and a
+		// phase role for each phase after; a phase no role works carries neither, where no row
+		// would be read and a difference written for one would never close. No row of a role the
+		// issue has moved past is read either, since that role keeps its entry and is sent nothing.
 		// The entry is 0 where the rows hold none of that role (record.PhaseRowOf), a role no
-		// transition has ever handed work on, and it is read with the same call admit's
-		// owedEntryRoles reads for the same role from the same rows, so the state shows what the
-		// admission pass weighs a claim against.
-		if role := phase.RoleFor(issue.Phase); role != "" {
-			view.PhaseEntry = record.PhaseRowOf(phases, role).Entry
-			view.GivenEntry = givenEntries[issueRole{issue: issue.Key, role: role}]
+		// transition has ever handed work on, which is the number admit's owedEntryRoles weighs
+		// the same role's claim against, so the state shows what the admission pass weighs.
+		role := phase.RoleFor(issue.Phase)
+		if role != "" {
+			view.PhaseEntry, view.GivenEntry = record.PhaseRowOf(phases, role).Entry, entries[issueRole{issue: issue.Key, role: role}].given
+		}
+		// Beside them the two times of a handshake: when a task of an entry was first queued to a
+		// claim and when a turn of its worker first confirmed one (api.Issue.EntryQueuedAt and
+		// EntryConfirmedAt), read from the claim's own record of it (supervise.Claim.Handshake),
+		// which outlasts the turn that confirmed the task. A tree's own root carries its
+		// architect's whatever phase it stands in: in awaiting_person, where no role works, and in
+		// each phase a phase role works, where the two numbers are that role's and the times are
+		// still the architect's. Any other issue carries the handshake of the role of its current
+		// phase, and none in a phase no role works. Either is shown for the issue's current
+		// generation alone (handshakeTimes), so a re-admitted root carries neither until its new
+		// architect entry is queued.
+		handshakeRole := role
+		if claim.IsTreeRoot(issue.Key, issue.Tree) {
+			handshakeRole = claim.RoleArchitect
+		}
+		if handshakeRole != "" {
+			view.EntryQueuedAt, view.EntryConfirmedAt =
+				handshakeTimes(entries[issueRole{issue: issue.Key, role: handshakeRole}].handshake, issue.Generation)
 		}
 
 		pr, err := s.PullRequest(ctx, tx, issue.Key)
@@ -502,6 +525,38 @@ type memoryDraw struct {
 type issueRole struct {
 	issue string
 	role  claim.Role
+}
+
+// roleEntry is what the claim of one issue and role says of its entry: the entry it was last
+// queued a task of (supervise.Claim.GivenEntry), and its handshake of the last entry it was
+// queued a task of (supervise.Claim.Handshake), the zero handshake where it was queued none.
+type roleEntry struct {
+	given     int64
+	handshake supervise.EntryHandshake
+}
+
+// handshakeTimes is the two times of the handshake h as the view of an issue at generation
+// carries them (api.Issue.EntryQueuedAt and EntryConfirmedAt). Both are nil where h names no
+// entry, a claim that has been queued no task carrying one since the handshake was recorded,
+// which a root of the release before this one is, and where h is of another run than the
+// issue's, which a re-admitted root is until its new architect entry is queued: the handshake of
+// an earlier run is no part of this one. The confirmed time alone is nil where no turn has
+// confirmed a task of the entry, the architect that took nothing, which the view leaves absent
+// rather than writing an instant that never happened.
+func handshakeTimes(h supervise.EntryHandshake, generation uint64) (*time.Time, *time.Time) {
+	if h.Entry == 0 || h.Generation != generation {
+		return nil, nil
+	}
+	var queued, confirmed *time.Time
+	if !h.QueuedAt.IsZero() {
+		at := h.QueuedAt.UTC()
+		queued = &at
+	}
+	if !h.ConfirmedAt.IsZero() {
+		at := h.ConfirmedAt.UTC()
+		confirmed = &at
+	}
+	return queued, confirmed
 }
 
 // checkView is an open production check as the state shows it (api.CheckView): the role the check

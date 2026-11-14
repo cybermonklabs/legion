@@ -113,7 +113,7 @@ func TestThePeriodicTurnAdmitsARootWhoseBlockerClosedWithNoEvent(t *testing.T) {
 // the tick with what it has — here nothing, which leaves the blocked root exactly where it was.
 func TestThePeriodicTurnWakesTheControllerWhenTheDispatchReadFails(t *testing.T) {
 	pool := isolatedOutboxPool(t)
-	registerTickController(t, pool)
+	registerProjectController(t, pool, "CAPTURE")
 	client := &tickDispatch{err: errors.New("dispatch is unreachable")}
 	w := tickRuntime(t, pool, client)
 
@@ -364,17 +364,18 @@ func seedTickMirror(t *testing.T, pool *store.Pool, key, status string, seq int6
 	}
 }
 
-// registerTickController registers a controller for this project, the daemon's own path: `legion
+// registerProjectController registers a controller for project, the daemon's own path: `legion
 // controller start` mints the capability and its session registers with it, both under the
-// project token (api/controller.go). Without one, a tick's wake is queued for nobody.
-func registerTickController(t *testing.T, pool *store.Pool) {
+// project token (api/controller.go). Without one, a tick's wake, and every wake of the daemon that
+// keeps a mark, is queued for nobody.
+func registerProjectController(t *testing.T, pool *store.Pool, project string) {
 	t.Helper()
 	st, err := store.Open(context.Background(), pool.Config().ConnString())
 	if err != nil {
 		t.Fatalf("open the store: %v", err)
 	}
 	t.Cleanup(st.Close)
-	token, err := claim.ProjectToken("CAPTURE")
+	token, err := claim.ProjectToken(project)
 	if err != nil {
 		t.Fatal(err)
 	}

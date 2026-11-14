@@ -596,19 +596,52 @@ type Issue struct {
 	// sends the entry's own work to a role whose given number is below the entry its row names, on
 	// every admission pass and on a sweep of its own each minute (workflow.OwedEntry, admit's
 	// resumeSlottedWorkers), so a reader tells a role holding the work its row names from one the
-	// daemon has still to reach, and `legion state` names the difference (its entrySummary).
+	// daemon has still to reach.
 	//
-	// Both are absent together for an issue whose current phase names no phase worker role: a root
-	// at admitted whose design gate has never opened is at work (record.AtWork) and phase.RoleFor
-	// names no role for that phase, so the sweep passes it over and nothing would ever close a
-	// difference written for it. GivenEntry alone is absent where it is 0, which is a role the
-	// daemon holds no claim row of — the start is what creates the claim — and one whose claim has
-	// been queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
-	// transition has raised an entry for. They are keys of the issue and not of PhaseView because a
-	// phases row exists for a role whose claim row does not, where PhaseView.Claim is a required
-	// value no reader parses empty.
+	// A root carries them as a child does: phase.RoleFor answers the architect for admitted, the
+	// phase a root's own architect works, so the two numbers there are the architect's as they
+	// are the implementer's in implementing. Both are absent together for a phase no role works —
+	// awaiting_person, done and held — where no row is read and a difference written for one
+	// would never close. GivenEntry alone is absent where it is 0, which is a role the daemon
+	// holds no claim row of — the start is what creates the claim — and one whose claim has been
+	// queued no task carrying an entry; PhaseEntry alone is absent where it is 0, a role no
+	// transition has raised an entry for. They are keys of the issue and not of PhaseView because
+	// a phases row exists for a role whose claim row does not, where PhaseView.Claim is a
+	// required value no reader parses empty.
 	PhaseEntry int64 `json:"phaseEntry,omitempty"`
 	GivenEntry int64 `json:"givenEntry,omitempty"`
+	// EntryQueuedAt is when a task of an entry was first queued to a claim, and EntryConfirmedAt
+	// is when a turn of that claim's worker first confirmed one (the turn the task's prompt
+	// started). They are the two halves of the handshake between the daemon and the role it hands
+	// work to, beside the two numbers above, which say which work it is: a reader sees that the
+	// entry's task was queued and whether a worker took it.
+	//
+	// Both are read from the claim's own record of the handshake of the last entry it was queued
+	// a task of (supervise.Claim.Handshake), which outlasts the task: the delivery is retired when
+	// the turn that confirmed it ends, and the two times stay. A tree's own root carries its
+	// architect's handshake whatever phase it stands in — admitted, awaiting_person, accepting,
+	// and each phase a phase role works, where the two numbers above are that role's and the two
+	// times are still the architect's. Any other issue carries the handshake of the claim of the
+	// role of its current phase, and none in a phase no role works. Both are absent where no entry
+	// was queued to that claim in the issue's current generation: a role the daemon holds no claim
+	// row of, a re-admitted root whose new architect entry is not queued yet, and one of the
+	// release before this one, whose migration gives the claim the two numbers and no handshake.
+	// EntryConfirmedAt alone is absent while no turn of its worker has confirmed a task of the
+	// entry, which is the root whose architect took nothing.
+	EntryQueuedAt    *time.Time `json:"entryQueuedAt,omitempty"`
+	EntryConfirmedAt *time.Time `json:"entryConfirmedAt,omitempty"`
+	// ArchitectStalls is, for a tree's own root, every arm of the daemon's architect-stalled
+	// reading that holds for that root's architect at this read, in the order the controller is
+	// told them: `took-nothing`, `claim-unreachable` and `slow-before-gate`
+	// (record.ArchitectStallArm). It is the reading the admission pass wakes the controller from
+	// (admit.Admission.ArchitectStallArms, the same reads and the same three predicates), made in
+	// this state's own snapshot, and it carries an arm whether or not the controller was told of
+	// it: the daemon tells each arm once per run and only while a controller is registered. It is
+	// absent for a root no arm holds for and for every issue that is not a tree's root.
+	// `legion state`'s plain line prints it and reads no arm of its own. It arrived with the two
+	// times above (contract 127), and a caller below that contract is served the issues without
+	// all three (api's stateFor, withoutEntryTimes).
+	ArchitectStalls []record.ArchitectStallArm `json:"architectStalls,omitempty"`
 	// TreeMovedAt is when the daemon last saw anything of this issue's tree move and QuietHours
 	// is how long that tree has been still at this read, in hours (contract 111). The two are one
 	// measure read at one instant (record.TreeQuiet, through projection's quietTrees), so every

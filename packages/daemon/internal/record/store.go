@@ -534,7 +534,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
-	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_raised_at, entry_moved_back from phases
+	rows, err := tx.Query(ctx, `select issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back from phases
 		where issue = $1 order by role`, issue)
 	if err != nil {
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
@@ -552,6 +552,41 @@ func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]Phase
 		return nil, fmt.Errorf("list phases for %s: %w", issue, err)
 	}
 	return phases, nil
+}
+
+// PhaseEntries reads the entry of every phases row of issues, and the moment it was raised, in
+// one statement, keyed by issue and role. The rows of an issue the record holds none of are
+// simply absent, which every reader takes as the zero entry. entry_raised_at is the row's one
+// nullable column (PutPhase), null on a row no entry has been raised on, and reads back as the
+// zero moment.
+func (s *Postgres) PhaseEntries(ctx context.Context, tx pgx.Tx, issues []string) (map[PhaseRole]PhaseEntry, error) {
+	entries := make(map[PhaseRole]PhaseEntry, len(issues))
+	if len(issues) == 0 {
+		return entries, nil
+	}
+	rows, err := tx.Query(ctx, `select issue, role, entry, entry_raised_at from phases where issue = any($1)`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var key PhaseRole
+		var role string
+		var entry PhaseEntry
+		var raisedAt *time.Time
+		if err := rows.Scan(&key.Issue, &role, &entry.Entry, &raisedAt); err != nil {
+			return nil, fmt.Errorf("read a phase entry: %w", err)
+		}
+		if raisedAt != nil {
+			entry.RaisedAt = raisedAt.UTC()
+		}
+		key.Role = claim.Role(role)
+		entries[key] = entry
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list the phase entries of %d issues: %w", len(issues), err)
+	}
+	return entries, nil
 }
 
 func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) error {
@@ -579,8 +614,8 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		raisedAt = phase.EntryRaisedAt
 	}
 	_, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
-		decision, completed_at, entry, entry_task, entry_raised_at, entry_moved_back)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+		decision, completed_at, entry, entry_task, entry_verbatim, entry_raised_at, entry_moved_back)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
@@ -588,11 +623,11 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		cap_told = excluded.cap_told, verdict = excluded.verdict,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at,
-		entry = excluded.entry, entry_task = excluded.entry_task, entry_raised_at = excluded.entry_raised_at,
-		entry_moved_back = excluded.entry_moved_back`,
+		entry = excluded.entry, entry_task = excluded.entry_task, entry_verbatim = excluded.entry_verbatim,
+		entry_raised_at = excluded.entry_raised_at, entry_moved_back = excluded.entry_moved_back`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
 		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
-		phase.Entry, phase.EntryTask, raisedAt, phase.EntryMovedBack,
+		phase.Entry, phase.EntryTask, phase.EntryVerbatim, raisedAt, phase.EntryMovedBack,
 	)
 	if err != nil {
 		return fmt.Errorf("put %s phase on %s: %w", phase.Role, phase.Issue, err)
@@ -607,7 +642,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var raisedAt *time.Time
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
 		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
-		&phase.Entry, &phase.EntryTask, &raisedAt, &phase.EntryMovedBack); err != nil {
+		&phase.Entry, &phase.EntryTask, &phase.EntryVerbatim, &raisedAt, &phase.EntryMovedBack); err != nil {
 		return PhaseRow{}, err
 	}
 	if raisedAt != nil {
@@ -1040,6 +1075,82 @@ func (s *Postgres) TellChildrenFirst(ctx context.Context, tx pgx.Tx, issue, tree
 	return tag.RowsAffected() == 1, nil
 }
 
+// TellArchitectsStalled records, in one statement, that the controller has been told each of
+// stalls, and answers at each index whether this call is the telling of that one: a mark that
+// already stands, or one an earlier index of this call wrote, answers false, so the one row
+// decides who tells. The arm is part of the key because each arm is a fact of its own and a root
+// that two of them read must wake the controller twice. The tree is part of it for the reason
+// TellChildrenFirst states, and each stall's At is the moment its pass read it, kept for a reader
+// of the table alone.
+func (s *Postgres) TellArchitectsStalled(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) ([]bool, error) {
+	told := make([]bool, len(stalls))
+	if len(stalls) == 0 {
+		return told, nil
+	}
+	issues, trees, generations, arms := architectStallKeys(stalls)
+	at := make([]time.Time, len(stalls))
+	for i, stall := range stalls {
+		at[i] = stall.At
+	}
+	rows, err := tx.Query(ctx, `insert into architect_stalled_notices (issue, tree, generation, arm, told_at)
+		select * from unnest($1::text[], $2::text[], $3::bigint[], $4::text[], $5::timestamptz[])
+		on conflict (issue, tree, generation, arm) do nothing
+		returning issue, tree, generation, arm`, issues, trees, generations, arms, at)
+	if err != nil {
+		return nil, fmt.Errorf("mark the controller told of %d architect stalls: %w", len(stalls), err)
+	}
+	defer rows.Close()
+	written := make(map[ArchitectStall]bool, len(stalls))
+	for rows.Next() {
+		var mark ArchitectStall
+		var generation int64
+		var arm string
+		if err := rows.Scan(&mark.Issue, &mark.Tree, &generation, &arm); err != nil {
+			return nil, fmt.Errorf("scan an architect stall marked told: %w", err)
+		}
+		mark.Generation, mark.Arm = uint64(generation), ArchitectStallArm(arm)
+		written[mark] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("mark the controller told of %d architect stalls: %w", len(stalls), err)
+	}
+	for i, stall := range stalls {
+		key := ArchitectStall{Issue: stall.Issue, Tree: stall.Tree, Generation: stall.Generation, Arm: stall.Arm}
+		told[i] = written[key]
+		delete(written, key)
+	}
+	return told, nil
+}
+
+// ArchitectStallsUntold says, in one statement, whether any of stalls holds no mark yet.
+func (s *Postgres) ArchitectStallsUntold(ctx context.Context, tx pgx.Tx, stalls []ArchitectStall) (bool, error) {
+	if len(stalls) == 0 {
+		return false, nil
+	}
+	issues, trees, generations, arms := architectStallKeys(stalls)
+	var untold bool
+	if err := tx.QueryRow(ctx, `select exists (
+		select 1 from unnest($1::text[], $2::text[], $3::bigint[], $4::text[]) as w (issue, tree, generation, arm)
+		where not exists (select 1 from architect_stalled_notices n
+			where n.issue = w.issue and n.tree = w.tree and n.generation = w.generation and n.arm = w.arm))`,
+		issues, trees, generations, arms).Scan(&untold); err != nil {
+		return false, fmt.Errorf("read whether any of %d architect stalls is untold: %w", len(stalls), err)
+	}
+	return untold, nil
+}
+
+// architectStallKeys is the key of each of stalls' marks as four parallel arrays, for unnest.
+func architectStallKeys(stalls []ArchitectStall) (issues, trees []string, generations []int64, arms []string) {
+	issues = make([]string, len(stalls))
+	trees = make([]string, len(stalls))
+	generations = make([]int64, len(stalls))
+	arms = make([]string, len(stalls))
+	for i, stall := range stalls {
+		issues[i], trees[i], generations[i], arms[i] = stall.Issue, stall.Tree, int64(stall.Generation), string(stall.Arm)
+	}
+	return issues, trees, generations, arms
+}
+
 func (s *Postgres) ReadmittedApproval(ctx context.Context, tx pgx.Tx, root string) (approved, latest int, err error) {
 	err = tx.QueryRow(ctx, "select approved_version, latest_version from readmitted_approvals where issue = $1", root).Scan(&approved, &latest)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1218,6 +1329,19 @@ func (s *Postgres) ArchitectLaunches(ctx context.Context, tx pgx.Tx, trees []str
 	return launches, nil
 }
 
+func (s *Postgres) ArchitectServed(ctx context.Context, tx pgx.Tx, tree string) (uint64, error) {
+	var served int64
+	err := tx.QueryRow(ctx, `select serving_generation from claims
+		where role = $1 and issue = $2 and tree = $2`, string(claim.RoleArchitect), tree).Scan(&served)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read the run the architect of %s last served: %w", tree, err)
+	}
+	return uint64(served), nil
+}
+
 func (s *Postgres) ForgetKeptDecisions(ctx context.Context, tx pgx.Tx, tree string, kept KeptDecisions, row int64) error {
 	if len(kept.Decisions) > 0 {
 		refs, at := keptMarks(kept)
@@ -1300,15 +1424,16 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, issues
 		// The entry's task goes with the run, and the entry itself stays where it stands: the
 		// number is never reset, so a worker still holding the old entry's task is behind the row
 		// rather than level with it, and the re-admitted tree's promotion raises the entry again
-		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The time
-		// the entry was raised stays with the number it belongs to, and so does the move that
-		// raised it (entry_moved_back), which that same promotion writes again. The counts go with the
+		// and writes the task of that entry beside it (admit's startMidPhaseMembers). The mark that
+		// the task is sent as written goes with the task it was about. The time the entry was
+		// raised stays with the number it belongs to, and so does the move that raised it
+		// (entry_moved_back), which that same promotion writes again. The counts go with the
 		// rounds: the new generation counts its moves back from nothing, and the cap mark goes
 		// with them, so the architect is told again at the new generation's own first crossing of
 		// the cap.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
 			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, " +
-			"entry_task = '' where " + where,
+			"entry_task = '', entry_verbatim = false where " + where,
 	} {
 		if _, err := tx.Exec(ctx, statement, key); err != nil {
 			return fmt.Errorf("%s: %w", describe, err)
@@ -2698,9 +2823,10 @@ type roleRunIdentity struct {
 
 // RoleRuns reads the queued supervise rows and the claims of keys in two bounded queries. The
 // outbox query reads the selected issues' supervise rows by the outbox_issue index with each
-// payload's role and generation as text, and decodes only the rows of keys' roles and
-// generations. A row of another role is never decoded, so one that does not decode fails only a
-// read of its own role's run, as RoleRun's did.
+// payload's role and generation as text and each row's age in the store's own clock
+// (QueuedSupervise.Age), and decodes only the rows of keys' roles and generations. A row of
+// another role is never decoded, so one that does not decode fails only a read of its own role's
+// run, as RoleRun's did.
 //
 // The rows are read first and the claims second, and that order is what makes the two answers
 // safe to judge together under a READ COMMITTED transaction, which every fact handler's is
@@ -2740,7 +2866,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		}
 	}
 
-	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', '')
+	rows, err := tx.Query(ctx, `select `+outboxColumns+`, coalesce(payload->>'role', ''), coalesce(payload->>'generation', ''),
+		now() - created_at
 		from outbox where kind = $1 and issue = any($2) order by id`, string(OutboxKindSupervise), issues)
 	if err != nil {
 		return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
@@ -2749,8 +2876,9 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 		var row OutboxRow
 		var kind, role, generation string
 		var payload []byte
+		var age time.Duration
 		if err := rows.Scan(&row.ID, &kind, &row.Issue, &payload, &row.Attempts, &row.NextAt, &row.LastError,
-			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation); err != nil {
+			&row.CreatedAt, &row.LeaseToken, &row.LeaseUntil, &role, &generation, &age); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("read the queued role runs of %d issues: %w", len(issues), err)
 		}
@@ -2771,7 +2899,8 @@ func (s *Postgres) RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (
 			return nil, fmt.Errorf("outbox row %d of kind %s decodes to %T", row.ID, row.Kind, decoded)
 		}
 		run := runs[token]
-		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request})
+		run.Queued = append(run.Queued, QueuedSupervise{ID: row.ID, Request: request, Attempts: row.Attempts,
+			Running: row.LeaseToken != "", Age: age})
 		runs[token] = run
 	}
 	if err := rows.Err(); err != nil {
@@ -2823,11 +2952,16 @@ func (s *Postgres) RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Tok
 // readRoleClaims hands each claim of tokens to found, in no order: the one statement RoleRuns and
 // RoleClaims share, with the task pending on each claim read beside it (the two tables are
 // written apart and read together, as claimSelect reads them).
+//
+// The task is read as the entry it is of and the two moments of its handshake: queued when the
+// delivery was written, confirmed when a turn of the claim's worker took it. Those are what say
+// an architect took nothing — a task of the entry its claim was given, standing unconfirmed —
+// which the admission pass reads of every root it weighs (admit's architectStalls).
 func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(claim.Token, *RoleClaim)) error {
 	rows, err := tx.Query(ctx, `select c.token, c.state, c.tree, c.suspended_by, c.last_start_row, c.retired_at_write_mark, c.given_entry,
 		c.update_round, c.step_at, c.turn_started_at,
 		c.activity_at, c.activity_background, c.activity_next_reminder_at,
-		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), d.confirmed_at
+		d.claim_token is not null, coalesce(d.generation, 0), coalesce(d.phase, ''), coalesce(d.entry, 0), d.queued_at, d.confirmed_at
 		from claims c left join pending_task_deliveries d on d.claim_token = c.token where c.token = any($1)`, tokens)
 	if err != nil {
 		return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
@@ -2838,7 +2972,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var held RoleClaim
 		var pending bool
 		var task supervise.Delivery
-		var confirmed *time.Time
+		var queued, confirmed *time.Time
 		// Both step columns are nullable (migration 20261107052815_claim_step_record): a claim
 		// whose agent has neither stepped nor begun a turn has neither, and the zero time left
 		// in the step record is what says so to its reader (supervise.StepRecord.LastStep).
@@ -2850,7 +2984,7 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 		var reported, reminder *time.Time
 		if err := rows.Scan(&token, &held.State, &held.Tree, &held.SuspendedBy, &held.LastStartRow, &held.RetiredAtWriteMark,
 			&held.GivenEntry, &held.UpdateRound, &stepped, &turnStarted, &reported, &held.ActivityBackground, &reminder,
-			&pending, &task.Generation, &task.Phase, &confirmed); err != nil {
+			&pending, &task.Generation, &task.Phase, &task.Entry, &queued, &confirmed); err != nil {
 			return fmt.Errorf("read the claims of %d role runs: %w", len(tokens), err)
 		}
 		if stepped != nil {
@@ -2866,6 +3000,9 @@ func readRoleClaims(ctx context.Context, tx pgx.Tx, tokens []string, found func(
 			held.ActivityNextReminderAt = *reminder
 		}
 		if pending {
+			if queued != nil {
+				task.QueuedAt = queued.UTC()
+			}
 			if confirmed != nil {
 				task.ConfirmedAt = *confirmed
 			}

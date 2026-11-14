@@ -717,7 +717,9 @@ func (a *Admission) everyIssueWaitsByDesign(members []record.Issue, holds lineHo
 // its record carries — `held` for a held issue — the role whose turn that issue's standing is
 // (workflow.RoleFor over record.StandsAt, which is the phase a held issue was held from) or
 // that the phase has no role, and the state of its pull request. It ends by telling the
-// controller to read the tree and decide.
+// controller to read the tree and decide. For an issue at admitted that role is the architect,
+// the role that works that phase for a root and a child alike (dispatch://INFRA-2614), so the
+// controller is told whose turn it is rather than that nobody works it.
 //
 // The membership is the measure's own and is read from the one predicate, so the notice names
 // exactly the issues whose stillness was measured: a root, whatever its own status says, and

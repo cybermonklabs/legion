@@ -523,6 +523,12 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 // for a completion of a phase it no longer works, in the engine's own words for it
 // (intake.NotCurrentPhase).
 //
+// A completion at admitted is answered so too, whichever role sends it. Admitted is the
+// architect's own phase (phase.RoleFor), and the architect completes nothing (workflow's
+// handoff refuses it ACCEPTANCE_IS_SIGN_OFF), so the guard keeps the answer a completion at
+// admitted had while no role was named for that phase (dispatch://INFRA-2614, R2), now that a
+// root's architect holds an entry there.
+//
 // An entry above the row's is refused with the entry below it (unraisedEntry), though the record
 // should never produce it: the transition raises the row's entry in the transaction that composes
 // that entry's task, so no delivery can carry an entry the row does not already name.
@@ -533,7 +539,7 @@ func entryFence(grant credential.Grant, position completionPosition, entry int64
 		return nil
 	}
 	p := position.issue.Phase
-	if phase.RoleFor(p) != grant.Role {
+	if p == phase.Admitted || phase.RoleFor(p) != grant.Role {
 		return intake.NotCurrentPhase(grant.Role, p, grant.Issue)
 	}
 	if entry > position.entry {

@@ -7,8 +7,8 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 123,
-    "caller": 123
+    "daemon": 127,
+    "caller": 127
   },
   "admission": {
     "cap": 3,
@@ -260,6 +260,8 @@
       "memoryDrawnAt": "2026-09-20T11:04:05Z",
       "phaseEntry": 4,
       "givenEntry": 4,
+      "entryQueuedAt": "2026-09-22T08:58:14Z",
+      "entryConfirmedAt": "2026-09-22T08:58:51Z",
       "treeMovedAt": "2026-09-22T09:17:12Z",
       "quietHours": 0.013333333333333334
     },
@@ -324,6 +326,9 @@
         "state": "claim_stopped",
         "reason": "Its phase is held and the implementer's claim is stranded at failed, so nothing will wake it."
       },
+      "architectStalls": [
+        "claim-unreachable"
+      ],
       "treeMovedAt": "2026-09-22T06:18:00Z",
       "quietHours": 3
     },
@@ -384,6 +389,7 @@
       },
       "phaseEntry": 2,
       "givenEntry": 1,
+      "entryQueuedAt": "2026-09-21T22:40:02Z",
       "treeMovedAt": "2026-09-21T09:18:00Z",
       "quietHours": 24
     },

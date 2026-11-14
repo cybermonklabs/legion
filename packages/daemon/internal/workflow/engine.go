@@ -719,13 +719,16 @@ func (e *Engine) enterChild(ctx context.Context, tx pgx.Tx, root record.Issue, f
 // completion names (record.Store.RoleRun), and role reported no completion of the phase it was in
 // (record.PhaseRow.Completed). That is this completion arriving after the daemon moved the issue
 // on without it - the review event taking reviewing on, or a conflicting head taking a later phase
-// back - and its handoff is the findings the next phase reads, which a refusal would lose. Three
+// back - and its handoff is the findings the next phase reads, which a refusal would lose. Four
 // completions are not: one from a role whose handoff already stands, which is reporting a phase it
 // finished a second time; one from a role the daemon never started on this issue, which has held
-// no phase of it to report; and any while the issue stands where no role works - parked, closed or
-// held - which is past recording work at all.
+// no phase of it to report; any while the issue stands where no role works - parked, closed or
+// held - which is past recording work at all; and any while it stands at admitted. Admitted is the
+// architect's own phase (phase.RoleFor), which completes nothing (handoff), and it comes before
+// every phase a worker works, so no worker's phase there is one the issue moved on from: the guard
+// keeps the refusal a completion at admitted had while no role was named for that phase.
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
-	if token == "" || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
+	if token == "" || issue.Phase == phase.Admitted || RoleFor(issue.Phase) == "" || phase.LeftBy(role, issue.Phase) == "" {
 		return false, nil
 	}
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
@@ -1392,7 +1395,10 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // the daemon stopping the phase on something it read of the head. Two moves tell it nothing (a
 // notice of no kind, which notice drops): its own sign-off, whose only recipient would be the
 // architect that just acted, and the merge that closes the issue, whose close tells a child's
-// architect child-closed itself (leave) and suspends a root's with the rest of its tree.
+// architect child-closed itself (leave) and suspends a root's with the rest of its tree. A third
+// move names no role: the gate's opening, the one move out of admitted (Table), whose role is the
+// architect. A phase-finished names the worker whose phase ended, and the architect is the tree's
+// own role and the reader of this notice, so a role there would tell the architect of itself.
 //
 // A worker's own backward move (TriggerBackward, request_backward_move) keeps the phase-finished
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
@@ -1403,6 +1409,8 @@ func noticeFor(trigger TriggerKind, from, to phase.Phase, handoff record.PhaseRo
 	switch trigger {
 	case TriggerConflict:
 		return record.Notice{Kind: "checks-red", Role: claim.RoleArchitect, Phase: from, Reason: reason}
+	case TriggerGateOpened:
+		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
 			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}

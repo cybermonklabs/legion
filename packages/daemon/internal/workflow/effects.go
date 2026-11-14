@@ -120,16 +120,22 @@ func StartFor(run record.RoleRun, root record.Issue, generation uint64, current 
 	return !slices.Contains(supervise.LiveStates(), held.State) && !(holds && held.State == supervise.StateLaunchUncertain)
 }
 
-// queuedStartActs is whether a queued start for current with an id above stop, the newest stop
-// that still acts (actingStop), will reach the claim. StartFor and SilentPhaseWorker both read
-// it, so they answer that term alike.
+// queuedStartActs is whether a queued start of run acts on the claim (startActs). StartFor and
+// SilentPhaseWorker both read it, so they answer that term alike.
 func queuedStartActs(run record.RoleRun, stop int64, current phase.Phase) bool {
 	for _, queued := range run.Queued {
-		if queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop {
+		if startActs(queued, stop, current) {
 			return true
 		}
 	}
 	return false
+}
+
+// startActs is whether queued is a start for current with an id above stop, the newest stop that
+// still acts (actingStop), which is a start that will reach the claim. queuedStartActs and
+// ArchitectRelaunchOf both read it, so they count the same starts.
+func startActs(queued record.QueuedSupervise, stop int64, current phase.Phase) bool {
+	return queued.Request.Op == "start" && queued.Request.Phase == current && queued.ID > stop
 }
 
 // PastBound is whether at is more than bound before now. A zero at is no recorded moment, and a
@@ -387,7 +393,9 @@ func refusedLingering(issue record.Issue, request string) intake.Result {
 // always its current phase's: the implementer's round-1 commit cannot advance round 2, a reviewer
 // starting round 2 or a tester starting a new round reads as not completed until it completes
 // again (record.PhaseRow.Completed), a merger sent back has no summary until its next one, and no
-// round inherits an earlier decision. The architect reports no handoff and has no row to clear.
+// round inherits an earlier decision. The architect reports no handoff, so it has none to clear:
+// its phases row holds only the entry it was handed work on (EnterArchitect), which no move
+// between phases clears.
 func (e *Engine) clearHandoff(ctx context.Context, tx pgx.Tx, issue string, role claim.Role) error {
 	if role == "" || role == claim.RoleArchitect {
 		return nil
@@ -460,7 +468,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if role == "" || role == claim.RoleArchitect {
 		return nil
 	}
-	entry, err := e.enter(ctx, tx, issue, role, task, movedBack)
+	entry, err := e.enter(ctx, tx, issue, role, task, movedBack, false)
 	if err != nil {
 		return err
 	}
@@ -560,7 +568,7 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // hands the role the phase it already stands in, and moves the issue nowhere.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
-	entry, err := e.enter(ctx, tx, issue, role, task, false)
+	entry, err := e.enter(ctx, tx, issue, role, task, false, false)
 	if err != nil {
 		return err
 	}
@@ -826,13 +834,14 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // still serves the earlier entry (the machine refuses a second delivery while one is pending), and
 // the row already names this one.
 //
-// Two starts raise one, each handing its role work it was not already on: a transition's start of
-// the phase the issue has moved into (start), and the promotion's start of a mid-phase worker a
-// re-admitted tree brings back (StartPromotedWorker). Every other start carries the entry its
-// role's phases row already names — the send of an owed entry (SendOwedEntry), the held phase's
-// retry (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them
-// moves the row and a worker's in-flight completion is never refused for an entry it was never
-// given.
+// Three starts raise one, each handing its role work it was not already on: a transition's start
+// of the phase the issue has moved into (start), the promotion's start of a mid-phase worker a
+// re-admitted tree brings back (StartPromotedWorker), and a root architect's start of work it was
+// not on (EnterArchitect: StartArchitect and ResumeAwaitedRoot). Every other start carries the
+// entry its role's phases row already names — the send of an owed entry (SendOwedEntry), the
+// sweep's start of a root architect behind its entry (SendArchitectStart), the held phase's retry
+// (restart) — or is a start of no entry (record.SuperviseRequest.Entry), so none of them moves
+// the row and a worker's in-flight completion is never refused for an entry it was never given.
 //
 // The number counts the entries this role has been handed on this issue, which is why it is raised
 // here: this is the one place a role is handed work it was not on. It needs to be unique among
@@ -851,17 +860,43 @@ func startOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string
 // the entry standing now was raised by a move back, since such an entry asks for the phase's
 // work to be done again (record.PhaseRow.EntryMovedBack, api/handoff.go). It is written here
 // rather than counted anywhere (record.PhaseRow.EntryMovedBack says why no count answers it).
-func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack bool) (int64, error) {
+//
+// verbatim is whether the sweep's send of a root architect's entry again sends that task as
+// written (record.PhaseRow.EntryVerbatim), which only the resume of an answered root says. Every
+// raise writes it, so a raise that does not say it clears the mark an earlier entry's resume left.
+func (e *Engine) enter(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, movedBack, verbatim bool) (int64, error) {
 	row, err := e.phaseRow(ctx, tx, issue.Key, role)
 	if err != nil {
 		return 0, err
 	}
 	row.Entry++
-	row.EntryTask, row.EntryRaisedAt, row.EntryMovedBack = task, e.now(), movedBack
+	row.EntryTask, row.EntryVerbatim, row.EntryRaisedAt, row.EntryMovedBack = task, verbatim, e.now(), movedBack
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return 0, err
 	}
 	return row.Entry, nil
+}
+
+// EnterArchitect raises the phase entry a root's architect is handed on root, writes task as the
+// work of that entry, whether the sweep sends it again as written (verbatim, enter) and the
+// moment it was raised, and answers the number for the start that hands it
+// (record.SuperviseRequest.Entry). A root's architect holds a row of the phases record exactly as
+// every phase worker does, so what it was handed, what that work is and how long it has stood are
+// read from the record rather than from the outbox row that carried it.
+//
+// It is the one way a root architect's entry is raised, and two starts that hand the architect
+// work it was not on make it. StartArchitect does, for admission's promotion of a queued root
+// (admit's LineQueuedRoot branch) and for the sweep's raise for an architect whose row names no
+// entry, with the derivation's task, which the sweep derives again. ResumeAwaitedRoot does, for
+// the resume of a root a person answered, with the task that names the answer, which the sweep
+// sends as written. Each composes the architect's task itself and enqueues its start itself,
+// because an architect's start waits for no admission slot, so neither writes through start or
+// started, both of which are a phase worker's. The rule it is held to is enter's own, which is
+// why it is one call and not a second implementation: it is made in the transaction that writes
+// that start. The entry is raised by no move back (record.PhaseRow.EntryMovedBack): that mark's
+// one reader is the completion route's entry fence, and the architect completes nothing there.
+func (e *Engine) EnterArchitect(ctx context.Context, tx pgx.Tx, root record.Issue, task string, verbatim bool) (int64, error) {
+	return e.enter(ctx, tx, root, claim.RoleArchitect, task, false, verbatim)
 }
 
 // task is what a started worker is told. It names the phase the worker starts, which the issue

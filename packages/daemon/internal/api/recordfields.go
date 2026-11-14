@@ -74,6 +74,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "GivenEntry", Column: ColumnAgents, Keys: []string{"givenEntry"},
 		Reason: "the entry the role's claim was last queued a task of, which its issue carries beside the entry that role's phases row stands on (api.Issue.GivenEntry): the pair says whether the daemon has still to send that role the entry's own work"},
 	{Field: "ServedEntry", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "Handshake", Column: ColumnWithheld,
+		Reason: "no claim view carries it: the issue's own view serves its two times as `entryQueuedAt` and `entryConfirmedAt` (api.Issue.EntryQueuedAt), which for a tree's own root are its architect's whatever phase it stands in, and its entry and generation are only what the projection reads to decide which issue shows them"},
 	{Field: "ServingCheckLook", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "LastStartRow", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "DeliveredRows", Column: ColumnWithheld, Reason: BookkeepingReason},

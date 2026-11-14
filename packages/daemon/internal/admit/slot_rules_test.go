@@ -70,16 +70,7 @@ func slotMember(t *testing.T, pool *pgxpool.Pool, key string, stands phase.Phase
 // takeSlot gives key one of the cap's slots, as a promotion would.
 func takeSlot(t *testing.T, pool *pgxpool.Pool, key string) {
 	t.Helper()
-	inTx(t, pool, func(tx pgx.Tx) {
-		records := record.NewStore()
-		held, err := records.Slots(context.Background(), tx)
-		if err != nil {
-			t.Fatalf("list slots: %v", err)
-		}
-		if err := records.PutSlot(context.Background(), tx, record.Slot{Issue: key, Index: len(held), AdmittedAt: fixedNow}); err != nil {
-			t.Fatalf("put slot: %v", err)
-		}
-	})
+	takeSlotAt(t, pool, key, fixedNow)
 }
 
 // oweStart queues the start of key's worker as a transition does (workflow.StartOrOwe): the one

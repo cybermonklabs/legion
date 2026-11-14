@@ -849,12 +849,15 @@ func TestAWaitByDesignIsNeverToldAsAStall(t *testing.T) {
 		const stillness = "The tree has been quiet for 7.0 hours. No agent of the tree is at work."
 		const decide = "\nRead the tree and decide what it needs. You can ask a role what it waits on." +
 			" You can move an issue back a phase. You can park the tree."
+		// The architect is the role that works admitted (workflow.RoleFor, dispatch://INFRA-2614),
+		// for a root and a child alike, so each issue standing there names it as the role whose
+		// turn it is. A root waiting on a person stands in a phase no role works.
 		wantDeadlocked := []stalledNotice{
 			{issue: deadAwaiting, reason: deadAwaiting + " has stopped. " + stillness + "\n" + deadAwaiting +
 				" is in awaiting_person. No role works this phase. The record holds no pull request." + decide},
 			{issue: deadParent, reason: deadParent + " has stopped. " + stillness + "\n" + deadParent +
-				" is in admitted. No role works this phase. The record holds no pull request.\n" + deadChild +
-				" is in admitted. No role works this phase. The record holds no pull request." + decide},
+				" is in admitted. The architect has the turn. The record holds no pull request.\n" + deadChild +
+				" is in admitted. The architect has the turn. The record holds no pull request." + decide},
 		}
 		if got := stalledNotices(t, deadPool); !reflect.DeepEqual(got, wantDeadlocked) {
 			t.Fatalf("the deadlocked project was told %#v, want %#v: where no slot holder of a project can finish and no agent of it is at work, every tree of it is named however its members wait",
