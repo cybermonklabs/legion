@@ -390,7 +390,9 @@ func (s *server) createArtifactReview(w http.ResponseWriter, r *http.Request) {
 	// The version this review records for the document: the one the open request names for it,
 	// else the latest settled version. A caller that names the version it read is refused here
 	// when that is not it, before the request is answered or anything is written, so no review
-	// records in a person's name a version that person did not read.
+	// records in a person's name a version of this document that person did not name. With a
+	// request open, every other document the request names is reviewed at the version the
+	// request names for it, which the caller does not name and this check does not compare.
 	recorded := version
 	if open != nil {
 		if named := open.Approval.Document(artifact.ID); named != nil {
