@@ -65,6 +65,19 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // told as well, and one the read shows with no sequence, on a root waiting from a sequenced start,
 // is neither told nor recorded as told (unplaceable): its sequenced event, still to come, decides
 // whether it answers the wait or reaches the architect.
+//
+// A registration on a basis (fact.Basis, dispatch://INFRA-3320 R1 to R3) rests the step on an
+// ancestor's approval rather than on a person's approval of the root's own document, which
+// register_gate found absent at this version, with no changes request as the newest review: what
+// that read shows of the root's own document opens and closes nothing here. The engine stamps the
+// basis with its own time of the registration (registeredBasis). An approved basis writes the row
+// open (record.OpenOnBasis), so the tree starts as after a person's approval at that version, and
+// answers a root waiting on that gate as such an approval does; a pending one writes it closed on
+// the ancestor's open request (record.PendOnBasis) and declares no hand-back, so the root keeps
+// its slot, its phase and any wait it holds. What each tells, and to whom, is
+// tellRegisteredBasis's. A registration with no basis writes a row with none, so it ends any
+// basis the step stood or waited on: the step waits for a person's approval of the root's own
+// document, as it did before the basis (R3).
 func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.GateRegistered) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil {
@@ -84,8 +97,9 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// (record.Store.PutGate). A step whose row holds another document — a carried root's, whose
 	// architect registers this issue's own — is registered afresh.
 	step := fact.Step.OrSpec()
+	held, registered := gates[step]
 	var stored *record.DesignGate
-	if held, found := gates[step]; found && held.ArtifactID == fact.ArtifactID {
+	if registered && held.ArtifactID == fact.ArtifactID {
 		stored = &held
 	}
 	// A step the deployment does not gate asks no person: its registration opens it at once, as
@@ -93,6 +107,12 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	// (artifactIgnored).
 	ungated := !e.gatesStep(step)
 	sameDocument := stored != nil
+	// The view fact is what this registration read of the root's documents (R4), so each
+	// registration of the spec step writes it, whatever the gate does with the registration.
+	if err := e.recordViewOf(ctx, tx, issue, step, fact.ViewOf); err != nil {
+		return intake.Result{}, err
+	}
+	basis := e.registeredBasis(fact, ungated)
 	// The version the gate is registered at is the newest either side knows of: the caller's, or
 	// Dispatch's latest as register_gate's read found it (register_gate refuses a caller's version
 	// above Dispatch's). A same-document registration older than the gate's newest observation (a
@@ -119,8 +139,12 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	gate := record.DesignGate{Issue: fact.Issue, Step: step, ArtifactID: fact.ArtifactID, LatestVersion: version}
 	// An approval of an older version the gate of this document holds is kept, as a version event
 	// keeps it (classify.ApplyDesignGateEvent): a late changes request it answered stays answered.
-	if sameDocument && stored.ApprovedVersion != nil && *stored.ApprovedVersion < version {
-		gate.ApprovedVersion, gate.ApprovedMark = stored.ApprovedVersion, stored.ApprovedMark
+	// It is the person's approval the gate holds (ApprovedByPerson), never the version a basis
+	// opened the step at, which no person approved.
+	if sameDocument {
+		if kept := stored.ApprovedByPerson(); kept != nil && kept.Version < version {
+			gate.ApprovedVersion, gate.ApprovedMark = &kept.Version, kept.Mark
+		}
 	}
 	changesRequested := false
 	// Who reviewed, named on the design-approved notice the registration sends: the person whose
@@ -130,12 +154,21 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	switch {
 	case ungated:
 		gate = classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, version, record.EventMark{})
+	// register_gate recorded a basis only where no person approved the root's own document at
+	// this version and its newest review is no changes request, so what its read shows of that
+	// document opens and closes nothing here: an approval there is no person's.
+	case basis != nil && basis.Pending != nil:
+		gate = record.PendOnBasis(gate, *basis, basis.Pending.Ask)
+	case basis != nil:
+		gate = record.OpenOnBasis(gate, *basis)
 	case fact.ApprovedVersion >= version:
 		// The approval the gate already holds at that version, read again, keeps the fuller mark,
 		// so a read that gave only its time never takes the sequence the live event gave.
 		mark := fact.ApprovedMark
-		if sameDocument && stored.ApprovedVersion != nil && *stored.ApprovedVersion == fact.ApprovedVersion && stored.ApprovedMark.Same(mark) {
-			mark = mark.Merged(stored.ApprovedMark)
+		if sameDocument {
+			if approved := stored.ApprovedByPerson(); approved != nil && approved.Version == fact.ApprovedVersion && approved.Mark.Same(mark) {
+				mark = mark.Merged(approved.Mark)
+			}
 		}
 		gate = classify.ApplyDesignGateEvent(gate, classify.DesignGateApproved, fact.ApprovedVersion, mark)
 		reviewer = fact.ReviewedBy.Name()
@@ -182,6 +215,17 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if err := e.declareRegistration(ctx, tx, *issue, fact, request, gate); err != nil {
 		return intake.Result{}, err
 	}
+	// The step was already open at this version: a registration that read the same again, whose
+	// opening the architect was told of then. One that stood on this same basis also had its
+	// basis recorded on the root's issue then.
+	alreadyOpen := sameDocument && classify.DesignGateOpen(*stored) && stored.LatestVersion == gate.LatestVersion
+	var before *record.DesignGate
+	if registered {
+		before = &held
+	}
+	if err := e.tellRegisteredBasis(ctx, tx, *issue, before, gate, alreadyOpen && sameBasis(stored.Basis, gate.Basis)); err != nil {
+		return intake.Result{}, err
+	}
 	switch {
 	case changesRequested && !tell:
 		e.logOnCommit(ctx, "workflow: the registration read a changes request the architect hears of otherwise", "issue", issue.Key,
@@ -209,8 +253,8 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	switch {
 	case issue.AwaitingPerson():
 		e.logOnCommit(ctx, "workflow: a root waiting on a person is told its open gate by its resume", "issue", issue.Key, "version", gate.LatestVersion)
-	case !sameDocument || !classify.DesignGateOpen(*stored) || stored.LatestVersion != gate.LatestVersion:
-		if err := e.notice(ctx, tx, fact.Issue, record.Notice{Kind: "design-approved", Version: gate.LatestVersion, Actor: reviewer, Ref: stepRef(fact.Issue, step)}); err != nil {
+	case !alreadyOpen:
+		if err := e.notice(ctx, tx, fact.Issue, openedNotice(fact.Issue, gate, reviewer)); err != nil {
 			return intake.Result{}, err
 		}
 	default:
@@ -386,6 +430,12 @@ func (e *Engine) answerAwaitedGate(ctx context.Context, tx pgx.Tx, key string, f
 // recorded it after the wait began. A request Dispatch shows waiting on the agent with no newer
 // version carries no author, and a session's note can put it there, so it answers nothing.
 //
+// A step the registration opens on an ancestor's approval (record.DesignGate.OnBasis) answers a
+// gate wait as an approval of the version registered does; that approval is a place in another
+// issue's event log, so it is never placed against the wait's start, and a question wait is left
+// to admission's pass, which answers it once every gated step is open (answerOpenGates). A step
+// that waits on an ancestor's open request is closed, and keeps the wait.
+//
 // A registration of another document is the architect choosing a new spec for the root: a gate
 // wait on the old document moves to the new one at the version Dispatch shows, and that document's
 // own review answers it, since comparing versions of two documents would wait on a number the new
@@ -414,7 +464,9 @@ func (e *Engine) answerRegisteredGate(ctx context.Context, tx pgx.Tx, fact intak
 	switch {
 	case onGate && fact.DispatchVersion > waited && fact.RequestWaitsOnAgent:
 		by, version = record.AnsweredByVersion, fact.DispatchVersion
-	case classify.DesignGateOpen(gate) && fact.ApprovedVersion >= waited && (onGate || placedAfter(*issue, fact.ApprovedMark)):
+	case gate.OnBasis() && onGate && gate.LatestVersion >= waited:
+		by, version = record.AnsweredByApproval, gate.LatestVersion
+	case !gate.OnBasis() && classify.DesignGateOpen(gate) && fact.ApprovedVersion >= waited && (onGate || placedAfter(*issue, fact.ApprovedMark)):
 		by, version = record.AnsweredByApproval, fact.ApprovedVersion
 	case changesRequested && fact.ChangesRequestedVersion >= waited && !placedAfter(*issue, fact.ChangesRequestedMark):
 		e.logOnCommit(ctx, "workflow: a registration read a changes request given before the wait began, which answers no wait", "issue", issue.Key,
@@ -562,8 +614,17 @@ func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.G
 // on the person's turn as the read left it — no event newer than the read has given it another
 // turn — and the gate is closed on a step the deployment gates, it records the hand-back at the
 // read's sequence (Store.Declare), whatever the root's last handout. A row an event newer than
-// the read already moved is that event's to declare.
+// the read already moved is that event's to declare. A step that waits on an ancestor's open
+// approval request (record.DesignGate.PendingOnBasis) declares nothing: its architect registered
+// on that request rather than handing the root's own document to the person, so the root keeps
+// its slot and its phase, and the wait the request of the root's own document may raise is
+// admission's to read from the record as it stands (R1).
 func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record.Issue, fact intake.GateRegistered, request record.RootAsk, gate record.DesignGate) error {
+	if gate.PendingOnBasis() {
+		e.logOnCommit(ctx, "workflow: a registration pending on an ancestor's request hands nothing to the person", "issue", root.Key,
+			"step", gate.Step, "version", gate.LatestVersion, "basis", gate.Basis.ArtifactID, "ask", gate.Basis.Pending.Ask)
+		return nil
+	}
 	since := fact.Since.Seq
 	if fact.RequestAsk == "" || since <= 0 || !claim.IsTreeRoot(root.Key, root.Tree) || request.WaitingOnSeq > since || request.Seq > since ||
 		!request.WithHuman() || !request.GateRequestOf(gateRequestOf(gate, e.gatesStep(gate.Step))) {
