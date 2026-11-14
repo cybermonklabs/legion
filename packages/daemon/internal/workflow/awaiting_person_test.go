@@ -413,6 +413,11 @@ func TestAnUnsequencedChangesReadThenItsLiveEventTellsTheReviewOnce(t *testing.T
 // The wait is answered through the engine and read back from the record, so the version is the
 // one the answer's own write stored. The control is the same pair of details with no approval
 // after the review, where both name it.
+//
+// The last case needs that stored version: the gate holds an approval of version 1, an older
+// version than the one reviewed, delivered after the wait began. It answers nothing of a review of
+// version 2, which is named; a review asked at no version would be asked at the approved version 1
+// instead, read as superseded by that approval, and dropped.
 func TestARewordedChangesDetailDoesNotChangeWhetherTheResumeNamesTheReview(t *testing.T) {
 	pool, apply := askRig(t)
 	seedIssue(t, pool, awaitingRoot(3))
@@ -430,6 +435,9 @@ func TestARewordedChangesDetailDoesNotChangeWhetherTheResumeNamesTheReview(t *te
 	approved := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &approvedVersion,
 		ApprovedMark: record.EventMark{Seq: 9, At: time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)}}
 	closed := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2}
+	olderVersion := 1
+	olderApproved := record.DesignGate{Issue: "LEGION-208", ArtifactID: "artifact-208", LatestVersion: 2, ApprovedVersion: &olderVersion,
+		ApprovedMark: record.EventMark{Seq: 9, At: time.Date(2026, 11, 13, 9, 5, 0, 0, time.UTC)}}
 	for _, waiting := range []record.Awaiting{*answered, reworded} {
 		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &approved, nil, true); !strings.Contains(task, "asks for no revision now") ||
 			strings.Contains(task, "revise the primary document as they ask") {
@@ -437,6 +445,11 @@ func TestARewordedChangesDetailDoesNotChangeWhetherTheResumeNamesTheReview(t *te
 		}
 		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &closed, nil, true); !strings.Contains(task, "revise the primary document as they ask") {
 			t.Errorf("control: resume task with the detail %q and no approval = %q, want the review named", waiting.AnsweredDetail, task)
+		}
+		if task := resumeTask("LEGION-208", waiting, record.DesignStepSpec, &olderApproved, nil, true); !strings.Contains(task, "revise the primary document as they ask") ||
+			strings.Contains(task, "asks for no revision now") {
+			t.Errorf("resume task with the detail %q and an approval of version 1 after it = %q, want the review of version 2 named: "+
+				"an approval of an older version answers nothing of it", waiting.AnsweredDetail, task)
 		}
 	}
 }
