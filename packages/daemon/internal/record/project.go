@@ -884,7 +884,8 @@ func NeedsSlot(issue, root Issue, live bool) bool {
 // workflow, standing at admitted and not lingering after its close, a worker of it has work
 // there (AtWork), and the daemon has started it, which is what the slot row it holds says
 // (slotted). The row no longer says a worker of the issue has work — an issue keeps it while it
-// waits on a person or on its review (KeepsSlot), and a root like this one, at admitted with a
+// waits on a person, and while it waits on its review unless it also waits on another issue
+// (KeepsSlot, blockers.waitsOf), and a root like this one, at admitted with a
 // design gate that has never opened, keeps it while it waits on another issue too
 // (blockers.waitsOf) — it says this root is one of the issues the daemon has started and not yet
 // finished with. A root with no row was never started and has no work of its own to hand to

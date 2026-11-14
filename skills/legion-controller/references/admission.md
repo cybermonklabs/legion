@@ -24,6 +24,7 @@ event, the daemon's boot read, its tick) takes it out of the workflow and sends 
 wake — an unanswered `awaiting_person` root only when its label or its Dispatch claim makes a
 resume unsafe. Holding no slot is by itself no fault: an issue past its review — in `accepting`,
 `retro` or `merging` — a root waiting in the line, a started issue that waits on another issue
+(but for the roots [the rule](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) names, which keep theirs)
 and a child its architect has not released yet hold none while their tree runs. The wake is live
 only, so a controller that starts later finds such a root by the last row, as its start procedure
 does.

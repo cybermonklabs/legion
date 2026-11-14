@@ -279,7 +279,9 @@ type awaitDecision struct {
 //
 // Rule 0 is the spec's own condition (dispatch://INFRA-980, "Which issue needs a slot"): a root
 // enters awaiting_person only while it holds a slot, which now says the daemon has started it
-// and has not finished with it (record.KeepsSlot), and it is read as the root's own slot row
+// and its work is not yet past its review (record.KeepsSlot); a root at admitted whose gate has
+// never opened keeps that slot through a wait on another issue (blockers.waitsOf). It is read as
+// the root's own slot row
 // (awaitView.Slotted). A root still waiting in line for
 // its first slot holds none, so it starts no wait however its architect's hand-back stands —
 // a re-admitted root the old architect declared on again before the linger's suspend ran is

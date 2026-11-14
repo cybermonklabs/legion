@@ -44,9 +44,10 @@ func carriedRoot(t *testing.T, pool *pgxpool.Pool, key string, carries phase.Pha
 	seedMirror(t, pool, key, "todo")
 }
 
-// A handed-over root that carries a phase short of its review takes a row, because an issue
-// holds its row from the moment the daemon starts it until its work is past that review, and
-// implementing is short of it (record.KeepsSlot). So the cap does hold such a root back: its
+// A handed-over root that carries a phase short of its review takes a row, because a started
+// issue holds one until its work is past that review, and implementing is short of it
+// (record.KeepsSlot), unless it waits on another issue (blockers.waitsOf), which this root does
+// not. So the cap does hold such a root back: its
 // tree is opened on the pass that finds a row free, and not before.
 //
 // The fixture: the cap's one row is held by a tree already at work, a released child of that

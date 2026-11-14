@@ -191,12 +191,13 @@ func assertRowHolders(t *testing.T, pool *pgxpool.Pool, want ...string) {
 
 // A1. One row rule per phase, read by admission passes over trees that run.
 //
-// The daemon creates a slots row for an issue when it starts it, and deletes that row in three
-// cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox, triage or
-// done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or its work
-// stands past its review, which is accepting, retro and merging. No other phase deletes a row,
-// so an issue keeps its place against the cap while it waits — in awaiting_person, in held, and
-// as a root standing at admitted whose design gate has opened. What the phase rule does not
+// The daemon creates a slots row for an issue when it starts it, and the phase rule deletes that
+// row in four cases only: the issue's own phase is done; Dispatch shows it in backlog, icebox,
+// triage or done; it belongs to a tree whose root closed or a tree the daemon no longer runs; or
+// its work stands past its review, which is accepting, retro and merging. No other phase deletes
+// a row, so an issue keeps its place against the cap while it waits — in awaiting_person, in
+// held, and as a root standing at admitted whose design gate has opened, when it waits on no
+// other issue. What the phase rule does not
 // decide is a wait on another issue: an issue the daemon started that waits on one before its
 // review gives its row back (INFRA-3036, releaseSlotsForWaits), which is the root of the first
 // tree here.

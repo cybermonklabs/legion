@@ -56,7 +56,8 @@ func TestARootWhoseGateHasOpenedEntersNoWaitOnAPerson(t *testing.T) {
 // neverStarted is rule 0's answer for a root the daemon has not started, word for word as
 // workflow's decideAwait writes it (awaiting_reconcile.go). The row the rule reads says the
 // daemon started the issue rather than that a worker of it has work, since an issue keeps its
-// row while it waits on a person or on its review as well (record.KeepsSlot).
+// row while it waits on a person as well, and while it waits on its review unless it also waits
+// on another issue (record.KeepsSlot, blockers.waitsOf).
 const neverStarted = "the daemon has not started it, so it holds no admission slot"
 
 // A root re-admitted and still waiting in line for its row holds none, so it enters no wait on

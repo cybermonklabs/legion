@@ -49,14 +49,14 @@ func shutGate(root string) map[record.DesignStep]record.DesignGate {
 
 // C1 of dispatch://INFRA-3107: every issue of the project the daemon's record holds in the
 // workflow stands in admission.active, in admission.waiting or in admission.held, and no issue
-// stands in held and in one of the other two. The fixture carries one issue for each of ten of
-// the eleven words of the ladder — a member of a closed tree, a member of a parked tree, a root
+// stands in held and in one of the other two. The fixture carries one issue for each of the
+// eleven words of the ladder — a member of a closed tree, a member of a parked tree, a root
 // whose label is off, a root whose Dispatch chain reaches another live root, a member of a tree
 // whose root waits on a person, a member under a shut design gate, a child an unfinished Dispatch
 // link holds, a parent whose own children are still open, an issue beneath an accepted ancestor,
-// and an issue none of the ten is true of — and the rows are read from the projected state, which
-// is where a reader meets them. No issue stands for at_work, which an issue past its review reads
-// where it is not held (record.HeldAtWork); this fixture builds none.
+// an issue past its review that nothing holds, which reads at_work (record.HeldAtWork), and an
+// issue none of the ten is true of — and the rows are read from the projected state, which is
+// where a reader meets them.
 //
 // Five controls stand beside them, each an issue that must take no held row. Two are the shapes
 // the requirement names: a slot holder, and a root a person answered, which stands in active and
@@ -105,8 +105,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 	// under it, so the admission pass has taken its slot back for that wait and marked it
 	// (admit.releaseSlotsForWaits, record.Issue.ReleasedForWaitAt), and its members carry three of
 	// the words. The issue in merging is
-	// an ancestor the daemon has accepted (record.Accepted) and holds its slot, nothing of the
-	// issue under it starts before that close, the issue at work that holds no row is the one the pass names nowhere,
+	// an ancestor the daemon has accepted (record.Accepted), and holds no slot, since its work is
+	// past its review (record.KeepsSlot); nothing of the issue under it starts before that close, the issue at work that holds no row is the one the pass names nowhere,
 	// and the issue at work that holds one is the plain slot holder.
 	openRoot := treeRoot("LEGION-170", "todo", phase.Admitted)
 	openRoot.ReleasedForWaitAt = &releasedAt
@@ -134,7 +134,6 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 			{Issue: "LEGION-160", Index: 1, AdmittedAt: projectedAt},
 			{Issue: "LEGION-175", Index: 3, AdmittedAt: projectedAt},
 			{Issue: "LEGION-190", Index: 5, AdmittedAt: projectedAt},
-			{Issue: "LEGION-172", Index: 6, AdmittedAt: projectedAt},
 		},
 		lifecycles: []string{"LEGION-150", "LEGION-160", "LEGION-170", "LEGION-180", "LEGION-190"},
 		gates: map[string]map[record.DesignStep]record.DesignGate{
@@ -171,6 +170,7 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		{Issue: "LEGION-151", Reason: record.HeldRootAwaitingPerson, HeldBy: []string{"LEGION-150"}},
 		{Issue: "LEGION-161", Reason: record.HeldDesignGate, HeldBy: []string{"LEGION-160"}},
 		{Issue: "LEGION-171", Reason: record.HeldDispatchBlocker, HeldBy: []string{"LEGION-900"}},
+		{Issue: "LEGION-172", Reason: record.HeldAtWork},
 		{Issue: "LEGION-173", Reason: record.HeldAcceptedAncestor, HeldBy: []string{"LEGION-172"}},
 		{Issue: "LEGION-174", Reason: record.HeldUnclassified},
 		{Issue: "LEGION-181", Reason: record.HeldChildrenFirst, HeldBy: []string{"LEGION-182"}},
@@ -179,8 +179,9 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 		t.Fatalf("admission.held = %#v, want %#v", got.Admission.Held, wantHeld)
 	}
 
-	// LEGION-172, the accepted ancestor in merging, holds the last slot row.
-	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-175", "LEGION-190", "LEGION-172"}
+	// LEGION-172, the accepted ancestor in merging, holds no slot row: its work is past its review
+	// (record.KeepsSlot), so it stands in held as at_work rather than in active.
+	wantActive := []string{"LEGION-150", "LEGION-160", "LEGION-175", "LEGION-190"}
 	if !reflect.DeepEqual(got.Admission.Active, wantActive) {
 		t.Fatalf("admission.active = %#v, want %#v: every issue holding a slot row, the roots a hold keeps out of the line among them, and neither root that gave its slot back for a wait",
 			got.Admission.Active, wantActive)
@@ -223,8 +224,8 @@ func TestEveryIssueInTheWorkflowHasAPlace(t *testing.T) {
 
 	// heldBy is absent where no issue holds the one that waits — a root whose label is off, an
 	// issue the pass names nowhere — which is a nil slice the wire form then omits, and not an
-	// empty array. The check names at_work beside them, though no issue of this fixture reads it
-	// (record.HeldAtWork says which issues do).
+	// empty array. at_work is beside them: the accepted ancestor in merging reads it, and nothing
+	// holds it (record.HeldAtWork).
 	for _, row := range got.Admission.Held {
 		wire, err := json.Marshal(row)
 		if err != nil {

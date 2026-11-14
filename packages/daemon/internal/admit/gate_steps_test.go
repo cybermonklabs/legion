@@ -32,10 +32,11 @@ const (
 // the root keeps its slot, no awaiting-person notice reaches the controller, and no phase starts,
 // because the record knows no document of that step to hand to a person. The same root with that
 // step registered and still closed enters awaiting_person and its notice does reach the
-// controller, which is what tells the two apart; it keeps its row through either, since an issue
-// holds one of the cap's slots from the moment the daemon starts it until its work is past its
-// review (record.KeepsSlot), and the root stands in admitted or awaiting_person throughout, where
-// it keeps that row even while it waits on another issue (blockers.waitsOf). It starts once the
+// controller, which is what tells the two apart; it keeps its row through either, since a started
+// issue holds one of the cap's slots until its work is past its review (record.KeepsSlot), and
+// this root stands in admitted with a gate that has never opened, or in awaiting_person,
+// throughout: the two places where a root keeps its row even while it waits on another issue
+// (blockers.waitsOf). It starts once the
 // step is registered and approved.
 func TestUnregisteredStepHoldsTheWorkAndRaisesNoWait(t *testing.T) {
 	steps := []record.DesignStep{record.DesignStepDecisions, record.DesignStepSpec}
