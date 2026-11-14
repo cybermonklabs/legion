@@ -7,8 +7,9 @@
 //     JSON refusal body, as answer_id, so a refused caller has a thing to quote;
 //   - counts the answer in broker_answers_total by outcome, code and caller class (NewAnswers);
 //   - and, for a refusal, writes one line at WARN under RefusalMessage naming the answer id, the
-//     status, the code, the method, the route, the caller's class and identity, every secret
-//     name the request named, and the caller's X-Correlation-Id when it sent one.
+//     status, the code, the method, the route, the caller's class and identity, the secret names
+//     the request named (SecretNames: the first of them, up to 32 KiB of names, and how many it
+//     named), and the caller's X-Correlation-Id when it sent one.
 //
 // A refusal is an answer with a status from 400 to 499. Three of them are counted and write no
 // line, because a caller is told each again and again while nothing changes: a 429, and the OAuth
@@ -63,6 +64,12 @@ const correlationHeader = "X-Correlation-Id"
 // fieldBytes bounds each piece of caller-written text a refusal's line keeps (Clip): the
 // correlation id, the method, each secret name, and on the airlock's proxy port the host and path.
 const fieldBytes = 256
+
+// secretNamesBytes bounds the secret names a refusal's line lists (SecretNames), counted as the
+// bytes of the names it lists, each already cut to fieldBytes. Cloud Logging refuses an entry over
+// 256 KiB, and a request may name thousands of names; 32 KiB of them leaves the rest of the line
+// far below that.
+const secretNamesBytes = 32 << 10
 
 // The caller classes a line and the counter name: how the broker established who sent the
 // request, which a handler notes once it knows (NoteCaller).
@@ -142,7 +149,7 @@ type Recorder struct {
 	request *http.Request
 	class   string
 	caller  string
-	secrets []string
+	secrets SecretNames
 	code    string
 
 	// status is the answer's status, 0 until the handler has set one.
@@ -235,16 +242,59 @@ func (rec *Recorder) NoteCaller(class, id string) {
 	rec.mu.Unlock()
 }
 
-// NoteSecrets adds names to the secret names the request named, which a refusal's line lists.
+// NoteSecrets adds names to the secret names the request named, which a refusal's line lists
+// (SecretNames).
 func (rec *Recorder) NoteSecrets(names ...string) {
 	if rec == nil {
 		return
 	}
 	rec.mu.Lock()
-	for _, name := range names {
-		rec.secrets = append(rec.secrets, Clip(name))
-	}
+	rec.secrets.Note(names...)
 	rec.mu.Unlock()
+}
+
+// SecretNames is the secret names a request named as a refusal's line lists them: the first of
+// them, in the request's order and each cut by Clip, up to secretNamesBytes of names, and a count
+// of the names after them. The first name that would pass the bound ends the list, so the list is
+// always a prefix of what the request named, and the names it leaves out are counted, never kept.
+// Middleware's Recorder notes the API port's names on one, and the airlock's proxy port the name
+// its call was handled for, so both ports' lines list names by this one rule. The zero value has
+// noted none.
+type SecretNames struct {
+	// listed is the names the line lists, and bytes their length together.
+	listed []string
+	bytes  int
+	// omitted counts the names noted once the list had ended.
+	omitted int
+}
+
+// Note adds names to those the request named, in its order.
+func (n *SecretNames) Note(names ...string) {
+	for _, name := range names {
+		if n.omitted == 0 {
+			if name = Clip(name); n.bytes+len(name) <= secretNamesBytes {
+				n.listed = append(n.listed, name)
+				n.bytes += len(name)
+				continue
+			}
+		}
+		n.omitted++
+	}
+}
+
+// AppendFields appends to fields, a line's attributes as slog takes them, the attributes that
+// name the noted names: secrets, the names listed (an empty list for none); secrets_count, how many
+// were noted; and secrets_omitted, how many the list left out, only when it left any out.
+func (n *SecretNames) AppendFields(fields []any) []any {
+	listed := n.listed
+	if listed == nil {
+		listed = []string{}
+	}
+	fields = append(fields, "secrets", listed, "secrets_count", len(n.listed)+n.omitted)
+	if n.omitted > 0 {
+		fields = append(fields, "secrets_omitted", n.omitted)
+	}
+	return fields
 }
 
 // NoteCode names the code of the refusal about to be written, for a writer whose body names none
@@ -377,10 +427,7 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 		answerCode = refusalCode(rec.status, fields, noted)
 	}
 	if Refused(rec.status, answerCode) {
-		if secrets == nil {
-			secrets = []string{}
-		}
-		attrs := []any{
+		attrs := secrets.AppendFields([]any{
 			"answer_id", rec.id,
 			"status", rec.status,
 			"code", answerCode,
@@ -388,8 +435,7 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 			"route", request.Pattern,
 			"caller_class", class,
 			"caller", caller,
-			"secrets", secrets,
-		}
+		})
 		if rec.correlation != "" {
 			attrs = append(attrs, "correlation_id", rec.correlation)
 		}
@@ -512,13 +558,15 @@ func stringMember(fields map[string]json.RawMessage, name string) string {
 // space may follow an object.
 func withAnswerID(body []byte, id string) []byte {
 	end := bytes.LastIndexByte(body, '}')
-	member := `"answer_id":"` + id + `"`
-	if !bytes.HasSuffix(bytes.TrimRight(body[:end], " \t\r\n"), []byte("{")) {
-		member = "," + member
-	}
-	out := make([]byte, 0, len(body)+len(member))
+	// A string always marshals.
+	quoted, _ := json.Marshal(id)
+	var out []byte
 	out = append(out, body[:end]...)
-	out = append(out, member...)
+	if !bytes.HasSuffix(bytes.TrimRight(body[:end], " \t\r\n"), []byte("{")) {
+		out = append(out, ',')
+	}
+	out = append(out, `"answer_id":`...)
+	out = append(out, quoted...)
 	return append(out, body[end:]...)
 }
 

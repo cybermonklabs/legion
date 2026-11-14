@@ -7,6 +7,9 @@ body: |-
   `agent-secrets` ends a refusal with `(answer <id>)`, so a refused caller has something to quote.
   A 429 and the device grant's `slow_down` and `authorization_pending` are counted and write no
   line.
+  A refusal's line lists the first secret names up to 32 KiB of them, counts every name in
+  `secrets_count`, and says how many it left out in `secrets_omitted`, since Cloud Logging
+  refuses an entry over 256 KiB.
   The broker serves Prometheus metrics on a port of its own, `BROKER_METRICS_LISTEN_ADDR`
   (`127.0.0.1:13382` by default), and on no other port: `broker_answers_total`,
   `broker_mint_attempts_total`, `broker_unservable_secrets` and `broker_policy_store_reads_total`.

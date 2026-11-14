@@ -404,7 +404,7 @@ Content-Length: 187
 
 {"code":"SECRET_NAME_INVALID","error":"not an agent secret name: uppercase letters, digits and single underscores, starting with a letter","answer_id":"852d8e549ba00de0a3e50f4e60644aa4"}
 $ jq -c 'select(.answer_id == "852d8e549ba00de0a3e50f4e60644aa4")' "$DEV_BROKER_DIR/broker.log"
-{"time":"2026-11-14T02:26:38.530366315Z","severity":"WARNING","message":"broker: answer refused","answer_id":"852d8e549ba00de0a3e50f4e60644aa4","status":400,"code":"SECRET_NAME_INVALID","method":"POST","route":"POST /v1/secrets/{name}/reread","caller_class":"public","caller":"","secrets":["bad name"]}
+{"time":"2026-11-14T02:26:38.530366315Z","severity":"WARNING","message":"broker: answer refused","answer_id":"852d8e549ba00de0a3e50f4e60644aa4","status":400,"code":"SECRET_NAME_INVALID","method":"POST","route":"POST /v1/secrets/{name}/reread","caller_class":"public","caller":"","secrets":["bad name"],"secrets_count":1}
 ```
 
 `agent-secrets` ends the broker's refusal with the same id, as `(answer <id>)`, for whoever was
@@ -555,7 +555,7 @@ lines:
 
 ```json
 {"time":"2026-11-14T02:30:23.932111149Z","severity":"INFO","message":"airlock proxy: a call to a bound host","answer_id":"d7550e31e79f8c6ab5d43d414cec83d1","enrollment":"cd6d7cba-56a7-41e9-b251-de51d4593c3c","grant":"11db25ae-3e7e-40fa-8fbb-aabff18d1d75","secret":"AIRLOCK_DEMO_TOKEN","issue":"","host":"s.airlock.test","method":"GET","path":"/read","status":200,"allowed":true}
-{"time":"2026-11-14T02:30:24.097750394Z","severity":"WARNING","message":"broker: answer refused","answer_id":"920e65ea84ffcaae7eb60c224f5d340b","status":403,"code":"REQUEST_NOT_ALLOWED","method":"POST","route":"","caller_class":"airlock","caller":"8c6d834c-9f0d-423a-97c8-319585e6e022@cd6d7cba-56a7-41e9-b251-de51d4593c3c","secrets":["AIRLOCK_SCOPED_TOKEN"],"host":"s.airlock.test","reason":"not allowed by rule","path":"/write","issue":""}
+{"time":"2026-11-14T02:30:24.097750394Z","severity":"WARNING","message":"broker: answer refused","answer_id":"920e65ea84ffcaae7eb60c224f5d340b","status":403,"code":"REQUEST_NOT_ALLOWED","method":"POST","route":"","caller_class":"airlock","caller":"8c6d834c-9f0d-423a-97c8-319585e6e022@cd6d7cba-56a7-41e9-b251-de51d4593c3c","secrets":["AIRLOCK_SCOPED_TOKEN"],"secrets_count":1,"host":"s.airlock.test","reason":"not allowed by rule","path":"/write","issue":""}
 ```
 
 No line of either holds a value or a placeholder. Ctrl-C in the first shell stops every process

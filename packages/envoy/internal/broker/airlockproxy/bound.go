@@ -590,16 +590,17 @@ func (s *Server) refuse(w http.ResponseWriter, r *http.Request, c call, status i
 // refusalFields is what one refusal of this port logs: the fields of the API port's refusal line,
 // read for this port - no route, since it has no mux; caller class airlock, and the grant and
 // its enrollment as the caller once the proxy password has proved them; the name the call was
-// handled for as its secrets, once one was chosen - and beside them the host, the reason, the
-// path, and the issue the grant was given for. Never the placeholder and never the value, as
-// callFields: the reason is the broker's own words, which name neither. The method, the host and
-// the path are the caller's, each cut as the API port's line cuts its method (answer.Clip).
+// handled for as its secrets, once one was chosen, listed and counted by the API port's rule
+// (answer.SecretNames) - and beside them the host, the reason, the path, and the issue the grant
+// was given for. Never the placeholder and never the value, as callFields: the reason is the
+// broker's own words, which name neither. The method, the host and the path are the caller's,
+// each cut as the API port's line cuts its method (answer.Clip).
 func (s *Server) refusalFields(id string, c call, r *http.Request, status int, code, reason string) []any {
-	secrets := []string{}
+	var secrets answer.SecretNames
 	if c.chosen.name != "" {
-		secrets = append(secrets, c.chosen.name)
+		secrets.Note(c.chosen.name)
 	}
-	fields := []any{
+	fields := secrets.AppendFields([]any{
 		"answer_id", id,
 		"status", status,
 		"code", code,
@@ -607,12 +608,13 @@ func (s *Server) refusalFields(id string, c call, r *http.Request, status int, c
 		"route", "",
 		"caller_class", answer.CallerAirlock,
 		"caller", callerOf(c.grant),
-		"secrets", secrets,
+	})
+	fields = append(fields,
 		"host", answer.Clip(c.host),
 		"reason", reason,
 		// The path alone, as callFields: a query can carry anything a command put in it.
 		"path", answer.Clip(r.URL.Path),
-	}
+	)
 	if correlation := answer.CorrelationID(r); correlation != "" {
 		fields = append(fields, "correlation_id", correlation)
 	}

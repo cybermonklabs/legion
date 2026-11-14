@@ -190,6 +190,7 @@ func TestARefusalWritesOneLineNamingItsCode(t *testing.T) {
 			want := map[string]any{
 				"answer_id": id, "status": int64(row.status), "code": row.wantCode, "method": http.MethodPost, "route": "",
 				"caller_class": answer.CallerSession, "caller": "enrollment-1", "secrets": []string{"FIRST_SECRET", "SECOND_SECRET"},
+				"secrets_count": int64(2),
 			}
 			for key, value := range want {
 				if got, err := json.Marshal(line[key]); err != nil || string(got) != mustJSON(t, value) {
@@ -416,6 +417,62 @@ func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
 	}
 	if driven != 2 {
 		t.Fatalf("the table drove %d rows, want 2", driven)
+	}
+}
+
+// The bound on a refusal line's names takes 32 KiB of names and not a byte more: a request naming
+// 128 names of 256 bytes lists all 128, with secrets_count 128 and no secrets_omitted, and one
+// naming 129 lists the first 128 and says it left one out. The first name past the bound ends the
+// list, so a short name after it that would still fit is left out too and the list stays a prefix
+// of what the request named. Each row notes its names in two notes, which the line reads as one.
+func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
+	named := make([]string, 129)
+	for i := range named {
+		prefix := fmt.Sprintf("NAME_%03d_", i)
+		named[i] = prefix + strings.Repeat("X", 256-len(prefix))
+	}
+	// 127 names of 256 bytes and one of 200 leave 56 bytes of the bound, which the next name of
+	// 256 passes and "SHORT" would not.
+	shortAfter := slices.Concat(named[:127], []string{strings.Repeat("Y", 200), named[127], "SHORT"})
+	driven := 0
+	for _, row := range []struct {
+		name   string
+		noted  []string
+		listed int
+		// omitted is the line's secrets_omitted, nil for a line that carries none.
+		omitted any
+	}{
+		{"128 names of 256 bytes", named[:128], 128, nil},
+		{"129 names of 256 bytes", named, 128, int64(1)},
+		{"a short name after the first name past the bound", shortAfter, 128, int64(2)},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			driven++
+			r := newRig(t, http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				rec := answer.FromContext(req.Context())
+				rec.NoteSecrets(row.noted[:len(row.noted)/2]...)
+				rec.NoteSecrets(row.noted[len(row.noted)/2:]...)
+				writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
+			}))
+			r.serve(httptest.NewRequest(http.MethodPost, "/", nil))
+			lines := r.lines(t)
+			if len(lines) != 1 {
+				t.Fatalf("one refusal wrote %d lines, want 1: %v", len(lines), lines)
+			}
+			line := lines[0]
+			if got, _ := line["secrets"].([]string); !slices.Equal(got, row.noted[:row.listed]) {
+				t.Errorf("the line lists %d names, want the first %d the request named", len(got), row.listed)
+			}
+			if got := line["secrets_count"]; got != int64(len(row.noted)) {
+				t.Errorf("secrets_count = %v, want %d, every name the request named", got, len(row.noted))
+			}
+			if got := line["secrets_omitted"]; got != row.omitted {
+				t.Errorf("secrets_omitted = %v, want %v", got, row.omitted)
+			}
+		})
+	}
+	if driven != 3 {
+		t.Fatalf("the table drove %d rows, want 3", driven)
 	}
 }
 

@@ -131,9 +131,9 @@ const boundCaller = testGrantID + "@" + testEnrollID
 // refuses a call, the 407 among them, and reads what each leaves: exactly one record under
 // answer.RefusalMessage at WARN, naming the code, the reason, the caller (class airlock, and the
 // grant once the proxy password proved one), the secret the call was handled for once one was
-// chosen, the host, and the answer id, which the answer carries in its X-Broker-Answer-Id header
-// and at the end of its text body; no call line beside it; and the refusal counted. No record
-// holds a value or a placeholder.
+// chosen and how many that is (secrets_count, and never secrets_omitted), the host, and the
+// answer id, which the answer carries in its X-Broker-Answer-Id header and at the end of its text
+// body; no call line beside it; and the refusal counted. No record holds a value or a placeholder.
 func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 	registry := metrics.New()
 	answers := answer.NewAnswers(registry)
@@ -329,11 +329,14 @@ func TestEveryRefusalOfTheAirlockWritesOneRecord(t *testing.T) {
 			}
 			for field, want := range map[string]any{
 				"status": int64(row.status), "code": row.code, "reason": row.reason, "caller_class": answer.CallerAirlock,
-				"caller": row.caller, "secrets": secrets, "host": row.host, "path": row.path, "route": "",
+				"caller": row.caller, "secrets": secrets, "secrets_count": len(secrets), "host": row.host, "path": row.path, "route": "",
 			} {
 				if fmt.Sprint(record.fields[field]) != fmt.Sprint(want) {
 					t.Errorf("%s: the record's %s is %v, want %v: %v", row.site, field, record.fields[field], want, record.fields)
 				}
+			}
+			if omitted, carried := record.fields["secrets_omitted"]; carried {
+				t.Errorf("%s: the record carries secrets_omitted %v for a call that named one secret at most: %v", row.site, omitted, record.fields)
 			}
 			for _, never := range []string{workerValue, workerPlaceholder, azureRealFederated, azureFederatedPlaceholder, awsRealSecret, awsKeyPlaceholder} {
 				if strings.Contains(fmt.Sprint(record.fields), never) {
