@@ -258,8 +258,8 @@ func TestCatchUpReadsAnAdmittedRootsAsksFromItsLastHandout(t *testing.T) {
 }
 
 // seedCaptureArchitect records CAPTURE-100's architect claim, running a turn, in session
-// session-architect, its task taken when confirmed: a root whose architect owes nothing may give
-// its slot back.
+// session-architect, its task taken when confirmed: a root whose architect owes nothing may start
+// its wait on a person.
 func seedCaptureArchitect(ctx context.Context, tx pgx.Tx, confirmed bool) error {
 	if _, err := tx.Exec(ctx, `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -785,7 +785,7 @@ func assertCaptureKeptItsSlot(t *testing.T, pool *store.Pool) *record.Issue {
 // The first boot after the upgrade replays nothing of a root recorded before the cursor existed:
 // a daemon of the earlier release applied that history live, and replayed through this release's
 // handlers it would read a question answered long ago as a fresh hand-back, suspend the running
-// architect, give its slot away, resume it with a stale task and tell a changes request again. The
+// architect, put the root in awaiting_person, resume it with a stale task and tell a changes request again. The
 // boot only sets the cursor to the issue's latest sequence; the next boot reads from there.
 func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 	gate := &record.DesignGate{Issue: "CAPTURE-100", ArtifactID: "artifact-root", LatestVersion: 3}
@@ -825,7 +825,9 @@ func TestTheFirstBootAfterTheUpgradeReplaysNothing(t *testing.T) {
 // again, so under the children-first rule the root is waiting for its children rather than
 // working, ReconcileAwaiting can start no wait on a person for it (workflow's decideAwait, rule
 // 0), and no pass can start it while a step of its design is unapproved; it keeps the row it
-// took at its admission throughout (record.KeepsSlot). CAPTURE-200 waits in line for its first row, so its
+// took at its admission throughout (record.KeepsSlot), since it waits on no other issue: no
+// blocked_by link holds it, and its children are no children-first wait while its gate is closed
+// (blockers.waitsOf). CAPTURE-200 waits in line for its first row, so its
 // architect has never run and has handed nothing back. Reading either one's event log would hold
 // it out of admission for a window that can decide nothing, and replay, for the root that never
 // ran, history older than the handout its own admission will be.

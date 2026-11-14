@@ -6,8 +6,8 @@ import (
 	"testing"
 )
 
-// The state's `blocked` is every issue Legion is waiting to start behind a Dispatch issue nobody
-// has finished — a waiting root and a child held at `admitted` alike — in one array in issue-key
+// The state's `blocked` is every issue Legion waits on a Dispatch issue nobody has finished for
+// — here a waiting root and a child held at `admitted` — in one array in issue-key
 // order, each with the keys it waits on. The root is in `waiting` as well, the admission line,
 // which since dispatch://INFRA-980 carries children as well as roots; `trees` stands between the
 // two, so the three are checked together as the wire orders them.

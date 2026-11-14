@@ -77,15 +77,16 @@ EOF
 - In a root session `$LEGION_ISSUE` is the root (it equals `$LEGION_TREE`): pass it as `--parent`.
   The daemon makes the sub-issue link from `--parent`.
 - File every child before you request the root spec's approval, and before `register_gate` under
-  `gates.design: off`: the gate's opening starts the root's own first phase unless Dispatch shows
-  an open child under it, so a child filed after that leaves the root working beside its children.
+  `gates.design: off`: the gate's opening starts the root's own first phase unless the root waits
+  on another issue, an open child under it or a `blocked_by` link to an issue that is not `done`,
+  so a child filed after that leaves the root working beside its children.
 - Give a child `--blocked-by` only for an issue outside this tree's own repositories, or one whose
   deploy another child builds on, then release every child at once with `release_children`:
   Legion holds a released child until its last blocker closes, and a child is inert only until it
   is released. No child waits on a sibling's merge in a repository this tree already has a pull
   request in; that work is written into the spec of the issue whose pull request carries it.
-  Each issue of the tree whose worker has work holds an admission slot of its own, so four
-  working children take four of the deployment's cap.
+  Each child the daemon starts takes an admission slot of its own, so four started children can
+  take four of the deployment's cap; when a child holds none, [Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label) says.
 - Never release a child `--blocked-by` its own parent: the parent now merges last, so that child
   would wait forever.
 - Do not pass `--assignee`, because the default keeps the tree's questions in one Inbox: under the
@@ -114,6 +115,34 @@ other one by commit (a lock file or dependency pin), the pin is that commit. Do 
 child with `--blocked-by` instead, because Legion would start it at the blocker's close, before you
 name the merged commit. Read the other repositories with your gh's read-only access
 (`-R owner/repo`).
+
+## Recording a wait on other work
+
+Set an issue's `blocked_by` list when its work must wait on an issue outside this tree
+(`dispatch issue-update --issue <key> --blocked-by <a> --blocked-by <b>`, which replaces the whole
+list, so read the issue's existing links first).
+That list is how Legion learns of the wait.
+An issue the daemon has already started returns its admission slot while a blocker of it is not
+`done`, so the deployment's cap goes to work that can move,
+except for three roots that keep it: one in `awaiting_person`, one at `admitted` whose design gate has never opened,
+and one that arrived from another tree carrying the row it held there
+([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label));
+nothing of the waiting issue stops — its workers stay live, its phase does not move, and its
+Dispatch status is not written — and it takes one again by itself;
+you do nothing for it.
+
+A blocker's close is the blocker's own Dispatch issue reaching `done`, and nothing more.
+It is not a merge of that work, and it is not a deployment of it.
+So pick a blocker whose close is the fact the waiting issue needs, and where the fact arrives
+later than the close, set the list again at that point rather than letting the issue start early.
+
+This does not change the rule above:
+a child that waits on another repository's merged change is released after that merge, not held by
+a link, because a link starts the child no earlier than its blocker's close, which is before you
+can name the merged commit.
+Releasing a child too early starts work that cannot build;
+a `blocked_by` link on a started issue takes a slot from work already under way, which stops
+nothing.
 
 ## A root with no code of its own
 

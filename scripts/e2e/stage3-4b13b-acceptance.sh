@@ -250,10 +250,7 @@ start_dispatch() {
 }
 
 # The one difference from Stage 3's configuration: admission_cap 5, for the five issues this lane
-# runs at once. Five is this lane's peak under
-# the slot rule of dispatch://INFRA-2560, where an issue holds one of the cap's slots from the
-# moment the daemon starts it until its work is past its review — accepting, retro and merging
-# hold none — or until it is done or Dispatch takes it out of the workflow. Its
+# runs at once. Five is this lane's peak under the slot rule (root AGENTS.md, "Admission"). Its
 # three roots hold a row each from their admission on, through the wait on the person at their
 # gates and on to their reviews, and the two children of root 1
 # run beside them at rerun-a-closed-child, where all three roots are still short of their

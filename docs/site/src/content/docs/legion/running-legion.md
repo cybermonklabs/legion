@@ -268,7 +268,9 @@ Dispatch read them, delete the files, then install every App from
   under `controller: daemon`, the controller's pod are counted; `admission_cap` counts the issues
   the daemon has started rather than the pods, since an issue keeps its pod past the slot — through
   its acceptance, its retro and its merge, on to its own close — and an issue waiting up to its
-  review keeps both, and an issue pod the pool cannot place stays `Pending` until
+  review keeps both, unless it waits on another issue, when it keeps only its pod
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
+  and an issue pod the pool cannot place stays `Pending` until
   the daemon reads it dead and, once its launch failures run out, fails the claim.
 - **A namespace and a storage class.** Each issue pod's disk (`issue_volume`, 50Gi by default,
   raised from 20Gi with the shared scratch) comes from `storage_class`, which is required. That
@@ -588,9 +590,18 @@ What each part is for:
   absent key is no limit at all, `stalled_tree_notice_hours` (6: how long a tree the daemon runs
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
-  told, nor is one every quiet issue of which waits by design while the project's line can still
-  move — some issue of the project holds a slot and waits by no such rule, or some claim of it is
-  at work — and no value turns the notice off,
+  told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
+  link, on its open children, or for a slot it needs and does not hold — while the project's line
+  can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
+  at work, or an issue of the line that waits on no other issue can start — nor, whether or not
+  the line can move, one whose only quiet issues gave their slot back to wait on work outside
+  their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
+  daemon has released. A wait on a child its architect has not released is no such wait. Where
+  the issue waited on is in this project and its own tree has stopped, that tree is told; a
+  wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
+  and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
+  under `admission.blocked` and in the tick notice's `blocked` list.
+  No value turns the notice off,
   so a deployment that wants fewer notices raises the number, to 596 at most),
   `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`
@@ -1080,11 +1091,10 @@ Closing the terminal leaves the project without one, and the daemon logs
   ```
 
   The `admission` line counts the issues that hold a slot, a root or a child, against the cap: an
-  issue holds one of the cap's slots from the moment the daemon starts it until its work is past
-  its review — `accepting`, `retro` and `merging` hold none — or until it is
-  done or Dispatch shows it in `triage`, `icebox` or `backlog`, so a tree of four issues at work
-  holds four of them, and the `live trees` count is the trees that run whether or not any issue
-  of theirs holds one.
+  issue takes a slot when the daemon starts it and gives it back as the admission rule says
+  ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)),
+  so a tree of four issues holding a slot holds four of them, and the `live trees` count is the
+  trees that run whether or not any issue of theirs holds one.
 
   The `waiting line` block under it names the issues of `admission.waiting`, in the order the
   daemon promotes them: the issues whose work came back first, oldest first by the moment it
@@ -1192,7 +1202,9 @@ Closing the terminal leaves the project without one, and the daemon logs
   read; a daemon below contract 58 serves none), beside which the line's own members say where
   that place came from and what it means for the slot the issue waits for:
   `part`, `returned` for an issue whose work came back or `starting` for one that has not
-  started; `kind`, `returning`, `answered`, `queued_root` or `first_phase`; `partPlace` and
+  started; `kind`, `returning`, `answered`, `queued_root`, `first_phase` or `waiting_on_issue` (a started
+  issue that gave its slot back to wait on another issue,
+  [Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)); `partPlace` and
   `partLength`, its place among the issues of its own part and how many they are; `holdsSlot`,
   true for an issue that already holds its admission slot and so takes no free one; `since`,
   the moment a `returned` issue's work came back; `rootRank`, `ownRank` and `rootKey`, the two
@@ -1202,8 +1214,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   line; `blocked`, a Dispatch link or an open child below it; `unlisted`, an issue the record
   holds in the workflow that stands in none of the three lists — and a `reason` sentence; an
   issue holding an admission slot carries no `why` unless it also stands in `admission.waiting`
-  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, a root
-  whose open children hold its own first phase reads `blocked`, and an issue at work whose
+  or `admission.blocked`, or a stranded claim names it: an answered root reads `waiting`, and an issue at work whose
   worker runs, one `held` and a root whose ask a person has not answered yet, which `waitingOn`
   answers for, read nothing. Neither does an issue the record does not hold in the workflow. A caller from a pod whose claims record a contract below 85 is
   served every issue without `why`, and the `waitingLine` of each member of the line with its

@@ -43,9 +43,9 @@ spec before every approval request: `plan-gap-analyst` for its gaps, and `plan-r
 that the document is a spec, for each factual claim. Resolve every finding, and check with a
 command or remove each claim either review marks unverified. File every child issue of your
 decomposition before you request approval, and, where your `Design gate steps` line gates no
-step, before `register_gate`: the gate's opening starts the root's own first phase unless
-Dispatch shows an open child under it, so a child filed later leaves the root working beside its
-children. Then
+step, before `register_gate`: the gate's opening starts the root's own first phase unless the root
+waits on another issue, an open child under it or a `blocked_by` link to an issue that is not
+`done`, so a child filed later leaves the root working beside its children. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
 a `--summary` whose last sentence states both reviews' results.
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
@@ -63,10 +63,8 @@ still with them; so does a question or the request you wait on being retracted b
 settlement, closed by anyone who is not a person, or handed back to your turn, once nothing else is
 with the person. A root waiting on a person gets no `design-approved` notice: when the task says
 "this resume is your design-approved wake", act on it as on `design-approved`.
-Your root holds its admission slot throughout, as every issue holds one of the cap's slots from
-the moment the daemon starts it until its work is past its review — `accepting`, `retro` and
-`merging` hold none — or until it is done or Dispatch takes it out of the
-workflow, so that resume takes no slot
+Your root holds its admission slot throughout, since a root in `awaiting_person` keeps the one the
+daemon gave it ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)), so that resume takes no slot
 and comes however full the cap is. An answered root stands in the admission line until the pass
 that resumes it, and nothing is sent to you about that wait: your
 record's `waitingLine` gives the live place in the line and the line's length, and the daemon

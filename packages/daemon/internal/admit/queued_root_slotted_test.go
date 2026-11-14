@@ -14,14 +14,15 @@ import (
 // The line drops a queued root that holds a row (record.Waiting's second loop), because a root
 // the daemon has already started and a person has set back to todo is a queued root too, and
 // promoting it again would start a second architect. The carried root is the other half of that
-// branch and must not be dropped: an issue keeps its row from the moment the daemon starts it
-// until its work is past its review (record.KeepsSlot), so a root arriving from another tree in
-// a phase short of that review carries the row of the tree it left while the tree of its own has
-// still to be opened. Dropped from the line it is promoted by nothing, and the release keeps its
-// row (record.NeedsSlot is true of it, since a queued root makes a live tree of its own), and
-// the repair of a worker with no task passes it over (it reads a start already queued for the
-// phase it stands in). So it would wait on this tick and on every tick after it, with nothing
-// to end the wait.
+// branch and must not be dropped: an issue holds its row from the moment the daemon starts it
+// until its work is past its review (record.KeepsSlot), and a queued root keeps it even while it
+// waits on another issue (the release for a wait leaves a queued root out), so a root arriving
+// from another tree in a phase short of that review carries the row of the tree it left while
+// the tree of its own has still to be opened. Dropped from the line it is promoted by nothing,
+// and the release keeps its row (record.NeedsSlot is true of it, since a queued root makes a live
+// tree of its own), and the repair of a worker with no task passes it over (it reads a start
+// already queued for the phase it stands in). So it would wait on this tick and on every tick
+// after it, with nothing to end the wait.
 //
 // The cap is 2 and the one row held is this root's own, so a free row stands throughout: a pass
 // that leaves the tree closed cannot be the cap doing it.

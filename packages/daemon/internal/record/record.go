@@ -188,6 +188,16 @@ type Issue struct {
 	MemoryGroup    string
 	MemoryDrawMode string
 	MemoryDrawnAt  *time.Time
+	// ReleasedForWaitAt is when the daemon took the issue's admission slot away because the issue
+	// waits on another issue — a Dispatch blocker of it that is not done, or an open child its own
+	// first phase waits for — and nil for every other record. It is the mark that stands an issue
+	// whose row was taken away for a wait in the waiting line at the moment it lost that row
+	// (Waiting). The row and the mark are written together, so no pass reads a mark beside a row:
+	// only Store.ReleaseSlotForWait writes it, with the delete of the row in one statement. Three
+	// writes clear it (Store.ClearReleasedForWait): the grant of a slot, the ordinary release of
+	// a row for good, and the issue's departure from the workflow, which the release's own read
+	// of the live issues no longer reaches (workflow's leave). PutIssue keeps the stored value.
+	ReleasedForWaitAt *time.Time
 	// MovedAt is when the daemon last saw the issue move: the time of the newest fact it recorded
 	// that meant the issue's own record changed — a Dispatch event of the issue, a GitHub event of
 	// its pull request, a phase change, a recorded handoff, a start or a completion (the write
@@ -258,8 +268,8 @@ const HoldEscalated HoldReason = "escalated"
 // version and reason of the review); and where on Dispatch the wait began (Since): the newest
 // hand-back the architect made since it was last given work (Issue.DeclaredSeq). It is a snapshot
 // of the wait's subject; what else is still with the person is the root's asks (RootAsk). A
-// person's act Dispatch recorded at or before Since never answers the wait. An answered root waits
-// for a slot ahead of every root that never ran (Waiting).
+// person's act Dispatch recorded at or before Since never answers the wait. An answered root
+// stands in the line's returned part (Waiting) and resumes on the slot it holds.
 type Awaiting struct {
 	Ask            string
 	GateVersion    int
@@ -1393,11 +1403,13 @@ type Store interface {
 	PutDispatchClaim(ctx context.Context, tx pgx.Tx, key, holder string, seq int64) error
 	// DispatchIssues is every mirrored row of the Dispatch project key project, by key.
 	DispatchIssues(ctx context.Context, tx pgx.Tx, project string) ([]DispatchIssueRow, error)
-	// DispatchIssuesOf is the mirrored row of each of keys in project and the row of each issue
-	// those rows say they wait on, by key, read by primary key: what a judgement of keys reads
+	// DispatchIssuesOf is the mirrored row of each of keys and the row of each issue those rows
+	// say they wait on, by key, read by primary key: what a judgement of keys reads
 	// (blockers.Load), whatever the number of rows the project's mirror holds. No keys read
-	// nothing.
-	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, project string, keys []string) ([]DispatchIssueRow, error)
+	// nothing. It names no project: a key is read whatever project it is in, since an issue may
+	// wait on an issue of another project and a blocker whose row the judgement cannot read
+	// counts as unfinished for ever.
+	DispatchIssuesOf(ctx context.Context, tx pgx.Tx, keys []string) ([]DispatchIssueRow, error)
 	// DispatchChildren is every mirrored issue of the Dispatch project key project whose parent is
 	// one of parents, grouped by parent and in key order within each group; a parent with no
 	// children has no entry, and no parents reads nothing. A later step reads it to decide whether
@@ -1627,6 +1639,14 @@ type Store interface {
 	Slots(ctx context.Context, tx pgx.Tx) ([]Slot, error)
 	PutSlot(ctx context.Context, tx pgx.Tx, slot Slot) error
 	ReleaseSlot(ctx context.Context, tx pgx.Tx, issue string) error
+	// ReleaseSlotForWait takes issue's slot away because it waits on another issue and records
+	// that it did, in one statement: the row is deleted and Issue.ReleasedForWaitAt set to at, so
+	// no pass can ever read a row gone with no mark, which would say the issue never started, or
+	// a mark beside a row, which would say it waits while it holds its place against the cap.
+	ReleaseSlotForWait(ctx context.Context, tx pgx.Tx, issue string, at time.Time) error
+	// ClearReleasedForWait sets Issue.ReleasedForWaitAt back to null: the issue holds a slot
+	// again, or holds none for a reason that is not a wait.
+	ClearReleasedForWait(ctx context.Context, tx pgx.Tx, issue string) error
 	// OpenTreeLifecycle binds an admission fact's root start rows to one durable tree epoch before
 	// the fact commits. A reserved cleanup returns treelifecycle.ErrCleanupReserved without
 	// admitting work.
@@ -1991,8 +2011,9 @@ func (i Issue) Standing() pods.Standing {
 // its tree's linger, say) has no run to carry — carried at done, its new root would take a slot
 // and start an architect with nothing to run. Every path that moves a child to a tree of its own
 // asks it: a hand-over's event, the outbox's direct consumption, and a person's labelling of an
-// orphan. And work already under way is never stopped and never re-checked, so a candidate that
-// carries a run waits on nothing, whatever its links say (blockers.Exempt).
+// orphan. And the promotion never holds a candidate that carries a run by its links, whatever
+// they say (blockers.Exempt); once it holds a slot, blockers.waitsOf reads its links like any
+// other issue's.
 func (i Issue) CarriesRun() bool { return i.Phase != phase.Admitted && i.Phase != phase.Done }
 
 // PhaseHolds says whether a task queued for phase queuedFor on run generation is still the work

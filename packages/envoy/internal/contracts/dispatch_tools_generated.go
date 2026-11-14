@@ -52,7 +52,7 @@ var DispatchTools = []DispatchTool{
 			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key for the new issue."},
 			{Name: "title", Kind: ToolFieldString, Required: true, Description: "Concise issue title, at most 1,000 characters."},
 			{Name: "parent", Kind: ToolFieldString, Description: "Optional parent issue."},
-			{Name: "blocked_by", Kind: ToolFieldArray, Description: "Issue keys in the same project this issue waits on. Dispatch refuses a dependency cycle.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
+			{Name: "blocked_by", Kind: ToolFieldArray, Description: "Issue keys this issue waits on; a key of any project, so work tracked elsewhere can be named. Dispatch refuses a dependency cycle.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
 			{Name: "advances", Kind: ToolFieldArray, Description: "Ids of the deployment's priorities this issue advances, which dispatch priorities lists. A child inherits every priority the issues above it advance, so name here only what this issue adds.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
 			{Name: "external", Kind: ToolFieldString, Description: "Optional external issue reference."},
 			{Name: "force", Kind: ToolFieldBoolean, Description: "Create even though POSSIBLE_DUPLICATE listed similar issues; pass it only after reading them."},
@@ -83,7 +83,7 @@ var DispatchTools = []DispatchTool{
 			{Name: "external_links", Kind: ToolFieldArray, Description: "URLs to link; a non-empty list merges into the issue's existing external links by URL, an empty list removes every link instead.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
 			{Name: "route", Kind: ToolFieldString, Description: "Route the issue to role:<name> or session:<id>; an empty string clears it."},
 			{Name: "parent", Kind: ToolFieldString, Description: "Parent issue key in the same project; an empty string clears the parent."},
-			{Name: "blocked_by", Kind: ToolFieldArray, Description: "Replacement list of issue keys in the same project this issue waits on; [] clears it. Dispatch refuses a dependency cycle.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
+			{Name: "blocked_by", Kind: ToolFieldArray, Description: "Replacement list of issue keys this issue waits on, of any project; [] clears it. Dispatch refuses a dependency cycle.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
 			{Name: "advances", Kind: ToolFieldArray, Description: "Replacement list of priority ids this issue advances, which dispatch priorities lists; [] clears the issue's own, leaving every priority it inherits from the issues above it. A set that moves two or more relations is a whole-set write and carries advances_revision; the call reads the issue and sends the revision that read answered, so pass advances_revision only to answer a 409 ADVANCES_REVISION.", Item: &ToolField{Kind: ToolFieldString, Required: true}},
 			{Name: "advances_revision", Kind: ToolFieldNumber, Description: "The advances_revision the read this set answers returned, sent with advances and alone changing nothing. Omit it and the call sends the revision of its own read; pass the revision a 409 ADVANCES_REVISION named to write the set you mean against it."},
 			{Name: "components", Kind: ToolFieldObject, Description: "Attach the issue to architecture components. Attach the root before decomposing it; children inherit unless they choose.", Fields: []ToolField{

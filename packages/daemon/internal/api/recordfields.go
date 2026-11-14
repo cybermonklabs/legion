@@ -161,7 +161,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld as bookkeeping.
+// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt and
+// TreeStalledToldAt, for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -192,6 +193,7 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Ancestry", Column: ColumnAgents, Keys: []string{"ancestry"},
 		Reason: "the chain that holds a labelled root under an unreleased child, which reaches no other surface"},
 	{Field: "HandedOverFrom", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "Awaiting", Column: ColumnAgents, Keys: []string{"waitingOn"},
 		Reason: "what a root in awaiting_person waits on from a person, and whether that person has answered"},
 	{Field: "HandoutSeq", Column: ColumnWithheld, Reason: BookkeepingReason},
@@ -203,7 +205,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the project's memory mode in force when the tree was drawn, which the group is read against"},
 	{Field: "MemoryDrawnAt", Column: ColumnAgents, Keys: []string{"memoryDrawnAt"},
 		Reason: "when the tree was drawn, which says the draw happened rather than was never reached"},
-	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "ReleasedForWaitAt", Column: ColumnWithheld,
+		Reason: "the moment a started issue gave its admission slot back because it waits on another issue, which orders it in the waiting line; a reader acts on what it causes, the issue's place in `admission.waiting` and `admission.blocked` and its own `waitingLine`, and never on the moment itself"},
 	{Field: "MovedAt", Column: ColumnWithheld,
 		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
 	{Field: "TreeStalledToldAt", Column: ColumnWithheld,

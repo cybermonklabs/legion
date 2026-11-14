@@ -32,8 +32,8 @@ func openSpecGate(root string, version int) record.DesignGate {
 // roots that can enter awaiting_person. A list shorter than the one the tree was admitted under
 // leaves every remaining step open, and an open step has ever_opened set, so record.AtWork gives
 // such a root no work and record.CanWaitOnPerson answers false for it: a hold that asked only
-// that predicate would hold nothing, the pass would free the root's slot, the waiting line would
-// offer its first phase that slot (record.Waiting classes it LineFirstPhase, StartFirstPhase runs
+// that predicate would hold nothing, and the waiting line would offer its first phase the slot
+// the root holds (record.Waiting classes it LineFirstPhase, StartFirstPhase runs
 // it), and the root would start on a document version nobody approved — the version the catch-up
 // has still to read off Dispatch. A held READY of the same tree is released the same way, through
 // the pass's own first-phase starts, whose hold is this one.

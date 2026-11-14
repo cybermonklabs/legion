@@ -811,8 +811,11 @@ func TestASameRoleBackwardMoveNeverStopsTheWorkerInItsNewPhase(t *testing.T) {
 	ctx := context.Background()
 	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
-	// The issue is at work in retro and at work in implementing after the move, so it holds its
-	// admission slot across it and the new phase's task waits for nothing.
+	// An issue in retro holds no admission slot (record.KeepsSlot), and the move back to
+	// implementing writes a start that waits for one (workflow.StartOrOwe). This row stands for
+	// the grant the admission pass gives that start, which this test does not run: what it proves
+	// is the handoff between two phases of one worker, so the implementing task is given its row
+	// up front and waits for nothing.
 	holdSlot(t, pool, issue.Key)
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
 		return records.PutPhase(ctx, tx, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "claim"})

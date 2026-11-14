@@ -1,0 +1,5 @@
+kind: Changed
+body: Dispatch accepts a blocked_by link into another project and still refuses every cycle.
+time: 2026-11-12T02:50:00.554933362Z
+custom:
+    Issue: pr3715

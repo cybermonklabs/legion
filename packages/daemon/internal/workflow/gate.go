@@ -38,8 +38,8 @@ func gateOfDocument(gates map[record.DesignStep]record.DesignGate, document stri
 // held before; once every step the deployment gates is open the registration advances the
 // admitted tree. What register_gate read of Dispatch's approval travels with the registration, so
 // a person's review given before the architect registered is applied here: an approval of the
-// latest version (ApprovedVersion) records the gate open, and the root keeps its slot and starts
-// planning; a changes request on it (ChangesRequestedVersion) records it closed with the architect
+// latest version (ApprovedVersion) records the gate open, and the root starts planning, keeping
+// its slot unless it waits on another issue (blockers.waitsOf), since the gate has now opened; a changes request on it (ChangesRequestedVersion) records it closed with the architect
 // told, unless the gate already records that same review as told, and the root keeps its slot at
 // admitted to revise. The architect is told the version the gate opened at, which an approval
 // carried to a later version makes the later one, and is not told it again when the gate of that
@@ -229,10 +229,13 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 //
 // The notice is work the daemon hands the running architect, so it is a handout whatever slot the
 // root holds: the cap counts the issues the daemon has started, and a root whose gate has opened
-// once keeps the row it was started with while its architect revises the spec
-// (record.KeepsSlot). What that architect handed back at or before the review is part of the
-// spec it is now asked to revise, and only a hand-back after the review starts the next wait
-// (record.Store.TakeInThrough). A hand-back newer than the review, applied first, still stands.
+// once keeps the row it was started with while its architect revises the spec (record.KeepsSlot),
+// except while it waits on another issue — an unfinished blocked_by link, or under an open gate an
+// open child of its own — when it has given that row back (blockers.waitsOf, admit's
+// releaseSlotsForWaits) and is told the request all the same. What that architect handed back at
+// or before the review is part of the spec it is now asked to revise, and only a hand-back after
+// the review starts the next wait (record.Store.TakeInThrough). A hand-back newer than the
+// review, applied first, still stands.
 // A review with no sequence cannot be placed, so it takes in everything the record holds
 // (record.Store.StartHandout), as the notice did before hand-backs were placed.
 //

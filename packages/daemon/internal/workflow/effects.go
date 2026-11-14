@@ -690,7 +690,8 @@ const (
 // A start whose phase holds one of the cap's slots is marked for it, and the outbox holds such
 // a row unclaimable while the issue holds no slot (store.go's outboxInOrder). The cap counts
 // the issues the daemon has started whose change is still to write, each holding its row from
-// its start until its work is past its review (record.KeepsSlot), so a start claimable at once
+// its start until its work is past its review, except while it waits on another issue
+// (record.KeepsSlot, blockers.waitsOf), so a start claimable at once
 // would put a worker to work on an issue holding no slot — where the cap is full that is what
 // it would do — and a worker put to work on an issue the cap has not admitted is what a start
 // of a phase worker may never be. A transition's start, admission's start of a mid-phase member,
@@ -748,17 +749,17 @@ const (
 //
 // No other start of the daemon's comes through here, and none may: the tree architect's start
 // (admit's promotion, awaiting_reconcile.go), which waits for no slot of its own, since the row
-// the cap counts is its root's and the root holds it from its promotion until its work is past
-// its review (record.KeepsSlot), the production check's look (check.go), the pod wake
-// (wake.go), the resume of a cancelled idle release (the daemon's outbox), the roles admission
-// brings back beside a member's phase worker (admit's startMidPhaseMembers) and the phase's
-// resume task a ready worker level with the entry its phases row names is given (catch_up.go's
-// readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five
-// puts a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited
-// for might never be offered. The last is sent to a worker already at work on the phase it is
-// in — its agent has just reported ready — so the issue already holds the row the cap counts in
-// a phase up to its review, and needs none past it (record.KeepsSlot), and this one has nothing
-// to wait for. The work of an entry that same ready worker stands below is sent through
+// the cap counts is its root's, the production check's look (check.go), the pod wake (wake.go),
+// the resume of a cancelled idle release (the daemon's outbox), the roles admission brings back
+// beside a member's phase worker (admit's startMidPhaseMembers) and the phase's resume task a
+// ready worker level with the entry its phases row names is given (catch_up.go's
+// readyWorkerTask) are enqueued directly and stay claimable at once. None of the first five puts
+// a worker to work on a phase, so none of them is the cap's to hold, and a slot they waited for
+// might never be offered. The last is sent to a worker already at work on the phase it is in —
+// its agent has just reported ready — so in a phase up to its review the issue holds the row the
+// cap counts already or gave it back to wait on another issue, a wait that stops none of its
+// work, and past its review it needs none (record.KeepsSlot), so this one has nothing to wait
+// for in any case. The work of an entry that same ready worker stands below is sent through
 // SendOwedEntry, and that start comes through here with the rest.
 func StartOrOwe(ctx context.Context, tx pgx.Tx, store record.Store, issue string, payload record.SuperviseRequest, at time.Time) error {
 	return startOrOwe(ctx, tx, store, issue, payload, at, newsOfTheIssue)

@@ -127,7 +127,8 @@ type IdleRoot struct {
 	Generation  uint64
 	LingerUntil *time.Time
 	// AwaitingPerson is whether the root waits on a person (phase awaiting_person) and Answered
-	// whether that person has answered, which leaves the root waiting only for a slot.
+	// whether that person has answered, which leaves the root waiting only for the admission pass
+	// that resumes it on the slot it holds.
 	AwaitingPerson bool
 	Answered       bool
 }

@@ -88,7 +88,7 @@ func (s projectionStore) GatesOf(_ context.Context, _ pgx.Tx, issue string) (map
 func (s projectionStore) OpenProductionChecks(context.Context, pgx.Tx) ([]record.ProductionCheck, error) {
 	return s.checks, nil
 }
-func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, _ string, keys []string) ([]record.DispatchIssueRow, error) {
+func (s projectionStore) DispatchIssuesOf(_ context.Context, _ pgx.Tx, keys []string) ([]record.DispatchIssueRow, error) {
 	wanted := make(map[string]bool, len(keys))
 	for _, key := range keys {
 		wanted[key] = true
@@ -474,9 +474,9 @@ func TestProjectShowsTheHeldLifecycleRowsWithTheirWaits(t *testing.T) {
 	}
 }
 
-// The state names every issue Legion is waiting to start behind a Dispatch issue nobody has
-// finished, judged from the project's mirror in the same transaction the rest of the state is
-// read in: the waiting root admission skips and the child the workflow holds at `admitted`, in
+// The state names every issue Legion waits on a Dispatch issue nobody has finished for, judged
+// from the project's mirror in the same transaction the rest of the state is read in: here the
+// waiting root admission skips and the child the workflow holds at `admitted`, in
 // one list sorted by issue key. A root carrying a run is never judged, whatever its links say,
 // and a state with nothing blocked carries an empty list rather than none.
 func TestProjectNamesWhatEveryBlockedRootAndChildWaitsOn(t *testing.T) {
@@ -797,9 +797,11 @@ func TestTheWaitingLinePlaceIsOnEachListedIssue(t *testing.T) {
 
 // admission.active is every issue the slots table holds a row for: the projection names the row
 // holders it finds and reads no phase of its own. An issue holds one of the cap's rows from the
-// moment the daemon starts it until its work is past its review (record.KeepsSlot), so a root
-// waiting on a person is named there though no worker of it is running this second. An issue
-// with no row of its own waits for nothing here: it stands in neither list.
+// moment the daemon starts it until its work is past its review (record.KeepsSlot), except while
+// it waits on another issue before then, when it gives the row back and is not named here
+// (admit's releaseSlotsForWaits), so a root waiting on a person is named there though no worker
+// of it is running this second. An issue with no row of its own waits for nothing here: it
+// stands in neither list.
 func TestAdmissionActiveNamesTheIssuesHoldingARow(t *testing.T) {
 	waiting := lineIssue("LEGION-10", "LEGION-10", "in_progress", phase.AwaitingPerson, "A")
 	waiting.Awaiting = &record.Awaiting{Ask: "ask-q", Since: record.EventMark{Seq: 5, At: projectedAt.Add(-time.Hour)}}

@@ -187,7 +187,7 @@ from its own read of the issue — and writes `done`. An issue that reaches `mer
 request GitHub has already merged closes at once.
 
 - A root whose merge lands while another issue of its tree is still in the workflow stays in
-  `merging`, its workers kept and live and its admission slot kept with them, until the last of
+  `merging`, its workers kept and live, until the last of
   them is done or parked. One
   `pr-merged` notice names what it waits for and none follows as they depart, so read the pull
   request on GitHub.
@@ -244,9 +244,9 @@ If you are that child's architect:
 
 This is for a root of your own standing at `admitted`, the only phase from which a root waits on a person.
 A registration that leaves the approval request with the person moves your root to `awaiting_person`, and what brings the root back is the answer, not the registration.
-Your root keeps its admission slot throughout: an issue holds one of the cap's slots from the moment the daemon starts it until its work is past its review — `accepting`, `retro` and `merging` hold none — or until it is done or Dispatch takes it out of the workflow.
+Your root keeps its admission slot throughout: a root in `awaiting_person` is one of the roots that keep their slot through a wait ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
 So your resume takes no slot and comes however full the cap is, whether or not the gate has ever opened in this generation.
-The first phase that resume starts needs no slot of its own either, since the root holds one: it waits in the line among the issues whose work came back, oldest first, placed by the moment your gate opened, so it stands behind every issue of that part whose work came back before it.
+The first phase that resume starts waits in the line among the issues whose work came back, oldest first; whether it needs a slot again depends on whether your root waits on another issue, an open child under it or a `blocked_by` link to an issue that is not `done` ([Admission and the `legion` label](https://cybermonklabs.github.io/legion/legion/concepts/#admission-and-the-legion-label)).
 A changes request, or a newer version of the document that hands the request back to you, leaves the gate closed, so it holds the tree's work until a new approval.
 While your answered root stands in the line, your record carries `waitingLine`: your place in the line and its length, your `part` (`returned`) and `kind` (`answered`), your `partPlace` of `partLength` among the issues whose work came back, `holdsSlot` true because your root has held its slot since its start, `since`, the moment your work came back, and `reason`, the daemon's own sentence for that place.
 An issue that has not started carries `rootRank`, `ownRank` and `rootKey` in place of `since`, the two Dispatch ranks that placed it and the key of its tree root.

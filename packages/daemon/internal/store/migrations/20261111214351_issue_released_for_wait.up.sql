@@ -1,0 +1,21 @@
+-- 20261111214351_issue_released_for_wait.up.sql — an issue the daemon started and that now waits
+-- on another issue gives its admission slot back, and this column is the mark of that
+-- (INFRA-3036).
+--
+-- released_for_wait_at is the moment the daemon took the issue's slots row away because the issue
+-- waits on another issue: a Dispatch blocker of it that is not done, or an open child its own
+-- first phase waits for. It is null for every issue holding its slot and for every issue that
+-- never started, and it is the moment such an issue stands at in the waiting line, among the
+-- issues whose work came back. Three writes clear it: the grant of a slot, the release of the
+-- row for good (record.NeedsSlot), and the issue's departure from the workflow, which that
+-- release no longer reads — so a mark outlives neither the wait nor the row.
+--
+-- The column is nullable with no backfill because null is exactly the truth about every issue
+-- recorded before this migration: none of them ever gave a slot back for a wait, since no daemon
+-- could do that yet, and a default moment would say of each that it did. The first release after
+-- the deploy writes the first mark. Nothing is cleared here either: the write is one column on
+-- issues, every row stands as it was, and the slots table is untouched, so an issue at work across
+-- the deploy keeps its row and nothing of its work stops.
+--
+-- There is no down file: migrations here are forward-only.
+alter table issues add column released_for_wait_at timestamptz;

@@ -340,8 +340,9 @@ type Notice struct {
 	// the legion.yaml line that records a decision; a gap is the operator's to close or decide, a
 	// live row's the session's environment to fix, and neither is the controller's.
 	OpenCapabilities []string `json:"openCapabilities,omitempty"`
-	// Blocked is every issue Legion is waiting to start because it waits on a Dispatch issue
-	// nobody has finished (INFRA-225), with what each still waits on. Only a tick controller
+	// Blocked is every issue Legion waits on a Dispatch issue nobody has finished for (INFRA-225),
+	// one it has still to start or one it started that gave its admission slot back for the wait,
+	// with what each still waits on. Only a tick controller
 	// notice carries it, as OpenCapabilities does: the tick is the turn that posts the day's
 	// report, so the controller names each there and takes nothing for it. A tick with nothing
 	// blocked carries none.
@@ -475,9 +476,10 @@ func (u UpdateStalled) MarshalJSON() ([]byte, error) {
 	return json.Marshal(out)
 }
 
-// BlockedIssue is one issue Legion is waiting to start and the issues it waits on that are not
-// done, in the order Dispatch lists them (blockers.Unfinished): a root admission skips, or a
-// child the workflow holds at `admitted`. It lives here, below both readers, so the tick notice
+// BlockedIssue is one issue Legion waits on another issue for and the issues it waits on that are
+// not done, in the order Dispatch lists them (blockers.Unfinished): a root admission skips, a
+// child the workflow holds at `admitted`, or a started issue that gave its admission slot back
+// for the wait. It lives here, below both readers, so the tick notice
 // above and the state's `blocked` (api.BlockedIssue, an alias of this type) carry one shape
 // rather than two that could drift.
 type BlockedIssue struct {
@@ -629,11 +631,8 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // that run back to zero; nothing is held and nothing is bounded, because a chain's bottom
 // refusing deterministically costs one request every ten minutes. A tree-stalled notice names a
 // root of the daemon's own whose tree has stopped: nothing of the tree has moved for longer than
-// `stalled_tree_notice_hours`, no claim of it is at work, and either at least one issue of it
-// waits by no rule of the daemon's own or the project's line can no longer move — a tree every
-// quiet issue of which waits by one of those rules is told to nobody while some issue of the
-// project holds a slot and waits by none of them, or some claim of the project is at work
-// (admit's tellStalledTrees, lineCanMove). Its issue is that root, and its Reason names the
+// `stalled_tree_notice_hours`, no claim of it is at work, and it does not wait by design (admit's
+// tellStalledTrees says which trees are told). Its issue is that root, and its Reason names the
 // tree's quiet hours, each issue the workflow still runs with its phase, the role whose turn it
 // is and the state of its pull request, and what the controller is to decide. It is told once
 // for each stall: the daemon marks the root with the movement the notice was told for, and tells

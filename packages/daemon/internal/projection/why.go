@@ -35,12 +35,14 @@ import (
 // issue's worker rather than its place in a queue, and an issue at work whose worker stopped is
 // the commonest question a reader brings. An issue that matches none of the four carries no
 // answer at all: an issue of `admission.active` whose worker is running, an issue at
-// phase.Held whose hold came from a phase that keeps a slot, which stands in that same list,
-// and an issue whose work is running past its own review, which holds no slot since
-// dispatch://INFRA-2560 and so stands in none of the three lists that place an issue, only in
-// `admission.held` (atWorkPastReview). A hold from a phase past the review keeps no slot
-// (record.KeepsSlot, which reads record.StandsAt), and no worker of such an issue runs, so it is
-// in neither of those two and is answered by the last arm.
+// phase.Held whose hold came from a phase that keeps a slot and which holds that slot, which
+// stands in that same list, and an issue whose work is running past its own review, which holds
+// no slot since dispatch://INFRA-2560 and so stands in none of the three lists that place an
+// issue, only in `admission.held` (atWorkPastReview). An issue at phase.Held that gave its slot
+// back to wait on another issue stands in the line and reads `waiting` (blockers.waitsOf). A
+// hold from a phase past the review keeps no slot (record.KeepsSlot, which reads
+// record.StandsAt), and no worker of such an issue runs, so it is in neither of those two and is
+// answered by the last arm.
 //
 // A blocked issue and an unlisted one may read the sentence of the held word the record carries
 // for it; heldSentences states the rule, which covers the order of the blocked arm's three
@@ -344,11 +346,13 @@ func atWorkPastReview(issue record.Issue, running map[string]struct{}) bool {
 // one (api.WhyUnlisted) reads its word's sentence under `unlisted`. Every word but
 // dispatch_blocker and children_first can reach that arm, and those two cannot, because every
 // issue the ladder gives either of them stands in `admission.blocked`. The state word is
-// `unlisted` and not `held`, because `held` is a phase of the workflow, whose issues hold a slot
-// and stand in `admission.active`. at_work has its entry, and the issues that read that word
-// stand past their review and are not held (record.HeldAtWork); one whose work runs in a tree
-// that runs is served no answer at all (atWorkPastReview), so the entry is served only to a
-// member past its review of a tree that runs nothing.
+// `unlisted` and not `held`, because `held` is a phase of the workflow, whose issues the daemon
+// has started: one held from a phase that keeps a slot stands in `admission.active`, or in
+// `admission.waiting` while it waits on another issue (blockers.waitsOf). at_work has its entry,
+// and the issues that read that word stand past their review and are not held
+// (record.HeldAtWork); one whose work runs in a tree that runs is served no answer at all
+// (atWorkPastReview), so the entry is served only to a member past its review of a tree that
+// runs nothing.
 //
 // The fallback is unclassified's sentence, the ladder's own last word, which says that no rule
 // of the held list names what the issue waits for. An unlisted issue whose word the table lacks,

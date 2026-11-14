@@ -112,8 +112,9 @@ func TestIssueBlockedByRoundTrip(t *testing.T) {
 }
 
 // A blocked_by dependency cannot make a child wait on its parent, a parent wait on its descendant,
-// or any issue wait on itself. One sibling may wait on another, and blockers never cross a
-// Dispatch project boundary.
+// or any issue wait on itself. One sibling may wait on another, and a blocker in another project
+// is a wait like any other: it is accepted, and a ring closed through it is refused as a ring
+// inside one project is.
 func TestIssueBlockedByRefusesDependencyCycles(t *testing.T) {
 	handler := newTestHandler(t)
 	for _, project := range []string{"CORE", "SIDE"} {
@@ -165,9 +166,13 @@ func TestIssueBlockedByRefusesDependencyCycles(t *testing.T) {
 	}, "alice"), http.StatusConflict, "DEPENDENCY_CYCLE")
 
 	foreign := create("SIDE", "Foreign", nil)
-	expectRefusal("foreign-project blocker", dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "CORE", "title": "Cross-project dependency", "blocked_by": []string{foreign.Key},
-	}, "alice"), http.StatusBadRequest, "BLOCKED_BY_OUTSIDE_PROJECT")
+	crossing := create("CORE", "Cross-project dependency", map[string]any{"blocked_by": []string{foreign.Key}})
+	if !slices.Equal(crossing.BlockedBy, []string{foreign.Key}) {
+		t.Fatalf("a blocker in another project = %v, want %v", crossing.BlockedBy, []string{foreign.Key})
+	}
+	expectRefusal("cross-project dependency loop", dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+foreign.Key, map[string]any{
+		"blocked_by": []string{crossing.Key},
+	}, "alice"), http.StatusConflict, "DEPENDENCY_CYCLE")
 }
 
 // An issue naming itself in blocked_by is an input mistake, refused as one rather than as a

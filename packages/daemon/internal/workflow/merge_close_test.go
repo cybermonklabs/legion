@@ -319,8 +319,10 @@ func TestAChildClosedAsDoneWithNoPullRequestOpensNoCheck(t *testing.T) {
 }
 
 // A root's merge while a child runs records the merge and waits: the root stays in merging
-// with nothing written to Dispatch, no linger deadline, no member suspended and its slot still
-// held, and its architect is told once, by name, which issue the close waits for.
+// with nothing written to Dispatch, no linger deadline and no member suspended, and its architect
+// is told once, by name, which issue the close waits for. The merged root holds no slot while it
+// waits, since merging stands past its review (record.KeepsSlot), and the merge takes none from
+// the running child.
 func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	assertPhase(t, rig.pool, phase.Merging)
@@ -346,8 +348,8 @@ func TestAMergedRootWaitsWhileItsChildRuns(t *testing.T) {
 	if got := issueSuspensions(t, rig.pool, "LEGION-209"); len(got) != 0 {
 		t.Fatalf("the child's issue suspensions = %+v, want none: nothing of the tree is suspended", got)
 	}
-	if got := slottedIssues(t, rig.pool); len(got) != 1 || got[0] != "LEGION-208" {
-		t.Fatalf("slots = %v, want the waiting tree's kept", got)
+	if got := slottedIssues(t, rig.pool); len(got) != 1 || got[0] != "LEGION-209" {
+		t.Fatalf("slots = %v, want the running child's alone: the merged root stands past its review and holds none while it waits", got)
 	}
 	if check := productionCheck(t, rig.pool, "LEGION-208"); check != nil {
 		t.Fatalf("the waiting root's production check = %+v, want none until it closes", check)
@@ -554,9 +556,9 @@ func TestNothingMovesAWaitingMergedRoot(t *testing.T) {
 // A merged root can stand in merging for days, and a pull request opened from its branch in
 // that time is new work, not the change the root waits to close on: GitHub has already merged that
 // one and never sends the merge again. The root still closes on that merge when its last child
-// leaves, its production check reading pull request #42 at merge. The tree's slot is admission's,
-// freed at phase done, and is asserted in admit's
-// TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves.
+// leaves, its production check reading pull request #42 at merge. The slots are admission's
+// rows, and a root in merging holds none; admit's
+// TestAMergedRootWaitsForItsChildrenAndClosesWhenTheLastLeaves asserts them.
 func TestANewPullRequestFromAWaitingRootsBranchLeavesItsMergeStanding(t *testing.T) {
 	rig := seedMergedRoot(t, record.Issue{Key: "LEGION-209", Phase: phase.Implementing, Status: "in_progress"})
 	rig.apply("follow-up-opened", intake.PullRequestOpened{Repo: "sjawhar/legion", Number: 99, Branch: "legion/LEGION-208", HeadSHA: "follow-up",
@@ -586,9 +588,12 @@ func seedMergedRoot(t *testing.T, children ...record.Issue) mergedRootRig {
 }
 
 // seedMergedRootUnder seeds the root LEGION-208 awaiting the merge of its open sjawhar/legion#42,
-// the slot its tree holds, and one child of it per entry of children — each seeded with the key,
-// phase, status and hold its entry names — then merges the root's pull request at merge, under an
-// engine whose production checks are role's, and which opens none when role is empty.
+// its open tree, and one child of it per entry of children — each seeded with the key, phase,
+// status and hold its entry names — then merges the root's pull request at merge, under an engine
+// whose production checks are role's, and which opens none when role is empty. The slot rows are
+// the ones the admission pass leaves such a tree: the root in merging stands past its review and
+// holds none (record.KeepsSlot), and a child holds one where it has started in a phase that keeps
+// one, which is every phase it is seeded in here but admitted.
 func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue) mergedRootRig {
 	t.Helper()
 	pool := migratedPool(t)
@@ -596,13 +601,19 @@ func seedMergedRootUnder(t *testing.T, role claim.Role, children ...record.Issue
 	engine := New(record.NewStore(), Config{Project: "LEGION", Steps: config.DesignGateRootIssues.Steps(), Linger: time.Hour, ProductionCheckBound: 48 * time.Hour, ProductionCheckRole: role, Clock: func() time.Time { return now }}, nil)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root",
 		Phase: phase.Merging, Generation: 7, Status: "retro", Rank: "U", LastDispatchSeq: 1})
-	seedSlot(t, pool, record.Slot{Issue: "LEGION-208", Index: 0})
+	seedTreeLifecycle(t, pool, "LEGION-208")
 	parent := "LEGION-208"
+	slots := 0
 	for i, child := range children {
 		child.Repo, child.DefaultBranch, child.GitHubRepo = "sjawhar/legion", "main", "sjawhar/legion"
 		child.Tree, child.Project, child.Title, child.Parent = "LEGION-208", "LEGION", child.Key, &parent
 		child.Generation, child.Rank, child.LastDispatchSeq = 3, fmt.Sprintf("V%d", i+1), 1
 		seedIssue(t, pool, child)
+		if child.Phase != phase.Admitted && record.KeepsSlot(child) {
+			slot := record.Slot{Issue: child.Key, Index: slots}
+			seedRecord(t, pool, func(tx pgx.Tx) error { return record.NewStore().PutSlot(t.Context(), tx, slot) })
+			slots++
+		}
 	}
 	seedPR(t, pool, record.PullRequest{State: record.PullRequestOpen, Issue: "LEGION-208", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", Failing: []string{}})
 	rig := mergedRootRig{pool: pool, apply: applyFacts(t, pool, engine)}

@@ -1,0 +1,5 @@
+kind: Changed
+body: The blocked_by field of the issue create and update tools takes an issue of another project.
+time: 2026-11-12T02:49:54.394541336Z
+custom:
+    Issue: pr3715
