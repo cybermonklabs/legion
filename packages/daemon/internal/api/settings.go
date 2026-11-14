@@ -85,9 +85,14 @@ type Settings struct {
 	// project's controller once for that tree. The daemon sends it only where nothing of the tree is
 	// at work, and either at least one quiet issue of it waits by no rule of the daemon's own or the
 	// project's line can no longer move: that line can still move while some issue of the project
-	// holds a slot and waits by no such rule, or some claim of the project is at work
-	// (dispatch://INFRA-2560 R5). No value turns that notice off, since the loader refuses zero for
-	// every key in hours; a deployment that wants fewer notices raises the number.
+	// holds a slot and waits by no such rule, some claim of the project is at work, or an issue of
+	// the line that waits on no other issue can start (admit's lineCanMove, dispatch://INFRA-2560
+	// R5). A tree whose only quiet issues gave their slot back to wait on another issue that nothing
+	// of the tree moves — a blocked-by link to an issue of any project, or an open child the daemon
+	// has released — is never told, whatever the line can do; a wait on a child nobody released has
+	// no such exception (admit's lineHolds.waitsOnIssue). No value turns that notice off, since the
+	// loader refuses zero for every key in hours; a deployment that wants fewer notices raises the
+	// number.
 	StalledTreeNoticeHours float64 `json:"stalled_tree_notice_hours"`
 	// WorkerSilenceMinutes is `worker_silence_minutes`, a decimal number of minutes: how long a
 	// phase worker's last recorded step may be in the past before the daemon reads that worker as

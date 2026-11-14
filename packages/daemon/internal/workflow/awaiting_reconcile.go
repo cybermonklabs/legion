@@ -128,7 +128,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 			changed = true
 		default:
 			intake.OnCommit(ctx, func() {
-				e.log.Debug("workflow: a root that handed work to a person keeps its slot", "issue", root.Key, "why", decision.Why)
+				e.log.Debug("workflow: a root that handed work to a person starts no wait on that person", "issue", root.Key, "why", decision.Why)
 			})
 		}
 	}
@@ -300,10 +300,13 @@ func decideAwait(v awaitView) awaitDecision {
 	// Rule 0 is record.CanWaitOnPerson alone: it tests the phase, the linger and the workflow,
 	// and through AtWork that the issue is a tree root whose design gate has never opened, so
 	// every standing a second case here could reject it rejects already. Only what to say of a
-	// rejection is decided here, and the slot row is what divides the two: a root the daemon has
-	// never started, and one it started whose own standing no longer lets it wait.
+	// rejection is decided here, and whether the daemon started the root is what divides the
+	// two: a root it has never started, and one it started whose own standing no longer lets it
+	// wait. Two facts say it started the root: the slot row, and the mark of a row a pass took
+	// back for a wait on another issue (record.Issue.ReleasedForWaitAt, blockers.waitsOf), since
+	// such a root holds no row and was started all the same.
 	case !record.CanWaitOnPerson(root, record.TreeGate{Steps: v.Steps, Rows: v.Gates}, v.Slotted):
-		if !v.Slotted {
+		if !v.Slotted && root.ReleasedForWaitAt == nil {
 			return awaitDecision{Why: "the daemon has not started it, so it holds no admission slot"}
 		}
 		return awaitDecision{Why: "it is not an admitted root of a tree in the workflow whose spec its architect is still writing"}

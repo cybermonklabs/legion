@@ -138,8 +138,11 @@ on a free slot, or on none, as a root past its review takes none.
 Where none of these holds, no work of the project can start again by itself, so every tree of it is
 named however its members wait, with one exception.
 An issue the daemon started that gave its slot back to wait on another issue never makes its own
-tree read as stopped, in whatever project the issue it waits on stands.
+tree read as stopped when nothing of that tree moves the wait: a `blocked_by` link to an issue of
+any project that is not `done`, or an open child the daemon has released into the tree.
 When that issue is in your project and has stopped, you are told of its tree instead.
+A wait on an open child the architect filed and has not released gets no such exception, because
+releasing that child is the tree's own work.
 The
 `reason` says the root has stopped and how many hours the tree has been quiet. It then gives one
 line for each issue of the tree the workflow still runs: the phase its record carries, the role

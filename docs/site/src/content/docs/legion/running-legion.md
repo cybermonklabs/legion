@@ -593,9 +593,11 @@ What each part is for:
   told, nor is one every quiet issue of which waits by design while the project's line can still
   move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start, on a free slot or on
-  none — nor is one whose only quiet issues gave their slot back to wait on another issue, in
-  any project and whether or not the line can move (the tree of that other issue is told if it
-  has stopped), and no value turns the notice off,
+  none — nor is one whose only quiet issues gave their slot back to wait on another issue that
+  nothing of their tree moves, a `blocked_by` link to an issue of any project or an open child
+  the daemon has released, whether or not the line can move (the tree of that other issue is
+  told if it has stopped; a wait on a child its architect has not released gets no such
+  exception), and no value turns the notice off,
   so a deployment that wants fewer notices raises the number, to 596 at most),
   `review_round_cap` (3),
   `controller_wake_interval_seconds` (3600), and the supervision budgets `launch_failure_limit`

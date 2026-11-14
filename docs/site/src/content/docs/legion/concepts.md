@@ -181,6 +181,11 @@ Three started issues keep their slot although a wait
 names them: a root in `awaiting_person`; a root at `admitted` whose design gate has never
 opened, whose architect is writing the design; and a root that arrived from another tree
 carrying the row it held there, which the line starts whatever its links say.
+Such a wait is a wait by design, in any project, when nothing in the issue's own tree moves it:
+a `blocked_by` link to an issue that is not `done`, in another project or in this one, run by a
+Legion tree or by none, or an open child the daemon has released into the tree and runs.
+A wait on an open child the architect filed and has not released is not one, because releasing
+that child is the tree's own work.
 
 An issue holding a slot starts its next phase whatever the cap says, and so does an issue past
 its review, which holds none. An issue that holds none and is owed a start, a child its architect

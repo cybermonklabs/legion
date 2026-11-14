@@ -1175,7 +1175,7 @@ func TestAStartedIssueThatGaveItsSlotBackForAWaitIsAWaitByDesign(t *testing.T) {
 	}
 }
 
-// A started issue that gave its slot back to wait on another issue (blockers.waitsOf,
+// A started issue that gave its slot back to wait on a Dispatch blocked-by link (blockers.waitsOf,
 // releaseSlotsForWaits) never makes its own tree read as stopped, whatever project the issue it
 // waits on is in: its wait ends when that issue finishes, and nothing of its own tree is the
 // thing that has stopped. That holds where the project's line cannot move as well
@@ -1210,40 +1210,11 @@ func TestATreeThatWaitsOnAnotherIssueIsNeverToldAsStopped(t *testing.T) {
 		seedClaim(t, records, waiter, waiter, claim.RoleImplementer, supervise.StateIdle)
 		return pool, admission, records
 	}
-	// passes runs the release pass at the settled movement and then three passes, each seven
-	// hours past the one before, and answers the roots told on each pass after the first. The
-	// notices are left in the outbox, so a tree told once is in every later answer.
-	passes := func(t *testing.T, pool *pgxpool.Pool, admission *Admission, keys ...string) [][]string {
-		t.Helper()
-		settled := settleMovements(t, pool, keys...)
-		admission.now = func() time.Time { return settled }
-		tick(t, pool, admission, "release")
-		if at := issue(t, pool, waiter).ReleasedForWaitAt; at == nil || holdsSlot(t, pool, waiter) {
-			t.Fatalf("%s = %+v holding a slot %t, want it released for its wait: the premise of this case", waiter,
-				issue(t, pool, waiter), holdsSlot(t, pool, waiter))
-		}
-		var told [][]string
-		for pass := 1; pass <= 3; pass++ {
-			at := settled.Add(time.Duration(pass) * 7 * time.Hour)
-			admission.now = func() time.Time { return at }
-			tick(t, pool, admission, fmt.Sprintf("measure-%d", pass))
-			roots := stalledRoots(t, pool)
-			slices.Sort(roots)
-			told = append(told, roots)
-		}
-		return told
-	}
-
 	// The deep review's case: the only tree of the project waits on an issue of another project.
 	t.Run("blocker-in-another-project", func(t *testing.T) {
 		pool, admission, _ := project(t, otherIssue)
-		inTx(t, pool, func(tx pgx.Tx) {
-			row := record.DispatchIssueRow{Key: otherIssue, Project: "OTHER", Status: "in_progress", Seq: 1}
-			if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
-				t.Fatalf("seed the mirror of %s: %v", otherIssue, err)
-			}
-		})
-		for pass, roots := range passes(t, pool, admission, waiter) {
+		seedOtherProjectIssue(t, pool, otherIssue)
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter) {
 			if roots != nil {
 				t.Fatalf("pass %d told the controller of %v, want nothing: a started issue that gave its slot back to wait on %s waits by design, whatever project %s is in",
 					pass+1, roots, otherIssue, otherIssue)
@@ -1258,7 +1229,7 @@ func TestATreeThatWaitsOnAnotherIssueIsNeverToldAsStopped(t *testing.T) {
 		pool, admission, records := project(t, otherIssue)
 		seedQuietRoot(t, pool, stoppedRet, "B", phase.Retro)
 		seedClaim(t, records, stoppedRet, stoppedRet, claim.RoleImplementer, supervise.StateIdle)
-		for pass, roots := range passes(t, pool, admission, waiter, stoppedRet) {
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter, stoppedRet) {
 			if want := []string{stoppedRet}; !reflect.DeepEqual(roots, want) {
 				t.Fatalf("after pass %d the controller was told of %v, want %v: the tree that has stopped is told, and the tree that waits on another issue is not",
 					pass+1, roots, want)
@@ -1274,10 +1245,114 @@ func TestATreeThatWaitsOnAnotherIssueIsNeverToldAsStopped(t *testing.T) {
 		seedQuietRoot(t, pool, sameRoot, "B", phase.Merging)
 		seedMirror(t, pool, sameRoot, "in_progress")
 		seedClaim(t, records, sameRoot, sameRoot, claim.RoleMerger, supervise.StateIdle)
-		for pass, roots := range passes(t, pool, admission, waiter, sameRoot) {
+		for pass, roots := range waitPasses(t, pool, admission, []string{waiter}, waiter, sameRoot) {
 			if want := []string{sameRoot}; !reflect.DeepEqual(roots, want) {
 				t.Fatalf("after pass %d the controller was told of %v, want %v: the notice goes on the tree of the issue that stopped and not on the tree that waits on it",
 					pass+1, roots, want)
+			}
+		}
+	})
+}
+
+// waitPasses runs the release pass at the settled movement of keys and then three passes, each
+// seven hours past the one before, and answers the roots told on each pass after the first. The
+// notices are left in the outbox, so a tree told once is in every later answer. Each of waiters
+// must have given its row back for its wait on the release pass: that is the premise of every
+// case that reads it.
+func waitPasses(t *testing.T, pool *pgxpool.Pool, admission *Admission, waiters []string, keys ...string) [][]string {
+	t.Helper()
+	settled := settleMovements(t, pool, keys...)
+	admission.now = func() time.Time { return settled }
+	tick(t, pool, admission, "release")
+	for _, waiter := range waiters {
+		if at := issue(t, pool, waiter).ReleasedForWaitAt; at == nil || holdsSlot(t, pool, waiter) {
+			t.Fatalf("%s = %+v holding a slot %t, want it released for its wait: the premise of this case", waiter,
+				issue(t, pool, waiter), holdsSlot(t, pool, waiter))
+		}
+	}
+	var told [][]string
+	for pass := 1; pass <= 3; pass++ {
+		at := settled.Add(time.Duration(pass) * 7 * time.Hour)
+		admission.now = func() time.Time { return at }
+		tick(t, pool, admission, fmt.Sprintf("measure-%d", pass))
+		roots := stalledRoots(t, pool)
+		slices.Sort(roots)
+		told = append(told, roots)
+	}
+	return told
+}
+
+// seedOtherProjectIssue writes the mirror row of key, an open issue of another project, as a
+// Dispatch blocked-by link reads it.
+func seedOtherProjectIssue(t *testing.T, pool *pgxpool.Pool, key string) {
+	t.Helper()
+	inTx(t, pool, func(tx pgx.Tx) {
+		row := record.DispatchIssueRow{Key: key, Project: "OTHER", Status: "in_progress", Seq: 1}
+		if err := record.NewStore().PutDispatchIssue(context.Background(), tx, row); err != nil {
+			t.Fatalf("seed the mirror of %s: %v", key, err)
+		}
+	})
+}
+
+// A root whose own first phase waits for an open child (the children-first wait) gave its slot
+// back for that wait, and whether the wait is one by design depends on the child. A child the
+// daemon records in the workflow is released work, which nothing of the waiting tree moves: the
+// wait is by design, as a blocked-by link is, and the tree is told to nobody however the line
+// stands. A child the architect filed and never released is work of the tree that its architect
+// can release, so the wait leaves the tree to the stall measure exactly as any other wait of the
+// daemon's does: told once the project's line can no longer move.
+//
+// Each project is the root alone at admitted under a design gate that has opened, with its
+// architect idle, under a cap of four, measured over three passes past the bound.
+func TestAWaitOnAChildIsAWaitByDesignOnlyOnceTheChildIsReleased(t *testing.T) {
+	const (
+		root  = "LEGION-950"
+		child = "LEGION-951"
+		other = "OTHER-9"
+	)
+	bound := deploymentBound(t, "")
+	project := func(t *testing.T) (*pgxpool.Pool, *Admission, *store.Store) {
+		t.Helper()
+		pool := migratedPool(t)
+		admission := quiet(t, 4)
+		admission.UseStalledTreeNotice(bound)
+		registerController(t, pool)
+		records := claimStore(t, pool)
+		seedQuietRoot(t, pool, root, "A", phase.Admitted)
+		seedGate(t, pool, record.DesignGate{Issue: root, ArtifactID: "artifact-950", LatestVersion: 1,
+			ApprovedVersion: new(1), EverOpened: true})
+		seedMirror(t, pool, root, "in_progress")
+		seedClaim(t, records, root, root, claim.RoleArchitect, supervise.StateIdle)
+		return pool, admission, records
+	}
+
+	// The tester's case: the open child is one the architect filed and has not released, so the
+	// daemon holds no record of it. Nothing else of the project can move, and the tree is told.
+	t.Run("unreleased-child", func(t *testing.T) {
+		pool, admission, _ := project(t)
+		seedMirrorChild(t, pool, child, "backlog", root)
+		for pass, roots := range waitPasses(t, pool, admission, []string{root}, root) {
+			if want := []string{root}; !reflect.DeepEqual(roots, want) {
+				t.Fatalf("after pass %d the controller was told of %v, want %v: a wait on a child nobody released is the tree's own work, which its architect can do",
+					pass+1, roots, want)
+			}
+		}
+	})
+
+	// The released child: recorded in the tree, in implementing, and itself waiting on an issue
+	// of another project, so it gave its own slot back. Nothing of the project can move, and
+	// neither wait is the tree's own work: the tree is told to nobody.
+	t.Run("released-child", func(t *testing.T) {
+		pool, admission, records := project(t)
+		seedQuietChild(t, pool, root, child, "A1", phase.Implementing, "in_progress")
+		takeSlot(t, pool, child)
+		seedMirrorChild(t, pool, child, "in_progress", root, other)
+		seedOtherProjectIssue(t, pool, other)
+		seedClaim(t, records, root, child, claim.RoleImplementer, supervise.StateIdle)
+		for pass, roots := range waitPasses(t, pool, admission, []string{root, child}, root, child) {
+			if roots != nil {
+				t.Fatalf("pass %d told the controller of %v, want nothing: %s waits on a child the daemon released, and that child waits on %s",
+					pass+1, roots, root, other)
 			}
 		}
 	})
