@@ -16,15 +16,22 @@ import (
 
 // A one-copy stream that lost every message it held (L = 0) does not turn the messages a session's
 // consumer holds unacked into messages it skips, as one that lost only the end of its data does not
-// (TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgain). nats-server
-// v2.15.1 reconciles the consumer to the stream's last sequence, 0 here: it reports an ack floor of
-// 0 and a delivered sequence of 0, and keeps its configuration's OptStartSeq. The consumer then
-// delivers the messages the stream stores next, from sequence 1. A restart at the consumer's floor
-// (RestartAtFloor) with those messages awaiting an ack must start at sequence 1, so they are
-// delivered again, and not at OptStartSeq, which the clamp lowers to the sequence after the stream's
-// last (create): that is past both messages. So ackFloor must tell this reconciled consumer from
-// the one its OptStartSeq - 1 term exists for, a consumer nats-server v2.10.29 reports with an ack
-// floor of 0 before any ack moves it.
+// (TestRestartAtFloorAfterAOneCopyStreamLostDataDeliversThePendingMessagesAgain). The consumer
+// delivered and acked messages before the loss, so nats-server v2.15.1 reconciles it to the
+// stream's last sequence, 0 here: it reports the stream sequence of its ack floor and its delivered
+// stream sequence as 0, keeps the consumer sequence of its ack floor above 0, and keeps its
+// configuration's OptStartSeq. The consumer then delivers the messages the stream stores next, from
+// sequence 1. A restart at the consumer's floor (RestartAtFloor) with those messages awaiting an ack
+// must start at sequence 1, so they are delivered again: ackFloor reads the floor as the server
+// reports it, because its consumer sequence is above 0 (ackFloor's OptStartSeq - 1 term is for the
+// nats-server v2.10.29 consumer that reports 0 in both sequences).
+//
+// This cut (K = 2 messages held) does not decide that term. With the term applied, the restart
+// would ask for OptStartSeq, which is past the stream's end, and create resets a start past the end
+// to the stream's first sequence, 1, so the cut passes either way. The cut whose held messages reach
+// past the sequence before the start
+// (TestRestartAtFloorAfterEveryMessageWasLostRedeliversPastTheStartWhenTheConsumerHadDelivered)
+// is the one the term's AckFloor.Consumer condition decides.
 //
 // The loss is made as the partial cut's test makes it, with the whole first message block cut
 // instead of half of it.
@@ -102,8 +109,8 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	if err != nil {
 		t.Fatalf("info after the restart: %v", err)
 	}
-	t.Logf("the server reconciled the consumer: it reports the ack floor as %d, the last delivery as %d and the start sequence as %d",
-		info.AckFloor.Stream, info.Delivered.Stream, info.Config.OptStartSeq)
+	t.Logf("the server reconciled the consumer: it reports the ack floor as stream %d, consumer %d, the last delivery as %d and the start sequence as %d",
+		info.AckFloor.Stream, info.AckFloor.Consumer, info.Delivered.Stream, info.Config.OptStartSeq)
 
 	held := []uint64{publishStored(t, owner, agent, "held 1"), publishStored(t, owner, agent, "held 2")}
 	if held[0] != 1 || held[1] != 2 {
@@ -115,8 +122,8 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	}
 	unacked.Stop()
 	info = waitForAckPending(t, consumers, session, 2)
-	t.Logf("with both awaiting an ack the server reports the ack floor as %d, the last delivery as %d and the start sequence as %d; the floor this package reads from that is %d",
-		info.AckFloor.Stream, info.Delivered.Stream, info.Config.OptStartSeq, ackFloor(info))
+	t.Logf("with both awaiting an ack the server reports the ack floor as stream %d, consumer %d, the last delivery as %d and the start sequence as %d; the floor this package reads from that is %d",
+		info.AckFloor.Stream, info.AckFloor.Consumer, info.Delivered.Stream, info.Config.OptStartSeq, ackFloor(info))
 
 	restarted, err := consumers.RestartAtFloor(ctx, session, filters)
 	if err != nil {
