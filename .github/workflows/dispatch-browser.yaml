@@ -1347,6 +1347,15 @@ jobs:
         # pay for it inside the browser step's own budget. A failed pull is a fault of this
         # repository's own package, so it fails here and says so.
         run: docker pull ghcr.io/cybermonklabs/legion/ci@sha256:2f05f8a734509a7b3f26a912639488ee08f58a7b292d14d62271bcff9038768f
+      # The stack's connection limit, read outside the browser step's budget, where
+      # e2e/harness-postgres.ts would otherwise compile it (DISPATCH_E2E_PG_CONNECTIONS).
+      - name: Read the connections the visual stack's Postgres must allow
+        id: connections
+        run: |
+          connections=$(go run ./internal/dispatch/store/cmd/connections)
+          [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
+          echo "connections=$connections" >> "$GITHUB_OUTPUT"
+        working-directory: packages/envoy
       - name: Browser-test dispatch dashboard against its baselines
         timeout-minutes: 3
         run: |
@@ -1361,6 +1370,8 @@ jobs:
           # is no route here: this job runs on the runner and only its Playwright command is in
           # a container.
           export DISPATCH_E2E_PG_IMAGE=ghcr.io/cybermonklabs/legion/ci@sha256:2358fcba361ed2233a5ed81b5fe4ca779ccb304120ce531a3bf51c0ed7e2bc11
+          # Read in the step above, outside this step's budget (e2e/harness-postgres.ts).
+          export DISPATCH_E2E_PG_CONNECTIONS=${{ steps.connections.outputs.connections }}
           # One stack, which e2e/visual-run.sh starts on the host and stops however it ends: the
           # Playwright run inside the container reads DISPATCH_E2E_REUSE_SERVERS=1 among that
           # stack's variables and starts none of its own. Each project of the two runs one

@@ -824,10 +824,13 @@ BROWSER_BINARIES_STEP = "Build the binaries the browser suite runs"
 BROWSER_BINARIES_SCRIPT = """\
 mkdir -p "$RUNNER_TEMP/dispatch-e2e-bin"
 CGO_ENABLED=0 go build -o "$RUNNER_TEMP/dispatch-e2e-bin/" ./cmd/dispatch ./cmd/broker ./cmd/dev-oidc-issuer ./internal/broker/brokertest/requestseed"""
-# The binaries job's step that reads the stacks' connection limit for the shard and alone jobs,
-# whose containers have no Go (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS).
+# The steps that read the stacks' connection limit before a browser step starts its stacks
+# (e2e/harness-postgres.ts takes it as DISPATCH_E2E_PG_CONNECTIONS): the binaries job's, for the
+# shard and alone jobs, whose containers have no Go, and the visual job's own, outside its browser
+# step's budget. One script; two names, since the check finds a step by name across the workflow.
 # Pinned whole, since `go run` is not a form the simple form reduces.
 BROWSER_CONNECTIONS_STEP = "Read the connections each stack's Postgres must allow"
+BROWSER_VISUAL_CONNECTIONS_STEP = "Read the connections the visual stack's Postgres must allow"
 BROWSER_CONNECTIONS_SCRIPT = """\
 connections=$(go run ./internal/dispatch/store/cmd/connections)
 [[ "$connections" =~ ^[1-9][0-9]*$ ]] || { echo "::error::go run ./internal/dispatch/store/cmd/connections printed '$connections', not a positive whole number"; exit 1; }
@@ -1197,9 +1200,9 @@ GATES = [
     # and the visual job still start compile closures this filter already carries:
     # run-server.sh, which both of them start, builds ./cmd/dispatch, which the multiprocess
     # job's own pinned build step below names, and run-signin-issuer.sh builds
-    # ./cmd/dev-oidc-issuer, which that first entry names. e2e/harness-postgres.ts runs
-    # ./internal/dispatch/store/cmd/connections in the visual job, which sets no
-    # DISPATCH_E2E_PG_CONNECTIONS, and the binaries job's pinned step below names that package.
+    # ./cmd/dev-oidc-issuer, which that first entry names. No job's e2e/harness-postgres.ts runs
+    # a go command in CI: each job that starts stacks there hands it the connection limit that
+    # a pinned step below reads.
     gate("dispatch_browser", BROWSER_JOB, exact=[
         # The four commands the shard and alone jobs' scripts built before those jobs moved
         # into a container, built once in the binaries job and downloaded by both: this is the
@@ -1213,12 +1216,14 @@ GATES = [
              {"mode": "build", "env": {"CGO_ENABLED": "0"}}),
         ], workflow=BROWSER_SITE),
         # The stacks' connection limit, read on the host for the shard and alone jobs, whose
-        # containers have no Go.
-        pinned_step(BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
+        # containers have no Go, and in the visual job before its timed browser step.
+        *[pinned_step(job, step, ENVOY, BROWSER_CONNECTIONS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/store/cmd/connections"],
              "go run ./internal/dispatch/store/cmd/connections, which prints testlimits.ServerConnections",
              {"mode": "build"}),
-        ], workflow=BROWSER_SITE),
+        ], workflow=BROWSER_SITE)
+          for job, step in ((BROWSER_BINARIES, BROWSER_CONNECTIONS_STEP),
+                            (BROWSER_VISUAL, BROWSER_VISUAL_CONNECTIONS_STEP))],
         # The multiprocess job builds the server once, so its two processes find it current and
         # start in seconds rather than waiting out run-server.sh's own build in each boot wait.
         # The line has an `-o`, which is no form this check reduces, so the entry pins the whole

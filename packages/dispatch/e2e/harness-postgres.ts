@@ -67,10 +67,12 @@ const superuserReserved = 3;
  *  a room, a lease or a socket, and nothing in that failure names the cause. The first stack
  *  that starts reads it, once per run.
  *
- *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number: the `shard` and `alone` jobs of
- *  `.github/workflows/dispatch-browser.yaml` run in a container with no Go, so their `binaries`
- *  job runs `connectionsArgs` and hands them its output. Unset, which is a developer's or an
- *  issue pod's run, where Go is installed, the harness runs `go` with `connectionsArgs` itself. */
+ *  `DISPATCH_E2E_PG_CONNECTIONS`, when set, is that number. Every job of
+ *  `.github/workflows/dispatch-browser.yaml` that starts stacks here sets it from a step that
+ *  runs `connectionsArgs` before its browser step: the `shard` and `alone` jobs run in a
+ *  container with no Go, so their `binaries` job runs it, and the `visual` job runs it in a step
+ *  of its own, outside its browser step's budget. Unset, which is a developer's or an issue
+ *  pod's run, where Go is installed, the harness runs `go` with `connectionsArgs` itself. */
 let maxConnections: Promise<number> | undefined;
 async function readMaxConnections(env: NodeJS.ProcessEnv): Promise<number> {
   const given = env[pgConnectionsVariable];
