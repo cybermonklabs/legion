@@ -545,6 +545,26 @@ export const phoneShotRoutes: readonly ReviewedRoute[] = reviewed.filter((route)
  *  is what the reservation is for - but what is inside it does, and both layers want the real
  *  margin rather than the box kept for it.
  *
+ *  The issue page's chrome is the third. Its header and its tab strip are chunks of their own,
+ *  each behind a `Suspense` whose fallback is that part's skeleton, and on a document address
+ *  the page holds both as the same skeletons until the editor's first batch
+ *  (`web/src/features/issue/IssuePage.tsx`, `issue-page-skeleton.tsx`,
+ *  `features/doc/AfterTheFirstBatch.tsx`). The skeletons carry the test ids `issue-header-box`
+ *  and `issue-tabs-box` and the parts they stand in for carry neither. No row's own locator
+ *  proves the chrome, because each names something in its tab panel, and the panel can commit
+ *  before the chrome does. Nor does `toHaveScreenshot`'s stabilisation catch it: its two
+ *  identical captures are 100 ms apart, and React holds a boundary's retry back for up to
+ *  300 ms after the last fallback any boundary on the page showed or hid (react-dom's
+ *  `FALLBACK_THROTTLE_MS`). Run 43579010512 shot `issue-artifacts` in that state: the artifact
+ *  list drawn, the header and the strip still skeletons, and 46,079 pixels off - every glyph of
+ *  the main column, and the list 2 px higher, because the strip's skeleton stands 2 px short of
+ *  that page's strip. Its trace has both skeletons in the DOM when the light shot began, and
+ *  the reads the header makes as it mounts - the repository mappings and the architecture
+ *  sources - going out about 285 ms into the shot and about 310 ms after the first frame that
+ *  shows the skeleton. So this waits for both skeletons to be gone, after the row's own
+ *  locators: before those the page may still be drawing "Loading issue…", which has neither
+ *  box.
+ *
  *  The landing highlight is the last of that page-wide half, and the only one of these that
  *  ends on a clock rather than on an answer: an address that names an artifact rings that
  *  artifact's header for two seconds, to tell the reader which thing on the page they
@@ -569,4 +589,6 @@ export async function waitForRouteSettled(page: Page, route: ReviewedRoute): Pro
   await expect(page.locator("[data-markdown-pending]")).toHaveCount(0);
   await expect(page.locator("[data-margin-pending]")).toHaveCount(0);
   await expect(page.locator("[data-landing-ring]")).toHaveCount(0);
+  await expect(page.getByTestId("issue-header-box")).toHaveCount(0);
+  await expect(page.getByTestId("issue-tabs-box")).toHaveCount(0);
 }

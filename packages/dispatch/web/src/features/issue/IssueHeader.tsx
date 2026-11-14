@@ -77,9 +77,13 @@ import {
   issueClosedCalloutClassName,
   issueHeaderFrameClassName,
   issueKeyBadgeClassName,
+  issueKeyTextClassName,
+  issueStateButtonClassName,
   issueStatusPillClassName,
   issueStatusPillDotClassName,
+  issueStatusSelectClassName,
   issueTitleBoxClassName,
+  issueTitleTextClassName,
 } from "./issue-header-classes";
 import { issuePriority } from "./issue-priority";
 import { PriorityEditor } from "./PriorityControl";
@@ -450,7 +454,7 @@ export function IssueHeader({
         <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
           <div className="flex shrink-0 items-center gap-1 self-start">
             <p
-              className={`${issueKeyBadgeClassName} font-mono text-sm font-semibold ${badgePrimary.bg} ${badgePrimary.text}`}
+              className={`${issueKeyBadgeClassName} ${issueKeyTextClassName} ${badgePrimary.bg} ${badgePrimary.text}`}
             >
               {issue.key}
             </p>
@@ -485,7 +489,7 @@ export function IssueHeader({
               />
             ) : (
               <h1
-                className={`min-w-0 flex-1 break-words rounded-lg border px-2 py-1 text-[22px] leading-7 font-semibold tracking-tight md:py-0 ${borderTransparent} ${textPrimaryOnSurface} ${
+                className={`${issueTitleBoxClassName} ${issueTitleTextClassName} ${borderTransparent} ${textPrimaryOnSurface} ${
                   isClosed ? "" : `cursor-text ${borderStrongHover}`
                 }`}
                 onClick={() => {
@@ -530,7 +534,7 @@ export function IssueHeader({
             />
             <select
               aria-label="Status"
-              className={`min-w-0 appearance-none font-inherit outline-none disabled:cursor-not-allowed disabled:opacity-50 ${bgTransparent} ${statusPill.text}`}
+              className={`${issueStatusSelectClassName} ${bgTransparent} ${statusPill.text}`}
               disabled={isClosed || updateIssue.isPending}
               onChange={(event) => drafts.requestStatusSubmit(event.target.value)}
               value={pendingStatus ?? issue.status}
@@ -604,7 +608,7 @@ export function IssueHeader({
               <ClaimChip claim={issue.claim} liveness={issue} />
               <button
                 aria-label={`Release the claim on ${issue.key}`}
-                className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+                className={`${issueStateButtonClassName} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
                 disabled={releaseClaim.isPending}
                 onClick={() => releaseClaim.mutate()}
                 title="Release this claim so another agent can take the issue"
@@ -617,7 +621,7 @@ export function IssueHeader({
           {isClosed ? null : (
             <button
               aria-label="Close issue"
-              className={`min-h-11 shrink-0 rounded-lg px-2 py-2 text-sm font-medium sm:px-3 md:min-h-8 md:py-1 xl:px-2 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
+              className={`${issueStateButtonClassName} ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
               disabled={updateIssue.isPending}
               onClick={() => drafts.requestStatusSubmit("done")}
               type="button"

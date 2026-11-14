@@ -19,8 +19,17 @@ import type { DispatchReferenceRoute } from "../refs/routes";
 const toolbarButton = `min-h-11 shrink-0 rounded-lg px-3 py-2 text-sm font-medium md:min-h-8 md:py-1 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder}`;
 
 /** Compact primary-Spec controls displayed at the end of the active issue tab row. `reference`
- *  is the document as shown — the spec, or a historical version of it. */
+ *  is the document as shown — the spec, or a historical version of it.
+ *
+ *  `held` is the toolbar standing in the space the page keeps for the tab strip until the
+ *  strip lands (`issue-page-skeleton.tsx`'s `IssueTabsSkeleton`). It is drawn whole there, at
+ *  its own size and wrapping where it wraps - a dot alone in its row left the second row the
+ *  toolbar takes at a phone width unkept, 52 px of strip that landed on the reader - but every
+ *  control in it is `inert`: the controls wait for the strip, and a press on one goes through to
+ *  the space, which hands the reader the strip (`ChromeAfterTheFirstBatch`). The connection dot
+ *  alone is live, since it is the document's own state and not the page's chrome. */
 export function SpecToolbar({
+  held = false,
   isClosed,
   onShowDiffChange,
   onVersionChange,
@@ -29,6 +38,7 @@ export function SpecToolbar({
   toolbar,
   version,
 }: {
+  held?: boolean;
   isClosed: boolean;
   onShowDiffChange(next: boolean): void;
   onVersionChange(version: number | null): void;
@@ -46,6 +56,7 @@ export function SpecToolbar({
       <select
         aria-label="Version"
         className={`min-h-11 min-w-0 max-w-48 truncate rounded border px-2 py-2 text-sm md:min-h-8 md:py-1 ${inputClasses(false)}`}
+        inert={held}
         onChange={(event) =>
           onVersionChange(event.target.value === "" ? null : Number(event.target.value))
         }
@@ -63,18 +74,22 @@ export function SpecToolbar({
         aria-label="Name version"
         className={`${toolbarButton} ${secondaryButtonDisabledText}`}
         disabled={isClosed || toolbar.isNamingVersion}
+        inert={held}
         onClick={toolbar.requestNamedVersion}
         type="button"
       >
         Name
       </button>
       <ConnectionDot connection={toolbar.connection} pending={toolbar.pending} />
-      <CopyRefButton route={reference} />
+      <span className="contents" inert={held}>
+        <CopyRefButton route={reference} />
+      </span>
       {version === undefined ? (
         <>
           <button
             aria-label="Copy link to block"
             className={`${toolbarButton} ${secondaryButtonDisabledText}`}
+            inert={held}
             onClick={() => {
               void toolbar.copyBlockLink().then(
                 (copied) => setCopyFeedback(copied ? "copied" : "failed"),
@@ -95,7 +110,12 @@ export function SpecToolbar({
           )}
         </>
       ) : (
-        <button className={toolbarButton} onClick={() => onShowDiffChange(!showDiff)} type="button">
+        <button
+          className={toolbarButton}
+          inert={held}
+          onClick={() => onShowDiffChange(!showDiff)}
+          type="button"
+        >
           {showDiff ? "Show version" : "Diff vs current"}
         </button>
       )}

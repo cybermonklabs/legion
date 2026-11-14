@@ -17,6 +17,7 @@ import { chunkComponent } from "../../components/chunk-component";
 import { QueryError } from "../../components/QueryError";
 import { tabButtonId } from "../../components/Tabs";
 import {
+  bgTransparent,
   borderDefault,
   dangerText,
   linkHoverText,
@@ -30,12 +31,11 @@ import {
 import { ArtifactRoutePanel } from "../artifacts/ArtifactRoutePanel";
 import { ChromeAfterTheFirstBatch } from "../doc/AfterTheFirstBatch";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { ConnectionDot } from "../doc/ConnectionDot";
 import { afterTheFirstBatch } from "../doc/first-batch";
 import type { DocumentToolbar } from "../doc/ProofDocument";
 import { putTheBoxAt, whatScrolls, whereTheReaderIs } from "../doc/readers-place";
 import { outsideAskCard } from "../inbox/ask-card";
-import { statusText } from "../project/board-model";
+import { issueStatuses, openIssueStatuses, statusLabel, statusText } from "../project/board-model";
 import {
   buildReferencePath,
   documentRoute,
@@ -46,10 +46,18 @@ import {
 import { useKeymap, useKeymapScope } from "../shell/keymap";
 import { NotFoundPage } from "../shell/NotFoundPage";
 import { useDocumentTitle } from "../shell/useDocumentTitle";
+import { badgeSelectBadge, badgeSelectWrapper } from "./badge-select";
 import { ItemMatchList } from "./ItemMatchList";
-import { issueStatusPillClassName, issueStatusPillDotClassName } from "./issue-header-classes";
-import { IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
+import {
+  issueStateButtonClassName,
+  issueStatusPillClassName,
+  issueStatusPillDotClassName,
+  issueStatusSelectClassName,
+} from "./issue-header-classes";
+import { HeldWords, IssueHeaderSkeleton, IssueTabsSkeleton } from "./issue-page-skeleton";
+import { issuePriority } from "./issue-priority";
 import { issueTabChunks } from "./issue-tab-list";
+import { ProgressChips } from "./ProgressChips";
 import { stateForIssue } from "./pins";
 import { forgetTheReach, reachingTheChrome } from "./reaching-the-chrome";
 import { SpecToolbar } from "./SpecToolbar";
@@ -185,18 +193,29 @@ function ItemLandingFailure({
 }
 
 /**
- * What the issue's header tells a reader without being asked, inside the state row: where its
- * work stands, and what a review of its spec has decided. It stands in the box the header
- * keeps until the editor's first batch (`issue-page-skeleton.tsx`, dispatch://INFRA-341 R11).
+ * The header's state row, as the box the header keeps until the editor's first batch draws it
+ * (`issue-page-skeleton.tsx`, dispatch://INFRA-341 R11): what the header tells a reader without
+ * being asked - where the work stands and what a review of its spec has decided - and a box for
+ * each control the row draws beside them, in the row's own order and at each control's own size.
+ * The row wraps at a phone width, so a box short of a control is a row short of the header: the
+ * pill alone stood in one row where the header draws two at 390 px, and the document moved by
+ * the second as the header landed.
+ *
  * The third thing the header says unasked - that the issue is closed - is a block above these
  * rows there and in the box too, so the box keeps its height: `IssueHeaderSkeleton`'s own
  * `isClosed`.
  *
  * Every word of it is the issue and its primary document, both of which the page has read
  * before it draws anything, so none of it is one of the reads the hold moved, and the header
- * says the same three things when it lands. The controls that stand beside them there - Reopen,
- * the status pick, Approve and Request changes - are not here: a press on this box is how a
- * reader asks for a control, and it hands them the header itself.
+ * says the same three things when it lands. The controls are boxes and not controls: the
+ * status pick is the header's own `<select>`, `inert`, since a select is as wide as its widest
+ * option; priority, assignee, Release and Close are `HeldWords` in their own badges and buttons.
+ * A press on this box is how a reader asks for a control, and it hands them the header itself.
+ *
+ * Not kept: the claim chip, whose words are the holder's live name and liveness from the agent
+ * registry, the route markers, which read that registry too, and a gated project's review
+ * steps, which read the project list - each a read the hold defers. An issue carrying one of
+ * them lands its header taller than this box by what it wraps.
  */
 function WhatTheHeaderWouldSay({
   artifact,
@@ -205,6 +224,8 @@ function WhatTheHeaderWouldSay({
   artifact: Artifact;
   issue: IssueDetails;
 }): ReactNode {
+  const isClosed = issue.closed_at !== null;
+  const priority = issuePriority(issue.priority);
   return (
     <>
       {/* The status pill at the size the header's own pick stands at, from the one place both
@@ -214,10 +235,47 @@ function WhatTheHeaderWouldSay({
         className={`${issueStatusPillClassName} ${borderDefault} ${statusPill.bg} ${statusPill.text}`}
       >
         <span aria-hidden="true" className={`${issueStatusPillDotClassName} ${statusPillDot}`} />
-        <span className="sr-only">Status</span>
-        {statusText(issue.status)}
+        <span className="sr-only">Status: {statusText(issue.status)}</span>
+        <select
+          className={`${issueStatusSelectClassName} ${bgTransparent} ${statusPill.text}`}
+          defaultValue={issue.status}
+          inert
+          key={issue.status}
+        >
+          {(isClosed ? issueStatuses : openIssueStatuses).map((status) => (
+            <option key={status} value={status}>
+              {statusLabel(status)}
+            </option>
+          ))}
+        </select>
       </span>
+      <span className={badgeSelectWrapper}>
+        <span className={badgeSelectBadge}>
+          <HeldWords words={priority === null ? "Priority" : `P${priority}`} />
+        </span>
+      </span>
+      <span className={badgeSelectWrapper}>
+        <span className={badgeSelectBadge}>
+          <HeldWords words={issue.assignee ?? "Unassigned"} />
+        </span>
+      </span>
+      <ProgressChips bar progress={issue.progress} />
       <ApprovalChip artifact={artifact} asText variant="header" />
+      {issue.claim === null ? null : (
+        <span className={`${issueStateButtonClassName} inline-flex items-center`}>
+          <HeldWords words="Release" />
+        </span>
+      )}
+      {isClosed ? null : (
+        <span className={`${issueStateButtonClassName} inline-flex items-center`}>
+          <span className="sm:hidden">
+            <HeldWords words="Close" />
+          </span>
+          <span className="hidden sm:inline">
+            <HeldWords words="Close issue" />
+          </span>
+        </span>
+      )}
     </>
   );
 }
@@ -614,6 +672,42 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   const issueKey = issue.data.key;
   const selectDocumentVersion = (artifact: Artifact, version: number | null) =>
     navigate(buildReferencePath(documentRoute(artifact, version ?? undefined)));
+  // The Spec tab's toolbar, which the strip trails and the strip's space draws held, so both
+  // stand at the toolbar's own size (`SpecToolbar`'s `held`).
+  const specToolbarFor = (held: boolean) =>
+    activeTab === "spec" && specToolbar !== undefined ? (
+      <SpecToolbar
+        held={held}
+        isClosed={isClosed}
+        onShowDiffChange={setSpecShowDiff}
+        onVersionChange={(version) => {
+          setSpecShowDiff(false);
+          selectDocumentVersion(primaryArtifact, version);
+        }}
+        reference={documentRoute(
+          primaryArtifact,
+          isPrimaryArtifactRoute ? artifactRoute?.version : undefined
+        )}
+        showDiff={specShowDiff}
+        toolbar={specToolbar}
+        version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
+      />
+    ) : undefined;
+  const headerSpace = (
+    <IssueHeaderSkeleton
+      isClosed={isClosed}
+      issueKey={issueKey}
+      state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
+      title={issue.data.title}
+    />
+  );
+  const tabsSpace = (
+    <IssueTabsSkeleton
+      activeTab={activeTab}
+      artifactCount={(issue.data.artifacts ?? []).length}
+      trailing={specToolbarFor(true)}
+    />
+  );
 
   return (
     <section ref={page}>
@@ -621,23 +715,8 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           lands, and in its box again while the header's chunk arrives: a reader is told the
           issue is closed, where its work stands and what a review of its spec decided, without
           having to press for it (`WhatTheHeaderWouldSay`). */}
-      <ChromeAfterTheFirstBatch
-        label="Show the issue header"
-        space={
-          <IssueHeaderSkeleton
-            isClosed={isClosed}
-            state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
-          />
-        }
-      >
-        <Suspense
-          fallback={
-            <IssueHeaderSkeleton
-              isClosed={isClosed}
-              state={<WhatTheHeaderWouldSay artifact={primaryArtifact} issue={issue.data} />}
-            />
-          }
-        >
+      <ChromeAfterTheFirstBatch label="Show the issue header" space={headerSpace}>
+        <Suspense fallback={headerSpace}>
           <IssueHeader
             documentArtifact={primaryArtifact}
             isClosed={isClosed}
@@ -647,39 +726,13 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
           />
         </Suspense>
       </ChromeAfterTheFirstBatch>
-      {/* The open document's connection dot stands in the strip's space until the strip itself
-          lands, and in the box again while the strip's chunk arrives. A reader whose edits are
-          in this browser alone is told so while the document is still connecting, which is
-          exactly when no first batch comes to draw the strip (`issue-page-skeleton.tsx`,
-          `features/doc/first-batch.ts`). */}
-      <ChromeAfterTheFirstBatch
-        label="Show the issue tabs"
-        space={
-          <IssueTabsSkeleton
-            artifactCount={(issue.data.artifacts ?? []).length}
-            trailing={
-              activeTab === "spec" && specToolbar !== undefined ? (
-                <ConnectionDot connection={specToolbar.connection} pending={specToolbar.pending} />
-              ) : undefined
-            }
-          />
-        }
-      >
-        <Suspense
-          fallback={
-            <IssueTabsSkeleton
-              artifactCount={(issue.data.artifacts ?? []).length}
-              trailing={
-                activeTab === "spec" && specToolbar !== undefined ? (
-                  <ConnectionDot
-                    connection={specToolbar.connection}
-                    pending={specToolbar.pending}
-                  />
-                ) : undefined
-              }
-            />
-          }
-        >
+      {/* The Spec tab's toolbar stands held in the strip's space until the strip itself lands,
+          and in the box again while the strip's chunk arrives, its connection dot live. A reader
+          whose edits are in this browser alone is told so while the document is still
+          connecting, which is exactly when no first batch comes to draw the strip
+          (`issue-page-skeleton.tsx`, `features/doc/first-batch.ts`). */}
+      <ChromeAfterTheFirstBatch label="Show the issue tabs" space={tabsSpace}>
+        <Suspense fallback={tabsSpace}>
           <IssueTabs
             activeTab={activeTab}
             artifactCount={(issue.data.artifacts ?? []).length}
@@ -687,25 +740,7 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
             onBeforeTabChange={(current) => {
               panelScroll.current[current] = whereTheReaderIs(theBoxThatScrollsIt());
             }}
-            toolbar={
-              activeTab === "spec" && specToolbar !== undefined ? (
-                <SpecToolbar
-                  isClosed={isClosed}
-                  onShowDiffChange={setSpecShowDiff}
-                  onVersionChange={(version) => {
-                    setSpecShowDiff(false);
-                    selectDocumentVersion(primaryArtifact, version);
-                  }}
-                  reference={documentRoute(
-                    primaryArtifact,
-                    isPrimaryArtifactRoute ? artifactRoute?.version : undefined
-                  )}
-                  showDiff={specShowDiff}
-                  toolbar={specToolbar}
-                  version={isPrimaryArtifactRoute ? artifactRoute?.version : undefined}
-                />
-              ) : undefined
-            }
+            toolbar={specToolbarFor(false)}
           />
         </Suspense>
       </ChromeAfterTheFirstBatch>

@@ -5,7 +5,6 @@ import {
   tabCountClassName,
   tabListClassName,
   tabStripClassName,
-  tabTrailingClassName,
 } from "../../components/tab-classes";
 import {
   borderTransparent,
@@ -16,13 +15,36 @@ import {
   skeletonBg,
   textTransparent,
 } from "../../theme/classes";
+import type { IssueTab } from "../refs/routes";
 import {
   issueClosedCalloutClassName,
   issueHeaderFrameClassName,
   issueKeyBadgeClassName,
+  issueKeyTextClassName,
   issueTitleBoxClassName,
+  issueTitleTextClassName,
 } from "./issue-header-classes";
 import { issueTabs } from "./issue-tab-list";
+
+/**
+ * Words the part will draw, standing where it draws them as a pulsing placeholder of exactly
+ * their size: in the font of the box they are put in, so they wrap where the part's own words
+ * wrap and the box stands at the part's own height.
+ *
+ * They are drawn as generated content (`attr(data-words)`) rather than as text, and hidden from
+ * assistive technology, because they are not the page yet: a text node would be a second copy of
+ * the issue's title, key or assignee in the page for every reader and every query of it until
+ * the part lands, and the reader is told none of them here.
+ */
+export function HeldWords({ words }: { words: string }): ReactNode {
+  return (
+    <span
+      aria-hidden="true"
+      className={`animate-pulse rounded box-decoration-clone before:content-[attr(data-words)] ${textTransparent} ${skeletonBg}`}
+      data-words={words}
+    />
+  );
+}
 
 /**
  * The two pieces of the issue page a reader has before the page itself: the header's box and the
@@ -50,11 +72,16 @@ import { issueTabs } from "./issue-tab-list";
  * part itself: `components/tab-classes.ts` and the sizes named below carry no component into the
  * shell's own task.
  *
- * `state` is the one thing in the header's box that is not a placeholder: what the header
- * would tell the reader about this issue without being asked - where its work stands, and what
- * a review of its spec has decided (`IssuePage.tsx`). A reader presses the box for a control
- * and has the header then, which is no use to one who was never told there was anything to
- * press for, so the notices stand in it and the controls wait.
+ * `state` is the state row as the header will draw it: what the header would tell the reader
+ * about this issue without being asked - where its work stands, and what a review of its spec
+ * has decided - and the boxes of the controls beside it (`IssuePage.tsx`). A reader presses the
+ * box for a control and has the header then, which is no use to one who was never told there was
+ * anything to press for, so the notices stand in it and the controls wait.
+ *
+ * `issueKey` and `title` are the two words of the first row, drawn as `HeldWords` in the
+ * header's own fonts (`issue-header-classes.ts`): the title is the line that wraps, and the
+ * key's width is where it starts. `IssuePageFallback` has read no issue and passes neither, so
+ * its box keeps one line for each.
  *
  * `isClosed` is the third of those notices, and it is a block of its own rather than a word in
  * `state`, because that is what the header draws for it: a full-width callout above the three
@@ -66,10 +93,14 @@ import { issueTabs } from "./issue-tab-list";
  */
 export function IssueHeaderSkeleton({
   isClosed = false,
+  issueKey,
   state,
+  title,
 }: {
   isClosed?: boolean;
+  issueKey?: string;
   state?: ReactNode;
+  title?: string;
 }): ReactNode {
   return (
     // The header's own frame, from the one place both are built from
@@ -97,17 +128,30 @@ export function IssueHeaderSkeleton({
       <div className="flex flex-wrap items-center gap-2">
         <div className="flex min-w-0 grow basis-full flex-col gap-2 sm:flex-row sm:items-start 2xl:basis-auto">
           {/* The key badge's box: the header's own `px-2.5 py-1.5` around a 20 px line, so
-              32 px. The placeholder inside is a block, not an inline box, so the line it makes
-              is exactly the line the key's own text makes. */}
+              32 px, and the copy control beside it, at `components/CopyButton.tsx`'s own
+              icon-only size: 44 px below md, which is the row's height there, and the badge's
+              width and its own are where the title starts from sm up. */}
           <div className="flex shrink-0 items-center gap-1 self-start">
-            <p className={issueKeyBadgeClassName}>
-              <span className={`block h-5 w-14 animate-pulse rounded ${skeletonBg}`} />
+            <p className={`${issueKeyBadgeClassName} ${issueKeyTextClassName}`}>
+              {issueKey === undefined ? (
+                <span className={`block h-5 w-14 animate-pulse rounded ${skeletonBg}`} />
+              ) : (
+                <HeldWords words={issueKey} />
+              )}
             </p>
+            <span className="min-h-11 min-w-11 shrink-0 md:min-h-8 md:min-w-8" />
           </div>
           <div className="flex min-w-0 flex-1 items-start gap-2">
-            {/* The title's box: the heading's own border and padding around its 28 px line. */}
-            <h1 className={`${issueTitleBoxClassName} ${borderTransparent}`}>
-              <span className={`block h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
+            {/* The title's box: the heading's own border and padding around its 28 px lines,
+                as many of them as the title wraps to in the heading's own font. */}
+            <h1
+              className={`${issueTitleBoxClassName} ${issueTitleTextClassName} ${borderTransparent}`}
+            >
+              {title === undefined ? (
+                <span className={`block h-7 w-2/3 animate-pulse rounded ${skeletonBg}`} />
+              ) : (
+                <HeldWords words={title} />
+              )}
             </h1>
             {/* The pin's box, at `components/PinButton.tsx`'s own size. It answers no press:
                 a press anywhere in this box hands the reader the header itself
@@ -161,26 +205,28 @@ export function IssueHeaderSkeleton({
  * issue's own. `IssuePageFallback` has read no issue yet and passes none; it keeps the box for
  * a page whose only content below is this skeleton's own rows.
  *
+ * `activeTab` is the tab the strip will draw selected, whose 2 px underline adds to its height
+ * from md up wherever its content is taller than the tab's minimum: the Artifacts tab with its
+ * count stands at 42 px there, not 40. Drawn unselected, that tab's box was 2 px short, and the
+ * whole Artifacts panel moved down by 2 px when the strip landed - every glyph of the column in
+ * CI run 43579010512's diff of `issue-artifacts`. So the selected tab is drawn selected.
+ *
  * Each tab is a pulsing box the width of its own name rather than a tab that reads as one: the
  * strip is what the reader presses, and nothing there answers a press or a screen reader.
  *
- * `trailing` is the one thing in this box that is not a placeholder: the open document's
- * connection dot, which the strip itself carries in the same place (`Tabs`'s own `trailing`,
- * inside `SpecToolbar`). It is the document's own state rather than the page's chrome, and the
- * moment a reader most needs it - the document is not connected and their edits are in this
- * browser alone - is exactly the moment no first batch comes to draw the strip
- * (`features/doc/first-batch.ts`, dispatch://INFRA-341 R11).
- *
- * It stands in the toolbar's own box (`tabTrailingClassName`) at the toolbar's own height,
- * because that is where the strip puts it: below `md` the toolbar is `w-full` and takes a row
- * of its own under the tabs, a `min-h-11` select and the row's `gap-1`, and a dot drawn inline
- * there left all of it unkept - 48 px of strip landing on the reader, on the very viewport
- * this box is written for.
+ * `trailing` is what the strip trails, drawn where the strip draws it (`Tabs`'s own `trailing`):
+ * the Spec tab's toolbar, held (`SpecToolbar`'s `held`), so it stands at its own size, wrapping
+ * where it wraps, and carries the open document's connection dot. The dot is the document's own
+ * state rather than the page's chrome, and the moment a reader most needs it - the document is
+ * not connected and their edits are in this browser alone - is exactly the moment no first batch
+ * comes to draw the strip (`features/doc/first-batch.ts`, dispatch://INFRA-341 R11).
  */
 export function IssueTabsSkeleton({
+  activeTab,
   artifactCount = 0,
   trailing,
 }: {
+  activeTab?: IssueTab;
   artifactCount?: number;
   trailing?: ReactNode;
 }): ReactNode {
@@ -188,7 +234,7 @@ export function IssueTabsSkeleton({
     <div className={tabStripClassName(true)} data-testid="issue-tabs-box">
       <div aria-hidden="true" className={tabListClassName(true)}>
         {issueTabs(artifactCount).map((tab) => (
-          <span className={tabClassName(true, false)} key={tab.id}>
+          <span className={tabClassName(true, tab.id === activeTab)} key={tab.id}>
             <span className={`animate-pulse rounded ${textTransparent} ${skeletonBg}`}>
               {tab.label}
             </span>
@@ -200,9 +246,7 @@ export function IssueTabsSkeleton({
           </span>
         ))}
       </div>
-      {trailing === undefined ? null : (
-        <div className={`${tabTrailingClassName} min-h-11 md:min-h-8`}>{trailing}</div>
-      )}
+      {trailing}
     </div>
   );
 }

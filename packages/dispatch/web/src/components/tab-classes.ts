@@ -38,8 +38,12 @@ export function tabListClassName(compact: boolean): string {
 export const tabTrailingClassName =
   "flex w-full min-w-0 flex-wrap items-center gap-2 md:ml-auto md:w-auto";
 
-/** One tab. The selected one carries a 2 px underline and a heavier weight, neither of which
- *  changes its height: the minimum is 44 px and the content under it stands at 38 px. */
+/** One tab. The selected one carries a 2 px underline and a heavier weight. The underline adds
+ *  to the tab's height wherever its content is taller than its minimum: below md the minimum is
+ *  44 px and nothing a tab holds reaches it, but a compact tab's minimum is 36 px from md, and
+ *  one carrying a count stands at 40 px there, so selected it stands at 42. The box the issue
+ *  page keeps for its strip draws the selected tab selected for that reason
+ *  (`features/issue/issue-page-skeleton.tsx`). */
 export function tabClassName(compact: boolean, selected: boolean): string {
   const minHeight = compact ? "min-h-11 md:min-h-9" : "min-h-11";
   const padding = compact ? "px-1.5 md:px-2" : "px-3";

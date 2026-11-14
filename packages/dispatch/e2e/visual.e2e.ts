@@ -123,10 +123,12 @@
  *    scrolled to, so a scroll position is in no baseline either, and a change below the fold is
  *    reviewed like one above it. Each project pins its viewport, so the width and every layout
  *    breakpoint are fixed and only the page's own height follows its content.
- *  - Lazy chunks, a pending query, a document still connecting, a reference still resolving. One
- *    wait covers them all: `waitForRouteSettled` (e2e/review-routes.ts), which the accessibility
- *    layer calls too, so no baseline is of a skeleton, of a route whose chunk is still coming or
- *    of a page that is still filling itself in.
+ *  - Lazy chunks, a pending query, a document still connecting, a reference still resolving, an
+ *    issue's header or tab strip still its skeleton. One wait covers them all:
+ *    `waitForRouteSettled` (e2e/review-routes.ts), which the accessibility layer calls too, so
+ *    no baseline is of a skeleton, of a route whose chunk is still coming or of a page that is
+ *    still filling itself in. The skeleton is the one run 43579010512 shot `issue-artifacts`
+ *    in, 46,079 pixels off; that function's comment has its trace.
  */
 import { readFileSync } from "node:fs";
 import { type Browser, expect, test } from "@playwright/test";
