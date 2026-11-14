@@ -322,8 +322,27 @@ const BrokerCallWait = 30 * time.Second
 // and 8 s.
 const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
 
+// ErrNoReply is in every Call error that comes after the helper was sent the whole request: the
+// helper gave no reply the client could read. No line came before the connection closed or the
+// timeout passed, or the line is not one JSON object. So the client does not know what the helper
+// did with the request: for a broker-call op, the broker may have acted on it. Test for it with
+// errors.Is. The error's text stays the failure's own.
+var ErrNoReply = errors.New("the helper gave no reply")
+
+// noReplyError is a Call failure that comes after the whole request was written. It reads as the
+// failure it wraps, so every message made from it reads as before. It unwraps to that failure and
+// to ErrNoReply, so errors.As on the failure and errors.Is(err, ErrNoReply) both hold.
+type noReplyError struct{ err error }
+
+func (e *noReplyError) Error() string { return e.err.Error() }
+
+func (e *noReplyError) Unwrap() []error { return []error{e.err, ErrNoReply} }
+
 // Call sends one request and reads one reply, all within timeout, the dial included (the dial
-// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack.
+// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack. An
+// error after the whole request was written (no reply line within the timeout, or a reply that
+// is not one JSON object) also matches ErrNoReply, because the helper may have acted on the
+// request. A failed dial, marshal or write does not: the helper did not get the whole request.
 func Call(sock string, req Request, timeout time.Duration) (Response, error) {
 	deadline := time.Now().Add(timeout)
 	conn, err := (&net.Dialer{Timeout: 2 * time.Second, Deadline: deadline}).Dial("unix", sock)
@@ -341,11 +360,11 @@ func Call(sock string, req Request, timeout time.Duration) (Response, error) {
 	}
 	line, err := bufio.NewReaderSize(conn, maxLine).ReadBytes('\n')
 	if err != nil && !errors.Is(err, io.EOF) {
-		return Response{}, err
+		return Response{}, &noReplyError{err: err}
 	}
 	var resp Response
 	if err := json.Unmarshal(line, &resp); err != nil {
-		return Response{}, fmt.Errorf("helper reply is not one JSON object: %w", err)
+		return Response{}, &noReplyError{err: fmt.Errorf("helper reply is not one JSON object: %w", err)}
 	}
 	return resp, nil
 }
