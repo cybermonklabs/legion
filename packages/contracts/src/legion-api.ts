@@ -376,7 +376,7 @@ const legionPullRequestView = z.object({
   reviewDecision: nonEmptyString.optional(),
 });
 
-/** `api.MergeWaitView` — what an issue's review round waits on from GitHub (contract 115). It is
+/** `api.MergeWaitView` — what an issue's review round waits on from GitHub (contract 129). It is
  * present only while the round waits on GitHub's merge state for the pull request's head
  * (`classify.RoundWaitsOnMergeState`): a reviewer's approval stands on the head the pull request
  * is at, and the merge state the record holds for that head is not one the issue may advance on.
@@ -731,10 +731,10 @@ const legionIssue = z.object({
   why: legionWhyView.optional(),
   waitingOn: legionWaitingOn.optional(),
   check: legionCheckView.optional(),
-  /** `mergeWait` is what this issue's review round waits on from GitHub (contract 115): present
+  /** `mergeWait` is what this issue's review round waits on from GitHub (contract 129): present
    * only while the round waits on GitHub's merge state for the pull request's head, so every
    * issue whose round waits on nothing from GitHub has none, and a daemon before `mergeWait`'s
-   * contract 115 writes none at all (`api.stateFor`, `withoutMergeWait`), which is why a reader
+   * contract 129 writes none at all (`api.stateFor`, `withoutMergeWait`), which is why a reader
    * takes it as optional. */
   mergeWait: legionMergeWaitView.optional(),
   /** The memory group of the issue's tree: `memory` for a tree whose roles run with the project's
@@ -1528,10 +1528,17 @@ export const LegionControllerGrantRequest = z.strictObject({
  * Dispatch and refuses when it is missing (`HANDOFF_RECORD_REQUIRED`), unknown
  * (`HANDOFF_RECORD_NOT_FOUND`), unreadable (`DISPATCH_READ_FAILED`), of another issue, phase or
  * version (`HANDOFF_RECORD_MISMATCH`), or written by another session than the claim's
- * (`HANDOFF_SESSION_MISMATCH`). `commit` is the implementer's (its pushed tip for an implementing
- * round, the commit it stands on for retro) and the head the merger merged; the planner, the tester
- * and the reviewer report none, and a check report carries neither (the look pushed nothing), so
- * all three are optional here, and the daemon requires each where it applies. `verdict` is `pass`
+ * (`HANDOFF_SESSION_MISMATCH`). `commit` on such a completion is the head that record's body
+ * names (`head`, the 40-character lower-case commit the work the handoff reports was done
+ * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
+ * the implementer's completion before it goes when its `implement` record names no head, when the
+ * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
+ * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
+ * the reviewer's completion without one. Retro and every completion of a phase its
+ * role does not work report the commit the workspace stands on instead, the merger's reports the
+ * head the merger merged, and a check report carries neither commit nor record (the look pushed
+ * nothing), so all three are optional here, and the daemon requires each where it applies.
+ * `verdict` is `pass`
  * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
  * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
  * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the

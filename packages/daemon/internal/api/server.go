@@ -1054,7 +1054,7 @@ const phaseEntriesContract = 94
 const quietTimeContract = 111
 
 // mergeWaitContract is the daemon contract that added `mergeWait`, what a reviewing issue's
-// round waits on from GitHub (version.go's 115). A plugin before it is served the state without
+// round waits on from GitHub (version.go's 129). A plugin before it is served the state without
 // the object: one built before sjawhar/legion#2788 reads it with a strict schema and would
 // refuse the whole body for a key it does not name, and one built after strips the key instead,
 // so the strip is what keeps the object from a caller that did not ask for it rather than what
@@ -1062,7 +1062,7 @@ const quietTimeContract = 111
 // number dispatch://INFRA-3027 declares and no band of another change: a caller from a pod
 // below it is served the state without `mergeWait`, whatever else the contracts it does reach
 // give it.
-const mergeWaitContract = 115
+const mergeWaitContract = 129
 
 // carriesUpdateRounds is whether any claim view of state carries `updateRound` or `updateHead`.
 func carriesUpdateRounds(state State) bool {

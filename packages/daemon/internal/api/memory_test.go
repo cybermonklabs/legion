@@ -243,7 +243,7 @@ func TestTheStateRouteServesAPodItsPluginContractsIssues(t *testing.T) {
 		// The band from 98 to 110, from heldContract to below quietTimeContract: the held list is
 		// served too, and every key a later row of stateNarrowings adds is held back.
 		{name: "a pod at heldContract", remote: statePodAddr + ":41000", claims: podClaims(heldContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true},
-		// The band from 111 to 114, from quietTimeContract to below mergeWaitContract, the last
+		// The band from 111 to 128, from quietTimeContract to below mergeWaitContract, the last
 		// band under the declared contract: the tree quiet time is served too, and every key a
 		// later row of stateNarrowings adds is held back.
 		{name: "a pod at quietTimeContract", remote: statePodAddr + ":41000", claims: podClaims(quietTimeContract), memory: true, trees: true, rounds: true, wakes: true, steps: true, retired: true, stall: true, line: true, moves: true, refresh: true, failure: true, answers: true, leak: true, entries: true, held: true, quiet: true},

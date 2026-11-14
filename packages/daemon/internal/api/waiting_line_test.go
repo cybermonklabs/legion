@@ -270,7 +270,7 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 	// The literal is a deliberate pin of the number the version.go entry that added the merge wait
 	// declares: a renumber moves it with the other sites, and the test fails while
 	// mergeWaitContract says another number.
-	const addedMergeWait = 115
+	const addedMergeWait = 129
 	if mergeWaitContract != addedMergeWait {
 		t.Fatalf("mergeWaitContract = %d, want %d, the contract whose entry in version.go added what a review round waits on from GitHub",
 			mergeWaitContract, addedMergeWait)

@@ -1,10 +1,10 @@
 // The harness this package's whole-daemon live proofs share: every *_live_test.go of this package
-// that embeds liveProof, those that drive real Oh My Pi panes through liveAgentProof among them.
-// Each one carrying the `e2e` build tag is built by a script of its own under scripts/e2e, which
-// makes the same run around it through scripts/e2e/lib/live-daemon-proof.sh;
-// admission_issues_live_test.go, which carries no build tag, runs in the ordinary
-// `go test ./internal/daemon/` on the broker that package's other tests take (newLiveProofOn over
-// workflowNATS), which is why this file carries no build tag of its own.
+// that embeds liveProof, directly or through live_issue_proof_test.go's liveIssueProof, those that
+// drive real Oh My Pi panes through liveAgentProof among them. Each one carrying the `e2e` build tag
+// is built by a script of its own under scripts/e2e, which makes the same run around it through
+// scripts/e2e/lib/live-daemon-proof.sh; admission_issues_live_test.go, which carries no build tag,
+// runs in the ordinary `go test ./internal/daemon/` on the broker that package's other tests take
+// (newLiveProofOn over workflowNATS), which is why this file carries no build tag of its own.
 //
 // A driver embeds liveProof, which holds what every such proof needs before and around the daemon
 // it boots: the configuration it boots with (newLiveProof reads the broker LEGION_E2E_NATS_URL

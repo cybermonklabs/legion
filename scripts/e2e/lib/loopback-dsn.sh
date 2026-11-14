@@ -25,7 +25,7 @@
 # DATABASE_URL once for dispatch-two-builds.sh and dispatch-search-two-builds.sh. The ninth is
 # lib/live-daemon-proof.sh, whose prerequisites check
 # reads LEGION_TEST_PG_DSN for each proof that makes that run, which is every entry script that
-# sources it. Seven of the nine call this function.
+# sources it. Seven of the nine call sites call this function.
 # envoy-session-delivery.sh and dispatch-session-settings.sh read their DSN with
 # run_database_url alone, which begins with this guard's own check. Every proof that writes a
 # server its caller's DSN names reads that DSN with this guard before it starts anything.
