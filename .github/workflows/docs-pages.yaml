@@ -89,6 +89,7 @@ on:
       - 'packages/daemon/internal/leakguard/*'
       - 'packages/daemon/internal/lookpath/*'
       - 'packages/daemon/internal/memorygroup/*'
+      - 'packages/daemon/internal/memoryguard/*'
       - 'packages/daemon/internal/modeltoken/*'
       - 'packages/daemon/internal/natsauth/*'
       - 'packages/daemon/internal/notify/*'
