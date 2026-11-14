@@ -5,14 +5,14 @@
 // them then. None of these rows is timed: each reads what the page drew and which side of the
 // first batch it fell on, never how long any of it took.
 //
-// These rows stood in `large-documents-first-screen.e2e.ts` until that file reached 1,391 lines;
-// they are a file of their own under a name that lists right after it, so every project runs
-// them in the order it did. The reads the page holds behind the same batch, and the rest of
+// These rows stood in `large-documents-first-screen.e2e.ts` until that file was split at its
+// seams; they are a file of their own under a name that lists right after it, so every project
+// runs them in the order it did. The reads the page holds behind the same batch, and the rest of
 // what a reader is given before their editor, are in that file; the reach these rows take by
 // pointer, taken by a reader with no pointer, is in
-// `large-documents-first-screen.the-keyboard.e2e.ts`. What the eleven `large-documents-*`
-// files share is `large-documents-rows.ts`, and what these three read the page's order by is
-// `large-documents-after-the-batch.ts`.
+// `large-documents-first-screen.the-keyboard.e2e.ts`. What these three read the page's order by
+// is `large-documents-after-the-batch.ts`. The other files of this family, and what each holds,
+// are listed once, at the head of `large-documents-rows.ts`, which holds what they share.
 import { expect, test } from "@playwright/test";
 
 import { createAsk, patchIssue } from "./api";

@@ -2,19 +2,21 @@
 # Tests for `check-readers-place.sh`: a read of the window's scroll with no comment above it
 # fails and is named with a GitHub annotation; a direct write of a scroll in the other package
 # fails too, so both roots are really scanned; a reason on the line directly above passes, and
-# one two lines up does not, which is the whole of the one-line window; the shapes a reader
-# could satisfy the check with without writing a reason - an arithmetic `*` line, a `//` inside
-# a string, a generator method's `*rows() {`, and a comment with no word in it (an empty `//` or
-# `/**/`, the ` */`, ` **/` or JSX `*/}` that closes a comment about something else) - all fail;
+# one two lines up does not, which is the whole of the one-line window, and a reason written as
+# a JSX comment passes on one line or over two; the shapes a reader could satisfy the check
+# with without writing a reason - an arithmetic `*` line, a `//` inside a string, a generator
+# method's `*rows() {`, and a comment with no word in it (an empty `//` or `/**/`, the ` */`,
+# ` **/` or JSX `*/}` that closes a comment about something else) - all fail;
 # a site named inside a comment is prose and is not counted, while a site on a generator
 # method's own line is code and is, and so is a site after a comment that closes on its line
 # (`/* fine */ window.scrollTo(` or a `*/` closing one opened above), a line that is no reason
 # for the one under it either; the module the rule exists for, and the suite's own test
 # files, are outside the reach; a read of a box's own `scrollTop`, or a comparison of it, is not
 # a reading of a reader's place while `documentElement.scrollTop` is, through `?.` too; every
-# write of `scrollTop` counts, by name or bracketed name and by `=`, any compound assignment, or
-# `++` or `--` before or after it, while `rows[++i].scrollTop` is a read; every call that moves
-# a scroll counts, by each of its spellings - `scrollTo(`, `scrollBy(`, `scrollIntoView(`,
+# write of `scrollTop` counts, by name or bracketed name and by `=`, any compound assignment,
+# `++` or `--` after it, or `++` or `--` before a receiver that is a name, a member chain or an
+# index of one, while `rows[++i].scrollTop` is a read; every call that moves a scroll counts,
+# by each of its spellings - `scrollTo(`, `scrollBy(`, `scrollIntoView(`,
 # `scrollIntoViewIfNeeded(`, the `.scroll(` alias, any of them by bracketed name
 # (`window["scrollTo"](`), written as an optional call or made through `.call(` or `.apply(`,
 # and a `.scrollTop =` whose value a formatter has put on the next line - and so does every
@@ -445,6 +447,41 @@ check "names the site under an empty //" "$(contains "$out" 'Surface.tsx:3')"
 check "names the site under an empty /**/" "$(contains "$out" 'Surface.tsx:5')"
 check "names the site under a **/ closer" "$(contains "$out" 'Surface.tsx:8')"
 check "names the site under a JSX */} closer" "$(contains "$out" 'Surface.tsx:15')"
+
+echo "case: a reason written as a JSX comment passes, on one line or over two"
+root=$(fixture jsx_reasons)
+surface "$root" <<'EOF'
+export function View(): JSX.Element {
+  return (
+    <div>
+      {/* the editor's own focus scroll */}
+      <b ref={(element) => element?.scrollIntoView()} />
+      {/*
+        * the editor's own focus scroll */}
+      <b ref={(element) => element?.scrollIntoView()} />
+      {/* the editor's own
+        * focus scroll */}
+      <b ref={(element) => element?.scrollIntoView()} />
+    </div>
+  );
+}
+EOF
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "counts all three, each under its reason" "$(contains "$out" 'every one of the 3 scroll sites')"
+
+echo "case: a closing brace after a bare comment is code, so that line is no reason"
+root=$(fixture brace_after_comment)
+surface "$root" <<'EOF'
+export function edge(box: HTMLElement): void {
+  if (box.isConnected) {
+    /* the editor's own focus scroll */ }
+  box.scrollIntoView();
+}
+EOF
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+check "names the site under it" "$(contains "$out" 'Surface.tsx:4')"
 
 echo "case: an increment or decrement of scrollTop counts, before or after it, by name or bracketed name"
 root=$(fixture step_write)

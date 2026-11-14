@@ -21,19 +21,25 @@
 # the one module.
 #
 # Its reach is the product code of the two packages: every .ts and .tsx file under
-# packages/dispatch/web/src and packages/proof-editor/src, less the module itself. It refuses
+# packages/dispatch/web/src and packages/proof-editor/src, less the module itself. It reads each
+# line of those files on its own, and on it refuses
 #   * a read of `scrollY` or `pageYOffset` by any spelling - `window.scrollY`, or the bare name
 #     a destructuring leaves behind (`const { scrollY } = window`) - a read of
 #     `documentElement.scrollTop` or `documentElement?.scrollTop`, or a mention of
 #     `scrollingElement`, which is that same box of the page under another name: these are "how
-#     far down the page the reader is", and
+#     far down the page the reader is";
 #   * a write of `scrollTop`, by name (`.scrollTop`) or by bracketed name (`["scrollTop"]`),
 #     with `=` or any compound assignment (`+=`, `-=`, `*=`, `**=`, `??=`, `||=`, `&&=` and the
 #     rest), the `=` ending its own line included where a formatter has put a long value on the
-#     next one, or with `++` or `--` before or after it, or a call of `scrollTo(`, `scrollBy(`,
-#     `scrollIntoView(`, `scrollIntoViewIfNeeded(` or `.scroll(` - the alias of `scrollTo` - by
-#     name or by bracketed name (`window["scrollTo"](`), each of them made plainly, optionally
-#     (`scrollIntoView?.(`) or through `.call(` or `.apply(`, which are the ways a scroll is moved.
+#     next one, with `++` or `--` after it, or with `++` or `--` before it where the receiver is
+#     a name, a member chain or an index of one (`++box.scrollTop`, `--rows[i]["scrollTop"]`);
+#     and
+#   * a call of `scrollTo(`, `scrollBy(`, `scrollIntoView(`, `scrollIntoViewIfNeeded(` or
+#     `scroll(` - the alias of `scrollTo`, on a receiver or on none - by name or by bracketed
+#     name (`window["scrollTo"](`), each of them made plainly, optionally (`scrollIntoView?.(`)
+#     or through `.call(` or `.apply(`, which are the ways a scroll is moved. The five names are
+#     written once (`NAMES`, below), and both forms are built from that one list.
+# `check-readers-place.test.sh` holds the cases for these spellings, and is the list of them.
 # Reads of `element.scrollTop` other than the document element's are left alone, a comparison
 # (`box.scrollTop >= n`) among them: that is a box's own geometry, which `whereTheReaderIs` is
 # itself written in terms of and which a scroller may legitimately measure (`use-live-follow.ts`
@@ -41,19 +47,30 @@
 # One further shape is outside the rule rather than missed by it: `scrollLeft` is how far across
 # a box stands, which is not where a reader is in a document. A `scroll(` with no receiver is
 # read as a site, because `scroll({ top: 0 })` on its own is the window's own alias, and a local
-# function of that name is renamed rather than excused - the tree holds none today. What it
-# cannot see is a site the formatter has split over two lines so that neither line holds a shape
-# above, and a call taken off its receiver without being made (`const go = window.scrollTo`, a
-# `.bind(`) - those are a reviewer's to catch.
+# function of that name is renamed rather than excused - the tree holds none today.
 #
-# Test files are outside that reach - `*.test.ts`, `*.test.tsx`, and anything under a `__tests__`
-# directory. A unit test of this behaviour is the browser: its harness defines `window.scrollY`,
-# writes `scrollTop` to stand for the reader's own hand on the scrollbar, and asserts on both to
-# say where the page left the reader. Those 276 sites are the measurement rather than the thing
-# measured, and 228 of them carry no reason above them today, so a check that refused them would
-# be answered by 228 reason lines that each said "this is a test", which buys a reader nothing. A
-# test cannot introduce the defect either: the class is a surface reading or writing the wrong
-# box, and no test ships.
+# What it does not read. A text check is as wide as its patterns, and JavaScript has more
+# spellings of a property than a pattern over one line lists, so these pass it unrefused:
+#   * `++` or `--` before a receiver written through a non-null `!`, parentheses or a call -
+#     `++ref.current!.scrollTop`, `++(box).scrollTop`, `++(el as HTMLElement).scrollTop`,
+#     `++g().scrollTop` - where the same step after any of those receivers is refused; neither
+#     package holds such a step today;
+#   * a site the formatter has split over two lines so that neither line holds a shape it reads;
+#   * a call taken off its receiver without being made (`const go = window.scrollTo`, a
+#     `.bind(`); and
+#   * every other spelling the three kinds it refuses do not name - a property name computed at
+#     run time, `Reflect.set`, a name held in a variable of its own.
+# A spelling outside what it reads is the reviewer's to catch, not this check's: it is widened
+# to one only where the tree holds a live site of it.
+#
+# Test files are not among the files it reads - `*.test.ts`, `*.test.tsx`, and anything under a
+# `__tests__` directory. A unit test of this behaviour is the browser: its harness defines
+# `window.scrollY`, writes `scrollTop` to stand for the reader's own hand on the scrollbar, and
+# asserts on both to say where the page left the reader. Those 276 sites are the measurement
+# rather than the thing measured, and 228 of them carry no reason above them today, so a check
+# that refused them would be answered by 228 reason lines that each said "this is a test", which
+# buys a reader nothing. A test cannot introduce the defect either: the class is a surface
+# reading or writing the wrong box, and no test ships.
 #
 # The escape is the one the fireEvent gate has (`check-fireevent-reasons.sh`): a comment on the
 # line directly above the site, saying why this site is not the page's place-keeping. Two kinds
@@ -69,10 +86,10 @@
 # reason five lines up is a reason for whatever was there when it was written.
 #
 # What it buys and what it does not. It makes an unexamined reading or write, in any of the
-# spellings above, impossible to add: the only way one lands is under a line of prose a reviewer
-# can read and judge. Any comment with a word in it satisfies the check, so whether a reason is
-# a true one is the reviewer's to judge, as it is for the fireEvent gate. A gate checks what a
-# program can check.
+# spellings it reads, impossible to add: the only way one lands is under a line of prose a
+# reviewer can read and judge. Any comment with a word in it satisfies the check, so whether a
+# reason is a true one is the reviewer's to judge, as it is for the fireEvent gate. A gate
+# checks what a program can check.
 #
 # A comment is a line whose trimmed text begins with `//`, `/*`, JSX's `{/*`, or a run of `*`
 # that whitespace, a `/` or the line's end follows, and nothing else is: a `//` inside a string,
@@ -81,9 +98,11 @@
 # and on the line above it, where the same URL would otherwise count as a reason. A comment that
 # closes on its line gives the rest of the line back to code: what follows a `/* … */` or the
 # `*/` of a comment opened above (`/* fine */ window.scrollTo(0, 0);`) is read as code in both
-# places too, so a site there is counted and the line is no reason for the one under it. A site
-# written inside a real comment is prose and is not counted, which is what lets this file's own
-# siblings name `scrollIntoView(` while explaining a rule. A comment with no word in it is no
+# places too, so a site there is counted and the line is no reason for the one under it. The `}`
+# that ends JSX's `{/* … */}` goes with the `*/` before it, wherever the `{/*` opened, so a JSX
+# reason written over two lines is a reason as one written on a single line is. A site written
+# inside a real comment is prose and is not counted, which is what lets this file's own siblings
+# name `scrollIntoView(` while explaining a rule. A comment with no word in it is no
 # reason: an empty `//` or `/**/`, and a line holding nothing but the ` */`, ` **/` or JSX `*/}`
 # that closes a comment, since what that ends was written about whatever stood above the site,
 # so a site under it is bare.
@@ -111,9 +130,9 @@ READ = re.compile(
 ASSIGN = r"\s*(?:\*\*|\?\?|\|\||&&|>>>|<<|>>|[-+*/%&|^])?=(?![=>])"
 # `scrollTop` by name or by bracketed name.
 TOP = r"""(?:\.scrollTop|\[\s*["'`]scrollTop["'`]\s*\])"""
-# The calls that move a scroll, by name, and the same calls with `.scroll(` by bracketed name.
-MOVES = r"(?:scrollTo|scrollBy|scrollIntoView|scrollIntoViewIfNeeded)"
-BRACKETED = r"""\[\s*["'`](?:scrollTo|scrollBy|scrollIntoView|scrollIntoViewIfNeeded|scroll)["'`]\s*\]"""
+# The calls that move a scroll, written once: the call by name and the call by bracketed name
+# are both built from this one list.
+NAMES = r"(?:scrollTo|scrollBy|scrollIntoView|scrollIntoViewIfNeeded|scroll)"
 # A call, plain or optional, or made through `.call` or `.apply`.
 CALL = r"\s*(?:(?:\?\.|\.)\s*(?:call|apply)\s*)?(?:\?\.)?\("
 WRITE = re.compile(
@@ -123,9 +142,8 @@ WRITE = re.compile(
     # name begins it and each `]` closes a `[` of its own, so `rows[++i].scrollTop` is the read
     # it is.
     + r"|(?:\+\+|--)\s*[\w$][\w$.]*(?:\[[^\]]*\][\w$.]*)*" + TOP + r"(?![\w$])"
-    + r"|\b" + MOVES + CALL
-    + r"|" + BRACKETED + CALL
-    + r"|(?:\.|\b)scroll" + CALL
+    + r"|\b" + NAMES + CALL
+    + r"""|\[\s*["'`]""" + NAMES + r"""["'`]\s*\]""" + CALL
 )
 # Where a line opens a comment: `//`, `/*`, JSX's `{/*`, or a run of `*` only where whitespace,
 # a `/` or the line's end follows it, so a generator method (`*walk() {`) is code.
@@ -155,8 +173,11 @@ def code_of(line: str) -> str:
         closer = rest.find("*/", start)
         if closer == -1:
             return ""
+        # A `}` after the closer, spaces aside, is the end of JSX's `{/* … */}`, whether its
+        # `{/*` opened on this line or on one above. A comment this line opens with a bare `/*`
+        # is no JSX comment, so a `}` after it is code and the line is no reason.
         rest = rest[closer + 2 :]
-        if token == "{/*":
+        if token.startswith("{") or not token.startswith("/"):
             rest = re.sub(r"^\s*\}", "", rest)
     return rest
 

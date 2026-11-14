@@ -378,7 +378,7 @@ export function clockSpecsNamed(...names: readonly string[]): RegExp {
  *  the listing Playwright cuts its shards from, so all three landed in the last shard at once
  *  (`shard (5)` of run 43421318396: 1.8 min, 51.8 s and 39.3 s of its 499 s).
  *
- *  Spelled once here and read three times - by the pattern below, which is `iphone`'s
+ *  Spelled once here and read twice - by the pattern below, which is `iphone`'s
  *  `testIgnore` beside `clockSpecPattern` and `iphone-long-build-alone`'s `testMatch`, so the
  *  files the one project drops are the files the other takes; and by
  *  `e2e/__tests__/row-configurations.test.ts`, which holds that project to the rows it owns. */

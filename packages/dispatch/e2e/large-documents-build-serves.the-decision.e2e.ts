@@ -8,13 +8,17 @@
 // and the same build, with the card the reader answers inside the blocks the server draws into
 // the page it sends. Why the row needs it there is in its own comment.
 //
-// This row stood in `large-documents-build-serves.e2e.ts`, beside the timer row, until that
-// file passed 1,000 lines. It is a file of its own under a name that lists right after it, and
-// like it this file is `iphone-alone`'s and no other project's: that project names both in its
-// `testMatch` and every parallel project ignores both (`clockSpecNames`,
-// e2e/configurations.ts), so the leg runs the two rows one at a time in the order it did. What
-// the eleven `large-documents-*` files share is `large-documents-rows.ts`, which holds the probe
-// this row reads a build through (`whatTheBuildServes`).
+// This row stood in `large-documents-build-serves.e2e.ts`, beside the timer row, until it was
+// moved into a file of its own under a name that lists right after that one, and like it this
+// file is `iphone-alone`'s and no other project's: that project names both in its `testMatch`
+// and every parallel project ignores both (`clockSpecNames`, e2e/configurations.ts), so the leg
+// runs the two rows one at a time in the order it did.
+//
+// The row reads the build's window through `watchTheBuildsWindow` (`large-documents-page.ts`),
+// and takes its seed, the document's own count of top-level blocks and the two editor
+// selectors from `large-documents-rows.ts` (`seedDocument`, `topLevelBlocks`, `liveEditorRoot`,
+// `namedEditor`). The other files of this family, and what each holds, are listed once, at the
+// head of that file.
 import { expect, type Page, test } from "@playwright/test";
 
 import { listIssueAsks } from "./api";

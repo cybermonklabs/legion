@@ -21,13 +21,9 @@
 // document on the screen. The phone is where it failed, which is why it carries `@phone`.
 //
 // It seeds the one short section `shortDocument` spells, because where the first block stands
-// is the same over any length of document. The other rows over these documents are in
-// the three `large-documents-first-screen.*.e2e.ts` files, `large-documents-build.e2e.ts`,
-// `large-documents-reader.e2e.ts`, `large-documents-long-build.e2e.ts`,
-// `large-documents-measured.e2e.ts`, `large-documents-build-serves.e2e.ts`,
-// `large-documents-build-serves.the-decision.e2e.ts` and
-// `large-documents-desktop-build.e2e.ts`. What the eleven files share is
-// `large-documents-rows.ts`.
+// is the same over any length of document. The other files of this family, and what each
+// holds, are listed once, at the head of `large-documents-rows.ts`, which holds what they
+// share.
 import { type BrowserContext, expect, type Page, test } from "@playwright/test";
 
 import { documentEditor } from "./editor";

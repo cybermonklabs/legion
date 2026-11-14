@@ -4,7 +4,8 @@
 // because it needs a build that lasts - a build of a few seconds hands over too few timers and
 // carries too few of another person's words to say anything. A decision the reader answers
 // inside the same build is the row of `large-documents-build-serves.the-decision.e2e.ts`,
-// which stood here until this file passed 1,000 lines and lists right after it.
+// which stood here until it was moved into a file of its own, named to list right after this
+// one.
 //
 // This file and that one are `iphone-alone`'s and no other project's: that project names both
 // in its `testMatch` and every parallel project ignores both (`clockSpecNames`,
@@ -14,19 +15,9 @@
 // wide instead, which is a reading of the other three lanes, with every suite green
 // (sjawhar/legion#2697).
 //
-// The two measurements R11's targets are read from are `iphone-measure-alone`'s, in
-// `large-documents-measured.e2e.ts` - a project and a leg of their own, because each takes
-// three readings and holds the median of them - and the longest main-thread task of a build at
-// a desktop width is `chromium-alone`'s, in `large-documents-desktop-build.e2e.ts`. What a
-// build of this document costs the page with no number read from the clock is
-// `large-documents-long-build.e2e.ts`, which the parallel projects run.
-//
-// Every other row of what was one file reads an order, a place or a count rather than a clock,
-// and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
-// `large-documents-reader.e2e.ts`, the three `large-documents-first-screen.*.e2e.ts` files and
-// `large-documents-fold.e2e.ts`, and what the eleven files share is `large-documents-rows.ts`,
-// which holds the probe the row below and the decision row read a build through
-// (`whatTheBuildServes`).
+// The other files of this family, and what each holds, are listed once, at the head of
+// `large-documents-rows.ts`, which holds what they share - among it the probe the row below
+// reads a build through (`whatTheBuildServes`).
 import { expect, test } from "@playwright/test";
 
 import { documentNames, largeDocument } from "./large-documents";

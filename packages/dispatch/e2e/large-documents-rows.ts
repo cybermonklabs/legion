@@ -9,7 +9,7 @@
 // They were one file until the `iphone` half of it cost a browser shard 610 s of a step that is
 // given 540 (dispatch://INFRA-341, run 42794865122's `shard (4)`), and Playwright hands a
 // file's rows to one shard, so a file larger than the budget fits in none of them. Four of
-// the eleven are read from the wall clock, and each of those is one project's alone,
+// the eleven are read from the wall clock, and each of those runs in one project and no other,
 // because a wall-clock project selects by file (`clockSpecNames`, e2e/configurations.ts):
 // `large-documents-measured.e2e.ts` (`iphone-measure-alone`: the two measurements R11's
 // targets are read from), `large-documents-build-serves.e2e.ts` and
@@ -18,14 +18,19 @@
 // `large-documents-desktop-build.e2e.ts` (`chromium-alone`: the longest main-thread task of a
 // build at a desktop width). The seven the parallel projects run are
 // `large-documents-long-build.e2e.ts` (what a build of the larger document costs the page, with
-// no number read from the clock), `large-documents-build.e2e.ts` (what stands on the reader's
-// screen while the editor is built), `large-documents-reader.e2e.ts` (what a reader does with a
-// document whose editor is still being built, and the rest of acceptance A7),
+// no number read from the clock; its phone half is `iphone-long-build-alone`'s, a leg of its
+// own), `large-documents-build.e2e.ts` (what stands on the reader's screen while the editor is
+// built), `large-documents-reader.e2e.ts` (what a reader does with a document whose editor is
+// still being built, and the rest of acceptance A7),
 // `large-documents-first-screen.e2e.ts` (the draw the server sends, and the reads the page holds
 // until the editor's first batch), `large-documents-first-screen.the-chrome.e2e.ts` (the chrome
 // the page holds until that batch), `large-documents-first-screen.the-keyboard.e2e.ts` (a reader
 // with no pointer reaching for that chrome) and `large-documents-fold.e2e.ts` (where that chrome
 // leaves the server's first block).
+//
+// This list is the one place the family's files are named with what each holds. The other
+// files point here rather than copy it, so a file added or split is written in here and in no
+// other header.
 //
 // The documents themselves are `large-documents.ts`, and what a page announces about its own
 // draw and its build is `large-documents-page.ts`.
@@ -49,12 +54,13 @@ import { resetDatabase } from "./seed";
 
 // What a row of the shards waits for the page to draw is bounded, so a page that never draws it
 // fails the row by name inside the leg it runs in, rather than at that leg's step budget, which
-// names no row and keeps no report. The two bounds below are the ones six files share:
-// `large-documents-first-screen.e2e.ts` and its two siblings
+// names no row and keeps no report. The two bounds below are shared: `aDrawWithinMs` is the
+// bound six files share - `large-documents-first-screen.e2e.ts` and its two siblings
 // `large-documents-first-screen.the-chrome.e2e.ts` and
 // `large-documents-first-screen.the-keyboard.e2e.ts`, `large-documents-reader.e2e.ts`,
-// `large-documents-build.e2e.ts` and `large-documents-fold.e2e.ts`. A bound only one file's
-// waits need is that file's, beside what those waits cost.
+// `large-documents-build.e2e.ts` and `large-documents-fold.e2e.ts` - and `aLongDrawWithinMs`
+// the one `large-documents-first-screen.e2e.ts` and its chrome sibling share. A bound only one
+// file's waits need is that file's, beside what those waits cost.
 //
 // The leg. These rows run in the shards, `chromium` and `iphone` four workers wide, under the
 // browser step's 540 s with one retry (.github/workflows/dispatch-browser.yaml). What a leg
@@ -63,8 +69,12 @@ import { resetDatabase } from "./seed";
 // time, less what it costs when it passes, to the worker it runs on. And the fault the bounds
 // are for - an editor that never opens - fails the rows of all six files at once, in whichever
 // leg holds them: what a bound has to fit is the sum of that over every row of these files one
-// leg holds, shared over its four workers, and not one file's rows. What a file's own rows add
-// when they fail is written in that file, beside its own bounds.
+// leg holds, shared over its four workers, and not one file's rows. That sum is not measured:
+// no file of this family gives it, so this is a rule the bounds are written to and not a figure
+// shown to fit the step. Four of the six files write what their own rows add when they fail,
+// beside their own bounds - `large-documents-build.e2e.ts`, `large-documents-reader.e2e.ts`,
+// `large-documents-first-screen.e2e.ts` and `large-documents-fold.e2e.ts` - and the chrome and
+// keyboard files write nothing of it; each of those figures is one file's, not the sum.
 //
 // What the waits cost, timed on this pod, one worker on two CPUs (dispatch://INFRA-341), the
 // slower of `chromium` and `iphone`. Bounded by `aDrawWithinMs`, the slowest of each file:
@@ -593,12 +603,14 @@ export async function theOtherPersonsPen(
 }
 
 // The probe the wall-clock rows read a build through, and the selectors it carries. It is here
-// rather than in one spec file because three files read it: the timer row and the decision row
-// of `large-documents-build-serves.e2e.ts`, which `iphone-alone` runs, the desktop guard of
-// `large-documents-desktop-build.e2e.ts`, which `chromium-alone` runs, and the edit row of
-// `large-documents-long-build.e2e.ts`, which takes the two selectors alone. What the probe
-// writes is the three window readings declared above - `__servedTimers`, `__theBuildRan` and
-// `__theirWordsServed` - so the writer stands beside the declarations of what it writes.
+// rather than in one spec file because four files read it: the timer row of
+// `large-documents-build-serves.e2e.ts`, which `iphone-alone` runs, and the desktop guard of
+// `large-documents-desktop-build.e2e.ts`, which `chromium-alone` runs, read a build through the
+// probe; the decision row of `large-documents-build-serves.the-decision.e2e.ts`, which
+// `iphone-alone` runs too, and the edit row of `large-documents-long-build.e2e.ts` take the two
+// selectors alone. What the probe writes is the three window readings declared above -
+// `__servedTimers`, `__theBuildRan` and `__theirWordsServed` - so the writer stands beside the
+// declarations of what it writes.
 
 /** The editor a reader already has while the rest of its blocks are built, as a selector an
  *  init script can carry (`editorBeingBuilt` is the same root as a locator). */
@@ -911,12 +923,13 @@ export function builtAcross(served: readonly ServedLate[]): [number, number] {
  * across it: two of them at least, and the editor holding more top-level blocks at the last of
  * them than at the first, which is the build's own batches arriving while they were served.
  *
- * This is the one proof this suite has that a window a row measures held a build, and the
- * three rows that read such a window use it: the timer row of
- * `large-documents-build-serves.e2e.ts`, its decision row's own window and the desktop guard
- * of `large-documents-desktop-build.e2e.ts`. It is a reading of the document rather than of
- * the runner:
- * the same batches carry the same blocks into the editor whatever the machine's speed, so the
+ * The two rows that read a window through `whatTheBuildServes` use it as their proof that the
+ * window held a build: the timer row of `large-documents-build-serves.e2e.ts` and the desktop
+ * guard of `large-documents-desktop-build.e2e.ts`. (The decision row of
+ * `large-documents-build-serves.the-decision.e2e.ts` reads its window through
+ * `watchTheBuildsWindow` instead, and holds its press to a build by the blocks the editor still
+ * owed at it.) It is a reading of the document rather than of the runner: the same batches
+ * carry the same blocks into the editor whatever the machine's speed, so the
  * rise is there on a loaded runner and on an idle one. A window the document was not built in -
  * one that ended before the first batch, or opened after the editor did - holds either no timer
  * at all or timers that all read the same count, and fails here.

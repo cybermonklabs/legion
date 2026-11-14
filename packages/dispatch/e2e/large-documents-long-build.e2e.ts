@@ -18,22 +18,10 @@
 //
 // Each row seeds the larger document, because each needs a build that lasts: a window read
 // over a build of a few seconds says nothing about a build of minutes, the edit has to cross
-// one, and the ratio is about the page the whole draw leaves behind. The one other row of the
-// suite that seeds it reads the reader's place half-way down it, and is in
-// `large-documents-first-screen.e2e.ts`.
+// one, and the ratio is about the page the whole draw leaves behind.
 //
-// The rows read from the wall clock over these documents are in four files, and every parallel
-// project ignores all four (`clockSpecNames`, e2e/configurations.ts):
-// `large-documents-measured.e2e.ts` is `iphone-measure-alone`'s, the two measurements of a
-// first editable block; `large-documents-build-serves.e2e.ts` and
-// `large-documents-build-serves.the-decision.e2e.ts` are `iphone-alone`'s, the page's own clock
-// and a decision answered inside a build; and `large-documents-desktop-build.e2e.ts` is
-// `chromium-alone`'s, the longest main-thread task of a build at a desktop width.
-//
-// Every other row of what was one file reads an order, a place or a count rather than a clock,
-// and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
-// `large-documents-reader.e2e.ts`, the three `large-documents-first-screen.*.e2e.ts` files and
-// `large-documents-fold.e2e.ts`, and what the eleven files share is `large-documents-rows.ts`.
+// The other files of this family, and what each holds, are listed once, at the head of
+// `large-documents-rows.ts`, which holds what they share.
 import { type Browser, expect, type Page, test } from "@playwright/test";
 
 import { getArtifactText } from "./api";

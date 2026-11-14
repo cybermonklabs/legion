@@ -27,15 +27,8 @@
 // and an answered decision near the end of it - and a build of five times the work is what
 // they cost the lane for it (the link row says the measurement).
 //
-// The numbers R11's targets are read from are in `large-documents-measured.e2e.ts`, and the
-// rows beside them that need a build of the larger document to last are in
-// `large-documents-build-serves.e2e.ts`, `large-documents-build-serves.the-decision.e2e.ts`,
-// `large-documents-desktop-build.e2e.ts` and `large-documents-long-build.e2e.ts`; what stands
-// on the reader's screen while the editor is built is in `large-documents-build.e2e.ts`; the
-// draw the server sends, and the reads and the chrome the page holds until the first batch, are
-// in the three `large-documents-first-screen.*.e2e.ts` files, and where that chrome leaves the
-// server's first block is in `large-documents-fold.e2e.ts`. What the eleven files share is
-// `large-documents-rows.ts`.
+// The other files of this family, and what each holds, are listed once, at the head of
+// `large-documents-rows.ts`, which holds what they share.
 import { MessageType } from "@hocuspocus/provider";
 import { expect, type Locator, type Page, test } from "@playwright/test";
 import { createDecoder, readVarUint } from "lib0/decoding";

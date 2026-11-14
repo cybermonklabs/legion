@@ -2,12 +2,12 @@
 // editor's first batch: their Tab into each held box hands them the chrome it holds, and their
 // next Tab goes on into it.
 //
-// This row stood in `large-documents-first-screen.e2e.ts` until that file reached 1,391 lines;
-// it is a file of its own under a name that lists after that file and after
+// This row stood in `large-documents-first-screen.e2e.ts` until that file was split at its
+// seams; it is a file of its own under a name that lists after that file and after
 // `large-documents-first-screen.the-chrome.e2e.ts`, whose rows stood above it, so every project
-// runs it in the order it did. What the eleven `large-documents-*` files share is
-// `large-documents-rows.ts`, and what these three read the page's order by is
-// `large-documents-after-the-batch.ts`.
+// runs it in the order it did. What these three read the page's order by is
+// `large-documents-after-the-batch.ts`. The other files of this family, and what each holds,
+// are listed once, at the head of `large-documents-rows.ts`, which holds what they share.
 import { expect, type Page, test } from "@playwright/test";
 
 import { documentTransport } from "./editor";

@@ -28,19 +28,10 @@
 // under a title the pattern did not match - ran in `iphone` four workers wide instead, which
 // is a reading of the other three lanes, with every suite green (sjawhar/legion#2697).
 //
-// The other rows read from the wall clock over these documents are in three files:
-// `large-documents-build-serves.e2e.ts` and `large-documents-build-serves.the-decision.e2e.ts`
-// are `iphone-alone`'s, the page's own clock and a decision answered inside a build, and
-// `large-documents-desktop-build.e2e.ts` is `chromium-alone`'s, the longest main-thread task of
-// a build at a desktop width. What a build of the larger document costs the page with no number
-// read from the clock is `large-documents-long-build.e2e.ts`, which the parallel projects run,
-// and it holds the row that proves the window the measurements below read their longest task
-// over covers the whole build.
-//
-// Every other row of what was one file reads an order, a place or a count rather than a clock,
-// and 406,000 characters buy none of them anything: they are in `large-documents-build.e2e.ts`,
-// `large-documents-reader.e2e.ts`, the three `large-documents-first-screen.*.e2e.ts` files and
-// `large-documents-fold.e2e.ts`, and what the eleven files share is `large-documents-rows.ts`.
+// The row that proves the window the measurements below read their longest task over covers
+// the whole build is in `large-documents-long-build.e2e.ts`. The other files of this family,
+// and what each holds, are listed once, at the head of `large-documents-rows.ts`, which holds
+// what they share.
 import { expect, test } from "@playwright/test";
 
 import { documentEditor } from "./editor";
