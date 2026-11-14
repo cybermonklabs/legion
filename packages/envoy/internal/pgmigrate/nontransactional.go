@@ -71,9 +71,15 @@ func concurrentIndex(sql string) (index indexStatement, err error) {
 // builds the index again, so a timed-out or killed build does not stop every later boot. A
 // relation of that name that is not an index on the target table is refused instead, because the
 // runner did not build it and IF NOT EXISTS would skip over it.
-// The session lock_timeout is bounded exactly as Exec's transaction-local setting is, restored
-// on return, and the same lock watch diagnoses failures, the drop's as well as the build's.
-// signIn has Exec's meaning.
+// The session takes the settings that Pin gives Exec's transaction (PinSession): lock_timeout
+// bounded exactly as Exec's transaction-local setting is, the text settings (textSettings), so
+// Postgres reads the build as the census read it, and session_authorization, role and
+// search_path at the values that RESET gives them (resetSettings), so the build resolves its
+// names as the census did. Each takes its value whatever the session, a connection option or a
+// database default set. Each of the seven is read first and given its value back on return, so a
+// caller that pinned the session before it (PinSession) has the pinned values on return too,
+// whatever the build's own code set. The same lock watch diagnoses failures, the drop's as well
+// as the build's. signIn has Exec's meaning.
 func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
 	if !migration.NonTransactional {
 		return fmt.Errorf("migration %s is not marked non-transactional", migration.Name)
@@ -87,21 +93,30 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	}
 	// The settings are set before the leftover check so the drop below is bounded by
 	// LockTimeout for every caller, whatever bound the caller's session carries (the server's
-	// default is none at all).
-	var previous, stringsSetting string
-	if err := conn.QueryRow(ctx, "select current_setting('lock_timeout'), current_setting('standard_conforming_strings')").Scan(&previous, &stringsSetting); err != nil {
-		return fmt.Errorf("migration %s: read session settings: %w", migration.Name, err)
+	// default is none at all), and resolves the index's names as the build does.
+	names := make([]string, 0, len(pinSettings)+len(resetSettings))
+	for _, s := range pinSettings {
+		names = append(names, s.name)
 	}
-	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false), set_config('standard_conforming_strings', 'on', false)", lockTimeoutSetting); err != nil {
-		return fmt.Errorf("migration %s: set session settings: %w", migration.Name, err)
+	// The reset settings come last, so the restore below gives session_authorization its value
+	// back before role, as resetSettings orders them. The restore is deferred before the session
+	// is pinned, so a pin that fails after one of its statements has run leaves the session as it
+	// found it too.
+	previous, err := currentSettings(ctx, conn, append(names, resetSettings...))
+	if err != nil {
+		return fmt.Errorf("migration %s: read session settings: %w", migration.Name, err)
 	}
 	defer func() {
 		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosisCleanupTimeout)
 		defer cancel()
-		if _, restore := conn.Exec(cleanup, "select set_config('lock_timeout', $1, false), set_config('standard_conforming_strings', $2, false)", previous, stringsSetting); restore != nil {
-			err = errors.Join(err, fmt.Errorf("migration %s: restore lock_timeout: %w", migration.Name, restore))
+		restore, args := setConfig(false, previous)
+		if _, restoreErr := conn.Exec(cleanup, restore, args...); restoreErr != nil {
+			err = errors.Join(err, fmt.Errorf("migration %s: restore session settings: %w", migration.Name, restoreErr))
 		}
 	}()
+	if err := PinSession(ctx, conn); err != nil {
+		return fmt.Errorf("migration %s: %w", migration.Name, err)
+	}
 	if err := dropOwnLeftover(ctx, conn, migration, index, signIn); err != nil {
 		return err
 	}

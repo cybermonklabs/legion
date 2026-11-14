@@ -353,6 +353,16 @@ func (s *Store) applyMigrationOnce(ctx context.Context, migration pgmigrate.Migr
 	// version record still commit together, and it is released before RetryLockTimeouts pauses
 	// between attempts.
 	return s.inMigrationLockTx(ctx, func(ctx context.Context, tx pgx.Tx) error {
+		// The check below and the insert of the version name schema_migrations without its
+		// schema, and the pooled connection can carry a session that an earlier migration's
+		// stored code changed, with set_config(…, false). Pin gives the transaction the values
+		// that RESET gives session_authorization, role and search_path, under which the census
+		// reads, so the check reads the version table that the census read, and bounds it by
+		// LockTimeout. Exec pins the transaction again after the migration's statements, so the
+		// insert runs under the same values whatever the migration's own stored code set.
+		if err := pgmigrate.Pin(ctx, tx); err != nil {
+			return fmt.Errorf("pin the runner's settings: %w", err)
+		}
 		var applied bool
 		// The parameter is cast, here and in the insert below, because pgx encodes it for the
 		// column it finds: a database whose column this boot is about to widen, or one widened by
@@ -391,17 +401,24 @@ func (s *Store) applyNonTransactionalMigration(ctx context.Context, migration pg
 	if err := lockMigrations(ctx, conn); err != nil {
 		return err
 	}
+	// The check below and the version insert name schema_migrations without its schema, and the
+	// pooled connection this one was hijacked from can carry a session that an earlier
+	// migration's stored code changed. PinSession gives the session the values that RESET gives
+	// session_authorization, role and search_path, under which the census reads, and bounds the
+	// check and the insert by LockTimeout, as Pin bounds the transactional runner's. No restore
+	// follows: closeBounded closes the connection once the migration is recorded, so no later
+	// caller meets the pinned session. ExecNonTransactional gives the session back the values it
+	// found on return, which are these, so the insert after it runs under them too, whatever the
+	// build's own code set.
+	if err := pgmigrate.PinSession(ctx, conn); err != nil {
+		return fmt.Errorf("pin the runner's settings: %w", err)
+	}
 	var applied bool
 	if err := conn.QueryRow(ctx, "select exists(select 1 from schema_migrations where version = $1::bigint)", migration.Version).Scan(&applied); err != nil {
 		return fmt.Errorf("check migration: %w", err)
 	}
 	if applied {
 		return nil
-	}
-	// Keep the version insert bounded too, just as the transactional runner's SET LOCAL
-	// remains in force until commit. ExecNonTransactional restores this same session bound.
-	if _, err := conn.Exec(ctx, "select set_config('lock_timeout', $1, false)", pgmigrate.LockTimeout.String()); err != nil {
-		return fmt.Errorf("bound migration version lock waits: %w", err)
 	}
 	if err := pgmigrate.ExecNonTransactional(ctx, conn, migration, s.Pool.Config().BeforeConnect); err != nil {
 		return err

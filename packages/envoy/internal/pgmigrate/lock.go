@@ -22,8 +22,9 @@ import (
 // the services' own transactions holds a table, so an ordinary deploy never trips it, and short
 // enough that a deploy stalled behind a stray holder fails, and is noticed, instead of being
 // absorbed by every request queued behind it. Exec sets it on every migration it runs; a migration
-// that needs another bound sets its own with SET LOCAL lock_timeout, which lasts until the
-// runner's transaction ends.
+// that needs another bound sets its own with SET LOCAL lock_timeout, which lasts until its
+// statements have run. Exec then sets LockTimeout again (Pin) for the runner's own statements
+// after them, such as its insert of the migration's version.
 const LockTimeout = 5 * time.Second
 
 // diagnosisCleanupTimeout bounds the rollback and the close that end a diagnosis's connection,
@@ -43,6 +44,118 @@ const lockNotAvailable = "55P03"
 
 // lockTimeoutSetting is LockTimeout as lock_timeout takes it.
 var lockTimeoutSetting = strconv.FormatInt(LockTimeout.Milliseconds(), 10) + "ms"
+
+// setting is a run-time parameter and the value given to it.
+type setting struct{ name, value string }
+
+// textSettings are the settings under which Postgres reads a text as the census reads it. The
+// census's parser, libpg_query, reads with standard_conforming_strings on, backslash_quote at its
+// default and UTF-8 text, and offers no way to change any of them. Its scanner (scanSQL) reads
+// with standard_conforming_strings on, and so does Load's check of a census (censusTokens). Each
+// setting below changes, when it differs, how Postgres reads the same bytes:
+//
+//   - standard_conforming_strings on: off, a backslash in a plain '…' literal escapes the quote
+//     after it, so the literal runs on to the next quote, and a text the census reads as one
+//     statement can hold a second statement for the server;
+//   - backslash_quote safe_encoding, the default: off, Postgres refuses the \' of an E'…' literal
+//     (SQLSTATE 22P06), which the parser reads as an escaped quote;
+//   - client_encoding UTF8: Postgres converts a text's bytes from the client encoding before it
+//     scans them, and the census reads the text as UTF-8, as pgx sends it. In SJIS, the last byte
+//     of a UTF-8 character and a backslash after it can be one character, so that backslash
+//     escapes nothing.
+//
+// Postgres's scanner (scan.l) takes no other setting: escape_string_warning only warns. Exec,
+// ExecNonTransactional and Census set the three before the text runs, transaction-local or for the
+// session, so each applies whatever a session SET left on a pooled connection, a connection option
+// or a database default says. Each site takes them from this list, so the sites cannot drift.
+var textSettings = []setting{
+	{"standard_conforming_strings", "on"},
+	{"backslash_quote", "safe_encoding"},
+	{"client_encoding", "UTF8"},
+}
+
+// withTextSettings is settings followed by textSettings, in a slice of its own.
+func withTextSettings(settings ...setting) []setting {
+	return append(settings, textSettings...)
+}
+
+// resetSettings are the settings by which Postgres resolves a name that a migration writes
+// without its schema. search_path lists the schemas a lookup searches, and its default, "$user",
+// public, starts with the schema named for the session user, which session_authorization sets.
+// role sets the current user, whose privileges decide which of those schemas a lookup can use.
+// A migration's text can change each of them with no SET that the census reads: stored code can
+// call set_config(name, value, false) in a column default, a check constraint, a domain's check
+// or default, a view's query, a rule and more places that the catalog holds, and the runner
+// applies the next migration on the same pooled connection. On PostgreSQL 18.6 a column default
+// that called set_config put a schema first in the search_path, and the next migration's added
+// column took a domain of that schema in place of the enum that the census read, and Postgres
+// rewrote the table. Pin and Census set each of them, transaction-local, and PinSession for the
+// session, to the value that RESET gives it: the value of a connection option, the role's
+// default or the database's default, and never of a session SET.
+// So a migration resolves its names as the census resolved them, whatever an earlier migration
+// did to the session, while the census and the runner sign in as one login with the same
+// connection options. SET … TO DEFAULT gives each its value inside the server, so no value is
+// written into the text, and pg_settings, where a select could read the values, does not list
+// session_authorization or role. session_authorization comes first: setting it makes the session
+// user the current user and ends a SET ROLE, and role and "$user" both depend on it. Each site
+// takes them from this list, so the sites cannot drift.
+var resetSettings = []string{"session_authorization", "role", "search_path"}
+
+// resetLocal and resetSession are texts that set each of resetSettings, in the list's order, to
+// the value that RESET gives it: resetLocal for the current transaction alone, and resetSession
+// for the session. Each text holds one statement per setting. pgx sends a text with no argument
+// through the simple protocol, which runs every statement of the text.
+var resetLocal, resetSession = resetText("set local"), resetText("set")
+
+// resetText is the text that runs set (SET or SET LOCAL) for each of resetSettings with the
+// value DEFAULT.
+func resetText(set string) string {
+	var text strings.Builder
+	for _, name := range resetSettings {
+		fmt.Fprintf(&text, "%s %s to default;", set, name)
+	}
+	return text.String()
+}
+
+// pinSettings are the settings that Pin and PinSession give with set_config once resetSettings
+// have their reset values: lock_timeout at LockTimeout, then the text settings.
+var pinSettings = withTextSettings(setting{"lock_timeout", lockTimeoutSetting})
+
+// setConfig is a select that gives each of settings its value with set_config, for the current
+// transaction alone when local is true and for the session when it is false, and the select's
+// arguments. Each name and value is a parameter, so no value is written into the text.
+func setConfig(local bool, settings []setting) (string, []any) {
+	var query strings.Builder
+	query.WriteString("select ")
+	args := make([]any, 0, 2*len(settings))
+	for i, s := range settings {
+		if i > 0 {
+			query.WriteString(", ")
+		}
+		fmt.Fprintf(&query, "set_config($%d, $%d, %t)", 2*i+1, 2*i+2, local)
+		args = append(args, s.name, s.value)
+	}
+	return query.String(), args
+}
+
+// currentSettings reads the session's value of each setting that names holds, in the same order,
+// so that a caller that sets them for the session can give each its value back.
+func currentSettings(ctx context.Context, conn *pgx.Conn, names []string) ([]setting, error) {
+	reads := make([]string, len(names))
+	args := make([]any, len(names))
+	current := make([]setting, len(names))
+	values := make([]any, len(names))
+	for i, name := range names {
+		reads[i] = fmt.Sprintf("current_setting($%d)", i+1)
+		args[i] = name
+		current[i].name = name
+		values[i] = &current[i].value
+	}
+	if err := conn.QueryRow(ctx, "select "+strings.Join(reads, ", "), args...).Scan(values...); err != nil {
+		return nil, err
+	}
+	return current, nil
+}
 
 // LockTimeoutAttempts is how many times RetryLockTimeouts applies a migration whose lock wait
 // outlasts its lock_timeout before the runner gives up and fails. LockTimeoutRetryPause is how long
@@ -84,12 +197,67 @@ func RetryLockTimeouts(ctx context.Context, migration string, attempt func(conte
 	}
 }
 
-// Exec is how a runner applies one migration's statements in tx. It first sets tx's lock_timeout
-// to LockTimeout, so every migration a runner applies is bounded whatever the migration's file
-// says, and then runs the statements while a watch reads what tx's backend waits for. A runner
-// calls it once it holds its own advisory lock, never before: a second process's runner waiting
-// for that lock is waiting for the first to finish, which queues no read or write behind it,
-// since nothing but a runner takes that lock.
+// Pin gives tx, until it ends, the settings under which a runner applies a migration and records
+// it: session_authorization, role and search_path at the values that RESET gives them
+// (resetSettings), so a name resolves as the census resolves it, then, in one select,
+// lock_timeout at LockTimeout and the text settings (textSettings). Exec pins the migration's own
+// statements with it. A runner also pins its own statements on its version table with it, since
+// the connection its transaction runs on can carry a session that an earlier migration's stored
+// code changed: a check whether a migration is applied that resolved the version table under such
+// a session could read another schema's table of that name.
+func Pin(ctx context.Context, tx pgx.Tx) error {
+	return pin(ctx, tx, true)
+}
+
+// PinSession gives conn's session the settings that Pin gives a transaction, for a runner that
+// applies a migration outside a transaction (ExecNonTransactional) and records it on the same
+// connection. Nothing gives the session its earlier values back: a caller that keeps using conn
+// reads them first, as ExecNonTransactional does, or closes conn when it is done, as Dispatch's
+// runner does.
+func PinSession(ctx context.Context, conn *pgx.Conn) error {
+	return pin(ctx, conn, false)
+}
+
+// execer is what pin runs its statements on: a transaction or a connection.
+type execer interface {
+	Exec(ctx context.Context, sql string, arguments ...any) (pgconn.CommandTag, error)
+}
+
+// pin sets resetSettings to their reset values, then pinSettings, for the current transaction
+// alone when local is true and for the session when it is false.
+func pin(ctx context.Context, db execer, local bool) error {
+	reset := resetSession
+	if local {
+		reset = resetLocal
+	}
+	if _, err := db.Exec(ctx, reset); err != nil {
+		return fmt.Errorf("set session_authorization, role and search_path to their reset values: %w", err)
+	}
+	set, args := setConfig(local, pinSettings)
+	if _, err := db.Exec(ctx, set, args...); err != nil {
+		return fmt.Errorf("set lock_timeout and text settings: %w", err)
+	}
+	return nil
+}
+
+// Exec is how a runner applies one migration's statements in tx. It first pins tx (Pin):
+// session_authorization, role and search_path at the values that RESET gives them
+// (resetSettings), so the migration resolves its names as the census resolved them, then tx's
+// lock_timeout at LockTimeout, so every migration a runner applies is bounded whatever the
+// migration's file says, and the text settings (textSettings), so Postgres reads the migration's
+// text as the census read it. All seven are transaction-local: they end with tx, and they apply
+// whatever the connection's session carries, a setting an earlier migration left on a pooled
+// connection by a SET or through stored code that called set_config, a connection option or a
+// database default. A setting the migration's own statements change takes effect only after
+// Postgres has read the text, since Postgres reads a migration's whole text before it runs the
+// first statement. Exec then runs the statements while a watch reads what tx's backend waits for.
+// Once they have run without an error, Exec pins tx again. Stored code that the migration ran can
+// change a setting for the rest of tx, as set_config(name, value, true) does, and the runner's
+// next statements in tx, its insert of the migration's version among them, must resolve the
+// version table's name under the values that RESET gives. A runner calls Exec once it holds its
+// own advisory lock, never before: a second process's runner waiting for that lock is waiting for
+// the first to finish, which queues no read or write behind it, since nothing but a runner takes
+// that lock.
 //
 // signIn is the BeforeConnect of the pool tx came from, nil when the pool has none: the watch's
 // own connection signs in as the pool's new connections do. A pool that signs in with a token
@@ -106,10 +274,16 @@ func Exec(ctx context.Context, tx pgx.Tx, migration Migration, signIn func(conte
 	if migration.NonTransactional || nonTransactionalHeader(migration.SQL) {
 		return fmt.Errorf("migration %s is non-transactional; this transactional runner cannot apply it", migration.Name)
 	}
-	if _, err := tx.Exec(ctx, "select set_config('lock_timeout', $1, true)", lockTimeoutSetting); err != nil {
-		return fmt.Errorf("migration %s: set lock_timeout: %w", migration.Name, err)
+	if err := Pin(ctx, tx); err != nil {
+		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	return execWatched(ctx, tx.Conn(), migration, signIn)
+	if err := execWatched(ctx, tx.Conn(), migration, signIn); err != nil {
+		return err
+	}
+	if err := Pin(ctx, tx); err != nil {
+		return fmt.Errorf("migration %s: after its statements: %w", migration.Name, err)
+	}
+	return nil
 }
 
 // execWatched executes on the connection's current transaction, explicit or implicit. Both
