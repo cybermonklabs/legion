@@ -123,7 +123,7 @@ test("scripts/build-inputs.txt matches every file the build reads", async () => 
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 120_000)
+})
 
 /** The entries of scripts/build-inputs.txt that are not release inputs, so
  *  $CLAUDE_ENVOY_VERSION_ARGS does not carry them: the toolchain block the list's own header

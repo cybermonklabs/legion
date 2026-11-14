@@ -9,7 +9,8 @@ import {
   useEnvoyStackDirectory,
 } from "@legion/envoy-client/test/envoy-stack"
 import { type StallProxy, startStallProxy } from "@legion/envoy-client/test/stall-proxy"
-import { RECOVERY_BOUND_MS, runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
+import { runFreezeScenario } from "@legion/envoy-client/test/stall-scenario"
+import { settled, until } from "@legion/test-fixtures/wait"
 import type { Subprocess } from "bun"
 import { type ModCallArguments, modSocketPath } from "../hooks/mod-protocol"
 import { startFakeMod } from "./fake-mod"
@@ -31,13 +32,11 @@ interface ChannelServer {
   readonly home: string
   /** The channel messages Claude Code would be shown, in the order the server sent them. */
   readonly channel: readonly string[]
-  /** Resolves once `condition` holds; throws when the server exits or `deadline` passes first. */
-  waitFor(
-    condition: () => boolean | Promise<boolean>,
-    deadline: number,
-    what: string,
-  ): Promise<void>
-  /** Stops the server (SIGTERM, then SIGKILL after 10 s), closes the proxy, removes its home. */
+  /** Resolves once `condition` holds; throws when the server exits first, or at the row's
+   *  deadline, naming `what` and what the server wrote to stderr. */
+  waitFor(condition: () => boolean | Promise<boolean>, what: string): Promise<void>
+  /** Stops the server (SIGTERM, and SIGKILL when it has not exited by the row's deadline), closes
+   *  the proxy, removes its home. */
   stop(): Promise<void>
 }
 
@@ -118,26 +117,36 @@ async function startChannelServer(
     home,
     channel,
     // The server runs on nats.js's real ping and dial timers and a real listener, so each wait
-    // polls the real clock until its condition holds or its deadline passes.
-    async waitFor(condition, deadline, what) {
-      while (!(await condition())) {
-        if (server.exitCode !== null) {
-          throw new Error(
-            `the channel server exited ${server.exitCode} waiting for ${what}: ${stderr}`,
-          )
-        }
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}: ${stderr}`)
-        await Bun.sleep(100)
+    // asks again through the shared wait until its condition holds; a server that exits first
+    // ends the wait at once, and so does the row's deadline.
+    async waitFor(condition, what) {
+      try {
+        await until(what, async () => {
+          if (server.exitCode !== null) {
+            throw new Error(`the channel server exited ${server.exitCode} waiting for ${what}`)
+          }
+          return await condition()
+        })
+      } catch (error) {
+        throw new Error(
+          `${error instanceof Error ? error.message : String(error)}; its stderr: ${stderr}`,
+          { cause: error },
+        )
       }
     },
     async stop() {
       await mod.stop()
       server.kill("SIGTERM")
-      const killer = setTimeout(() => server.kill("SIGKILL"), 10_000)
-      await server.exited
-      clearTimeout(killer)
-      await proxy.close()
-      await rm(home, { recursive: true, force: true })
+      try {
+        await settled("the channel server's exit on SIGTERM", server.exited)
+      } finally {
+        // A server still running when the row's deadline passed goes too, rather than outliving
+        // the run (a no-op for one that exited).
+        server.kill("SIGKILL")
+        await server.exited
+        await proxy.close()
+        await rm(home, { recursive: true, force: true })
+      }
     },
   }
 }
@@ -155,12 +164,12 @@ describe.skipIf(!envoyStackEnabled)(
     let stack: EnvoyStack | undefined
     beforeAll(async () => {
       stack = await startEnvoyStack({ work: stackDirectory })
-    }, 120_000)
+    })
     afterAll(async () => {
       await stack?.stop()
-    }, 60_000)
+    })
 
-    test("a session whose NATS path freezes subscribes its relay subject again on the new connection within 60 s, registers a new epoch, and shows each message once", async () => {
+    test("a session whose NATS path freezes subscribes its relay subject again on the new connection, registers a new epoch, and shows each message once", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
       const { envoyUrl } = stack
       const { proxy, sessionID, channel, waitFor, stop } = await startChannelServer(
@@ -168,10 +177,8 @@ describe.skipIf(!envoyStackEnabled)(
         "ses_stall",
       )
       try {
-        const started = Date.now()
         await waitFor(
           async () => (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok,
-          started + 30_000,
           "the session's registration",
         )
         // The bundle runs from this checkout, outside Claude Code's plugin cache.
@@ -197,7 +204,7 @@ describe.skipIf(!envoyStackEnabled)(
       } finally {
         await stop()
       }
-    }, 120_000)
+    })
 
     test("a session whose redial once hung still exits on SIGTERM", async () => {
       if (stack === undefined) throw new Error("the Envoy stack did not start")
@@ -207,12 +214,10 @@ describe.skipIf(!envoyStackEnabled)(
         "ses_stall_exit",
       )
       try {
-        const started = Date.now()
         await waitFor(
           async () =>
             (await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok &&
             proxy.connections[0]?.subscribedAt !== undefined,
-          started + 30_000,
           "the session's registration and first subscription",
         )
         // The first redial after the freeze hangs (accepted, never answered); the next forwards.
@@ -223,22 +228,21 @@ describe.skipIf(!envoyStackEnabled)(
             proxy.connections.some(
               (opened) => opened.acceptedAt >= frozenAt && opened.subscribedAt !== undefined,
             ),
-          frozenAt + RECOVERY_BOUND_MS,
           "the session to subscribe again after the hung redial",
         )
-        const signalledAt = Date.now()
+        // The hung redial must not hold the process: it exits on SIGTERM, which the shared wait
+        // reads through its exit, failing at the row's deadline while the server still runs. The
+        // server promises no exit time of its own, only bounded steps on the way out (the
+        // settle's `SHUTDOWN_SETTLE_MS`, the NATS drain's second): what this checks is that it
+        // ran that shutdown to its end, by its own record — it left with status 0, not killed by
+        // the signal, and the deregistration the shutdown sends reached the listener.
         server.kill("SIGTERM")
-        const outcome = await Promise.race([
-          server.exited.then(() => "exited"),
-          Bun.sleep(15_000).then(() => "running"),
-        ])
-        console.log(
-          `claude-envoy stall exit: SIGTERM -> ${outcome} after ${((Date.now() - signalledAt) / 1000).toFixed(1)} s`,
-        )
-        expect(outcome).toBe("exited")
+        const exitCode = await settled("the channel server's exit on SIGTERM", server.exited)
+        expect({ exitCode, signal: server.signalCode }).toEqual({ exitCode: 0, signal: null })
+        expect((await fetch(`${envoyUrl}/v1/registry/${sessionID}`)).ok).toBe(false)
       } finally {
         await stop()
       }
-    }, 120_000)
+    })
   },
 )

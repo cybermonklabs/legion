@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { skipWithout } from "@legion/test-fixtures/host-tools"
+import { settled } from "@legion/test-fixtures/wait"
 import { queryTmux, sessionTitle, type TmuxQuery, tmuxPaneTitle } from "../src/session-title"
 
 const SESSION_ID = "3084299d-32a7-41a3-ba9b-f61675b03b8d"
@@ -413,38 +414,43 @@ test.skipIf(withoutTmux)(
   },
 )
 
-test("queryTmux is bounded even by a tmux that ignores SIGTERM", () => {
+test("queryTmux is bounded even by a tmux that ignores SIGTERM", async () => {
   const directory = mkdtempSync(join(tmpdir(), "title-tmux-"))
   const marker = join(directory, "ran")
-  writeFileSync(join(directory, "tmux"), `#!/bin/sh\ntrap "" TERM\ntouch ${marker}\nsleep 5\n`, {
-    mode: 0o755,
-  })
+  // The stub ignores TERM, and a child of its own, which ignores it too, holds the pipe open for
+  // as long as this directory stands: the test removes it only once the call has answered, so a
+  // call that waited for the stub, or for the pipe it left behind, never answers at all.
+  writeFileSync(
+    join(directory, "tmux"),
+    `#!/bin/sh\ntrap "" TERM\ntouch ${marker}\n(while [ -d ${directory} ]; do sleep 0.02; done)\n`,
+    { mode: 0o755 },
+  )
   // A child of its own, so the stub is first on the PATH it starts with, wherever the spawn looks
-  // `tmux` up. The child times its own call and prints the milliseconds beside the answer, because
-  // what is bounded is `queryTmux`, not Bun's start-up and this import, which on a loaded machine
-  // take longer than the bound itself.
+  // `tmux` up. The child reports the order of what it saw: a timer of its own, armed just before
+  // the call for a millisecond short of the call's one-second timeout, and the call's answer.
+  // Both run on the child's one event loop, which fires the earlier deadline first however
+  // loaded the machine, so a call killed before its timeout answers ahead of that timer. The
+  // child then ends on its own: a read the call left pending would keep it alive.
   const source = join(import.meta.dir, "../src/session-title.ts")
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      "-e",
+      `import { queryTmux } from ${JSON.stringify(source)}; const order = []; setTimeout(() => order.push("999 ms"), 999); const answer = await queryTmux("/nonexistent/tmux.sock", "%0", "x"); order.push(\`answer \${String(answer)}\`); process.stdout.write(JSON.stringify(order))`,
+    ],
+    { env: { PATH: `${directory}:${process.env["PATH"] ?? ""}`, HOME: directory }, stdout: "pipe" },
+  )
   try {
-    const started = Date.now()
-    const child = Bun.spawnSync(
-      [
-        process.execPath,
-        "-e",
-        `import { queryTmux } from ${JSON.stringify(source)}; const started = Date.now(); const answer = await queryTmux("/nonexistent/tmux.sock", "%0", "x"); process.stdout.write(\`\${String(answer)} \${Date.now() - started}\`)`,
-      ],
-      { env: { PATH: `${directory}:${process.env["PATH"] ?? ""}`, HOME: directory } },
+    const [exitCode, reported] = await settled(
+      "the child's call to answer while the stub and its pipe still stand",
+      Promise.all([child.exited, new Response(child.stdout).text()]),
     )
-    const ran = Date.now() - started
-    const [answer, elapsed] = child.stdout.toString().split(" ")
-    expect(answer).toBe("undefined")
+    expect(exitCode).toBe(0)
     expect(existsSync(marker)).toBe(true)
-    // The stub ignores TERM and would sleep five seconds: the call waits out the one-second
-    // timeout, then is killed rather than waited for.
-    expect(Number(elapsed)).toBeGreaterThanOrEqual(1_000)
-    expect(Number(elapsed)).toBeLessThan(3_000)
-    // The killed stub's `sleep` still holds the pipe open; the child exits without waiting for it.
-    expect(ran).toBeLessThan(5_000)
+    // The call waited out its timeout, then was killed rather than waited for.
+    expect(JSON.parse(reported)).toEqual(["999 ms", "answer undefined"])
   } finally {
+    child.kill("SIGKILL")
     rmSync(directory, { recursive: true, force: true })
   }
 })

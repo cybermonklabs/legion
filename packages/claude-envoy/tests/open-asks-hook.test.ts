@@ -850,4 +850,4 @@ test("keeps the session's own export when a later run of the same id has no jj t
   } finally {
     await rm(scratch, { recursive: true, force: true })
   }
-}, 20_000)
+})

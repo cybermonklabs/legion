@@ -16,6 +16,7 @@ import {
   type TemporaryDirectoryMaker,
   temporaryDirectories,
 } from "@legion/test-fixtures/temporary-directories"
+import { until } from "@legion/test-fixtures/wait"
 import type {
   ChannelBrokerMessage,
   ChannelConnection,
@@ -222,31 +223,25 @@ export function settled(): Promise<void> {
 }
 
 /**
- * Polls `condition` every 5 ms until it holds; fails after 5 s naming `what`, followed by what
- * `state` reports at that moment (an `observedClient`'s `describe`, the test's own fakes).
- * Real time on purpose: the awaited conditions are filesystem writes the
- * server's own heartbeat performs, which no fake clock can advance. The
- * deadline is read from the monotonic clock, which `setSystemTime` leaves alone.
- *
- * The package's `test` script gives each test 60 s (`--timeout=60000`), above the longest chain of
- * waits one test makes: a wait that succeeds can take up to its 5 s, so a stuck wait names its step
- * only once every wait before it has had its time. The longest is eleven, counting the waits of
- * `boot` and `reconnect` (envoy-channel-replay.test.ts, "a stored frame the channel never takes is
- * named in one notice…"): 11 × 5 s, and 5 s more covers startup and shutdown. A test that chains
- * more raises it. Under bun's default of 5 s its own timeout fired first, and a stuck wait never
- * said which step it was.
+ * Waits through the shared wait (`until`, `@legion/test-fixtures/wait`) until `condition` holds;
+ * past the row's deadline it fails naming `what`, followed by what `state` reports at that moment
+ * (an `observedClient`'s `describe`, the test's own fakes). Real time on purpose: the awaited
+ * conditions are filesystem writes the server's own heartbeat performs, which no fake clock can
+ * advance. The wait takes no bound of its own: each ends at its row's deadline, which the package
+ * script's one `--timeout` sets, so a stuck wait names its step whichever wait of the row it is.
  */
 export async function waitFor(
   condition: () => Promise<boolean>,
   what: string,
   state?: () => string,
 ): Promise<void> {
-  const deadline = performance.now() + 5_000
-  while (!(await condition())) {
-    if (performance.now() > deadline) {
-      throw new Error(`timed out waiting for ${what}${state === undefined ? "" : ` (${state()})`}`)
-    }
-    await Bun.sleep(5)
+  try {
+    await until(what, condition)
+  } catch (error) {
+    if (state === undefined) throw error
+    throw new Error(`${error instanceof Error ? error.message : String(error)} (${state()})`, {
+      cause: error,
+    })
   }
 }
 

@@ -125,7 +125,7 @@ test("over MCP the server offers only the Envoy tools, refuses dispatch_ask, poi
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+})
 
 // A mod says hello once per Claude Code process, so a server Claude Code starts again inside
 // that process hears none, and neither does a listener added after the hello landed: the session
@@ -217,4 +217,4 @@ test("the session advertises its delivery modes for a mod that polls and never s
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+})

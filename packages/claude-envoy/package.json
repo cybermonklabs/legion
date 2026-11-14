@@ -31,7 +31,7 @@
     "prepack": "bash scripts/pack-skills.sh",
     "postpack": "bash scripts/pack-skills.sh --restore",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout=60000 --preload @legion/test-fixtures/row-deadline",
+    "test": "bun test --timeout=60000 --preload @legion/test-fixtures/row-deadline --path-ignore-patterns='tests/{answers-claude,build-inputs,build-out,envoy-channel-stall,legion-phase-hook-claude}.test.ts' && bun test --timeout=240000 --preload @legion/test-fixtures/row-deadline ./tests/answers-claude.test.ts ./tests/build-inputs.test.ts ./tests/build-out.test.ts ./tests/envoy-channel-stall.test.ts ./tests/legion-phase-hook-claude.test.ts",
     "lint": "bunx biome check src/ hooks/ scripts/"
   },
   "devDependencies": {

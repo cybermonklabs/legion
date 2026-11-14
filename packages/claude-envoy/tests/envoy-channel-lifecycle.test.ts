@@ -67,4 +67,4 @@ test("a hangup from the Claude process group deregisters the session before the 
     await broker.stop()
     await rm(stateDirectory, { recursive: true, force: true })
   }
-}, 20_000)
+})

@@ -1,6 +1,8 @@
-import { expect, test } from "bun:test"
+import { expect, jest, test } from "bun:test"
 import { uncapturedTopicRefusal } from "@legion/contracts"
+import { SHUTDOWN_SETTLE_MS } from "@legion/envoy-client/envoy-settings"
 import { EnvoyApiError } from "@legion/envoy-client/transport"
+import { span } from "@legion/test-fixtures/wait"
 import { startChannelSession } from "../src/envoy-channel-server"
 import { SessionIdentity, sessionHandoffFile, writeSessionHandoff } from "../src/session-identity"
 import {
@@ -303,11 +305,13 @@ test("a persistent reconciliation failure retries once after a delay of its own,
     expect(scheduled[0]?.delayMs).toBeLessThanOrEqual(40_000)
     scheduled[0]?.run()
     await waitFor(async () => getInterestAttempts >= 3, "the extra call itself")
-    // A real wait, not a guessed one: proving the guard holds needs to observe a
-    // window in which nothing further happens, and nothing else here produces an
-    // event to wait for instead — a hot loop would have run thousands of times
-    // over 150 ms (measured: ~9,000 in 300 ms without this fix).
-    await Bun.sleep(150)
+    // Proving the guard holds needs a window in which nothing further happens: a hot loop would
+    // have run thousands of times over 150 ms (measured: ~9,000 in 300 ms without this fix).
+    await span(
+      150,
+      "a hot loop's calls bypass scheduleRetry, the session's only retry hook, and leave no " +
+        "state to read and no later effect to wait for",
+    )
     expect(getInterestAttempts).toBe(3)
     // The extra call failed too: the session waits for the next heartbeat rather than asking
     // for a second one.
@@ -767,15 +771,27 @@ test("the shutdown deregistration spends a quarter second settling, not the whol
   try {
     await waitFor(async () => registrations > 1, "a registration the listener never answers")
 
-    // Real time: the bound is a real timer, and the failure is that the DELETE waits out two
-    // five-second settles the process is never given.
-    const startedAt = Date.now()
-    await session.shutdown()
-    const elapsed = Date.now() - startedAt
-
+    // The bound is a timer of the server's own, armed once shutdown begins, so from here it runs
+    // on the fake clock the test moves: the DELETE goes out once that clock has passed the
+    // whole budget, `SHUTDOWN_SETTLE_MS`, and not a millisecond before; two waits of their own
+    // would hold it past that.
+    jest.useFakeTimers()
+    const shutdown = session.shutdown()
+    await settled()
+    jest.advanceTimersByTime(SHUTDOWN_SETTLE_MS - 1)
+    await settled()
+    expect(calls).not.toContain("unregister ses_claude")
+    jest.advanceTimersByTime(1)
+    await settled()
+    // The wait for the wedged registration is left none of the budget: it ends where the clock
+    // stands.
+    jest.advanceTimersByTime(0)
+    await settled()
     expect(calls).toContain("unregister ses_claude")
-    expect(elapsed).toBeLessThan(2_000)
+    jest.useRealTimers()
+    await shutdown
   } finally {
+    jest.useRealTimers()
     wedged.resolve()
   }
 })
