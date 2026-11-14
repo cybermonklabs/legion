@@ -100,17 +100,20 @@ func TestAPendingBasisOpensOnThePersonsApprovalOfTheAncestorsVersion(t *testing.
 
 // Each act R1 names ends a pending row: a changes request on the ancestor's version, a newer
 // version of the ancestor's document, a session's close of the request, the person's close of it
-// with no review, the ancestor done or in Dispatch's retro, the ancestor losing the legion label, and
-// a newer version or a changes request of the root's own document. The step stays closed,
-// registered on the root's own document with no basis and resting on nothing, the root's
-// architect gets a basis-ended notice that names the act, and the ancestor's architect a
-// resting-root notice of the end.
+// with no review, the withdrawal of the request that the ancestor's close records (the ask event
+// Dispatch appends before the ancestor's own issue.closed), the ancestor done or in Dispatch's
+// retro, the ancestor losing the legion label, and a newer version or a changes request of the
+// root's own document. The step stays closed, registered on the root's own document with no basis
+// and resting on nothing, the root's architect gets a basis-ended notice that names the act, and
+// the ancestor's architect a resting-root notice of the end.
 func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 	session := dispatch.Actor{Kind: "session", ID: "session-other"}
 	closed := func(actor dispatch.Actor) intake.DispatchAskClosed {
 		return intake.DispatchAskClosed{Key: basisAncestor, Ask: "ask-100", Kind: record.AskApproval, Artifact: basisDoc, State: "resolved",
 			Actor: actor, Mark: askSeq(61)}
 	}
+	withdrawn := closed(basisPerson)
+	withdrawn.Withdrawn = true
 	ancestorAt := func(status string, labelled bool) intake.DispatchIssue {
 		return intake.DispatchIssue{Key: basisAncestor, Seq: 5, Type: "issue.updated", Status: status, Title: "ancestor", Rank: "T", HandedOver: labelled}
 	}
@@ -129,6 +132,8 @@ func TestEachActOnAPendingBasisEndsItWithABasisEndedNotice(t *testing.T) {
 			act: "session:session-other closed approval request ask-100 of version 4 of the primary document of LEGION-100"},
 		{name: "the person's close of the request with no review", fact: closed(basisPerson),
 			act: "user:alice closed approval request ask-100 of version 4"},
+		{name: "the ancestor's close, which withdraws the request", fact: withdrawn,
+			act: "Dispatch shows LEGION-100 done, so LEGION-100 is accepted. Its close withdrew approval request ask-100 of version 4 of the primary document of LEGION-100"},
 		{name: "the ancestor done", fact: ancestorAt("done", true), act: "Dispatch shows LEGION-100 done"},
 		{name: "the ancestor in Dispatch's retro", fact: ancestorAt("retro", true), act: "Dispatch shows LEGION-100 retro"},
 		{name: "the ancestor without the legion label", fact: ancestorAt("in_progress", false), act: "LEGION-100 no longer carries the legion label."},

@@ -753,7 +753,10 @@ func (e *Engine) tellBasisChanges(ctx context.Context, tx pgx.Tx, root record.Is
 // transaction and appends its artifact.* event after the ask's, so that event approves the
 // version, which opens the step, or asks for changes on it, which ends the wait (basisArtifact),
 // and the answer itself ends nothing. Every other close (a resolution by the person, the
-// architect, another session or Dispatch's settlement) carries no approval.
+// architect, another session or Dispatch's settlement) carries no approval. The withdrawal
+// Dispatch records on the asks of an issue set done (intake.DispatchAskClosed.Withdrawn) comes
+// before that issue's own event, which would end the wait as the ancestor's acceptance
+// (endPendingOnAncestorIssue), so the end it makes names that acceptance and the withdrawal both.
 func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake.DispatchAskClosed) error {
 	if fact.State == "answered" {
 		return nil
@@ -773,8 +776,13 @@ func (e *Engine) endPendingOnRequest(ctx context.Context, tx pgx.Tx, fact intake
 		if root == nil {
 			continue
 		}
+		document := documentOf(gate.Basis.Issue, gate.Step.OrSpec())
 		act := fmt.Sprintf("%s closed approval request %s of version %d of %s, as %s, with no approval of that version.",
-			actorOr(fact.Actor, "Someone Dispatch does not name"), fact.Ask, gate.Basis.Version, documentOf(gate.Basis.Issue, gate.Step.OrSpec()), fact.State)
+			actorOr(fact.Actor, "Someone Dispatch does not name"), fact.Ask, gate.Basis.Version, document, fact.State)
+		if fact.Withdrawn {
+			act = fmt.Sprintf("Dispatch shows %s done, so %s is accepted. Its close withdrew approval request %s of version %d of %s, with no approval of that version.",
+				fact.Key, fact.Key, fact.Ask, gate.Basis.Version, document)
+		}
 		if err := e.endPendingBasis(ctx, tx, *root, gate, act, fact.Actor.Name()); err != nil {
 			return err
 		}

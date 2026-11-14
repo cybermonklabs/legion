@@ -413,26 +413,37 @@ func (DispatchAskRestored) isFact() {}
 // document as DispatchAskOpened names them, the actor who closed it, and where Dispatch recorded
 // that act (Mark).
 //
-// Decline is the person's decline to answer, set where the close carries a resolution of the one
-// kind this daemon acts on (ResolutionDeclined) and nil for every other close: an answer, a close
-// whose payload carries no resolution, and a resolution kind this daemon does not know, which is
-// no defect to report — Dispatch resolves asks for several reasons and the daemon acts on this
-// one. It carries the person's own note and Dispatch's own words apart (record.AskDecline), each
-// as Dispatch recorded it.
+// Decline is the person's decline to answer, set where the close carries a resolution of that
+// kind (ResolutionDeclined) and nil for every other close: an answer, a close whose payload
+// carries no resolution, and a resolution kind this daemon does not know, which is no defect to
+// report — Dispatch resolves asks for several reasons and the daemon acts on two of them. It
+// carries the person's own note and Dispatch's own words apart (record.AskDecline), each as
+// Dispatch recorded it.
+//
+// Withdrawn says the close is the withdrawal Dispatch records on each open ask of an issue that
+// is set done (ResolutionWithdrawn), whose ask.resolved events come before the issue's own
+// issue.closed: what closed the ask is the issue's close, which a reader names as that
+// (workflow's endPendingOnRequest) rather than as a resolution by the actor who closed the issue.
 type DispatchAskClosed struct {
-	Key      string
-	Ask      string
-	Kind     string
-	Artifact string
-	State    string
-	Decline  *record.AskDecline
-	Actor    dispatch.Actor
-	Mark     record.EventMark
+	Key       string
+	Ask       string
+	Kind      string
+	Artifact  string
+	State     string
+	Decline   *record.AskDecline
+	Withdrawn bool
+	Actor     dispatch.Actor
+	Mark      record.EventMark
 }
 
 // ResolutionDeclined is the resolution kind of an ask a person chose not to answer
 // (DispatchAskClosed.Decline), which Dispatch writes on its POST /api/v1/asks/{id}/decline.
 const ResolutionDeclined = "declined"
+
+// ResolutionWithdrawn is the resolution kind Dispatch records on each open ask of an issue whose
+// close (a move to done) withdrew it (DispatchAskClosed.Withdrawn). Only Dispatch's server writes
+// it: its resolve route refuses the kind.
+const ResolutionWithdrawn = "withdrawn"
 
 func (DispatchAskClosed) isFact() {}
 
