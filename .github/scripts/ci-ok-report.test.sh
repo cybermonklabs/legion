@@ -34,6 +34,9 @@ case "\$*" in
   *"--method POST repos/o/r/check-runs"*)
     # post-check-run.sh sends the body as a file, so that a retried post can send it again.
     n=\$(find "$work" -maxdepth 1 -name 'posted.*.json' | wc -l)
+    # The body comes from the file --input names, not from standard input: post-check-run.sh
+    # posts through retry_fetch, and an attempt that had read the input would leave the attempt
+    # after it posting nothing.
     body=
     while [ \$# -gt 0 ]; do
       case \$1 in --input) body=\$2 ;; esac
@@ -46,6 +49,16 @@ case "\$*" in
 esac
 GH
 chmod +x "$work/bin/gh"
+
+# Both scripts read through retry_fetch (.github/scripts/ci-retry.sh), which sleeps 10, 20, 40
+# and 80 seconds between its five attempts. Those waits are ci-retry.test.sh's to prove, by
+# measuring them; here they would add 150 s to each case that exhausts a retry, so `sleep` is a
+# no-op on this PATH, as the retry delay this test used to set to zero was.
+cat > "$work/bin/sleep" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+chmod +x "$work/bin/sleep"
 
 cat > "$work/ci.yaml" <<'YAML'
 env:
@@ -76,7 +89,7 @@ jobs() {
 run_report() {
   set +e
   out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=41 \
-    GITHUB_SERVER_URL=https://github.com GH_RETRY_SECONDS=0 JOB=typecheck CHANGES=$1 \
+    GITHUB_SERVER_URL=https://github.com JOB=typecheck CHANGES=$1 \
     EVENT=$2 JOB_STATUS=$3 HEAD_SHA=abc123 CI_OK_WORKFLOW=${4:-$work/ci.yaml} \
     "$script_dir/ci-ok-report.sh" 2>&1)
   status=$?
@@ -170,7 +183,8 @@ run_report "$selects" workflow_dispatch failure
 check "posts nothing" "$(is "$(posted)" 0)"
 
 echo "case: a decided merge_group run whose jobs route GitHub refuses posts its verdict all the same"
-# The jobs route is read three times before the script gives up. On a decided merge-group run
+# The jobs route is read five times before the script gives up, which is retry_fetch's floor
+# (.github/scripts/ci-retry.sh). On a decided merge-group run
 # nothing this job waits for can help: the queue takes the pull request out on this verdict and
 # dequeued.yaml force-cancels the run, and a force-cancel leaves every `if: always()` step
 # skipped. A run that waited for a read it could not make would carry no ci-ok at all and hold the
@@ -186,15 +200,15 @@ check "records every other job as unread" "$(contains "$(field .output.summary)"
 check "and the reporting job at its own status" \
   "$(contains "$(field .output.summary)" '^typecheck: failure (selected')"
 check "warns why it posted on an unread run" \
-  "$(contains "$out" "::warning::GitHub refused this run's job list three times")"
+  "$(contains "$out" "::warning::GitHub refused this run's job list five times")"
 
 echo "case: GitHub refuses the post"
 jobs typecheck=in_progress lint=in_progress envoy-client=queued
 touch "$work/post-fails"
 run_report "$selects" merge_group failure
 check "fails the step" "$(is "$status" 1)"
-check "tried three times" "$(is "$(posted)" 3)"
-check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 three times')"
+check "tried five times" "$(is "$(posted)" 5)"
+check "says so" "$(contains "$out" 'GitHub refused the ci-ok check run on abc123 five times')"
 
 echo "case: CHANGES is not toJSON(needs.changes)"
 jobs typecheck=in_progress
@@ -215,7 +229,7 @@ echo "case: post-check-run.sh called with no marker"
 jobs
 : > "$work/summary.md"
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GH_RETRY_SECONDS=0 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
   HEAD_SHA=abc123 CHECK_NAME=pr-title CONCLUSION=success TITLE='the title is conventional' \
   SUMMARY_FILE="$work/summary.md" DETAILS_URL=https://github.com/o/r/actions/runs/41 \
   "$script_dir/post-check-run.sh" 2>&1)
@@ -231,7 +245,7 @@ echo "case: post-check-run.sh posts the marker it was given"
 jobs
 : > "$work/summary.md"
 set +e
-out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r GH_RETRY_SECONDS=0 \
+out=$(PATH="$work/bin:$PATH" GH_TOKEN=t GITHUB_REPOSITORY=o/r \
   HEAD_SHA=abc123 CHECK_NAME=pr-title CONCLUSION=success TITLE='the title is conventional' \
   SUMMARY_FILE="$work/summary.md" DETAILS_URL=https://github.com/o/r/actions/runs/41 \
   EXTERNAL_ID=pr-title:41 "$script_dir/post-check-run.sh" 2>&1)

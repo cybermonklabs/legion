@@ -28,6 +28,8 @@ on:
       - '.github/workflows/ci.yaml'
       - '.github/workflows/docs-pages.yaml'
       - '.github/workflows/docs-site.yaml'
+      # ci.yaml's *ci_retry:
+      - '.github/scripts/ci-retry.sh'
       # ci.yaml's *bun_install:
       - 'package.json'
       - 'bun.lock'

@@ -615,6 +615,9 @@ ENV_ALLOWED = frozenset({
     "DISPATCH_TEST_DATABASE_URL", "ENVOY_INFRA_DOCKER_PLUGIN", "ENVOY_SMOKE_HELD_PORT_IMAGE", "ENVOY_SMOKE_IMAGE",
     "GOPROXY",
     "LEGION_E2E", "LEGION_E2E_DISPATCH_STACK", "LEGION_E2E_ENVOY_STACK", "LEGION_E2E_PG_DSN", "LEGION_KEPT_PROPERTY_RUNS",
+    # A directory of binaries a live test runs rather than installing its own: it names no
+    # package and changes nothing a go command compiles (dispatch://INFRA-1545).
+    "LEGION_LIVE_TOOL_DIR",
     "LEGION_RUN_FUZZ_ITERS", "LEGION_TEST_NATS_URL", "LEGION_TEST_PG_DSN",
     "TESTCONTAINERS_RYUK_DISABLED",
 })
@@ -1329,6 +1332,7 @@ def check() -> int:
     rules.check_race_fill_packages(data.DAEMON_RACE_PACKAGES, problems)
     rules.check_workspace_table(data.WORKSPACES, problems)
     rules.check_one_merge_group_workflow(problems)
+    rules.check_workflow_size(problems)
     expander = Expander(files)
     check_dead_patterns(data, filters, expander, problems)
     session = Session()

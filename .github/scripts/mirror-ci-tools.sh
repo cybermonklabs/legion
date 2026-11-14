@@ -38,7 +38,9 @@
 # two must agree on the row, the digest and the address, and this script holds no second copy of
 # any of that: it reads the rows with `ci_tools_rows`, each row's second source with
 # `ci_tools_source_name` and their fields with `ci_tools_field`, fetches the asset with
-# `ci_tools_curl`, holds the bytes to the row with `ci_tools_verify`, names the package with
+# `ci_tools_curl` and asks the package every question of its own with `ci_tools_curl_status`,
+# so every request this run makes rides the one retry ladder and none of them is written here
+# a second time; it holds the bytes to the row with `ci_tools_verify`, names the package with
 # `ci_tools_registry`, addresses that package with `ci_tools_registry_url` and the row's blob in
 # it with `ci_tools_blob_url`, and mints its token with `ci_tools_ghcr_token`.
 # What is this script's own is what no install does: the state of the copy — `held`, `filled` or
@@ -181,11 +183,20 @@ fi
 # the store that holds it, so curl follows it and this reads the status of the last hop. A
 # request the service did not answer at all reads 000, which is no status this script admits, so
 # it is refused like any other.
+# The request is made with `ci_tools_curl_status`, the one ladder .github/scripts/ci-tools.sh
+# holds, so a flap of the package costs a retry here as it costs one in an install, and this
+# file writes no second copy of that ladder (dispatch://INFRA-1545, R2). That helper reads the
+# status rather than failing on it, which is what this function is for: the 404 that says the
+# package holds no such blob is this run's answer and not its error.
+# 30 s per attempt: a HEAD carries no body in either direction, so what an attempt waits for is
+# the package's own answer, and 30 s is the bound this repository gives such a request (the
+# ci-ok report's `gh api` reads). A row's own `max_time` bounds the transfers of its bytes
+# below, which is what that field is about.
 registry_head() {
   local url=$1 status
   shift
-  status=$(curl -sSL -o /dev/null -D "$headers" -w '%{http_code}' -I \
-    -H "Authorization: Bearer $token" "$@" "$url") || status=000
+  status=$(ci_tools_curl_status 30 "$url" -D "$headers" -I \
+    -H "Authorization: Bearer $token" "$@") || status=000
   printf '%s\n' "$status"
 }
 
@@ -198,14 +209,21 @@ header_value() {
   ' "$headers"
 }
 
-# push_blob <row> <file> <digest> <what these bytes are>: one blob of the copy, in the two steps
-# the registry API takes. The upload's location may be absolute or path-only, and it may already
-# carry a query, so the digest is appended with the separator that location needs.
+# push_blob <row> <file> <digest> <what these bytes are> <per-attempt bound>: one blob of the
+# copy, in the two steps the registry API takes. The upload's location may be absolute or
+# path-only, and it may already carry a query, so the digest is appended with the separator
+# that location needs.
+# Both requests go through `ci_tools_curl_status` as the reads above do, so every request this
+# run makes retries under the one ladder and the push of a copy rides out the flap an install
+# of it would ride out.
+# The POST that opens the upload carries no body, so it is bounded at 30 s like the HEADs; the
+# PUT that carries the bytes is bounded by the caller, which passes the row's own `max_time`
+# for the layer — the bound .github/scripts/ci-tools.sh reads those same bytes under — and
+# 30 s for the config document this run wrote itself.
 push_blob() {
-  local row=$1 file=$2 digest=$3 what=$4 status location separator
-  status=$(curl -sS -X POST -o /dev/null -D "$headers" -w '%{http_code}' \
-    -H "Authorization: Bearer $token" -H 'Content-Length: 0' \
-    "$registry_url/blobs/uploads/") || status=000
+  local row=$1 file=$2 digest=$3 what=$4 max_time=$5 status location separator
+  status=$(ci_tools_curl_status 30 "$registry_url/blobs/uploads/" -X POST -D "$headers" \
+    -H "Authorization: Bearer $token" -H 'Content-Length: 0') || status=000
   if [ "$status" != 202 ]; then
     error "$row: the upload of the $what started with POST $registry_url/blobs/uploads/, and the package answered $status where the registry API answers 202. The copy of this row is unchanged."
     return 1
@@ -223,9 +241,9 @@ push_blob() {
     *\?*) separator='&' ;;
     *) separator='?' ;;
   esac
-  status=$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
-    -H "Authorization: Bearer $token" -H 'Content-Type: application/octet-stream' \
-    --data-binary "@$file" "${location}${separator}digest=sha256:$digest") || status=000
+  status=$(ci_tools_curl_status "$max_time" "${location}${separator}digest=sha256:$digest" \
+    -X PUT -H "Authorization: Bearer $token" -H 'Content-Type: application/octet-stream' \
+    --data-binary "@$file") || status=000
   if [ "$status" != 201 ]; then
     error "$row: the $what was PUT to $location and the package answered $status where the registry API answers 201. The copy of this row is unchanged."
     return 1
@@ -236,6 +254,9 @@ push_blob() {
 # and the manifest, which are the same two pushes whether this run filled the blob now or found
 # it already there under no tag. Both documents are built with python3, so no shell quoting
 # decides a byte of either.
+# Both are small documents this run wrote itself — the config is three keys and the manifest
+# four — so each is pushed at 30 s per attempt, the bound the requests that carry no asset
+# bytes take here, through the same `ci_tools_curl_status` ladder as every other request.
 push_copy() {
   local row=$1 digest=$2 size=$3 media=$4 title=$5 tag=$6
   local config="$work/config.json" document="$work/manifest.json" config_digest config_size status
@@ -255,7 +276,7 @@ PY
   config_digest=$(sha256sum -- "$config")
   config_digest=${config_digest%% *}
   config_size=$(wc -c < "$config")
-  push_blob "$row" "$config" "$config_digest" "config of the copy" || return 1
+  push_blob "$row" "$config" "$config_digest" "config of the copy" 30 || return 1
   PYTHONDONTWRITEBYTECODE=1 python3 - "$document" "$MANIFEST_TYPE" "$CONFIG_TYPE" \
     "$config_digest" "$config_size" "$media" "$digest" "$size" "$title" <<'PY'
 import json
@@ -292,9 +313,9 @@ document = {
 with open(path, "w") as handle:
     handle.write(json.dumps(document, separators=(",", ":")))
 PY
-  status=$(curl -sS -X PUT -o /dev/null -w '%{http_code}' \
+  status=$(ci_tools_curl_status 30 "$registry_url/manifests/$tag" -X PUT \
     -H "Authorization: Bearer $token" -H "Content-Type: $MANIFEST_TYPE" \
-    --data-binary "@$document" "$registry_url/manifests/$tag") || status=000
+    --data-binary "@$document") || status=000
   if [ "$status" != 201 ]; then
     error "$row: the manifest was PUT to $registry_url/manifests/$tag and the package answered $status where the registry API answers 201. The blob is in the package and the tag $tag names nothing, so re-run the ci-images job."
     return 1
@@ -405,7 +426,9 @@ for name in $rows; do
   fi
   size=$(wc -c < "$bytes")
 
-  push_blob "$name" "$bytes" "$digest" "layer of the copy"
+  # The layer is the row's own bytes, so the PUT that carries them takes the row's own
+  # `max_time`, which is the bound every install reads those same bytes under.
+  push_blob "$name" "$bytes" "$digest" "layer of the copy" "$max_time"
   push_copy "$name" "$digest" "$size" "$media" "$title" "$tag"
 
   # The one read that says the fill landed. The asset answered, so an absent blob here is a

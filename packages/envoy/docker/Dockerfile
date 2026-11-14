@@ -39,8 +39,20 @@ COPY packages/dispatch/package.json packages/dispatch/package.json
 COPY packages/proof-editor/package.json packages/proof-editor/package.json
 # proof-sdk-upstream is file:./proof-sdk-<commit>.tgz, a dependency of that manifest rather than a
 # registry fetch: the upstream editor sources, which the install below reads from the context.
+# The glob, not the file name the pinned commit is in, so raising that pin edits nothing here.
 COPY packages/proof-editor/proof-sdk-*.tgz packages/proof-editor/
 COPY packages/test-fixtures/package.json packages/test-fixtures/package.json
+# What the glob costs, and the line that pays it, as in packages/daemon/docker/worker.Dockerfile.
+# BuildKit builds every COPY source with AllowWildcard and AllowEmptyWildcard (buildkit v0.26.1
+# frontend/dockerfile/dockerfile2llb/convert.go:1669-1670), and a wildcard matching nothing
+# copies nothing and returns no error (solver/llbsolver/file/backend.go:248-252), where a COPY of
+# an exact name the context does not hold fails at the cache key with `not found`. The tree's own
+# count is tests/one-upstream-tarball.test.ts; this is the context's. An unmatched pattern is left
+# in `$1` by the shell, so it is dropped before the count is taken and a context with no tarball
+# is reported as the none it is.
+RUN set -- packages/proof-editor/proof-sdk-*.tgz; [ -e "$1" ] || set --; \
+    { [ "$#" -eq 1 ] && [ -f "$1" ]; } \
+    || { echo "the build context holds $# entries matching packages/proof-editor/proof-sdk-*.tgz, want one regular file" >&2; exit 1; }
 COPY packages/envoy/internal/dispatch/pmdoc/gen/package.json packages/envoy/internal/dispatch/pmdoc/gen/package.json
 COPY docs/site/package.json docs/site/package.json
 # What this stage installs, because the SPA build and the contract codegen that follow read no
@@ -59,7 +71,13 @@ COPY docs/site/package.json docs/site/package.json
 # source (oven-sh/bun#4290), and the stage would then need python3, make and g++ for a module
 # the image never ships, which packages/proof-editor reaches through proof-sdk and nothing
 # copies out of this stage.
-RUN bun install --frozen-lockfile --ignore-scripts \
+# The one fetch of this layer, and the largest in the file: Bun reads from the npm registry every
+# dependency the root lockfile pins for the four workspaces the filters below name, tens of
+# megabytes of tarballs, so an attempt gets 600 s.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 600 "bun install" bun install --frozen-lockfile --ignore-scripts \
     --filter './' \
     --filter './packages/dispatch' \
     --filter './packages/contracts' \
@@ -93,9 +111,21 @@ ENV GOPROXY=https://proxy.golang.org|direct
 # layer of its own, before the module files, so neither a source change nor a dependency bump
 # rebuilds it.
 COPY scripts/go-third-party-notices.sh scripts/assemble-third-party-notices.sh /usr/local/bin/
-RUN go-third-party-notices.sh --install
+# go-licenses comes down and is built in one act (`go install …@v2.0.1`, inside the script), with no
+# download to separate out, so the retry wraps the script: 600 s an attempt, one module tree
+# fetched from the proxy and compiled.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 600 "go-licenses install" go-third-party-notices.sh --install
 COPY packages/envoy/go.mod packages/envoy/go.sum ./
-RUN go mod download
+# The module cache of the four binaries below, this layer's only fetch and a few hundred megabytes
+# of module zips from the proxy: 600 s an attempt. The builds that follow read this cache and
+# download nothing, so they stay bare.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 600 "go mod download" go mod download
 
 COPY packages/envoy/cmd ./cmd
 COPY packages/envoy/internal ./internal
@@ -157,7 +187,20 @@ FROM ghcr.io/cybermonklabs/legion/ci@sha256:99c0b25c46d0214d5a2091092e7908907dca
 
 LABEL org.opencontainers.image.source=https://github.com/cybermonklabs/legion
 
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl && rm -rf /var/lib/apt/lists/* \
+# This file's only apt fetches, and the only RUN of this stage that fetches at all. Five attempts,
+# with 10, 20, 40 and 80 s of sleep between them, 150 s in all, each attempt under a bound of its
+# own: 120 s for the index read, a few megabytes from the Debian mirror, and 300 s for the package
+# set, the bounds this RUN sets for a set this small. The index read carries
+# `-o APT::Update::Error-Mode=any`, which makes a failed index read fail the command instead of
+# warning and exiting 0: without it the retry has nothing to retry
+# (.github/scripts/check-download-retry.sh's rule 5). groupadd, useradd, mkdir and chown fetch
+# nothing and stay bare.
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/* \
     && groupadd -r envoy && useradd -r -g envoy envoy \
     && mkdir -p /home/envoy/.local/share/dispatch \
     && chown -R envoy:envoy /home/envoy

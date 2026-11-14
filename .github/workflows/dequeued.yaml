@@ -56,21 +56,47 @@ on:
 jobs:
   cancel-dequeued:
     runs-on: ubuntu-24.04
-    # A GraphQL read, one run list and one cancel: the limit is short so that a wedged API call
-    # cannot hold a runner, and it is above the minute the timeline read can wait.
-    timeout-minutes: 5
+    # A GraphQL poll, one run list and one cancel. 300 s, the 5 minutes that gives, plus this
+    # job's slowest retried step alone, as ci-budgets.md's Budgets note derives one: that step holds
+    # the timeline read, which sits inside a seven-pass poll and so costs
+    # 7 x (5 x 30 + 150) + 6 x 10 = 2160 s, the run list's 300 s and the force-cancel's 300 s,
+    # 2760 s together, a whole number of minutes, so that step's own budget takes one more and
+    # this job takes it too. 300 + 2820 = 3120 s -> 53 min, the whole minute above a sum that is itself a whole number of minutes. That ceiling is reached only
+    # against a host that accepts the connection and then sends nothing through every attempt
+    # of every pass; what this job costs when nothing stalls is one read and one cancel.
+    timeout-minutes: 53
     # `gh run list` and the force-cancel need `actions: write`, and nothing here needs another
-    # scope: there is no checkout, and the GraphQL read is of a public repository's pull request,
-    # which GitHub serves to any valid token — the same ground on which ci.yaml's `cancel-started`
-    # holds `actions: write` alone and still checks out.
+    # scope: the checkout below reads a public repository's git data, which GitHub serves to any
+    # valid token, and so is the GraphQL read of its pull request — the same ground on which
+    # ci.yaml's `cancel-started` holds `actions: write` alone and still checks out.
     permissions:
       actions: write
     steps:
+      # The job reads nothing of the tree but .github/scripts/ci-retry.sh, the one retry every
+      # download of this repository's CI goes through, so the .github cone is the whole checkout
+      # it needs, as ci.yaml's `cancel-started` takes it.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: .github
+          persist-credentials: false
       - name: Cancel the removed group's ci.yaml run
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
+        # Its own retry arithmetic, so an exhausted read fails this step by name rather than
+        # being cut part way by the job. The timeline read is written inside the seven-pass
+        # poll below, so the step waits for seven of its ladders and the six 10 s sleeps
+        # between the passes: 7 x (5 x 30 + 150) + 6 x 10 = 2160 s, where every read stalls
+        # for the whole of every attempt, and 7 x 150 + 6 x 10 = 1110 s where GitHub refuses
+        # each one at once. Then the run list's 5 x 30 + 150 = 300 s and the force-cancel's
+        # 300 s, which counts once because the queue starts one ci.yaml run for a group and
+        # the loop below is over the runs to cancel
+        # (.github/scripts/check-download-retry.sh's DECLARED_LOOPS carries that 300 s).
+        # 2160 + 300 + 300 = 2760 s, a whole number of minutes, so the budget is the next one
+        # strictly above it -> 47 min.
+        timeout-minutes: 47
         run: |
+          . .github/scripts/ci-retry.sh
           query='query($owner: String!, $name: String!, $number: Int!) {
             repository(owner: $owner, name: $name) {
               pullRequest(number: $number) {
@@ -96,9 +122,17 @@ jobs:
           # at all and ends red, because a token-scope regression or an API that is down for a
           # minute would otherwise leave this workflow green and silent while the removed
           # group kept its runners — the one thing it exists to prevent.
+          #
+          # The loop below is a poll and not a retry: it waits for a removal to reach the
+          # timeline, which is why it goes round again on a read that succeeded and held
+          # nothing. The attempts against a refusing or stalling API are the helper's, at the
+          # 30 s an attempt this repository's CI gives one page of an API route (ci-budgets.md's
+          # Retries note), so one rule still holds them (dispatch://INFRA-1545, R2) and a read
+          # that counts as refused here is one five bounded attempts could not make.
           refused=0
           for attempt in 1 2 3 4 5 6 7; do
-            if removal=$(gh api graphql -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" \
+            if removal=$(retry_fetch "pull request #$PR_NUMBER's timeline" 30 -- \
+              gh api graphql -F owner="${GITHUB_REPOSITORY%%/*}" -F name="${GITHUB_REPOSITORY#*/}" \
               -F number="$PR_NUMBER" -f query="$query" --jq "$select"); then
               [ -z "$removal" ] || break
               echo "read $attempt of 7 of pull request #$PR_NUMBER's timeline holds no removal after its newest queue entry"
@@ -128,7 +162,10 @@ jobs:
             echo "::warning::the removal names no beforeCommit, so there is no group head to look for and nothing is cancelled"
             exit 0
           fi
-          runs=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
+          # The same 30 s an attempt as the reads above: a refused list would leave the removed
+          # group's run holding its runners with nothing to say about it.
+          runs=$(retry_fetch "the merge-group runs of $before" 30 -- \
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
             --commit "$before" --limit 20 --json databaseId,headSha,status,conclusion)
           doomed=$(jq -r --arg sha "$before" \
             '.[] | select(.headSha == $sha and .status != "completed") | .databaseId' <<<"$runs")
@@ -136,8 +173,11 @@ jobs:
             echo "no ci.yaml merge-group run with head $before is still going, so nothing is cancelled. What that commit's runs are: $(jq -c --arg sha "$before" '[.[] | select(.headSha == $sha) | {databaseId, status, conclusion}]' <<<"$runs")"
             exit 0
           fi
+          # The loop is over the runs to cancel, not over the attempts: those are the helper's,
+          # at the same 30 s an attempt as the read above.
           while read -r id; do
             echo "run $id is the ci.yaml merge-group run of the group whose head is $before, and it has not completed: force-cancel it"
-            gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
+            retry_fetch "the force-cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel" ||
               echo "::warning::force-cancel of run $id failed; it may have completed already"
           done <<<"$doomed"

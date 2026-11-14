@@ -51,14 +51,21 @@ repeat() {
 # legitimate_log: 65 records of a run that must pass. Merge_group run 42975857631, job
 # 130374882879 (`tool-fallback`, success, head 9300f28b1c) read 65 records on a runner, and the
 # three that carry the name are the one case that keeps the pinned ladder, at 63 s, 0 s and 1 s
-# (records 18 to 20 of its listing). This log keeps those three as they are and puts the other
+# (records 18 to 20 of its listing). THOSE 63 s ARE A READING OF THE 60 s LADDER that job ran
+# under. Since dispatch://INFRA-1545 raised `--retry-max-time` to 300 s the same case reads
+# 127 s, and the window it is held to moved with it, so the records below are re-derived from
+# this tree's own listing rather than carried: job 130686006739 (`tool-fallback`, success, head
+# 974a67db6338) reads `github.com: full, curl exit 22, 127s` beside honest ghcr.io fetches of
+# 1 s and 0 s. A case here that kept 63 s would now take the under-floor arm of the window
+# chain and prove the opposite of what it says. This log carries those three with the kept case's
+# seconds re-derived to that 127 s, and puts the other
 # 62 in three shapes that no refusal of the verb reads: 18 refusals of the faulted release host,
 # 11 refusals of the dead address and 33 fetches that served the bytes. That listing mixes its
 # hosts in another order; the verb reads no order. Every case below is built from this one log.
 legitimate_log() {
   repeat 18 "seconds=0 decision=shortened host=github.com exit=22 full-ladder=none"
   printf '%s\n' \
-    "seconds=63 decision=full host=github.com exit=22 full-ladder=crane-head" \
+    "seconds=127 decision=full host=github.com exit=22 full-ladder=crane-head" \
     "seconds=0 decision=full host=ghcr.io exit=0 full-ladder=crane-head" \
     "seconds=1 decision=full host=ghcr.io exit=0 full-ladder=crane-head"
   repeat 11 "seconds=0 decision=shortened host=127.0.0.1 exit=7 full-ladder=none"
@@ -107,7 +114,7 @@ echo "case: a log whose every record carries the name is refused"
 # The log dispatch://INFRA-2850 was filed against. Before the count refusal the verb read one
 # name and a measurement inside the window here, passed, and printed a closing sentence that is
 # false of this log: every one of these 65 fetches kept the pinned ladder and none was shortened.
-run_report "$(repeat 65 "seconds=63 decision=full host=github.com exit=22 full-ladder=crane-head")"
+run_report "$(repeat 65 "seconds=127 decision=full host=github.com exit=22 full-ladder=crane-head")"
 check "exits 1" "$(is "$status" 1)"
 check "names the count it read and the bound" \
   "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to, and the names they carried it under are: crane-head")"
@@ -123,14 +130,14 @@ check "no other refusal speaks" "$(is "$(error_count "$out")" 1)"
 echo "case: a log under the floor is refused for its records as well"
 # The comment above the count refusal in ci-tools-proof.sh's ladder_report says that refusal
 # stands on its own and is no further arm of the window chain above it. This log is the case
-# above with one field changed, 10 s in place of 63 s, so it takes that chain's under-floor arm,
+# above with one field changed, 10 s in place of that 127 s, so it takes that chain's under-floor arm,
 # and written as a further `elif` the verb would then say nothing of its 65 records at all.
 # That rewrite is what the two assertions below on the count refusal and on the number of
 # refusals redden for.
 run_report "$(repeat 65 "seconds=10 decision=full host=github.com exit=22 full-ladder=crane-head")"
 check "exits 1" "$(is "$status" 1)"
 check "the under-floor refusal speaks" \
-  "$(contains "$out" "measured 10 s, under the floor of 45 s, so it stopped driving the real ladder")"
+  "$(contains "$out" "measured 10 s, under the floor of 109 s, so it stopped driving the real ladder")"
 check "the count refusal speaks beside it" \
   "$(contains "$out" "65 fetches of this job carried CI_TOOLS_PROOF_FULL_LADDER, over the 3 this rig holds that count to")"
 check "no refusal speaks beside those two" "$(is "$(error_count "$out")" 2)"

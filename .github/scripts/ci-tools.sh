@@ -129,6 +129,15 @@
 #                                         read with. .github/scripts/mirror-ci-tools.sh fetches
 #                                         the asset it pushes with it, so the copy is filled
 #                                         with the same ladder an install reads it under.
+#   ci_tools_curl_status <max_time>
+#                 <url> [argument…]       that same ladder for a request whose answer is the
+#                                         HTTP status and not a file: it prints the status,
+#                                         writes no body anywhere and turns `--fail` off, so
+#                                         the caller reads the status itself.
+#                                         .github/scripts/mirror-ci-tools.sh asks the package
+#                                         every one of its questions with it, and
+#                                         .github/workflows/ci.yaml's tool-fallback job reads
+#                                         the blob of every mirrored row with it.
 #   ci_tools_extract <archive> <member>
 #                    <destination> <url>  that member of that archive at <destination>, read by
 #                                         the suffix of the address it came from rather than by
@@ -514,37 +523,123 @@ ci_tools__tempfile() {
 # nowhere: ci_tools__curl_report below reads it as this run's own write error, and the caller
 # refuses where it stands.
 #
-# `--retry-max-time 60` bounds the ladder as a whole, and it is the bound on when a new attempt
-# may start: an attempt already running when the minute is over still finishes under
-# `--max-time`, and curl starts no attempt after it.
+# `--retry-max-time 300` bounds the ladder as a whole, and it is the bound on when a new attempt
+# may start: an attempt already running when the timer reset at the first attempt reaches five
+# minutes still finishes under `--max-time`, and curl starts no attempt after it.
 # What it buys is the hang. Without it a host that accepts and sends nothing costs the whole
-# ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s —
-# which is about ten minutes for one row, while many jobs of .github/workflows/ci.yaml carry
-# `timeout-minutes: 10`.
-# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it buys almost
-# nothing: the back-off alone reaches the minute, so the ladder is one attempt shorter.
-# This issue's tester measured both shapes at the manifest's `max_time` of 60. Against a source
-# that refuses at once, as a 504 does, the bound makes 7 attempts. Their back-off is
-# 1+2+4+8+16+32, so that ladder costs 63 s. Without the bound the same source makes 8 attempts,
-# which is that back-off plus 64 s, or 127 s. The 63 s was measured twice. One such ladder
-# against a port that refuses at once took 1m3.064s and exited 7. And in job 129743677408 of
-# .github/workflows/ci.yaml the two kinds of step are apart by a factor of two: seven of the
-# eight negative controls each drive two ladders, because their primary meets the fault and
-# their second source is a dead port, and measured 126 to 127 s, while seven of the head's own
-# installs and seven of the second-source cases each drive one and measured 63 to 65 s (73 s
-# and 72 s for jj, which carry mise's own 10 s). So 126 s is two ladders and not one.
-# The eighth of each is Bun, whose primary oven-sh/setup-bun fetches as a Node action and not
-# through this function: its negative control drives one ladder, against the dead port, after
-# that action's own failed download, and measured 104 s, while its head install and its
-# second-source case drive none, because npm answers, and measured 23 s and 30 s.
-# The hang is the other shape. It costs 124 s with the bound, where the ladder without the
-# bound costs about ten minutes. So a row's primary costs about one minute before the second
-# source is read against a source that refuses at once, and about two minutes against a host
-# that hangs. Both are inside every ci.yaml budget.
+# ladder — eight attempts of `--max-time` 60 s plus a back-off of 1, 2, 4, 8, 16, 32 and 64 s,
+# 8 x 60 + 127 = 607 s — which is about ten minutes for one row, while many jobs of
+# .github/workflows/ci.yaml carry `timeout-minutes: 10`.
+#
+# WHAT ONE LADDER COSTS UNDER IT, derived once here for any per-attempt bound. The budget
+# comments of the workflows write the sum a `ci_tools_fetch` comes to and cite it through the
+# Budgets note of .github/ci-budgets.md, which points here; none of them derives
+# the per-ladder term again. The worst case is not the host that stalls throughout and not the
+# host that
+# fails fast: it is the mixture of the two. A pure staller spends the whole bound on each
+# attempt, so the timer passes this limit inside the fifth attempt and curl starts none
+# after it — measured against a host that accepts and never
+# answers, at the `max_time: 60` every row carries: at the 120 s this file bounded the ladder
+# with before dispatch://INFRA-1545 raised it, two attempts at 0 s and 61 s, exit 28 at about
+# 121 s, so the last attempt began at 61 s; AT THE 300 s IT WRITES NOW, FIVE ATTEMPTS AT 0 s,
+# 62 s, 124 s, 188 s AND 256 s, EXIT 28 AT ABOUT 315 s. That is what R1's floor asks of a
+# staller - at least five attempts, the last beginning at least 120 s after the first - and the
+# 120 s bound met neither half of it. The gaps widen from 62 s to 64 s and then 68 s because the
+# ladder's own waits ride on top of each stalled attempt once more than two are made. A host that fails at once spends nothing on
+# its attempts, so all eight are made and the ladder is its waits alone,
+# 1 + 2 + 4 + 8 + 16 + 32 + 64 = 127 s. The expensive shape is a host that does both: the quick
+# failures carry the timer to just under five minutes, the last wait of 64 s is taken, and the
+# attempt it then starts stalls for its whole bound.
+#
+#   ONE LADDER'S CEILING IS 300 + 64 + <the per-attempt bound>, rounded up by the seconds a
+#   second's rounding in each of those three terms can add.
+#
+# At the `max_time: 60` every row of .github/ci-tools.yaml carries that is 424 s, written as
+# 427 s; at the 30 s bound ci.yaml's blob read passes for a HEAD it is 394 s, written as
+# 397 s. Both halves of the 30 s
+# shape were driven on this issue's pod against curl 8.14.1 and a loopback server: answering
+# seven delayed 503s and then accepting a connection it never answers gives eight requests,
+# the seventh failing at 119 s, the eighth starting 64 s later at 183 s and spending its whole
+# bound, exit 28 at 213 s; refusing every connection instead gives the waits alone, eight
+# requests and exit 7 at 127 s. THAT 30 s DRIVE WAS MADE AT THE 120 s BOUND, so its 213 s is the
+# ceiling that bound gave and is kept here as the shape rather than as this file's figure: the
+# retry after the seventh was made because the timer stood at 119 s when that attempt ended and
+# the next retry was decided, which is what "just under the limit" means at whatever the limit
+# is. At the 300 s this file writes, the same shape ends at 394 s, written as 397 s above.
+#
+# Main's #3470 measured this ladder at the `--retry-max-time 60` this file carried before
+# dispatch://INFRA-1545 raised it: 7 attempts and 63 s against a source that refuses at once,
+# where at 120 the eighth attempt is made and the ladder is 127 s. Its figures are of that
+# bound and are kept here as history rather than as the ladder this file now writes.
+#
+# A failing fetch of a ghcr-mirror row runs three of these — the asset, the pull token, the
+# blob — which .github/scripts/check-download-retry.sh's DECLARED_LOOPS entry for this file
+# sums into the one figure rule 8 prices, reading this block for the per-ladder term rather
+# than deriving it again. Every budget comment that holds that sum names it as a
+# `ci_tools_fetch` rather than as a ladder, since three ladders are what it buys.
+# Against a source that answers 504 at once, the shape of the 2026-11-08 outage, it costs
+# nothing at all: the timer stands at 63 s when the last retry is decided, which is inside this
+# limit, so the ladder is the eight attempts it would make with no such bound, where at 60 it
+# was seven.
+#
+# THE FIGURE IS 300, AND WHAT DECIDES IT IS THE STALLING HOST RATHER THAN THE REFUSING ONE,
+# because R1's floor is the ladder itself (dispatch://INFRA-1545): at least five attempts, the
+# last starting at least 120 s after the first. curl's rule is that a retry is made only while
+# the timer reset at the first attempt has not reached this limit (curl 8.14.1), and against a
+# host that spends every attempt's whole bound the timer is the attempts themselves.
+# At 60 the ladder ends with one attempt. At 120 it makes two, at 0 s and 61 s, so it meets
+# NEITHER half of the floor. At 180 it makes three, the last at 123 s, which clears the time
+# half and not the count. At 300 it makes five, at 0, 62, 124, 188 and 256 s, which is both
+# halves, and that is why this file writes 300 and .github/scripts/check-download-retry.sh
+# refuses a smaller one with that figure.
+# Against a host that REFUSES at once the ladder is its waits alone and every bound above 63 s
+# gives the same eight attempts in about 127 s — measured against a refused port on curl 8.14.1
+# at 128.1 s — which is why that shape decides nothing here.
+#
+# Two figures above are this issue's tester's, and both were measured at `--retry-max-time 60`:
+# a source that answers 504 at once cost 7 attempts in 126 s with the bound and 8 attempts in
+# 127 s without it, and a host that hangs cost 124 s with the bound where the ladder without it
+# costs about ten minutes. Neither is restated here as a measurement of this value; what 300
+# makes of each shape is the derivation above, and the five attempts at 0, 62, 124, 188 and
+# 256 s are this issue's own measurement of it, made twice on curl 8.14.1 and read again in
+# run 43202546798's job 131129681795, where each `ci_tools_curl` ladder made five.
 ci_tools_curl() {
   local file=$1 max_time=$2 url=$3
   shift 3
-  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 60 --max-time "$max_time" -o "$file" "$@" "$url"
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" "$@" "$url"
+}
+
+# ci_tools_curl_status <max_time> <url> [curl argument…]: the HTTP status of one request whose
+# answer the caller judges itself, printed, with no body written anywhere.
+# It is ci_tools_curl with three arguments appended, so the attempts, the waits and the
+# per-attempt bound are the one ladder above and this file holds no second copy of them
+# (dispatch://INFRA-1545, R2). The three are `-o /dev/null`, since what a caller of this reads
+# is the status and not the bytes; `-w '%{http_code}'`, which prints it; and `--no-fail`,
+# curl's own negation of the `--fail` ci_tools_curl writes, which stands because curl reads
+# the last of two conflicting options.
+#
+# `--no-fail` is what makes the status the answer rather than an exit code, and the callers are
+# the ones asking a question whose answer is a status a fetch would call a failure: the 404
+# that says the package holds no such blob, the 202 that opens an upload, the 201 that closed
+# one. Under `--fail` curl exits 22 for that 404 and `--retry-all-errors` spends the whole
+# ladder on it first — measured on curl 8.14.1 against a 404: eight attempts in 127.1 s, where
+# the same call with `--no-fail` answered 404 at once and exited 0 — and the caller's errexit
+# would then end the run on a question it had an answer for.
+# What curl still retries is the transient error it retries with no `--fail` at all: a timeout,
+# a connection it could not make or lost, and an HTTP 408, 429, 500, 502, 503 or 504 answer.
+# So the flap this ladder exists for is ridden out, and the statuses these callers read are
+# answered at once.
+#
+# A request the service did not answer at all prints 000 and returns curl's own status, which
+# is no status a caller here admits, so it is refused like any other.
+ci_tools_curl_status() {
+  if [ "$#" -lt 2 ]; then
+    ci_tools__error "ci_tools_curl_status takes a per-attempt bound and a URL, and this call gave $#"
+    return 1
+  fi
+  local max_time=$1 url=$2
+  shift 2
+  ci_tools_curl /dev/null "$max_time" "$url" -w '%{http_code}' --no-fail "$@"
 }
 
 # ci_tools__curl_report <curl's exit> <the file curl was given> <what every other exit says>:

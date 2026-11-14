@@ -210,7 +210,12 @@ jobs:
     # Only main releases, as above; a workflow_dispatch on main runs it as a push does.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the measured 15 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 24 call sites of one 450 s fetch = 10800 s, above every other retried step here.
+    # 900 + 10800 = 11700 s -> 196 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (181 min here).
+    timeout-minutes: 196
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -233,6 +238,7 @@ jobs:
       # published release and publishes a draft one), and otherwise bumps from the newest legion-v*
       # tag over the paths $LEGION_VERSION_ARGS names (the workflow's `env:` says why each is there).
       - name: Determine next version
+        timeout-minutes: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $LEGION_VERSION_ARGS is the argument list, split on purpose
@@ -247,6 +253,7 @@ jobs:
       # tag between this step and the plugins' build jobs. publish's "legion: Check the linked
       # plugin pair" refuses to release this legion unless npm then carries exactly this pair.
       - name: Resolve plugin versions for the smoke test and worker image
+        timeout-minutes: 181
         id: plugin_versions
         run: |
           # pair_member <version output> <tag prefix>: the version npm carries for the plugin in
@@ -297,6 +304,25 @@ jobs:
             ~/.cache/go-build
           key: go-daemon-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-daemon-${{ runner.os }}-
+      # The modules this job's build compiles, downloaded once and retried, so the build itself
+      # reads the module cache and never the proxy (dispatch://INFRA-1545, R1 and its D1: the
+      # retried unit is the download, never the build). Five bounded attempts through
+      # .github/scripts/ci-retry.sh, the last starting 150 s after the first.
+      #
+      # 180 s per attempt: a cold `go mod download` of packages/daemon — an empty module cache,
+      # this repository at this commit — measured 81 s on 2026-11-07, and the slowest cold run
+      # measured anywhere in this repository is packages/envoy/infra's 113 s, so the bound is
+      # 1.6 times that slowest measurement. It can be that tight where a tarball fetch's could
+      # not: an attempt the bound kills leaves what it fetched in the module cache, and the next
+      # attempt resumes from there. The cache restored above makes the common run far shorter.
+      - name: Download the Go modules the build compiles
+        if: steps.version.outputs.skip != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
       # CGO_ENABLED=0: a static binary, as the worker image builds it, so a linux archive runs on any
       # distribution. One archive per target .github/go-release-targets.json lists (the pull
       # request's notices check reads the same list), each holding one top-level directory,
@@ -346,14 +372,21 @@ jobs:
           path: assets/
           if-no-files-found: error
 
+      # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (ci-budgets.md's Budgets note) -> 22 min.
       - uses: ./.github/actions/install-changie
+        timeout-minutes: 22
         if: steps.version.outputs.skip != 'true'
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
       # there: the fragments under packages/daemon/.changes/unreleased/ that this release's own
       # commits first added, and the `notes` line fold-notes prints says whether there were any.
+      # Its own retry arithmetic, so an exhausted fetch fails this step by name rather than
+      # being cut part way by the job: the leak-guard fetch of the release-push.sh steps,
+      # 6 call sites of one 450 s fetch = 2700 s -> 46 min.
       - name: Render this release's changelog entries
         id: notes
+        timeout-minutes: 46
         if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -369,6 +402,7 @@ jobs:
           path: ${{ runner.temp }}/release-notes.md
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # The Envoy Oh My Pi plugin, @sjawhar/pi-envoy. pi_envoy_build versions it, installs the
@@ -381,7 +415,12 @@ jobs:
     # main"). A workflow_dispatch on main runs it as a push does.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -405,6 +444,7 @@ jobs:
       # tag on this commit. Otherwise it bumps from the newest pi-envoy-v* tag over the paths
       # $PI_ENVOY_VERSION_ARGS names (the workflow's `env:` says why each is there).
       - name: Determine next version
+        timeout-minutes: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $PI_ENVOY_VERSION_ARGS is the argument list, split on purpose
@@ -412,6 +452,9 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
+        timeout-minutes: 22
 
       # This release's own changelog entries, which publish writes into the GitHub release's body.
       # A fragment stays under packages/pi-envoy/.changes/unreleased/ after the release that ships
@@ -420,6 +463,7 @@ jobs:
       # line fold-notes prints says which of the two it was, since publish cannot look into the
       # artifact before it downloads it.
       - name: Render this release's changelog entries
+        timeout-minutes: 46
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
@@ -436,12 +480,24 @@ jobs:
           path: ${{ runner.temp }}/release-notes.md
           if-no-files-found: error
 
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
+        timeout-minutes: 43
 
+      # The install retries: five bounded attempts through .github/scripts/ci-retry.sh, the last
+      # starting 150 s after the first. 180 s per attempt, the bound every Bun install of this
+      # repository's CI carries (dispatch://INFRA-1545): this install measured 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in the 20 most recent successful ci.yaml
+      # push runs on main.
       - name: Install dependencies
         if: steps.version.outputs.skip != 'true'
-        run: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -509,6 +565,7 @@ jobs:
           if-no-files-found: error
 
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # The Legion Oh My Pi plugin, @sjawhar/pi-legion, built and published as @sjawhar/pi-envoy is.
@@ -516,7 +573,12 @@ jobs:
     # Only main publishes, as pi_envoy_build says.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -535,6 +597,7 @@ jobs:
       # an earlier attempt pushed for this commit as that step does, over the paths
       # $PI_LEGION_VERSION_ARGS names (the workflow's `env:` says why each is there).
       - name: Determine next version
+        timeout-minutes: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $PI_LEGION_VERSION_ARGS is the argument list, split on purpose
@@ -542,11 +605,15 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
+        timeout-minutes: 22
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
       # there: the fragments this release's own commits first added, and the `notes` line
       # fold-notes prints says whether there were any.
       - name: Render this release's changelog entries
+        timeout-minutes: 46
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
@@ -563,12 +630,21 @@ jobs:
           path: ${{ runner.temp }}/release-notes.md
           if-no-files-found: error
 
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
+        timeout-minutes: 43
 
+      # Retried as pi_envoy_build's install is, and bounded as it is: 180 s per attempt, against
+      # 20.70 s cold on a pod and a measured maximum of 11 s over 180 observations.
       - name: Install dependencies
         if: steps.version.outputs.skip != 'true'
-        run: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -630,6 +706,7 @@ jobs:
           if-no-files-found: error
 
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # The Claude Code plugin, @sjawhar/claude-envoy, built and published as the two Oh My Pi plugins
@@ -644,7 +721,12 @@ jobs:
     # Only main publishes, as pi_envoy_build says.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    # Budget (the Budgets note of .github/ci-budgets.md): 900 s, the measured 15 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 900 + 2700 = 3600 s -> 61 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 61
     # contents: read is for the checkout; nothing here writes to the repository, a registry or a
     # release.
     permissions:
@@ -663,6 +745,7 @@ jobs:
       # an earlier attempt pushed for this commit as that step does, over the paths
       # $CLAUDE_ENVOY_VERSION_ARGS names (the workflow's `env:` says why each is there).
       - name: Determine next version
+        timeout-minutes: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $CLAUDE_ENVOY_VERSION_ARGS is the argument list, split on purpose
@@ -670,11 +753,15 @@ jobs:
 
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
+        timeout-minutes: 22
 
       # This release's own changelog entries, as in pi_envoy_build and for the reasons given
       # there: the fragments this release's own commits first added, and the `notes` line
       # fold-notes prints says whether there were any.
       - name: Render this release's changelog entries
+        timeout-minutes: 46
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
@@ -691,12 +778,21 @@ jobs:
           path: ${{ runner.temp }}/release-notes.md
           if-no-files-found: error
 
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
         if: steps.version.outputs.skip != 'true'
+        timeout-minutes: 43
 
+      # Retried as pi_envoy_build's install is, and bounded as it is: 180 s per attempt, against
+      # 20.70 s cold on a pod and a measured maximum of 11 s over 180 observations.
       - name: Install dependencies
         if: steps.version.outputs.skip != 'true'
-        run: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
 
       - name: Set release version
         if: steps.version.outputs.skip != 'true'
@@ -745,6 +841,7 @@ jobs:
       # What it writes: release-push.sh extract-built. The package tracks neither directory, so
       # this is what puts the checked build where `bun pm pack` finds it.
       - name: Put the checked build into the checkout
+        timeout-minutes: 46
         if: steps.version.outputs.skip != 'true'
         run: .github/scripts/release-push.sh extract-built "$RUNNER_TEMP/claude-envoy-built.tar"
 
@@ -802,6 +899,7 @@ jobs:
           if-no-files-found: error
 
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # Publishes what the four build jobs made, in one job for all four packages, so their release
@@ -831,7 +929,12 @@ jobs:
     needs: [pi_envoy_build, pi_legion_build, claude_envoy_build, legion_build]
     if: always() && github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 12 call sites of one 450 s fetch = 5400 s, above every other retried step here.
+    # 600 + 5400 = 6000 s -> 101 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (91 min here).
+    timeout-minutes: 101
     # contents: write creates the GitHub releases (`release-push.sh release`, below); id-token: write
     # is the OIDC token npm trusted publishing exchanges for the publish credential (the registry
     # records `trustedPublisher: github` for each plugin; no NPM_TOKEN is set), which also signs npm
@@ -884,6 +987,7 @@ jobs:
       # take the name's stem and spell the `.tgz` themselves, so each reads as the publish of a
       # tarball (check-release-credentials.sh allows `npm publish` of nothing else).
       - name: "pi-envoy: Check the hand-over"
+        timeout-minutes: 46
         id: pi_envoy_handed
         if: ${{ !cancelled() && steps.pi_envoy_download.outcome == 'success' }}
         env:
@@ -914,6 +1018,7 @@ jobs:
         working-directory: packages/pi-envoy
 
       - name: "pi-envoy: Tag release"
+        timeout-minutes: 46
         id: pi_envoy_tag
         if: ${{ !cancelled() && steps.pi_envoy_npm.outcome == 'success' }}
         env:
@@ -926,6 +1031,7 @@ jobs:
       # key again. The tag goes before the release below, which verifies it on GitHub; the tag is
       # all this package puts in the repository.
       - name: "pi-envoy: Push tag"
+        timeout-minutes: 46
         id: pi_envoy_push_tag
         if: ${{ !cancelled() && steps.pi_envoy_tag.outcome == 'success' }}
         env:
@@ -934,6 +1040,7 @@ jobs:
         run: .github/scripts/release-push.sh push-tag "$TAG"
 
       - name: "pi-envoy: Create GitHub release"
+        timeout-minutes: 46
         id: pi_envoy_release
         if: ${{ !cancelled() && steps.pi_envoy_push_tag.outcome == 'success' }}
         env:
@@ -958,6 +1065,7 @@ jobs:
       # heading already holds, and says there why the write is a replace and not an append. The
       # artifact holds the one file fold-notes wrote, under the name the build job gave it.
       - name: "pi-envoy: Write the changelog into the release body"
+        timeout-minutes: 46
         if: ${{ !cancelled() && steps.pi_envoy_notes.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -976,6 +1084,7 @@ jobs:
           path: ${{ runner.temp }}/pi-legion-tarball
 
       - name: "pi-legion: Check the hand-over"
+        timeout-minutes: 46
         id: pi_legion_handed
         if: ${{ !cancelled() && steps.pi_legion_download.outcome == 'success' }}
         env:
@@ -1004,6 +1113,7 @@ jobs:
         working-directory: packages/pi-legion
 
       - name: "pi-legion: Tag release"
+        timeout-minutes: 46
         id: pi_legion_tag
         if: ${{ !cancelled() && steps.pi_legion_npm.outcome == 'success' }}
         env:
@@ -1013,6 +1123,7 @@ jobs:
 
       # The deploy key reaches this step alone of this package's, as for pi-envoy.
       - name: "pi-legion: Push tag"
+        timeout-minutes: 46
         id: pi_legion_push_tag
         if: ${{ !cancelled() && steps.pi_legion_tag.outcome == 'success' }}
         env:
@@ -1021,6 +1132,7 @@ jobs:
         run: .github/scripts/release-push.sh push-tag "$TAG"
 
       - name: "pi-legion: Create GitHub release"
+        timeout-minutes: 46
         id: pi_legion_release
         if: ${{ !cancelled() && steps.pi_legion_push_tag.outcome == 'success' }}
         env:
@@ -1040,6 +1152,7 @@ jobs:
           path: ${{ runner.temp }}/pi-legion-notes
 
       - name: "pi-legion: Write the changelog into the release body"
+        timeout-minutes: 46
         if: ${{ !cancelled() && steps.pi_legion_notes.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1065,6 +1178,7 @@ jobs:
           path: ${{ runner.temp }}/claude-envoy-tarball
 
       - name: "claude-envoy: Check the hand-over"
+        timeout-minutes: 46
         id: claude_envoy_handed
         if: ${{ !cancelled() && steps.claude_envoy_download.outcome == 'success' }}
         env:
@@ -1093,6 +1207,7 @@ jobs:
         working-directory: packages/claude-envoy
 
       - name: "claude-envoy: Tag release"
+        timeout-minutes: 46
         id: claude_envoy_tag
         if: ${{ !cancelled() && steps.claude_envoy_npm.outcome == 'success' }}
         env:
@@ -1102,6 +1217,7 @@ jobs:
 
       # The deploy key reaches this step alone of this package's, as for pi-envoy.
       - name: "claude-envoy: Push tag"
+        timeout-minutes: 46
         id: claude_envoy_push_tag
         if: ${{ !cancelled() && steps.claude_envoy_tag.outcome == 'success' }}
         env:
@@ -1110,6 +1226,7 @@ jobs:
         run: .github/scripts/release-push.sh push-tag "$TAG"
 
       - name: "claude-envoy: Create GitHub release"
+        timeout-minutes: 46
         id: claude_envoy_release
         if: ${{ !cancelled() && steps.claude_envoy_push_tag.outcome == 'success' }}
         env:
@@ -1129,6 +1246,7 @@ jobs:
           path: ${{ runner.temp }}/claude-envoy-notes
 
       - name: "claude-envoy: Write the changelog into the release body"
+        timeout-minutes: 46
         if: ${{ !cancelled() && steps.claude_envoy_notes.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1147,6 +1265,7 @@ jobs:
       # worker_image_attest does not attest the image on main, so neither links a plugin version
       # npm lacks.
       - name: Check the plugin pair npm carries
+        timeout-minutes: 91
         id: pair
         if: ${{ !cancelled() }}
         env:
@@ -1223,6 +1342,7 @@ jobs:
       # tag. SHA256SUMS is then written over them, and the tag and the explicit lists go to the
       # steps below.
       - name: "legion: Check build's archives and write SHA256SUMS"
+        timeout-minutes: 46
         id: legion_assets
         if: ${{ !cancelled() && steps.legion_download.outcome == 'success' }}
         env:
@@ -1256,6 +1376,7 @@ jobs:
       # key again. The tag names $GITHUB_SHA, the commit legion_build built, which is what every
       # package of this job checks out and tags.
       - name: "legion: Tag release"
+        timeout-minutes: 91
         id: legion_tag
         if: ${{ !cancelled() && steps.legion_assets.outcome == 'success' }}
         env:
@@ -1288,6 +1409,7 @@ jobs:
       # an earlier attempt left, with the files the check above listed. Its version and tag are the
       # job's outputs, which worker_image_release names the worker image on.
       - name: "legion: Create GitHub release"
+        timeout-minutes: 46
         id: legion_release
         if: ${{ !cancelled() && steps.legion_attest.outcome == 'success' }}
         env:
@@ -1312,7 +1434,10 @@ jobs:
           name: legion-notes
           path: ${{ runner.temp }}/legion-notes
 
+      # Its own retry arithmetic, as the step above: the leak-guard fetch of the
+      # release-push.sh steps, 6 call sites of one 450 s fetch = 2700 s -> 46 min.
       - name: "legion: Write the changelog into the release body"
+        timeout-minutes: 46
         if: ${{ !cancelled() && steps.legion_notes.outcome == 'success' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -1407,7 +1532,12 @@ jobs:
       (needs.publish.result == 'success' || needs.publish.result == 'failure') &&
       needs.publish.outputs.tag != ''
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     permissions:
       contents: write # gh release edit
       packages: write # the legion version tag on ghcr.io
@@ -1456,6 +1586,7 @@ jobs:
       # points at now. release-section replaces a section that heading already holds, which is what
       # a whole-run rerun of this image needs, and says there why the write is a replace.
       - name: Name the worker image on the legion release
+        timeout-minutes: 46
         run: |
           test -n "$REF"
           # shellcheck disable=SC2016 # literal Markdown backticks, no expansion wanted

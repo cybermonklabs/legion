@@ -384,7 +384,20 @@ leak_guard() {
     else
       dir=$(mktemp -d)
       on_exit_remove "$dir"
-      curl --fail --silent --show-error --location --retry 3 --max-time 120 \
+      # The leak engine is a release asset like any other this repository fetches, so it
+      # comes down through the one helper at the release-asset bound of .github/ci-budgets.md:
+      # 5 x 60 + 150 = 450 s. Written as `--retry 3 --max-time 120` it sat below that floor,
+      # and rule 8 of check-download-retry.sh charges every step that calls this script the
+      # arithmetic of the floor it would have to meet, once per call site: 6522 s on 46 steps,
+      # 13044 on five and 26088 on one, which no `timeout-minutes` can hold under GitHub's
+      # 360-minute job ceiling (review round 17 of dispatch://INFRA-1545).
+      # Sourced here rather than at the top of this file: the helper is what the fetch needs,
+      # and a copy of this script that never fetches - the engine seam below, which every case
+      # of release-push.test.sh fills - needs no copy of the helper beside it.
+      # shellcheck source=.github/scripts/ci-retry.sh
+      . "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/ci-retry.sh"
+      retry_fetch "the leak engine" 60 -- \
+        curl --fail --silent --show-error --location \
         --output "$dir/gitleaks.tar.gz" "$leak_engine_url" ||
         fail_error "$setup $leak_engine_url could not be fetched"
       printf '%s  %s\n' "$leak_engine_sha256" "$dir/gitleaks.tar.gz" > "$dir/SHA256SUMS"

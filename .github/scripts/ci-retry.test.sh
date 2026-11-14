@@ -1,0 +1,394 @@
+#!/usr/bin/env bash
+# Tests for `ci-retry.sh`: what the helper does, measured by running it, never read off its
+# source. The attempt count is counted from a file each fake command appends to, the sleeps and
+# the per-attempt bound are read from the times in that file, and the floor R1 sets — five
+# attempts, the fifth starting at least 120 s after the first — is the measured span between the
+# first and the fifth line of it. Every number the cases assert is printed beside the assertion,
+# so a reader of the log sees the measurement rather than the expectation.
+#
+# The helper is sourced into this harness, which runs with `set -euo pipefail` on: that is how a
+# workflow step uses it, and it is also the proof that a failing attempt does not end the caller.
+# The case that fails twice and then succeeds calls `retry_fetch` bare, with no `set +e` around
+# it, so a leaked failure would kill this script at its first failed attempt and no summary would
+# be printed at all.
+#
+# It costs about 360 s, almost all of it in two cases that each pay the helper's 150 s of
+# sleeps: the five attempts against a command that hangs for ever, which the 120 s floor is
+# measured from, and the five against a command that writes an error body and fails, which is how
+# the cases below see that none of those bytes reach a caller capturing the value, that the last
+# attempt's own body is printed on standard error, and that a body larger than the report prints
+# is cut. Those three readings share that one case's sleeps rather than paying them again.
+#
+# Everything is written under $TMPDIR (mktemp -d honours it), never /tmp by name.
+#
+# Run from anywhere: .github/scripts/ci-retry.test.sh
+# CI runs it in ci.yaml's test job.
+set -euo pipefail
+shopt -s inherit_errexit
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+helper="$script_dir/ci-retry.sh"
+
+# shellcheck source=.github/scripts/test-lib.sh
+source "$script_dir/test-lib.sh"
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+# The one call that matters: sourced into a shell that has errexit and pipefail on, exactly as a
+# workflow step sources it.
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$helper"
+
+# run_retry <arguments...>: calls retry_fetch, leaving its merged output in $out, its exit status
+# in $status and its wall time in whole seconds in $elapsed.
+run_retry() {
+  local start
+  start=$(date +%s)
+  set +e
+  out=$(retry_fetch "$@" 2>&1)
+  status=$?
+  set -e
+  elapsed=$(($(date +%s) - start))
+}
+
+# near <actual> <expected> <tolerance>: true/false for check.
+near() {
+  if [ "$1" -ge "$(($2 - $3))" ] && [ "$1" -le "$(($2 + $3))" ]; then echo true; else echo false; fi
+}
+
+# The status the local `timeout` returns when it kills: 124 from GNU coreutils, 143 from BusyBox.
+# The helper may only call 124 the bound's own kill, so which one this machine gives decides which
+# wording the hanging case expects.
+set +e
+timeout 1 sleep 5
+kill_status=$?
+set -e
+echo "measured: this machine's \`timeout\` exits $kill_status when it kills"
+
+echo "case: sourcing the helper sets no shell option and adds one name"
+check "errexit is still on in this harness" "$(contains "$(set +o)" '^set -o errexit$')"
+check "pipefail is still on in this harness" "$(contains "$(set +o)" '^set -o pipefail$')"
+cat > "$work/probe" <<'PROBE'
+#!/usr/bin/env bash
+# Sources the helper in a shell that has set no option at all, and reports what sourcing it
+# changed: the shell's options, and the function names it added.
+before_options=$(set +o)
+before_functions=$(declare -F | awk '{print $NF}' | sort)
+# shellcheck source=/dev/null
+. "$1"
+after_options=$(set +o)
+after_functions=$(declare -F | awk '{print $NF}' | sort)
+if [ "$before_options" = "$after_options" ]; then echo "options: unchanged"; else echo "options: changed"; fi
+printf 'added: %s\n' "$(comm -13 <(echo "$before_functions") <(echo "$after_functions") | paste -sd,)"
+PROBE
+chmod +x "$work/probe"
+probe_out=$(bash "$work/probe" "$helper")
+indent "$probe_out"
+check "an option-less shell has the same options after sourcing" "$(contains "$probe_out" '^options: unchanged$')"
+check "and exactly one new function, retry_fetch" "$(contains "$probe_out" '^added: retry_fetch$')"
+
+echo "case: a command that succeeds on the first attempt returns 0 and sleeps nothing"
+run_retry "a tool already on disk" 5 -- true
+echo "  measured: exit $status after ${elapsed}s"
+check "exits 0" "$(is "$status" 0)"
+check "costs no sleep" "$([ "$elapsed" -lt 3 ] && echo true || echo false)"
+check "prints no failure line" "$(is "$(contains "$out" 'attempt')" false)"
+check "and no error annotation" "$(is "$(contains "$out" '::error::')" false)"
+
+echo "case: a command that fails twice and then succeeds makes three attempts, 10 s and 20 s apart"
+cat > "$work/flaky" <<FLAKY
+#!/usr/bin/env bash
+# Records the time this attempt started, then fails until the third one.
+date +%s >> "$work/flaky.starts"
+[ "\$(wc -l < "$work/flaky.starts")" -ge 3 ]
+FLAKY
+chmod +x "$work/flaky"
+: > "$work/flaky.starts"
+flaky_start=$(date +%s)
+# Called bare, under this harness's errexit and pipefail: if a failed attempt leaked out of the
+# helper, this script would end here and print no summary.
+retry_fetch "the twice-failing tool" 5 -- "$work/flaky" > "$work/flaky.log" 2>&1
+flaky_elapsed=$(($(date +%s) - flaky_start))
+flaky_out=$(cat "$work/flaky.log")
+mapfile -t flaky_starts < "$work/flaky.starts"
+indent "$flaky_out"
+check "the caller's shell survived two failed attempts under set -e" true
+check "exactly three attempts ran" "$(is "${#flaky_starts[@]}" 3)"
+if [ "${#flaky_starts[@]}" -eq 3 ]; then
+  echo "  measured: 3 attempts over ${flaky_elapsed}s, the second $((flaky_starts[1] - flaky_starts[0]))s after the first and the third $((flaky_starts[2] - flaky_starts[1]))s after the second"
+  check "the first sleep was 10 s" "$(near "$((flaky_starts[1] - flaky_starts[0]))" 10 2)"
+  check "the second was 20 s" "$(near "$((flaky_starts[2] - flaky_starts[1]))" 20 2)"
+fi
+check "the whole call took about 30 s" "$(near "$flaky_elapsed" 30 3)"
+check "it named the first failure, its status and what was left" \
+  "$(contains "$flaky_out" '^the twice-failing tool: attempt 1 of 5 failed (exit 1); 4 attempts left$')"
+check "and the second" \
+  "$(contains "$flaky_out" '^the twice-failing tool: attempt 2 of 5 failed (exit 1); 3 attempts left$')"
+
+echo "case: the helper's own lines go to standard error, so a caller may capture the command's output"
+# A caller that reads a download into a variable — `names=$(retry_fetch … -- gh api …)` — gets the
+# command's own output and nothing of the helper's, or every such call site would have to strip
+# the retry log out of the value it just fetched.
+cat > "$work/noisy" <<NOISY
+#!/usr/bin/env bash
+date +%s >> "$work/noisy.starts"
+if [ "\$(wc -l < "$work/noisy.starts")" -lt 2 ]; then exit 7; fi
+echo "the payload"
+NOISY
+chmod +x "$work/noisy"
+: > "$work/noisy.starts"
+captured=$(retry_fetch "the noisy tool" 5 -- "$work/noisy" 2> "$work/noisy.err")
+noisy_err=$(cat "$work/noisy.err")
+indent "$noisy_err"
+check "standard output carried the command's output alone" "$(is "$captured" 'the payload')"
+check "and the failed attempt was reported on standard error" \
+  "$(contains "$noisy_err" '^the noisy tool: attempt 1 of 5 failed (exit 7); 4 attempts left$')"
+check "and printed no error annotation, since it succeeded" "$(is "$(contains "$flaky_out" '::error::')" false)"
+
+# The payload a failed attempt writes in the three cases below, and its size in bytes, measured
+# here rather than written out: gh copies an error answer's body to standard output as it copies
+# a good one's, and this is the shape a refused `gh api` call prints there (gh 2.98.0, a 422).
+# LEAKED-MARKER is what a leak looks like in a value the caller captured.
+leak_payload='{"message":"LEAKED-MARKER","status":"422"}'
+leak_bytes=$(printf '%s\n' "$leak_payload" | wc -c | tr -d ' ')
+echo "measured: a failed attempt writes $leak_bytes bytes in the cases below"
+
+echo "case: a failed attempt that wrote to standard output has those bytes withheld"
+cat > "$work/leaky" <<LEAKY
+#!/usr/bin/env bash
+# Writes an error body and fails, as a refused \`gh api\` call does, until the second attempt.
+date +%s >> "$work/leaky.starts"
+if [ "\$(wc -l < "$work/leaky.starts")" -lt 2 ]; then
+  echo '$leak_payload'
+  exit 1
+fi
+echo "the good answer"
+LEAKY
+chmod +x "$work/leaky"
+: > "$work/leaky.starts"
+leaked=$(retry_fetch "the leaky tool" 5 -- "$work/leaky" 2> "$work/leaky.err")
+leaky_err=$(cat "$work/leaky.err")
+indent "$leaky_err"
+check "the captured value is the successful attempt's output alone" "$(is "$leaked" 'the good answer')"
+check "the failed attempt's bytes are not in front of it" \
+  "$(is "$(contains "$leaked" 'LEAKED-MARKER')" false)"
+check "and they reached standard error no more than standard output" \
+  "$(is "$(contains "$leaky_err" 'LEAKED-MARKER')" false)"
+check "standard error says how many bytes were withheld" \
+  "$(contains "$leaky_err" "^the leaky tool: attempt 1 of 5 wrote $leak_bytes bytes to standard output; none of it is printed\$")"
+
+echo "case: every attempt writes and fails, so nothing of any attempt reaches standard output, and the last attempt's body is printed and cut"
+# 500 bytes more than the helper prints, so the whole is over the cut and the report must name
+# both figures.
+refusing_filler=$((4096 + 500 - ${#leak_payload}))
+refusing_bytes=$((${#leak_payload} + refusing_filler + 1))
+# Its body is larger than the helper prints, so this one case proves the cut as well as the
+# withholding and pays the helper's 150 s of sleeps once rather than twice. The marker is at the
+# front, where a cut cannot drop it.
+cat > "$work/refusing" <<REFUSING
+#!/usr/bin/env bash
+date +%s >> "$work/refusing.starts"
+printf '%s' '$leak_payload'
+head -c $refusing_filler /dev/zero | tr '\\0' 'x'
+echo
+exit 1
+REFUSING
+chmod +x "$work/refusing"
+: > "$work/refusing.starts"
+set +e
+refusing_out=$(retry_fetch "the refusing tool" 5 -- "$work/refusing" 2> "$work/refusing.err")
+refusing_status=$?
+set -e
+mapfile -t refusing_starts < "$work/refusing.starts"
+refusing_err=$(cat "$work/refusing.err")
+indent "$refusing_err"
+check "exactly five attempts ran" "$(is "${#refusing_starts[@]}" 5)"
+check "standard output is empty" "$(is "$refusing_out" '')"
+check "the four attempts a retry follows said what they withheld and printed none of it" \
+  "$(is "$(grep -c "wrote $refusing_bytes bytes to standard output; none of it is printed" <<<"$refusing_err" || true)" 4)"
+# The last attempt is the diagnosis: nothing retries after it, so its body is printed - on
+# standard error, where it cannot reach a caller capturing this call's value. An apt outage read
+# `677 bytes, none printed` on every one of fifteen attempts across three jobs of this
+# repository's own CI and said nothing about which
+# host or error (dispatch://INFRA-1545).
+check "the last attempt's bytes are printed, on standard error" \
+  "$(is "$(contains "$refusing_err" 'LEAKED-MARKER')" true)"
+check "and it says it is printing them, naming the whole size and the part it prints" \
+  "$(contains "$refusing_err" "^the refusing tool: the last attempt wrote $refusing_bytes bytes to standard output; the first 4096 of them follow on standard error\$")"
+check "and it prints that many bytes of them and no more" \
+  "$(is "$(grep -c "^{\"message\":\"LEAKED-MARKER\",\"status\":\"422\"}x\{$((4096 - ${#leak_payload}))\}\$" <<<"$refusing_err" || true)" 1)"
+check "standard output still carries nothing of them" \
+  "$(is "$(contains "$refusing_out" 'LEAKED-MARKER')" false)"
+# Those bytes are a host's, and the runner reads its workflow commands on standard error as it
+# reads them on standard output, so the copy is wrapped in a stop token the body cannot have
+# guessed: a body writing `::add-mask::` or `::error::` of its own is text between these lines.
+refusing_stop=$(sed -n 's/^::stop-commands::\(.*\)$/\1/p' <<<"$refusing_err")
+check "the copy is wrapped in a stop-commands token" "$(is "$(grep -c . <<<"$refusing_stop")" 1)"
+# Not a pattern: a hard-coded token would match any shape this names. The token is the buffer's
+# own `mktemp` name, so what makes it unguessable is that it differs per call, and the case below
+# drives a second call to read a second one.
+check "the token carries the random part mktemp chose" \
+  "$(is "$(grep -cE '^ci-retry\.[A-Za-z0-9]{6}$' <<<"$refusing_stop" || true)" 1)"
+check "and the block is closed again with that same token" \
+  "$(contains "$refusing_err" "^::$refusing_stop::\$")"
+check "the body sits inside that block" \
+  "$(is "$(awk -v s="::stop-commands::$refusing_stop" -v e="::$refusing_stop::" '$0==s{i=1;next} $0==e{i=0} i&&/LEAKED-MARKER/{n++} END{print n+0}' "$work/refusing.err")" 1)"
+check "it returns the last attempt's status" "$(is "$refusing_status" 1)"
+check "and its last line is still the exhaustion annotation" \
+  "$(is "$(tail -n 1 <<<"$refusing_err")" '::error::the refusing tool failed to download after 5 attempts (last exit 1)')"
+
+echo "case: a hostile body stays inside the stop block, under each caller's own shell options"
+# Round 22 of dispatch://INFRA-1545 caught a branch that passed when driven bare and KILLED THE
+# CALLER when driven under the flags a caller really sets, so this case drives the helper under
+# both: `bash --noprofile --norc -eo pipefail`, which is GitHub's `shell: bash` for every
+# composite action, and `dash -eu`, which scripts/go-third-party-notices.sh uses. `sleep` is
+# stubbed on PATH, so five attempts cost no seconds and this case adds nothing to the suite's
+# 362 s.
+mkdir -p "$work/stub"
+cat > "$work/stub/sleep" <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+chmod +x "$work/stub/sleep"
+# A body of exactly the lines the runner would act on, and no final newline.
+cat > "$work/hostile" <<'HOSTILE'
+#!/usr/bin/env bash
+printf '::add-mask::x\n::error::x\n::stop-commands::deadbeef\n::::\n::deadbeef::\nHOSTILE-END'
+exit 1
+HOSTILE
+chmod +x "$work/hostile"
+for caller_shell in "bash --noprofile --norc -eo pipefail" "dash -eu"; do
+  caller_name=${caller_shell%% *}
+  if ! command -v "$caller_name" > /dev/null; then
+    echo "  $caller_name is not on PATH, so that half is not driven"
+    continue
+  fi
+  # `set +e` as the cases above do: this call is meant to fail, and a bare failing command would
+  # end this harness before it could read what the call printed.
+  set +e
+  PATH="$work/stub:$PATH" $caller_shell -c '
+    . "$1/ci-retry.sh"
+    retry_fetch "the hostile tool" 5 -- "$2"
+  ' _ "$script_dir" "$work/hostile" > "$work/hostile.out" 2> "$work/hostile.err"
+  hostile_status=$?
+  set -e
+  hostile_err=$(cat "$work/hostile.err")
+  hostile_stop=$(sed -n 's/^::stop-commands::\(ci-retry\..*\)$/\1/p' <<<"$hostile_err")
+  check "$caller_name: it returns the command's own status rather than a helper's" \
+    "$(is "$hostile_status" 1)"
+  check "$caller_name: the exhaustion annotation is still printed" \
+    "$(is "$(tail -n 1 <<<"$hostile_err")" '::error::the hostile tool failed to download after 5 attempts (last exit 1)')"
+  check "$caller_name: the token is the buffer's own name" \
+    "$(is "$(grep -cE '^ci-retry\.[A-Za-z0-9]{6}$' <<<"$hostile_stop" || true)" 1)"
+  check "$caller_name: and it is not the token the case above read" \
+    "$(is "$([ "$hostile_stop" = "$refusing_stop" ] && echo same || echo different)" different)"
+  # Every line the runner would act on sits between the two markers, the body's own
+  # `::deadbeef::` included, and the close is on a line of its own although the body ended
+  # without a newline.
+  check "$caller_name: each workflow command of the body is inside the block" \
+    "$(is "$(awk -v s="::stop-commands::$hostile_stop" -v e="::$hostile_stop::" 'index($0, s) == 1 && length($0) == length(s) {i = 1; next} index($0, e) == 1 && length($0) == length(e) {i = 0; next} i && /^::/ {n++} END {print n + 0}' "$work/hostile.err")" 5)"
+  check "$caller_name: the close stands on its own line after a body with no final newline" \
+    "$(contains "$hostile_err" "^::$hostile_stop::\$")"
+  check "$caller_name: the helper's own annotation is outside the block" \
+    "$(is "$(awk -v e="::$hostile_stop::" 'index($0, e) == 1 && length($0) == length(e) {after = 1; next} after && /^::error::/ {n++} END {print n + 0}' "$work/hostile.err")" 1)"
+  check "$caller_name: and nothing of it reached standard output" \
+    "$(is "$(cat "$work/hostile.out")" '')"
+done
+
+echo "case: a first attempt that succeeds has its output copied byte for byte"
+# The buffer must add nothing and drop nothing, a trailing newline the command did not write
+# least of all: a caller writing the value into a file compares it with a checksum.
+cat > "$work/exact" <<'EXACT'
+#!/usr/bin/env bash
+printf 'no trailing newline'
+EXACT
+chmod +x "$work/exact"
+printf 'no trailing newline' > "$work/exact.want"
+retry_fetch "the exact tool" 5 -- "$work/exact" > "$work/exact.got" 2> "$work/exact.err"
+echo "  measured: $(wc -c < "$work/exact.want" | tr -d ' ') bytes written, $(wc -c < "$work/exact.got" | tr -d ' ') bytes captured"
+check "the capture is byte for byte what the command wrote, with no newline added" \
+  "$(cmp -s "$work/exact.want" "$work/exact.got" && echo true || echo false)"
+check "and the helper printed nothing beside it" "$(is "$(cat "$work/exact.err")" '')"
+
+echo "case: a copy the caller's standard output refuses is the call's status, not a silent 0"
+# The successful attempt's buffer is copied with `cat`, and that copy can fail where the fetch
+# did not: a full device, an I/O error, a reader that closed the pipe. The caller then holds a
+# cut answer, so the call has to say so. /dev/full answers every write with ENOSPC, which is the
+# cheapest of the three to drive; the command itself writes into the buffer and succeeds.
+set +e
+retry_fetch "the tool whose output a full device refuses" 5 -- printf payload > /dev/full 2> "$work/full.err"
+full_status=$?
+set -e
+full_err=$(cat "$work/full.err")
+indent "$full_err"
+echo "  measured: exit $full_status"
+check "the call fails rather than returning 0" "$([ "$full_status" -ne 0 ] && echo true || echo false)"
+check "and returns the status cat gave" "$(is "$full_status" 1)"
+check "cat's own message is on standard error" "$(contains "$full_err" 'No space left on device')"
+check "no attempt is reported as failed, since the fetch itself worked" \
+  "$(is "$(contains "$full_err" 'attempt 1 of 5')" false)"
+check "and no exhaustion annotation is printed" "$(is "$(contains "$full_err" '::error::')" false)"
+
+echo "case: a command that hangs for ever makes five bounded attempts, the fifth past the 120 s floor"
+cat > "$work/hangs" <<HANGS
+#!/usr/bin/env bash
+# Records the time this attempt started, then hangs until \`timeout\` kills it. exec, so the kill
+# reaches the sleep rather than a parent that would leave it running.
+date +%s >> "$work/hangs.starts"
+exec sleep 600
+HANGS
+chmod +x "$work/hangs"
+: > "$work/hangs.starts"
+run_retry "the stalled tool" 2 -- "$work/hangs"
+mapfile -t hangs_starts < "$work/hangs.starts"
+indent "$out"
+check "exactly five attempts ran" "$(is "${#hangs_starts[@]}" 5)"
+if [ "${#hangs_starts[@]}" -eq 5 ]; then
+  span=$((hangs_starts[4] - hangs_starts[0]))
+  gaps=""
+  for i in 1 2 3 4; do gaps="$gaps $((hangs_starts[i] - hangs_starts[i - 1]))s"; done
+  echo "  measured: attempt starts$gaps apart, ${span}s from the first attempt to the fifth, ${elapsed}s in all, exit $status"
+  # Each gap is this attempt's 2 s bound plus the sleep after it. Against a command that would run
+  # for 600 s, a gap of 12 s is the attempt ending at its bound and nowhere else.
+  check "the first attempt ended at its 2 s bound and was followed by a 10 s sleep" "$(near "$((hangs_starts[1] - hangs_starts[0]))" 12 2)"
+  check "the second, by a 20 s sleep" "$(near "$((hangs_starts[2] - hangs_starts[1]))" 22 2)"
+  check "the third, by a 40 s sleep" "$(near "$((hangs_starts[3] - hangs_starts[2]))" 42 2)"
+  check "the fourth, by an 80 s sleep" "$(near "$((hangs_starts[4] - hangs_starts[3]))" 82 2)"
+  check "the fifth attempt started at least 120 s after the first" \
+    "$([ "$span" -ge 120 ] && echo true || echo false)"
+fi
+check "it returns the last attempt's non-zero status" "$(is "$status" "$kill_status")"
+if [ "$kill_status" -eq 124 ]; then
+  check "each attempt is reported as having reached its bound" \
+    "$(is "$(grep -c 'reached its 2s bound (exit 124)' <<<"$out")" 5)"
+else
+  check "no attempt is reported as having reached its bound, since this timeout exits $kill_status" \
+    "$(is "$(grep -c "failed (exit $kill_status)" <<<"$out")" 5)"
+fi
+check "its last line is the error annotation, naming the download and the attempts" \
+  "$(is "$(tail -n 1 <<<"$out")" '::error::the stalled tool failed to download after 5 attempts (last exit '"$kill_status"')')"
+
+echo "case: a malformed call is refused, naming the mistake"
+run_retry "a tool" 5 true
+check "a call with no -- separator is refused" "$(is "$status" 2)"
+check "and says the separator is missing" "$(contains "$out" '^::error::retry_fetch: no -- separator before the command')"
+check "it slept nothing" "$([ "$elapsed" -lt 3 ] && echo true || echo false)"
+
+run_retry "a tool"
+check "a call with fewer than three arguments is refused" "$(is "$status" 2)"
+check "and says what it takes" "$(contains "$out" '^::error::retry_fetch takes <what> <per-attempt bound in seconds> -- <command\.\.\.>, and got 1 argument')"
+
+run_retry "a tool" 30s -- true
+check "a bound that is not a whole number is refused" "$(is "$status" 2)"
+check "and names the bound" "$(contains "$out" "^::error::retry_fetch: the per-attempt bound is a positive whole number of seconds, not '30s'\$")"
+
+run_retry "a tool" 0 -- true
+check "a bound of zero is refused" "$(is "$status" 2)"
+check "and names it" "$(contains "$out" "not '0'\$")"
+
+run_retry "a tool" 5 --
+check "a call with nothing after -- is refused" "$(is "$status" 2)"
+check "and says so" "$(contains "$out" '^::error::retry_fetch: nothing to run after --')"
+
+summary "ci-retry.sh"

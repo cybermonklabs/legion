@@ -220,6 +220,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -355,6 +356,14 @@ IMAGE_FROM = {
         "or comes from the `images:` input, which ci.yaml's envoy-smoke job fills with the FROM "
         "arguments of packages/envoy/docker/Dockerfile; every one of those files is in the reach "
         "above, and this check reads the references in them"
+    ),
+    (".github/workflows/ci.yaml", "image"): (
+        "the download-retry-images job's \"Pull every base image the three builds read\" step "
+        "reads one name a line from the file it wrote immediately above, which holds every FROM "
+        "of packages/daemon/docker/worker.Dockerfile, packages/envoy/docker/Dockerfile and "
+        "packages/envoy/infra/host/heldportwrapper/Dockerfile that names an image rather than a "
+        "build argument or an earlier stage; all three files are in the reach above, and this "
+        "check reads the references in them"
     ),
     (".github/workflows/ci.yaml", "ENVOY_SMOKE_IMAGE"): (
         "the local tag the envoy-smoke job's own build loaded (ci.yaml sets it to "
@@ -608,6 +617,85 @@ def verdict(what: str, summary: str) -> None:
 
 
 # ---------------------------------------------------------------- rules 9 and 10: the package
+# The three reads this section makes of ghcr.io retry, in this check's own idiom rather than
+# through .github/scripts/ci-retry.sh, which is shell this Python cannot source: five attempts,
+# waits of 10, 20, 40 and 80 seconds between them, so the fifth starts 150 s after the first,
+# each attempt bounded by the timeout that read already carried (dispatch://INFRA-1545, R1).
+# One loop makes those attempts for all three, `retrying` below; each caller hands it the
+# attempt to make and what counts as retryable, so this check holds one copy of the ladder as
+# the shell side holds one. Two of the reads are urllib's, the pull token and a row's manifest
+# HEAD, and read_retrying holds them at the 30 s they carried: nothing there measures larger,
+# since both ask for one small answer. The third is the `crane config` of a built row's label,
+# which rule 10 reads, and run_retrying holds it at the 120 s that read carried.
+#
+# An answer carrying a status is an answer, not a fault: a 404 says the package does not hold
+# that digest, which is rule 9's whole question, so only a 5xx and a failure with no status at
+# all — a reset, a timeout, a name that does not resolve — are retried. Retrying a 404 would add
+# 150 s for every row the package lacks, which are the rows this rule exists to name. The label
+# read has no such answer to tell apart: it runs for a digest the HEAD above just found, so a
+# crane that exits non-zero there is a registry that would not answer, and every one of those
+# exits is retried.
+RETRY_WAITS = (10, 20, 40, 80)
+
+
+def retrying(attempt, retryable):
+    """What `attempt()` answers, retried over RETRY_WAITS. `retryable` is handed what the
+    attempt returned, or the exception it raised, and answers the reason to print before the
+    next attempt, or "" where that outcome is the answer. The last attempt's value is returned
+    and its exception raised, so each caller keeps the handling it had."""
+    for wait in (*RETRY_WAITS, None):
+        try:
+            answer = attempt()
+        except Exception as error:  # noqa: BLE001 - which failures stand is `retryable`'s call
+            reason = retryable(error)
+            if not reason or wait is None:
+                raise
+        else:
+            reason = retryable(answer)
+            if not reason or wait is None:
+                return answer
+        print(f"ghcr.io: {reason}; next attempt in {wait}s", file=sys.stderr)
+        time.sleep(wait)
+    raise AssertionError("retrying ran out of attempts without raising")
+
+
+def read_fault(outcome) -> str:
+    """Why a urllib read's outcome is one to try again, or "" where it is the answer this check
+    reads: a status is an answer, so a 4xx stands and the retry is for a 5xx and for a failure
+    carrying no status at all."""
+    if isinstance(outcome, urllib.error.HTTPError):
+        return f"HTTP {outcome.code}" if outcome.code >= 500 else ""
+    if isinstance(outcome, Exception):
+        return f"{type(outcome).__name__}: {one_line(outcome)}"
+    return ""
+
+
+def read_retrying(request):
+    """The answer to `request`, a Request or a URL, read with the retry above and each attempt
+    bounded at the 30 s both urllib reads carry. Raises the last attempt's error, so each caller
+    keeps the handling it had."""
+    return retrying(lambda: urllib.request.urlopen(request, timeout=30), read_fault)
+
+
+def run_fault(outcome) -> str:
+    """Why a run's outcome is one to try again, or "" where it is the answer. The label read
+    runs for a digest the manifest HEAD just found, so there is no answer here to tell apart and
+    every non-zero exit is a registry that would not answer."""
+    if isinstance(outcome, Exception):
+        return f"{type(outcome).__name__}: {one_line(outcome)}"
+    return "" if outcome.returncode == 0 else f"exit {outcome.returncode}"
+
+
+def run_retrying(command: list[str]) -> subprocess.CompletedProcess:
+    """`command`'s run, with the retry above and each attempt bounded by the 120 s the label
+    read carries. Raises the last attempt's error, and returns the last attempt's result where
+    every attempt exited non-zero, so the caller keeps the handling it had."""
+    return retrying(
+        lambda: subprocess.run(command, capture_output=True, text=True, check=False, timeout=120),
+        run_fault,
+    )
+
+
 class PackageRead(NamedTuple):
     """What this mode read about one row's digest. `status` is the HTTP status of the manifest
     HEAD rule 9 reads. `label` is the SOURCE_LABEL the image at that digest carries, which rule
@@ -631,9 +719,7 @@ def source_label(digest: str) -> tuple[str, str]:
     reference = f"{REGISTRY}@{digest}"
     call = " ".join((*CRANE_CONFIG, reference))
     try:
-        done = subprocess.run(
-            [*CRANE_CONFIG, reference], capture_output=True, text=True, check=False, timeout=120
-        )
+        done = run_retrying([*CRANE_CONFIG, reference])
     except Exception as error:  # noqa: BLE001 - every failure to read the package is a refusal
         return "", (
             f"`{call}` would not run ({type(error).__name__}: {one_line(error)}), and "
@@ -687,9 +773,8 @@ def package_reads(rows: list[Row]) -> dict[str, PackageRead]:
             )
         return out
     try:
-        with urllib.request.urlopen(
-            f"https://ghcr.io/token?scope=repository:{REPOSITORY}:pull&service=ghcr.io",
-            timeout=30,
+        with read_retrying(
+            f"https://ghcr.io/token?scope=repository:{REPOSITORY}:pull&service=ghcr.io"
         ) as answer:
             token = json.load(answer)["token"]
     except Exception as error:  # noqa: BLE001 - every failure to read the package is a refusal
@@ -707,7 +792,7 @@ def package_reads(rows: list[Row]) -> dict[str, PackageRead]:
         request.add_header("Authorization", f"Bearer {token}")
         request.add_header("Accept", ACCEPT)
         try:
-            with urllib.request.urlopen(request, timeout=30) as answer:
+            with read_retrying(request) as answer:
                 status = str(answer.status)
         except urllib.error.HTTPError as error:
             status = str(error.code)

@@ -1,0 +1,3886 @@
+#!/usr/bin/env bash
+# Tests for `check-download-retry.sh`: every network fetch of this repository's CI retries at
+# R1's floor, a curl whose own options would put its last attempt inside that floor is refused,
+# an `apt-get update` fails rather than warns when an index read fails so that the retry has
+# something to retry, a `mise x` carries no retry at all because it exits 0 when it cannot
+# resolve the tool, a fetch left of a `|` in a step whose shell leaves pipefail off is refused
+# because the pipeline's status is its last command's, a step's budget holds every pass of a
+# loop around a retried call, one rule holds that retry, and the exceptions R2 lists are
+# the only sites left bare (dispatch://INFRA-1545, R2).
+#
+# Each case builds a miniature repository under a temporary directory and symlinks the real
+# script into it, so the script under test is the file CI runs. Every fixture starts from the
+# same baseline: every exception that still has a site, each at the file, job and step name the
+# check's exception
+# list holds, the loops its DECLARED_LOOPS list declares the arithmetic of, each at the file,
+# step and verb that list holds, and the three Dockerfiles it reads. Both lists fail the check
+# when an entry matches nothing, which is why the baseline carries one site for each. A case
+# that proves a refusal adds a workflow, an action or a Dockerfile of its own beside that
+# baseline, so a refusal is the case's own and not a hole in the baseline, and the baseline's
+# own case proves it passes.
+#
+# Run from anywhere: .github/scripts/check-download-retry.test.sh
+# CI runs it in ci.yaml's test job.
+set -euo pipefail
+shopt -s inherit_errexit
+
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+check_script="$script_dir/check-download-retry.sh"
+work=$(mktemp -d "${TMPDIR:-/tmp}/check-download-retry.XXXXXX")
+trap 'rm -rf "$work"' EXIT
+
+# shellcheck source=.github/scripts/test-lib.sh
+source "$script_dir/test-lib.sh"
+
+PIN=fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+DIGEST=sha256:5498ba57b9471840be3d15b033a4eec554d1c02fa6c2cc0ca2d888637f6c6e2f
+
+# The canonical inline retry every network RUN of the three Dockerfiles opens with. A fixture
+# that means to pass writes this text; a fixture that means to be refused writes another.
+read -r -d '' CANONICAL <<'TEXT' || true
+RUN retry() { b=$1; what=$2; shift 2; i=1; while :; do timeout "$b" "$@" && return 0; s=$?; \
+  [ "$i" -ge 5 ] && { echo "$what failed after $i attempts (last exit $s)" >&2; return "$s"; }; \
+  sleep "$(( 10 << (i - 1) ))"; i=$((i + 1)); done; } \
+TEXT
+
+# fixture <name>: a tree holding the baseline below, with the script linked in. Echoes its root.
+#
+# The baseline is R2's exceptions that still have a site, which every fixture carries for two
+# reasons: the
+# check refuses an exception that matches no fetch, so a tree without them fails for a reason no
+# case is about; and a case that then adds one bad site proves that site alone.
+fixture() {
+  local root="$work/$1"
+  if [ -e "$root" ]; then
+    echo "  FAIL: the fixture name '$1' is already taken by an earlier case" >&2
+    return 1
+  fi
+  mkdir -p "$root/.github/scripts" "$root/.github/workflows" \
+    "$root/.github/actions/pull-test-images" \
+    "$root/packages/daemon/docker" "$root/packages/envoy/docker" \
+    "$root/packages/envoy/infra/host/heldportwrapper"
+  ln -s "$check_script" "$root/.github/scripts/check-download-retry.sh"
+  ln -s "$script_dir/workflow_paths.py" "$root/.github/scripts/workflow_paths.py"
+  for dockerfile in \
+    "$root/packages/daemon/docker/worker.Dockerfile" \
+    "$root/packages/envoy/docker/Dockerfile" \
+    "$root/packages/envoy/infra/host/heldportwrapper/Dockerfile"; do
+    printf 'FROM scratch\nCOPY . /src\n' > "$dockerfile"
+  done
+
+  # Exception (a), first site: the ghcr.io pull of a package this repository publishes, read from
+  # a Go const and pulled in a loop.
+  cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
+name: Pull the images tests start
+description: Pulls each image a job's tests start, from the package this repository publishes.
+runs:
+  using: composite
+  steps:
+    - name: Pull the images tests start
+      shell: bash
+      run: |
+        for image in $IMAGES; do
+          docker pull "$image"
+        done
+YAML
+
+  # Exceptions (a) again and (b), and a browser download, which is a site like any other and
+  # retries like one: exception (c)'s script held the apt phase beside it and went with that
+  # script (cybermonklabs/legion#2938).
+  cat > "$root/.github/workflows/ci.yaml" <<YAML
+name: CI
+on: [push]
+jobs:
+  envoy-client:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pre-pull the NATS image the credential tests run
+        run: docker pull ghcr.io/example/legion/ci@$DIGEST
+  download-retry-images:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pull every base image the three builds read
+        run: |
+          for image in \$images; do docker pull "\$image"; done
+  airlock-lean:
+    runs-on: ubuntu-24.04
+    steps:
+      # Rule 11's exemption names this job, and its guard refuses an entry matching no job that
+      # compiles Go here, so every fixture carries the job its entry names, as each fixture
+      # carries the site an EXEMPTIONS entry names. The real job builds a package importing the
+      # standard library alone; a fixture needs only the verb.
+      - name: Compare the Go airlock with the model
+        run: go test ./internal/broker/airlock/
+  dispatch:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@$PIN
+      - name: Install Playwright Chromium
+        # The browser download's 5 x 300 + 150 = 1650 s. Rule 8 asks every step holding a
+        # retried call for a budget above its arithmetic, so the baseline's own steps carry
+        # one: a fixture without them fails for a reason no case is about.
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
+YAML
+
+  # Exception (a)'s fourth site: the browser lane's visual job pulls the pinned Playwright copy
+  # from the same package. The entry naming it is in EXEMPTIONS, and an entry matching nothing
+  # fails this check, so every fixture carries the site its entry names.
+  cat > "$root/.github/workflows/dispatch-browser.yaml" <<YAML
+name: Dispatch browser
+on:
+  workflow_call:
+jobs:
+  visual:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pull the pinned Playwright copy
+        run: docker pull ghcr.io/example/legion/ci@$DIGEST
+YAML
+
+  # Exception (d): a credentialed publish job, whose pinned command set no wrapper may change.
+  cat > "$root/.github/workflows/release.yaml" <<'YAML'
+name: Release
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install dependencies
+        # 5 x 60 + 150 = 450 s.
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 60 -- bun install --frozen-lockfile
+  publish:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Determine latest
+        run: gh api "repos/$GITHUB_REPOSITORY/releases/latest"
+YAML
+
+  # The loops DECLARED_LOOPS declares the arithmetic of, one call of each at the file, step
+  # and verb that list holds. Every fixture carries them for the reason it carries the four
+  # exceptions: a declaration matching no such loop fails the check, so a tree without them
+  # fails for a reason no case is about. Each is the shape that list is for — a loop over the
+  # work the run found, whose pass count the check cannot read off the loop — and each passes
+  # every other rule, so a case that adds one bad site still proves that site alone. Each
+  # carries the budget rule 8 asks of a step holding a retried call, 6 minutes above the 300 s
+  # its declaration writes, so none of them is a budget a case has to reckon with.
+  cat >> "$root/.github/workflows/ci.yaml" <<'YAML'
+  cancel-started:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Force-cancel the runs of the groups the queue removed
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r act id; do
+            retry_fetch "the force-cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel"
+          done <<<"$acts"
+YAML
+  cat > "$root/.github/workflows/dequeued.yaml" <<'YAML'
+name: CI (dequeued pull request)
+on: [pull_request]
+jobs:
+  cancel-dequeued:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel the removed group's ci.yaml run
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the force-cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/force-cancel"
+          done <<<"$doomed"
+YAML
+  cat > "$root/.github/workflows/main-bypass-check.yaml" <<'YAML'
+name: CI (main bypass check)
+on: [push]
+jobs:
+  bypass-check:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Start ci.yaml when this push's head was never tested
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r act sha; do
+            retry_fetch "the ci.yaml dispatch" 30 -- \
+              gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          done <<<"$tokens"
+YAML
+  cat > "$root/.github/scripts/check-pr-text.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while :; do
+  retry_fetch "page $page of the $route route" 30 -- \
+    gh api "repos/$repository/$route?per_page=100&page=$page" > "$work/answer"
+  [ "$(jq length "$work/answer")" = 100 ] || break
+  page=$((page + 1))
+done
+SH
+  cat > "$root/.github/scripts/ci-ok-reconcile.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id status was marker; do
+  retry_fetch "the PATCH of ci-ok check run $id" 30 -- \
+    gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"
+done <<<"$runs"
+SH
+  # The last of them is read through two functions: the call sits in image_go(), which
+  # check_go() calls, and the loop runs check_go. A declaration covers it for the loop that
+  # runs those calls, which is the loop the entry names.
+  cat > "$root/.github/scripts/mirror-ci-images.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+image_go() {
+  retry_fetch "the config of $1" 60 -- crane config --platform linux/amd64 "$1"
+}
+check_go() {
+  local carried_go
+  carried_go=$(image_go "$1")
+  [ "$carried_go" = "$2" ] || exit 1
+}
+while IFS=$'\t' read -r registry tag digest source claimed_go; do
+  check_go "$registry@$digest" "$claimed_go"
+  retry_fetch "the copy of $source" 300 -- crane copy "$source" "$registry:$tag"
+  have=$(retry_fetch "the digest of $registry:$tag" 60 -- crane digest "$registry:$tag")
+done <<<"$rows"
+SH
+  # The entry of that table which is no loop: the one curl of .github/scripts/ci-tools.sh,
+  # whose `--max-time` is the row's own field and so is a bound the check cannot read. One
+  # call of it has no figure, so the declaration writes what the site contributes whole, and
+  # an entry matching nothing fails the check — which is why every fixture carries this file
+  # too. No step here runs it, so the seconds that entry writes sit in no budget a case has
+  # to reckon with. It is sourced and not executed in the repository, and it is not
+  # executable here either.
+  cat > "$root/.github/scripts/ci-tools.sh" <<'SH'
+#!/usr/bin/env bash
+ci_tools_curl() {
+  local file=$1 max_time=$2 url=$3
+  shift 3
+  curl -fsSL --retry 7 --retry-all-errors --retry-max-time 300 --max-time "$max_time" -o "$file" "$@" "$url"
+}
+SH
+  chmod +x "$root/.github/scripts/check-pr-text.sh" "$root/.github/scripts/ci-ok-reconcile.sh" \
+    "$root/.github/scripts/mirror-ci-images.sh"
+  echo "$root"
+}
+
+# GATE_BOUND: the seconds one call of the gate may take before this harness calls it hung and
+# stops, naming the case that ran it. Measured on 2026-11-14 on an INFRA issue pod (2 CPUs,
+# gVisor): an unmutated harness run made 147 gate calls, median 1.5 s, 99th percentile 1.87 s,
+# slowest 1.94 s (`declaration-two-loops-below`). 60 s is about thirty times that slowest call,
+# which is the margin: a slow runner does not trip it, and a gate that never returns fails here
+# a minute in, under its case's name, rather than at the test job's own key with GitHub's bare
+# timeout line. Round 32's mutation pass found two mutants of rule 8 that hang the gate
+# (dispatch://INFRA-1545), and before this bound nothing below the job key ended them.
+GATE_BOUND=60
+
+# run_gate <stderr: out|null> <root> <args…>: runs the gate in a session of its own with its
+# output in a file, never through a pipe: a gate that hangs is bash waiting on its Python, and
+# killing the bash alone leaves the Python holding a pipe open, which blocks a `$(…)` capture
+# for ever. At the bound the whole session is killed, the hang is one FAIL under the current
+# case, and the harness ends there, since every later case would hang the same way.
+run_gate() {
+  local stderr=$1 root=$2 log="$work/gate.out" pid tenths=0
+  shift 2
+  if [ "$stderr" = out ]; then
+    ( cd "$root" && exec setsid ./.github/scripts/check-download-retry.sh "$@" ) > "$log" 2>&1 &
+  else
+    ( cd "$root" && exec setsid ./.github/scripts/check-download-retry.sh "$@" ) > "$log" 2>/dev/null &
+  fi
+  pid=$!
+  while kill -0 "$pid" 2>/dev/null; do
+    if [ "$tenths" -ge $((GATE_BOUND * 10)) ]; then
+      kill -KILL -- "-$pid" 2>/dev/null
+      wait "$pid" 2>/dev/null
+      echo "  FAIL: the gate did not return within ${GATE_BOUND} s of starting this case"
+      FAIL=$((FAIL + 1))
+      summary "check-download-retry.sh"
+    fi
+    sleep 0.1
+    tenths=$((tenths + 1))
+  done
+  wait "$pid"
+  status=$?
+  out=$(cat "$log")
+}
+
+run_check() {
+  local root=$1
+  shift
+  set +e
+  run_gate out "$root" "$@"
+  set -e
+}
+
+# declare_entry <root> <one DECLARED_LOOPS entry, in Python>: replaces the check this fixture
+# links with a copy of it carrying that entry at the end of its DECLARED_LOOPS table. A
+# declaration is proved this way because the tree's own table holds only the entries the tree
+# needs, and none of them covers a loop a fixture writes. The copy is the same file otherwise,
+# so every other rule reads the fixture as it always does.
+declare_entry() {
+  local root=$1 entry=$2 copy="$root/.github/scripts/check-download-retry.sh"
+  rm "$copy"
+  awk -v entry="$entry" '
+    /^DECLARED_LOOPS/ { inside = 1 }
+    inside && $0 == "]" { print entry; inside = 0 }
+    { print }
+  ' "$check_script" > "$copy"
+  chmod +x "$copy"
+}
+
+list_check() {
+  local root=$1
+  set +e
+  run_gate null "$root" --list
+  set -e
+}
+
+echo "case: a tree holding each exception R2 still has a site for passes"
+root=$(fixture exceptions)
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "says what it read" "$(contains "$out" 'every network fetch in CI retries at the floor')"
+# Five sites, not the seven this case counted while exception (c) had a script: that script
+# went with the browser suite's move into an image this repository builds
+# (cybermonklabs/legion#2938), and its two exempted apt sites went with it.
+check "counts the sites the exceptions name" "$(contains "$out" '5 site(s) the exceptions name')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: a workflow with a bare curl of a release asset"
+root=$(fixture bare-curl)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        run: |
+          curl -fsSL https://github.com/miniscruff/changie/releases/download/v1.21.1/changie.tar.gz \
+            | tar -xz -C /usr/local/bin changie
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line and the step" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=8::.curl. in step .Install changie. fetches without the floor')"
+check "names each option it lacks" "$(contains "$out" 'it passes none')"
+check "names --retry-all-errors" "$(contains "$out" 'retry-all-errors')"
+check "names --max-time" "$(contains "$out" 'max-time')"
+check "counts the refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: a workflow whose curl carries a retry below the floor"
+root=$(fixture short-retry)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install crane
+        run: |
+          curl -fsSL --retry 3 --retry-all-errors --max-time 30 -o crane.tar.gz \
+            https://github.com/google/go-containerregistry/releases/download/v0.21.1/crane.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the count it passes" "$(contains "$out" 'it passes .--retry 3.')"
+check "names the floor" "$(contains "$out" 'only 7 reaches 127 s')"
+
+echo "case: a curl that retries but bounds no attempt"
+root=$(fixture unbounded-curl)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install uv
+        run: curl -fsSL --retry 7 --retry-all-errors -o uv.tar.gz https://example.com/uv.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the missing bound" "$(contains "$out" 'which curl resets for each attempt')"
+
+echo "case: a curl that retries and never fails on a persistent 504"
+root=$(fixture no-fail)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install uv
+        run: curl -sSL --retry 7 --retry-all-errors --max-time 30 -o uv.tar.gz https://example.com/uv.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names --fail and what it costs" "$(contains "$out" 'writes the error body to the output')"
+
+echo "case: a curl that reads the status itself answers for --fail"
+root=$(fixture status-read)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the release
+        # 8 x 30 + 127 = 367 s.
+        timeout-minutes: 7
+        run: |
+          code=$(curl -sSL --retry 7 --retry-all-errors --max-time 30 -o out.json -w '%{http_code}' https://example.com/r)
+          [ "$code" = 200 ]
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# Two of curl's options rewrite the waits between its own attempts, and each can put the last
+# attempt inside R1's floor of 120 s while every other test of that floor passes. The rule is
+# curl's own, read at curl 8.14.1: the first wait is one second and doubles for each of the
+# rest, `--retry-delay <n>` replaces that with a fixed n, and `--retry-max-time <n>` lets a
+# retry start only while the timer reset at the first attempt has not reached n.
+echo "case: a curl whose --retry-delay puts the last attempt seconds after the first"
+root=$(fixture retry-delay)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install uv
+        run: curl -fsSL --retry 7 --retry-all-errors --retry-delay 1 --max-time 60 -o uv.tar.gz https://example.com/uv.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the ladder it computed" \
+  "$(contains "$out" 'its last one starts 7 s after the first, inside R1.s floor of 120 s')"
+check "names the option that made it so" "$(contains "$out" '.--retry-delay 1., which replaces')"
+
+echo "case: a curl whose --retry-max-time stops the ladder inside the floor"
+root=$(fixture retry-max-time)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install uv
+        run: curl -fsSL --retry 7 --retry-all-errors --retry-max-time 5 --max-time 60 -o uv.tar.gz https://example.com/uv.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the ladder the limit allows" \
+  "$(contains "$out" 'its last one starts 7 s after the first')"
+check "names the option that made it so" \
+  "$(contains "$out" '.--retry-max-time 5., which stops the ladder')"
+
+echo "case: a curl whose --retry-delay reaches the floor passes"
+root=$(fixture retry-delay-wide)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install uv
+        # 8 x 60 + 7 x 20 = 620 s.
+        timeout-minutes: 11
+        run: curl -fsSL --retry 7 --retry-all-errors --retry-delay 20 --max-time 60 -o uv.tar.gz https://example.com/uv.tar.gz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a curl whose retry wait is not a number this check can read is refused"
+root=$(fixture retry-delay-unreadable)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install uv
+        run: curl -fsSL --retry 7 --retry-all-errors --retry-delay "$delay" --max-time 60 -o uv.tar.gz https://example.com/uv.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says it cannot read the wait" \
+  "$(contains "$out" 'with a value this check cannot read')"
+
+echo "case: a composite action holding a second copy of the retry helper"
+root=$(fixture copied-helper)
+mkdir -p "$root/.github/actions/install-thing"
+cat > "$root/.github/actions/install-thing/action.yml" <<'YAML'
+name: Install the thing
+description: Installs the thing, with a retry loop of its own.
+runs:
+  using: composite
+  steps:
+    - name: Install the thing
+      shell: bash
+      run: |
+        attempt=1
+        while [ "$attempt" -le 5 ]; do
+          curl -fsSL --retry 7 --retry-all-errors --max-time 30 -o thing.tar.gz https://example.com/thing && break
+          sleep $((10 * attempt))
+          attempt=$((attempt + 1))
+        done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the loop as a copy" \
+  "$(contains "$out" 'file=.github/actions/install-thing/action.yml,line=9::this loop retries .curl. itself, which makes it a second copy')"
+check "names the one rule" "$(contains "$out" 'One rule holds the attempts')"
+
+echo "case: a loop that hands a fetch to a retry function of its own is a copy too"
+root=$(fixture copied-helper-indirect)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the packages
+        run: |
+          attempts() {
+            local left=$1 what=$2 status
+            shift 2
+            while :; do
+              "$@" && return 0
+              status=$?
+              left=$((left - 1))
+              [ "$left" -gt 0 ] || return 1
+            done
+          }
+          attempts 2 "apt-get update" sudo timeout 90 apt-get update
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the loop the call reaches" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=11::this loop retries .apt-get update. itself')"
+
+echo "case: a loop whose fetch is a retry_fetch call is no copy"
+root=$(fixture loop-with-helper)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Copy each row
+        # Three passes of 5 x 300 + 150 = 1650 s. The loop writes its passes so that this case
+        # proves rule 2 alone: an unreadable one would be refused for want of a figure.
+        timeout-minutes: 83
+        run: |
+          . .github/scripts/ci-retry.sh
+          for row in one two three; do
+            retry_fetch "the copy of $row" 300 -- crane copy "$row" "ghcr.io/example/ci:$row"
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a retry_fetch call written without a per-attempt bound"
+root=$(fixture unbounded-helper)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the workspace's dependencies
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" -- bun install --frozen-lockfile
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the missing bound" \
+  "$(contains "$out" 'is retried and no attempt of it is bounded in time. Give .retry_fetch. a per-attempt bound')"
+
+echo "case: a Dockerfile with an unretried apt-get"
+root=$(fixture bare-apt)
+cat > "$root/packages/envoy/docker/Dockerfile" <<'DOCKER'
+FROM debian:trixie-slim AS build
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl \
+    && rm -rf /var/lib/apt/lists/*
+DOCKER
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the Dockerfile, the line and the verb" \
+  "$(contains "$out" 'file=packages/envoy/docker/Dockerfile,line=2::.apt-get update. fetches inside a Dockerfile RUN with no retry')"
+check "names the inline loop to use" "$(contains "$out" 'the canonical inline loop')"
+
+echo "case: a Dockerfile RUN that opens with the canonical retry and wraps each fetch passes"
+root=$(fixture canonical-retry)
+{
+  echo 'FROM debian:trixie-slim AS build'
+  printf '%s\n' "$CANONICAL"
+  cat <<'DOCKER'
+    && retry 120 "apt-get update" apt-get update -o APT::Update::Error-Mode=any \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+DOCKER
+} > "$root/packages/envoy/docker/Dockerfile"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a Dockerfile's retried apt-get update that keeps apt's warning on a failed index"
+root=$(fixture dockerfile-apt-error-mode)
+{
+  echo 'FROM debian:trixie-slim AS build'
+  printf '%s\n' "$CANONICAL"
+  cat <<'DOCKER'
+    && retry 120 "apt-get update" apt-get update \
+    && retry 300 "apt-get install" apt-get install -y --no-install-recommends curl \
+    && rm -rf /var/lib/apt/lists/*
+DOCKER
+} > "$root/packages/envoy/docker/Dockerfile"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the Dockerfile, the line and the option" \
+  "$(contains "$out" 'file=packages/envoy/docker/Dockerfile,line=5::.apt-get update. passes no .-o APT::Update::Error-Mode=any.')"
+check "says what goes wrong, not only what is missing" \
+  "$(contains "$out" 'the retry around it stops after one attempt having read no list')"
+check "names the install the unread list breaks" \
+  "$(contains "$out" 'has no installation candidate')"
+
+echo "case: a Dockerfile RUN with a retry loop of its own text"
+root=$(fixture other-retry)
+cat > "$root/packages/envoy/docker/Dockerfile" <<'DOCKER'
+FROM debian:trixie-slim AS build
+RUN retry() { for i in 1 2 3; do "$@" && return 0; sleep 5; done; return 1; } \
+    && retry apt-get update \
+    && rm -rf /var/lib/apt/lists/*
+DOCKER
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the canonical text as the one definition" \
+  "$(contains "$out" 'this RUN defines a retry loop of its own text')"
+
+echo "case: a Dockerfile RUN whose one fetch is a curl carrying curl's own options passes"
+root=$(fixture dockerfile-curl)
+cat > "$root/packages/daemon/docker/worker.Dockerfile" <<'DOCKER'
+FROM debian:trixie-slim AS build
+RUN set -eu; \
+    curl -fsSL --retry 7 --retry-all-errors --max-time 120 -o /tmp/mise.tar.gz \
+      "https://example.com/mise.tar.gz"; \
+    tar -xzf /tmp/mise.tar.gz -C /tmp
+DOCKER
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a workflow that wraps a mise x in a retry"
+root=$(fixture retried-mise-x)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the worker image's jj
+        run: |
+          . .github/scripts/ci-retry.sh
+          jj_path=$(retry_fetch "the worker image's jj" 60 -- mise x "$jj_tool" -- sh -c 'command -v jj')
+          install -m 0755 "$jj_path" "$HOME/.local/bin/jj"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line, the step and the verb" \
+  "$(contains "$out" "file=.github/workflows/case.yaml,line=9::.mise x. in step .Install the worker image.s jj. is retried, and that retry protects nothing")"
+check "says what goes wrong, not only what to write instead" \
+  "$(contains "$out" 'runs whatever binary of that name is already on PATH')"
+check "names the cure" "$(contains "$out" 'The cure is .mise install <tool>. under the retry')"
+check "names the resolution that follows it" \
+  "$(contains "$out" 'with the resolution after it')"
+
+echo "case: a Dockerfile RUN that wraps a mise x in the canonical retry"
+root=$(fixture retried-mise-x-dockerfile)
+{
+  echo 'FROM debian:trixie-slim AS build'
+  printf '%s\n' "$CANONICAL"
+  cat <<'DOCKER'
+    && install -m 0755 "$(retry 300 "jj download" mise x "$JJ_TOOL" -- sh -c 'command -v jj')" /opt/tools/jj
+DOCKER
+} > "$root/packages/daemon/docker/worker.Dockerfile"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the Dockerfile, the line and the verb" \
+  "$(contains "$out" 'file=packages/daemon/docker/worker.Dockerfile,line=5::.mise x. is retried, and that retry protects nothing')"
+check "names the cure" "$(contains "$out" 'The cure is .mise install <tool>. under the retry')"
+check "counts the one refusal" \
+  "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: a workflow's retried mise install with the resolution after it passes"
+root=$(fixture mise-install-cured)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the worker image's jj
+        # 5 x 60 + 150 = 450 s.
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the worker image's jj" 60 -- mise install "$jj_tool"
+          jj_path=$(mise x "$jj_tool" -- sh -c 'command -v jj')
+          install -m 0755 "$jj_path" "$HOME/.local/bin/jj"
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "the install is on the list" "$(contains "$out" 'case.yaml	11	mise install	')"
+check "the resolution after it is on no list" \
+  "$(is "$(contains "$out" 'mise x')" false)"
+
+echo "case: a Dockerfile's retried mise install with the resolution after it passes"
+root=$(fixture mise-install-cured-dockerfile)
+{
+  echo 'FROM debian:trixie-slim AS build'
+  printf '%s\n' "$CANONICAL"
+  cat <<'DOCKER'
+    && retry 300 "jj download" mise install "$JJ_TOOL" \
+    && install -m 0755 "$(mise x "$JJ_TOOL" -- sh -c 'command -v jj')" /opt/tools/jj
+DOCKER
+} > "$root/packages/daemon/docker/worker.Dockerfile"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "the install is on the list" \
+  "$(contains "$out" '^packages/daemon/docker/worker.Dockerfile	5	mise install	-$')"
+check "the resolution after it is on no list" \
+  "$(is "$(contains "$out" 'mise x')" false)"
+
+echo "case: a readiness poll of the loopback is no download"
+root=$(fixture loopback)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Wait for the S3-compatible server
+        run: |
+          for attempt in $(seq 1 60); do
+            curl -sf -o /dev/null http://127.0.0.1:18333/ && break
+            sleep 1
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "the poll is on no list" "$(is "$(contains "$out" 'case.yaml')" false)"
+
+echo "case: a probe whose failure is the answer is no download"
+root=$(fixture probe)
+cat > "$root/.github/scripts/mirror.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+have=$(crane digest "ghcr.io/example/ci:$tag" 2>/dev/null || true)
+[ "$have" = "$digest" ] || echo copy
+SH
+chmod +x "$root/.github/scripts/mirror.sh"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: the same read with its failure a fault is a download"
+root=$(fixture probe-not)
+cat > "$root/.github/scripts/mirror.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+have=$(crane digest "ghcr.io/example/ci:$tag")
+echo "$have"
+SH
+chmod +x "$root/.github/scripts/mirror.sh"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the read" "$(contains "$out" 'file=.github/scripts/mirror.sh,line=3::.crane digest. fetches with no retry')"
+
+# The same scoping in a workflow step, which is where ci.yaml's proof-sdk-offline job reads its
+# fault proxy: two requests through the proxy before the installs, one to a faulted host that
+# must be refused and one to a control that must be answered. Each reads whether the proxy is in
+# the path and brings nothing into the job, so each is written the way
+# .github/scripts/download-retry-proof.sh's through_proxy writes one — error silenced, status
+# consumed into the reading — and this check reads it as the probe it is. Written as a plain
+# fetch the same two requests are two downloads, and the pair below proves both halves: a step
+# that takes the scoping out of the shape is refused by rule 1 for each curl, and by rule 8 for
+# the budget the ladders it would then make need.
+echo "case: a workflow step's curl whose status is the reading is no download"
+root=$(fixture probe-step)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe the proxy before the install
+        run: |
+          faulted=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 30 https://api.example.com/meta 2>/dev/null || true)
+          [ "${faulted:-000}" = 000 ]
+          passed=$(curl -sS -o /dev/null -w '%{http_code}' --max-time 60 https://registry.example.org/ 2>/dev/null || true)
+          [ "${passed:-000}" != 000 ]
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "neither request is on the list" "$(is "$(contains "$out" 'case.yaml')" false)"
+
+echo "case: the same two requests written as plain fetches are two downloads"
+root=$(fixture probe-step-not)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  offline:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Probe the proxy before the install
+        run: |
+          if curl -sS -o /dev/null --max-time 30 https://api.example.com/meta; then
+            exit 1
+          fi
+          curl -sS -o /dev/null --max-time 60 https://registry.example.org/
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the first request" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=8::.curl. in step .Probe the proxy before the install. fetches without the floor')"
+check "names the second request" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=11::.curl. in step .Probe the proxy before the install. fetches without the floor')"
+check "asks the step for the budget those ladders would need" \
+  "$(contains "$out" "holds 974 s of retries and carries no \`timeout-minutes\`")"
+
+echo "case: a Python read that goes straight to urllib"
+root=$(fixture python-read)
+cat > "$root/.github/scripts/read.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+python3 <<'PY'
+import urllib.request
+
+with urllib.request.urlopen("https://ghcr.io/token", timeout=30) as answer:
+    print(answer.read())
+PY
+SH
+chmod +x "$root/.github/scripts/read.sh"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file and the one reader" \
+  "$(contains "$out" 'file=.github/scripts/read.sh,line=6::this read goes straight to urllib.request')"
+check "names the floor it carries" "$(contains "$out" 'waits of 10, 20, 40 and 80')"
+
+echo "case: the same read inside another file's read_retrying is still refused"
+root=$(fixture python-copy)
+cat > "$root/.github/scripts/read.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+python3 <<'PY'
+import urllib.request
+
+
+def read_retrying(request):
+    for wait in (10, 20, 40, 80, None):
+        try:
+            return urllib.request.urlopen(request, timeout=30)
+        except Exception:
+            if wait is None:
+                raise
+PY
+SH
+chmod +x "$root/.github/scripts/read.sh"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the copy" "$(contains "$out" 'this read goes straight to urllib.request')"
+
+echo "case: an apt unpack after a retried download takes no network"
+root=$(fixture apt-unpack)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install this proof's packages
+        # 5 x 95 + 150 = 625 s and 5 x 125 + 150 = 775 s; the unpack after them takes no
+        # network and is no term.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- \
+            sudo timeout 90 apt-get update -o APT::Update::Error-Mode=any
+          retry_fetch "the proof's apt packages" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d $PACKAGES
+          sudo apt-get install -y --no-install-recommends $PACKAGES
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a workflow's retried apt-get update that keeps apt's warning on a failed index"
+root=$(fixture apt-error-mode)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the packages
+        # 5 x 95 + 150 = 625 s and 5 x 125 + 150 = 775 s.
+        timeout-minutes: 24
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "apt's package lists" 95 -- sudo timeout 90 apt-get update
+          retry_fetch "the packages" 125 -- \
+            sudo timeout 120 apt-get install -y --no-install-recommends -d $PACKAGES
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line, the step and the option" \
+  "$(contains "$out" "file=.github/workflows/case.yaml,line=11::.apt-get update. in step .Install the packages. passes no .-o APT::Update::Error-Mode=any.")"
+check "says what goes wrong, not only what is missing" \
+  "$(contains "$out" 'the retry around it stops after one attempt having read no list')"
+check "the retried install beside it is no problem of this rule" \
+  "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: a command that only answers about itself is no fetch"
+root=$(fixture versions)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the toolchain
+        run: curl --version; wget --version; bunx biome check .
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: --list prints every site with its step name"
+root=$(fixture listing)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Download the Go modules this job builds
+        # 5 x 300 + 150 = 1650 s.
+        timeout-minutes: 28
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 300 -- go -C packages/envoy mod download
+YAML
+cat > "$root/.github/scripts/report.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "the run's artifact list" 60 -- gh api "$route" > "$out"
+SH
+chmod +x "$root/.github/scripts/report.sh"
+list_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "a workflow site carries its step name" \
+  "$(contains "$out" '^.github/workflows/case.yaml	11	go mod download	Download the Go modules this job builds$')"
+check "a script site carries a dash for the step" \
+  "$(contains "$out" '^.github/scripts/report.sh	4	gh api	-$')"
+check "the baseline's own retried site is on it" \
+  "$(contains "$out" 'playwright install	Install Playwright Chromium$')"
+check "an excepted site is not on it" "$(is "$(contains "$out" 'docker pull')" false)"
+check "the count goes to standard error, not into the rows" \
+  "$(is "$(contains "$out" 'site\(s\)')" false)"
+
+echo "case: --list over a tree with a problem refuses instead of listing"
+root=$(fixture listing-refused)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        run: curl -fsSL -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root" --list
+check "exits 1" "$(is "$status" 1)"
+check "names the problem" "$(contains "$out" 'fetches without the floor')"
+
+echo "case: an exception that matches no fetch fails"
+root=$(fixture stale-exception)
+rm "$root/.github/actions/pull-test-images/action.yml"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the exception and what it no longer covers" \
+  "$(contains "$out" 'the exception for .github/actions/pull-test-images/action.yml matches no fetch')"
+
+echo "case: one of the three Dockerfiles missing fails"
+root=$(fixture missing-dockerfile)
+rm "$root/packages/daemon/docker/worker.Dockerfile"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file" \
+  "$(contains "$out" 'packages/daemon/docker/worker.Dockerfile is one of the three Dockerfiles')"
+
+echo "case: a workflow that cannot be parsed as YAML"
+root=$(fixture bad-yaml)
+printf 'name: Case\non: [push\n' > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file" "$(contains "$out" 'this file is not valid YAML')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+# A step's own budget must be larger than the attempts it allows, not equal to them. Measured in
+# run 42386541065's download-retry job, where `Read the run's artifact list under the stalling
+# fault` carries `timeout-minutes: 5` against its own arithmetic of 5 x 30 + 150 = 300 s: the
+# fifth attempt ended at 300.03 s and the runner killed the step in the same tenth of a second
+# (`the run's artifact list: attempt 5 of 5 reached its 30s bound` at 17:22:16.7444966Z, then
+# `The action 'Read the run's artifact list under the stalling fault' has timed out after 5
+# minutes.` at 17:22:16.7483230Z). The helper's own `::error::` line won that race by four
+# milliseconds; a run whose attempts drift later loses it, and the job then reports a timeout
+# rather than the download that failed, which is the diagnosis this change exists to give.
+echo "case: a step whose own timeout-minutes is no larger than the attempts it allows"
+root=$(fixture budget-no-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the run's artifact list
+        timeout-minutes: 5
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the run's artifact list" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/1/artifacts"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step" "$(contains "$out" "Read the run's artifact list")"
+check "names the budget" "$(contains "$out" 'timeout-minutes')"
+# The figures a refusal prints are what its reader writes next, so each is pinned exactly: a
+# `cost // 60 + 1` turned into `/` prints `6.0`, which a check for `timeout-minutes: 6` alone
+# also matches (dispatch://INFRA-1545, round 33).
+check "says the budget in seconds" "$(contains "$out" 'carries .timeout-minutes: 5., 300 s, and its own retries take 300 s')"
+check "says exactly what to write" "$(contains "$out" 'so write .timeout-minutes: 6. or more\.')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: the same step with a budget above its attempts passes"
+root=$(fixture budget-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the run's artifact list
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the run's artifact list" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/1/artifacts"
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# A call inside a loop is one call per pass of that loop, and the step waits for all of them.
+# dequeued.yaml's timeline read is the site these cases close: one `retry_fetch` call of
+# 5 x 30 + 150 = 300 s written inside a seven-pass poll with a 10 s sleep between the passes,
+# 7 x 300 + 6 x 10 = 2160 s, which the check read as 300 s before this change and passed under
+# a budget of 16 minutes.
+echo "case: a counted loop multiplies the call in it, and a budget written for one call fails"
+root=$(fixture loop-counted)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Poll the pull request's timeline
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          for attempt in 1 2 3 4 5 6 7; do
+            removal=$(retry_fetch "the timeline" 30 -- gh api graphql -f query="$query") && break
+            sleep 10
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step" "$(contains "$out" "Poll the pull request's timeline")"
+check "multiplies the call by the passes and adds the loop's own sleeps" \
+  "$(contains "$out" 'retries take 2160 s to exhaust')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 37')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: the same counted loop under a budget above the multiplied figure passes"
+root=$(fixture loop-counted-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Poll the pull request's timeline
+        timeout-minutes: 37
+        run: |
+          . .github/scripts/ci-retry.sh
+          for attempt in 1 2 3 4 5 6 7; do
+            removal=$(retry_fetch "the timeline" 30 -- gh api graphql -f query="$query") && break
+            sleep 10
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a loop counted with seq multiplies the same way"
+root=$(fixture loop-seq)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read each page of the route
+        timeout-minutes: 15
+        run: |
+          . .github/scripts/ci-retry.sh
+          for page in $(seq 1 3); do
+            retry_fetch "page $page" 30 -- gh api "repos/$GITHUB_REPOSITORY/issues?page=$page"
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the three passes and no sleep" "$(contains "$out" 'retries take 900 s to exhaust')"
+
+echo "case: a step whose budget reaches a loop with no readable count is refused by name"
+root=$(fixture loop-unreadable)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel every run the decision named
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the call it cannot count" \
+  "$(contains "$out" "step .Cancel every run the decision named. carries .timeout-minutes: 30. and this check can put no figure on it")"
+check "names the loop's file and line" \
+  "$(contains "$out" '.gh api. at .github/workflows/case.yaml:11, inside the loop at line 10')"
+check "says what one call of it costs" "$(contains "$out" 'One call there takes 300 s')"
+check "says where a count can be written or declared" "$(contains "$out" 'DECLARED_LOOPS')"
+check "does not judge the budget against a figure it is missing" \
+  "$(is "$(contains "$out" 'does not strictly exceed')" false)"
+
+# Two uncounted loops, one inside the other's script: the step's loop cannot be counted, and
+# neither can the loop inside the script it runs, so the figure for one run of that script is
+# one this check cannot make either. It printed `0 s` here while the read's None was taken for
+# a zero, which is the gate stating a cost it never computed - rule 8's own defect, one layer
+# in (dispatch://INFRA-1545, round 4).
+echo "case: a script whose own loop is uncounted is refused with no figure at all"
+root=$(fixture script-loop-unreadable)
+cat > "$root/.github/scripts/c.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id; do
+  retry_fetch "the run $id" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/c.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            .github/scripts/c.sh "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the call it cannot count" \
+  "$(contains "$out" "step .Read every run the decision named. carries .timeout-minutes: 30. and this check can put no figure on it")"
+check "names the script call and the loop around it" \
+  "$(contains "$out" '..github/scripts/c.sh. at .github/workflows/case.yaml:10, inside the loop at line 9')"
+check "says one run of that script reaches an uncounted loop" \
+  "$(contains "$out" 'One run of ..github/scripts/c.sh. reaches a loop, its own or one in a script it calls, whose passes this check cannot read either')"
+check "prints no figure for a cost it cannot compute" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+check "still says what to do instead" \
+  "$(contains "$out" 'take the call out of the loop')"
+
+# The loop can be two scripts in: the step loops over a script that calls another outside any
+# loop, and that second one holds the `while read`. The figure for one run of the first is
+# still one this check cannot make, because the run reaches the uncounted loop either way, but
+# the loop is not the first script's own — the sentence said it was while the site list named
+# the second script, so the two halves of one refusal pointed a reader at different files
+# (dispatch://INFRA-1545, round 5).
+echo "case: a loop in a script the called script calls is refused without naming the wrong file"
+root=$(fixture script-loop-two-deep)
+cat > "$root/.github/scripts/c2.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/d.sh "$1"
+SH
+cat > "$root/.github/scripts/d.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id; do
+  retry_fetch "the run $id" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/c2.sh" "$root/.github/scripts/d.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            .github/scripts/c2.sh "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the script the step runs and the loop around that call" \
+  "$(contains "$out" '..github/scripts/c2.sh. at .github/workflows/case.yaml:10, inside the loop at line 9')"
+check "names the site in the second script that stopped the reading" \
+  "$(contains "$out" '.gh api. at .github/scripts/d.sh:5, inside the loop at line 4')"
+check "says the loop one run reaches may sit in a script that script calls" \
+  "$(contains "$out" 'One run of ..github/scripts/c2.sh. reaches a loop, its own or one in a script it calls')"
+check "does not call the uncounted loop the first script's own" \
+  "$(is "$(contains "$out" 'holds a loop of its own')" false)"
+
+# A loop this check cannot count around a script that retries nothing is no loop rule 8 has
+# anything to say about: nobody waits for an attempt under it, so there is no sum for a budget
+# to exceed and no pass count to ask the step's author for. The gate refused this shape and
+# priced the run it was refusing at `0 s`, because blocked_calls lists every script call in an
+# uncounted loop and the script's own arithmetic of 0 is not the None the no-figure sentence
+# reads (dispatch://INFRA-1545, round 5).
+echo "case: a loop around a script that fetches nothing passes"
+root=$(fixture script-no-fetch-in-loop)
+cat > "$root/.github/scripts/zz-e.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+chmod +x "$root/.github/scripts/zz-e.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo every id the decision named
+        timeout-minutes: 30
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-e.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "prices no run of that script at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
+# One layer deeper: the loop sits in a script the step runs, around a call of the costless
+# one, so the item blocked_calls lists is that inner call rather than the step's own. The one
+# reading drops it there too, because the step's list and the lists of every script and
+# action it reaches take the same filter (review round 5 of dispatch://INFRA-1545). What leaves the step
+# with a figure rather than none is carried(), which answers 0 for a call of a script that
+# costs nothing however many passes are above it; the case below holding a priced script
+# beside such a loop is the one that pins that answer.
+echo "case: a loop around a script that calls a script that fetches nothing passes"
+root=$(fixture script-no-fetch-two-deep)
+cat > "$root/.github/scripts/zz-g.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+cat > "$root/.github/scripts/zz-h.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while read -r id; do
+  .github/scripts/zz-g.sh "$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/zz-g.sh" "$root/.github/scripts/zz-h.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo every id the decision named
+        timeout-minutes: 30
+        run: .github/scripts/zz-h.sh
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+
+# A script this check cannot price is not a script that retries nothing. A curl making its own
+# attempts passes rule 1 on the options it writes, and `--max-time "$bound"` is one of them:
+# the flag is there, so each attempt is bounded, and the seconds are not, so one_call reads no
+# figure off the call. Answering 0 for that made the script read as one holding no retry at
+# all, and the filter above dropped the loop around it, where the fetch is real and the step
+# waits for the whole of it once per pass (review round 6 of dispatch://INFRA-1545).
+echo "case: a loop around a script whose curl writes its bound as a variable is refused"
+root=$(fixture script-unread-bound-in-loop)
+cat > "$root/.github/scripts/zz-i.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+bound=60
+curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" -o run.json \
+  "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1"
+SH
+chmod +x "$root/.github/scripts/zz-i.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 1
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-i.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the script call and the loop around it" \
+  "$(contains "$out" '..github/scripts/zz-i.sh. at .github/workflows/case.yaml:9, inside the loop at line 9')"
+check "says the bound is written as a variable rather than as a number" \
+  "$(contains "$out" 'makes attempts whose bound is written as a variable rather than as a number')"
+check "prices no run of that script at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
+# The third member of that family, and the one the two cases above leave open: the site whose
+# bound this check cannot read, written in the body's own loop rather than in a script the
+# loop runs. One call of it has no figure — `--max-time "$bound"` bounds the attempt where the
+# seconds are not written — and the loop around it has no pass count, so both halves of what
+# the step waits for are unread. uncounted_of dropped it with the sites that cost nothing,
+# because `one is None` was read as "this item is a script call" and a site with no figure had
+# no sentence of its own to be refused with, so rule 8 priced the step's whole wait at 0 and
+# refused nobody for it (review round 8 of dispatch://INFRA-1545).
+#
+# The fetch is written in a function the loop calls, because rule 2 refuses any fetch that is
+# not a `retry_fetch` call written in a loop's own body, and a fetch in a function the loop
+# runs sits in no loop of its own. That is rule 8's second reading of a loop — times_run folds
+# the loops around the calls of the function holding the call — so the case is about rule 8
+# alone, and the fixture passes every other rule.
+echo "case: a loop around the step's own curl whose bound is a variable is refused"
+root=$(fixture site-unread-bound-in-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          read_run() {
+            curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+              -o "run-$1.json" "https://api.github.com/repos/$GITHUB_REPOSITORY/actions/runs/$1"
+          }
+          while read -r id; do
+            read_run "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the site it cannot count" \
+  "$(contains "$out" "step .Read every run the decision named. carries .timeout-minutes: 30. and this check can put no figure on it")"
+check "names the site's line and the loop around it" \
+  "$(contains "$out" '.curl. at .github/workflows/case.yaml:10, inside the loop at line 13')"
+check "says what one call of it takes is a figure it cannot make" \
+  "$(contains "$out" 'What one call of .curl. there takes is a figure this check cannot make, because its bound is written as a variable rather than as a number')"
+check "says the passes of the loop are unread too" \
+  "$(contains "$out" 'the step waits for that once per pass of a loop whose passes this check cannot read either')"
+check "prints no figure for a call it cannot price" \
+  "$(is "$(contains "$out" 'One call there takes')" false)"
+check "prices the site at nothing nowhere" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+check "gives the site's advice and not a script call's" \
+  "$(contains "$out" 'write that bound as a number')"
+check "says a declaration answers an unread bound" \
+  "$(contains "$out" 'or declare that site in DECLARED_LOOPS in .github/scripts/check-download-retry.sh. An entry there writes the seconds the site contributes to this budget, whole')"
+check "says why that entry writes the whole of it" \
+  "$(contains "$out" 'neither half of what the step waits for — what one call takes, or how many calls the loop makes — is a figure this check can make')"
+check "names what such an entry matches a site by" \
+  "$(contains "$out" 'It matches a site by its file, the verb it retries and the step where the site is written in a workflow, a site inside a script being read with no step at all')"
+check "no longer says no entry of DECLARED_LOOPS answers this one" \
+  "$(is "$(contains "$out" 'No entry of DECLARED_LOOPS answers this one')" false)"
+check "offers no pass count as a way out of this one" \
+  "$(is "$(contains "$out" 'Write the count where this check reads it')" false)"
+check "does not tell the author to take a call out of a loop" \
+  "$(is "$(contains "$out" 'take the call out of the loop')" false)"
+
+# The fourth member of that family, and the one with no loop anywhere in it. A curl whose
+# `--max-time` is written as a variable is bounded, so rule 4 passes it, and the seconds are
+# the caller's, so one_call answers None: the passes here are plainly one, and one times a
+# figure nobody can read is still no figure. Round 8 answered 0 for the site and the step
+# passed under any budget at all, which is how every tool install fetching through
+# .github/scripts/ci-tools.sh read green at a minute (review round 9 of dispatch://INFRA-1545).
+echo "case: a step whose curl writes its bound as a variable, in no loop, is refused"
+root=$(fixture site-unread-bound-no-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 1
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step and the site whose bound it cannot read" \
+  "$(contains "$out" "step .Install the tool this job runs. carries .timeout-minutes: 1. and this check can put no figure on it: it runs a retried call whose attempts are bounded by a variable rather than by a number — .curl. at .github/workflows/case.yaml:10")"
+check "says a budget cannot be held above a wait nobody can price" \
+  "$(contains "$out" 'a budget cannot be held above a wait nobody can price')"
+check "offers the bound written as a number" \
+  "$(contains "$out" 'Write that bound as a number')"
+check "offers the declaration beside it" \
+  "$(contains "$out" 'declare that site in DECLARED_LOOPS')"
+check "names no loop, there being none" \
+  "$(is "$(contains "$out" 'inside the loop at line')" false)"
+check "prices the step at nothing nowhere" \
+  "$(is "$(contains "$out" 'holds 0 s of retries')" false)"
+
+# And the declaration answers it, with no loop for the entry to name: the figure is the whole
+# of what the site contributes, since there is no per-call number for a pass count to
+# multiply. The entry is counted where it is read, so this check refuses it for matching
+# nothing no more than it refuses the entries that answer a loop.
+echo "case: a declaration answers that site, and is counted"
+root=$(fixture site-unread-bound-declared)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 31
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 1821, "the three fetches one failing install makes, at 8 x 60 + 127 = 607 s each: 3 x 607 = 1821 s"),'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no figure of its own" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "refuses the entry for matching no call nowhere" \
+  "$(is "$(contains "$out" 'matches no retried call')" false)"
+
+# The entry's seconds are the site's contribution and not a note beside it: the budget is held
+# above that figure, and a budget under it is refused with it.
+echo "case: the declared seconds are what that step's budget is held above"
+root=$(fixture site-unread-bound-declared-under)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 30
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 1821, "the three fetches one failing install makes, at 8 x 60 + 127 = 607 s each: 3 x 607 = 1821 s"),'
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "holds the budget above the declared figure" \
+  "$(contains "$out" 'carries .timeout-minutes: 30., 1800 s, and its own retries take 1821 s to exhaust')"
+
+# The floor an entry is held to is one call of the site it covers, and this site has none:
+# one_call answered None, which is the absence of the very figure that comparison reads. An
+# entry below one call of a site that has one is still refused, which the case for that floor
+# elsewhere proves; here there is nothing to compare and the entry stands on its own `why`.
+echo "case: no floor is compared with an entry answering a bound nobody can read"
+root=$(fixture site-unread-bound-declared-small)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install the tool this job runs
+        timeout-minutes: 2
+        run: |
+          bound=60
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$bound" \
+            -o tool.tar.gz https://example.com/tool.tar.gz
+YAML
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml", "Install the tool this job runs", "curl", 60, "one attempt of one fetch, which is all this fixture claims"),'
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "compares the entry with no floor it cannot read" \
+  "$(is "$(contains "$out" 'A site costs at least one call of itself')" false)"
+
+# The other half of that reading, which the case above must not take with it: a site one_call
+# prices at 0 is still dropped. The loop the exempt action writes is as unreadable as the one
+# above, and the `docker pull` under it is a verb this check puts no attempt behind, so there
+# is nothing under that loop for the step's budget to exceed and no pass count to ask the
+# action's author for. Keeping every site with no figure, rather than only the ones whose
+# bound is unread, refuses this step — and the baseline's own two image loops with it.
+echo "case: a step whose action loops, uncounted, over a verb that waits for nothing passes"
+root=$(fixture site-costless-in-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Pull the images tests start
+        timeout-minutes: 30
+        uses: ./.github/actions/pull-test-images
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "prices no call of that loop at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
+# The filter's question asked one layer in: the step's loop runs a script whose own work is a
+# loop this check cannot count over a script that fetches nothing. No attempt waits under
+# either loop, so neither is a loop rule 8 has a pass count to ask the step's author for.
+# Reading the question as "the script holds no uncounted item of its own" refused this with
+# the `0 s` sentence, because the inner call is an item of the script the step runs
+# (review round 6 of dispatch://INFRA-1545).
+echo "case: a loop around a script that loops over a script that fetches nothing passes"
+root=$(fixture script-no-fetch-in-loop-two-deep)
+cat > "$root/.github/scripts/zz-j.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+cat > "$root/.github/scripts/zz-k.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+while read -r id; do
+  .github/scripts/zz-j.sh "$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/zz-j.sh" "$root/.github/scripts/zz-k.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Echo every id the decision named
+        timeout-minutes: 30
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-k.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+check "prices no run of either script at nothing" \
+  "$(is "$(contains "$out" 'takes 0 s')" false)"
+
+# A script this check does price, holding beside that ladder a loop it cannot count around a
+# costless script. The ladder is 450 s the step waits for and the costless loop takes nothing
+# off it, so the budget is held to the 450 s. carried()'s answer of 0 for a call of a script
+# that costs nothing is what keeps that figure readable: without it the costless call answers
+# None, the whole script's arithmetic answers None with it, and the step is compared with
+# nothing and passes in silence (review round 6 of dispatch://INFRA-1545).
+echo "case: a priced script that also loops, uncounted, over a costless one keeps its figure"
+root=$(fixture script-priced-beside-costless-loop)
+cat > "$root/.github/scripts/zz-l.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+SH
+cat > "$root/.github/scripts/zz-m.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "the run" 60 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1"
+while read -r id; do
+  .github/scripts/zz-l.sh "$id"
+done <<<"$ids"
+SH
+chmod +x "$root/.github/scripts/zz-l.sh" "$root/.github/scripts/zz-m.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the run the decision named
+        timeout-minutes: 1
+        run: .github/scripts/zz-m.sh a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "holds the step to the ladder the priced script makes" \
+  "$(contains "$out" 'its own retries take 450 s to exhaust')"
+check "asks the step for no pass count" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+
+# The same loop around a script that does fetch is the shape rule 8 is for: the step waits for
+# that script's whole ladder once per pass, and the passes are unread.
+echo "case: the same loop around a script that does fetch is refused"
+root=$(fixture script-fetch-in-loop)
+cat > "$root/.github/scripts/zz-f.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "the run" 60 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$1"
+SH
+chmod +x "$root/.github/scripts/zz-f.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read every run the decision named
+        timeout-minutes: 30
+        run: |
+          printf 'a\nb\n' | while read -r id; do .github/scripts/zz-f.sh "$id"; done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the script call and the loop around it" \
+  "$(contains "$out" '..github/scripts/zz-f.sh. at .github/workflows/case.yaml:9, inside the loop at line 9')"
+check "says what one run of that script takes" \
+  "$(contains "$out" 'One run of that script takes 450 s to exhaust its attempts')"
+
+# A step with no budget of its own is no longer a step nothing judges: rule 8 asks a budget of
+# every step holding a retried call, so the loop this check cannot read is refused here too,
+# and the refusal names the loop rather than the missing budget — a reader cannot write the
+# budget until the site has a figure.
+echo "case: the same loop in a step with no budget is refused and named all the same"
+root=$(fixture loop-unreadable-unbudgeted)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel every run the decision named
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says the step writes no budget" \
+  "$(contains "$out" "step .Cancel every run the decision named. carries no .timeout-minutes. and this check can put no figure on it")"
+check "names the loop's file and line" \
+  "$(contains "$out" '.gh api. at .github/workflows/case.yaml:10, inside the loop at line 9')"
+
+# A loop whose passes are as many as the run finds work has its own arithmetic declared in the
+# check's own DECLARED_LOOPS, and the budget is held to that figure. The baseline's
+# ci-ok-reconcile.sh is one of them, declared at the 900 s three PATCHes take: a 15-minute
+# budget does not strictly exceed them.
+echo "case: a declared loop is counted at the seconds the declaration writes"
+root=$(fixture loop-declared)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set every other ci-ok on this head to this job's conclusion
+        timeout-minutes: 15
+        run: .github/scripts/ci-ok-reconcile.sh
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the 900 s the declaration writes" \
+  "$(contains "$out" 'retries take 900 s to exhaust')"
+check "names the script the step runs" "$(contains "$out" 'ci-ok-reconcile.sh')"
+
+echo "case: the same declared loop under a budget above its figure passes"
+root=$(fixture loop-declared-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Set every other ci-ok on this head to this job's conclusion
+        timeout-minutes: 16
+        run: .github/scripts/ci-ok-reconcile.sh
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a declared loop that matches no loop in the tree fails"
+root=$(fixture stale-declaration)
+rm "$root/.github/scripts/mirror-ci-images.sh"
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the declaration and what it no longer covers" \
+  "$(contains "$out" 'the declared arithmetic for .github/scripts/mirror-ci-images.sh .crane copy. matches no retried call this check could not price of itself')"
+check "says what the declaration was for" "$(contains "$out" 'written for 1650 s')"
+
+# A site whose passes this check cannot resolve is answered in seconds, not in passes, and the
+# figure stands for the whole of what that site contributes to its step.
+echo "case: a declared arithmetic is the figure the budget is held to"
+root=$(fixture declared-arithmetic)
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml",
+                       "Cancel every run the decision named", "gh api", 1200,
+                       "four cancels at 5 x 30 + 150 = 300 s each: 4 x 300 = 1200 s"),'
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel every run the decision named
+        timeout-minutes: 20
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "uses the declared seconds and not one call of the site" \
+  "$(contains "$out" 'retries take 1200 s to exhaust')"
+check "no longer refuses the site for want of a figure" \
+  "$(is "$(contains "$out" 'can put no figure on it')" false)"
+
+echo "case: a declared arithmetic below one call of its site is refused"
+root=$(fixture declared-arithmetic-floor)
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml",
+                       "Cancel every run the decision named", "gh api", 200,
+                       "a figure nobody derived"),'
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel every run the decision named
+        timeout-minutes: 20
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the site and the floor one call of it sets" \
+  "$(contains "$out" 'writes 200 s, and one call of that site at .github/workflows/case.yaml:11 takes 300 s')"
+check "says a site costs one call of itself" \
+  "$(contains "$out" 'A site costs at least one call of itself')"
+
+# The shape that reached no comparison at all: a step whose whole arithmetic is a composite
+# action's, carrying no budget of its own. ci.yaml's `airlock-lean` held install-elan's
+# 8 x 60 + 127 = 607 s ladder that way, under a job budget with no term for it, and this check
+# built a budget only for a step that wrote one.
+echo "case: a step running a composite action's ladder with no budget of its own is refused"
+root=$(fixture action-unbudgeted)
+mkdir -p "$root/.github/actions/install-elan"
+cat > "$root/.github/actions/install-elan/action.yml" <<'YAML'
+name: Install elan
+description: Installs elan, the Lean toolchain manager.
+runs:
+  using: composite
+  steps:
+    - name: Install elan
+      shell: bash
+      run: |
+        curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o elan.tar.gz \
+          https://example.com/elan.tar.gz
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install elan
+        uses: ./.github/actions/install-elan
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step, its arithmetic and the budget it writes none of" \
+  "$(contains "$out" "step .Install elan. holds 607 s of retries and carries no .timeout-minutes. of its own")"
+check "names the measured shape it comes from" "$(contains "$out" 'install-elan')"
+check "says exactly what to write" "$(contains "$out" 'write .timeout-minutes: 11. or more on this step')"
+
+echo "case: the same step carrying that budget passes"
+root=$(fixture action-budgeted)
+mkdir -p "$root/.github/actions/install-elan"
+cat > "$root/.github/actions/install-elan/action.yml" <<'YAML'
+name: Install elan
+description: Installs elan, the Lean toolchain manager.
+runs:
+  using: composite
+  steps:
+    - name: Install elan
+      shell: bash
+      run: |
+        curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o elan.tar.gz \
+          https://example.com/elan.tar.gz
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install elan
+        uses: ./.github/actions/install-elan
+        timeout-minutes: 11
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# A job ceiling under one of its own steps' arithmetic cuts that step before the step's own
+# budget can name the site, so the step's margin buys nothing.
+echo "case: a job whose budget is under one of its steps' retries is refused"
+root=$(fixture job-budget)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- \
+            curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job, its budget and the step's arithmetic" \
+  "$(contains "$out" "job .build. carries .timeout-minutes: 5., 300 s, and its step .Install changie. holds retries taking 450 s to exhaust")"
+check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 8. or more on this job')"
+
+echo "case: the same job with a budget above that step passes"
+root=$(fixture job-budget-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 0 s measured, plus its slowest retried step alone, the changie tarball's
+    # 5 x 60 + 150 = 450 s -> 9 min.
+    timeout-minutes: 9
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- \
+            curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# Rule 8's `<=`, at the job ceiling against a step's arithmetic: a job whose budget EQUALS that
+# arithmetic is refused. Every other fixture of this clause leaves a gap of seconds between the
+# two, where `<` and `<=` answer alike, so this one is what refuses a revert of the comparison
+# (dispatch://INFRA-1545, round 31). 5 x 90 + 150 = 600 s, which is 10 minutes exactly.
+echo "case: a job whose budget equals one of its steps' retries to the second is refused"
+root=$(fixture job-budget-equal)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Install changie
+        timeout-minutes: 11
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 90 -- \
+            curl -fsSL --max-time 90 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job at 600 s against a step whose retries take 600 s" \
+  "$(contains "$out" "job .build. carries .timeout-minutes: 10., 600 s, and its step .Install changie. holds retries taking 600 s to exhaust, which that budget does not strictly exceed")"
+check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 11. or more on this job')"
+
+# The job half of the same rule, which the clause above cannot reach: a step whose retries fit
+# inside its own budget is still cut by a job ceiling that is not above that budget, because the
+# job holds the step AND everything else it runs. Twenty-two job keys of this repository stood
+# below their own documented derivation while this check was green (dispatch://INFRA-1545,
+# round 27), every one of them past the clause above.
+echo "case: a job whose budget equals its slowest step's own budget is refused"
+root=$(fixture job-holds-step)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- \
+            curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job's budget and the step's own" \
+  "$(contains "$out" "and its step .Install changie. carries .timeout-minutes: 8.")"
+check "says the job budget does not strictly exceed it" \
+  "$(contains "$out" "which that job budget does not strictly exceed")"
+check "says what to write on the job" "$(contains "$out" 'timeout-minutes: 9. or more on this job')"
+check "does not also report the step's own retries against this job" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'holds retries taking')" 0)"
+
+# The job-derivation clause, which reads a job key against THE SUM ITS OWN COMMENT STATES and
+# recomputes the second term from this check's own step arithmetic. Its fixtures are the shapes
+# that earned it: a comment naming a step that stopped being the slowest (eight jobs of this
+# repository, dispatch://INFRA-1545 round 28), a key under the sum its own comment states
+# (`download-retry`, 221 minutes against its own 14322 s), and the job it must NOT refuse — one
+# whose comment derives its key by a construction rather than by a sum, which `tool-fallback`
+# does and which a clause that assumed first-plus-slowest would have refused.
+echo "case: a job whose comment names a step that is no longer its slowest is refused"
+root=$(fixture job-derivation)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the small fetch,
+    # 450 s. 1200 + 450 = 1650 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the sum the comment states" \
+  "$(contains "$out" "its own comment derives 1200 + 450 = 1650 s")"
+check "names the step that is really the slowest, with this check's own figure" \
+  "$(contains "$out" "slowest retried step of this job is .The large fetch., whose retries take 1050 s")"
+check "says the sum this check computes" "$(contains "$out" "1200 + 1050 = 2250 s")"
+check "says what the key must be" "$(contains "$out" 'timeout-minutes: 38. or more')"
+
+echo "case: the same job with the derivation and the key corrected passes"
+root=$(fixture job-derivation-fixed)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 38
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job whose key is under the sum its own comment states is refused"
+root=$(fixture job-derivation-half-a)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 30 min.
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the sum and says the key does not strictly exceed it" \
+  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
+check "says what to write" "$(contains "$out" 'timeout-minutes: 38. or more')"
+
+# Rule 8's `<=` at the derivation clause's two halves: a key EXACTLY at the sum its comment
+# states, and a key exactly at the sum this check recomputes. The fixtures above use
+# 1200 + 1050 = 2250 s, which is 37.5 minutes, where `<` and `<=` answer alike, so a revert of
+# either comparison left every case green (dispatch://INFRA-1545, round 31). 1350 + 1050 =
+# 2400 s is 40 minutes exactly, the shape of the eleven keys round 29 raised.
+echo "case: a job whose key equals the whole-minute sum its own comment states is refused"
+root=$(fixture job-derivation-equal)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1350 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1350 + 1050 = 2400 s -> 40 min.
+    timeout-minutes: 40
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the sum and says the key does not strictly exceed it" \
+  "$(contains "$out" "its own comment derives 1350 + 1050 = 2400 s, which that key does not strictly exceed")"
+check "says what to write" "$(contains "$out" 'timeout-minutes: 41. or more')"
+
+echo "case: a job whose key equals the whole-minute sum this check recomputes is refused"
+root=$(fixture job-derivation-recomputed-equal)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1350 s measured, plus its slowest retried step alone — the small fetch,
+    # 450 s. 1350 + 450 = 1800 s -> 40 min.
+    timeout-minutes: 40
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the recomputed sum and says the key does not strictly exceed it" \
+  "$(contains "$out" "1350 + 1050 = 2400 s, which this key does not strictly exceed")"
+check "says what the key must be" "$(contains "$out" 'timeout-minutes: 41. or more')"
+
+# The stand-aside, which is the clause's whole design: `tool-fallback` of this repository states
+# `114 is the 104 this construction gives with ten minutes added`, which .github/ci-budgets.md
+# holds for that job, and carries a position rule,
+# so no `<a> + <b> = <c> s -> <key> min` ties a sum to its key, and a clause that refused it
+# would be a correct job refused — which is how a check gets silenced.
+# The arrow rule, which is this issue's own control moved into the check: a key lowered while
+# its comment is left alone. Before it, each of the nine keys dispatch://INFRA-1545 raised could
+# be put back with its sentence untouched and this check stayed green, because the derivation
+# clause below finds no sum once the arrow and the key disagree, and stands aside.
+echo "case: a key lowered while its comment is left alone is refused"
+root=$(fixture arrow-against-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 38 min.
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the figure the comment prices and the key beneath it" \
+  "$(contains "$out" "this comment prices what it sits above at 38 min, and the .timeout-minutes: 30. below it carries 30")"
+check "points at the comment's first line, where a reader rewrites the sentence" \
+  "$(contains "$out" "file=.github/workflows/case.yaml,line=6::this comment prices")"
+
+echo "case: a comment block pricing two steps keeps both keys"
+root=$(fixture arrow-two-steps)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  # Budget: 1350 s measured, plus the large fetch's 5 x 180 + 150 = 1050 s -> 40 min.
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      # Two steps of this job, at the bounds their own arithmetic gives: the large fetch's
+      # 5 x 180 + 150 = 1050 s -> 18 min, and the small fetch's 5 x 60 + 150 = 450 s -> 8 min.
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# EVERY CLAIM THIS RULE'S HEADER MAKES ABOUT WHAT IT REFUSES HAS A CASE HERE THAT FAILS WHEN
+# THAT BEHAVIOUR IS REMOVED. The claims were written from memory of the change three rounds
+# running and were wrong each time: a reviewer turned `<=` back into `<` and the gate and all
+# 299 cases stayed green, so the eleven keys that operator raised were guarded by nothing
+# (dispatch://INFRA-1545, review round 26). A claim with no case behind it is a sentence.
+echo "case: a job key equal to the sum its own comment states is refused"
+root=$(fixture job-key-equals-sum)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the large fetch,
+    # 1050 s. 1200 + 1050 = 2250 s -> 37 min.
+    timeout-minutes: 37
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says the key does not strictly exceed the sum" \
+  "$(contains "$out" "its own comment derives 1200 + 1050 = 2250 s, which that key does not strictly exceed")"
+# 37 minutes is 2220 s, under the sum; 38 is 2280 s, above it. The case above and the case
+# below therefore fail together when `allowed <= total` becomes `allowed < total`, which is the
+# mutation that exposed this gap.
+echo "case: one minute above that sum passes"
+root=$(fixture job-key-above-sum)
+sed 's/-> 37 min/-> 38 min/; s/^    timeout-minutes: 37$/    timeout-minutes: 38/' \
+  "$work/job-key-equals-sum/.github/workflows/case.yaml" > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job holding a retried step whose comments price nothing is refused"
+root=$(fixture job-prices-nothing)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s, which comes to 2250 s and takes
+    # the whole minute above it: 38.
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the retried step it holds" "$(contains "$out" "holds a retried step")"
+check "says no comment block prices that key" \
+  "$(contains "$out" "no comment block prices that key")"
+check "names the two clauses that read a price, by what they are and where" \
+  "$(contains "$out" "rule 8's priced-comment and job-derivation clauses in .github/scripts/check-download-retry.sh")"
+check "says what to write" "$(contains "$out" 'as .-> N min. in a comment block above this key')"
+
+echo "case: the same job priced as -> N min passes, wherever the block sits"
+root=$(fixture job-priced-above-its-id)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  # Budget: 1200 s measured, plus the large fetch's 1050 s: 1200 + 1050 = 2250 s -> 38 min.
+  # This block sits above the job's id rather than above its key, which is where two jobs of
+  # this repository state their sums.
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# What "a job prices itself" means is what the priced-comment clause pairs: a block's arrow goes
+# to the keys below it, one per figure, so an arrow belongs to the key it sits above and never to
+# a job further down. A 40-line window stood here before, and a reviewer lowered `typecheck` to
+# 20 minutes — 1200 s under its own 1650 s — with its derivation written in words: the gate
+# stayed green, because `tool-fallback-arm`'s step comment 28 lines up carried `-> 22 min`
+# (dispatch://INFRA-1545, review round 27). This case is that shape.
+echo "case: a job priced only by a neighbouring job's arrow is refused"
+root=$(fixture job-priced-by-neighbour)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  arm:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the small fetch's 450 s: 1200 + 450 = 1650 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      # The small fetch's 5 x 60 + 150 = 450 s, the whole minute above it (ci-budgets.md's
+      # Budgets note) -> 8 min.
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+  typecheck:
+    runs-on: ubuntu-24.04
+    # Budget: 600 s measured, plus the large fetch's 1050 s: 600 + 1050 = 1650 s, so the key
+    # takes the whole minute above it: 28.
+    timeout-minutes: 20
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses typecheck's key, which no block prices" \
+  "$(contains "$out" "line=20::job 'typecheck' carries .timeout-minutes: 20. and holds a retried step")"
+check "does not refuse the job whose own step comment it is" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "job 'arm'")" 0)"
+
+echo "case: a job priced by its own arrow more than forty lines above its key passes"
+root=$(fixture job-priced-far-above)
+{
+  printf 'name: Case\non: [push]\njobs:\n  build:\n    runs-on: ubuntu-24.04\n'
+  printf '    # Budget: 1200 s measured, plus the large fetch, 1200 + 1050 = 2250 s -> 38 min.\n'
+  for line in $(seq 1 45); do
+    printf '    # Line %s of the reasoning behind that sum, which this check never reads.\n' "$line"
+  done
+  cat <<'YAML'
+    timeout-minutes: 38
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+} > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The pricing clause's guard is `cost <= 0`: only a job whose retried steps cost nothing is passed
+# over. A reviewer widened it to `<= 1000` and `download-retry-images`, its arrow written in words
+# and its key put back to 95 minutes, went through (review round 27), so a retried job costing a
+# few minutes is the case that holds that guard where it is.
+echo "case: an unpriced job whose slowest retried step takes 450 s is refused"
+root=$(fixture job-prices-nothing-small)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 300 s measured, plus the small fetch's 450 s, which takes the whole minute
+    # above 750 s: 13.
+    timeout-minutes: 13
+    steps:
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the 450 s step" "$(contains "$out" "whose retries take 450 s to exhaust")"
+check "says no comment block prices that key" \
+  "$(contains "$out" "no comment block prices that key")"
+
+# The priced-comment clause holds a key to BEING ONE OF its block's figures. A reviewer weakened
+# `key in figures` to `key >= min(figures)` and `re-record`, whose block prices both a step at 9
+# and the job at 69, went through at 50 (review round 27): a key between two figures of its block
+# names neither.
+echo "case: a key between the two figures its block prices is refused"
+root=$(fixture arrow-between-figures)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the small fetch's 5 x 60 + 150 = 450 s -> 9 min, and the job's 3000 s measured
+    # plus that, 3000 + 450 = 3450 s -> 69 min.
+    timeout-minutes: 50
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names both figures and the key between them" \
+  "$(contains "$out" "this comment prices what it sits above at 9 min and 69 min, and the .timeout-minutes: 50. below it carries 50")"
+
+echo "case: a job whose comment derives its key another way is passed over"
+root=$(fixture job-derivation-construction)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: NOT first-plus-slowest. The large fetch's own 18 minutes have to finish before
+    # this ceiling, and the steps beside it measure 2 minutes, so the limit is those two with
+    # room on top: 18 + 2 = 20, written as 30 for the ten minutes this job has always carried
+    # -> 30 min.
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: one minute above that step passes, and the step's retries never reach its own budget"
+root=$(fixture job-holds-step-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 0 s measured, plus the changie tarball's 5 x 60 + 150 = 450 s -> 9 min.
+    timeout-minutes: 9
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the changie tarball" 60 -- \
+            curl -fsSL --max-time 60 -o changie.tar.gz https://example.com/changie.tar.gz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# A step waits for every pass of every loop around a call, for every call of the function that
+# holds it, and for every pass of the loops around those calls — and it waits for all of that
+# again in each script it runs inside a loop of its own. Each shape below was a budget this
+# check read at a fraction of what the step allows: a loop inside a loop counted once, a
+# function called three times counted once, and a script in a three-pass loop counted once.
+# The live instance was the required `pr-title` check: check-pr-text.sh makes five `gh api`
+# ladders and this check counted three, because the third sits in read_list's page loop and
+# the `for ((i = 0; i < ${#lists[@]}; i += 2))` under it calls read_list once for each of the
+# three lists.
+echo "case: a loop inside a loop multiplies the call by both"
+root=$(fixture loop-nested)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read each page of each list
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          for list in comments reviews; do
+            for page in 1 2 3; do
+              retry_fetch "page $page of $list" 30 -- \
+                gh api "repos/$GITHUB_REPOSITORY/issues/1/$list?page=$page"
+            done
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts both loops and not the innermost alone" \
+  "$(contains "$out" 'retries take 1800 s to exhaust')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 31')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: the same nest under a budget above the figure both loops make passes"
+root=$(fixture loop-nested-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read each page of each list
+        timeout-minutes: 31
+        run: |
+          . .github/scripts/ci-retry.sh
+          for list in comments reviews; do
+            for page in 1 2 3; do
+              retry_fetch "page $page of $list" 30 -- \
+                gh api "repos/$GITHUB_REPOSITORY/issues/1/$list?page=$page"
+            done
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a function holding a retried call is counted once for each call of it"
+root=$(fixture function-called-thrice)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the three lists
+        timeout-minutes: 15
+        run: |
+          . .github/scripts/ci-retry.sh
+          read_list() {
+            retry_fetch "the $1 list" 30 -- gh api "repos/$GITHUB_REPOSITORY/issues/1/$1"
+          }
+          read_list comments
+          read_list reactions
+          read_list events
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the call once for each of the three" \
+  "$(contains "$out" 'retries take 900 s to exhaust')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 16')"
+
+echo "case: the same function under a budget above its three calls passes"
+root=$(fixture function-called-thrice-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read the three lists
+        timeout-minutes: 16
+        run: |
+          . .github/scripts/ci-retry.sh
+          read_list() {
+            retry_fetch "the $1 list" 30 -- gh api "repos/$GITHUB_REPOSITORY/issues/1/$1"
+          }
+          read_list comments
+          read_list reactions
+          read_list events
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The baseline's ci-ok-reconcile.sh is 3 x (5 x 30 + 150) = 900 s of its own, so a step that
+# runs it three times round a loop waits 2700 s for it.
+echo "case: a script the step runs inside its own loop is counted once for each pass"
+root=$(fixture script-in-loop)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks of each head the queue left
+        timeout-minutes: 45
+        run: |
+          for head in 1 2 3; do
+            .github/scripts/ci-ok-reconcile.sh "$head"
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the script once for each pass of the step's loop" \
+  "$(contains "$out" 'retries take 2700 s to exhaust')"
+check "names the script the step runs" "$(contains "$out" 'ci-ok-reconcile.sh')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 46')"
+
+echo "case: the same script in the same loop under a budget above the three runs passes"
+root=$(fixture script-in-loop-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks of each head the queue left
+        timeout-minutes: 46
+        run: |
+          for head in 1 2 3; do
+            .github/scripts/ci-ok-reconcile.sh "$head"
+          done
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# A heredoc body belongs to the command consuming it. A shell runs what it reads on its standard
+# input, so the calls a `bash <<EOF` body writes are the step's own and their attempts are the
+# step's cost; `cat`, a redirect into a file and a `python3 <<'PY'` take their body as data,
+# where a path is a path something prints rather than runs. The baseline's ci-ok-reconcile.sh is
+# 900 s of its own, which is the figure every case below turns on.
+echo "case: a script called inside a bash heredoc is the step's own arithmetic"
+root=$(fixture heredoc-bash)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks the queue left
+        timeout-minutes: 15
+        run: |
+          bash <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the call the body makes" "$(contains "$out" 'retries take 900 s to exhaust')"
+check "names the script that body runs" \
+  "$(contains "$out" 'that of .github/scripts/ci-ok-reconcile.sh, which it runs')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 16')"
+
+echo "case: the same body under a budget above the call it makes passes"
+root=$(fixture heredoc-bash-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks the queue left
+        timeout-minutes: 16
+        run: |
+          bash <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: the same call inside a cat heredoc is data and costs the step nothing"
+root=$(fixture heredoc-cat)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Write the note that names the script a reader runs
+        run: |
+          cat > note.txt <<'EOF'
+          Run .github/scripts/ci-ok-reconcile.sh once the queue has settled.
+          EOF
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the step holding no call is asked for no budget" \
+  "$(is "$(contains "$out" '900 s')" false)"
+
+echo "case: the same call inside a python3 heredoc is data and costs the step nothing"
+root=$(fixture heredoc-python)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Print the script a reader runs
+        run: |
+          python3 <<'PY'
+          print("run .github/scripts/ci-ok-reconcile.sh once the queue has settled")
+          PY
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "the step holding no call is asked for no budget" \
+  "$(is "$(contains "$out" '900 s')" false)"
+
+# However the shell is written, the body is the commands it runs: a bare word, an absolute path,
+# options of its own, a `-s` that says the script is standard input, and a `-` written for the
+# script argument, which is standard input spelled out.
+echo "case: every spelling of a shell reads its body as the step's commands"
+root=$(fixture heredoc-interpreters)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A shell written as an absolute path
+        timeout-minutes: 15
+        run: |
+          /bin/bash <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A shell carrying options of its own
+        timeout-minutes: 15
+        run: |
+          sudo bash -euo pipefail <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A shell told to read its script from standard input
+        timeout-minutes: 15
+        run: |
+          bash -s stage1 <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A dash written for the script argument
+        timeout-minutes: 15
+        run: |
+          sh - <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "the absolute path runs its body" \
+  "$(contains "$out" "step .A shell written as an absolute path. carries .timeout-minutes: 15")"
+check "the shell carrying options runs its body" \
+  "$(contains "$out" "step .A shell carrying options of its own. carries .timeout-minutes: 15")"
+check "the shell reading standard input runs its body" \
+  "$(contains "$out" "step .A shell told to read its script from standard input. carries")"
+check "the dash for the script argument runs its body" \
+  "$(contains "$out" "step .A dash written for the script argument. carries")"
+check "each of the four is one refusal" \
+  "$(contains "$out" '4 download(s) outside the one retry rule')"
+
+# An interpreter whose script is somewhere else reads its body as that script's input, which is
+# the shell's own rule: the word behind `-c` is the script, and so is a file named on the line.
+echo "case: an interpreter whose body is another script's input is data"
+root=$(fixture heredoc-interpreter-input)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: A script behind -c, whose body is that script's input
+        run: |
+          bash -c 'cat > note.txt' <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+      - name: A script file, whose body is that file's input
+        run: |
+          bash tools/note.sh <<'EOF'
+          .github/scripts/ci-ok-reconcile.sh
+          EOF
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "neither step is asked for a budget" "$(is "$(contains "$out" '900 s')" false)"
+
+echo "case: a data heredoc inside a shell's heredoc is still data"
+root=$(fixture heredoc-nested)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Reconcile the ci-oks and leave a note naming the other script
+        timeout-minutes: 15
+        run: |
+          bash <<'OUTER'
+          cat > note.txt <<'INNER'
+          Read .github/scripts/check-pr-text.sh for the page this reconcile skipped.
+          INNER
+          .github/scripts/ci-ok-reconcile.sh
+          OUTER
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "the outer body is commands and the inner one is not" \
+  "$(contains "$out" 'retries take 900 s to exhaust')"
+check "the script the inner body names is no call of this step" \
+  "$(is "$(contains "$out" 'check-pr-text.sh')" false)"
+
+# A declaration writes one number, so it answers for one loop. A second loop of the same file,
+# step and verb would take that number without anybody writing it one, which is the undercount
+# the declaration exists to stop.
+echo "case: a declaration that would cover two loops fails"
+root=$(fixture declaration-two-loops)
+cat > "$root/.github/scripts/ci-ok-reconcile.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+while read -r id status was marker; do
+  retry_fetch "the PATCH of ci-ok check run $id" 30 -- \
+    gh api --silent --method PATCH "repos/$GITHUB_REPOSITORY/check-runs/$id" --input "$body"
+done <<<"$runs"
+while read -r id; do
+  retry_fetch "the ci-ok of run $id" 30 -- \
+    gh api "repos/$GITHUB_REPOSITORY/check-runs/$id"
+done <<<"$others"
+SH
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the entry and the two loops it covers" \
+  "$(contains "$out" 'the declared loop for .github/scripts/ci-ok-reconcile.sh .gh api. covers the loops at lines 4, 8')"
+check "says what the entry was written for" "$(contains "$out" 'This entry said 900 s')"
+
+# Rule 8 reads a curl's own attempts off the ladder rule 1 holds it to, not off a fixed eight:
+# `--retry 10` is eleven attempts at `--max-time` with 1, 2, 4, …, 512 s between them, so
+# 11 x 30 + 1023 = 1353 s.
+echo "case: a curl's own attempts are counted at the ladder its options write"
+root=$(fixture curl-ladder-budget)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install crane
+        timeout-minutes: 22
+        run: |
+          curl -fsSL --retry 10 --retry-all-errors --max-time 30 -o crane.tar.gz \
+            https://example.com/crane.tar.gz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "counts the eleven attempts and curl's own waits" \
+  "$(contains "$out" 'retries take 1353 s to exhaust')"
+check "names the budget that would hold it" "$(contains "$out" 'timeout-minutes: 23')"
+
+echo "case: the same curl under a budget above its ladder passes"
+root=$(fixture curl-ladder-budget-headroom)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install crane
+        timeout-minutes: 23
+        run: |
+          curl -fsSL --retry 10 --retry-all-errors --max-time 30 -o crane.tar.gz \
+            https://example.com/crane.tar.gz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: an argument this check does not take"
+root=$(fixture bad-argument)
+run_check "$root" --everything
+check "exits 2" "$(is "$status" 2)"
+check "says what it takes" "$(contains "$out" 'this check takes no argument')"
+
+# Rule 9. A workflow `run:` that names no shell runs under GitHub's `/usr/bin/bash -e {0}`:
+# errexit on, pipefail off, so a pipeline's status is its last command's and a fetch left of a
+# `|` can fail with the step exiting 0. The retry around such a pipeline sees that 0 and never
+# retries, which is the hole these cases close.
+echo "case: a retried fetch left of a pipe in a workflow run"
+root=$(fixture piped-retry)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line and the step" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=10::.curl. in step .Install changie. is not the last command of its pipeline')"
+check "says whose status the step reads" \
+  "$(contains "$out" "a pipeline's status is its last command's alone")"
+check "says the retry around it never retries" "$(contains "$out" 'never retries')"
+check "names the cure" "$(contains "$out" 'write the pipeline as two commands')"
+check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: a bare fetch left of a pipe is refused for the pipeline as well as the floor"
+root=$(fixture piped-bare-curl)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        run: |
+          curl -fsSL https://example.com/changie.tar.gz | tar -xz -C /usr/local/bin changie
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the missing floor" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=8::.curl. in step .Install changie. fetches without the floor')"
+check "names the pipeline too, not only the missing retry" \
+  "$(contains "$out" 'is not the last command of its pipeline')"
+check "the two faults of one site are one annotation" \
+  "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: the same piped fetch in a composite action passes, since its shell sets pipefail"
+root=$(fixture piped-action)
+mkdir -p "$root/.github/actions/install-thing"
+cat > "$root/.github/actions/install-thing/action.yml" <<'YAML'
+name: Install the thing
+description: Installs the thing through a shell that carries the fetch's failure.
+runs:
+  using: composite
+  steps:
+    - name: Install the thing
+      shell: bash
+      run: |
+        . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
+        retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/thing.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a workflow's gh api with a logical OR after it is no pipeline"
+root=$(fixture logical-or)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel the runs this push started
+        timeout-minutes: 6
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the force-cancel" 30 -- gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/1/force-cancel" ||
+            echo "failed"
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a fetch that is the last command of its pipeline passes"
+root=$(fixture piped-last)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Read what this job downloads
+        # Two curls of 8 x 60 + 127 = 607 s.
+        timeout-minutes: 21
+        run: |
+          echo x | xargs curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o out
+          cat urls.txt | curl -fsSL --retry 7 --retry-all-errors --max-time 60 -K - -o out2
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+list_check "$root"
+check "the curl at the end of its pipeline is a site like any other" \
+  "$(contains "$out" '^.github/workflows/case.yaml	11	curl	Read what this job downloads$')"
+
+echo "case: a workflow step that names shell bash carries the fetch's failure and passes"
+root=$(fixture piped-step-shell)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        shell: bash
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a workflow whose defaults.run.shell names bash passes"
+root=$(fixture piped-workflow-defaults)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+defaults:
+  run:
+    shell: bash
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a job whose defaults.run.shell names sh is refused, since sh sets no pipefail"
+root=$(fixture piped-job-defaults)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        shell: sh
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz | tar -xz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line and the step" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=13::.curl. in step .Install changie. is not the last command of its pipeline')"
+
+echo "case: a retried fetch left of a pipe that carries standard error too is refused"
+root=$(fixture piped-stderr)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Install changie
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a tarball" 60 -- curl -fsSL https://example.com/changie.tar.gz |& tar -xz
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the file, the line and the step" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=10::.curl. in step .Install changie. is not the last command of its pipeline')"
+check "counts the one refusal" "$(contains "$out" '1 download(s) outside the one retry rule')"
+
+echo "case: a job that compiles Go with no retried module download of its own"
+# Rule 11's own fixture, driven both ways: a go command fetches this module's dependencies when
+# the cache misses, and that fetch is in none of THE VERBS, so every other rule of this check
+# passes the job. Two real jobs stood like this - the browser suite's embedder and the nightly
+# re-record - each found by a person reading the job rather than by this check.
+root=$(fixture go-build-no-download)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Build the server
+        run: go build -o ./server ./cmd/server
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the job, the step and the file" \
+  "$(contains "$out" "file=.github/workflows/case.yaml,line=9::job .build. compiles Go in step .Build the server. and holds no retried")"
+check "names the step to write" "$(contains "$out" 'mod download')"
+# The same job with the download step the browser suite's jobs carry.
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      - name: Download the Go modules this job builds
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a module's Go modules" 180 -- go -C packages/envoy mod download
+      - name: Build the server
+        run: go build -o ./server ./cmd/server
+YAML
+run_check "$root"
+check "passes once the job downloads its modules in a step of its own" "$(is "$status" 0)"
+# And a `go test` is read as readily as a `go build`, since both fetch on a cache miss.
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [pull_request]
+jobs:
+  unit:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: go test ./...
+YAML
+run_check "$root"
+check "reads a go test too" \
+  "$(contains "$out" "job .unit. compiles Go in step")"
+
+echo "case: rule 11's exemption holds a job that compiles Go and stops holding a renamed one"
+# The exemption path and its staleness guard, which the rule's own fixture above does not reach:
+# the fixture ci.yaml carries `airlock-lean`, so a tree whose GO_BUILD_EXEMPT names it passes
+# with that job compiling Go and no download, and the same tree with the job renamed is refused
+# twice - once for the renamed job, which no entry covers, and once for the entry, which now
+# matches no job compiling Go. That second refusal is what a guard that asked only whether the job
+# still existed never made: it left a renamed job's exception live for the next job of that name.
+root=$(fixture go-exempt)
+run_check "$root"
+check "the exempted job passes" "$(is "$status" 0)"
+check "and no refusal names it" "$(is "$(contains "$out" 'airlock-lean')" false)"
+
+root=$(fixture go-exempt-stale)
+python3 - "$root/.github/workflows/ci.yaml" <<'PY_EDIT'
+import sys
+p = sys.argv[1]
+t = open(p).read()
+open(p, "w").write(t.replace("  airlock-lean:", "  airlock-lean-renamed:", 1))
+PY_EDIT
+run_check "$root"
+check "a renamed job is refused" "$(is "$status" 1)"
+check "the renamed job is named" \
+  "$(contains "$out" "job 'airlock-lean-renamed' compiles Go in step")"
+check "and its stale exemption is named too" \
+  "$(contains "$out" "GO_BUILD_EXEMPT holds 'airlock-lean' of this file")"
+
+echo "case: a workflow whose job writes one key twice"
+# GitHub refuses such a file and runs nothing of it, where PyYAML takes the last of the two, so
+# this check reads it before any rule below can pass a file CI will not start. Driven both ways:
+# the duplicate is refused by name and line, and the same tree with one of them deleted passes.
+root=$(fixture duplicate-key)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 22
+    timeout-minutes: 75
+    steps:
+      - run: echo hi
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the key and the second line" \
+  "$(contains "$out" 'file=.github/workflows/case.yaml,line=7::`timeout-minutes` is written twice')"
+check "says GitHub runs nothing of it" "$(contains "$out" 'runs nothing of it')"
+
+python3 - "$root/.github/workflows/case.yaml" <<'PY_EDIT'
+import sys
+p = sys.argv[1]
+open(p, "w").write(open(p).read().replace("    timeout-minutes: 22\n", "", 1))
+PY_EDIT
+run_check "$root"
+check "and the same tree with one of them gone passes" "$(is "$status" 0)"
+
+# ---------------------------------------------------------------- rule 8's own mutants
+# Every case below answers one mutant round 32's enumeration of rule 8 made and the harness
+# missed: the code changed, the gate's every refusal on the tree stayed the same, and all 326
+# cases passed (dispatch://INFRA-1545, round 32). Each names the behaviour its mutant removed.
+
+# The four walks rule 8 recurses through each stop at a path already read, so a cycle ends and a
+# file two calls reach is read once. A cycle is what no case wrote, so the stop could go and every
+# case stayed green; without it the check recurses until Python gives up.
+echo "case: two scripts that call each other are read once each, and the check ends"
+root=$(fixture script-cycle)
+cat > "$root/.github/scripts/cycle-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+.github/scripts/cycle-b.sh
+SH
+cat > "$root/.github/scripts/cycle-b.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/cycle-a.sh
+SH
+chmod +x "$root/.github/scripts/cycle-a.sh" "$root/.github/scripts/cycle-b.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch through the pair
+        timeout-minutes: 8
+        run: .github/scripts/cycle-a.sh
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: a loop around two scripts that call each other and fetch nothing passes"
+root=$(fixture script-cycle-costless)
+cat > "$root/.github/scripts/quiet-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+echo "$1"
+.github/scripts/quiet-b.sh "$1"
+SH
+cat > "$root/.github/scripts/quiet-b.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/quiet-a.sh "$1"
+SH
+chmod +x "$root/.github/scripts/quiet-a.sh" "$root/.github/scripts/quiet-b.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Print every name
+        timeout-minutes: 5
+        run: |
+          while read -r name; do
+            .github/scripts/quiet-a.sh "$name"
+          done <<<"$names"
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: a loop around two scripts that call each other and fetch is refused, and the check ends"
+root=$(fixture script-cycle-uncounted)
+cat > "$root/.github/scripts/loud-a.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+. .github/scripts/ci-retry.sh
+retry_fetch "the asset $1" 60 -- curl -fsSL --max-time 60 -o a "https://example.com/$1"
+.github/scripts/loud-b.sh "$1"
+SH
+cat > "$root/.github/scripts/loud-b.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+.github/scripts/loud-a.sh "$1"
+SH
+chmod +x "$root/.github/scripts/loud-a.sh" "$root/.github/scripts/loud-b.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch every name
+        timeout-minutes: 30
+        run: |
+          while read -r name; do
+            .github/scripts/loud-a.sh "$name"
+          done <<<"$names"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the loop around the first script" \
+  "$(contains "$out" '..github/scripts/loud-a.sh. at .github/workflows/case.yaml:10, inside the loop at line 9')"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+echo "case: two composite actions that use each other are read once each, and the check ends"
+root=$(fixture action-cycle)
+mkdir -p "$root/.github/actions/cycle-x" "$root/.github/actions/cycle-y"
+cat > "$root/.github/actions/cycle-x/action.yml" <<'YAML'
+name: Cycle x
+description: Fetches an asset and uses cycle-y.
+runs:
+  using: composite
+  steps:
+    - name: Fetch the asset
+      shell: bash
+      run: |
+        curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o x.tar.gz \
+          https://example.com/x.tar.gz
+    - uses: ./.github/actions/cycle-y
+YAML
+cat > "$root/.github/actions/cycle-y/action.yml" <<'YAML'
+name: Cycle y
+description: Uses cycle-x.
+runs:
+  using: composite
+  steps:
+    - uses: ./.github/actions/cycle-x
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Run the pair
+        uses: ./.github/actions/cycle-x
+        timeout-minutes: 11
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+# step_name: a `uses:` step with no `name:` reads as '-' in the workflow, so every step refusal
+# names the action it runs instead (review round 26). No case wrote such a step until this one.
+echo "case: a step with no name is named in a refusal by the action it runs"
+root=$(fixture action-unnamed)
+mkdir -p "$root/.github/actions/install-elan"
+cat > "$root/.github/actions/install-elan/action.yml" <<'YAML'
+name: Install elan
+description: Installs elan, the Lean toolchain manager.
+runs:
+  using: composite
+  steps:
+    - name: Install elan
+      shell: bash
+      run: |
+        curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o elan.tar.gz \
+          https://example.com/elan.tar.gz
+YAML
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: ./.github/actions/install-elan
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the step by the action it runs" \
+  "$(contains "$out" "step 'the step running .github/actions/install-elan/action.yml' holds 607 s of retries")"
+check "never names it '-'" "$(is "$(contains "$out" "step '-'")" false)"
+
+# The slowest step is the first one with the largest arithmetic: a later step that only ties it
+# does not take its place, so the refusal names the step written first.
+echo "case: of two steps that tie for the slowest, a refusal names the first"
+root=$(fixture job-slowest-tie)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the small fetch, 450 s.
+    # 1200 + 450 = 1650 s -> 30 min.
+    timeout-minutes: 30
+    steps:
+      - name: The first large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+      - name: The second large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "another large asset" 180 -- curl -fsSL --max-time 180 -o c https://example.com/c
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the first of the two" \
+  "$(contains "$out" "slowest retried step of this job is 'The first large fetch'")"
+
+# A step holding two loops this check cannot count is told about the first of them, by its figure
+# and its name: the refusal's sentence is written for blocking[0], and the list beside it names
+# the rest.
+echo "case: a step with two uncounted loops is priced at the first loop's call"
+root=$(fixture two-uncounted-first-figure)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch every name twice over
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the small $id" 60 -- curl -fsSL --max-time 60 -o a "https://example.com/$id"
+          done <<<"$ids"
+          while read -r id; do
+            retry_fetch "the large $id" 180 -- curl -fsSL --max-time 180 -o b "https://example.com/$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "prices one call of the first loop's site" "$(contains "$out" 'One call there takes 450 s')"
+
+echo "case: a step with two uncounted loops whose bounds are unread names the first site"
+root=$(fixture two-uncounted-first-unread)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch every name twice over
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            curl -fsSL --retry 7 --retry-all-errors --max-time "$T" -o a "https://example.com/$id"
+          done <<<"$ids"
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the run $id" "$T" -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the first site's verb in the sentence" "$(contains "$out" 'What one call of .curl. there takes')"
+
+# The two loops in the other order: the first loop's call has a bound the check reads and the
+# second's is unread. Every blocked-item case above has the unread one first, or both alike,
+# so reading `blocking[-1].one` where the gate reads `blocking[0].one` passed the whole harness
+# and told the reader that the first call's bound is a variable when it is `--max-time 60`
+# (dispatch://INFRA-1545, the tester's mutation pass at 663a6c05a083, mutant T045).
+echo "case: a step with two uncounted loops, the first with a read bound, prices the first"
+root=$(fixture two-uncounted-first-read)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch every name twice over
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o a "https://example.com/$id"
+          done <<<"$ids"
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the run $id" "$T" -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "prices the first loop's call at its read bound" "$(contains "$out" 'One call there takes 607 s')"
+check "does not call the first call's bound a variable" \
+  "$(is "$(contains "$out" 'What one call of .curl. there takes is a figure this check cannot make')" false)"
+
+echo "case: a step looping over two scripts, the first with an unread bound, names the first"
+root=$(fixture two-uncounted-scripts)
+cat > "$root/.github/scripts/early-unread.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsSL --retry 7 --retry-all-errors --max-time "$T" -o a "https://example.com/$1"
+SH
+cat > "$root/.github/scripts/later-numbered.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+curl -fsSL --retry 7 --retry-all-errors --max-time 60 -o a "https://example.com/$1"
+SH
+chmod +x "$root/.github/scripts/early-unread.sh" "$root/.github/scripts/later-numbered.sh"
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch every name through both
+        timeout-minutes: 30
+        run: |
+          while read -r id; do
+            .github/scripts/early-unread.sh "$id"
+          done <<<"$ids"
+          while read -r id; do
+            .github/scripts/later-numbered.sh "$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the first script and its unread bound" \
+  "$(contains "$out" 'One run of ..github/scripts/early-unread.sh. makes attempts whose bound is written as a variable')"
+
+# One refusal per step: a step told its retries sit in a loop nobody can count is told that alone,
+# and not also about a second site of it whose bound is unread.
+echo "case: a step with an uncounted loop and an unread bound is refused once"
+root=$(fixture uncounted-and-unread)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Fetch every name, then one more
+        timeout-minutes: 30
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the small $id" 60 -- curl -fsSL --max-time 60 -o a "https://example.com/$id"
+          done <<<"$ids"
+          curl -fsSL --retry 7 --retry-all-errors --max-time "$T" -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the step for its loop" "$(contains "$out" 'inside the loop at line 10')"
+check "and only once" \
+  "$(is "$(printf '%s\n' "$out" | grep -c 'this check can put no figure on it')" 1)"
+
+# A step whose own budget is under its retries is told about its own budget first, and not also
+# about the job's: the step's budget is the one its author writes next.
+echo "case: a step under its own retries is told about its budget, not also its job's"
+root=$(fixture step-and-job-under)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the small fetch's 5 x 60 + 150 = 450 s alone -> 5 min.
+    timeout-minutes: 5
+    steps:
+      - name: The small fetch
+        timeout-minutes: 7
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the step's own budget" \
+  "$(contains "$out" "step 'The small fetch' carries .timeout-minutes: 7.")"
+check "and not the job's for the same retries" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "job 'build' carries .timeout-minutes: 5.")" 0)"
+
+echo "case: a job under a step's retries is told about that, not also about the step's budget"
+root=$(fixture job-under-step-retries)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: the small fetch's 5 x 60 + 150 = 450 s alone -> 7 min.
+    timeout-minutes: 7
+    steps:
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job against the step's retries" \
+  "$(contains "$out" "holds retries taking 450 s to exhaust, which that budget does not strictly exceed")"
+check "and not also against the step's own budget" \
+  "$(is "$(printf '%s\n' "$out" | grep -c "which that job budget does not strictly exceed")" 0)"
+
+echo "case: a job that writes no timeout-minutes is told GitHub gives it 360 minutes"
+root=$(fixture job-default-under-step)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The small fetch
+        timeout-minutes: 400
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says the job writes none and what GitHub gives it" \
+  "$(contains "$out" "job 'build' writes no .timeout-minutes., so GitHub gives it 360 minutes, and its step 'The small fetch' carries .timeout-minutes: 400.")"
+
+# The same default, under a step's retries this time: the refusal prints GitHub's 360 minutes in
+# seconds as well, a figure its reader compares with the step's own, so it is pinned exactly.
+echo "case: a job that writes no timeout-minutes, under a step's retries, is told the 21600 s it gets"
+root=$(fixture job-default-under-retries)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: The large fetch, thirty times
+        timeout-minutes: 600
+        run: |
+          . .github/scripts/ci-retry.sh
+          for x in $(seq 1 30); do
+            retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+          done
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "says what GitHub gives the job, in minutes and in seconds, against the step's retries" \
+  "$(contains "$out" "job 'build' writes no .timeout-minutes., so GitHub gives it 360 minutes, 21600 s, and its step 'The large fetch, thirty times' holds retries taking 31500 s to exhaust")"
+check "says exactly what to write on the job" "$(contains "$out" 'Write .timeout-minutes: 526. or more on this job\.')"
+
+# The priced-comment clause reads a block to the last line of the file, and a file whose last line
+# is a comment with no newline after it ends the block there.
+echo "case: a workflow whose last line is a comment with no newline after it passes"
+root=$(fixture comment-at-end-of-file)
+{
+  cat <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the small fetch's 450 s: 1200 + 450 = 1650 s -> 28 min.
+    timeout-minutes: 28
+    steps:
+      - name: The small fetch
+        timeout-minutes: 8
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+  printf '    # The last line of this file, with no newline after it.'
+} > "$root/.github/workflows/case.yaml"
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+check "no traceback" "$(is "$(contains "$out" 'Traceback')" false)"
+
+# The derivation clause's header says a sum that does not add up is passed over rather than
+# refused, since a clause recomputing a total it cannot trust would be guessing. This is that sum.
+echo "case: a derivation whose sum does not add up is passed over"
+root=$(fixture job-derivation-bad-sum)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the small fetch's 450 s. 1200 + 450 = 2500 s -> 40 min.
+    timeout-minutes: 40
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# One refusal per job: a key under the sum its own comment states is told that, and not also the
+# sum this check recomputes, which the corrected derivation will state anyway.
+echo "case: a key under both its stated and its recomputed sum is refused once"
+root=$(fixture job-derivation-both-under)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus its slowest retried step alone — the small fetch, 450 s.
+    # 1200 + 450 = 1650 s -> 27 min.
+    timeout-minutes: 27
+    steps:
+      - name: The small fetch
+        timeout-minutes: 9
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a small asset" 60 -- curl -fsSL --max-time 60 -o a https://example.com/a
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the key under the sum its comment states" \
+  "$(contains "$out" "own comment derives 1200 + 450 = 1650 s, which that key does not strictly exceed")"
+check "and only once" "$(is "$(printf '%s\n' "$out" | grep -c 'own comment derives')" 1)"
+
+# The pricing clause passes over a job whose steps retry nothing: there is no arithmetic under its
+# key for a comment to price, and the tree holds such jobs.
+echo "case: a job whose steps retry nothing needs no price"
+root=$(fixture job-retries-nothing)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Say hello
+        timeout-minutes: 2
+        run: echo hello
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# A declaration two loops match is refused for that, once: its figure is wrong for one of the two
+# loops whatever it is, so its floor is not told about as well.
+echo "case: a declaration covering two loops and under a call's floor is refused once"
+root=$(fixture declaration-two-loops-below)
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml",
+                       "Cancel every run, then read every run", "gh api", 200,
+                       "a figure nobody derived"),'
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel every run, then read every run
+        timeout-minutes: 20
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
+          done <<<"$ids"
+          while read -r id; do
+            retry_fetch "the run $id" 30 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the entry for its two loops" "$(contains "$out" 'covers the loops at lines')"
+check "and not also for its floor" "$(is "$(contains "$out" 'writes 200 s, and one call')" false)"
+
+echo "case: a declaration under the floor of two of its calls names the first of them"
+root=$(fixture declared-arithmetic-two-floors)
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml",
+                       "Cancel and read every run the decision named", "gh api", 200,
+                       "a figure nobody derived"),'
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Cancel and read every run the decision named
+        timeout-minutes: 20
+        run: |
+          . .github/scripts/ci-retry.sh
+          while read -r id; do
+            retry_fetch "the cancel of run $id" 30 -- \
+              gh api --silent --method POST "repos/$GITHUB_REPOSITORY/actions/runs/$id/cancel"
+            retry_fetch "the run $id" 60 -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/$id"
+          done <<<"$ids"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "names the first call under the floor and its floor" \
+  "$(contains "$out" 'one call of that site at .github/workflows/case.yaml:11 takes 300 s')"
+
+# Two more of the derivation clause's stated limits, each pinned so that reading it starts or stops
+# in the harness: a derivation above the job's id, and one with words between its sum and arrow.
+# Both keys sit under the sum they state, and both pass, because this clause reads neither.
+echo "case: a derivation written above the job's id is not read by the derivation clause"
+root=$(fixture job-derivation-above-id)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  # Budget: 1200 s measured, plus the large fetch's 1050 s. 1200 + 1050 = 2250 s -> 30 min.
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+echo "case: a derivation with words between its sum and its arrow is not read as one"
+root=$(fixture job-derivation-words-between)
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    # Budget: 1200 s measured, plus the large fetch's 1050 s. 1200 + 1050 = 2250 s, of which
+    # this key carries the measured part -> 30 min.
+    timeout-minutes: 30
+    steps:
+      - name: The large fetch
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "a large asset" 180 -- curl -fsSL --max-time 180 -o b https://example.com/b
+YAML
+run_check "$root"
+check "exits 0" "$(is "$status" 0)"
+
+# The pricing clause passes over a job only where its retried steps cost nothing at all: a
+# declaration answering a site whose bound is unread writes that site's seconds outright, so a
+# retried step can cost one second, and its job is still a retried job that must price itself.
+echo "case: an unpriced job whose retries cost one declared second is refused"
+root=$(fixture job-prices-nothing-one-second)
+declare_entry "$root" '    DeclaredArithmetic(".github/workflows/case.yaml",
+                       "Read the run", "gh api", 1,
+                       "a figure that is the smallest a declaration can write"),'
+cat > "$root/.github/workflows/case.yaml" <<'YAML'
+name: Case
+on: [push]
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Read the run
+        timeout-minutes: 1
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the run" "$T" -- gh api "repos/$GITHUB_REPOSITORY/actions/runs/1"
+YAML
+run_check "$root"
+check "exits 1" "$(is "$status" 1)"
+check "refuses the job for its one second of retries" \
+  "$(contains "$out" "whose retries take 1 s to exhaust — and no comment block prices that key")"
+
+summary "check-download-retry.sh"

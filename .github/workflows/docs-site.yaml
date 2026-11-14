@@ -57,7 +57,15 @@ env:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    # Budget (the Budgets note of .github/ci-budgets.md): 1500 s, the 25 minutes
+    # this job carried, plus its slowest retried step alone — THE SETUP-BUN STEP, whose two
+    # `ci_tools_fetch` calls are 2562 s at this change's bound, above the Go module download's
+    # two calls at 2 x (5 x 180 + 150) = 2100 s, written as 2160 for the whole minute each
+    # takes, above the Playwright install's 1650 s, the workspace install's 1050 s and the
+    # ci-ok report's 600 s. The module download led that list while a `ci_tools_fetch` was
+    # 1482 s, and this comment kept naming it after the bound moved.
+    # 1500 + 2562 = 4062 s -> 68 min.
+    timeout-minutes: 68
     # The screenshots step boots Dispatch on the e2e harness, which needs a database it may
     # truncate.
     services:
@@ -76,7 +84,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: .github/scripts/ci-tools.sh is sourced
+      # in two of that action's steps - the second source's fetch of Bun and the digest check
+      # after it - and rule 8 of .github/scripts/check-download-retry.sh credits that file's
+      # declared 1281 s `ci_tools_fetch` to each of them, 2 x 1281 = 2562 s -> 43 min.
       - uses: ./.github/actions/setup-bun
+        timeout-minutes: 43
       # Astro runs on Node.js (22.12 or newer).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -91,10 +104,10 @@ jobs:
       # go-docs is a cache family of its own. This build compiles the daemon's legion command and
       # envoy's dispatch, broker and agent-secrets commands. envoy-e2e-local's go-envoy entry
       # holds the listener and natsd alone, so one key for both let whichever job saved first own
-      # it. ci.yaml's header says how every family is kept. This step restores go-docs in the form
-      # docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the prefix too, on
-      # main by the exact key alone. The save-cache input names the one caller that writes the
-      # entry, and that caller is docs-pages.yaml.
+      # it. ci-budgets.md's "Caches" says how every family is kept. This step restores go-docs
+      # in the form docs/solutions/github/join-a-job-to-the-ci-router.md gives: off main by the
+      # prefix too, on main by the exact key alone. The save-cache input names the one caller
+      # that writes the entry, and that caller is docs-pages.yaml.
       - id: go-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -103,7 +116,44 @@ jobs:
             ~/.cache/go-build
           key: go-docs-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ github.ref != 'refs/heads/main' && format('go-docs-{0}-', runner.os) || '' }}
-      - run: bun install --frozen-lockfile
+      # The modules this job's Go builds compile — docs/site/scripts/build-binaries.sh builds
+      # legion out of packages/daemon and four commands out of packages/envoy, for the generated
+      # reference pages and the screenshot harness — downloaded once and retried, so each build
+      # reads the module cache and never the proxy (dispatch://INFRA-1545, R1 and its D1: the
+      # retried unit is the download, never the build). Five bounded attempts through
+      # .github/scripts/ci-retry.sh, the last starting 150 s after the first.
+      #
+      # 180 s per attempt: cold `go mod download` runs of these two modules — an empty module
+      # cache, this repository at this commit — measured 81 s and 77 s on 2026-11-07, and the
+      # slowest cold run measured anywhere in this repository is packages/envoy/infra's 113 s,
+      # so the bound is 1.6 times that slowest measurement. It can be that tight where a tarball
+      # fetch's could not: an attempt the bound kills leaves what it fetched in the module cache,
+      # and the next attempt resumes from there. The cache restored above makes the common run
+      # far shorter.
+      - name: Download the Go modules the site's binaries compile
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: two calls, 2 x (5 x 180 + 150) = 2100 s, a whole number
+        # of minutes, so the budget is the next one strictly above it -> 36 min.
+        timeout-minutes: 36
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/daemon's Go modules" 180 -- go -C packages/daemon mod download
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
+      # The install retries: five bounded attempts through .github/scripts/ci-retry.sh, the last
+      # starting 150 s after the first, so a registry that refuses for a minute costs this job a
+      # wait rather than a red run (dispatch://INFRA-1545, R1). The step is named for the command
+      # it runs, which is the handle .github/scripts/ci_job_reads.py's bun_job cites it by.
+      #
+      # 180 s per attempt, the bound every Bun install of this repository's CI carries
+      # (dispatch://INFRA-1545): this install measured 20.70 s cold on a pod, against at most
+      # 11 s over 180 observations in the 20 most recent successful ci.yaml push runs on main,
+      # so the bound is over eight times the cold reading.
+      - name: bun install --frozen-lockfile
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Lint the docs site
         run: bun run lint
         working-directory: docs/site
@@ -115,6 +165,14 @@ jobs:
       - name: Build the Dispatch dashboard the screenshots show
         run: bun run build:web
         working-directory: packages/dispatch
+      # Chromium itself, from Playwright's CDN, through .github/scripts/ci-retry.sh for five
+      # bounded attempts, the last starting 150 s after the first.
+      #
+      # 300 s per attempt: this download measured at most 15 s across the 20 most recent
+      # successful ci.yaml push runs on main, which is a download the runner image's cache had
+      # already served; the same window measured a cold download of Chromium, WebKit and
+      # Firefox together at 634 s, so one cold browser is about 210 s. The bound is 20 times the
+      # measured maximum and above that cold figure.
       - name: Install Playwright Chromium
         # No apt in this step at all. Playwright's `chromium` entry in its ubuntu24.04-x64 table
         # adds no package this GitHub ubuntu-24.04 image lacks, so `--with-deps` installed only
@@ -128,8 +186,16 @@ jobs:
         # (docs/site/media/README.md), and fonts-liberation and fonts-noto-color-emoji are on
         # the image already. With the apt call goes this step's removal of the runner image's
         # chrome-stable apt source, which it carried only because that source's index
-        # intermittently failed `apt-get update` and took `--with-deps` down with it.
-        run: bunx playwright install chromium
+        # intermittently failed `apt-get update` and took `--with-deps` down with it. With it
+        # goes the separate apt step this branch had split off beside the download: the
+        # download below is the whole of this install, and it is the one call here R1 reaches.
+        #
+        # Its own retry arithmetic, and nothing unretried is left beside it: 5 x 300 + 150 =
+        # 1650 s -> 28 min, the next whole minute strictly above it.
+        timeout-minutes: 28
+        run: |
+          . "$GITHUB_WORKSPACE/.github/scripts/ci-retry.sh"
+          retry_fetch "Playwright's Chromium" 300 -- bunx playwright install chromium
         working-directory: docs/site
       - name: Take the screenshots
         run: bun run docs:media
@@ -197,6 +263,11 @@ jobs:
       # ci.yaml's docs job runs on a pull request and on a merge group alike, so the step is live
       # here; docs-pages.yaml's call passes no `ci-ok-changes`, and the step skips.
       - name: Report ci-ok when this job decides a merge-group run
+        # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+        # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+        # this step posts the required ci-ok check, and a budget that cuts it between those two
+        # ladders loses the check run rather than reporting a failure (ci-budgets.md's Budgets note).
+        timeout-minutes: 12
         if: always() && inputs.ci-ok-changes != ''
         uses: ./.github/actions/ci-ok-report
         with:

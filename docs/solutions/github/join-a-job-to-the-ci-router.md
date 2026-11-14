@@ -390,7 +390,9 @@ the fills live in workflows that run there.
 - The release workflows' Go builds (release.yaml's `legion_build`, release-envoy-infra.yaml's
   `build`) restore `go-daemon` and `go-envoy-infra` and save nothing, so they keep the prefix as
   `restore-keys` on main too: an entry they never save cannot grow.
-- `.github/actions/setup-bun` reads and writes its cache only on main; use it as it is.
+- `.github/actions/setup-bun` restores `~/.bun/bin` on every ref, keyed on the version `.bun-version` pins, and passes `no-cache: true` on every ref.
+  setup-bun then finds that binary, reads its `bun --revision`, takes it as an existing installation, and downloads nothing.
+  The action saves that `bun` family itself, on a push to main alone, which this workflow never runs on: `ci-caches.yaml`'s browsers job calls it on every one of those pushes. Use the action as it is.
 
 ## The merge queue runs the router too
 

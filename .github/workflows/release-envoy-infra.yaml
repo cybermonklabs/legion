@@ -59,7 +59,16 @@ jobs:
     # with it.
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 40
+    # Budget (the Budgets note of .github/ci-budgets.md): 2400 s, the 40 minutes
+    # this job carried, plus its slowest retried step alone — `Determine next version`, which
+    # runs .github/scripts/release-push.sh and so holds that script's leak-guard fetch at
+    # every one of its call sites, 6 call sites of one 450 s fetch = 2700 s, as the sibling
+    # release workflows word it, above install-pulumi's one `ci_tools_fetch` of 1281 s and
+    # above the Go module download's 5 x 180 + 150 = 1050 s. This comment named the module
+    # download while a `ci_tools_fetch` was 741 s and that script's fetch was written below
+    # the floor; both moved, and rule 8's job-derivation clause refused this key until it
+    # carried the larger. 2400 + 2700 = 5100 s -> 86 min.
+    timeout-minutes: 86
     permissions:
       contents: read
     outputs:
@@ -84,7 +93,36 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-infra-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: go-envoy-infra-${{ runner.os }}-
+      # The modules this job's Go commands read, downloaded once and retried before the first of
+      # them (dispatch://INFRA-1545, R1 and its D1: the retried unit is the download, never the
+      # build — a retried `go test` would run a failing test five times and call it a download).
+      # Five bounded attempts through .github/scripts/ci-retry.sh, the last starting 150 s after
+      # the first.
+      #
+      # Before "Determine next version", and the order is the point: that step's `go list -deps`
+      # reads the whole module graph, so with the download after it a cold run fetched every
+      # module there unretried and the retry protected nothing. The step carries no `if:` for
+      # the same reason — the output such a condition would read is written by the step below it
+      # — and it needs none: the version step compiles the module graph whether or not a version
+      # is cut.
+      #
+      # 180 s per attempt: a cold `go mod download` over this module's workspace — an empty
+      # module cache, this repository at this commit — measured 113 s on 2026-11-07, the slowest
+      # cold run measured anywhere in this repository (packages/daemon 81 s, packages/envoy
+      # 77 s), so the bound is 1.6 times it. It can be that tight where a tarball fetch's could
+      # not: an attempt the bound kills leaves what it fetched in the module cache, and the next
+      # attempt resumes from there. The restore above reads the go-envoy-infra family that
+      # .github/workflows/ci-caches.yaml fills on a push to main, so that cold figure is what a
+      # run whose restore misses pays, and a run that hits pays less.
+      - name: Download the Go modules this job compiles
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "envoy-infra's Go modules" 180 -- go -C packages/envoy/infra mod download
       - name: Determine next version
+        timeout-minutes: 46
         id: version
         run: |
           # The paths a version is cut from, as the build defines them: every directory of the
@@ -219,6 +257,9 @@ jobs:
       # is unpacked (.github/actions/install-pulumi).
       - name: Install the Pulumi CLI
         if: steps.version.outputs.skip != 'true'
+        # install-pulumi's own retry arithmetic: one `ci_tools_fetch` of the release tarball,
+        # 1281 s (the Budgets note of .github/ci-budgets.md) -> 22 min.
+        timeout-minutes: 22
         uses: ./.github/actions/install-pulumi
       # The schema the linux/amd64 plugin serves carries the version it was built with and names
       # the release this job creates as the place Pulumi downloads the plugin from: the download
@@ -250,6 +291,7 @@ jobs:
           path: assets/
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # Checks what build hands over, writes SHA256SUMS, tags the commit, attests build's archives and
@@ -263,7 +305,12 @@ jobs:
     # says; a skipped build gives `result == 'skipped'`, false.
     if: always() && needs.build.result == 'success' && needs.build.outputs.skip != 'true'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 12 call sites of one 450 s fetch = 5400 s, above every other retried step here.
+    # 600 + 5400 = 6000 s -> 101 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (91 min here).
+    timeout-minutes: 101
     # contents: write creates the GitHub release (`release-push.sh release`, below); id-token and
     # attestations: write are for the archives' provenance attestation (id-token is the Sigstore
     # signing certificate's OIDC token). The tag push uses the deploy key, not either scope.
@@ -291,6 +338,7 @@ jobs:
       # tag. publish then writes SHA256SUMS over them, for a consumer that pins an archive by digest,
       # and hands the tag and the explicit lists to the steps below.
       - name: Check build's archives and write SHA256SUMS
+        timeout-minutes: 46
         id: assets
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -318,6 +366,7 @@ jobs:
       # The only step that holds the deploy key. release-push.sh push-tag writes it to a directory
       # of its own, pushes the tag over SSH to GitHub's pinned host keys, and removes the key again.
       - name: Tag release
+        timeout-minutes: 91
         env:
           VERSION: ${{ needs.build.outputs.version }}
           TAG: ${{ steps.assets.outputs.tag }}
@@ -336,6 +385,7 @@ jobs:
         with:
           subject-path: ${{ steps.assets.outputs.subjects }}
       - name: Create GitHub release
+        timeout-minutes: 46
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.assets.outputs.tag }}

@@ -51,13 +51,21 @@ jobs:
     # Playwright base fetched. Its steps, as that job ran them: 1 s set-up, 7 s checkout, 1 s
     # crane, 0 s row, 0 s decide, 9 s buildx, 0 s login, 47 s build and push, 0 s tag and 1 s
     # record (one step here now), 2 s the second checkout, 0 s the ci-ok report, 6 s the post
-    # steps — 74 s of steps inside the 77 s the job took whole. One step carries a budget of
-    # its own, the build, at 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor; the job's is
-    # that budget plus the measured maximum of every step without one, the other 74 - 47 = 27 s,
-    # rounded up: 2 min + 27 s -> 3 min. A run whose row already names a served digest skips
+    # steps — 74 s of steps inside the 77 s the job took whole. The build step carries a budget
+    # of its own, 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor, and four more steps
+    # carry one each now, each for the retries it holds (the Budgets note of
+    # .github/ci-budgets.md). The job's own two terms are that 77 s measured
+    # maximum and its slowest retried step alone — install-crane's one `ci_tools_fetch`, which
+    # is 1281 s at this change's bound and so is above the record step's two `crane manifest`
+    # reads at 2 x (5 x 60 + 150) = 900 s, the ci-ok report's 600 s and the decide step's one
+    # `crane config` read of 450 s. The record step led that list while a `ci_tools_fetch` was
+    # 741 s. The job holds that step AND the
+    # 77 s measured above it, so its key is the two together, 77 + 1281 = 1358 s -> 23 min, one
+    # minute above the step's own 22: a job ceiling equal to a step's ceiling cuts that step
+    # before its budget can name the site, which rule 8 refuses since dispatch://INFRA-1545. A run whose row already names a served digest skips
     # the buildx, login and build steps and their post steps, 61 s of those 74, and is left
     # with about 13 s of work.
-    timeout-minutes: 3
+    timeout-minutes: 23
     # Job-level (not workflow-level): this file is a called workflow, and job-level concurrency
     # behaves identically for its two triggers, `workflow_call` and `workflow_dispatch`.
     # A pull request's runs share one group per PR number. A new head's run cancels the build of
@@ -103,7 +111,10 @@ jobs:
 
       # crane reads the published image's label for the publish decision below and writes the
       # pushed image's tag.
+      # install-crane's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+      # (the Budgets note of .github/ci-budgets.md) -> 22 min.
       - uses: ./.github/actions/install-crane
+        timeout-minutes: 22
 
       # Where this image lives and what the package already holds for it, read from
       # .github/ci-images.yaml at run time rather than written here: that file is where this
@@ -195,8 +206,10 @@ jobs:
       # (.github/ci-images.yaml says why). Any failure of that read — a digest the package does
       # not hold, an image with no such label, a registry that answered with an error — leaves
       # publish=true, so a read that did not happen builds and pushes rather than deciding.
+      # Its own retry arithmetic: the `crane config` read below, 5 x 60 + 150 = 450 s -> 8 min.
       - name: Decide whether to publish
         id: decide
+        timeout-minutes: 8
         env:
           REGISTRY: ${{ steps.row.outputs.registry }}
           ROW_DIGEST: ${{ steps.row.outputs.digest }}
@@ -206,11 +219,25 @@ jobs:
           why="no row of .github/ci-images.yaml is built from this Dockerfile yet, so the package holds no image this build can leave alone"
           if [ -n "$ROW_DIGEST" ]; then
             # crane's own stderr goes to the log, not into jq, so a failed read says why it
-            # failed; the pipeline's failure then leaves `carried` empty and publish true.
+            # failed; a read that did not happen leaves `carried` empty and publish true.
+            # The read is a command of its own rather than the left half of a pipeline: this
+            # step names no shell, so it runs under GitHub's `/usr/bin/bash -e {0}`, where a
+            # pipeline's status is its last command's alone and `crane config | jq` would exit
+            # 0 on a crane that read nothing (.github/scripts/check-download-retry.sh's rule
+            # 9). It retries through the one helper every download of this repository's CI
+            # uses, at the 60 s per attempt .github/scripts/mirror-ci-images.sh derives for
+            # this same `crane config` read of a config blob. The row names a digest the
+            # package serves, checked by .github/scripts/check-ci-images.sh, so what the
+            # retry answers is a registry that would not answer; the run where the package
+            # really holds nothing for this row pays the ladder's sleeps once and then
+            # publishes, which is what it would have done at once.
             # --platform is named for the reason rule 10 of .github/scripts/check-ci-images.sh
             # names it on this same read: a config belongs to one platform, this build pushes
             # linux/amd64 alone, and the three readers of this label must read the same image.
-            carried=$(crane config --platform linux/amd64 "$REGISTRY@$ROW_DIGEST" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
+            . .github/scripts/ci-retry.sh
+            config=$(retry_fetch "the config of $REGISTRY@$ROW_DIGEST" 60 -- \
+              crane config --platform linux/amd64 "$REGISTRY@$ROW_DIGEST") || config=""
+            carried=$(printf '%s' "$config" | jq -r '.config.Labels["legion.browser-image.source-sha256"] // ""' || true)
             if [ "$carried" = "$SOURCE" ]; then
               publish=false
               why="$REGISTRY@$ROW_DIGEST, the digest this row names, was built from this recipe ($SOURCE), so there is nothing to push"
@@ -273,7 +300,8 @@ jobs:
         id: build
         if: steps.decide.outputs.publish == 'true'
         # 47 s measured on that same job, cold: no cache entry to read, the whole apt set and
-        # the Playwright base fetched. 47 s x 1.15 = 54 s -> 1 min -> the two-minute floor.
+        # the Playwright base fetched. 47 s x 1.15 = 54 s, which is -> 1 min, and the budget
+        # floor of this repository takes it to -> 2 min.
         timeout-minutes: 2
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         env:
@@ -341,14 +369,25 @@ jobs:
       # else reads the image. The docker/login-action step above wrote the docker config crane
       # reads, so this push needs no login of its own, and it runs only where this run pushed:
       # the image the row names already carries its tag.
+      # Its own retry arithmetic: the two `crane manifest` reads below, 2 x (5 x 60 + 150) =
+      # 900 s -> 16 min.
       - name: Tag and record the image this run leaves
         id: record
+        timeout-minutes: 16
         env:
           REGISTRY: ${{ steps.row.outputs.registry }}
           ROW_DIGEST: ${{ steps.row.outputs.digest }}
           BUILT_DIGEST: ${{ steps.build.outputs.digest }}
           PUBLISH: ${{ steps.decide.outputs.publish }}
         run: |
+          # The two `crane manifest` reads below retry through the one helper every download
+          # of this repository's CI uses: five attempts, the last starting 150 s after the
+          # first, each under `timeout 60`. 60 s per attempt is the bound
+          # .github/scripts/mirror-ci-images.sh derives for a read of image metadata, which a
+          # manifest is — a few kilobytes against the smallest download this repository
+          # measures, install-changie's tarball, at most 1 s. `crane tag` below writes rather
+          # than reads and is this run's own push, which the push step already retried.
+          . .github/scripts/ci-retry.sh
           digest=$BUILT_DIGEST
           if [ "$PUBLISH" != "true" ]; then
             digest=$ROW_DIGEST
@@ -370,12 +409,13 @@ jobs:
             crane tag "$ref" "$tag"
             echo "tagged $ref as $REGISTRY:$tag"
           fi
-          manifest=$(crane manifest "$ref")
+          manifest=$(retry_fetch "the manifest of $ref" 60 -- crane manifest "$ref")
           # An index names one manifest per platform and holds no layers of its own, so where the
           # push left one, the amd64 child is the manifest whose layers this image is.
           child=$(jq -r 'first(.manifests[]? | select(.platform.os == "linux" and .platform.architecture == "amd64") | .digest) // ""' <<<"$manifest")
           if [ -n "$child" ]; then
-            manifest=$(crane manifest "$REGISTRY@$child")
+            manifest=$(retry_fetch "the manifest of $REGISTRY@$child" 60 -- \
+              crane manifest "$REGISTRY@$child")
           fi
           layers=$(jq '.layers | length' <<<"$manifest")
           size=$(jq '[.layers[].size] | add' <<<"$manifest")
@@ -415,8 +455,14 @@ jobs:
           ref: ${{ github.sha }}
           sparse-checkout: .github
           persist-credentials: false
+      # Its own retry arithmetic: ci-ok-report.sh's `gh api` read and post-check-run.sh's POST
+      # of the check run, 2 x (5 x 30 + 150) = 600 s. 720 s and not rule 8's minimum of 660 s:
+      # this step posts the required ci-ok check, and a budget that cuts it between those two
+      # ladders loses the check run rather than reporting a failure (the Budgets note of
+      # .github/ci-budgets.md).
       - name: Report ci-ok when this is the run's last job
         if: always()
+        timeout-minutes: 12
         uses: ./.github/actions/ci-ok-report
         with:
           job: browser-image

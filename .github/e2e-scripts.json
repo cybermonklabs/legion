@@ -9,7 +9,20 @@
     "`apt` is what the job installs for that script alone, `bun` whether it needs bun and this",
     "repository's node_modules, `evidence_variable` the environment variable the script reads for",
     "its evidence directory (empty where it takes none and keeps its work directory instead), and",
-    "`timeout_minutes` the job's limit, measured from the script's header with headroom."
+    "`timeout_minutes` the job's limit: the script's own measured duration with headroom, as its",
+    "header gives it, plus the retry arithmetic of the slowest retried step the row selects, as",
+    "ci-budgets.md's Budgets note sets it out. Which retried step that is, is the row's own: a row",
+    "whose `jj` is true carries install-jj's two `ci_tools_fetch` calls and its `mise install`",
+    "of the jj release, 2562 + 450 = 3012 s; a row whose `jj` is false and whose `bun` is true",
+    "carries setup-bun's two `ci_tools_fetch` calls, 2 x 1281 = 2562 s; and a row with neither,",
+    "which is a row carrying `apt` alone, carries the apt steps' 625 + 775 = 1400 s. The",
+    "workspace install a `bun` row also runs, 5 x 180 + 150 = 1050 s, is under all three, so it",
+    "sizes no row. Each figure is the one e2e.yaml writes beside that step's own",
+    "`timeout-minutes`. A budget under the step its row selects would cut a retry part way",
+    "rather than let the step fail naming itself, and .github/scripts/check-download-retry.sh's",
+    "rule 8 cannot say so for these rows: the proof job's limit is the expression",
+    "`matrix.timeout_minutes`, which that check reads no number out of, so every row here is",
+    "derived by hand and moves when one of those steps is re-priced."
   ],
   "hosted": [
     {
@@ -28,7 +41,7 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "CHILD_ADOPTION_EVIDENCE_DIR",
-      "timeout_minutes": 25,
+      "timeout_minutes": 76,
       "why_hosted": "Run it from a checkout on a Linux host with go and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/child-adoption.sh; CI's service satisfies it, and this script starts none",
       "jj": true
     },
@@ -38,8 +51,8 @@
       "apt": [],
       "bun": false,
       "evidence_variable": "CONFLICT_NO_TAKEOVER_EVIDENCE_DIR",
-      "timeout_minutes": 25,
-      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and the script starts no container, installing the nats-server it needs with go install",
+      "timeout_minutes": 76,
+      "why_hosted": "Run it from a checkout on a Linux host with go, awk and python3, as LEGION_TEST_PG_DSN=... bash scripts/e2e/conflict-no-takeover.sh; CI's service satisfies it, and this script starts none",
       "jj": true
     },
     {
@@ -48,7 +61,7 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 25,
+      "timeout_minutes": 68,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     },
@@ -58,7 +71,7 @@
       "apt": [],
       "bun": true,
       "evidence_variable": "HANDOFF_RECORDS_EVIDENCE_DIR",
-      "timeout_minutes": 25,
+      "timeout_minutes": 76,
       "why_hosted": "Run it from a checkout on a Linux host with go, bun (after bun install) and awk, as LEGION_TEST_PG_DSN=... bash scripts/e2e/handoff-records.sh; CI's pgvector service is the server it needs, its role creates Dispatch's database there, it builds and starts Dispatch and the daemon itself, and it reaches no outside service; a run takes two to four minutes",
       "jj": true
     },
@@ -78,7 +91,7 @@
       "apt": ["tmux"],
       "bun": false,
       "evidence_variable": "",
-      "timeout_minutes": 20,
+      "timeout_minutes": 44,
       "why_hosted": "The daemon refuses to start without tmux on PATH, and CI's tmux is the runner's apt binary; with LEGION_E2E_PG_DSN set the script starts no container of its own, which is how ci.yaml's test job already runs it",
       "jj": false
     },
@@ -88,7 +101,7 @@
       "apt": ["postgresql-client"],
       "bun": true,
       "evidence_variable": "",
-      "timeout_minutes": 20,
+      "timeout_minutes": 63,
       "why_hosted": "DATABASE_URL is required and must name a loopback host; its prerequisite loop takes go, bun, curl, psql and openssl, and it starts no container",
       "jj": false
     }

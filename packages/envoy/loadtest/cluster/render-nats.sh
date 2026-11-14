@@ -6,7 +6,7 @@
 #
 # It downloads chart nats/nats 2.15.1 from https://nats-io.github.io/k8s/helm/charts/, refuses an
 # archive whose sha256 is not the chart index's b209c627…58cc1 (the value INFRA-549 records),
-# renders it with `helm template --skip-tests` (helm v3.20.2 through go run) and nats-values.yaml,
+# renders it with `helm template --skip-tests` (helm v3.20.2, installed with `go install`) and nats-values.yaml,
 # with each image pinned to the digest a registry manifest read gives its tag, and refuses a render
 # that holds a kind the load-test Role cannot write or an image not pinned by digest. The output
 # keeps the placeholders __NAMESPACE__, __STORAGE_CLASS__ and __RUN_ID__, which cluster.sh fills.
@@ -19,6 +19,11 @@ set -euo pipefail
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 # shellcheck source=packages/envoy/loadtest/cluster/cluster.sh
 source "$here/cluster.sh"
+# Every fetch below retries at this repository's floor through the one helper
+# (dispatch://INFRA-1545): the chart index, the chart archive, and the install of helm, which
+# builds from helm's own go.mod and reads no go.work, so no workspace download covers it.
+# shellcheck source=.github/scripts/ci-retry.sh
+source "$here/../../../../.github/scripts/ci-retry.sh"
 
 CHART_REPO=https://nats-io.github.io/k8s/helm/charts
 CHART_VERSION=2.15.1
@@ -54,10 +59,12 @@ done
 tmp=$(mktemp -d "${TMPDIR:-/tmp}/render-nats.XXXXXX")
 trap 'rm -rf -- "$tmp"' EXIT
 
-curl -fsSL --max-time 60 -o "$tmp/index.yaml" "$CHART_REPO/index.yaml" || die "could not read $CHART_REPO/index.yaml"
+retry_fetch "the nats chart index" 60 -- \
+  curl -fsSL -o "$tmp/index.yaml" "$CHART_REPO/index.yaml" || die "could not read $CHART_REPO/index.yaml"
 url=$(grep -oE "https://[^[:space:]\"']+/nats-$CHART_VERSION\.tgz" "$tmp/index.yaml" | head -n1)
 [ -n "$url" ] || die "$CHART_REPO/index.yaml lists no nats-$CHART_VERSION.tgz"
-curl -fsSL --max-time 120 -o "$tmp/nats.tgz" "$url" || die "could not download $url"
+retry_fetch "the nats chart archive" 60 -- \
+  curl -fsSL -o "$tmp/nats.tgz" "$url" || die "could not download $url"
 sha=$(sha256_of "$tmp/nats.tgz")
 [ "$sha" = "$CHART_SHA256" ] || die "$url has sha256 $sha, not $CHART_SHA256; refusing it"
 
@@ -77,7 +84,11 @@ for entry in "${IMAGES[@]}"; do
   pins+=("$ref -> $pinned")
 done
 
-(cd -- "$tmp" && go run "$HELM" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
+# What retries is the download and never the work after it (.github/ci-budgets.md): helm comes
+# down in its own retried install, and the template that follows runs once.
+GOBIN="$tmp/bin" retry_fetch "helm ${HELM##*@}" 180 -- go install "$HELM" ||
+  die "could not install helm $HELM"
+(cd -- "$tmp" && "$tmp/bin/helm" template nats nats.tgz --skip-tests -f "$here/nats-values.yaml" "${sets[@]}") >"$tmp/rendered.yaml" ||
   die "helm template failed"
 
 while read -r kind; do

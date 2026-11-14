@@ -1797,6 +1797,48 @@ run_check "$root"
 check "and reads the .yml spelling GitHub reads too" \
   "$(contains "$out" "::error file=.github/workflows/scan.yml::")"
 
+echo "case: every workflow file stays under the size GitHub starts a run from"
+# The size GitHub needs to start a run, in the rule that reads every workflow of the directory
+# rather than in a case of this suite alone: the file that grows is not the file whose filter
+# would select the check, so a pull request growing only dispatch-browser.yaml would never have
+# run the case below. The fixture writes a workflow of its own past the limit and reads the
+# message for the file and its size, because a run with zero jobs gives a reader nothing else.
+root=$(fixture workflow-size)
+run_check "$root"
+check "passes while every workflow is under the limit" "$(is "$status" 0)"
+{
+  printf 'name: Fat\non: [pull_request]\njobs:\n  fat:\n    runs-on: ubuntu-24.04\n    steps:\n'
+  printf '      - run: echo %s\n' "$(head -c 500000 /dev/zero | tr '\0' 'x')"
+} > "$root/.github/workflows/fat.yaml"
+run_check "$root"
+check "fails once one is over it" "$(is "$status" 1)"
+fat_size=$(wc -c < "$root/.github/workflows/fat.yaml")
+check "naming the file, its size and the limit" \
+  "$(contains "$out" "::error file=.github/workflows/fat.yaml::.github/workflows/fat.yaml is $fat_size bytes, over the 500000")"
+check "and what a run over it does" \
+  "$(contains "$out" "creates a run with zero jobs that concludes failure at once")"
+mv "$root/.github/workflows/fat.yaml" "$root/.github/workflows/fat.yml"
+run_check "$root"
+check "reading the .yml spelling GitHub reads too" \
+  "$(contains "$out" "::error file=.github/workflows/fat.yml::")"
+
+# For .github/scripts/check-ci-filters.test.sh, beside "every workflow file stays under the size
+# GitHub starts a run from". The tester drove it at 3abd0ef6f3f8 (dispatch://INFRA-1545, round 33):
+# it passes there, it fails when escape_property returns its value unchanged, and the branch's old
+# plain-string append fails it with AttributeError in print_annotation.
+echo "case: a workflow over the size limit whose file name holds % : , and ##[ is escaped"
+root=$(fixture workflow-size-unsafe-name)
+unsafe='fat%25:x,y##[warning]z.yaml'
+{
+  printf 'name: Fat\non: [pull_request]\njobs:\n  fat:\n    runs-on: ubuntu-24.04\n    steps:\n'
+  printf '      - run: echo %s\n' "$(head -c 500000 /dev/zero | tr '\0' 'x')"
+} > "$root/.github/workflows/$unsafe"
+run_check "$root"
+check "fails" "$(is "$status" 1)"
+size=$(wc -c < "$root/.github/workflows/$unsafe")
+expected="::error file=.github/workflows/fat%2525%3Ax%2Cy%23%23%5Bwarning]z.yaml::.github/workflows/fat%2525:x,y%23%23%5Bwarning]z.yaml is $size bytes, over the 500000"
+check "the size refusal carries the escaped file property and message" "$(contains "$out" "$expected")"
+
 # ci_job_reads.py builds envoy-go's plain step - the tests a race build cannot run at all or at
 # full size - by reading packages/envoy's own source rather than from a list a table could hold,
 # so the cases below run that walk itself, over a tree of this test's making and a lane of its
@@ -2025,5 +2067,31 @@ PY
 )
 check "the guide's list and the label's gates are the same set" \
   "$(is "$mismatch" "")"
+
+echo "case: every workflow file is small enough for GitHub to start a run"
+# A workflow file over GitHub's documented limit starts NO run, and the failure is silent exactly
+# where a reader looks for it: the run is created, it holds zero jobs, every required check is
+# ABSENT rather than red, and the only words GitHub gives are "This run likely failed because of a
+# workflow file issue". https://docs.github.com/actions/reference/limits, "Workflow file size":
+# "Each workflow file in the .github/workflows directory must be 500 KB or smaller to trigger a
+# run."
+#
+# Measured on this branch, which grew .github/workflows/ci.yaml by about 150 KB of budget
+# comments: at 0ddb1151db30 that file was 501,500 bytes and run 42710088044 ran the whole lane,
+# ci-ok included; at e6d27187f974, the forward merge of main's 909a79b8cb9e, it was 525,100 bytes
+# and run 42739729814 reported that message with zero jobs and no check of ci.yaml at all. So the
+# threshold this repository has met lies between those two sizes, and 500,000 bytes is the figure
+# the documentation states and the only one a reader can cite. A file that passes this case by a
+# few hundred bytes is one forward merge from stopping CI again, so the margin is the point.
+limit=500000
+oversized=""
+for workflow in "$script_dir"/../workflows/*.yaml; do
+  size=$(wc -c < "$workflow")
+  if [ "$size" -gt "$limit" ]; then
+    oversized="$oversized${workflow##*/} is $size bytes, over $limit; "
+  fi
+done
+check "no workflow file is over the 500 KB that starts no run at all" \
+  "$(is "$oversized" "")"
 
 summary "check-ci-filters.sh holds each filter to its job's Go closure, its rules and its table"

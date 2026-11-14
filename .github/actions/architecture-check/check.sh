@@ -11,7 +11,8 @@
 #          $RUNNER_TEMP/architecture-check/bin/architecture-check, with its module cache in
 #          $RUNNER_TEMP/architecture-check/mod and its build cache in
 #          $RUNNER_TEMP/architecture-check/build, the two directories the action's cache steps
-#          restore and save. It exits with go build's status.
+#          restore and save. It downloads the modules first, retried, and exits with the
+#          retry's status when every attempt failed, and with go build's otherwise.
 #   run    Runs that binary over ARCHITECTURE_CHECK_PATH, resolved against GITHUB_WORKSPACE (an
 #          absolute path stays as it is), with --allow-empty when ARCHITECTURE_CHECK_ALLOW_EMPTY
 #          is `true`. The binary's standard error goes to the log, and its standard output to
@@ -69,10 +70,23 @@ build() {
   #   runner cannot run.
   # - GOMODCACHE and GOCACHE: the action's own caches, so an entry holds this build alone and
   #   never the caller's.
-  env -u GOOS -u GOARCH \
-    GOWORK=off GOTOOLCHAIN=local GOFLAGS= GOENV=off \
-    GOMODCACHE="$work/mod" GOCACHE="$work/build" \
+  # The build reads its modules from the action's own GOMODCACHE, which a miss of the action's
+  # cache leaves empty, and a caller's own retried `go mod download` fills another cache, so the
+  # build would fetch every module once and unretried. The download comes first, under the same
+  # settings, through the one retry helper at the module bound
+  # (.github/scripts/ci-retry.sh, at this action's own repository root, which GitHub fetches whole
+  # for a caller in another repository too), and the build then fetches nothing. Main's #3994
+  # added this build; dispatch://INFRA-1545 retried its download; dispatch://INFRA-2648 owns
+  # teaching check-download-retry.sh to read a private module cache.
+  (
+    unset GOOS GOARCH
+    export GOWORK=off GOTOOLCHAIN=local GOFLAGS= GOENV=off
+    export GOMODCACHE="$work/mod" GOCACHE="$work/build"
+    # shellcheck source=../../scripts/ci-retry.sh
+    . "$GITHUB_ACTION_PATH/../../scripts/ci-retry.sh"
+    retry_fetch "the architecture-check command's Go modules" 180 -- go mod download
     go build -buildvcs=false -o "$binary" ./cmd/architecture-check
+  )
 }
 
 run() {

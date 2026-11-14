@@ -48,8 +48,12 @@ on:
 jobs:
   bypass-check:
     runs-on: ubuntu-24.04
-    # The checkout, two API reads at the push's head, and at most one dispatch.
-    timeout-minutes: 10
+    # The checkout, two API reads at the push's head, and at most one dispatch: 600 s, the
+    # 10 minutes that gives, plus this job's slowest retried step alone, as ci-budgets.md's Budgets
+    # note derives one — the one `run:` step below, whose three retried calls are
+    # 3 x (5 x 30 + 150) = 900 s, a whole number of minutes, so that step's own budget takes one
+    # more and this job takes it too. 600 + 960 = 1560 s -> 27 min, the whole minute above a sum that is itself a whole number of minutes.
+    timeout-minutes: 27
     # The dispatch of ci.yaml needs `actions: write`, and `gh run list` needs no more than that;
     # nothing here needs another scope. The checkout needs no `contents: read`, because this
     # repository is public and GitHub serves a public repository's git data to any valid token,
@@ -80,18 +84,33 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ github.event.after }}
           HEAD_MESSAGE: ${{ github.event.head_commit.message }}
+        # Its own retry arithmetic, so an exhausted read fails this step by name rather than
+        # being cut part way by the job: the run list, the check-runs read and the dispatch, each
+        # 5 x 30 + 150 = 300 s, 900 s together, a whole number of minutes, so the budget is the
+        # next one strictly above it -> 16 min.
+        timeout-minutes: 16
         run: |
+          . .github/scripts/ci-retry.sh
           # The merge-group runs at the push's head. `--workflow ci.yaml` is what holds the list
           # to this repository's router; the decision reads each run's headSha itself, so a run
-          # this filter returned for another commit is no run of this head.
-          RUNS=$(gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
+          # this filter returned for another commit is no run of this head. It retries at the
+          # same 30 s an attempt as the check-runs read below, and for the same reason: a
+          # refusal here leaves the decision reading an empty list and starting nothing.
+          RUNS=$(retry_fetch "the head's merge-group runs" 30 -- \
+            gh run list --repo "$GITHUB_REPOSITORY" --workflow ci.yaml --event merge_group \
             --commit "$HEAD_SHA" --limit 20 --json conclusion,headSha,workflowName)
           export RUNS
           # filter=all, because the default returns one check run per name and a commit can carry
           # two: a failing ci-ok from the run whose job failed, and a passing one from a later run
           # of the same group. per_page=100, because the default page holds the 30 newest check
           # runs of the commit, and a commit the queue tested more than once can carry more.
-          CI_OK=$(gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
+          #
+          # The read retries, at the 30 s an attempt this repository's CI gives one page of a
+          # REST route (ci-budgets.md's Retries note): a refusal here would otherwise leave the
+          # decision reading an empty list and starting nothing, which is the one outcome this
+          # backstop exists to prevent.
+          CI_OK=$(retry_fetch "the head's ci-ok check runs" 30 -- \
+            gh api "repos/$GITHUB_REPOSITORY/commits/$HEAD_SHA/check-runs?check_name=ci-ok&filter=all&per_page=100" \
             --jq '[.check_runs[] | {name, conclusion}]')
           export CI_OK
 
@@ -109,7 +128,26 @@ jobs:
 
           while read -r act sha; do
             case $act in dispatch) ;; *) continue ;; esac
-            gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+            # The dispatch retries too: it is the act this whole backstop exists to perform, and
+            # a 502 on it would leave the untested commit on main with no run at all. It is a
+            # write, so a repeat is a cost rather than nothing: a dispatch GitHub accepted and
+            # then failed to answer is retried into a second run of ci.yaml on the same tip.
+            # Read ci.yaml's own `concurrency:` block for what that costs: off a pull request
+            # the group is `ci-<sha>` and `cancel-in-progress` is false, so the second run
+            # queues behind the first rather than running beside it or cancelling it. The cost
+            # is therefore the same tree tested twice in sequence, and never a run that was
+            # about to pass being cancelled. The case has two branches and no third, so the
+            # retry is harmless in both: if the first dispatch landed, the retry queues behind
+            # it and costs a second run of the same tree; if it did not land, which is the
+            # failure this backstop exists for, the retry is the only run there is. It either
+            # costs a run or supplies the one that was missing. This is why a write is retried
+            # here where dispatch://INFRA-1544
+            # excepts a mutation from its own ring: that non-goal is about a call whose repeat
+            # is not safe, and this call's repeat is benign while its failure mode is the
+            # absence the backstop exists to prevent. The loop is over the acts the decision
+            # wrote, not over the attempts: the attempts are the helper's.
+            retry_fetch "the ci.yaml dispatch" 30 -- \
+              gh workflow run ci.yaml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
             echo "::notice::$sha reached $GITHUB_REF_NAME with no passing merge-group ci-ok, so ci.yaml was started on $GITHUB_REF_NAME, whose tip contains it"
             {
               echo

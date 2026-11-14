@@ -139,6 +139,11 @@ jobs:
       # The two shapes IMAGE_FROM covers in the real tree, so this fixture holds its entries
       # to a command each, as the check demands.
       - run: docker run --rm "\$ENVOY_SMOKE_IMAGE" ls
+      # The fourth shape: the download-retry-images job pulls every base image of the three
+      # Dockerfiles by reading the file it wrote from their FROM lines, which is the ci.yaml
+      # `image` entry of IMAGE_FROM (dispatch://INFRA-1545).
+      - run: |
+          while read -r image; do docker pull "\$image"; done < "\$RUNNER_TEMP/base-images"
 YAML
   cat > "$root/.github/actions/pull-test-images/action.yml" <<'YAML'
 name: Pull the images tests start

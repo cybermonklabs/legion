@@ -44,12 +44,14 @@
 # but a success is a success there, so ci-ok.sh's verdict is failure, which is right: a selected
 # job that did not succeed fails ci-ok, and the group this run tests cannot merge.
 #
-# A jobs read GitHub refuses three times records every job as `unread`, which is no success
+# A jobs read GitHub refuses every attempt records every job as `unread`, which is no success
 # either, and the verdict goes up all the same: it is failing whatever those jobs go on to do, and
 # waiting for a read this job cannot make would leave the group with no ci-ok at all until
 # GitHub's 180-minute check timeout took its pull request out of the queue. Every read here, and
-# the post, is retried on gh-read.sh's one ladder, whose GH_RETRY_SECONDS is the tests' knob for
-# the delay; three refusals of the post fail the step with nothing posted, and the run's other
+# the post, goes through .github/scripts/ci-retry.sh, the one retry every download and every API
+# call of this repository's CI makes (dispatch://INFRA-1545, R1 and R2): five attempts, each
+# bounded at 30 s, the last starting 150 s after the first. Five refused attempts of the post
+# fail the step with nothing posted, and the run's other
 # jobs run on — the ci-ok job then posts the verdict at the end of the run, unless
 # .github/workflows/dequeued.yaml force-cancels the run first, which leaves every `if: always()`
 # step skipped.
@@ -80,8 +82,8 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 workflow=${CI_OK_WORKFLOW:-$script_dir/../workflows/ci.yaml}
-# shellcheck source=.github/scripts/gh-read.sh
-source "$script_dir/gh-read.sh"
+# shellcheck source=.github/scripts/ci-retry.sh
+. "$script_dir/ci-retry.sh"
 for input in GH_TOKEN JOB JOB_STATUS CHANGES EVENT HEAD_SHA GITHUB_REPOSITORY GITHUB_RUN_ID GITHUB_SERVER_URL; do
   if [ -z "${!input:-}" ]; then
     echo "::error::ci-ok-report.sh needs $input in its environment"
@@ -148,13 +150,30 @@ def live($job): [mine($job)[] | select(.status != "completed") | .status] | firs
 + ([$always[] | select(. != "changes") | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 + ([$map | keys_unsorted[] | {key: ., value: {result: (ended(.) // live(.))}}] | from_entries)
 JQ
-if jobs=$(gh_read gh api --paginate \
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+# The run's jobs, read once. The read goes through retry_fetch: five attempts, each bounded at
+# 30 s, the last starting 150 s after the first. The loop that used to stand here, and the
+# second ladder the ci-ok scripts kept beside it, were each a copy of that helper, which is
+# what dispatch://INFRA-1545's R2 refuses: one file holds the attempts for all of CI.
+#
+# gh writes into a file rather than into a variable, and the redirection is this shell's own,
+# applied once: the helper buffers each attempt's output and prints the successful attempt's
+# alone, so a refused attempt's body — which gh copies to standard output as it copies a good
+# one's — reaches neither this file nor the log.
+#
+# 30 s per attempt: this is a JSON read of one REST route, which measured about 3 s over 378
+# observations in the 20 most recent successful ci.yaml push runs on main, so the bound is ten
+# times what the call takes. This read is the dominant adder in the report step's budget, and
+# that is why the bound is the call's own size rather than a round number above it
+# (dispatch://INFRA-1545).
+if retry_fetch "the run's job list" 30 -- gh api --paginate \
   "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" \
-  --jq '.jobs[] | {name, status, conclusion}'); then
-  needs=$(jq -n --argjson jobs "$(jq -s . <<<"$jobs")" --argjson changes "$CHANGES" \
+  --jq '.jobs[] | {name, status, conclusion}' > "$work/jobs"; then
+  needs=$(jq -n --argjson jobs "$(jq -s . "$work/jobs")" --argjson changes "$CHANGES" \
     --argjson map "$selected_by" --argjson always "$always_run" "$program")
 else
-  echo "::warning::GitHub refused this run's job list three times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
+  echo "::warning::GitHub refused this run's job list five times, and this merge-group run is already decided: every other job is read as unread, because this run's verdict is failing whatever those jobs go on to do and a group with no ci-ok at all holds the queue for 180 minutes"
   needs=$(jq -n --argjson changes "$CHANGES" --argjson map "$selected_by" --argjson always "$always_run" \
     '{changes: $changes}
      + ([$always[] | select(. != "changes") | {key: ., value: {result: "unread"}}] | from_entries)
@@ -163,8 +182,9 @@ fi
 # This job's own result, which the jobs route cannot give while this step is running.
 needs=$(jq --arg job "$JOB" --arg status "$JOB_STATUS" '.[$job].result = $status' <<<"$needs")
 
-summary=$(mktemp)
-trap 'rm -f "$summary"' EXIT
+# Under $work, so the one EXIT trap above removes it: a second `trap … EXIT` would replace that
+# one and leave the directory behind.
+summary="$work/summary"
 status=0
 verdict=$(NEEDS=$needs EVENT=$EVENT SELECTED_BY=$selected_by ALWAYS_RUN=$always_run \
   PULL_REQUEST_ONLY=$pull_request_only "$script_dir/ci-ok.sh" 2>&1) || status=$?

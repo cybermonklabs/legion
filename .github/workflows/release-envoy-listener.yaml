@@ -130,7 +130,12 @@ jobs:
   # tripwire last, as in build, docker and release_build.
   targets:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     permissions:
       contents: read
     outputs:
@@ -153,12 +158,18 @@ jobs:
             echo "envoy_image=$image"
           } >> "$GITHUB_OUTPUT"
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   build:
     needs: targets
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     # Checks out and uploads; nothing here writes to the repository or a registry.
     permissions:
       contents: read
@@ -170,11 +181,41 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 43
+      # The install retries: five bounded attempts through .github/scripts/ci-retry.sh, the last
+      # starting 150 s after the first. 180 s per attempt, the bound every Bun install of this
+      # repository's CI carries (dispatch://INFRA-1545): this install measured 20.70 s cold on a
+      # pod, against at most 11 s over 180 observations in the 20 most recent successful ci.yaml
+      # push runs on main.
+      - name: Install dependencies
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: packages/envoy/go.mod
+      # The modules the build below compiles, downloaded once and retried, so the build itself
+      # reads the module cache and never the proxy (dispatch://INFRA-1545, R1 and its D1: the
+      # retried unit is the download, never the build).
+      #
+      # 180 s per attempt: a cold `go mod download` of packages/envoy — an empty module cache,
+      # this repository at this commit — measured 77 s on 2026-11-07, and the slowest cold run
+      # measured anywhere in this repository is packages/envoy/infra's 113 s, so the bound is
+      # 1.6 times that slowest measurement. It can be that tight where a tarball fetch's could
+      # not: an attempt the bound kills leaves what it fetched in the module cache, and the next
+      # attempt resumes from there.
+      - name: Download the Go modules the build compiles
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       - name: Generate Go contracts
         run: bun run gen:go
         working-directory: packages/contracts
@@ -193,6 +234,7 @@ jobs:
           name: legion-envoy-${{ matrix.arch }}
           path: packages/envoy/legion-envoy-${{ matrix.arch }}.tar.gz
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # One leg per platform, each on a runner of that architecture, so no build runs under emulation
@@ -215,7 +257,17 @@ jobs:
           - arch: arm64
             runner: ubuntu-24.04-arm
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 80
+    # Budget (the Budgets note of .github/ci-budgets.md): 4800 s, the 80 minutes
+    # this job carried, plus its slowest retried step alone — `Check this job holds no
+    # credential (tripwire)`, which runs .github/scripts/release-push.sh and so holds that
+    # script's leak-guard fetch at every one of its call sites, 6 call sites of one 450 s
+    # fetch = 2700 s, as the `build` job of this file words it, above setup-bun's two
+    # `ci_tools_fetch` calls at 2562 s and above the Go module download and the workspace
+    # install at 5 x 180 + 150 = 1050 s each. 4800 + 2700 = 7500 s -> 126 min.
+    # THE REVIEWER'S EIGHT DID NOT HOLD THIS ONE: rule 8's job-derivation clause found it,
+    # because it reads the step arithmetic this check computes rather than the figures a
+    # comment names (dispatch://INFRA-1545, round 28).
+    timeout-minutes: 126
     # Builds and pushes images to ghcr.io; nothing here writes to the repository.
     permissions:
       contents: read
@@ -249,11 +301,32 @@ jobs:
           # setup-go-Linux-arm64 Actions-cache entry of about 0.5–1 GB, against INFRA-490's target
           # of an Actions cache under 9 GB.
           cache: ${{ matrix.arch == 'amd64' }}
+      # Its own retry arithmetic, which is the action's: two `ci_tools_fetch` calls,
+      # 2 x 1281 = 2562 s (the Budgets note of .github/ci-budgets.md) -> 43 min.
       - uses: ./.github/actions/setup-bun
-      - run: bun install --frozen-lockfile
+        timeout-minutes: 43
+      # Retried as the build job's install is, and bounded as it is: 180 s per attempt, against
+      # 20.70 s cold on a pod and a measured maximum of 11 s over 180 observations.
+      - name: Install dependencies
+        # Its own retry arithmetic: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "the workspace's dependencies" 180 -- bun install --frozen-lockfile
       - name: Generate Go contracts
         run: bun run gen:go
         working-directory: packages/contracts
+      # The modules the smoke test below compiles, downloaded once and retried, as in the build
+      # job and bounded as there: 180 s, 1.6 times the 113 s of the slowest cold run measured in
+      # this repository (packages/envoy/infra; packages/envoy 77 s on 2026-11-07). The arm64 leg
+      # restores no module cache, so this leg's download is the cold one.
+      - name: Download the Go modules the smoke test compiles
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # The image build is a step of its own: what TestSmoke asserts is the container's
       # behaviour, so a slow build must fail nothing. Inside the test it spent 256.60–289.47 s
       # of `go test -timeout 5m` across ten runs while the five assertions measured 0.00 s each
@@ -350,6 +423,7 @@ jobs:
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # Joins the docker legs' per-platform images into the `envoy:<sha>` index with `docker buildx
@@ -479,7 +553,12 @@ jobs:
   release_build:
     if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 6 call sites of one 450 s fetch = 2700 s, above every other retried step here.
+    # 600 + 2700 = 3300 s -> 56 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (46 min here).
+    timeout-minutes: 56
     permissions:
       contents: read
     outputs:
@@ -497,12 +576,16 @@ jobs:
       # bumps from the newest legion-envoy-v* tag. $LEGION_ENVOY_VERSION_ARGS is expanded unquoted
       # on purpose: it is the argument list, split on its spaces.
       - name: Determine next version
+        timeout-minutes: 46
         id: version
         run: |
           # shellcheck disable=SC2086 # $LEGION_ENVOY_VERSION_ARGS is the argument list, split on purpose
           .github/scripts/release-push.sh version legion-envoy-v $LEGION_ENVOY_VERSION_ARGS >> "$GITHUB_OUTPUT"
       - uses: ./.github/actions/install-changie
         if: steps.version.outputs.skip != 'true'
+        # install-changie's own retry arithmetic: one `ci_tools_fetch`, 1281 s
+        # (the Budgets note of .github/ci-budgets.md) -> 22 min.
+        timeout-minutes: 22
       # This release's own changelog entries, which release_publish writes into the GitHub
       # release's body. A fragment stays under packages/envoy/.changes/unreleased/ after the
       # release that ships it, so fold-notes renders the ones this release's own commits first
@@ -510,6 +593,7 @@ jobs:
       # file, and the `notes` line fold-notes prints says which of the two it was, since
       # release_publish cannot look into the artifact before it downloads it.
       - name: Render this release's changelog entries
+        timeout-minutes: 46
         id: notes
         if: steps.version.outputs.skip != 'true'
         env:
@@ -531,6 +615,29 @@ jobs:
         if: steps.version.outputs.skip != 'true'
         with:
           go-version-file: packages/envoy/go.mod
+      # The module the builds below compile, downloaded once and retried before the first of
+      # them (the Retries note of .github/ci-budgets.md; the retried unit is the
+      # download, never the build). On the same condition as those builds. One call:
+      # every binary this job ships is a command of packages/envoy, and the cross-builds read
+      # that one module graph whatever GOOS and GOARCH they set. This job holds `contents: read`
+      # and no secret, so it is a build job like any other and the retry belongs in it;
+      # .github/scripts/check-release-credentials.sh pins the command set of the credentialed
+      # release_publish below, not of this one.
+      #
+      # 180 s per attempt: the slowest cold `go mod download` measured is 113 s, for
+      # packages/envoy/infra, against 77 s for packages/envoy, each on an empty module cache on
+      # 2026-11-07, so the bound is 1.6 times the slowest of them; an attempt it kills leaves
+      # what it fetched in the module cache for the next one to resume from, which a tarball
+      # fetch cannot do. This job restores no module cache, so the cold figure is the one every
+      # run pays.
+      - name: Download the Go modules this job builds
+        if: steps.version.outputs.skip != 'true'
+        # Its own retry arithmetic, so an exhausted download fails this step by name rather than
+        # being cut part way by the job: 5 x 180 + 150 = 1050 s -> 18 min.
+        timeout-minutes: 18
+        run: |
+          . .github/scripts/ci-retry.sh
+          retry_fetch "packages/envoy's Go modules" 180 -- go -C packages/envoy mod download
       # CGO_ENABLED=0 matches the existing agent-secrets builds
       # (packages/envoy/docker/Dockerfile, packages/daemon/docker/worker.Dockerfile):
       # without it, a same-arch build (amd64 here) links dynamically against the
@@ -596,6 +703,7 @@ jobs:
           path: agent-secrets-assets/
           if-no-files-found: error
       - name: Check this job holds no credential (tripwire)
+        timeout-minutes: 46
         run: .github/scripts/release-push.sh no-credential
 
   # Moves `latest` and, when release_build decided a release, publishes it: confirms the version
@@ -637,7 +745,12 @@ jobs:
       cancel-in-progress: false
       queue: max
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # Budget (the Budgets note of .github/ci-budgets.md): 600 s, the measured 10 minutes this job carried,
+    # plus its slowest retried step alone - the leak-guard fetch of the release-push.sh
+    # steps, 12 call sites of one 450 s fetch = 5400 s, above every other retried step here.
+    # 600 + 5400 = 6000 s -> 101 min, which carries the whole minute that
+    # note gives a step whose own arithmetic is a whole number of minutes (91 min here).
+    timeout-minutes: 101
     # packages: write moves the `latest` tag to the newest already-published image (`docker
     # buildx imagetools create`, below); contents: write creates and uploads the GitHub release
     # (`release-push.sh release`); id-token and attestations: write are for the agent-secrets
@@ -824,6 +937,7 @@ jobs:
       # its own, which no newer push replaces while it waits.
       # $LEGION_ENVOY_VERSION_ARGS is expanded unquoted on purpose, as in release_build.
       - name: Confirm the version
+        timeout-minutes: 91
         id: confirm
         if: needs.release_build.result == 'success' && needs.release_build.outputs.skip != 'true'
         env:
@@ -865,6 +979,7 @@ jobs:
       # binaries' archives are the attestation's subjects, every archive and SHA256SUMS the
       # release's files.
       - name: Check the hand-over and write SHA256SUMS
+        timeout-minutes: 46
         id: assets
         if: steps.confirm.outputs.release == 'true'
         env:
@@ -901,6 +1016,7 @@ jobs:
       # of its own, pushes the tag over SSH to GitHub's pinned host keys, and removes the key again.
       # A lightweight tag has no tagger, so no git user is configured.
       - name: Tag release
+        timeout-minutes: 91
         if: steps.confirm.outputs.release == 'true'
         env:
           VERSION: ${{ needs.release_build.outputs.version }}
@@ -924,6 +1040,7 @@ jobs:
         with:
           subject-path: ${{ steps.assets.outputs.subjects }}
       - name: Create or update GitHub release
+        timeout-minutes: 46
         id: release
         if: steps.confirm.outputs.release == 'true'
         env:
@@ -953,6 +1070,7 @@ jobs:
       # says there why the write is a replace and not an append. The artifact holds the one file
       # fold-notes wrote, under the name the build job gave it.
       - name: Write the changelog into the release body
+        timeout-minutes: 46
         if: steps.notes.outcome == 'success'
         env:
           GH_TOKEN: ${{ github.token }}

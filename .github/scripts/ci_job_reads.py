@@ -64,6 +64,28 @@ CI = ".github/workflows/ci.yaml"
 DOCS_SITE = ".github/workflows/docs-site.yaml"
 BROWSER_SITE = ".github/workflows/dispatch-browser.yaml"
 BROWSER_NIGHTLY = ".github/workflows/dispatch-browser-nightly.yaml"
+# The one retry every download of this repository's CI goes through (dispatch://INFRA-1545, R1):
+# a workflow step sources it and calls its retry_fetch, and so does
+# .github/scripts/mirror-ci-images.sh. A job that fetches anything reads it, so its gate declares
+# it and the changes job's filter for that gate names it.
+CI_RETRY = ".github/scripts/ci-retry.sh"
+# The step every ci.yaml job that runs a go command carries, after its Go module cache restore
+# and before its first Go step: `go mod download` of the module directories it builds in, through
+# the helper above, so the retried unit is the download and never the build or the test.
+# `mod` is not one of the verbs ci_filter_coverage.py's GO_COMMAND matches, so the step claims no
+# Run of its own.
+GO_DOWNLOAD_STEP = "Download the Go modules this job builds"
+# The two jobs that prove the retry against the fault it answers (dispatch://INFRA-1545, T7):
+# the fault, the rig that puts one in front of one step or one image build at a time, and the
+# steps their gates cite.
+FAULT_PROXY = ".github/scripts/ci-fault-proxy.py"
+RETRY_RIG = ".github/scripts/download-retry-proof.sh"
+RETRY_JOB = "download-retry"
+IMAGES_JOB = "download-retry-images"
+RETRY_FIRST_PROXY = "Start the recovering fault for install-changie"
+RETRY_FIRST_REPORT = "What install-changie's curl did under the recovering fault"
+RETRY_GO_STEP = "Download packages/envoy's Go modules under the recovering fault"
+IMAGES_WORKER_STEP = "Build the worker image under the recovering fault"
 
 
 def targets(path: str, key: str) -> list:
@@ -123,12 +145,14 @@ def bun_job(job, workflow=CI):
     install = at(job, "bun install --frozen-lockfile", workflow)
     return reads(
         (".github/actions/setup-bun/**", at(job, "./.github/actions/setup-bun", workflow)),
-        (".bun-version", ".github/actions/setup-bun/action.yml:106 bun-version-file: .bun-version, and :84 and :137 "
-                         "read the version it pins to tell a Bun of that version from any other"),
-        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:119-133 chooses the bun row of this runner's "
-                                  "build variant, :174 fetches that row's second source where no Bun of the pinned "
-                                  "version is installed, and :208 holds the bun on PATH to that row's digest"),
-        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:115,194 source it: ci_tools_source_name "
+        (".bun-version", ".github/actions/setup-bun/action.yml:92 reads it into the bun cache key, :172 "
+                         "bun-version-file: .bun-version, and :150 and :203 read the version it pins to tell a Bun "
+                         "of that version from any other"),
+        (CI_RETRY, f"{install} sources it: the install retries through retry_fetch"),
+        (".github/ci-tools.yaml", ".github/actions/setup-bun/action.yml:186-199 chooses the bun row of this runner's "
+                                  "build variant, :242 fetches that row's second source where no Bun of the pinned "
+                                  "version is installed, and :296 holds the bun on PATH to that row's digest"),
+        (".github/scripts/ci-tools.sh", ".github/actions/setup-bun/action.yml:181,282 source it: ci_tools_source_name "
                                         "reads the word for the source that served the bytes, ci_tools_fetch_fallback "
                                         "installs the npm copy and ci_tools_verify checks the installed binary"),
         ("package.json", f"{install} reads the root manifest (workspaces package.json:19-31, patchedDependencies :50-59)"),
@@ -141,6 +165,12 @@ def bun_job(job, workflow=CI):
     )
 
 
+def go_modules(job, workflow=CI):
+    """The retry helper, read by the step that downloads a job's Go modules before its first Go
+    step. A job whose bun_job already declares it needs no second entry."""
+    return reads((CI_RETRY, f"{at(job, GO_DOWNLOAD_STEP, workflow)} sources it"))
+
+
 def biome(where):
     return reads(
         ("biome.json", f"{where}: Biome reads the root config"),
@@ -151,12 +181,14 @@ def biome(where):
 def install_jj(job):
     return reads(
         (".github/actions/install-jj/**", at(job, "./.github/actions/install-jj")),
-        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:60 reads ARG JJ_TOOL, the tool spec mise installs"),
+        (f"{DAEMON}/docker/worker.Dockerfile", ".github/actions/install-jj/action.yml:62 reads ARG JJ_TOOL, the tool spec mise installs"),
         (".github/ci-tools.yaml", ".github/actions/install-jj/action.yml:42-43 installs the mise row's archive, and "
-                                  ":74,83 hold the jj binary to the jj row's digest, whichever source served it"),
+                                  ":102,111 hold the jj binary to the jj row's digest, whichever source served it"),
         (".github/scripts/ci-tools.sh", ".github/actions/install-jj/action.yml:39,58 source it: ci_tools_fetch installs "
                                         "mise, ci_tools_fetch_fallback reads the jj row's second source and "
                                         "ci_tools_verify checks the binary"),
+        (CI_RETRY, ".github/actions/install-jj/action.yml:60 sources it: :93 retries `mise install` in front of that "
+                   "second source, since a release asset that fails one fetch is a flap and not the outage a copy answers"),
     )
 
 
@@ -470,6 +502,22 @@ cap=$(../../{TAGGED_TESTS} natslive ./internal/bus)
 go test -count=1 -timeout 5m -tags natslive -run "$cap" -v ./internal/bus/"""
 # One call per package, never one union -run over the three: a name an untagged test of one
 # package shares with a natslive test of another would then run a second time unremarked.
+INFRA_LIVE_TOOLS_STEP = "Download the tools envoy-infra's live tests run"
+# The four tools those live tests run, each a `go install module@version`: that form builds
+# from the named module's own go.mod and compiles nothing of this repository, so the entry
+# claims the step's every go line and gives the job no read of its own. The step is pinned as
+# text, so an edit of it comes back here.
+INFRA_LIVE_TOOLS_SCRIPT = """\
+. .github/scripts/ci-retry.sh
+mkdir -p "$RUNNER_TEMP/live-tools"
+cd packages/envoy/infra
+export GOBIN="$RUNNER_TEMP/live-tools" GOWORK=off
+retry_fetch "helm v3.20.2" 180 -- go install helm.sh/helm/v3/cmd/helm@v3.20.2
+retry_fetch "nats-server v2.15.1" 180 -- go install github.com/nats-io/nats-server/v2@v2.15.1
+retry_fetch "the config reloader v0.24.0" 180 -- \
+  go install github.com/nats-io/nack/cmd/nats-server-config-reloader@v0.24.0
+retry_fetch "the nats exporter v0.20.2" 180 -- \
+  go install github.com/nats-io/prometheus-nats-exporter@v0.20.2"""
 INFRA_NATSLIVE_STEP = "Live tests of envoy-infra against nats-server (natslive)"
 INFRA_NATSLIVE_PACKAGES = ["./core", "./seed", "./gcp"]
 INFRA_NATSLIVE_SCRIPT = f"""\
@@ -846,7 +894,7 @@ GATES = [
     gate("typecheck", "typecheck", runs=[
         step_run("typecheck", "Vet the Go daemon, its e2e-tagged live proofs included", "go vet -tags e2e ./...", DAEMON, ["./..."],
                  tags="e2e", mode="vet"),
-    ], reads=CI_SELF + setup_go("typecheck", f"{DAEMON}/go.mod")),
+    ], reads=CI_SELF + setup_go("typecheck", f"{DAEMON}/go.mod") + go_modules("typecheck")),
 
     gate("test", "test", runs=[
         step_run("test", DAEMON_RACE_STEP, DAEMON_RACE_TEXT, DAEMON, DAEMON_RACE_PKGS, race=True),
@@ -1314,6 +1362,7 @@ GATES = [
                  tags="pulumilive,natslive", mode="vet"),
         step_run("envoy-infra-go", "Unit test envoy-infra", "go test -count=1 ./...", INFRA, ["./..."]),
     ], exact=[
+        pinned_step("envoy-infra-go", INFRA_LIVE_TOOLS_STEP, ".", INFRA_LIVE_TOOLS_SCRIPT, []),
         # One go test per package, each running only what the natslive tag adds to it.
         pinned_step("envoy-infra-go", INFRA_NATSLIVE_STEP, INFRA, INFRA_NATSLIVE_SCRIPT, [
             (INFRA, [pkg], f"go test -tags natslive {pkg}", {"tags": "natslive"})
@@ -1325,7 +1374,7 @@ GATES = [
         (f"{ENVOY}/internal/testnats/nats.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: consts Image, HubImage"),
         (f"{ENVOY}/internal/testpg/testpg.go", f"{at('envoy-infra-go', 'Pull the NATS and Postgres test container images')}: const Image"),
         (TAGGED_TESTS, f"{at('envoy-infra-go', INFRA_NATSLIVE_STEP)} takes each call's -run from it"),
-    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + CI_SELF),
+    ) + setup_go("envoy-infra-go", f"{INFRA}/go.mod") + go_modules("envoy-infra-go") + CI_SELF),
 
     # The lane's three jobs: each step's text and packages come from ENVOY_RACE_LANE, which the
     # envoy-go unit step and its plain companion are built from too. envoy-go-race-docs is the one
@@ -1333,10 +1382,10 @@ GATES = [
     # (dispatch://INFRA-1085), so its gate pins that whole line while the lane table still names
     # the package, which is what keeps it out of the unit step.
     gate("envoy_go_race", "envoy-go-race", runs=[race_step(RACE_JOBS["envoy-go-race"])],
-         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + CI_SELF),
+         reads=setup_go("envoy-go-race", f"{ENVOY}/go.mod") + go_modules("envoy-go-race") + CI_SELF),
 
     gate("envoy_go_race_api", "envoy-go-race-api", runs=[race_step(RACE_JOBS["envoy-go-race-api"])],
-         reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + CI_SELF),
+         reads=setup_go("envoy-go-race-api", f"{ENVOY}/go.mod") + go_modules("envoy-go-race-api") + CI_SELF),
 
     gate("envoy_go_race_docs", "envoy-go-race-docs", exact=[
         pinned_step("envoy-go-race-docs", RACE_DOCS_STEP, ENVOY, RACE_DOCS_SCRIPT, [
@@ -1344,7 +1393,7 @@ GATES = [
         ]),
     ], reads=reads(
         (".github/scripts/race_memory.py", f"{at('envoy-go-race-docs', RACE_DOCS_STEP)} runs the package under it"),
-    ) + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("envoy-go-race-docs", f"{ENVOY}/go.mod") + go_modules("envoy-go-race-docs") + CI_SELF),
 
     # A second gate on envoy_go_race_docs: this job runs the same package, so it reads that
     # closure and no other, and check-ci-filters.sh keys a claim by (job, step), so the two gates
@@ -1353,7 +1402,7 @@ GATES = [
         pinned_step("envoy-go-docs-finalizers", FINALIZERS_STEP, ENVOY, FINALIZERS_SCRIPT, [
             (ENVOY, ["./internal/dispatch/docs/"], "go test -v -count=1 -timeout 34m ./internal/dispatch/docs/", {}),
         ]),
-    ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod") + CI_SELF),
+    ], reads=setup_go("envoy-go-docs-finalizers", f"{ENVOY}/go.mod") + go_modules("envoy-go-docs-finalizers") + CI_SELF),
 
     gate("dispatch_memory", "dispatch-memory", exact=[
         pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [
@@ -1361,7 +1410,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-memory", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("dispatch-memory", f"{ENVOY}/go.mod") + go_modules("dispatch-memory") + CI_SELF),
 
     gate("dispatch_multiprocess", "dispatch-multiprocess", exact=[
         pinned_step("dispatch-multiprocess", DISPATCH_MP_STEP, ENVOY, DISPATCH_MP_SCRIPT, [
@@ -1369,7 +1418,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('dispatch-multiprocess', DISPATCH_MP_STEP)} takes its -run from it"),
-    ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("dispatch-multiprocess", f"{ENVOY}/go.mod") + go_modules("dispatch-multiprocess") + CI_SELF),
 
     gate("listener_server_change", "listener-server-change", exact=[
         pinned_step("listener-server-change", SOAK_STEP, ENVOY, SOAK_SCRIPT, [
@@ -1377,7 +1426,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('listener-server-change', SOAK_STEP)} takes its -run from it"),
-    ) + setup_go("listener-server-change", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("listener-server-change", f"{ENVOY}/go.mod") + go_modules("listener-server-change") + CI_SELF),
 
     gate("broker_multiprocess", "broker-multiprocess", exact=[
         pinned_step("broker-multiprocess", BROKER_MP_STEP, ENVOY, BROKER_MP_SCRIPT, [
@@ -1385,7 +1434,7 @@ GATES = [
         ]),
     ], reads=reads(
         (TAGGED_TESTS, f"{at('broker-multiprocess', BROKER_MP_STEP)} takes its -run from it"),
-    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + CI_SELF),
+    ) + setup_go("broker-multiprocess", f"{ENVOY}/go.mod") + go_modules("broker-multiprocess") + CI_SELF),
 
     gate("airlock_lean", AIRLOCK_JOB, exact=[
         pinned_step(AIRLOCK_JOB, AIRLOCK_SEED_STEP, ENVOY, AIRLOCK_SEED_SCRIPT, [
@@ -1437,6 +1486,7 @@ GATES = [
         (".github/scripts/disk_watch.py",
          f"{at('envoy-smoke', 'Start the machine watch over the live tests')} and "
          f"{at('envoy-smoke', 'Report what the live tests ran on')} run it"),
+        (CI_RETRY, f"{at('envoy-smoke', GO_DOWNLOAD_STEP)} sources it: the step downloads both of this job's modules through it"),
     ) + setup_go("envoy-smoke", f"{ENVOY}/go.mod") + CI_SELF),
 
     gate("envoy_e2e_local", "envoy-e2e-local", runs=[
@@ -1481,6 +1531,7 @@ GATES = [
         (GO_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (CLIENT_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
         (INFRA_TARGETS, f"{NOTICES_LOOPS}: jq reads it"),
+        (CI_RETRY, f"{at('lint', GO_DOWNLOAD_STEP)} sources it: it downloads what the notices step builds, on the notices step's own condition"),
     ) + CI_SELF),
 
     # This check itself: it lists every module's packages (vet mode: each package directory, its
@@ -1511,8 +1562,10 @@ GATES = [
         (BROWSER_NIGHTLY, "dispatch-browser.yaml's other caller: a change to either must re-run this check, which "
                           "holds the dispatch_browser filter to that gate"),
         (CACHE_WORKFLOW, "ci_workflow_rules.py holds its cache saves to ci.yaml's restores"),
-        (".github/workflows/**", "ci_workflow_rules.check_one_merge_group_workflow reads every workflow of the "
-                                 "directory, and a rule that refuses a new one has to run on the change that adds it"),
+        (".github/workflows/**", "ci_workflow_rules.check_one_merge_group_workflow and check_workflow_size read "
+                                 "every workflow of the directory, and a rule that refuses a new one, or one "
+                                 "grown past the size GitHub starts a run from, has to run on the change that "
+                                 "makes it"),
     ) + reads(*((path, f"check-ci-filters.sh holds its on.push.paths equal to the {name} filter (PUSH_WORKFLOWS)")
                 for name, path in PUSH_WORKFLOWS.items()))
       + setup_go("ci-filters", f"{DAEMON}/go.mod") + CI_SELF),
@@ -1554,6 +1607,41 @@ GATES = [
                                         "its seams the way that helper does, and the copy it fills is what the "
                                         "helper then reads"),
         (".github/actions/install-crane/**", at("ci-images", "./.github/actions/install-crane")),
+        (CI_RETRY, f"{at('ci-images', COPY_STEP)}: mirror-ci-images.sh sources it for every registry read that has to succeed"),
+    ) + CI_SELF),
+
+    # The two jobs that prove the retry rather than the build (dispatch://INFRA-1545, T7):
+    # download-retry runs each real site under .github/scripts/ci-fault-proxy.py, and
+    # download-retry-images builds the three Dockerfiles under the same fault. Each gate declares
+    # the machinery alone — the retry loop, the fault, the rig, and the composite actions or
+    # Dockerfiles whose own downloads run under it — and nothing those downloads read. A
+    # manifest, a lockfile, a pin or a module file moves the bytes that come down the wire; what
+    # these two jobs prove is that a download survives a faulting host, which those bytes cannot
+    # change. So this gate declares none of them, and the filter beside it names none either:
+    # between them the bun install set, the Go workspace and the two tool pins made an ordinary
+    # dependency bump select a job of about two hours. The job that proves a version is the one
+    # that builds with it — worker-image and envoy-smoke for the images, every Bun and Go job for
+    # the rest.
+    gate("download_retry", "download-retry", reads=reads(
+        (CI_RETRY, f"{at(RETRY_JOB, RETRY_GO_STEP)} and every other faulted site written as a run: step "
+                   f"source it and call retry_fetch"),
+        (FAULT_PROXY, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} and every other proxy step of the job run it"),
+        (RETRY_RIG, f"{at(RETRY_JOB, RETRY_FIRST_PROXY)} starts the proxy with it and "
+                    f"{at(RETRY_JOB, RETRY_FIRST_REPORT)} reads its log with it"),
+        (".github/actions/setup-bun/**", at(RETRY_JOB, "./.github/actions/setup-bun")),
+        (".github/actions/install-jj/**", at(RETRY_JOB, "./.github/actions/install-jj")),
+        (".github/actions/install-changie/**", at(RETRY_JOB, "./.github/actions/install-changie")),
+        (".github/actions/install-claude-code/**", at(RETRY_JOB, "./.github/actions/install-claude-code")),
+        (".github/actions/install-omp/**", at(RETRY_JOB, "./.github/actions/install-omp")),
+    ) + CI_SELF),
+
+    gate("download_retry_images", "download-retry-images", reads=reads(
+        (f"{DAEMON}/docker/worker.Dockerfile", f"{at(IMAGES_JOB, IMAGES_WORKER_STEP)} builds it"),
+        (f"{ENVOY}/docker/Dockerfile", f"{at(IMAGES_JOB, 'Build the Envoy image under the recovering fault')} builds it, and "
+                                       f"{at(IMAGES_JOB, 'Build the smoke image the held-port wrapper takes as its base, with no proxy')} builds it unfaulted first"),
+        (f"{ENVOY}/infra/host/heldportwrapper/Dockerfile", f"{at(IMAGES_JOB, 'Build the held-port image under the recovering fault')} builds it"),
+        (FAULT_PROXY, f"{at(IMAGES_JOB, 'Start the recovering fault for the worker image build')} runs it, bound to the docker bridge"),
+        (RETRY_RIG, f"{at(IMAGES_JOB, IMAGES_WORKER_STEP)} builds through it"),
     ) + CI_SELF),
 
     # The tool-fallback job: the live proof that every tool install reads the second source

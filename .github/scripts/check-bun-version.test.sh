@@ -463,7 +463,7 @@ check "a step of the wrapper prepending \$GITHUB_PATH fails" "$(is "$status" 1)"
 check "says what that path does to a later step" "$(contains "$out" 'prepends \$GITHUB_PATH, which every step after this action keeps')"
 check "and one rule catches it, not two" "$(contains "$out" '1 place(s)')"
 
-# What this branch's wrapper is: the install, then the second source the pin decides between,
+# Three steps the gate accepts: the install, then the second source the pin decides between,
 # then the check of the binary that ended up installed. A step that writes no $GITHUB_PATH and
 # no INPUT_* hands a later step nothing, so how many of them there are is not the gate's
 # business.
@@ -488,6 +488,39 @@ runs:
 YAML
 run_check "$root"
 check "a wrapper of three steps, one of them setup-bun on the version file, passes" "$(is "$status" 0)"
+check "and says every install reads the pin" "$(contains "$out" 'every Bun install reads .bun-version (1.3.14)')"
+
+# What this repository's wrapper is: the pin and the build variant read into outputs, the cache
+# that pair keys restored, the install, and then the check of the binary that ended up
+# installed. A restore is a step like any other to this gate, since it hands a later step
+# neither an input nor a bun of its own, and the check is still the last of them, which is what
+# rule 9 holds.
+root=$(fixture wrapper-reads-pin-and-restores)
+cat > "$root/.github/actions/setup-bun/action.yml" <<'YAML'
+name: Setup Bun
+runs:
+  using: composite
+  steps:
+    - id: bun-pin
+      shell: bash
+      run: echo "version=$(tr -d '[:space:]' < .bun-version)" >> "$GITHUB_OUTPUT"
+    - id: bun-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+      with:
+        path: ~/.bun/bin
+        key: bun-${{ runner.os }}-${{ steps.bun-pin.outputs.version }}
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version-file: .bun-version
+        no-cache: true
+    - name: Check the installed Bun is the pinned binary
+      shell: bash
+      run: |
+        bun=$(command -v bun)
+        ci_tools_verify bun-linux-x64 "$bun" cache
+YAML
+run_check "$root"
+check "a wrapper that reads the pin and restores the cache before installing passes" "$(is "$status" 0)"
 check "and says every install reads the pin" "$(contains "$out" 'every Bun install reads .bun-version (1.3.14)')"
 
 echo "case: rule 9 — the wrapper's last step holds the installed bun to its row"
