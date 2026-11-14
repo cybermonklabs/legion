@@ -234,6 +234,10 @@ func newHeldDurable(natsClient *bus.Client, leases intakeLeases, config func() n
 	}
 }
 
+// intakeHoldLost is the line of an intake whose durable's hold is no longer its own, so it stops
+// delivering (run).
+const intakeHoldLost = "dispatch delivery: the intake's hold is lost; it stops delivering"
+
 // run delivers from the durable while this intake holds its hold, and stands by for it otherwise,
 // until ctx ends; then it stops delivering and releases the hold (stop), under the one stop
 // deadline armed at ctx's end (stopContext), so a take-over under way at that moment spends that
@@ -283,7 +287,7 @@ func (d *heldDurable) run(ctx context.Context, wake func() <-chan struct{}, read
 		case <-checks.C:
 			d.check(ctx)
 		case <-lost:
-			slog.Warn("dispatch delivery: the intake's hold is lost; it stops delivering", "name", d.name)
+			slog.Warn(intakeHoldLost, "name", d.name)
 			// The hold lasts intakeHoldMargin longer on the database's clock, so a handler that
 			// finishes within it finished while the hold still held; the rest are given up,
 			// since another process may take the hold from that moment.
@@ -613,6 +617,10 @@ var createDurable = func(js natsgo.JetStreamContext, config *natsgo.ConsumerConf
 	return js.AddConsumer(bus.Stream, config, opts...)
 }
 
+// durableDeliversElsewhere is the line of an intake whose durable no longer delivers to its
+// deliver subject, so it stops delivering (check).
+const durableDeliversElsewhere = "dispatch delivery: the NATS consumer no longer delivers to this intake; it stops delivering"
+
 // check stops delivering when the durable no longer delivers to this intake's deliver subject:
 // something deleted it, or replaced it with one on another subject. The intake keeps its hold, and
 // its next attempt takes the durable over again, or waits for a process that binds without a
@@ -629,7 +637,7 @@ func (d *heldDurable) check(ctx context.Context) {
 	case info.Config.DeliverSubject == d.subject:
 		return
 	}
-	slog.Warn("dispatch delivery: the NATS consumer no longer delivers to this intake; it stops delivering", "name", d.name)
+	slog.Warn(durableDeliversElsewhere, "name", d.name)
 	// The durable's messages are the next holder's from here, so a handler still running after
 	// the renewal interval is given up rather than left to write what that holder writes too.
 	d.stopDeliveringWithin(intakeHoldRenew)

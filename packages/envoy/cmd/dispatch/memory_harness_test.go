@@ -33,7 +33,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // The real-process harness the memory tests (memory_test.go) drive Dispatch through: a test
@@ -112,9 +111,11 @@ func (h *memoryHarness) waitForSettled(t *testing.T, artifactID string) {
 type memoryServer struct {
 	command *exec.Cmd
 	base    string
-	output  *lockedBuffer
-	exited  chan struct{}
-	idle    int64
+	// output and exited are the process's (cmdtest.Process): its combined output, and closed
+	// once it has exited and released its connections.
+	output *cmdtest.LockedBuffer
+	exited <-chan struct{}
+	idle   int64
 	// database is the harness's own handle on the database this server serves, which a measured
 	// window takes the block-index lease on (holdBlockIndexLease).
 	database *store.Store
@@ -153,24 +154,16 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 	}
 	command.Env = append(command.Env, h.env...)
 	held.Pass(command, "DISPATCH_LISTEN_FD")
-	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: &lockedBuffer{}, exited: make(chan struct{}), database: h.database}
-	command.Stdout, command.Stderr = server.output, server.output
 	// This server is a Dispatch process like any other a test starts, so the connection guard
 	// counts it, and releases it before exited closes, so a test that sees the exit sees the
-	// count fall (requireConnectionCeiling, cmdtest.StartThen).
-	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
-	err := command.Start()
-	// The server holds its own copy of the socket from here on, so it releases the port when it
+	// count fall (requireConnectionCeiling, cmdtest.StartThen). StartThen closes the test's copy
+	// of the held socket once the server has started, so the server releases the port when it
 	// exits.
-	cmdtest.CloseExtraFiles(command)
-	if err != nil {
-		t.Fatalf("start a Dispatch server: %v", err)
-	}
-	go func() {
-		_ = command.Wait()
-		releaseConnections()
-		close(server.exited)
-	}()
+	releaseConnections := requireConnectionCeiling(t, h.database.Pool.Config().ConnString())
+	process := cmdtest.StartThen(t, "the Dispatch server", command, releaseConnections)
+	server := &memoryServer{command: command, base: "http://127.0.0.1:" + port, output: process.Output, exited: process.Exited, database: h.database}
+	// Registered after StartThen's own cleanup, so it runs first: the server is stopped with
+	// SIGTERM as a deploy stops it, and StartThen's kill finds it gone.
 	t.Cleanup(func() { server.stop(t) })
 	deadline := time.Now().Add(time.Minute)
 	// The kernel queues a request on the held socket until the server serves it, so each one is
@@ -190,11 +183,11 @@ func (h *memoryHarness) start(t *testing.T) *memoryServer {
 		}
 		select {
 		case <-server.exited:
-			t.Fatalf("the Dispatch server exited while starting:\n%s", server.output.tail())
+			t.Fatalf("the Dispatch server exited while starting:\n%s", server.outputTail())
 		default:
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("the Dispatch server did not answer /healthz:\n%s", server.output.tail())
+			t.Fatalf("the Dispatch server did not answer /healthz:\n%s", server.outputTail())
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -447,7 +440,7 @@ func (p *memoryServer) resident(t *testing.T, field string) int64 {
 	t.Helper()
 	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", p.command.Process.Pid))
 	if err != nil {
-		t.Fatalf("read the server's memory (has it died?): %v\n%s", err, p.output.tail())
+		t.Fatalf("read the server's memory (has it died?): %v\n%s", err, p.outputTail())
 	}
 	for _, line := range strings.Split(string(status), "\n") {
 		if value, ok := strings.CutPrefix(line, field+":"); ok {
@@ -476,7 +469,7 @@ func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
 	if err := os.WriteFile(fmt.Sprintf("/proc/%d/clear_refs", p.command.Process.Pid), []byte("5"), 0); err != nil {
 		t.Fatalf("reset the server's peak memory: %v", err)
 	}
-	written := p.output.len()
+	written := p.output.Len()
 	during()
 	// A block-index pass reads whole documents of its own, so one inside the window would make the
 	// peak that pass's memory rather than the request's. start leaves nothing owed, and a pass
@@ -488,7 +481,7 @@ func (p *memoryServer) peakAboveIdle(t *testing.T, during func()) int64 {
 	// The handler is the slog.NewTextHandler main installs with slog.SetDefault in
 	// cmd/dispatch/main.go, which writes the message mid-line as msg="dispatch: block index", so
 	// the substring is the match and not a line's prefix.
-	for _, line := range strings.Split(p.output.from(written), "\n") {
+	for _, line := range strings.Split(p.outputFrom(written), "\n") {
 		if strings.Contains(line, "dispatch: block index") {
 			t.Fatalf("the server indexed blocks inside the measured window, so the peak is that pass's memory: %s", line)
 		}
@@ -538,7 +531,7 @@ func (p *memoryServer) holdBlockIndexLease(t *testing.T) func() {
 		if time.Now().After(deadline) {
 			conn.Release()
 			t.Fatalf("the block-index pass held the %q lease for more than %s, so this window could not be measured with the pass held off:\n%s",
-				docs.BlockIndexLease, blockIndexLeaseWait, p.output.tail())
+				docs.BlockIndexLease, blockIndexLeaseWait, p.outputTail())
 		}
 		// pg_try_advisory_lock answers false rather than queueing behind the holder, so a pass
 		// running at this moment is waited out here: it gives the lease back when it ends.
@@ -578,7 +571,7 @@ func (p *memoryServer) trySend(method, path, contentType string, body io.Reader,
 	}
 	answer, err := (&http.Client{Timeout: 20 * time.Minute}).Do(request)
 	if err != nil {
-		return response{}, fmt.Errorf("%s %s: %w\n%s", method, path, err, p.output.tail())
+		return response{}, fmt.Errorf("%s %s: %w\n%s", method, path, err, p.outputTail())
 	}
 	defer answer.Body.Close()
 	read, err := io.ReadAll(answer.Body)
@@ -718,28 +711,20 @@ func (p *memoryServer) loadOverWebsocket(t *testing.T, artifactID string) {
 	time.Sleep(3 * time.Second)
 }
 
-// lockedBuffer is the server's output, written by the process's copying goroutine and read by the
-// test when it fails.
-type lockedBuffer struct {
-	logtest.Buffer
-}
-
-func (b *lockedBuffer) tail() string {
-	output := b.String()
+// outputTail is the last 4,000 bytes the server has written, for a failure to show.
+func (p *memoryServer) outputTail() string {
+	output := p.output.String()
 	if len(output) > 4000 {
 		output = output[len(output)-4000:]
 	}
 	return output
 }
 
-// len is how much the server has written, and from everything it wrote past offset: what one
-// measured window logged (peakAboveIdle), which tail's last 4,000 bytes do not answer for.
-func (b *lockedBuffer) len() int {
-	return b.Len()
-}
-
-func (b *lockedBuffer) from(offset int) string {
-	output := b.String()
+// outputFrom is everything the server wrote past offset, a length of its output read earlier:
+// what one measured window logged (peakAboveIdle), which outputTail's last 4,000 bytes do not
+// answer for.
+func (p *memoryServer) outputFrom(offset int) string {
+	output := p.output.String()
 	if offset >= len(output) {
 		return ""
 	}

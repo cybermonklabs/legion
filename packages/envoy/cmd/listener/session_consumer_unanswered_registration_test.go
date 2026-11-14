@@ -225,7 +225,7 @@ func requireFilteredOnStoredRow(t *testing.T, rig *sessionConsumerRig, sessionID
 	if err != nil {
 		t.Fatalf("read the stored interest row of %s: %v", sessionID, err)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(sessionConsumerFilter(rig.deps.consumers.stream, sessionID, stored.Topics))))
+	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v, the topics of the row the bucket holds", sessionID, got, want)
 	}

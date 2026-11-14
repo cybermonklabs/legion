@@ -43,7 +43,7 @@ func newRoleClaimRenewalRig(t *testing.T) *roleClaimRenewalRig {
 		registry:  registry,
 		roleKV:    registryRoleKV(t, registry),
 		logs:      logs,
-		subscribe: subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.NewWithWriter("test", logs)),
+		subscribe: subscribeHandler(&listenerDeps{registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, nil)}, "test-machine", logging.NewWithWriter("test", logs)),
 	}
 }
 

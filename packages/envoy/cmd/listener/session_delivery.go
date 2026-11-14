@@ -160,11 +160,11 @@ type sessionRelay interface {
 // connection fails, and only a test builds a listener without one.
 type sessionDelivery struct {
 	consumers *bus.SessionConsumers
-	// stream is the client whose read of the deployed stream's subjects decides which stored
-	// topics a consumer's filter carries (sessionConsumerFilter): main's listener client, the one
-	// /v1/interests/subscribe judges a registration's topics on (splitUncapturedTopics), so a topic
-	// a registration stores is one its consumer filters on. nil judges the subjects this build
-	// compiles (bus.Client.DeployedStreamCaptures), which only a test's listener does.
+	// stream is the client whose read of the deployed stream's subjects decides both which
+	// topics /v1/interests/subscribe stores (splitUncapturedTopics) and which stored topics a
+	// consumer's filter carries (sessionConsumerFilter), so a topic a registration stores is one
+	// its consumer filters on. main gives it the listener's own client. nil judges the subjects
+	// this build compiles (bus.Client.DeployedStreamCaptures), which only a test's listener does.
 	stream *bus.Client
 	logger *logging.Logger
 	// relay hears each registration that records consumer delivery. A sessionDelivery with
@@ -273,7 +273,8 @@ type sessionDelivery struct {
 // here, at the connection, because the threshold must be in hand before the first consumer is
 // created, and this is the one place every one of them comes from. main derives it from the
 // deployment's own windows (inactiveThresholdFor). stream is the listener's own client, whose
-// read of the deployed stream's subjects every consumer filter is judged on (sessionDelivery.stream).
+// read of the deployed stream's subjects both a registration's stored topics and every consumer
+// filter are judged on (sessionDelivery.stream).
 //
 // Every session takes its messages from the consumer this connection manages, so a failure is
 // the whole start's: main ends the process with it, as it does for the live topics lane.
@@ -538,7 +539,7 @@ func (m *sessionDelivery) registeredTarget(ctx context.Context, d *listenerDeps,
 	if ackFloor > 0 {
 		start = max(start, ackFloor+1)
 	}
-	return registeredConsumer{filter: sessionConsumerFilter(m.stream, sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
+	return registeredConsumer{filter: m.sessionConsumerFilter(sessionID, topics), start: start, revision: revision}, registeredTargetBuilt
 }
 
 // mark returns the next of the marks that order registrations against the relay's restarts: a
@@ -724,7 +725,7 @@ func (m *sessionDelivery) consumerFor(ctx context.Context, body subscribeBody, t
 		startSeq = *resume.Seq + 1
 	}
 	unlock := m.locks.lock(body.SessionID)
-	start, err := m.consumers.Ensure(ctx, body.SessionID, sessionConsumerFilter(m.stream, body.SessionID, topics), startSeq)
+	start, err := m.consumers.Ensure(ctx, body.SessionID, m.sessionConsumerFilter(body.SessionID, topics), startSeq)
 	if err != nil {
 		// A call the server answered - the grant it may not make, the stream's consumer cap, a
 		// consumer it refused - set no filter, and the registration settles nothing for it: a
@@ -931,9 +932,9 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 }
 
 // sessionConsumerFilter is the subjects sessionID's consumer filters on: its agent subject and
-// every one of topics the deployed stream stores, as stream last read its subjects
+// every one of topics the deployed stream stores, as m.stream last read its subjects
 // (bus.Client.DeployedStreamCaptures), a team topic among them. Those are the subjects
-// /v1/interests/subscribe judges a registration's topics on (bus.Client.ReachesNoSession), so a
+// /v1/interests/subscribe judges a registration's topics on (m.splitUncapturedTopics), so a
 // topic only a newer build's subjects capture, which this build stores on the session's row
 // while the two builds run, is in the filter too, and a message stored on it is delivered. A
 // Legion controller's notice lane (notifications.legion.<project>.controller) is one of those
@@ -951,11 +952,11 @@ func (l *sessionLocks) lock(sessionID string) (unlock func()) {
 // in a GitHub topic that spells a repository name with a dot, or a `>` before the last token) is
 // left out, though the row stores it: with it in the list the server refuses the whole call and
 // the session gets no consumer at all, and no message can reach such a subject anyway.
-func sessionConsumerFilter(stream *bus.Client, sessionID string, topics []string) []string {
+func (m *sessionDelivery) sessionConsumerFilter(sessionID string, topics []string) []string {
 	filter := make([]string, 0, len(topics)+1)
 	filter = append(filter, contracts.AgentSubject(sessionID))
 	for _, topic := range topics {
-		if stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
+		if m.stream.DeployedStreamCaptures(topic) && bus.CheckFilterSubject(topic) == nil {
 			filter = append(filter, topic)
 		}
 	}

@@ -45,7 +45,7 @@ func TestTheInterestWriteRoutesAnswerOverAnUnreadableInterestRecord(t *testing.T
 		t.Fatalf("open the interest bucket: %v", err)
 	}
 	mux := http.NewServeMux()
-	registerV1Routes(mux, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t)}, "test-machine", logging.New("test"))
+	registerV1Routes(mux, &listenerDeps{client: client, registry: registry, sessions: sessions, consumers: setupSessionConsumers(t, client)}, "test-machine", logging.New("test"))
 	serve := func(method, path, body string) *httptest.ResponseRecorder {
 		recorder := httptest.NewRecorder()
 		mux.ServeHTTP(recorder, httptest.NewRequest(method, path, strings.NewReader(body)))

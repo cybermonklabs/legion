@@ -71,6 +71,13 @@ func TestSessionConsumerFiltersOnATopicOnlyTheDeployedStreamCaptures(t *testing.
 // it, and publishes no delivery exception. A fan-out that judged the topic on the subjects this
 // build compiles would read the session as one nothing reaches and report a failure for a message
 // its consumer delivers.
+//
+// The row hands the message to the fan-out through the core handler, which no production path
+// does for such a topic today: the listener's own durable filters on the subjects this build
+// compiles (durable.go, startListenerSubscription, bus.StreamSubjects), so on an older build a
+// topic only a newer build's subjects capture never reaches the fan-out, and the session's
+// consumer filter is what delivers it during a roll. The row stands for a fan-out that does see
+// such a message, and holds that it judges it as the consumer filter does.
 func TestFanoutLeavesATopicOnlyTheDeployedStreamCapturesToTheSessionsConsumer(t *testing.T) {
 	const (
 		sessionID = "ses_deployed_fanout"

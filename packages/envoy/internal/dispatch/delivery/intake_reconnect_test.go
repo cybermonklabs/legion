@@ -51,12 +51,6 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 )
 
-// intakeHoldLostMessage is the line an intake writes when the durable's hold is no longer its own
-// and it stops delivering (heldDurable.run). Written out here rather than read from a constant
-// because held_durable.go logs it as a literal, and a row that reads the log reads what an
-// operator reads.
-const intakeHoldLostMessage = "dispatch delivery: the intake's hold is lost; it stops delivering"
-
 // A process whose NATS connection drops and reconnects in place comes back to a durable the
 // process standing by took over while it was away, and leaves it there: the one pull request
 // envelope published afterwards is handled once, by the process that took the durable over, the
@@ -439,9 +433,9 @@ func holderBackFromALostHold(t *testing.T, afterTakeOver func(*connectionEventPr
 	}
 
 	// Only the process that was cut off can log this: the other renewed its hold throughout.
-	if !loggedMessage(logs(), intakeHoldLostMessage) {
+	if !loggedMessage(logs(), intakeHoldLost) {
 		t.Errorf("no process logged %q, so none gave the delivery durable up when its hold lapsed; the messages logged were %q",
-			intakeHoldLostMessage, loggedMessages(logs()))
+			intakeHoldLost, loggedMessages(logs()))
 	}
 
 	holderDelivering, keeperDelivering := intakeHoldsSubscription(holder), intakeHoldsSubscription(keeper)

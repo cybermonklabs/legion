@@ -892,7 +892,7 @@ func (m *sessionRelays) storedFilter(ctx context.Context, sessionID string) ([]s
 	if m.delivery.afterStoredRowRead != nil {
 		m.delivery.afterStoredRowRead()
 	}
-	return sessionConsumerFilter(m.delivery.stream, sessionID, topics), revision, true
+	return m.delivery.sessionConsumerFilter(sessionID, topics), revision, true
 }
 
 // settleFilter holds a restart's filter write to the interest row it was built from: wrote is the

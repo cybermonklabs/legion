@@ -333,7 +333,7 @@ func (m *sessionDelivery) storedFilterStep(ctx context.Context, registry *store.
 	if m.afterStoredRowRead != nil {
 		m.afterStoredRowRead()
 	}
-	if err := m.consumers.UpdateFilter(ctx, sessionID, sessionConsumerFilter(m.stream, sessionID, topics)); err != nil {
+	if err := m.consumers.UpdateFilter(ctx, sessionID, m.sessionConsumerFilter(sessionID, topics)); err != nil {
 		if errors.Is(err, bus.ErrSessionConsumerNotFound) {
 			return 0, filterWriteSettled
 		}

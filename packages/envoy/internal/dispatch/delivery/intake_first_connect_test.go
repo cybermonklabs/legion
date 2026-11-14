@@ -2,7 +2,7 @@ package delivery
 
 import (
 	"fmt"
-	"strings"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -21,10 +21,9 @@ const firstConnectNumber = 7
 // running once the gate is open.
 const firstConnectWithin = 20 * time.Second
 
-// givingUpLines are the parts of the lines an intake writes when it stops delivering from a
-// durable it bound: a lost hold, a durable delivering elsewhere (heldDurable.run, check), and a
-// connection change, the line of an intake that gives the durable up on one.
-var givingUpLines = []string{"NATS connection changed", "hold is lost", "stops delivering"}
+// givingUpLines are the lines heldDurable writes when it stops delivering from a durable it
+// bound: a lost hold (run) and a durable that no longer delivers to it (check).
+var givingUpLines = []string{intakeHoldLost, durableDeliversElsewhere}
 
 // An intake whose client connects in the background keeps the durable it bound when the client's
 // first-connect callback lands inside that bind. nats.go reports the connection CONNECTED as soon
@@ -110,15 +109,13 @@ func TestAHolderKeepsTheDurableThroughAFirstConnectCallbackThatLandsInsideItsBin
 		t.Helper()
 		for _, record := range logs() {
 			message, _ := record["msg"].(string)
-			for _, line := range givingUpLines {
-				if !strings.Contains(message, line) {
-					continue
-				}
-				stamp, _ := record["time"].(string)
-				at, _ := time.Parse(time.RFC3339Nano, stamp)
-				t.Fatalf("%s the intake had logged %q at %s, %s after it logged the bind at %s; want it to keep the durable through a first-connect callback that landed inside its bind",
-					when, message, stamp, at.Sub(boundAt), boundAt.Format(time.RFC3339Nano))
+			if !slices.Contains(givingUpLines, message) {
+				continue
 			}
+			stamp, _ := record["time"].(string)
+			at, _ := time.Parse(time.RFC3339Nano, stamp)
+			t.Fatalf("%s the intake had logged %q at %s, %s after it logged the bind at %s; want it to keep the durable through a first-connect callback that landed inside its bind",
+				when, message, stamp, at.Sub(boundAt), boundAt.Format(time.RFC3339Nano))
 		}
 	}
 
