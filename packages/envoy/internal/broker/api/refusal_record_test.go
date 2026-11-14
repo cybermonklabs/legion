@@ -1,7 +1,8 @@
 // refusal_record_test.go drives one refusal through each writer of the API port, behind the
-// answer recorder cmd/broker installs outermost (answer.Middleware, which newTestServerWith wraps
-// every test server in), and reads the record each one writes, the answer id each answer
-// carries, and the count of every answer, refusals and those that write no line alike.
+// answer recorder cmd/broker wraps the mux in, inside withRequestDeadline (answer.Middleware,
+// which newTestServerWith wraps every test server's mux in), and reads the record each one writes,
+// the answer id each answer carries, and the count of every answer, refusals and those that write
+// no line alike.
 package api_test
 
 import (

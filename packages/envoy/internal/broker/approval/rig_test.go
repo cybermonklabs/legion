@@ -83,8 +83,9 @@ func newRig(t *testing.T) *rig {
 	current := policytest.Current(t, local)
 
 	mux := http.NewServeMux()
-	// Behind the answer recorder cmd/broker installs outermost (answer.Middleware), so every
-	// answer of the page a test reads is the one a deployment sends, its answer id included.
+	// Behind the answer recorder (answer.Middleware), which cmd/broker wraps the mux in, inside
+	// withRequestDeadline, so every answer of the page a test reads is the one a deployment sends,
+	// its answer id included.
 	srv := httptest.NewTLSServer(answer.Middleware(mux, nil))
 	t.Cleanup(srv.Close)
 

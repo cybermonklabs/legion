@@ -623,13 +623,15 @@ func main() {
 				slog.Warn("broker: the other pods were not told to reread a secret", "secret", name, "error", err)
 			}
 		}})
-	// The answer recorder is outermost, outside the request deadline, so it sees every answer of
-	// this port, whichever writer wrote it: the API's routes, the OAuth provider's library, the
-	// approval page and the mux's own 404 and 405 (answer.Middleware). Its counter is built on the
-	// registry the metrics port serves, and the airlock's proxy port counts its answers on it too.
+	// The answer recorder wraps the mux itself, inside the request deadline, which writes no
+	// answer, so it sees every answer of this port, whichever writer wrote it: the API's routes,
+	// the OAuth provider's library, the approval page and the mux's own 404 and 405
+	// (answer.Middleware), and reads each one's route from the request it hands the mux. Its
+	// counter is built on the registry the metrics port serves, and the airlock's proxy port
+	// counts its answers on it too.
 	answers := answer.NewAnswers(registry)
 	srv := &http.Server{
-		Handler:           answer.Middleware(withRequestDeadline(mux, requestDeadline), answers),
+		Handler:           withRequestDeadline(answer.Middleware(mux, answers), requestDeadline),
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      writeTimeout,
@@ -796,14 +798,13 @@ const shutdownTimeout = writeTimeout
 // is given is a whole number of them.
 func wholeSeconds(d time.Duration) string { return strconv.Itoa(int(d/time.Second)) + "s" }
 
-// withRequestDeadline hands next the request with deadline on its context, through
-// answer.WithContext, so the answer recorder outside it reads the route the mux matched on the
-// request the mux is handed.
+// withRequestDeadline hands next the request with deadline on its context. It writes no answer,
+// so it sits outside the answer recorder, which wraps the mux itself.
 func withRequestDeadline(next http.Handler, deadline time.Duration) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, cancel := context.WithTimeout(r.Context(), deadline)
 		defer cancel()
-		next.ServeHTTP(w, answer.WithContext(r, ctx))
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 

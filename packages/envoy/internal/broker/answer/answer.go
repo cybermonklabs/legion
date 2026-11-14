@@ -1,15 +1,16 @@
-// Package answer records every answer of the broker's API port. Middleware wraps the one handler
-// that port serves (cmd/broker installs it outermost), so it sees the answer of every route, of
-// the OAuth provider's library, of the approval page and of the mux's own 404 and 405, whichever
-// writer wrote it. For each answer it:
+// Package answer records every answer of the broker's API port. Middleware wraps the mux that
+// port serves (cmd/broker puts only the request deadline, which writes no answer, outside it), so
+// it sees the answer of every route, of the OAuth provider's library, of the approval page and of
+// the mux's own 404 and 405, whichever writer wrote it. For each answer it:
 //
 //   - mints an answer id, which the answer carries in its X-Broker-Answer-Id header and, in a
 //     JSON refusal body, as answer_id, so a refused caller has a thing to quote;
 //   - counts the answer in broker_answers_total by outcome, code and caller class (NewAnswers);
 //   - and, for a refusal, writes one line at WARN under RefusalMessage naming the answer id, the
 //     status, the code, the method, the route, the caller's class and identity, the secret names
-//     the request named (SecretNames: the first of them, up to 32 KiB of names, and how many it
-//     named), and the caller's X-Correlation-Id when it sent one.
+//     the request named (SecretNames: the first of them, up to 32 KiB of names as the line writes
+//     them, and how many it named), and the caller's X-Correlation-Id when it sent one. Those
+//     fields are RefusalLine's, which the airlock's proxy port writes its refusal line by too.
 //
 // A refusal is an answer with a status from 400 to 499. Three of them are counted and write no
 // line, because a caller is told each again and again while nothing changes: a 429, and the OAuth
@@ -46,6 +47,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/metrics"
 )
@@ -66,10 +68,24 @@ const correlationHeader = "X-Correlation-Id"
 const fieldBytes = 256
 
 // secretNamesBytes bounds the secret names a refusal's line lists (SecretNames), counted as the
-// bytes of the names it lists, each already cut to fieldBytes. Cloud Logging refuses an entry over
-// 256 KiB, and a request may name thousands of names; 32 KiB of them leaves the rest of the line
-// far below that.
+// bytes the line writes for them (listedBytes): each name, already cut to fieldBytes, as a JSON
+// string, its escapes and its two quotes included. Cloud Logging refuses an entry over 262,144
+// bytes, and a request may name thousands of names; this count alone keeps the line below that.
+// The list is at most 32 KiB of written names and one comma between each two, and a name is
+// written as at least its two quotes, so it has at most 16,384 names and fewer commas: some 48 KiB
+// in all, which leaves the rest of the line, each caller-written field of it cut to fieldBytes,
+// far below the limit. Counted by the names' own bytes, 32,768 names of one control byte, each
+// written as 8, would make a line of about 288 KiB.
 const secretNamesBytes = 32 << 10
+
+// invalidUTF8Bytes is what the line writes for a byte of a name that is not UTF-8: encoding/json,
+// which writes the secrets list (slog's JSON handler writes a slice through it), writes U+FFFD in
+// its place, as itself (3 bytes) while the toolchain's jsonv2 experiment is on and as the escape
+// \ufffd (6) while it is off, so the count asks encoding/json once rather than assume either.
+var invalidUTF8Bytes = func() int {
+	written, _ := json.Marshal("\xff")
+	return len(written) - len(`""`)
+}()
 
 // The caller classes a line and the counter name: how the broker established who sent the
 // request, which a handler notes once it knows (NoteCaller).
@@ -142,11 +158,9 @@ type Recorder struct {
 	// none.
 	correlation string
 
-	// mu guards the notes and request: a handler may note from a goroutine of its own while the
-	// answer is being written.
-	mu sync.Mutex
-	// request is the request the mux was handed, whose Pattern is the route (WithContext).
-	request *http.Request
+	// mu guards the notes: a handler may note from a goroutine of its own while the answer is
+	// being written.
+	mu      sync.Mutex
 	class   string
 	caller  string
 	secrets SecretNames
@@ -162,11 +176,14 @@ type Recorder struct {
 
 // Middleware records every answer next writes: it gives the answer its id, counts it on answers
 // (nil counts nothing), writes a refusal's line, and adds answer_id to a JSON refusal body that
-// does not hold it.
+// does not hold it. The line's route is the Pattern the mux sets on the request it is handed, read
+// from the request Middleware hands next, so next is the mux itself: a handler between the two
+// that hands the mux a request of its own (r.WithContext) leaves every line's route empty.
 func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &Recorder{ResponseWriter: w, id: NewID(), correlation: CorrelationID(r), class: CallerPublic}
-		r = WithContext(r, context.WithValue(r.Context(), recorderKey{}, rec))
+		// The request the mux is handed, whose Pattern names the route once next has returned.
+		r = r.WithContext(context.WithValue(r.Context(), recorderKey{}, rec))
 		completed := false
 		defer func() {
 			// A handler that panicked answers nothing net/http will send - it closes the
@@ -181,22 +198,8 @@ func Middleware(next http.Handler, answers *metrics.Counter) http.Handler {
 		}()
 		next.ServeHTTP(rec, r)
 		completed = true
-		rec.finish(answers)
+		rec.finish(r, answers)
 	})
-}
-
-// WithContext is r.WithContext(ctx) for a handler between Middleware and the mux, which must hand
-// the mux a request of its own: the request it answers is the one the recorder reads the route
-// from, since the mux sets Pattern on the request it is handed and no other. With no Recorder on
-// ctx it is r.WithContext(ctx) and no more.
-func WithContext(r *http.Request, ctx context.Context) *http.Request {
-	derived := r.WithContext(ctx)
-	if rec := FromContext(ctx); rec != nil {
-		rec.mu.Lock()
-		rec.request = derived
-		rec.mu.Unlock()
-	}
-	return derived
 }
 
 // FromContext is the Recorder of the request ctx belongs to, and nil for one Middleware does not
@@ -254,14 +257,14 @@ func (rec *Recorder) NoteSecrets(names ...string) {
 }
 
 // SecretNames is the secret names a request named as a refusal's line lists them: the first of
-// them, in the request's order and each cut by Clip, up to secretNamesBytes of names, and a count
-// of the names after them. The first name that would pass the bound ends the list, so the list is
-// always a prefix of what the request named, and the names it leaves out are counted, never kept.
-// Middleware's Recorder notes the API port's names on one, and the airlock's proxy port the name
-// its call was handled for, so both ports' lines list names by this one rule. The zero value has
-// noted none.
+// them, in the request's order and each cut by Clip, up to secretNamesBytes of names as the line
+// writes them (listedBytes), and a count of the names after them. The first name that would pass
+// the bound ends the list, so the list is always a prefix of what the request named, and the
+// names it leaves out are counted, never kept. Middleware's Recorder notes the API port's names on
+// one, and the airlock's proxy port the name its call was handled for, so both ports' lines list
+// names by this one rule. The zero value has noted none.
 type SecretNames struct {
-	// listed is the names the line lists, and bytes their length together.
+	// listed is the names the line lists, and bytes what the line writes for them.
 	listed []string
 	bytes  int
 	// omitted counts the names noted once the list had ended.
@@ -272,14 +275,51 @@ type SecretNames struct {
 func (n *SecretNames) Note(names ...string) {
 	for _, name := range names {
 		if n.omitted == 0 {
-			if name = Clip(name); n.bytes+len(name) <= secretNamesBytes {
+			name = Clip(name)
+			if written := listedBytes(name); n.bytes+written <= secretNamesBytes {
 				n.listed = append(n.listed, name)
-				n.bytes += len(name)
+				n.bytes += written
 				continue
 			}
 		}
 		n.omitted++
 	}
+}
+
+// listedBytes is the bytes a refusal's line writes for name in its secrets list: name as a JSON
+// string, its two quotes included, the comma between two names not. slog's JSON handler writes the
+// list, a []string, through encoding/json with HTML escaping off, so this counts by encoding/json's
+// escapes, not the ones slog writes a string attribute with: 2 bytes for a quote, a backslash, \b,
+// \f, \n, \r and \t; 6 for any other byte below 0x20 (\u00XX) and for U+2028 and U+2029 (\u2028,
+// \u2029); invalidUTF8Bytes for a byte that is not UTF-8; and every other byte as itself, the
+// HTML characters <, > and & among them.
+func listedBytes(name string) int {
+	written := len(`""`)
+	for i := 0; i < len(name); {
+		if b := name[i]; b < utf8.RuneSelf {
+			switch {
+			case b == '"' || b == '\\' || b == '\b' || b == '\f' || b == '\n' || b == '\r' || b == '\t':
+				written += 2
+			case b < ' ':
+				written += len(`\u0000`)
+			default:
+				written++
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(name[i:])
+		switch {
+		case r == utf8.RuneError && size == 1:
+			written += invalidUTF8Bytes
+		case r == '\u2028' || r == '\u2029':
+			written += len(`\u2028`)
+		default:
+			written += size
+		}
+		i += size
+	}
+	return written
 }
 
 // AppendFields appends to fields, a line's attributes as slog takes them, the attributes that
@@ -295,6 +335,53 @@ func (n *SecretNames) AppendFields(fields []any) []any {
 		fields = append(fields, "secrets_omitted", n.omitted)
 	}
 	return fields
+}
+
+// RefusalLine is the fields a refusal's line names on both ports of the broker, which a reader of
+// the log filters and alerts on by name: Middleware writes the API port's line by it and the
+// airlock's proxy port its own, so the two name each field alike and in one order.
+type RefusalLine struct {
+	// ID is the answer's id, which the answer carries in its X-Broker-Answer-Id header.
+	ID string
+	// Status is the answer's status, and Code the code it names.
+	Status int
+	Code   string
+	// Method is the request's method, which the line cuts by Clip.
+	Method string
+	// Route is the pattern of the route the API port's mux matched, and empty for none.
+	Route string
+	// CallerClass is one of the Caller constants, and Caller that class's identity.
+	CallerClass string
+	Caller      string
+	// Secrets is the secret names the request named.
+	Secrets SecretNames
+	// Correlation is the caller's X-Correlation-Id as CorrelationID keeps it, empty for none.
+	Correlation string
+}
+
+// Fields is the line's attributes as slog takes them, in the one order both ports write: answer_id,
+// status, code, method, route, caller_class, caller, the names (SecretNames.AppendFields), then
+// extras, a port's own fields that come before correlation_id, then correlation_id when the
+// caller sent one, then trailing, a port's own fields that come after it. The API port has none of
+// either; the airlock's proxy port names its host, reason and path as extras, and its issue and
+// slot as trailing.
+func (l RefusalLine) Fields(extras []any, trailing ...any) []any {
+	fields := make([]any, 0, 22+len(extras)+len(trailing))
+	fields = append(fields,
+		"answer_id", l.ID,
+		"status", l.Status,
+		"code", l.Code,
+		"method", Clip(l.Method),
+		"route", l.Route,
+		"caller_class", l.CallerClass,
+		"caller", l.Caller,
+	)
+	fields = l.Secrets.AppendFields(fields)
+	fields = append(fields, extras...)
+	if l.Correlation != "" {
+		fields = append(fields, "correlation_id", l.Correlation)
+	}
+	return append(fields, trailing...)
 }
 
 // NoteCode names the code of the refusal about to be written, for a writer whose body names none
@@ -405,10 +492,11 @@ func (rec *Recorder) release() {
 	_, _ = rec.ResponseWriter.Write(rec.body.Bytes())
 }
 
-// finish records the answer once the handler has returned: its line when it is a refusal, its
-// count, and then a held refusal's status and body, answer_id added to a JSON object that names
-// none. The line is written before the body, so whoever reads the answer can find its line.
-func (rec *Recorder) finish(answers *metrics.Counter) {
+// finish records the answer to r, the request the mux was handed, once the handler has returned:
+// its line when it is a refusal, its count, and then a held refusal's status and body, answer_id
+// added to a JSON object that names none. The line is written before the body, so whoever reads
+// the answer can find its line.
+func (rec *Recorder) finish(r *http.Request, answers *metrics.Counter) {
 	if rec.status == 0 {
 		// A handler that wrote nothing answers 200 with no body, which net/http sends once it
 		// returns.
@@ -416,7 +504,7 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 		rec.Header().Set(Header, rec.id)
 	}
 	rec.mu.Lock()
-	request, class, caller, secrets, noted := rec.request, rec.class, rec.caller, rec.secrets, rec.code
+	class, caller, secrets, noted := rec.class, rec.caller, rec.secrets, rec.code
 	rec.mu.Unlock()
 
 	body := rec.body.Bytes()
@@ -427,19 +515,9 @@ func (rec *Recorder) finish(answers *metrics.Counter) {
 		answerCode = refusalCode(rec.status, fields, noted)
 	}
 	if Refused(rec.status, answerCode) {
-		attrs := secrets.AppendFields([]any{
-			"answer_id", rec.id,
-			"status", rec.status,
-			"code", answerCode,
-			"method", Clip(request.Method),
-			"route", request.Pattern,
-			"caller_class", class,
-			"caller", caller,
-		})
-		if rec.correlation != "" {
-			attrs = append(attrs, "correlation_id", rec.correlation)
-		}
-		slog.Warn(RefusalMessage, attrs...)
+		line := RefusalLine{ID: rec.id, Status: rec.status, Code: answerCode, Method: r.Method, Route: r.Pattern,
+			CallerClass: class, Caller: caller, Secrets: secrets, Correlation: rec.correlation}
+		slog.Warn(RefusalMessage, line.Fields(nil)...)
 	}
 	Count(answers, rec.status, answerCode, class)
 

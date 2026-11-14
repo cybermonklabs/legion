@@ -31,18 +31,18 @@ type rig struct {
 	handler  http.Handler
 }
 
-// newRig records next as cmd/broker does, behind a handler that hands the mux a request of its
-// own (as withRequestDeadline does) through answer.WithContext.
+// newRig records next as cmd/broker does: behind the recorder, which a handler wraps that hands it
+// the request with a context of its own, as withRequestDeadline does.
 func newRig(t *testing.T, next http.Handler) *rig {
 	t.Helper()
 	r := &rig{log: &logtest.Recorder{}, registry: metrics.New()}
 	logtest.SetDefault(t, r.log)
-	deadline := http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+	recorded := answer.Middleware(next, answer.NewAnswers(r.registry))
+	r.handler = http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		ctx, cancel := context.WithCancel(req.Context())
 		defer cancel()
-		next.ServeHTTP(w, answer.WithContext(req, ctx))
+		recorded.ServeHTTP(w, req.WithContext(ctx))
 	})
-	r.handler = answer.Middleware(deadline, answer.NewAnswers(r.registry))
 	return r
 }
 
@@ -283,9 +283,10 @@ func TestACodeNotedForARefusalNamesNoOtherAnswer(t *testing.T) {
 	}
 }
 
-// The line names the pattern of the route the mux matched, read from the request the mux was
-// handed through a middleware between it and the recorder, and an empty route for the mux's own
-// 404 and 405. A caller's X-Correlation-Id is kept as its printable ASCII, at most 256 bytes.
+// The line names the pattern of the route the mux matched, read from the request the recorder
+// hands the mux, though a handler outside the recorder handed it a request of its own, and an empty
+// route for the mux's own 404 and 405. A caller's X-Correlation-Id is kept as its printable ASCII,
+// at most 256 bytes.
 func TestTheLineNamesTheRouteAndTheCallersCorrelationID(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /v1/things/{name}", func(w http.ResponseWriter, _ *http.Request) {
@@ -420,21 +421,22 @@ func TestARefusalsLineBoundsTheNamesItLists(t *testing.T) {
 	}
 }
 
-// The bound on a refusal line's names takes 32 KiB of names and not a byte more: a request naming
-// 128 names of 256 bytes lists all 128, with secrets_count 128 and no secrets_omitted, and one
-// naming 129 lists the first 128 and says it left one out. The first name past the bound ends the
-// list, so a short name after it that would still fit is left out too and the list stays a prefix
-// of what the request named, whether the two come in one note or each in a note of its own, as a
-// release notes its grant's names (requests/machine_read.go). Each other row notes its names in
-// two notes, which the line reads as one.
+// The bound on a refusal line's names takes 32 KiB of names as the line writes them, each with its
+// two quotes, and not a byte more: a request naming 128 names of 254 bytes, 256 each as written,
+// lists all 128, with secrets_count 128 and no secrets_omitted, and one naming 129 lists the first
+// 128 and says it left one out. The first name past the bound ends the list, so a short name after
+// it that would still fit is left out too and the list stays a prefix of what the request named,
+// whether the two come in one note or each in a note of its own, as a release notes its grant's
+// names (requests/machine_read.go). Each other row notes its names in two notes, which the line
+// reads as one.
 func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
 	named := make([]string, 129)
 	for i := range named {
 		prefix := fmt.Sprintf("NAME_%03d_", i)
-		named[i] = prefix + strings.Repeat("X", 256-len(prefix))
+		named[i] = prefix + strings.Repeat("X", 254-len(prefix))
 	}
-	// 127 names of 256 bytes and one of 200 leave 56 bytes of the bound, which the next name of
-	// 256 passes and "SHORT" would not.
+	// 127 names written as 256 bytes and one of 200, written as 202, leave 54 bytes of the bound,
+	// which the next name passes and "SHORT", written as 7, would not.
 	shortAfter := slices.Concat(named[:127], []string{strings.Repeat("Y", 200), named[127], "SHORT"})
 	driven := 0
 	for _, row := range []struct {
@@ -446,8 +448,8 @@ func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
 		// eachAlone notes each name in a note of its own, rather than the names in two notes.
 		eachAlone bool
 	}{
-		{"128 names of 256 bytes", named[:128], 128, nil, false},
-		{"129 names of 256 bytes", named, 128, int64(1), false},
+		{"128 names of 254 bytes", named[:128], 128, nil, false},
+		{"129 names of 254 bytes", named, 128, int64(1), false},
 		{"a short name after the first name past the bound", shortAfter, 128, int64(2), false},
 		{"a short name after the first name past the bound, each noted alone", shortAfter, 128, int64(2), true},
 	} {
@@ -484,6 +486,97 @@ func TestARefusalsLineListsNamesUpToItsBound(t *testing.T) {
 	}
 	if driven != 4 {
 		t.Fatalf("the table drove %d rows, want 4", driven)
+	}
+}
+
+// A refusal's line counts each name it lists by what it writes for it, not by the name's own
+// bytes: a request naming 40,000 names of one control byte, each written as "\u0001", 8 bytes,
+// lists the first 4,096 of them, 32 KiB as written, and says it left the rest out. Its line, read
+// as the broker writes it, stays under the 262,144 bytes of one Cloud Logging entry; counted by
+// the names' own bytes, the list would take 32,768 of them, and the line would be about 288 KiB,
+// which GKE drops.
+func TestARefusalsLineCountsTheNamesAsItWritesThem(t *testing.T) {
+	const (
+		listBudget = 32 << 10
+		entryLimit = 256 << 10
+		nameBytes  = len(`"\u0001"`)
+	)
+	named := slices.Repeat([]string{"\x01"}, 40000)
+	out := &logtest.Buffer{}
+	logtest.SetDefault(t, logging.NewCloudHandler(out))
+	handler := answer.Middleware(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		answer.FromContext(req.Context()).NoteSecrets(named...)
+		writeJSON(w, http.StatusBadRequest, `{"code":"NAMES_REFUSED","error":"no"}`)
+	}), nil)
+	handler.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/v1/requests", nil))
+
+	var refusals []string
+	for line := range strings.Lines(out.String()) {
+		if strings.Contains(line, `"message":"`+answer.RefusalMessage+`"`) {
+			refusals = append(refusals, line)
+		}
+	}
+	if len(refusals) != 1 {
+		t.Fatalf("one refusal wrote %d lines under %q, want 1", len(refusals), answer.RefusalMessage)
+	}
+	text := refusals[0]
+	if len(text) >= entryLimit {
+		t.Fatalf("the refusal's line is %d bytes, want under the %d bytes of one Cloud Logging entry", len(text), entryLimit)
+	}
+	var line struct {
+		Secrets json.RawMessage `json:"secrets"`
+		Count   *int            `json:"secrets_count"`
+		Omitted *int            `json:"secrets_omitted"`
+	}
+	if err := json.Unmarshal([]byte(text), &line); err != nil {
+		t.Fatalf("the refusal's line is not one JSON object: %v", err)
+	}
+	var listed []string
+	if err := json.Unmarshal(line.Secrets, &listed); err != nil || len(listed) == 0 || !slices.Equal(listed, named[:len(listed)]) {
+		t.Fatalf("the line's secrets are %.80s (%v), want the first names the request named", line.Secrets, err)
+	}
+	// The list as the line writes it is its brackets, its names, and a comma between each two.
+	written := len(line.Secrets) - len("[]") - (len(listed) - 1)
+	if written > listBudget {
+		t.Fatalf("the line lists %d names written as %d bytes, want at most %d", len(listed), written, listBudget)
+	}
+	if written+nameBytes <= listBudget {
+		t.Fatalf("the line left names out but lists only %d bytes of the %d it may", written, listBudget)
+	}
+	if line.Count == nil || *line.Count != len(named) {
+		t.Fatalf("secrets_count = %v, want %d, the names the request named", line.Count, len(named))
+	}
+	if left := len(named) - len(listed); line.Omitted == nil || *line.Omitted != left {
+		t.Fatalf("secrets_omitted = %v, want %d, the names the line left out", line.Omitted, left)
+	}
+}
+
+// The bound counts each name as the bytes the line writes for it (answer.ListedBytes), measured
+// here on what the broker's own JSON handler writes for a secrets list naming that name alone,
+// for each escape the list's writer makes: a quote and a backslash, the control bytes with a short
+// escape and those without, U+2028 and U+2029, bytes that are not UTF-8, and the bytes it writes
+// as they are, the HTML characters among them. The count allocates nothing.
+func TestTheBoundCountsANameAsTheLineWritesIt(t *testing.T) {
+	const opening = `"secrets":[`
+	for _, name := range []string{
+		"", "PLAIN_NAME", `"`, `\`, "\b", "\f", "\n", "\r", "\t", "\x00", "\x01", "\x1f", "\x7f",
+		"<", ">", "&", "\u2028", "\u2029", "\xff", "\xc3", "\xe2\x80", "\xed\xa0\x80", "\xf4\x90\x80\x80",
+		"é", "\ufffd", "😀", "A\x01B\"C\\D\u2028E\xffF<G>H&\bI\u2029",
+	} {
+		var out strings.Builder
+		slog.New(logging.NewCloudHandler(&out)).Warn(answer.RefusalMessage, "secrets", []string{name})
+		text := out.String()
+		start := strings.Index(text, opening)
+		if start < 0 || !strings.HasSuffix(text, "]}\n") {
+			t.Fatalf("the line for %q is %q, want it to end with a secrets list", name, text)
+		}
+		written := len(text) - start - len(opening) - len("]}\n")
+		if got := answer.ListedBytes(name); got != written {
+			t.Errorf("ListedBytes(%q) = %d, want %d, what the line writes for it: %s", name, got, written, text[start:])
+		}
+		if allocs := testing.AllocsPerRun(10, func() { answer.ListedBytes(name) }); allocs != 0 {
+			t.Errorf("ListedBytes(%q) allocates %v times, want none", name, allocs)
+		}
 	}
 }
 

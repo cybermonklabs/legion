@@ -119,8 +119,9 @@ func newTestServerWith(t *testing.T, adjust func(*api.Deps)) *testServer {
 	cur := policytest.Current(t, local)
 
 	mux := http.NewServeMux()
-	// Behind the answer recorder cmd/broker installs outermost (answer.Middleware), counting on a
-	// registry of the server's own, so every answer a test reads is the one a deployment sends.
+	// Behind the answer recorder (answer.Middleware), which cmd/broker wraps the mux in, inside
+	// withRequestDeadline, counting on a registry of the server's own, so every answer a test reads
+	// is the one a deployment sends.
 	registry := metrics.New()
 	srv := httptest.NewServer(answer.Middleware(mux, answer.NewAnswers(registry)))
 	t.Cleanup(srv.Close)
