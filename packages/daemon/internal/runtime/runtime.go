@@ -118,8 +118,7 @@ type Runtime interface {
 	// non-empty answer: the round asks each role of that place to push its work and answer (api's
 	// claims/ready-for-update), and replaces the place (ReplacePod) once every asked role has
 	// answered and no turn runs, or at the round's bound (pod_update_grace_minutes) whatever the
-	// roles answered, an operator's suspension excepted. The push check runs before every
-	// replacement (RescueUnpushed).
+	// roles answered, an operator's suspension excepted.
 	//
 	// ErrPodGone is the place the locator records not being there, or being ended for something
 	// other than this round's own replacement, which is neither drift nor a failure to ask:
@@ -145,16 +144,6 @@ type Runtime interface {
 	// deletes an issue's disk, so every caller states what makes it still due rather than
 	// leaving the question to a nil.
 	ReplacePod(ctx context.Context, k Known, due func(context.Context) error) error
-	// RescueUnpushed is the push check of the place k's process runs in, made just before
-	// ReplacePod deletes it: the process's own shim checks every workspace on that place's disk
-	// for the issue's own work its remote lacks and pushes it to the issue's one rescue branch,
-	// request.Target (a shim built before that field pushes to branches numbered from
-	// request.Branch), as the process's role and with that role's own credential, so the daemon
-	// handles no secret for it. It answers one entry per workspace. k must record a running
-	// process in the place it names. A shim built before the check is ErrRescueUnsupported. A
-	// runtime whose places outlive every replacement (a tmux pane's host directory) has nothing to
-	// check and answers nil.
-	RescueUnpushed(ctx context.Context, k Known, request RescueRequest) ([]WorkspaceRescue, error)
 	// CleanupTree deletes what the runtime holds for tree beyond its claims' processes, once every
 	// claim of the tree has retired and the tree's cleanup is reserved (store.CleanupReservedTree);
 	// nil once nothing of it remains. A runtime that holds nothing per tree returns nil at once.

@@ -308,12 +308,13 @@ func DecideWorkspaceRestore(bundle, running WorkspaceCopyHeld, push WorkspacePus
 // by jj as a move backwards or sideways.
 //
 // The rescue branch is withheld because it only moves forward: each rescue is one commit on the
-// tip GitHub holds (claim.RescueBranch). The shim's bundler keeps a local bookmark of it, like
-// any other, where it is on a commit no remote branch holds, and a rescue the pod pushes after the
-// copy was taken moves GitHub's tip past that commit. A restore that set the bookmark back there
-// would leave it behind GitHub's tip: a role's `jj git push` of it moves GitHub's branch backwards
-// and drops the later rescue, and the next rescue push leaves the bookmark conflicted, which jj
-// then refuses to push.
+// tip GitHub holds (claim.RescueBranch). No daemon of this release pushes one, but an earlier
+// daemon's rescue branch stays on GitHub and a role may push it. The shim's bundler keeps a local
+// bookmark of it, like any other, where it is on a commit no remote branch holds, and a rescue
+// pushed after the copy was taken moves GitHub's tip past that commit. A restore that set the
+// bookmark back there would leave it behind GitHub's tip: a role's `jj git push` of it moves
+// GitHub's branch backwards and drops the later rescue, and the next rescue push leaves the
+// bookmark conflicted, which jj then refuses to push.
 //
 // It also answers what it left out, withheld: each of the two names that bookmarks holds, with
 // the commit it holds it on, and nil when bookmarks holds neither. The one line that tells an

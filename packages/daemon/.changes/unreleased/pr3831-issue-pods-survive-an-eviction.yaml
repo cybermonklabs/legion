@@ -1,4 +1,6 @@
 kind: Added
+custom:
+  Issue: pr3831
 body: |-
   The daemon keeps a copy of each issue workspace's unpushed work while its pod runs: at the end of
   each turn, every 5 minutes inside a turn, and at each push of the issue's branch it records. The

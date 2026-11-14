@@ -9,9 +9,11 @@ const issueBranchPrefix = "legion/"
 // workspace, the branch the daemon creates for it, and the head branch of its pull request.
 func IssueBranch(issue string) string { return issueBranchPrefix + issue }
 
-// RescueBranch is issue's one rescue branch, legion/<KEY>-rescue: the branch the push check before
-// a pod's replacement pushes the issue's unpushed work to (rescue.Request.Target), which only
-// moves forward. It is no issue's branch (BranchIssue), so nothing the daemon keeps follows it.
+// RescueBranch is issue's one rescue branch, legion/<KEY>-rescue: the branch an earlier daemon's
+// push check before a pod's replacement pushed the issue's unpushed work to, which only moves
+// forward. No daemon of this release pushes it, but a branch an earlier one pushed stays on
+// GitHub, where a pod's fetch brings it (runtime.RestorableBookmarks withholds it for that). It is
+// no issue's branch (BranchIssue), so nothing the daemon keeps follows it.
 func RescueBranch(issue string) string { return IssueBranch(issue) + "-rescue" }
 
 // BranchIssue is the issue whose branch (IssueBranch) branch is, and whether it is one: a branch
