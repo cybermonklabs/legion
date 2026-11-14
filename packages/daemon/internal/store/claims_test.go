@@ -449,6 +449,32 @@ func TestWhatAClaimsDeathWasChargedRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
+// Both runs of a claim's pod ends from outside the pod round-trip through its row, each in a
+// column of its own (supervise.Budgets.PodEndsNotOurs and StartEndsNotOurs): a restart builds
+// every claim from this table, so a run held in memory alone would start again at each restart,
+// and a start the cluster ends at every try, with the daemon restarting between, would never
+// reach the limit that charges it. The second write is the agent's ready, which ends the start's
+// run and keeps the other, so a column the upsert's update forgot reads back the run the ready
+// ended.
+func TestAClaimsTwoRunsOfPodEndsFromOutsideThePodRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store := migratedStore(t)
+	want := tmuxClaim("legion-LEGION-209-outsideends")
+	want.State = supervise.StateLaunching
+	want.Budgets = supervise.Budgets{LaunchFailures: 1, PodEndsNotOurs: 1, StartEndsNotOurs: 4}
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+
+	want.State = supervise.StateReady
+	want.Budgets = supervise.Budgets{PodEndsNotOurs: 1}
+	if err := store.PutClaim(ctx, want); err != nil {
+		t.Fatalf("put claim again: %v", err)
+	}
+	sameClaim(t, onlyClaim(t, store), want)
+}
+
 // The round a claim left is a column of its own, and it is read back exactly as it was written:
 // the daemon decides from it what the pod of a round took with it when it went, and a restart
 // has nothing else to read that from (INFRA-484). It round-trips independently of the round the

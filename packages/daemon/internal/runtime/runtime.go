@@ -441,8 +441,9 @@ const (
 	// nothing the daemon can see wrong, so the supervisor continues each role of that pod in its
 	// own session, charging neither a death nor a launch failure, and sends each the task it owed
 	// again (supervise's judge, endedFromOutside, displaced) — until such ends come
-	// launch_failure_limit times in a row with no turn completed between, when the end is charged
-	// as the claim's own death (supervise.Budgets.PodEndsNotOurs). It covers every claim the
+	// launch_failure_limit times in a row, with no turn completed between them on a ready agent
+	// or no ready between them while the agent starts, when the end is charged as the claim's own
+	// death (supervise.Budgets.PodEndsNotOurs and StartEndsNotOurs). It covers every claim the
 	// runtime observes, the project controller's included: the reading is of the cause of the
 	// end, not of the kind of pod.
 	PodEndNotOurs PodEndReading = "pod_end_not_ours"

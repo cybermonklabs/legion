@@ -879,8 +879,11 @@ func (m *Machine) retirePending(ctx context.Context) error {
 	} else if p.Entry != 0 && p.Entry == m.claim.GivenEntry {
 		retired.GivenEntry = retired.ServedEntry
 	}
-	// The deaths and the run of pod ends from outside the pod were counted against this task, so
-	// they end with it, in the same write (chargeDeath, endedFromOutside, workOutstanding).
+	// The deaths and the run of pod ends from outside the pod that found the ready agent at this
+	// task were counted against it, so they end with it, in the same write (chargeDeath,
+	// endedFromOutside, workOutstanding). The run of a start's ends (Budgets.StartEndsNotOurs) is
+	// the start's and not the task's: a task that ends while the agent starts leaves that start
+	// exactly as it was, so only the agent's ready ends that run (ready).
 	retired.Budgets.Deaths, retired.Budgets.PodEndsNotOurs = 0, 0
 	err := m.write(ctx, func(ctx context.Context) error {
 		return m.deps.Store.RetireDelivery(ctx, retired, p.ID)

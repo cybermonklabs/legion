@@ -1844,11 +1844,13 @@ func (m *Machine) takeBackSignal(ownTask bool) {
 // starts under a compaction writes one too (turnStartedWhileBusy), so a reader counting starts
 // against ends finds the pair.
 //
-// A turn that completes ends the claim's run of pod ends from outside it (Budgets.PodEndsNotOurs,
-// endedFromOutside): the process held a pod long enough to finish work, so the next such end is
-// the first of a new run. It is cleared before either write below, so the claim leaves this turn
-// with the reset stored whichever of the two writes it. A turn a compaction aborted completed
-// nothing, and clears nothing.
+// A turn that completes ends the first of the claim's two runs of pod ends from outside it, the
+// run counted against a ready agent's work (Budgets.PodEndsNotOurs, endedFromOutside): the
+// process held a pod long enough to finish work, so the next such end is the first of a new run.
+// It is cleared before either write below, so the claim leaves this turn with the reset stored
+// whichever of the two writes it. A turn a compaction aborted completed nothing, and clears
+// nothing. The second run, of the ends of a start, is already over by then: the agent's ready
+// ended it (ready).
 func turnEnded(m *Machine, ctx context.Context, _ Event) error {
 	m.endTurn()
 	m.claim.LastTurnEnd = m.deps.Clock.Now()
@@ -2212,18 +2214,26 @@ func reregister(m *Machine, ctx context.Context, ev Event) error {
 // since it is what dates the two causes beside it — a death and a failed start are both older
 // than the agent that is running now (machine.go's Claim).
 //
-// The ready resets the launch failures and not the run of pod ends from outside the pod
-// (Budgets.PodEndsNotOurs), which outlives it as the deaths do: a relaunch completes no turn, so
-// only a turn that completes or the end of the task the run was counted against resets it
-// (turnEnded, retirePending). An agent relaunched after a turn a message started comes up with no
-// task and no turn, and a run ended here would be one again at each such turn the cluster ends,
-// never reaching the limit (endedFromOutside).
+// The ready resets the launch failures, and with them the second of the two runs of pod ends from
+// outside the pod, the run of ends that found the agent not yet ready (Budgets.StartEndsNotOurs):
+// a start that reaches ready is one the cluster let finish, so the next start the cluster ends is
+// the first of a new run. It does not reset the first run, of ends that found the ready agent
+// with work outstanding (Budgets.PodEndsNotOurs), which outlives it as the deaths do: a relaunch
+// completes no turn, so only a turn that completes or the end of the task the run was counted
+// against resets it (turnEnded, retirePending). An agent relaunched after a turn a message
+// started comes up with no task and no turn, and a run ended here would be one again at each such
+// turn the cluster ends, never reaching the limit. One run cannot do both, which is why there are
+// two (endedFromOutside): kept past the ready, the run of a start's ends could not count a claim
+// with no task, which completes no turn and would see its count only grow.
 func ready(m *Machine, ctx context.Context, _ Event) error {
 	m.claim.State = StateReady
 	m.claim.LastReady = m.deps.Clock.Now()
 	// The pending cause goes with the launch failures it names: the episode they measure ended
-	// when this agent came up (Claim.PendingCause).
+	// when this agent came up (Claim.PendingCause). The run of the start's ends from outside the
+	// pod ends with them, since the start it counted is over and a launch failure is what its
+	// limit charges (Budgets.StartEndsNotOurs).
 	m.claim.Budgets.LaunchFailures, m.claim.PendingCause = 0, ""
+	m.claim.Budgets.StartEndsNotOurs = 0
 	m.disarm(TimerRegistration)
 	if m.held != nil {
 		return m.suspendHeld(ctx)

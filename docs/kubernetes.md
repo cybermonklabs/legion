@@ -4515,17 +4515,25 @@ The daemon continues each role of that pod in that role's own session, charges n
 The turn each role was in is lost with the pod, and the task goes back to waiting until that session resumes.
 
 The third such end in a row is charged all the same.
-When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own, and so every such end after it until the run is reset (`launch_failure_limit`, 3 by default).
-A pod that uses more memory than it requested can drive its own node into pressure, and that eviction carries `DisruptionTarget` exactly as a neighbour's does, so the condition cannot tell the two apart.
-A completed turn starts the count again, and so does the end of the task the run was counted against, however that task ends: a suspension or a phase change that retires it ends the run with it, as it ends the claim's deaths.
-Nothing else resets it, so the run survives a relaunch: the agent that comes up has completed no turn, and the count goes on from where the last pod left it.
-The count is kept in the claim's row (`claims.pod_ends_not_ours`), so a daemon restart does not start it again.
-An end that finds the claim's agent ready is counted only with work outstanding, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
+The daemon counts these ends in two runs, by whether the claim's agent was ready when its pod ended: the third end of either run is charged, and so is every end of that run after it until the run is reset (`launch_failure_limit`, 3 by default).
+A pod that uses more memory than it requested can drive its own node into pressure, its start as much as its work, and that eviction carries `DisruptionTarget` exactly as a neighbour's does, so the condition cannot tell the two apart.
+Both runs are kept in the claim's row (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), so a daemon restart starts neither again.
+
+The first run counts the ends that find the claim's agent ready with work outstanding, which is the condition a death is charged under: a task the claim holds, or a turn that was open when the pod ended, such as one a message started.
+When a claim's pod ends from outside it for the third time with no turn of that claim completed between those ends, the daemon charges that end as it charges a death of the claim's own.
 Such an end ends the turn it interrupted, as a charged death does, since the agent that turn belonged to is gone and never ends it.
+A completed turn starts the count again, and so does the end of the task the run was counted against, however that task ends: a suspension or a phase change that retires it ends the run with it, as it ends the claim's deaths.
+Nothing else resets it, the agent's ready included, so the run survives a relaunch: the agent that comes up has completed no turn, and the count goes on from where the last pod left it.
 An architect's turns and the controller's start from messages, so a claim whose pod the cluster ends in every such turn adds one to its run each time and is charged at the limit rather than being relaunched for ever.
-An end that finds the agent not yet ready is counted when the claim holds a task, since a pod's own start, with the workspace's restore and six agents starting at once, can drive its node into pressure as well;
-the end of such a start that reaches the limit is charged as the end of any process whose agent never came up is, as a launch failure, so a start the cluster ends every time fails its claim once its launch failures run out rather than being relaunched for ever.
-A claim relaunched with no task and no turn counts nothing, and neither does an agent ready and idle between assignments: such an end is neither counted nor charged and leaves the count where it was, since a claim that completes no turn would otherwise be charged for a pod the cluster repacks now and then.
+An end that finds the agent ready and idle between assignments, with no task and no turn open, is neither counted nor charged and leaves both runs where they were, since a claim that completes no turn would otherwise be charged for a pod the cluster repacks now and then.
+
+The second run counts the ends that find the claim's agent not yet ready, whatever work the claim holds, and such an end counts in it alone.
+Its third end is charged as the end of any process whose agent never came up is, as a launch failure, so a start the cluster ends every time fails its claim once its launch failures run out rather than being relaunched for ever, with a task or without one.
+The agent's ready resets this run, as it resets the launch failures: a start that reaches ready is one the cluster let finish, so the ends of starts that each reach ready cost nothing.
+
+One run could not bound both loops.
+Reset at the agent's ready, it would start again at each turn a message started and the cluster ended, since the agent relaunched after such a turn comes up with no task and no turn, and that claim would never reach the limit.
+Kept past the ready, it could not count the start of a claim with no task, such as an architect a message woke, the controller or a phase worker between assignments: such a claim completes no turn, so its count would only grow and charge it for starts the cluster ends now and then.
 
 An end of neither reading is charged as a death exactly as before, so a pod that fails by itself still ends its claim once that claim's deaths run out ([Liveness rules](#liveness-rules)).
 `Evicted` with no `DisruptionTarget` condition is such an end:
@@ -4540,7 +4548,7 @@ Three ends differ in what reaches the issue's next pod, and this is how a reader
   The disk goes with the pod, as it does at every end.
   What comes back is the newer of the issue's two saved copies, restored before any role starts:
   the work of the last turn that ended, or of a turn still running up to its last copy, which the cadence bounds at 5 minutes ([The copy of a running pod's workspace](#the-copy-of-a-running-pods-workspace)).
-  Each role keeps its session, keeps the task it owed and is charged no death, until such ends reach `launch_failure_limit` in a row while it holds a task or is in a turn, with no turn completed between them (above).
+  Each role keeps its session, keeps the task it owed and is charged no death, until such ends reach `launch_failure_limit` in one of the two runs above.
   What no copy holds goes with the disk:
   the issue's scratch, each role's temporary directory and logs, every ignored file and the workspace's CodeGraph index;
 
@@ -5025,14 +5033,15 @@ Deleting the rows costs no work: a running copy's work is on the disk it was tak
 What the rollback does cost is the copy of a pod the cluster ends while the earlier daemon runs, which no earlier daemon has.
 The rows of `issue_pushes` and `issue_push_heads` need no act: they hold only times older than any push the earlier daemon saw and the commits of the pushes before it, and a running copy the new daemon takes after the roll forward is newer than all of them.
 An earlier daemon charges a death for every pod end again, as it did before this release, and records no reading.
-It also neither reads nor clears the claims' run of ends from outside the pod (`claims.pod_ends_not_ours`), so the turns it completes do not start that run again, and a roll forward would read back a run its turns had ended.
-Clear the column in the same rollback:
+It also neither reads nor resets the claims' two runs of ends from outside the pod (`claims.pod_ends_not_ours` and `claims.start_ends_not_ours`), since no earlier daemon names either column:
+the turns it completes do not start the first run again and the readies its agents reach do not start the second, so a roll forward would read back runs the earlier daemon had ended and could charge an end for them.
+Clear both columns in the same rollback:
 
 ```sh
-psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set pod_ends_not_ours = 0;'
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -c 'update claims set pod_ends_not_ours = 0, start_ends_not_ours = 0;'
 ```
 
-It prints `UPDATE <n>`, and the column then holds nothing a roll forward could charge by.
+It prints `UPDATE <n>`, and the columns then hold nothing a roll forward could charge by.
 
 ### Liveness rules
 

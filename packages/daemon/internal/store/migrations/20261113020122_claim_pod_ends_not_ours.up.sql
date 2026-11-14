@@ -1,27 +1,44 @@
--- 20261113020122_claim_pod_ends_not_ours.up.sql — how many ends of a claim's pod in a row the
--- daemon read as made by something outside the pod, with no turn of the claim completed between
--- them (INFRA-1117).
+-- 20261113020122_claim_pod_ends_not_ours.up.sql — the claim's two runs of ends of its pod that the
+-- daemon read as made by something outside the pod (INFRA-1117): the ends that found its agent
+-- ready with work outstanding, and the ends that found its agent not yet ready.
 --
--- claims.pod_ends_not_ours is supervise.Budgets.PodEndsNotOurs. An end read pod_end_not_ours —
--- an eviction, a preemption, a node going down, a delete no act of the daemon's accounts for —
--- is continued uncharged, and counted here where it finds the claim holding a task or its ready
--- agent in a turn. From launch_failure_limit such ends on, each is charged as the claim's own
--- death (a launch failure where the agent was not yet ready). Only a completed turn and the end
--- of the task the run was counted against put it back to 0; a relaunch does not, so the run goes
--- on across the claim's pods. A pod that uses more memory than it requested can drive its own
--- node into pressure, and that eviction carries the same DisruptionTarget condition a
--- neighbour's does, so a claim whose work keeps ending its own pod that way would otherwise be
--- relaunched for ever. It is written with the claim, as the four other budgets are, so a daemon
--- restart between two such ends does not start the run again.
+-- An end read pod_end_not_ours — an eviction, a preemption, a node going down, a delete no act of
+-- the daemon's accounts for — is continued uncharged and counted in one of the two columns below.
+-- From launch_failure_limit ends in a run on, each end of that run is charged as the claim's own
+-- death. A pod that uses more memory than it requested can drive its own node into pressure, its
+-- start (the workspace's restore and six agents starting at once) as much as its work, and that
+-- eviction carries the same DisruptionTarget condition a neighbour's does, so a claim whose start
+-- or work keeps ending its own pod that way would otherwise be relaunched for ever.
 --
--- 0 for every row the table already holds, and nothing backfills it: the release this upgrades
--- from counted these ends nowhere, so a claim in the middle of such a run when the image changes
--- starts it again once, which is what that release's own restart did.
+-- claims.pod_ends_not_ours is supervise.Budgets.PodEndsNotOurs, the first run: the ends that
+-- found the claim's ready agent holding a task or in a turn. Its limit charges a death. Only a
+-- completed turn and the end of the task the run was counted against put it back to 0; a relaunch
+-- and the agent's ready do not, so the run goes on across the claim's pods, and a claim whose
+-- messages' turns keep ending its pod reaches the limit.
 --
--- Rolling the image back restores nothing, but it clears this column (docs/kubernetes.md,
--- "Rolling back the running copy"): store's claims.go is the only reader and writer of it, and the
--- release before it names it in no statement, so its upserts leave whatever the column last held
--- while the turns that release completes would have ended the run. A daemon of this release rolled
--- forward over a column left as it was would read that run back and could charge an end the
--- earlier daemon's turns had already put behind it.
+-- claims.start_ends_not_ours is supervise.Budgets.StartEndsNotOurs, the second run: the ends that
+-- found the claim's agent not yet ready, whatever work the claim holds, task or none. Such an end
+-- counts here alone. Its limit charges a launch failure, and the launch failures then end the
+-- loop. The agent's ready puts it back to 0, as it does the launch failures.
+--
+-- The runs are two because one count cannot bound both loops. Reset at the ready, the first would
+-- start again at each relaunch after a message's turn. Kept past the ready, a count of a start's
+-- ends would only grow for a claim with no task, which completes no turn, and charge it for starts
+-- the cluster ends now and then; left uncounted, a claim with no task whose every start the
+-- cluster ends was relaunched for ever, charged nothing.
+--
+-- Both are written with the claim, as the other budgets are, so a daemon restart between two such
+-- ends does not start a run again. 0 for every row the table already holds, and nothing backfills
+-- either: the release this upgrades from counted these ends nowhere, so a claim in the middle of
+-- such a run when the image changes starts it again once, which is what that release's own
+-- restart did.
+--
+-- Rolling the image back restores nothing, but it clears both columns (docs/kubernetes.md,
+-- "Rolling back the running copy"): store's claims.go is the only reader and writer of them, and
+-- the release before it names neither in any statement, so its upserts leave whatever each column
+-- last held, while the turns that release completes would have ended the first run and the
+-- readies its agents reach the second. A daemon of this release rolled forward over columns left
+-- as they were would read those runs back and could charge an end the earlier daemon's turns or
+-- readies had already put behind it.
 alter table claims add column pod_ends_not_ours integer not null default 0 check (pod_ends_not_ours >= 0);
+alter table claims add column start_ends_not_ours integer not null default 0 check (start_ends_not_ours >= 0);

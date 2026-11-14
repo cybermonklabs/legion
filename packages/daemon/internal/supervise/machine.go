@@ -321,9 +321,10 @@ type Claim struct {
 	// found to have nothing to charge: the decision died makes for one dead process, and the
 	// record that keeps a second report of that same process from being charged a second death.
 	// An end of that process's pod from outside it is decided once in the same way: endedFromOutside
-	// counts it (Budgets.PodEndsNotOurs) and writes this, so a second report of the one end counts
-	// nothing more. The rule it keeps is written where it is applied (died, endedFromOutside);
-	// what leaves a claim to be reported twice is ProcessGone's two windows above.
+	// counts it in one of its two runs (Budgets.PodEndsNotOurs, Budgets.StartEndsNotOurs) and
+	// writes this, so a second report of the one end counts nothing more. The rule it keeps is
+	// written where it is applied (died, endedFromOutside); what leaves a claim to be reported
+	// twice is ProcessGone's two windows above.
 	//
 	// It is durable, and it is the one of these marks that is: a restart restores the claim a
 	// refused or parked relaunch left standing over its dead process, and the sweep's first
@@ -2794,9 +2795,10 @@ func (m *Machine) judge(ctx context.Context, observation runtime.Observation, al
 		// The daemon's own replacement of a pod is no fault of the process (Displaced). An end
 		// something outside the pod made is read in one place, here, and goes to the one site
 		// that decides what it costs (endedFromOutside): uncharged, until such ends come
-		// launch_failure_limit times in a row with no turn completed between them. An end the
-		// daemon itself made, and one the runtime read neither way, are charged exactly as they
-		// were before the reading existed.
+		// launch_failure_limit times in one of its two runs — with no turn completed between
+		// them, or with no ready between them while the agent starts. An end the daemon itself
+		// made, and one the runtime read neither way, are charged exactly as they were before
+		// the reading existed.
 		if observation.Displaced {
 			return m.displaced(ctx, observation)
 		}
