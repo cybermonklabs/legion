@@ -30,11 +30,11 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
-// capturedRequest is one request a real gh or git sent to GitHub through the capture proxy: the
-// owner of the repository it targets, read from its path or its GraphQL variables ("" for a
-// request naming none), and the credential it carried.
+// capturedRequest is one request a real gh or git sent to GitHub through the capture proxy: its
+// method, its host and path, the owner of the repository it targets, read from its path or its
+// GraphQL variables ("" for a request naming none), and the credential it carried.
 type capturedRequest struct {
-	host, path, owner, auth string
+	method, host, path, owner, auth string
 }
 
 // captureProxy is an HTTPS proxy that answers CONNECT for any host with a certificate of its own
@@ -152,7 +152,7 @@ func startCaptureProxy(t *testing.T) *captureProxy {
 // through to a host it never means.
 func (p *captureProxy) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
-	request := capturedRequest{host: r.Host, path: r.URL.Path, auth: r.Header.Get("Authorization")}
+	request := capturedRequest{method: r.Method, host: r.Host, path: r.URL.Path, auth: r.Header.Get("Authorization")}
 	switch {
 	case capturedRESTOwner.MatchString(r.URL.Path):
 		request.owner = strings.ToLower(capturedRESTOwner.FindStringSubmatch(r.URL.Path)[1])
@@ -259,15 +259,20 @@ func realGHForCapture(t *testing.T) string {
 // an option's value read as that option's from the leaf command's own help, GH_REPO under an
 // explicit endpoint, -R under GH_REPO, --help=false, a name in --repos under --org, -R after an
 // optional-value shorthand, every argument of a plural slot, a placeholder gh fills from GH_REPO,
-// the working directory's own repository as gh reads its remotes whatever their scheme — the issue
-// owner's token only for the issue owner's repository and for a command naming none run
-// where only that owner's remotes are, each other owner's own token for that owner's, and the
-// git gh runs itself asking the wrapper for the owner in its path. A command the wrapper cannot
-// read for certain (a gh alias or an extension, run, as `gh help`'s target or after --version, a
-// command gh's own help does not list, `gh extension exec`, a search qualifier it cannot read,
-// GH_HOST naming another host, an argument a later gh's usage names otherwise), one naming two
-// owners — an option or another repository naming one owner while gh takes the command's own from
-// the working directory or GH_REPO, or a workspace whose remotes name two — and one naming an owner
+// the working directory's own repository as gh reads its remotes whatever their scheme, origin's
+// alone in a fork's checkout whose origin carries gh's default marker, `remote.origin.gh-resolved
+// base`, for a command of a group gh resolves through that marker — the issue owner's token only
+// for the issue owner's repository and for a command naming none run where only that owner's
+// remotes are or where that marker makes the issue owner's origin the repository gh acts on, each
+// other owner's own token for that owner's, and the git gh runs itself asking the wrapper for the
+// owner in its path. A command the wrapper cannot read for certain (a gh alias or an extension,
+// run, as `gh help`'s target or after --version, a command gh's own help does not list, `gh
+// extension exec`, a search qualifier it cannot read, GH_HOST naming another host, an argument a
+// later gh's usage names otherwise), one naming two owners — an option or another repository
+// naming one owner while gh takes the command's own from the working directory or GH_REPO, or a
+// workspace whose remotes name two, every one but that marked checkout: a group that never reads
+// the marker, repo set-default reading every remote's network, a second marker line gh reads, a
+// marker that is not origin's `base`, an origin URL gh may read otherwise — and one naming an owner
 // the bundle does not hold are refused with exit 2 and send nothing; no alias or extension runs,
 // none is installed, and gh's own help and version answer.
 func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
@@ -551,8 +556,85 @@ func TestRealGhAndGitSendTheTargetOwnersToken(t *testing.T) {
 	for _, scheme := range []string{"git+https://github.com/sjawhar/legion.git", "ftp://github.com/sjawhar/legion", "ftps://github.com/sjawhar/legion", "file://github.com/sjawhar/legion", "github.com://sjawhar/legion", "git@github.com/sjawhar:legion"} {
 		rows = append(rows, row{workspace([][]string{origin, {"remote", "add", "upstream", scheme}}), nil, []string{"pr", "list", "--json", "title"}, "", "more than one owner"})
 	}
+	// R1 of dispatch://INFRA-3399: the marked fork checkout, acme's fork whose upstream is
+	// sjawhar's and whose origin carries gh's default marker, `remote.origin.gh-resolved base`, as
+	// the issue clone a pod provisions does. gh resolves a command of the groups that read the
+	// marker to origin's repository there, gh api naming no repository among them, so it carries
+	// acme's token; so it does where the one change to that checkout is a spelling of github.com
+	// gh normalizes, an origin push URL naming another owner, which gh reads only where the fetch
+	// URL names nothing, or a marker line gh reads as none: an empty value on a remote other than
+	// origin, a key set with no value. Every other two-owner checkout is refused as before: a group
+	// that never reads the marker, repo set-default reading every remote's network, the marker on
+	// upstream or on both, origin's naming sjawhar's repository, origin's URL an ssh one or on a
+	// host gh does not normalize to github.com, a second line gh gives origin — a dotted remote's
+	// key, the key given twice, an empty value clearing base — and origin's marker gone where
+	// upstream's value holds a newline, so git prints a second line, `origin base`, which gh skips.
+	markedFork := func(changes ...[]string) string {
+		return workspace(append([][]string{
+			{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
+			{"remote", "add", "upstream", "git@github.com:sjawhar/legion.git"},
+			{"config", "remote.origin.gh-resolved", "base"},
+		}, changes...))
+	}
+	marked := markedFork()
+	// git config writes no key without a value, so that line is written into the checkout's
+	// configuration file itself.
+	valueless := markedFork()
+	configFile, err := os.OpenFile(filepath.Join(valueless, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := configFile.WriteString("[remote \"upstream\"]\n\tgh-resolved\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := configFile.Close(); err != nil {
+		t.Fatal(err)
+	}
+	repoView := []string{"repo", "view", "--json", "nameWithOwner"}
+	rows = append(rows,
+		row{marked, nil, repoView, "acme", ""},
+		row{marked, nil, []string{"api", "repos/{owner}/{repo}"}, "acme", ""},
+		row{marked, nil, []string{"api", "graphql", "-f", "query={viewer{login}}"}, "acme", ""},
+		row{markedFork([]string{"remote", "set-url", "origin", "https://www.github.com/acme/widgets.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"remote", "set-url", "origin", "https://GitHub.com/acme/widgets.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"remote", "set-url", "origin", "http://github.com/acme/widgets.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"config", "remote.origin.pushurl", "https://github.com/sjawhar/legion.git"}), nil, repoView, "acme", ""},
+		row{markedFork([]string{"config", "remote.upstream.gh-resolved", ""}), nil, repoView, "acme", ""},
+		row{valueless, nil, repoView, "acme", ""},
+		row{marked, nil, []string{"variable", "list"}, "", "more than one owner"},
+		row{marked, nil, []string{"repo", "set-default", "acme/widgets"}, "", "more than one owner"},
+		row{marked, nil, []string{"repo", "set-default", "--view=false", "acme/widgets"}, "", "more than one owner"},
+	)
+	for _, changes := range [][][]string{
+		{{"config", "--unset", "remote.origin.gh-resolved"}, {"config", "remote.upstream.gh-resolved", "base"}},
+		{{"config", "remote.upstream.gh-resolved", "base"}},
+		{{"config", "remote.origin.gh-resolved", "sjawhar/legion"}},
+		{{"remote", "set-url", "origin", "git@github.com:acme/widgets.git"}},
+		{{"remote", "set-url", "origin", "https://WWW.github.com/acme/widgets.git"}},
+		{{"remote", "set-url", "origin", "https://api.github.com/acme/widgets.git"}},
+		{{"remote", "add", "origin.fork", "https://github.com/acme/widgets.git"}, {"config", "remote.origin.fork.gh-resolved", "sjawhar/legion"}},
+		{{"config", "--add", "remote.origin.gh-resolved", "base"}},
+		{{"config", "--add", "remote.origin.gh-resolved", ""}},
+		{{"config", "--unset", "remote.origin.gh-resolved"}, {"config", "remote.upstream.gh-resolved", "\norigin base"}},
+	} {
+		rows = append(rows, row{markedFork(changes...), nil, repoView, "", "more than one owner"})
+	}
 	for _, tc := range rows {
 		check(tc.dir, tc.env, tc.args, tc.owner, tc.refuse)
+	}
+	// repo set-default --view and -v print the default repository the marker names, and gh sends
+	// nothing for them, returning before it builds an HTTP client, so each exits 0 against the
+	// proxy: the one request is the leak guard's read of acme's repository's visibility, carrying
+	// acme's token.
+	guardsRead := capturedRequest{method: http.MethodGet, host: "api.github.com", path: "/repos/acme/widgets", owner: "acme", auth: "token " + tokens["acme"]}
+	for _, option := range []string{"--view", "-v"} {
+		what := "legion gh repo set-default " + option
+		if code, out := runIn(marked, ghEnv, os.Args[0], "gh", "repo", "set-default", option); code != 0 || !strings.Contains(out, "acme/widgets") {
+			t.Errorf("%s = exit %d, %q; want exit 0 naming acme/widgets", what, code, out)
+		}
+		if sent := proxy.take(); !slices.Equal(sent, []capturedRequest{guardsRead}) {
+			t.Errorf("%s sent %+v, want the leak guard's visibility read alone, %+v", what, sent, guardsRead)
+		}
 	}
 	// gh's own help, its topics and its version still answer, exit 0, and send nothing.
 	for _, args := range [][]string{{"help"}, {"help", "pr", "view"}, {"help", "environment"}, {"pr", "view", "--help"}, {"--version"}} {

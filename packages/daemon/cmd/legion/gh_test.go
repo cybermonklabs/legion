@@ -326,6 +326,13 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 	}
 	acmeClone := ghRemote{name: "origin", url: "https://github.com/Acme/widgets.git"}
 	sjawharClone := ghRemote{name: "origin", url: "https://github.com/sjawhar/legion"}
+	// The marked fork checkout of dispatch://INFRA-3399: acme's fork, whose upstream is sjawhar's
+	// and whose origin carries gh's default marker, followed by more lines.
+	forkUpstream := ghRemote{name: "upstream", url: "git@github.com:sjawhar/legion.git"}
+	originBase := ghMarkerLine("remote.origin.gh-resolved base")
+	markedFork := func(more ...ghRemote) func() ([]ghRemote, error) {
+		return remotes(append([]ghRemote{acmeClone, forkUpstream, originBase}, more...)...)
+	}
 	// A gh whose pr view lists an option a later gh might add, naming a repository.
 	ghWithARepositoryOption := editedGhHelp(map[string][2]string{
 		"pr view": {"\nINHERITED FLAGS\n", "      --mirror string    Read the pull request from this repository instead\n\nINHERITED FLAGS\n"},
@@ -339,8 +346,10 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		err     string                         // a refusal containing this
 	}{
 		// The final gates' at 96e1672cd, as round 4 reads them. A command naming no repository acts
-		// on the working directory's: every github.com remote and gh-resolved setting names an
-		// owner, and they must name one.
+		// on the working directory's: origin's fetch URL alone names its owner where the leaf
+		// honours gh's default marker and the marker makes origin's repository gh's own (the
+		// marked fork checkout's rows below); otherwise every github.com remote and gh-resolved
+		// setting names an owner, and they must name one.
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone), owner: "acme"},
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved base")), owner: "acme"},
 		{argv: []string{"pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "sjawhar"},
@@ -357,6 +366,37 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"-R", "acme/widgets", "pr", "view", "1"}, env: pane, remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: paneWith("GH_REPO", "acme/widgets"), remotes: remotes(sjawharClone), owner: "acme"},
 		{argv: []string{"pr", "view", "--help"}, env: pane, remotes: remotes(sjawharClone)},
+		// R1 of dispatch://INFRA-3399, in the marked fork checkout unless a row says otherwise: the
+		// conditions the real gh's capture test cannot reach with real git. The leaf must honour
+		// the marker: a group gh builds without it (secret) takes the first of gh's sorted
+		// remotes, upstream, and repo set-default reads every remote's network unless --view or
+		// --unset is true, which a value that is no boolean is not.
+		{argv: []string{"secret", "set", "TOKEN", "--body", "dummy"}, remotes: markedFork(), err: "more than one owner"},
+		{argv: []string{"repo", "set-default", "--view"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "-v"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "--unset"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "-u"}, remotes: markedFork(), owner: "acme"},
+		{argv: []string{"repo", "set-default", "--view=maybe", "acme/widgets"}, remotes: markedFork(), err: "more than one owner"},
+		// One marker line gh reads must be left: a dotted key gh gives origin, `base` or empty, is
+		// a second, while a key with no dot, which names gh no remote, a key with no value and an
+		// empty value on a remote other than origin, as gh names it, are none.
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.origin.fork.gh-resolved base")), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("origin base")), owner: "acme"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.origin.gh-resolved")), owner: "acme"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.origin.fork.gh-resolved ")), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: markedFork(ghMarkerLine("remote.upstream.x.gh-resolved ")), owner: "acme"},
+		// That line must be origin's `base`: `origin base` alone is no marker gh reads.
+		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, forkUpstream, ghMarkerLine("origin base")), err: "more than one owner"},
+		// origin must have one fetch line, whose URL gh keeps as github.com's with nothing the
+		// wrapper cannot read: two fetch lines, a push line alone and an ssh URL are refused; a
+		// port is no part of gh's host; a local path gh drops, taking upstream's repository, so
+		// every remote counts and sjawhar is the one owner. gh api naming nothing reads the marker.
+		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghRemote{name: "origin", url: "https://github.com/acme/other.git"}, forkUpstream, originBase), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "https://github.com/Acme/widgets.git", push: true}, forkUpstream, originBase), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "ssh://git@github.com/acme/widgets"}, forkUpstream, originBase), err: "more than one owner"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "https://github.com:443/acme/widgets"}, forkUpstream, originBase), owner: "acme"},
+		{argv: []string{"pr", "list"}, remotes: remotes(ghRemote{name: "origin", url: "/srv/widgets"}, forkUpstream, originBase), owner: "sjawhar"},
+		{argv: []string{"api", "graphql", "-f", "query=q"}, remotes: markedFork(), owner: "acme"},
 		// Round 4's: a remote URL gh reads as github.com's whatever its scheme, as gh's own parser
 		// reads it (deep 2, quality A, final B1).
 		{argv: []string{"pr", "list"}, remotes: remotes(acmeClone, ghRemote{name: "upstream", url: "git+https://github.com/sjawhar/legion.git"}), err: "more than one owner"},
@@ -754,6 +794,67 @@ func TestReadGitRemotesReadsWhatGhReads(t *testing.T) {
 		{name: "upstream", url: "git@github.com:sjawhar/legion"},
 		{name: "upstream", url: "git@github.com:sjawhar/legion", push: true},
 		{name: "origin", marker: true, key: "remote.origin.gh-resolved", resolved: "base", valued: true},
+	}
+	if err != nil || !slices.Equal(remotes, want) {
+		t.Errorf("readGitRemotes = %+v, %v; want %+v", remotes, err, want)
+	}
+}
+
+// gh reads every line `git config --get-regexp` prints for a gh-resolved key, giving it the
+// remote its key's second `.`-separated part names and skipping one with no value (cli/cli
+// git/client.go, populateResolvedRemotes), so readGitRemotes hands each on as a marker line, in
+// git's order, with git's own key and value and whether git printed one: a key given two values,
+// a marker on a dotted remote name, an empty value and a key set with none.
+func TestReadGitRemotesReadsEveryMarkerLineGitPrints(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("no git on this machine")
+	}
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	t.Setenv("GIT_CONFIG_GLOBAL", os.DevNull)
+	repository := t.TempDir()
+	t.Chdir(repository)
+	fixture := fixturegit.Isolated(t, t.TempDir())
+	for _, args := range [][]string{
+		fixturegit.InitWorkTree("", "")[1:],
+		{"remote", "add", "origin", "https://github.com/acme/widgets.git"},
+		{"config", "remote.origin.gh-resolved", "base"},
+		{"config", "--add", "remote.origin.gh-resolved", "sjawhar/legion"},
+		// The dotted remote has a URL: a marker's section alone is a remote `git remote -v`
+		// prints with none, a line readGitRemotes refuses.
+		{"remote", "add", "origin.fork", "https://github.com/acme/fork.git"},
+		{"config", "remote.origin.fork.gh-resolved", "base"},
+		{"remote", "add", "upstream", "git@github.com:sjawhar/legion.git"},
+		{"config", "remote.upstream.gh-resolved", ""},
+	} {
+		// The fixture configures the repository readGitRemotes reads, named rather than
+		// inherited, under an environment of its own, for the reason the test above gives.
+		fixture.Run(repository, append([]string{"git"}, args...)...)
+	}
+	// git config writes no key without a value, so that line is written into the repository's
+	// configuration file itself.
+	config, err := os.OpenFile(filepath.Join(repository, ".git", "config"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.WriteString("[remote \"upstream\"]\n\tgh-resolved\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.Close(); err != nil {
+		t.Fatal(err)
+	}
+	remotes, err := readGitRemotes()
+	want := []ghRemote{
+		{name: "origin", url: "https://github.com/acme/widgets.git"},
+		{name: "origin", url: "https://github.com/acme/widgets.git", push: true},
+		{name: "origin.fork", url: "https://github.com/acme/fork.git"},
+		{name: "origin.fork", url: "https://github.com/acme/fork.git", push: true},
+		{name: "upstream", url: "git@github.com:sjawhar/legion.git"},
+		{name: "upstream", url: "git@github.com:sjawhar/legion.git", push: true},
+		{name: "origin", marker: true, key: "remote.origin.gh-resolved", resolved: "base", valued: true},
+		{name: "origin", marker: true, key: "remote.origin.gh-resolved", resolved: "sjawhar/legion", valued: true},
+		{name: "origin.fork", marker: true, key: "remote.origin.fork.gh-resolved", resolved: "base", valued: true},
+		{name: "upstream", marker: true, key: "remote.upstream.gh-resolved", valued: true},
+		{name: "upstream", marker: true, key: "remote.upstream.gh-resolved"},
 	}
 	if err != nil || !slices.Equal(remotes, want) {
 		t.Errorf("readGitRemotes = %+v, %v; want %+v", remotes, err, want)
