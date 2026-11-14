@@ -148,10 +148,10 @@ func NewGCPClient(ctx context.Context, opts ...option.ClientOption) (*secretmana
 	}
 	// The library retries only AccessSecretVersion; the metadata calls a reload and a reread make
 	// get a retry of UNAVAILABLE, at most gcpMetadataAttempts calls in all, so one transient failure
-	// neither fails a reload (and its alarm) nor a value release, and a lasting outage fails each
-	// call within seconds with its own code, as the AWS SDK's three attempts do. RESOURCE_EXHAUSTED
-	// is not retried: the read quota is shared by the whole project, and retrying into it only
-	// spends more of it.
+	// neither fails a reload (and so writes no failed-load line) nor a value release, and a lasting
+	// outage fails each call within seconds with its own code, as the AWS SDK's three attempts do.
+	// RESOURCE_EXHAUSTED is not retried: the read quota is shared by the whole project, and
+	// retrying into it only spends more of it.
 	retry := gax.WithRetry(func() gax.Retryer {
 		return &boundedRetryer{inner: gax.OnCodes([]codes.Code{codes.Unavailable}, gax.Backoff{Initial: 200 * time.Millisecond, Max: 2 * time.Second, Multiplier: 2}), left: gcpMetadataAttempts - 1}
 	})

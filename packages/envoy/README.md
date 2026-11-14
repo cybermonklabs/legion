@@ -61,6 +61,10 @@ The secrets broker (`cmd/broker`) supports these kinds for `agent-secrets secret
 
 Without a kind, the broker releases the stored value unchanged.
 
+One decoder reads each kind's stored value, `secrets.ParseValue`, which the minters, the broker's policy load and `agent-secrets secret` all call.
+`secret create --kind`, `secret set` on a kind secret, and a `secret retag` that changes the kind, or the shape of a secret that keeps a kind, refuse a value that kind's minter would refuse and write nothing.
+The broker reads each kind secret's value once for each new version, kind or shape, and refuses a secret whose value the decoder refuses as `value-malformed`.
+
 ## Layout
 
 - `internal/contracts/generated.go` — generated Go contract output from `packages/contracts/scripts/gen-go.ts`

@@ -1689,7 +1689,7 @@ jobs:
               - 'packages/envoy/agentloop/*'
               - 'packages/envoy/cmd/broker/*'
               - 'packages/envoy/cmd/agent-secrets/*'
-              # cmd/broker/main_test.go:220 (sslrootcert).
+              # cmd/broker/main_test.go:348 (sslrootcert).
               - 'packages/envoy/docker/rds-global-bundle.pem'
               - 'packages/envoy/internal/broker/airlock/*'
               # cmd/broker/minters_test.go mints through the GitHub stand-in.

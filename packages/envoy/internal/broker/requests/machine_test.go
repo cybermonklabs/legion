@@ -531,8 +531,8 @@ func TestANameNoSecretCanCarrySpendsNoMissReread(t *testing.T) {
 
 // TestARereadItsCallerAbandonedRaisesNoAlarm pins that a miss-path reread cut short by its own
 // request's end is that request's failure, not Secrets Manager's: the broker logs no
-// LoadFailedMessage, the line the policy alarm filters on, and answers the request with its
-// context's error, writing no request and so no grant.
+// LoadFailedMessage, the line that reports a failed reread of the store, and answers the request
+// with its context's error, writing no request and so no grant.
 func TestARereadItsCallerAbandonedRaisesNoAlarm(t *testing.T) {
 	m, enr, key, _ := newFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())

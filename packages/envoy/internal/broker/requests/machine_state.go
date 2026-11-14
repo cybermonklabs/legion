@@ -544,9 +544,9 @@ func (m *Machine) Create(ctx context.Context, enrollmentID, compactRequest, sess
 // a token or a line. A failed reread logs LoadFailedMessage and the name stays unknown — the
 // caller sees UNKNOWN_SECRET exactly as before the miss path existed. A reread that fails once ctx
 // has ended (the caller went away, or its deadline passed) is the request's failure, not Secrets
-// Manager's: it logs nothing and answers ctx's error, so the alarm on LoadFailedMessage never
-// counts a client that left. It runs before Create's transaction, so no Secrets Manager call
-// holds a row lock.
+// Manager's: it logs nothing and answers ctx's error, so a LoadFailedMessage line always reports
+// the store's failure and never a client that left. It runs before Create's transaction, so no
+// Secrets Manager call holds a row lock.
 func (m *Machine) rereadMissing(ctx context.Context, enrollmentID string, names []string, set *policy.Set) (*policy.Set, error) {
 	for _, name := range names {
 		if _, ok := set.Secrets[name]; ok {

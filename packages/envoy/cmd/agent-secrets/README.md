@@ -14,7 +14,9 @@ environment, writing one line to standard error first: the names it injected, th
 AGENT_SECRETS_URL names (GCP Secret Manager)`, never a value. Every other line about a secret names
 its source the same way - `request`, `status` and `self` as a `source:` line, a denial, a pending
 request and every refusal as `; asked the broker AGENT_SECRETS_URL names (<store kind>)` - so an
-answer of this CLI's is never taken for another secrets CLI's about the same name. Those lines are
+answer of this CLI's is never taken for another secrets CLI's about the same name. A refusal of
+the broker also ends with its answer id, `(answer <id>)`, the id of the broker's own log line for
+that refusal, for whoever was refused to quote to whoever runs the broker. Those lines are
 quoted wherever an agent's output is, so none names the store's account, region or project, and
 none names the broker's host but two: a broker that could not be reached, named by its URL so a
 stale address reads as one, and a pending secret request, whose line names the page on the broker
@@ -64,10 +66,20 @@ retag <NAME> --shape document`.
 token|document|none` changes it or removes it, `secret show` prints it as a `shape:` line, and
 `secret list` prints it as a `SHAPE` column. `secret create` and `secret set` read the value they
 store by this same rule, so a value stored through this client and a value stored by any other
-writer are spent alike. `secret set` reads the secret's own shape tag first, so a document's
-owner stores a document. Where the rule changes nothing, the client still removes one final line
-feed, which it has always done, so `echo` and a file that ends in a newline store the value
-without one.
+writer are spent alike. `secret set` reads the secret's own kind and shape tags first, so a
+document's owner stores a document. Where the rule changes nothing, the client still removes one
+final line feed, which it has always done, so `echo` and a file that ends in a newline store the
+value without one.
+
+A kind secret's value is checked before it is written, by the decoder the broker's minter for that
+kind reads it with: `secret create --kind` checks the value it stores, `secret set` checks it under
+the kind tag the secret holds, and `secret retag` checks the value the secret holds when it
+changes the kind, or the shape of a secret that keeps a kind. A value that minter could not mint
+from is refused with the minter's reason, exit 2, and nothing is written. The retag reads the
+value for that check and never prints it. A sign-in the store refuses that read still writes the
+tags, and the retag says on standard error that the value was not checked and names the
+permission the read needs. The broker reads every kind secret's value with the same decoder and
+refuses a secret whose value it refuses as `value-malformed`.
 
 On a machine that runs agents directly, `agent-secrets-helper` (`../agent-secrets-helper`) holds
 each session's key and signs for it; in a container or a Kubernetes pod, the session's key lives in
