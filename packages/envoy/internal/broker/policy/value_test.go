@@ -536,6 +536,138 @@ func TestAFailedReadRecordedAfterASuccessfulReadOfTheSameValueRecordsNothing(t *
 	}
 }
 
+// lockedOutRead is a secrets.Local whose next GetSecretValue, once armRead arms it, waits until
+// released and then answers Local's own value, and whose next ListSecrets, once holdList arms it,
+// waits until let go and then answers Local's listing as it stands then: a reread's value read
+// that returns while a reload, stuck on a slow listing, holds the writer lock.
+type lockedOutRead struct {
+	*secrets.Local
+	mu                       sync.Mutex
+	readEntered, readRelease chan struct{}
+	listEntered, listRelease chan struct{}
+}
+
+// armRead arms the next value read, answering the channel it closes once that read is waiting and
+// the one to close to let it answer.
+func (s *lockedOutRead) armRead() (entered <-chan struct{}, release chan<- struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.readEntered, s.readRelease = make(chan struct{}), make(chan struct{})
+	return s.readEntered, s.readRelease
+}
+
+// holdList arms the next listing the same way.
+func (s *lockedOutRead) holdList() (entered <-chan struct{}, release chan<- struct{}) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.listEntered, s.listRelease = make(chan struct{}), make(chan struct{})
+	return s.listEntered, s.listRelease
+}
+
+func (s *lockedOutRead) GetSecretValue(ctx context.Context, in *secretsmanager.GetSecretValueInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.GetSecretValueOutput, error) {
+	s.mu.Lock()
+	entered, released := s.readEntered, s.readRelease
+	s.readEntered, s.readRelease = nil, nil
+	s.mu.Unlock()
+	if entered != nil {
+		close(entered)
+		<-released
+	}
+	return s.Local.GetSecretValue(ctx, in, opts...)
+}
+
+func (s *lockedOutRead) ListSecrets(ctx context.Context, in *secretsmanager.ListSecretsInput, opts ...func(*secretsmanager.Options)) (*secretsmanager.ListSecretsOutput, error) {
+	s.mu.Lock()
+	entered, released := s.listEntered, s.listRelease
+	s.listEntered, s.listRelease = nil, nil
+	s.mu.Unlock()
+	if entered != nil {
+		close(entered)
+		<-released
+	}
+	return s.Local.ListSecrets(ctx, in, opts...)
+}
+
+// TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes (ca-parser, Verification v9): a
+// reread's value read records its outcome under the writer lock, and its wait for that lock ends
+// with the reread's own context, as the reread's first wait for it does. So a reread whose
+// deadline passes while a reload stuck on its listing holds the lock returns by that deadline and
+// records nothing: the secret's state stays as the reread left it, and the reload, once its
+// listing answers, reads that version again and records it itself.
+//
+// The named revert: take the lock in readValues with a bare send on the writer lock, deaf to ctx
+// (fbaa5626); the reread then waits for the reload to let go, past its deadline, and this test
+// fails.
+func TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes(t *testing.T) {
+	local := secrets.NewLocal(kindSecret("APP_KEY", policy.KindGitHubApp, policytest.KindValue(policy.KindGitHubApp)))
+	store := &lockedOutRead{Local: local}
+	cur, registry, logged := bootThrough(t, local, store)
+	gained := logChecker(logged)
+	if got := gained(); got != "" {
+		t.Fatalf("the first load logged:\n%s", got)
+	}
+	id := policytest.ID("APP_KEY")
+
+	// A new version no decoder reads, which this pod has not decoded: the reread lists it and
+	// reads its value.
+	local.Put(kindSecret("APP_KEY", policy.KindGitHubApp, undecodable))
+	readEntered, readRelease := store.armRead()
+	const deadline = 300 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	defer cancel()
+	rereadDone := make(chan struct{})
+	started := time.Now()
+	go func() {
+		defer close(rereadDone)
+		_, _ = cur.RefreshOne(ctx, "APP_KEY")
+	}()
+	<-readEntered
+
+	// A reload whose listing hangs takes the writer lock while the reread's value read is out.
+	listEntered, listRelease := store.holdList()
+	reloadDone := make(chan struct{})
+	var reloadErr error
+	go func() {
+		defer close(reloadDone)
+		reloadErr = cur.Refresh(context.Background())
+	}()
+	<-listEntered
+	released := false
+	letGo := func() {
+		if !released {
+			released = true
+			close(listRelease)
+		}
+	}
+	t.Cleanup(func() { letGo(); <-reloadDone; <-rereadDone })
+
+	close(readRelease)
+	select {
+	case <-rereadDone:
+	case <-time.After(deadline + 1500*time.Millisecond):
+		t.Fatalf("RefreshOne(APP_KEY) with a %s deadline still waits %s later on the writer lock a reload holds", deadline, time.Since(started).Round(time.Millisecond))
+	}
+	if got := gained(); got != "" {
+		t.Fatalf("a reread whose deadline passed before it could record its value read logged:\n%s", got)
+	}
+	if _, served := cur.Get().Secrets["APP_KEY"]; !served {
+		t.Fatal("a reread that recorded nothing refused APP_KEY")
+	}
+
+	letGo()
+	<-reloadDone
+	if reloadErr != nil {
+		t.Fatalf("Refresh: %v", reloadErr)
+	}
+	if n := valueReads(t, registry); n != 3 {
+		t.Fatalf("the policy has read %d values; want 3, the boot's, the reread's and the reload's read of the same version again", n)
+	}
+	refusedAs(t, cur.Get(), "APP_KEY", policy.ReasonValueMalformed)
+	if got, want := gained(), refusedLine(id, policy.ReasonValueMalformed, kindOwner, false, ""); got != want {
+		t.Fatalf("the reload that read the version again logged:\n%s\nwant:\n%s", got, want)
+	}
+}
+
 // TestAMintsRefusalUnderAKeyARetagReplacedRefusesNothing: a mint refuses the value under the
 // version, kind and shape its release decoded it as (RefuseValue), and a retag of the shape
 // leaves the version and makes another key, which the policy decodes afresh. So a refusal from a
