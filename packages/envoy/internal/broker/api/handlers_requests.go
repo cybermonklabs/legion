@@ -202,6 +202,10 @@ type grantValuesResponse struct {
 	ExpiresAt *time.Time `json:"expires_at"`
 	// Each granted name's value, read fresh from the secret store.
 	Values map[string]string `json:"values"`
+	// Each Google login value's owner in the policy snapshot that released it. A client that
+	// spends a Google login token uses this owner from the same release, never an owner it read
+	// from a separate grant.
+	GoogleLoginOwners map[string]string `json:"google_login_owners,omitempty"`
 	// The narrowing this release applied to its GitHub App tokens, absent when it applied none. A
 	// client that asked for one and finds none here is answered by a broker from before
 	// narrowing, which released the owner-wide tokens.
@@ -369,7 +373,9 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	if values == nil {
 		values = map[string]string{}
 	}
-	answer := grantValuesResponse{ExpiresAt: release.Expires, Values: values, GitHubApp: applied}
+	answer := grantValuesResponse{
+		ExpiresAt: release.Expires, Values: values, GoogleLoginOwners: release.GoogleLoginOwners, GitHubApp: applied,
+	}
 	if release.Airlock != nil {
 		answer.Airlock = &airlockRelease{
 			ProxyURL:      release.Airlock.ProxyURL,

@@ -25,6 +25,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/broker/policy"
 	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/record"
 	"github.com/sjawhar/envoy/internal/broker/secrets"
 )
 
@@ -106,6 +107,20 @@ func TestSecretWriteSignInAcceptsAWSPartitions(t *testing.T) {
 	}
 }
 
+func TestSecretCreateLentLoginRefusesAWSBeforeRequest(t *testing.T) {
+	broker := startSecretBroker(t, alwaysServed)
+	t.Setenv("AGENT_SECRETS_KEY_DIR", newKeyDir(t))
+
+	_, stderr, code := runSecret("create", "NEW_KEY", "--owner", "me", "--tier", "agent",
+		"--lent-login", "GOOGLE_LOGIN", "--reason", "create a secret")
+	if code != exitUsageError || !strings.Contains(stderr, "only when the broker's store is GCP") {
+		t.Fatalf("exit %d, stderr %q; want the GCP-only refusal", code, stderr)
+	}
+	if rereads, _ := broker.recorded(); len(rereads) != 0 {
+		t.Fatalf("the AWS refusal reread %v", rereads)
+	}
+}
+
 func TestSecretAStoppedPromptWritesNothingAndNamesTheRetry(t *testing.T) {
 	for _, args := range [][]string{
 		{"create", "NEW_KEY", "--owner", "me", "--tier", "agent"},
@@ -157,6 +172,13 @@ type secretBroker struct {
 	answer   func(name string) Reread
 	fail     int
 	settings Settings
+	lent     *lentLoginRelease
+}
+
+// lentLoginRelease is the broker response a --lent-login test spends.
+type lentLoginRelease struct {
+	name, token, owner string
+	status             int
 }
 
 // failRereads makes the broker refuse every reread from now on with status.
@@ -176,12 +198,47 @@ func startSecretBroker(t *testing.T, answer func(name string) Reread) *secretBro
 // startSecretBrokerWith is startSecretBroker with settings of the caller's choosing, so a test for
 // another store (e.g. GCP) can reuse the same fake broker.
 func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name string) Reread) *secretBroker {
+	return startSecretBrokerWithLent(t, settings, answer, nil)
+}
+
+// startSecretBrokerWithLent adds one session-authenticated Google login grant to secretBroker.
+func startSecretBrokerWithLent(t *testing.T, settings Settings, answer func(name string) Reread, lent *lentLoginRelease) *secretBroker {
 	t.Helper()
-	b := &secretBroker{answer: answer, settings: settings}
+	b := &secretBroker{answer: answer, settings: settings, lent: lent}
+	var audience string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/settings":
 			writeJSON(w, b.settings)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/requests" && b.lent != nil:
+			var body struct {
+				Request string `json:"request"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			request, err := record.VerifyRequestObject(body.Request, audience, time.Minute, time.Now())
+			if err != nil || len(request.Details) != 1 || request.Details[0].Identifier != b.lent.name {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, map[string]any{
+				"request_id": "lent-request", "state": "granted",
+				"secrets":  []map[string]string{{"name": b.lent.name, "decision": "approval"}},
+				"grant_id": "lent-grant", "record_id": "lent-record", "approver": b.lent.owner,
+			})
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/grants/lent-grant/values" && b.lent != nil:
+			if b.lent.status != 0 {
+				w.WriteHeader(b.lent.status)
+				writeJSON(w, map[string]string{"code": "GRANT_NOT_LIVE", "error": "grant is not live"})
+				return
+			}
+			writeJSON(w, map[string]any{
+				"values":              map[string]string{b.lent.name: b.lent.token},
+				"google_login_owners": map[string]string{b.lent.name: b.lent.owner},
+				"expires_at":          time.Now().Add(time.Hour),
+			})
 		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/v1/secrets/") && strings.HasSuffix(r.URL.Path, "/reread"):
 			name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/secrets/"), "/reread")
 			b.mu.Lock()
@@ -202,6 +259,7 @@ func startSecretBrokerWith(t *testing.T, settings Settings, answer func(name str
 			http.NotFound(w, r)
 		}
 	}))
+	audience = srv.URL
 	t.Cleanup(srv.Close)
 	t.Setenv("AGENT_SECRETS_URL", srv.URL)
 	return b

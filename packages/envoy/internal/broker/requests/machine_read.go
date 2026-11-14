@@ -43,13 +43,14 @@ const TrailingLineEndingRemovedMessage = "broker: a stored value's trailing line
 // mint failure the operator acts on.
 const NarrowingRefusedMessage = "broker: narrowing refused"
 
-// Release is one release of a grant: the values the session may hold, when the grant expires,
-// and, when the grant holds a name behind the airlock, how to reach the proxy that holds the
-// rest.
+// Release is one release of a grant: the values the session may hold, the person owner of each
+// Google login value, when the grant expires, and, when the grant holds a name behind the airlock,
+// how to reach the proxy that holds the rest.
 type Release struct {
-	Values  map[string]string
-	Expires *time.Time
-	Airlock *AirlockRelease // nil when no granted name is behind the airlock
+	Values            map[string]string
+	GoogleLoginOwners map[string]string
+	Expires           *time.Time
+	Airlock           *AirlockRelease // nil when no granted name is behind the airlock
 }
 
 // grantRelease is a live grant as checkRelease found it: the enrollment that holds it, the
@@ -203,7 +204,11 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 		}
 		values[released.name] = released.value
 	}
-	release := Release{Values: values, Expires: checked.expires}
+	googleLoginOwners, err := googleLoginOwners(checked)
+	if err != nil {
+		return Release{}, err
+	}
+	release := Release{Values: values, GoogleLoginOwners: googleLoginOwners, Expires: checked.expires}
 	if len(splits) > 0 {
 		if release.Airlock, err = m.airlockRelease(ctx, grantID, checked.expires, splits); err != nil {
 			return Release{}, err
@@ -217,6 +222,28 @@ func (m *Machine) Values(ctx context.Context, grantID, enrollmentID string, narr
 		return Release{}, err
 	}
 	return release, nil
+}
+
+// googleLoginOwners returns the owner tag for each Google login value this release reads. The
+// same checked policy snapshot supplies both the token and the owner, so a client cannot combine
+// a token from one grant with the owner from another.
+func googleLoginOwners(checked grantRelease) (map[string]string, error) {
+	owners := map[string]string{}
+	for _, granted := range checked.granted {
+		kind, _, minted, err := policy.ParseKindSource(granted.source)
+		if err != nil {
+			return nil, fmt.Errorf("parse source for %s: %w", granted.name, err)
+		}
+		if !minted || kind != policy.KindGoogleLogin {
+			continue
+		}
+		secret, ok := checked.set.Secrets[granted.name]
+		if !ok || secret.Source != granted.source {
+			return nil, fmt.Errorf("the Google login source for %s changed while its grant was released", granted.name)
+		}
+		owners[granted.name] = secret.Owner
+	}
+	return owners, nil
 }
 
 // readValue is one granted name's value and, for a minted kind, when that value stops working,
@@ -712,7 +739,7 @@ type Grant struct {
 	RequestID string `json:"request_id"`
 	// The login that approved it; null for a grant the policy gave automatically.
 	Approver *string `json:"approver"`
-	// When it expires; null for a grant that lasts until its session ends.
+	// When it expires; null for a grant that lasts until the session ends.
 	ExpiresAt *time.Time `json:"expires_at"`
 }
 

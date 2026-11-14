@@ -3,14 +3,18 @@ package requests
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/sjawhar/envoy/internal/broker/policy"
+	"github.com/sjawhar/envoy/internal/broker/policy/policytest"
+	"github.com/sjawhar/envoy/internal/broker/record"
+	"github.com/sjawhar/envoy/internal/broker/secrets"
+	"github.com/sjawhar/envoy/internal/broker/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
+	"maps"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/internal/broker/record"
-	"github.com/sjawhar/envoy/internal/broker/store/storetest"
-	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
 // TestGrantsForApproverNamesWhoApproved pins that the approver list names each grant's approver:
@@ -35,6 +39,62 @@ func TestGrantsForApproverNamesWhoApproved(t *testing.T) {
 		if len(grants) != 1 || grants[0].GrantID != dec.GrantID || grants[0].Approver != otherPerson {
 			t.Fatalf("GrantsForApprover(%s) = %+v, want grant %s approved by %s", viewer, grants, dec.GrantID, otherPerson)
 		}
+	}
+}
+
+func TestGoogleLoginReleaseReportsAuthorizedOwner(t *testing.T) {
+	m, enrollmentID, key, owner := newFixture(t)
+	login := policytest.KindSecret("GOOGLE_LOGIN", owner, policy.TierHuman, policy.KindGoogleLogin, "credential")
+	retag(t, m, login)
+	m.Minters = map[string]Minter{
+		policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+			return secrets.Minted{Value: "access-token"}, nil
+		},
+	}
+
+	request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "create a secret", login.Name), "")
+	if err != nil || request.RecordID == nil {
+		t.Fatalf("Create = %+v, %v", request, err)
+	}
+	decision, err := m.ApplyDecision(t.Context(), *request.RecordID, true, owner)
+	if err != nil || decision.GrantID == "" {
+		t.Fatalf("ApplyDecision = %+v, %v", decision, err)
+	}
+	release, err := m.Values(t.Context(), decision.GrantID, enrollmentID, nil)
+	if err != nil || release.Values[login.Name] != "access-token" || release.GoogleLoginOwners[login.Name] != owner {
+		t.Fatalf("release did not contain one token and its owner (values=%d owners=%d succeeded=%t)",
+			len(release.Values), len(release.GoogleLoginOwners), err == nil)
+	}
+}
+
+func TestGoogleLoginReleaseStopsWhenPolicyChanges(t *testing.T) {
+	for name, change := range map[string]func(*secrets.LocalSecret){
+		"owner":     func(secret *secrets.LocalSecret) { secret.Tags[policy.TagOwner] = otherPerson },
+		"requester": func(secret *secrets.LocalSecret) { secret.Tags[policy.TagRequesters] = otherPerson },
+	} {
+		t.Run(name, func(t *testing.T) {
+			m, enrollmentID, key, owner := newFixture(t)
+			login := policytest.KindSecret("GOOGLE_LOGIN", owner, policy.TierAgent, policy.KindGoogleLogin, "credential")
+			retag(t, m, login)
+			m.Minters = map[string]Minter{
+				policy.KindGoogleLogin: func(context.Context, secrets.MintRequest) (secrets.Minted, error) {
+					return secrets.Minted{Value: "access-token"}, nil
+				},
+			}
+			request, err := m.Create(t.Context(), enrollmentID, signRequest(t, m, key, "create a secret", login.Name), "")
+			if err != nil || request.GrantID == nil {
+				t.Fatalf("Create = %+v, %v", request, err)
+			}
+			changed := login
+			changed.Tags = maps.Clone(login.Tags)
+			change(&changed)
+			retag(t, m, changed)
+
+			if release, err := m.Values(t.Context(), *request.GrantID, enrollmentID, nil); !errors.Is(err, ErrGrantNotLive) || release.Values != nil {
+				t.Fatalf("policy change released values=%d owners=%d grant_not_live=%t",
+					len(release.Values), len(release.GoogleLoginOwners), errors.Is(err, ErrGrantNotLive))
+			}
+		})
 	}
 }
 
