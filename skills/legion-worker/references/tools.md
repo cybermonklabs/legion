@@ -223,19 +223,18 @@ fifty-nine minutes old, and the trimmer takes it only once it is older than the 
 that hour together.
 It opens every directory one name at a time and refuses a symbolic link at that name, so what it
 lists is what it opened and not what a name came to mean later.
-Those guards are what keep it off your work, and they are guards rather than a wall: inside one
-removal the kernel walks on its own, and a name swapped for a link there is followed. Every role
-of this pod runs as one uid, and `/legion` is wholly visible to the process that deletes, so a
-link left in one of those cache directories at the wrong moment leads it only where the role
-that left the link could already delete itself by its own path.
-What it cannot be led to at all is what the container holds for the roles and no role holds
-itself: another role's private, state and agent-secrets directories, its launcher token, the
-pod's shared configuration home, the home every role's own is built over, and the container's
-own temporary directories, lock directories, shared memory, terminals, message queues and
-`/proc`. The deletions are made in a mount namespace built from the one list a role's own
-namespace is built from, where every path a role is given something of its own at is an empty
-filesystem instead, and `/proc` is a procfs of the deleting process's own, which shows nothing
-of any other process.
+Its removal of an entry keeps that rule below the name: it opens each directory inside the entry
+one name at a time, unlinks a link as the link it is, and follows none.
+Those guards are what keep it off your work, and they are guards rather than a wall: every role
+of this pod runs as one uid, and `/legion` is wholly visible to the process that deletes.
+What it cannot be led to at all, even by a link it did follow, is what the container holds for
+the roles and no role holds itself: another role's private, state and agent-secrets directories,
+its launcher token, the pod's shared configuration home, the home every role's own is built
+over, and the container's own temporary directories, lock directories, shared memory, terminals,
+message queues and `/proc`. The deletions are made in a mount namespace built from the one list
+a role's own namespace is built from, where every path a role is given something of its own at
+is an empty filesystem instead, and `/proc` is a procfs of the deleting process's own, which
+shows nothing of any other process.
 
 That cuts both ways: **`$TMPDIR` is yours to clean.** What you leave there lives as long as the
 pod does and counts against the volume for every role. Delete the paths you made, each by its
