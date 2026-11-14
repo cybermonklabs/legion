@@ -107,7 +107,7 @@ func newClosedSettlementFixture(t *testing.T) closedSettlementFixture {
 	// Cleanups run in reverse, and Shutdown waits for the room's persistence worker this hold parks.
 	t.Cleanup(held.let)
 	server := newTestServer(t, service)
-	createOwedDocument(t, database, service, artifactID, "spec", closedSettlementText, closedSettlementVersionOne)
+	createOwedDocument(t, database, service, "CORE-1", artifactID, "spec", closedSettlementText, closedSettlementVersionOne)
 	return closedSettlementFixture{database: database, service: service, server: server, held: held, artifactID: artifactID}
 }
 

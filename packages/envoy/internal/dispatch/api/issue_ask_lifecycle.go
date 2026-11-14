@@ -29,8 +29,9 @@ func withdrawnReason(issueKey string) string {
 
 // settleIssueBeforeClose runs, before a close of issueKey opens its transaction, the settlement
 // each document of the issue owes, so every ask block written into them is an ask, credited to its
-// author, for the close to withdraw with a record: no settlement runs once the issue is closed. It
-// holds no transaction or lock, so it cannot meet the close's. A settlement that stops short is
+// author, for the close to withdraw with a record: a closed issue's document settles too, but that
+// settlement opens no ask and saves a block with no row resolved. It holds no transaction or lock,
+// so it cannot meet the close's. A settlement that stops short is
 // run again a few times within a short budget (docs.SettleIssueDocuments): one that met updates
 // the room had not stored yet, one a write superseded (another process's append among them, which
 // the settlement catches its room up with first), and one whose room held a stored history that
@@ -267,9 +268,10 @@ func (s *server) sweepIssueAskBlocksTx(ctx context.Context, tx pgx.Tx, issueKey 
 	// between the close's commit and this lock leave them other than the close wrote them. Every
 	// other resolved or answered block ask's blocks are written from its row too: an ask resolved
 	// or answered after the close's settlement ran and before its transaction took the issue's row
-	// marked its copies owed a settlement, and no settlement runs while the issue is closed, so the
-	// sweep writes those copies its state in that settlement's place. An answered ask's own block
-	// is the answer route's to write, and WriteIssueAskStates leaves it as it is. A nil
+	// marked its copies owed a settlement, which on the closed issue runs only after the close, so
+	// the sweep writes those copies its state in the close's own write rather than leave it to that
+	// settlement. An answered ask's own block is the answer route's to write, and
+	// WriteIssueAskStates leaves it as it is. A nil
 	// withdrawnIDs is a null array, which matches no id. withdrawing are open rows, which the
 	// query does not select.
 	current, err := s.readIssueAsks(ctx, tx, `
