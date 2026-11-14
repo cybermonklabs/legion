@@ -37,7 +37,7 @@ func newAgentActivityFixture(t *testing.T) *store.Store {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('TEST', 'Test')`,
+		`insert into projects (key, name, default_assignee) values ('TEST', 'Test', 'alice')`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank)
 			values ('TEST-1', 'TEST', 1, 'Test issue', 'todo', '{"kind":"user","id":"alice"}', 'U')`,
 		`insert into events (issue_key, seq, type, actor, payload, notify, created_at) values

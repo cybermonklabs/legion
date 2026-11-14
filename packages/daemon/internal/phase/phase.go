@@ -126,9 +126,9 @@ func buildBackwardPairSet() map[string]bool {
 // tester's, and the reviewer's, each under the word its role's prompt spells
 // (internal/prompts/roles/*.md), the phase of the record whose newest version the `legion` tool's
 // `handoff_complete` reads and names (packages/pi-shared/src/handoff-record.ts). The writer is the
-// role the workflow starts on the phase (workflow.RoleFor, whose tests tie the two). Retro and
-// merging write none, and report the commit they stand on; accepting is the architect's sign-off,
-// no handoff at all.
+// role the workflow starts on the phase (RoleFor, whose tests tie the two). Retro and merging
+// write none, and report the commit they stand on; accepting is the architect's sign-off, no
+// handoff at all.
 func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	switch p {
 	case Planning:
@@ -142,4 +142,73 @@ func Handoff(p Phase) (word string, writer claim.Role, ok bool) {
 	default:
 		return "", "", false
 	}
+}
+
+// RoleFor is the role that works a phase: the one a transition starts, and the one whose handoff
+// record the `legion` tool's `handoff_complete` reads for a phase with a handoff (Handoff, whose
+// writer a test holds to this; packages/pi-shared/src/handoff-record.ts). A phase no role works —
+// awaiting_person, done, held — has none. Accepting is the tree architect's, a
+// claim per tree that no row starts: every site that starts, resumes or reports a phase's worker
+// skips it (workflow's start, admit's startMidPhaseMembers, workflow's booted and Stranded).
+//
+// It stands in this package, with the phase vocabulary it reads, rather than in internal/workflow,
+// which starts the roles: the state projection names the role each issue's entry numbers are of
+// (projection.Project), admission starts the mid-phase children of a tree it re-admits on each
+// child's own phase's role, and `legion state` reads the same role back for its line
+// (cmd/legion's entriesBehind). internal/workflow's own tests import internal/projection, so the
+// projection cannot reach a workflow function at all.
+func RoleFor(p Phase) claim.Role {
+	switch p {
+	case Planning:
+		return claim.RolePlanner
+	case Implementing, Retro:
+		return claim.RoleImplementer
+	case Testing:
+		return claim.RoleTester
+	case Reviewing:
+		return claim.RoleReviewer
+	case Accepting:
+		return claim.RoleArchitect
+	case Merging:
+		return claim.RoleMerger
+	default:
+		return ""
+	}
+}
+
+// LeftBy is the phase role has left when the issue, standing at at, no longer stands in a phase
+// that role works: RoleFor read the other way round, the one phase each role works, and, for the
+// implementer, which works two, implementing while the issue stands before retro and retro once
+// it stands past it. A completion that arrives after the issue moved on without its role is of
+// this phase (Of). The architect works accepting with its sign-off and completes nothing, so it
+// leaves no phase here.
+func LeftBy(role claim.Role, at Phase) Phase {
+	switch role {
+	case claim.RolePlanner:
+		return Planning
+	case claim.RoleTester:
+		return Testing
+	case claim.RoleReviewer:
+		return Reviewing
+	case claim.RoleMerger:
+		return Merging
+	case claim.RoleImplementer:
+		if MovesBack(at, Retro) {
+			return Retro
+		}
+		return Implementing
+	}
+	return ""
+}
+
+// Of is the phase role's completion is of while the issue stands at at: at when role works it
+// (RoleFor), and otherwise the phase role has left (LeftBy). The workflow records a completion on
+// this phase (workflow's leftItsPhase) and the completion route reads its handoff record against
+// it (api's handoffComplete), so the two read one answer. It is "" for the architect anywhere but
+// accepting, since the architect leaves no phase.
+func Of(role claim.Role, at Phase) Phase {
+	if RoleFor(at) == role {
+		return at
+	}
+	return LeftBy(role, at)
 }

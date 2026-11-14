@@ -129,7 +129,9 @@ test("picking a file on the Documents tab uploads it at once and lists it @pr", 
 test("comment, suggest, and ask anchor marks on a project document; accept edits the text; the ask flows through the Inbox @pr", async ({
   browser,
 }, testInfo) => {
-  await createProject({ key: "CORE", name: "Core" });
+  // CORE names bob: a document has no assignee, so its question reaches the project's default
+  // assignee, and bob is the reader who answers it from his own Inbox below.
+  await createProject({ key: "CORE", name: "Core" }, "bob");
   const created = await createProjectDocument("CORE", {
     content: "# Design notes\n\nComment target.\n\nSuggestion target.\n\nAsk target.\n",
     name: "Design notes",
@@ -199,11 +201,12 @@ test("comment, suggest, and ask anchor marks on a project document; accept edits
       throw new Error("Document ask did not retain its anchor.");
     }
     await expect(markSpan(bobPage, ask.ask.anchor.mark_id)).toContainText(ask.ask.anchor.quote);
-    // A document has no assignee, so its question is in nobody's own list: the Inbox reaches it
-    // under the Unassigned filter. The short row names the document the question belongs to,
-    // and the card - which from 1280 px the reading pane draws (INFRA-575) - answers it.
-    // Neither move is a cold load the row proves: bob is already signed in and on the page.
-    await navigateInApp(bobPage, "/?assignee=unassigned");
+    // A document has no assignee, so its question reaches the default assignee of its project,
+    // which is bob: his own list holds it. The short row names the document the question
+    // belongs to, and the card - which from 1280 px the reading pane draws (INFRA-575) -
+    // answers it. Neither move is a cold load the row proves: bob is already signed in and on
+    // the page.
+    await navigateInApp(bobPage, "/");
     const inboxDocumentRow = inboxRow(bobPage, askId);
     await expect(inboxDocumentRow.getByRole("link", { name: /CORE.*Design notes/ })).toBeVisible();
     const inboxAsk = await inboxAskCard(bobPage, askId);

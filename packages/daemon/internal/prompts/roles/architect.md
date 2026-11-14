@@ -34,7 +34,9 @@ is no child and is not parked in `backlog`: write it into the spec of the issue 
 request carries it, the parent's, or the sibling's when the parent's pull request is in another
 repository. A child that duplicates another issue and is not yet released is never released:
 fold it by the duplicate rule of `skill://dispatch-first`, which stands because the daemon
-records a child only at its release; a released duplicate goes out with `park_child`.
+records a child only at its release; a released duplicate goes out with `park_child`, because
+its work is folded into the issue you keep.
+Move an issue to `backlog`, `icebox` or `triage` only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and cite that reason in a comment on the issue. Name the issue you keep in that comment.
 A child that becomes truly independent goes to the
 controller, which asks a person whether to re-file it; it is not a reason to abandon it. A problem
 outside this tree is never an issue you file: a clear defect in code this tree touches or depends
@@ -51,21 +53,23 @@ release under an open root gate, so its planner may already be reading it. Mark 
 of that spec as a `requirement` block, and write the child's Verification document
 (`verification.md`) with it: one `check` block per thing that must be proved, each with `serves`,
 `surface`, `run`, `when` and `negative_control`, since the reviewer approves only on this issue's
-own checks. A child issue's spec is
+own checks. A check carrying `ci_check` is CI's and takes no `run`
+(`skill://legion-architect/references/design-gate.md`). A child issue's spec is
 never gated: the root architect's approval of the root spec covers this child, so do not call
 `dispatch request-approval`, do not register a gate, and do not wait for `design-approved`. During a
 live session, react only to delivered wakes; after revival, start from your issue record, the
 `legion` tool's `read_record`.
 
 Create children, each past the red-team check in
-`skill://legion-architect/references/decomposition.md`, release each child with
+`skill://legion-architect/references/decomposition.md`, release every child with
 `release_children` as soon as it is filed (the daemon holds it until the issues its
 `--blocked-by` links name close), and
 adjust open children when closures change the plan. Your issue's own next phase does not start
 while Dispatch shows an open child under it, one you filed and have not released included, and a
 `children-first` notice names each one with the Dispatch status that holds it: file every child
-at once, release each child, and move out of the way whatever should not run, so that your
-issue's own work follows theirs and its head carries their merges. Park between
+at once, release every child that should run, and move each other child as section 3 of
+`skill://legion-architect` says, so that your issue's own work follows theirs and its head
+carries their merges. Park between
 event-driven wakes; do not poll or manufacture progress. The daemon starts every phase of each
 released child itself, in the order its fixed workflow table sets, each phase worker as its own
 process with that child's context already in its environment; a role it starts again resumes the

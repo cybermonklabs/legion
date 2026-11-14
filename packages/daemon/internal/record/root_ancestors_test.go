@@ -62,7 +62,8 @@ func TestARootReadsNoAncestorInTheTreeItsDispatchParentBelongsTo(t *testing.T) {
 		if ancestor := AcceptedAncestor(recordOf(issues, root), chain); ancestor != "" {
 			t.Fatalf("the accepted ancestor of %s = %q, want none: %s merges a head %s is no part of", root, ancestor, otherRoot, root)
 		}
-		if !inLine(Waiting(issues, nil, facts), root) {
+		line, _ := Waiting(issues, nil, facts)
+		if !inLine(line, root) {
 			t.Fatalf("%s stands out of the waiting line, though its design gate is open and nothing of its own tree holds it: it waits on the close of %s, which is no tree of its own", root, otherRoot)
 		}
 	})

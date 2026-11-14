@@ -139,7 +139,8 @@ func waitingNow(t *testing.T, pool *pgxpool.Pool) []string {
 		if err != nil {
 			return err
 		}
-		for _, issue := range record.Waiting(issues, slots, facts) {
+		line, _ := record.Waiting(issues, slots, facts)
+		for _, issue := range line {
 			keys = append(keys, issue.Issue.Key)
 		}
 		return nil

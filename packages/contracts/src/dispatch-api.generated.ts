@@ -1194,7 +1194,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-four tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
@@ -1262,7 +1262,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on - whoever it was handed to, and the assignee of its issue until somebody hands it on (unassigned is every ask nobody waits on, a document ask among them; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
+    /** @description Open asks waiting on the caller, grouped by whose turn it is; ?project= and ?assignee=me|unassigned|<email> filter on the person each ask waits on, which is three steps resolved as the ask is read: the person the question was handed to, then the issue's assignee, then the project's default assignee (unassigned is every ask nobody waits on; an email nobody has signed in with is 400 ASSIGNEE_NOT_ALLOWED). */
     get: operations["getApiV1Inbox"];
     put?: never;
     post?: never;
@@ -1279,10 +1279,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List issues; filters project, status, parent, label, priority (repeatable: 0-3, or none for unset), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
+    /** @description List issues; filters project, status (repeatable: the issues standing in any of those statuses; a blank value names none, and a value is matched as written, so a status the lifecycle does not hold matches no issue: alone it answers none, and beside another status it adds nothing), parent, label, priority (repeatable: 0-3, or none for unset), advances (repeatable: a priority id, none for the work that advances no live priority or any for the work that advances one, own or inherited; several are a union), open, updated_since, closed_since and closed_before (RFC3339; the issues closed at or after closed_since and before closed_before, so an open issue matches neither), route_status (live, no_holder or unknown; open issues only); ?pinned=true needs the person scope, since the pins are one person's. A malformed updated_since, closed_since or closed_before is 400 INVALID_UPDATED_SINCE, INVALID_CLOSED_SINCE or INVALID_CLOSED_BEFORE, and a closed_before at or before closed_since 400 INVALID_CLOSED_WINDOW. Each issue carries closed_at, when it was closed or null while it is open, and progress: {tasks, children}, its spec's task-list items and its direct children as {done, total}, each null when it has none. ?moved=true adds moved_at and moved_by to each issue standing in backlog or icebox: when it was moved there and who moved it, read from its newest issue.updated event that set one of the two statuses, as GET /api/v1/priorities' parked work reads them; an issue standing elsewhere, or whose events do not reach back to the move, carries neither, and a listing without moved=true carries neither on any issue. Pages with limit (1-250) and offset (0 or more; alone it pages 50): a paged answer is {issues, total, limit, offset}, total counting every issue the filters match; without either it is every matching issue as an array. cursor is 400 INVALID_QUERY. */
     get: operations["getApiV1Issues"];
     put?: never;
-    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee when that still names a person who has signed in. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
+    /** @description Create an issue (native, or from a GitHub owner/repo#n ref); assignee defaults to the creating person, the personal token's owner, the parent's assignee, or the project's default assignee. A title over 1000 characters is 400 CAP_EXCEEDED. After the write commits, a related-item check searches the project by meaning and by its rarest words and waits at most 5 seconds; the response's advice.suggestions says whether it found related items (outcome found, none or not_made with the reason in missing), how it searched (search, search_note), the three items most like the new issue, one per owner, with each ask item's answer state, words to search with by hand (search_query), and under force the near copies forced past (title_matches), or the likely duplicate an unforced create was told (likely_duplicate). */
     post: operations["postApiV1Issues"];
     delete?: never;
     options?: never;
@@ -1694,10 +1694,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read. A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}, and makes no read of GitHub at all. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
+    /** @description The checks of the issue's Verification document in document order, each with its attributes (when, surface, run, negative_control, ci_check), the version its words last changed in and their digest, and every result recorded against it from any issue, newest first: {issue, verification_artifact_id, checks}. A check's results come newest first by created_at, the time the recording transaction began, with id descending breaking a tie, and a client reading one result per check reads the first. Two results recorded in transactions that overlapped can come back in either order. Each check carries compared_with, the commits and branches its results are compared with, in the order they are asked about. For a before_merge check that is every pull request head Dispatch holds for the check's issue, each {kind: pull_request, commit, pull_request, learned_at: {at, kind}}, the kind of time being read_at when Dispatch last read that pull request from GitHub (checked_at) and updated_at when the pull request's own update time, as its newest webhook event carried it (event_at), is the later of the two. For an after_merge check it is {kind: branch, branch} for the branch that issue's pull request merged into and for the repository's default branch, the default branch alone where Dispatch holds no merge of the issue. For a default_branch check it is the repository's default branch alone. Where that list is empty the check carries compared_nothing with its reason: no_pull_request_or_branch (the issue resolves to no repository, or a before_merge check's issue holds no pull request), repository_unreadable (Dispatch's GitHub App cannot read the repository) or read_failed (a read Dispatch makes did not answer). Each check also carries pass_stands {answer, roles}: yes with the roles whose passes stand, no, or unknown where the repository could not be read, and for a check CI proves whose check runs GitHub could not be read (ci state unread). A pass stands when its commit is at one of the compared commits, the check's words have not moved since it was recorded, and no retraction stands against it. Each result states two facts apart from each other. commit_stands {answer, basis, reason} is where its commit stands: at_basis with the basis it matched (for a check compared with branches, the branch that carries the commit), other_commit, or unknown with the reason (repository_unreadable, read_failed). check_words_moved is whether the check's words moved after the result was recorded, which the digests decide, and the result's own check_version stands beside the check's version. A result a retraction stands against carries retracted {reason, actor, created_at} and counts as no evidence. A check CI proves is one whose ci_check names a GitHub check run, with when before_merge, no run, a negative_control, and no result recorded against it. It carries ci {run, state, case, detail, line}, read from that run at the head of the issue's open pull request of the highest number, else at the final head of its merged pull request of the highest number: state pass, fail, no_result or unread; case the conclusion that decided it (success, failure, timed_out, action_required, startup_failure, stale, or another conclusion as GitHub wrote it), or neutral, skipped, cancelled, not_completed, absent (no run of that name at the head), no_head (Dispatch holds no open or merged pull request head of the issue) or github_unreadable (state unread); detail one sentence naming the case, with GitHub's own answer where GitHub could not be read; line the pull-request body line for the check. Its one result is derived from that run on every read, for a pass or a fail alone, and is stored nowhere: id ci-run:<check run id>, role ci, actor {kind: github_app, id: the slug of the App that made the run}, session "", verdict pass or fail, commit_sha the head read, created_at the run's completed_at, observed the conclusion, the run's output title and summary cut to 2,000 runes, and its URL, one a line, check_sha256 the check's own, and no event_seq. It is compared as a recorded result is. ?at=<commit> replaces compared_with for every check of the issue by that one commit, {kind: named, commit}. The only read of GitHub it leaves is the check runs of a check CI proves, read at the issue's newest pull request head as on every read, so a derived result stands at the named commit only where that commit is that head. A value that is not 40 lowercase hex characters is 400 INVALID_QUERY. An issue with no Verification document answers no checks. */
     get: operations["getApiV1IssuesByKeyResults"];
     put?: never;
-    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
+    /** @description Record one result of one check: {check, role, verdict, commit, surface?, run?, observed?, negative_control?, failed?, skipped?, excluded?, screenshots?}. {key} is the issue the result is recorded on; check names a check block of its Verification document or of one of its ancestors', by block id or, when a block id is not unique in that set, by its canonical reference (409 CHECK_AMBIGUOUS); any other id is 400 UNKNOWN_CHECK. A check CI proves (GET's definition: ci_check set, when before_merge, no run, a negative_control, and no result recorded against it) is 409 CHECK_PROVED_BY_CI for every role, naming the block and the check run, since its result is read from that run. role is at most 32 characters of a-z and -, verdict is pass or fail, commit is 40 lowercase hex, and the counts default to 0; a pass counting any failed, skipped or excluded case is 400 RESULT_CONTRADICTS. A commit the repository the check's issue resolves to does not hold is 400 RESULT_COMMIT_UNKNOWN, naming the commit and that owner/repo; a repository Dispatch cannot read, or none at all, stores the result as before. A screenshot names an image document of the recording issue or of the check's issue. The result is appended as result.recorded on the check's issue. A closed issue, recording or the check's, takes a result only for a check whose when is after_merge or default_branch; every other result there is 409 ISSUE_CLOSED. The answer is {result, line}, line being the pull-request body line the result implies, which carries no link to Dispatch. */
     post: operations["postApiV1IssuesByKeyResults"];
     delete?: never;
     options?: never;
@@ -2168,6 +2168,59 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/priorities": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description Every live priority, in rank order: id, title, description (markdown of any length), owner, rank (its place in the one order), state (live; a deleted priority is gone and is not listed), and when and by whom it was made, each beside the work that advances it (work): by_status, the open issues in each lifecycle status, claimed, open_asks, closed_last_7_days and newest_event_at. The work under a priority is the issues that state the relation and every issue below one of them. Beside the list it answers the two faults: work_under_no_priority, the open issues in flight (in_progress, testing, needs_review, retro) that advance no live priority, and priority_work_parked, the issues that advance one and stand in backlog or icebox, each as a whole count, the same count by project or by priority, and the newest 50 rows. Each row carries advances as the issue read does, one {id, inherited} entry per live priority the issue advances, inherited true for one it takes from an issue above it; a row of work_under_no_priority carries the empty list. A priority belongs to no project, so this read is of the whole deployment and any authenticated caller makes it, the shared token every pod carries included. ?project=<KEY>, repeatable, narrows the work counted and both fault lists to those projects and never the priorities themselves; ?summary=true answers the two fault counts alone, with no priority row and no fault row, which is what the navigation rail reads. */
+    get: operations["getApiV1Priorities"];
+    put?: never;
+    /** @description Write one priority {id?, title, description?, owner?}: title is required, and a title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is) is 400 PRIORITY_INPUT; id is the caller's and defaults to the title written as a slug, and an id that is no slug of lowercase letters, digits and single hyphens, one over 200 characters, the ids none and any (the issue listing reads advances=none as the work under no priority and advances=any as the work under any), and a title no slug can be written from are each 400 PRIORITY_INPUT, an id derived from the title as much as one given; an id the store already holds is 409 PRIORITY_EXISTS. The new priority takes the last place of the order. A credential scoped to one project is refused, since a priority belongs to none. */
+    post: operations["postApiV1Priorities"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/priorities/{id}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    post?: never;
+    /** @description Delete a priority: its state is written gone and no row is removed, so the listing answers without it while its history still names who ended it and when. An id no priority carries is 404 PRIORITY_NOT_FOUND; 204 otherwise. */
+    delete: operations["deleteApiV1PrioritiesById"];
+    options?: never;
+    head?: never;
+    /** @description Write one priority's title, description or owner, and move its order {title?, description?, owner?, rank?}: each field named is written and each left out is left alone. rank is {before, after}, the priority this one lands above and the one it lands below, as the issue board's own drag names them; a rank naming neither, a neighbour that is this priority, and one no live priority carries (an id the store does not hold, or one whose state is gone) are each 400 RANK_INPUT. A title with nothing in it or over 1000 characters (UTF-16 units, counted as an issue title is, so a rename is held to the bound a create is) and a body naming nothing to write are 400 PRIORITY_INPUT, and an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    patch: operations["patchApiV1PrioritiesById"];
+    trace?: never;
+  };
+  "/api/v1/priorities/{id}/history": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description One priority's own history, newest first: every act stated about it as {field, value, issue, asserted, actor, at}. field is what was stated — title, description, owner and rank, the four a person writes, state (live when it was made, gone when it was deleted) and visibility; advances is the relation an issue states on it. value is what an attribute write wrote and is empty on an advances act; issue is the issue at the other end of an advances act and is empty on an attribute write; asserted is false on the act that retracted an advances and true on every other. A priority belongs to no project, so any authenticated caller reads this, the shared token every pod carries included. A deleted priority still answers its history, the delete its newest act; an id no priority carries is 404 PRIORITY_NOT_FOUND. */
+    get: operations["getApiV1PrioritiesByIdHistory"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects": {
     parameters: {
       query?: never;
@@ -2175,10 +2228,10 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List projects. */
+    /** @description List projects. A project's default assignee is not listed here: GET /api/v1/settings/project-default-assignees reads it, with the person scope. */
     get: operations["getApiV1Projects"];
     put?: never;
-    /** @description Create a project {key, name}: any signed-in person or agent session; a bearer names its session in actor. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. */
+    /** @description Create a project {key, name, default_assignee}: any signed-in person or agent session; a bearer names its session in actor. Every project names the person its unowned work lands on, the last step of the chain that decides who a question reaches: default_assignee is the email of a person who has signed in, and a call that names none takes the person creating the project, else the person its credential acts for. A credential that acts for nobody and names no default_assignee is 400 INVALID_PROJECT; a login nobody has signed in with, the one the call names or the one its credential acts for, is 400 ASSIGNEE_NOT_ALLOWED. A key that is not a project key, an empty name, a name holding a control character or a bidi embedding, override or isolate, or a name with no visible character (a letter, number, punctuation or symbol other than the blank fillers U+115F, U+1160, U+3164, U+FFA0 and U+2800, or a code point Go's Unicode tables leave unassigned, such as an emoji newer than them, other than a noncharacter (U+FDD0-U+FDEF and each code point ending in FFFE or FFFF) or a reserved default-ignorable (U+2065, U+FFF0-U+FFF8, U+E0000-U+E0FFF); combining marks, format characters, private-use characters and whitespace don't count) is 400 INVALID_PROJECT; a name over 80 characters is 400 CAP_EXCEEDED; a key that already exists is 409 PROJECT_EXISTS. The answer is the project with the default_assignee the create stored. */
     post: operations["postApiV1Projects"];
     delete?: never;
     options?: never;
@@ -2451,7 +2504,7 @@ export interface paths {
       cookie?: never;
     };
     get?: never;
-    /** @description Set a project's default assignee {assignee} (the email of a person who has signed in, or null to clear it): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
+    /** @description Move a project's default assignee to another person {assignee} (the email of a person who has signed in): who an issue created with no assignee, by nobody, under no parent or under a parent with nobody on it, goes to, and who a question on an issue nobody holds reaches. A project always names a person, so an assignee that is absent, null or blank is 400 INVALID_PROJECT and the default cannot be cleared. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
     put: operations["putApiV1ProjectsByKeyDefaultAssignee"];
     post?: never;
     delete?: never;
@@ -2707,7 +2760,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description List every project that names a default assignee, by project key: the last step of a create's assignee chain. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
+    /** @description List every project with the person it defaults to, by project key: every project names one, and that person is the last step of the chain that decides who a question reaches. Needs the person scope, as the default names a person: a credential the deployment configured, the shared token or a pod's, holds none. */
     get: operations["getApiV1SettingsProjectDefaultAssignees"];
     put?: never;
     post?: never;
@@ -3637,6 +3690,8 @@ export interface components {
     CheckBlock: {
       artifact_id: string;
       block_id: string;
+      ci?: components["schemas"]["CheckCI"];
+      ci_check?: string;
       /** @enum {string} */
       compared_nothing?: "no_pull_request_or_branch" | "repository_unreadable" | "read_failed";
       compared_with: components["schemas"]["CheckBasis"][] | null;
@@ -3651,6 +3706,14 @@ export interface components {
       text: string;
       version: number;
       when: string;
+    };
+    CheckCI: {
+      case: string;
+      detail: string;
+      line: string;
+      run: string;
+      /** @enum {string} */
+      state: "pass" | "fail" | "no_result" | "unread";
     };
     CheckPassStands: {
       /** @enum {string} */
@@ -3713,6 +3776,9 @@ export interface components {
       force?: boolean;
     };
     ClaimedIssue: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
@@ -3931,6 +3997,7 @@ export interface components {
     };
     CreateIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
+      advances?: string[] | null;
       assignee?: string | null;
       blocked_by?: string[] | null;
       components?: components["schemas"]["IssueComponentsInput"] | null;
@@ -3957,8 +4024,16 @@ export interface components {
       actor?: components["schemas"]["Actor"] | null;
       version: number;
     };
+    CreatePriorityInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      description?: string;
+      id?: string;
+      owner?: string;
+      title: string;
+    };
     CreateProjectInput: {
       actor?: components["schemas"]["Actor"] | null;
+      default_assignee?: string;
       key: string;
       name: string;
     };
@@ -3978,6 +4053,15 @@ export interface components {
       revoked_at: null | string;
       scopes: string[] | null;
       token: string;
+    };
+    CreatedProject: {
+      /** Format: date-time */
+      created_at: string;
+      default_assignee: string;
+      gated_steps: string[] | null;
+      key: string;
+      name: string;
+      open_asks: number;
     };
     CredentialCapabilities: {
       machine_code_page: boolean;
@@ -4757,6 +4841,9 @@ export interface components {
       waiting_on_person?: string;
     };
     Issue: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
@@ -4786,6 +4873,10 @@ export interface components {
       /** Format: date-time */
       updated_at: string;
       verification_artifact_id: string;
+    };
+    IssueAdvance: {
+      id: string;
+      inherited: boolean;
     };
     IssueAskRow: {
       anchor: components["schemas"]["Anchor"] | null;
@@ -4922,6 +5013,9 @@ export interface components {
       gates: null | components["schemas"]["IssueDesignGate"][];
     };
     IssueDetails: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       artifacts: components["schemas"]["ArtifactWithTrees"][] | null;
       assignee: null | string;
       blocked_by: string[] | null;
@@ -5043,6 +5137,9 @@ export interface components {
       truncated: boolean;
     };
     IssueSummary: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      /** Format: int64 */
+      advances_revision: number;
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
@@ -5055,6 +5152,9 @@ export interface components {
       key: string;
       labels: string[] | null;
       last_seq: number;
+      /** Format: date-time */
+      moved_at?: string;
+      moved_by?: components["schemas"]["Actor"];
       open_asks: number;
       parent: null | string;
       primary_artifact_id: string;
@@ -5391,6 +5491,13 @@ export interface components {
       started_at: string;
       state: string;
     };
+    PatchPriorityInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      description?: null | string;
+      owner?: null | string;
+      rank?: components["schemas"]["IssueRankInput"] | null;
+      title?: null | string;
+    };
     PersonSignInResp: {
       /** Format: date-time */
       created_at: string;
@@ -5407,6 +5514,75 @@ export interface components {
     PersonSignInsResponse: {
       signins: components["schemas"]["PersonSignInResp"][] | null;
     };
+    Priorities: {
+      empty?: string;
+      priorities: components["schemas"]["PriorityRow"][] | null;
+      priority_work_parked: components["schemas"]["PriorityWorkParked"];
+      work_under_no_priority: components["schemas"]["WorkUnderNoPriority"];
+    };
+    Priority: {
+      description: string;
+      id: string;
+      /** Format: date-time */
+      made_at: string;
+      made_by: components["schemas"]["Actor"];
+      owner: string;
+      rank: string;
+      state: string;
+      title: string;
+    };
+    PriorityAct: {
+      actor: components["schemas"]["Actor"];
+      asserted: boolean;
+      /** Format: date-time */
+      at: string;
+      field: string;
+      issue: string;
+      value: string;
+    };
+    PriorityIssue: {
+      advances: components["schemas"]["IssueAdvance"][] | null;
+      assignee: null | string;
+      /** Format: date-time */
+      changed_at: string;
+      claim: components["schemas"]["IssueClaim"] | null;
+      key: string;
+      /** Format: date-time */
+      moved_at: null | string;
+      moved_by: components["schemas"]["Actor"] | null;
+      project: string;
+      status: string;
+      title: string;
+    };
+    PriorityRow: {
+      description: string;
+      id: string;
+      /** Format: date-time */
+      made_at: string;
+      made_by: components["schemas"]["Actor"];
+      owner: string;
+      rank: string;
+      state: string;
+      title: string;
+      work: components["schemas"]["PriorityWork"];
+    };
+    PriorityWork: {
+      by_status: {
+        [key: string]: number;
+      } | null;
+      claimed: number;
+      closed_last_7_days: number;
+      /** Format: date-time */
+      newest_event_at: null | string;
+      open_asks: number;
+    };
+    PriorityWorkParked: {
+      by_priority: {
+        [key: string]: number;
+      } | null;
+      count: number;
+      issues: components["schemas"]["PriorityIssue"][] | null;
+    };
     ProgressCount: {
       done: number;
       total: number;
@@ -5420,11 +5596,11 @@ export interface components {
       open_asks: number;
     };
     ProjectDefaultAssignee: {
-      assignee: null | string;
+      assignee: string;
       project: string;
     };
     ProjectDefaultAssigneeInput: {
-      assignee: string | null;
+      assignee: string;
     };
     ProjectGatedSteps: {
       project: string;
@@ -5867,6 +6043,8 @@ export interface components {
     };
     UpdateIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
+      advances?: null | string[];
+      advances_revision?: null | number;
       assignee?: string | null;
       blocked_by?: null | string[];
       components?: components["schemas"]["IssueComponentsInput"] | null;
@@ -5944,6 +6122,13 @@ export interface components {
       kind: "user";
       login: string;
       scopes: string[] | null;
+    };
+    WorkUnderNoPriority: {
+      by_project: {
+        [key: string]: number;
+      } | null;
+      count: number;
+      issues: components["schemas"]["PriorityIssue"][] | null;
     };
     WriteAdvice: {
       decision_block_checks?: components["schemas"]["DecisionBlockCheck"][];
@@ -9131,13 +9316,15 @@ export interface operations {
       query?: {
         pinned?: boolean;
         project?: string;
-        status?: string;
+        status?: string[];
         parent?: string;
         label?: string[];
         updated_since?: string;
         closed_since?: string;
         closed_before?: string;
         priority?: string[];
+        advances?: string[];
+        moved?: boolean;
         route_status?: string;
         open?: boolean;
         limit?: number;
@@ -11518,6 +11705,184 @@ export interface operations {
       };
     };
   };
+  getApiV1Priorities: {
+    parameters: {
+      query?: {
+        project?: string[];
+        summary?: boolean;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Priorities"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1Priorities: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["CreatePriorityInput"];
+      };
+    };
+    responses: {
+      /** @description Created */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Priority"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  deleteApiV1PrioritiesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ActorInput"];
+      };
+    };
+    responses: {
+      /** @description No Content */
+      204: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  patchApiV1PrioritiesById: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PatchPriorityInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["Priority"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1PrioritiesByIdHistory: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PriorityAct"][];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1Projects: {
     parameters: {
       query?: {
@@ -11572,7 +11937,7 @@ export interface operations {
           [name: string]: unknown;
         };
         content: {
-          "application/json": components["schemas"]["Project"];
+          "application/json": components["schemas"]["CreatedProject"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13222,6 +13587,7 @@ export type CarriedBlock = components["schemas"]["CarriedBlock"];
 export type ChangeFailureRate = components["schemas"]["ChangeFailureRate"];
 export type CheckBasis = components["schemas"]["CheckBasis"];
 export type CheckBlock = components["schemas"]["CheckBlock"];
+export type CheckCI = components["schemas"]["CheckCI"];
 export type CheckPassStands = components["schemas"]["CheckPassStands"];
 export type CheckResult = components["schemas"]["CheckResult"];
 export type CheckResultRecorded = components["schemas"]["CheckResultRecorded"];
@@ -13252,9 +13618,11 @@ export type CreateHandoffInput = components["schemas"]["CreateHandoffInput"];
 export type CreateIssueInput = components["schemas"]["CreateIssueInput"];
 export type CreateMessageInput = components["schemas"]["CreateMessageInput"];
 export type CreatePlanReviewInput = components["schemas"]["CreatePlanReviewInput"];
+export type CreatePriorityInput = components["schemas"]["CreatePriorityInput"];
 export type CreateProjectInput = components["schemas"]["CreateProjectInput"];
 export type CreateVersionInput = components["schemas"]["CreateVersionInput"];
 export type CreatedAgentToken = components["schemas"]["CreatedAgentToken"];
+export type CreatedProject = components["schemas"]["CreatedProject"];
 export type CredentialCapabilities = components["schemas"]["CredentialCapabilities"];
 export type CredentialDecisionInput = components["schemas"]["CredentialDecisionInput"];
 export type CredentialPendingResponse = components["schemas"]["CredentialPendingResponse"];
@@ -13345,6 +13713,7 @@ export type InboxReadRequest = components["schemas"]["InboxReadRequest"];
 export type InboxReadResponse = components["schemas"]["InboxReadResponse"];
 export type InboxRow = components["schemas"]["InboxRow"];
 export type Issue = components["schemas"]["Issue"];
+export type IssueAdvance = components["schemas"]["IssueAdvance"];
 export type IssueAskRow = components["schemas"]["IssueAskRow"];
 export type IssueCheckResults = components["schemas"]["IssueCheckResults"];
 export type IssueChild = components["schemas"]["IssueChild"];
@@ -13410,9 +13779,17 @@ export type OutgoingReference = components["schemas"]["OutgoingReference"];
 export type PassCounts = components["schemas"]["PassCounts"];
 export type PassCursor = components["schemas"]["PassCursor"];
 export type PassRecord = components["schemas"]["PassRecord"];
+export type PatchPriorityInput = components["schemas"]["PatchPriorityInput"];
 export type PersonSignInResp = components["schemas"]["PersonSignInResp"];
 export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRevokedResponse"];
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
+export type Priorities = components["schemas"]["Priorities"];
+export type Priority = components["schemas"]["Priority"];
+export type PriorityAct = components["schemas"]["PriorityAct"];
+export type PriorityIssue = components["schemas"]["PriorityIssue"];
+export type PriorityRow = components["schemas"]["PriorityRow"];
+export type PriorityWork = components["schemas"]["PriorityWork"];
+export type PriorityWorkParked = components["schemas"]["PriorityWorkParked"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
 export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssignee"];
@@ -13487,6 +13864,7 @@ export type UserStateStaleError = components["schemas"]["UserStateStaleError"];
 export type Version = components["schemas"]["Version"];
 export type WhoamiAgent = components["schemas"]["WhoamiAgent"];
 export type WhoamiUser = components["schemas"]["WhoamiUser"];
+export type WorkUnderNoPriority = components["schemas"]["WorkUnderNoPriority"];
 export type WriteAdvice = components["schemas"]["WriteAdvice"];
 export type WriteSuggestion = components["schemas"]["WriteSuggestion"];
 

@@ -226,7 +226,8 @@ func admissionPassHolding(t *testing.T, pool *pgxpool.Pool, engine *Engine, held
 		t.Fatalf("list the mirror: %v", err)
 	}
 	rows := blockers.Rows(mirrored)
-	for _, entry := range record.Waiting(issues, slots, facts) {
+	line, _ := record.Waiting(issues, slots, facts)
+	for _, entry := range line {
 		// The real pass stops at the first candidate a hold holds, because the cap counts
 		// issues and everything behind it competes for the same slots.
 		if held != nil && held(entry.Issue.Key) {

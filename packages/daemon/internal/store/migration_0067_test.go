@@ -15,6 +15,12 @@ import (
 // sides, which the completion route reads as nothing to compare, so none of their completions is
 // refused for a value only one side has. This asserts that emptiness on rows recorded before the
 // migration, and that each column then takes and keeps a value.
+//
+// The three columns stand between 0067 and 20261111225552, which drops them for the phase entry
+// that replaced the token
+// (TestThePhaseEntryColumnsReplaceTheAssignmentColumnsWith20261111225552). So this test migrates
+// through 0067 and no further: what it holds is 0067's own effect, which every upgrade from a
+// store older than it still walks.
 func TestTheAssignmentColumnsArriveEmptyWith0067(t *testing.T) {
 	ctx := context.Background()
 	store := emptyStore(t)
@@ -42,9 +48,7 @@ func TestTheAssignmentColumnsArriveEmptyWith0067(t *testing.T) {
 		t.Fatalf("stamping a phases row's assignment before 0067 = %v, want the column to be unknown", err)
 	}
 	t.Logf("before the migration the assignment write is refused: %v", err)
-	if _, err := store.Migrate(ctx); err != nil {
-		t.Fatalf("migrate through the assignment columns: %v", err)
-	}
+	migrateThrough(t, store, 67)
 
 	for _, read := range []struct {
 		what  string

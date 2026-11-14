@@ -499,6 +499,16 @@ type rig struct {
 	// launcher that held the whole bundle and could not put it back.
 	refuseBundle string
 	failRestore  string
+	// leakCheckTag and leakCheckInstalled are what every fake launcher's hello says of the shared
+	// public leak check: its pin, "" for none, and whether it holds that pin installed
+	// (withLeakCheckHello). refuseLeakCheck, when set, is the cause every fake launcher answers
+	// each launcher_leak_check slice with, silentLeakCheck has it answer none at all, and
+	// causelessLeakCheck has it refuse each slice with no cause.
+	leakCheckTag       string
+	leakCheckInstalled bool
+	refuseLeakCheck    string
+	silentLeakCheck    bool
+	causelessLeakCheck bool
 }
 
 type rigOption func(*rig, *Options)
@@ -520,10 +530,33 @@ func withFailedRestore(reason string) rigOption {
 	return func(g *rig, _ *Options) { g.failRestore = reason }
 }
 
+// withLeakCheckHello has every fake launcher's hello name tag as its leak-check pin, saying the
+// launcher holds it installed when installed is set, as one of a pod whose launcher already took
+// the check does after a reconnect.
+func withLeakCheckHello(tag string, installed bool) rigOption {
+	return func(g *rig, _ *Options) { g.leakCheckTag, g.leakCheckInstalled = tag, installed }
+}
+
+// withRefusedLeakCheck has every fake launcher refuse each slice of the leak check with cause, as
+// a launcher whose install of the served check failed does.
+func withRefusedLeakCheck(cause string) rigOption {
+	return func(g *rig, _ *Options) { g.refuseLeakCheck = cause }
+}
+
+// withSilentLeakCheck has every fake launcher take the leak check's slices and answer none, as
+// one whose install is still running when the daemon's hop ends.
+func withSilentLeakCheck() rigOption { return func(g *rig, _ *Options) { g.silentLeakCheck = true } }
+
+// withCauselessLeakCheck has every fake launcher refuse each slice of the leak check with no
+// cause, an answer no launcher of this release gives and the daemon refuses as malformed.
+func withCauselessLeakCheck() rigOption {
+	return func(g *rig, _ *Options) { g.causelessLeakCheck = true }
+}
+
 // testLaunchers is a launchers of its own, outside any rig, with no saved workspace bundles to
 // carry: the tests that build one drive the launcher protocol itself.
 func testLaunchers() *launchers {
-	return newLaunchers(nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	return newLaunchers(nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // launcherIssue is the issue key a role token's pod is of, as the role Secret's annotation
@@ -1019,7 +1052,10 @@ func (g *rig) connect(token claim.Token) { g.connectRunning(token, 0) }
 func (g *rig) connectRunning(token claim.Token, running uint64) {
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{LauncherID: "test-" + string(token), PodUID: string(pod.UID)})
+	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, shimwire.LauncherHello{
+		LauncherID: "test-" + string(token), PodUID: string(pod.UID),
+		LeakCheckTag: g.leakCheckTag, LeakCheckInstalled: g.leakCheckInstalled,
+	})
 	g.t.Cleanup(func() { _ = client.Close() })
 	go session.ServeLauncher(server, bufio.NewReader(server), shimwire.NewWriter(server))
 	go func() {
@@ -1038,6 +1074,12 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 		held := map[string]map[int]bool{}
 		whole := ""
 		var release int64
+		// checks is the slices of each leak check sequence that arrived and installed whether
+		// this launcher process holds the check installed, as the real launcher's checkInstall
+		// does: it installs nothing, and answers the last slice of a sequence, and every slice
+		// once it holds one installed, Installed.
+		checks := map[string]map[int]bool{}
+		installed := g.leakCheckInstalled
 		reader := bufio.NewReader(client)
 		for {
 			line, err := reader.ReadBytes('\n')
@@ -1098,6 +1140,21 @@ func (g *rig) connectRunning(token claim.Token, running uint64) {
 				_ = writer.WriteFrame(shimwire.LauncherBundleResult{
 					ID: command.ID, Index: command.Index, OK: true, Held: all,
 				})
+			case shimwire.LauncherLeakCheck:
+				switch {
+				case g.silentLeakCheck:
+				case g.causelessLeakCheck:
+					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index})
+				case g.refuseLeakCheck != "":
+					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, Error: g.refuseLeakCheck})
+				default:
+					if checks[command.ID] == nil {
+						checks[command.ID] = map[int]bool{}
+					}
+					checks[command.ID][command.Index] = true
+					installed = installed || len(checks[command.ID]) == command.Count
+					_ = writer.WriteFrame(shimwire.LauncherLeakCheckResult{ID: command.ID, Index: command.Index, OK: true, Installed: installed})
+				}
 			}
 		}
 	}()

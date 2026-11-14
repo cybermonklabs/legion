@@ -78,8 +78,9 @@ func TestSignOffIsRefusedOutsideAccepting(t *testing.T) {
 }
 
 // The architect's sign_off in accepting moves the issue to retro with the status retro and starts
-// the implementer there, its task naming the phase, the review's handoff record (the reviewer
-// reports no commit) and the pull request; the architect that just acted is told nothing.
+// the implementer there, its task naming the phase, the review's handoff record (the reviewer's
+// completion seeded here reported no commit) and the pull request; the architect that just acted is
+// told nothing.
 func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -101,7 +102,7 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 		}
 	}
 	if strings.Contains(task, "Handoff commit:") {
-		t.Fatalf("the implementer's retro task %q names a commit the reviewer never reported", task)
+		t.Fatalf("the implementer's retro task %q names a commit the seeded reviewer's completion never reported", task)
 	}
 	if pass := implementerPass(t, pool); pass != 0 {
 		t.Fatalf("acceptance counted the implementer %d passes, want none: nothing went back", pass)
@@ -109,7 +110,7 @@ func TestSignOffInAcceptingStartsRetro(t *testing.T) {
 }
 
 // The architect accepts with sign_off: its handoff_complete in accepting is refused and records
-// nothing, before the phase gate that RoleFor(accepting) would let it through.
+// nothing, before the phase gate that phase.RoleFor(accepting) would let it through.
 func TestTheArchitectsCompletionInAcceptingIsRefused(t *testing.T) {
 	pool := migratedPool(t)
 	seedAccepting(t, pool)
@@ -192,7 +193,7 @@ func TestABackwardMoveOntoAcceptingWritesNeedsReview(t *testing.T) {
 	for _, from := range []phase.Phase{phase.Retro, phase.Merging} {
 		t.Run(string(from), func(t *testing.T) {
 			pool := migratedPool(t)
-			role := RoleFor(from)
+			role := phase.RoleFor(from)
 			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: from, Generation: 1, Status: "retro", Rank: "U"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim")})
 			applyRefusingNothing(t, pool, testEngine(config.DesignGateRootIssues, nil),

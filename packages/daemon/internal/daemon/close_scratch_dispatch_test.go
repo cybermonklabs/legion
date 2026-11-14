@@ -7,13 +7,13 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
@@ -31,7 +31,7 @@ import (
 func TestTheDaemonsOwnCloseLandsOnScratchDispatchAfterAnEventOvertakesItsRead(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
-		close func(t *testing.T, pool *pgxpool.Pool, records record.Store, engine *workflow.Engine, issue string)
+		close func(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string)
 	}{
 		{name: "the merge's close", close: mergeClosesTheIssue},
 		{name: "an architect's close_root", close: architectClosesTheRoot},
@@ -174,7 +174,7 @@ func TestACloseWhoseAttemptFailedWritesNothingOverAReopen(t *testing.T) {
 
 // reopenTheIssue is a person's reopen as a re-admission leaves it: the issue back in the workflow
 // in a generation of its own, which is what tells a close of the run before it from the record's.
-func reopenTheIssue(t *testing.T, pool *pgxpool.Pool, records record.Store, issue string) {
+func reopenTheIssue(t *testing.T, pool *store.Pool, records record.Store, issue string) {
 	t.Helper()
 	reopened := recordOf(t, pool, records, issue)
 	reopened.Generation, reopened.Phase, reopened.Status = reopened.Generation+1, phase.Implementing, "in_progress"
@@ -188,7 +188,7 @@ func reopenTheIssue(t *testing.T, pool *pgxpool.Pool, records record.Store, issu
 
 // mergeClosesTheIssue drives the close the daemon makes when it reads the merged pull request of
 // an issue in merging, and holds it to the one close row that leaves.
-func mergeClosesTheIssue(t *testing.T, pool *pgxpool.Pool, records record.Store, engine *workflow.Engine, issue string) {
+func mergeClosesTheIssue(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -211,7 +211,7 @@ func mergeClosesTheIssue(t *testing.T, pool *pgxpool.Pool, records record.Store,
 
 // architectClosesTheRoot drives the close an architect makes of a root that has started no phase,
 // and holds it to the one close row that leaves.
-func architectClosesTheRoot(t *testing.T, pool *pgxpool.Pool, records record.Store, engine *workflow.Engine, issue string) {
+func architectClosesTheRoot(t *testing.T, pool *store.Pool, records record.Store, engine *workflow.Engine, issue string) {
 	t.Helper()
 	ctx := context.Background()
 	if err := pgx.BeginFunc(ctx, pool, func(tx pgx.Tx) error {
@@ -233,7 +233,7 @@ func architectClosesTheRoot(t *testing.T, pool *pgxpool.Pool, records record.Sto
 // done over the status Dispatch shows, fenced on the generation it closed. A wrong kind is
 // reported and the case runs on, since what the kind costs is the write itself and the run that
 // follows is where that shows.
-func wantsOneCloseRow(t *testing.T, pool *pgxpool.Pool, issue string) {
+func wantsOneCloseRow(t *testing.T, pool *store.Pool, issue string) {
 	t.Helper()
 	var kind, status, observed string
 	var generation int64

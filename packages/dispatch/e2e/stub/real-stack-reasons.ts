@@ -155,7 +155,6 @@ export const realStackReasons: Record<string, string> = {
   "inbox-read-state.e2e.ts": "reading writes the read mark and the row is re-read",
   "inbox-reading-pane.e2e.ts":
     "the answer is a write; approval is the server's computation; the withdrawal is the server's",
-  "inbox-search.e2e.ts": "a write in flight",
   "inbox-stability.e2e.ts":
     "rows move because writes land elsewhere and arrive live under the reader's hand",
   "inbox-thread-pane.e2e.ts":
@@ -227,8 +226,12 @@ export const realStackReasons: Record<string, string> = {
     "the command bar's own search reads `/api/v1/search`, and the inbox peek lists the asks the server holds for the reader",
   "polish.e2e.ts": "opens the margin ask composer on the live document",
   "prefix-links.e2e.ts": "`sql`-forged id twins and the server's short-id resolution",
+  "priorities.e2e.ts":
+    "every row reads what the server decides about a priority: the two faults are its own queries over statuses and the `advances` tuples, a priority a child inherits is its walk down the parent chain, each write is read back out of the store after a reload, the margin is the history the server answers, the rail's count falls under an open page with no reload, and another person's write of a priority reaches that open page as the server's event",
   "progress.e2e.ts":
     "it asserts the progress the server computes over an issue's children before it opens a page",
+  "project-default-assignee.e2e.ts":
+    "which person a question reaches is the server's own expression over three tables, and each of the two writes that move it must reach the open Inboxes, issue page and document page over the live socket with no reload",
   "project.e2e.ts": "the reference closure is the server's graph walk",
   "recipients-claim.e2e.ts": "claims and routes the server computes, with live card updates",
   "reference-cards.e2e.ts": "opens the spec's live editor and its margin thread",

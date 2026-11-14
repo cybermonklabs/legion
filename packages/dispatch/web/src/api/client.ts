@@ -921,6 +921,9 @@ export class DispatchApiClient {
     return this.read("/api/v1/projects", {});
   }
 
+  /** Answers `CreatedProject`: the project as created, with the default assignee the create
+   *  stored, which the project list leaves out (`listProjectDefaultAssignees` is the one read of
+   *  every project's default). */
   createProject(input: Body<"/api/v1/projects", "post">, bounds: WriteBounds) {
     return this.post("/api/v1/projects", {}, input, bounds);
   }
@@ -946,15 +949,16 @@ export class DispatchApiClient {
     await this.remove("/api/v1/settings/repo-projects/{owner}/{repo}", repoParams(repo), bounds);
   }
 
-  /** Only the projects that name a default; a project left out names nobody. Needs the
-   *  `person` scope. */
+  /** Every project with the person it defaults to: each one names somebody, so none is left out.
+   *  Needs the `person` scope. */
   listProjectDefaultAssignees() {
     return this.read("/api/v1/settings/project-default-assignees", {});
   }
 
-  /** Sets the person a project's unowned work lands on, or clears it with `{assignee: null}`.
-   *  Needs the `person` scope, and a login nobody has signed in as is refused
-   *  `400 ASSIGNEE_NOT_ALLOWED`. */
+  /** Moves the person a project's unowned work lands on, and the person a question on an issue
+   *  nobody holds reaches. A project always names somebody: an assignee that is absent, null or
+   *  blank is refused `400 INVALID_PROJECT`, so nothing clears a default. Needs the `person`
+   *  scope, and a login nobody has signed in as is refused `400 ASSIGNEE_NOT_ALLOWED`. */
   putProjectDefaultAssignee(
     project: string,
     input: Body<"/api/v1/projects/{key}/default-assignee", "put">,
@@ -1143,6 +1147,36 @@ export class DispatchApiClient {
    *  plan document - so a reader draws its answer rather than judging again. */
   getIssueCoverage(key: string) {
     return this.read("/api/v1/issues/{key}/coverage", { key });
+  }
+
+  /** `GET /api/v1/priorities`: every live priority in rank order, each with the work that
+   *  advances it, and the two faults the page draws beside them - the open work under no
+   *  priority and the work parked under one. A priority belongs to no project, so this reads the
+   *  whole deployment; `project`, repeatable, counts only the work of those projects, and
+   *  `summary: true` answers the two fault counts alone, with no row and no issue list. */
+  listPriorities(query: Query<"/api/v1/priorities", "get"> = {}) {
+    return this.read("/api/v1/priorities", {}, query);
+  }
+
+  /** `POST /api/v1/priorities`: one new priority, which takes the last place of the order. Its
+   *  id defaults to its title as a slug. */
+  createPriority(input: Body<"/api/v1/priorities", "post">, bounds: WriteBounds) {
+    return this.post("/api/v1/priorities", {}, input, bounds);
+  }
+
+  /** `PATCH /api/v1/priorities/{id}`: the priority's title, description or owner, and its place
+   *  in the one order (`rank: {before, after}`, the priorities it lands between, as the issue
+   *  board's own drag names them). Each field left out is left alone. */
+  patchPriority(id: string, input: Body<"/api/v1/priorities/{id}", "patch">, bounds: WriteBounds) {
+    return this.patch("/api/v1/priorities/{id}", { id }, input, bounds);
+  }
+
+  /** `GET /api/v1/priorities/{id}/history`: the priority's own history, newest first - each
+   *  write of its title, description, owner, order, state and visibility, and each `advances`
+   *  relation an issue asserted or retracted on it, with the actor who stated it and when. A
+   *  priority that was deleted still answers its history, the delete its newest act. */
+  getPriorityHistory(id: string) {
+    return this.read("/api/v1/priorities/{id}/history", { id });
   }
 
   getInbox(project?: string) {

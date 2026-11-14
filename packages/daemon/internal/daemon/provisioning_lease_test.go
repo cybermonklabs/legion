@@ -10,10 +10,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"maps"
 	"net/http"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -27,7 +25,9 @@ import (
 
 // provisioningTokenRequest is one installation token request a provisioning mint made: the
 // installation it was addressed to, and the repositories and permissions its body named. Every
-// mint of this daemon names both, so neither is ever nil in a request a provisioning mint made.
+// mint of this daemon names permissions, so they are never nil in a request a provisioning mint
+// made; no mint names a repository, the installation deciding what its token reaches
+// (INFRA-2543), so repositories is nil in every one.
 type provisioningTokenRequest struct {
 	installation string
 	repositories []string
@@ -162,8 +162,9 @@ func exchangeBody(t *testing.T, r *http.Request) ([]string, map[string]string) {
 }
 
 // mintedToken answers a token request with token, as GitHub's own answer is shaped: the selection
-// of the repositories the request named and the permissions it asked for, which GitHub names in
-// every answer it makes and the mint holds its answer to (appauth's narrowedTo).
+// of the repositories the request named, which no mint of this daemon names, and the permissions
+// it asked for, which GitHub names in every answer it makes and the mint holds its answer to
+// (appauth's narrowedTo).
 func mintedToken(w http.ResponseWriter, token string, repositories []string, permissions map[string]string) {
 	named := make([]string, 0, len(repositories))
 	for _, repository := range repositories {
@@ -175,30 +176,32 @@ func mintedToken(w http.ResponseWriter, token string, repositories []string, per
 		token, time.Now().Add(time.Hour).Format(time.RFC3339), strings.Join(named, ","), held)
 }
 
-// provisioningRefusal is GitHub's 422 to a token request that narrowed the token: a repository
-// the installation does not reach, or a permission it is not granted, which GitHub answers the
-// same way, minting nothing rather than leaving one out. It carries no rate-limit signal, so
-// appauth reads it as the narrowing refused (ErrNarrowingRefused) rather than as GitHub's
-// trouble.
+// provisioningRefusal is GitHub's 422 to a token request for a permission the installation is
+// not granted, which it answers by minting nothing rather than by leaving that permission out.
+// It carries no rate-limit signal, so appauth reads it as the narrowing refused
+// (ErrNarrowingRefused) rather than as GitHub's trouble.
 func provisioningRefusal(w http.ResponseWriter) {
 	w.WriteHeader(http.StatusUnprocessableEntity)
 	fmt.Fprint(w, `{"message":"Validation Failed","errors":[{"resource":"Permission","code":"invalid"}]}`)
 }
 
 // The Sandbox runtime's provisioning token is a reading lease: implementTokens mints the
-// implement App's installation token for the one repository the pod clones, narrowed to
+// implement App's installation token on the owner of the repository the pod clones, narrowed to
 // contents, pull requests, Actions and metadata at read, which is all a clone, a fetch and a
 // repository cache do (INFRA-1254, INFRA-513).
 // Four installations, one per case, so no case's mints or cached leases reach another's:
 //
-//   - one granted the implement App's whole set: the one request names that repository and the
-//     reading set, and that token is served;
+//   - one granted the implement App's whole set: the one request names the reading set and no
+//     repository, and that token is served;
 //   - one not granted Actions: the mint asks for what the installation is granted of the reading
 //     set, so the one request leaves actions out and the adapter is served that token, with no
 //     second call;
-//   - one that refuses the reading request: the adapter falls back to the App's own write token
-//     for that repository, the one fallback there is, and says so once for that owner;
-//   - one in GitHub's trouble (a 500): the error is returned as it came, with no fallback mint and
+//   - one that refuses the reading request: the refusal is returned as it came and nothing else
+//     is minted. It once fell back to the App's own write token for that owner, from when a
+//     request named the repository and a 422 could mean the installation did not reach it; no
+//     request names a repository now (INFRA-2543), so that write token would reach the owner's
+//     whole installation, and a refused reading lease fails the mint rather than hand it out;
+//   - one in GitHub's trouble (a 500): the error is returned as it came, with no second mint and
 //     nothing logged.
 func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	const (
@@ -219,8 +222,8 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	readingSet := map[string]string{"contents": "read", "pull_requests": "read", "actions": "read", "metadata": "read"}
 	withoutActions := map[string]string{"contents": "read", "pull_requests": "read", "metadata": "read"}
 	// writeSet is what the implement App's write token asks for (appauth's writePermissions),
-	// which is what the fallback mint carries and what each installation below is granted, bar
-	// the one its own case takes a permission from.
+	// which is what each installation below is granted, bar the one its own case takes a
+	// permission from.
 	writeSet := map[string]string{"actions": "write", "checks": "read", "contents": "write",
 		"metadata": "read", "pull_requests": "write", "statuses": "write", "workflows": "write"}
 	withoutActionsGranted := map[string]string{"checks": "read", "contents": "write",
@@ -252,8 +255,8 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 				mintedToken(w, "narrowed-lease", repositories, permissions)
 			}},
 		// An installation that refuses the narrowed read — a grant that changed between the
-		// permissions read and the exchange reaches the adapter as the same 422 a repository it
-		// does not reach does — and mints the App's own write token.
+		// permissions read and the exchange reaches the adapter as a 422 — and would mint the
+		// App's own write token if asked, which the adapter never does.
 		provisioningInstallation{id: refusedInstallation, owner: refusedOwner, granted: writeSet,
 			answer: func(w http.ResponseWriter, repositories []string, permissions map[string]string) {
 				if allRead(permissions) {
@@ -268,19 +271,13 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 				fmt.Fprint(w, `{"message":"Server Error"}`)
 			}},
 	)
-	var logged syncBuffer
 	// The adapter as sandboxRuntime builds it, with the identity serving map of a deployment that
 	// configures no rename.
-	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo },
-		slog.New(slog.NewJSONHandler(&logged, nil)))
-	fallbacks := func() []map[string]any {
-		t.Helper()
-		return loggedLines(t, logged.String(), "refuses a read-only provisioning token")
-	}
+	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo })
 	ctx := context.Background()
 
-	// The request carries the one repository and the reading permissions, and that token is what
-	// a pod clones with.
+	// The request carries the reading permissions and no repository, and that token is what a pod
+	// clones with.
 	token, err := adapter.Token(ctx, readingRepo)
 	if err != nil || token != "reading-lease" {
 		t.Fatalf("the token for %s = %q, %v; want the reading lease", readingRepo, token, err)
@@ -291,9 +288,6 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	}
 	if !maps.Equal(requests[0].permissions, readingSet) {
 		t.Fatalf("the token request asked for %v, want %v", requests[0].permissions, readingSet)
-	}
-	if !slices.Equal(requests[0].repositories, []string{readingRepo.Name()}) {
-		t.Fatalf("the token request named %v, want the one repository the pod clones: %s", requests[0].repositories, readingRepo.Name())
 	}
 
 	// An installation not granted actions: the mint asks for what it is granted of the reading
@@ -310,52 +304,21 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 		t.Fatalf("the token request asked for %v, want %v: the reading set without actions", requests[0].permissions, withoutActions)
 	}
 
-	// An installation that refuses the reading request: the App's own write token for that
-	// repository is the one fallback, said once.
+	// An installation that refuses the reading request: the refusal is the adapter's answer, and
+	// the one request is all GitHub is asked.
 	token, err = adapter.Token(ctx, refusedRepo)
-	if err != nil || token != "own-installation-token" {
-		t.Fatalf("the token for %s = %q, %v; want the App's own write token", refusedRepo, token, err)
+	if !appauth.NarrowingRefused(err) || token != "" {
+		t.Fatalf("the token for %s = %q, %v; want the refusal returned and no token", refusedRepo, token, err)
 	}
 	requests = github.requestsTo(refusedInstallation)
-	if len(requests) != 2 {
-		t.Fatalf("%d token requests for %s, want the read mint and the fallback: %+v", len(requests), refusedRepo, requests)
+	if len(requests) != 1 {
+		t.Fatalf("%d token requests for %s, want the read mint alone: %+v", len(requests), refusedRepo, requests)
 	}
 	if !maps.Equal(requests[0].permissions, readingSet) {
-		t.Fatalf("the first token request asked for %v, want the reading set %v", requests[0].permissions, readingSet)
-	}
-	if !maps.Equal(requests[1].permissions, writeSet) {
-		t.Fatalf("the fallback token request asked for %v, want the App's write set %v", requests[1].permissions, writeSet)
-	}
-	for _, request := range requests {
-		if !slices.Equal(request.repositories, []string{refusedRepo.Name()}) {
-			t.Fatalf("a token request named %v, want the one repository the pod clones: %s", request.repositories, refusedRepo.Name())
-		}
-	}
-	lines := fallbacks()
-	if len(lines) != 1 {
-		t.Fatalf("%d fallback lines, want exactly one: %s", len(lines), logged.String())
-	}
-	if lines[0]["owner"] != refusedOwner || lines[0]["level"] != "WARN" {
-		t.Fatalf("the fallback line = %v, want a WARN naming %s", lines[0], refusedOwner)
+		t.Fatalf("the token request asked for %v, want the reading set %v", requests[0].permissions, readingSet)
 	}
 
-	// The same owner provisioned again says nothing more, for the life of the process. The lease
-	// the first call cached is dropped first, so this call really mints again (appauth's Forget,
-	// as TestForgetMakesTheNextTokenAndReadTokenMintAgain uses it): served from the cache it
-	// would make no GitHub request at all and prove nothing about the once-per-owner rule.
-	github.tokens.Forget(appauth.Implement, refusedOwner)
-	token, err = adapter.Token(ctx, refusedRepo)
-	if err != nil || token != "own-installation-token" {
-		t.Fatalf("the second token for %s = %q, %v; want the App's own write token again", refusedRepo, token, err)
-	}
-	if again := github.requestsTo(refusedInstallation); len(again) != 4 {
-		t.Fatalf("%d token requests for %s after Forget, want the two of each call: %+v", len(again), refusedRepo, again)
-	}
-	if lines := fallbacks(); len(lines) != 1 {
-		t.Fatalf("%d fallback lines after the second mint for the same owner, want the first one alone: %s", len(lines), logged.String())
-	}
-
-	// GitHub's trouble is returned as it came: no fallback mint, and nothing logged.
+	// GitHub's trouble is returned as it came, and no second mint is made.
 	token, err = adapter.Token(ctx, flakyRepo)
 	var transient *appauth.TransientError
 	if !errors.As(err, &transient) || token != "" {
@@ -370,19 +333,25 @@ func TestTheProvisioningTokenIsAReadingLease(t *testing.T) {
 	}
 	for _, request := range requests {
 		if request.permissions["contents"] != "read" {
-			t.Fatalf("a token request for %s asked for %v, want no fallback to the App's write token: %+v", flakyRepo, request.permissions, requests)
+			t.Fatalf("a token request for %s asked for %v, want no mint of the App's write token: %+v", flakyRepo, request.permissions, requests)
 		}
 	}
-	if lines := fallbacks(); len(lines) != 1 {
-		t.Fatalf("%d fallback lines after GitHub's trouble, want only the refused owner's: %s", len(lines), logged.String())
+
+	// No request names a repository: the installation decides what the lease reaches
+	// (INFRA-2543), and the repository the pod clones keys the lease alone.
+	for _, installation := range []string{readingInstallation, narrowInstallation, refusedInstallation, flakyInstallation} {
+		for _, request := range github.requestsTo(installation) {
+			if request.repositories != nil {
+				t.Fatalf("a token request to installation %s named %v, want no repository", installation, request.repositories)
+			}
+		}
 	}
 }
 
 // A 422 carrying GitHub's rate limit is GitHub's trouble and not its answer about the
-// installation, so the provisioning read is never softened into the App's own write token for
-// it: a rate limit would otherwise hand every pod of that owner the widest credential this issue
-// narrows, for as long as the limit lasts. The adapter returns the trouble, makes no fallback
-// mint and says nothing; the next provisioning asks again.
+// installation, and the adapter tells the two apart so that a caller reading its failure reads
+// a rate limit as nothing about what the account grants: the trouble is returned as it came,
+// and the next provisioning asks again.
 func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *testing.T) {
 	const (
 		limitedOwner        = "acme-rate-limited"
@@ -395,14 +364,12 @@ func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *test
 	github := provisioningStandIn(t,
 		provisioningInstallation{id: limitedInstallation, owner: limitedOwner, granted: writeSet,
 			answer: func(w http.ResponseWriter, _ []string, _ map[string]string) {
-				// GitHub's secondary rate limit, which it answers 422 to a narrowed request with.
+				// GitHub's secondary rate limit, which it answers 422 to a token request with.
 				w.WriteHeader(http.StatusUnprocessableEntity)
 				fmt.Fprint(w, `{"message":"You have exceeded a secondary rate limit. Please wait a few minutes before you try again."}`)
 			}},
 	)
-	var logged syncBuffer
-	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo },
-		slog.New(slog.NewJSONHandler(&logged, nil)))
+	adapter := newImplementTokens(github.tokens, func(repo ghrepo.Repository) ghrepo.Repository { return repo })
 
 	token, err := adapter.Token(context.Background(), limitedRepo)
 	var transient *appauth.TransientError
@@ -414,10 +381,10 @@ func TestARateLimited422OfTheProvisioningReadIsNoFallbackToTheWriteToken(t *test
 	}
 	for _, request := range github.requestsTo(limitedInstallation) {
 		if request.permissions["contents"] != "read" {
-			t.Fatalf("a token request asked for %v, want no fallback to the App's write token", request.permissions)
+			t.Fatalf("a token request asked for %v, want the reading lease and no second mint", request.permissions)
 		}
-	}
-	if lines := loggedLines(t, logged.String(), "refuses a read-only provisioning token"); len(lines) != 0 {
-		t.Errorf("%d fallback lines, want none: %s", len(lines), logged.String())
+		if request.repositories != nil {
+			t.Fatalf("a token request named %v, want no repository", request.repositories)
+		}
 	}
 }

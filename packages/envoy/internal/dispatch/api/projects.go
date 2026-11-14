@@ -57,11 +57,25 @@ func (s *server) listProjects(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, projects)
 }
 
-// createProjectInput is the body of POST /api/v1/projects.
+// createProjectInput is the body of POST /api/v1/projects. DefaultAssignee is optional in the
+// body and never optional in the row: a call that names none takes the person creating the
+// project, and only a caller acting for nobody has to name one (createProject below).
 type createProjectInput struct {
-	Key   string       `json:"key" required:"true"`
-	Name  string       `json:"name" required:"true"`
-	Actor *model.Actor `json:"actor"`
+	Key             string       `json:"key" required:"true"`
+	Name            string       `json:"name" required:"true"`
+	DefaultAssignee string       `json:"default_assignee"`
+	Actor           *model.Actor `json:"actor"`
+}
+
+// createdProject is the answer of POST /api/v1/projects: the project as created, and the
+// default assignee the create stored, so the caller knows whom the project's unowned work lands
+// on without a second read. The project list leaves the default out: GET
+// /api/v1/settings/project-default-assignees, which needs the person scope, is the one read of
+// every project's default, so a credential that route refuses reads no default off the list
+// either. The project.created event carries the project alone.
+type createdProject struct {
+	model.Project
+	DefaultAssignee string `json:"default_assignee"`
 }
 
 func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
@@ -94,16 +108,50 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_PROJECT", http.StatusBadRequest, problem)
 		return
 	}
+	// Every project names a person. The column refuses nothing
+	// (store/migrations/20261111210103_projects_default_assignee_not_null.up.sql) because the
+	// chain that decides who an issue's question reaches ends here, so the default is resolved
+	// in two steps: the login the call names, then the person the creating credential acts for,
+	// which is actorPerson (issue_assignee.go), the step defaultAssignee opens with, read off
+	// the same actor.
+	//
+	// actingPerson is deliberately not called for it: it refuses a caller holding no `person`
+	// scope (server.go), and this route is scopeDeployment (routes_table.go) — the deployment's
+	// own token creates projects, and that token holds no scope at all. Such a caller acts for
+	// nobody, so it must name the person itself, which is the refusal below. Whichever step
+	// answers, the login is held to somebody who has signed in (allowedLogin), as PUT
+	// /api/v1/projects/{key}/default-assignee holds one: a typo never becomes a stored default,
+	// and neither does the owner a broker-issued token names, which the broker decides rather
+	// than the people table.
+	projectDefault := strings.TrimSpace(input.DefaultAssignee)
+	if projectDefault == "" {
+		if login, acts := actorPerson(actor); acts {
+			projectDefault = login
+		}
+	}
+	if projectDefault == "" {
+		writeError(w, "INVALID_PROJECT", http.StatusBadRequest,
+			"default_assignee is required: this credential acts for no person, so the call must name "+
+				"the person a project's unowned work lands on")
+		return
+	}
+	projectDefault, err := s.allowedLogin(r.Context(), projectDefault)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	tx, err := s.begin(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	defer tx.Rollback(r.Context())
-	var project model.Project
+	var created createdProject
 	if err := tx.QueryRow(r.Context(), `
-		insert into projects (key, name) values ($1, $2) returning key, name, gated_steps, created_at
-	`, input.Key, input.Name).Scan(&project.Key, &project.Name, &project.GatedSteps, &project.CreatedAt); err != nil {
+		insert into projects (key, name, default_assignee) values ($1, $2, $3)
+		returning key, name, gated_steps, default_assignee, created_at
+	`, input.Key, input.Name, projectDefault).Scan(
+		&created.Key, &created.Name, &created.GatedSteps, &created.DefaultAssignee, &created.CreatedAt); err != nil {
 		if isUniqueViolation(err) {
 			writeError(w, "PROJECT_EXISTS", http.StatusConflict, "a project with this key already exists")
 			return
@@ -111,7 +159,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(r.Context(), tx, projectOwner(project.Key).event("project.created", actor, project))
+	event, err := s.appendEvent(r.Context(), tx, projectOwner(created.Key).event("project.created", actor, created.Project))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -121,7 +169,7 @@ func (s *server) createProject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.publish(r.Context(), event)
-	WriteJSON(w, http.StatusCreated, project)
+	WriteJSON(w, http.StatusCreated, created)
 }
 
 // projectNameProblem refuses a project name that would mislead its reader: one holding a control

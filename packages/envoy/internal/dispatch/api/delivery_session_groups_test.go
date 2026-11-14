@@ -21,7 +21,7 @@ func recordSessionTitles(t *testing.T, database *store.Store, at time.Time, titl
 	ctx := t.Context()
 	pool := database.Pool
 	for _, statement := range []string{
-		`insert into projects (key, name) values ('ACME', 'Acme') on conflict do nothing`,
+		`insert into projects (key, name, default_assignee) values ('ACME', 'Acme', 'alice') on conflict do nothing`,
 		`insert into issues (key, project_key, number, title, status, created_by, rank)
 			values ('ACME-900', 'ACME', 900, 'Titles', 'todo', '{"kind":"system","id":"test"}', 'Z')
 			on conflict do nothing`,

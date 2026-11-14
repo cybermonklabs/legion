@@ -383,10 +383,11 @@ a path that reaches a file descriptor of whichever process opens it (`/dev/stdin
 `/proc/self/fd/N`, `/proc/thread-self/fd/N`, `/proc/<n>/fd/N`, and any link to one): AskGate
 would open it in Oh My Pi's process and the command in its shell. For text from standard input,
 use `--<field>-file -` with a quoted here-document. For an upload, that is `--content-file -`:
-the CLI reads `--path -` as a file named `-`. The gate cuts all arguments at 64 KiB as one JSON
-block, so it reviews only part of a long document. It judges an upload against content failure
-10 alone: a plan or a report is long by nature. An upload of any other file is not reviewed. A
-`task` subagent is not reviewed.
+the CLI reads `--path -` as a file named `-`. Only one flag of a call may read standard input.
+The CLI refuses `--<field> -` for each text flag except an upload's `--path`. The gate cuts all
+arguments at 64 KiB as one JSON block, so it reviews only part of a long document. It judges an
+upload against content failure 10 alone: a plan or a report is long by nature. An upload of any
+other file is not reviewed. A `task` subagent is not reviewed.
 
 **A file a call of the same message writes.** Oh My Pi runs the gate for every call of a message
 before any call of that message runs. So the gate reads a file before an earlier call of the same

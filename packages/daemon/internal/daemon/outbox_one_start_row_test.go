@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -17,6 +16,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
 	"github.com/sjawhar/legion/daemon/internal/workspace"
@@ -34,7 +34,7 @@ type wholeStartRow struct {
 // theOneStartRow is the single supervise start row issue holds, and the assertion that it is
 // single. A start of a phase worker is one row that carries the worker's task, so the row this
 // returns is the whole of the start the transition wrote.
-func theOneStartRow(t *testing.T, pool *pgxpool.Pool, issue string) wholeStartRow {
+func theOneStartRow(t *testing.T, pool *store.Pool, issue string) wholeStartRow {
 	t.Helper()
 	rows, err := pool.Query(context.Background(), `select id, payload, coalesce(payload->>'role', ''),
 		coalesce(payload->>'task', ''), coalesce(payload->>'phase', '')
@@ -70,7 +70,7 @@ func theOneStartRow(t *testing.T, pool *pgxpool.Pool, issue string) wholeStartRo
 // oneStartRig is the fixture these cases share: an issue whose planner has just completed, the
 // implementer start that completion wrote, and the outbox over a supervisor of its own.
 type oneStartRig struct {
-	pool        *pgxpool.Pool
+	pool        *store.Pool
 	issue       record.Issue
 	runner      *outbox
 	sup         *supervisor

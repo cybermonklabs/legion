@@ -473,7 +473,7 @@ func TestAnIssueReachingMergingOnAMergedPullRequestWaitsForItsTree(t *testing.T)
 // done hold it not at all, while one held because its worker ran out of launches does.
 //
 // A released child that has not started a phase holds it no longer. It stands at admitted
-// beneath a root in awaiting_merge, a root the daemon has already accepted, so the daemon itself
+// beneath a root in merging, a root the daemon has already accepted, so the daemon itself
 // pins the child there until that root closes (record.AcceptedAncestor), and a child the daemon
 // pins is left out of the set the close waits on (record.OpenBeneath). Counting it would
 // deadlock the pair. This is the one recorded departure from the spec of dispatch://INFRA-980,
@@ -621,7 +621,7 @@ func assertWaitNotice(t *testing.T, pool *pgxpool.Pool, waiting string) {
 			got = append(got, notice)
 		}
 	}
-	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves, or take one out of the workflow with park_child", waiting)
+	want := fmt.Sprintf("pull request #42 merged, and LEGION-208's close is waiting for %s, still in the workflow; LEGION-208 closes once the last of them leaves. Park one with park_child only when a person asked for that move, or when the work is done, folded into another issue or no longer needed, and say in a comment which of those it is", waiting)
 	if len(got) != 1 || got[0].Reason != want {
 		t.Fatalf("pr-merged notices = %+v, want one reading %q", got, want)
 	}

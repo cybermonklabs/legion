@@ -164,7 +164,7 @@ export const PhaseOpArguments = z.discriminatedUnion(
       }),
       reason: requiredString("request_backward_move", "reason"),
     }),
-    // The signal carries one field of the agent's: the round its update task named, which the
+    // The signal carries one field of the agent's: the round its update message named, which the
     // daemon takes the answer for and no other. The claim says who answers, and the plugin
     // resolves the branch head it reports.
     operation("ready_for_update", { round: requiredString("ready_for_update", "round") }),
@@ -231,6 +231,19 @@ export const PHASE_OP_SENTENCES = {
 } as const;
 
 /**
+ * What a worker whose completion is refused HANDOFF_STALE_ENTRY does, word for word the text the
+ * daemon ends that refusal with (`staleEntryInstruction` in
+ * `packages/daemon/internal/api/handoff.go`), so the worker reads one instruction in its tool and
+ * in the refusal. The daemon's golden test writes its constant to
+ * `packages/contracts/fixtures/daemon-api/stale-entry.json`, and `legion-phase-ops.test.ts` holds
+ * the description below to that file.
+ */
+export const STALE_ENTRY_INSTRUCTION =
+  "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. " +
+  "That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's " +
+  "record, commit or verdict";
+
+/**
  * The `legion` tool's description on every host, one template: what the tool is, then `before`,
  * then `handoff_complete`'s contract, then `after`, then where a question for another role goes,
  * `envoyPublish` being the host's name for Envoy's publish tool. `before` and `after` are whole
@@ -247,15 +260,18 @@ export function legionToolDescription(host: {
     "Perform the workflow operation the Legion daemon assigned this role. The daemon advances phases; this tool cannot spawn workers. " +
     (host.before ?? "") +
     "handoff_complete (phase workers and sub-architects; the daemon accepts a completion only from the role working the issue's current phase, " +
+    "or a role's first completion of the phase it left, which it records and which moves nothing, " +
     "and the checking role's report on a look of its closed issue's production check) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
     "yet). A planning, implementing, testing or reviewing phase ends with a handoff record on the " +
     "Dispatch issue: write it with `dispatch handoff-write --issue <issue> --phase <plan|implement|test|review> --body-file <file>` before " +
-    "calling. This call reads the phase's newest record from Dispatch and reports it; the implementer's round also reports the commit " +
-    "`legion/<issue>@origin` names, so push the branch first; retro and the merger's completion report the commit the workspace stands on. It " +
-    "refuses, posting nothing, a phase with no record, a Dispatch that does not answer, or an implementer's `@-` not yet on " +
-    "`legion/<issue>@origin`, each naming the remedy. A production check report " +
+    "calling. This call reads from Dispatch the newest record of the phase your role works or, once the issue has moved on, of the phase it left, " +
+    "and reports it with `commit`, the head that record's body names " +
+    "(`head`, the 40-character lower-case commit the work it reports was done against); in implementing, the implementer's must be the commit its " +
+    "workspace stands on, `@-`, pushed to `legion/<issue>@origin`, so push the branch first; retro, the merger's completion and a phase you left with no record, or with an implement record naming no head, report the commit the workspace stands on. It " +
+    "refuses, posting nothing, a phase you work with no record, a Dispatch that does not answer, and, in implementing, an implement record naming no head, an " +
+    "implementer's `@-` not yet on `legion/<issue>@origin`, or an implement record whose head is not that pushed `@-`, each naming the remedy. A production check report " +
     "(the task whose first line is `Production check of <KEY>`, handed once the merge closed the issue to the role the check records) needs no " +
     "handoff and no commit: it carries its verdict and summary alone. A pending report also names `wake_at`, an RFC 3339 time: when you want the " +
     "next look. A pass, a fail, and a pending on the check's last look end the check, so none of them carries `wake_at` " +
@@ -264,15 +280,15 @@ export function legionToolDescription(host: {
     "The daemon refuses " +
     "HANDOFF_SESSION_MISMATCH (another session wrote the record), HANDOFF_NOT_NEW (the record is the one you named for your previous phase: " +
     "write this phase's handoff), " +
-    "HANDOFF_STALE_ASSIGNMENT (the issue left your phase and came back while your turn ran, so this completion is of the assignment before the one " +
-    "the phase hands you now: end the turn without completing; the task of the assignment it hands you now is work of its own, so do that work and " +
-    "complete it with a handoff of its own, never this record or verdict again), the implementer's completion of implementing with no open " +
+    "HANDOFF_STALE_ENTRY (this completion is of a phase entry behind the one your role's phases row names, because the phase was entered " +
+    `again while your turn ran, and nothing was recorded. ${STALE_ENTRY_INSTRUCTION}), the implementer's completion of implementing with no open ` +
     "pull request on `legion/<issue>` and none recorded " +
     "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
     "nothing, so fix what it names and complete again. " +
-    "ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the " +
+    "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
     "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
-    "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
+    "first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every " +
+    "role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The " +
     "daemon holds your next task until your process comes back on the new pod, in this same session. " +
     (host.after ?? "") +
     `What a later phase needs goes in your handoff; a question for another live role goes to its role topic with ${host.envoyPublish}.`
@@ -282,9 +298,13 @@ export function legionToolDescription(host: {
 export interface PhaseOpRuntime {
   readonly daemon: LegionDaemonClient;
   readonly claim: ClaimCapability;
-  /** What a completion of `phase` by `role` reports beside its summary (`findHandoffReport` with
-   * the pane's environment and Dispatch): throws naming the remedy when the phase has no handoff
-   * record, Dispatch does not answer, or the implementer's work is not pushed. */
+  /** What a completion by `role` reports beside its summary while the issue stands at `phase`
+   * (`findHandoffReport` with the pane's environment and Dispatch): the newest record of the
+   * phase the role works or, once the issue has moved on, of the phase it left, or `@-` alone where
+   * that left phase has none or the implementer's left record names no head. Throws naming the remedy when the phase the role works has no
+   * handoff record, Dispatch does not answer, or, while the issue stands in implementing, the
+   * implementer's record names no head, the commit its workspace stands on is not pushed, or its
+   * record's head is not that pushed commit. */
   readonly handoffReport: (phase: LegionPhase, role: LegionRole) => Promise<HandoffReport>;
   /** The head of `legion/<issue>@origin` the `ready_for_update` signal reports
    * (`findPushedBranchHead` with the pane's environment): `""` when the branch is not there. A
@@ -428,13 +448,13 @@ export async function executePhaseOp(
     }
     case "ready_for_update": {
       // The claim authenticates the signal, as it does `claims/ready`: no grant is minted. The
-      // round is the agent's own word, read from the update task it answers, and the daemon takes
-      // the answer for that round alone — an answer for a round its claim has left is refused
-      // naming both. The head is the plugin's to resolve, and a branch not yet on the remote is
-      // left out. A workspace whose jj cannot answer leaves it out too, and is told so: the round
-      // waits for every claim of the pod, so a worker whose lookup fails must still be able to
-      // answer. The daemon verifies no head, so the missing one costs the record a line and the
-      // round nothing.
+      // round is the agent's own word, read from the update message it answers, and the daemon
+      // takes the answer for that round alone — an answer for a round its claim has left is
+      // refused naming both. The head is the plugin's to resolve, and a branch not yet on the
+      // remote is left out. A workspace whose jj cannot answer leaves it out too, and is told so:
+      // an answer from every claim of the pod is what ends the round before its bound, so a worker
+      // whose lookup fails must still be able to answer. The daemon verifies no head, so the
+      // missing one costs the record a line and the round nothing.
       let head = "";
       let failure: string | undefined;
       try {

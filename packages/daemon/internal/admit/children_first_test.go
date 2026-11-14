@@ -81,7 +81,7 @@ func blockedNow(t *testing.T, pool *pgxpool.Pool, admission *Admission) []record
 	var blocked []record.BlockedIssue
 	inTx(t, pool, func(tx pgx.Tx) {
 		var err error
-		if blocked, err = admission.blocked(context.Background(), tx); err != nil {
+		if _, blocked, _, err = admission.tickRows(context.Background(), tx); err != nil {
 			t.Fatalf("read what is blocked: %v", err)
 		}
 	})

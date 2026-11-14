@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/notify"
+	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/pods"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/workflow"
@@ -87,6 +88,59 @@ func TestIdleReleaseAndWake(t *testing.T) {
 			}
 			if wake.issue.name != idleRigDelivery && !strings.Contains(prompts[0].Text, idleRigWakePreamble) {
 				t.Errorf("%s's task does not say its pod was released and brought back: %q", wake.issue.name, prompts[0].Text)
+			}
+		}
+	})
+
+	// The task each role was given at the rig's start is its phase's own: the daemon's boot
+	// starts the implementer of an issue at `implementing`, whose phase it is, and the task it
+	// gives names that phase. The daemon adopts the working copy for such a task, once, before it
+	// sends it, so each start task came behind exactly one adopt-working-copy frame, which the
+	// role's own process recorded before it answered it (idleRigAdoption.Ahead). That the task
+	// names its phase is read from the daemon's own account of the adoption — the line it logs
+	// once the shim answers ok, naming the task's delivery and its phase — so this holds for the
+	// phase task itself and not for a frame some other send happened to bring.
+	t.Run("APhaseTaskReachesItsRoleBehindOneAdoption", func(t *testing.T) {
+		for _, issue := range rig.issues {
+			prompts := rig.agents.prompts(issue.key, string(issue.role))
+			if len(prompts) == 0 {
+				t.Errorf("%s's role was given no task at the rig's start", issue.name)
+				continue
+			}
+			start := prompts[0]
+			if ahead := rig.adoptionsAhead(issue, 0); len(ahead) != 1 {
+				t.Errorf("%s's phase task came behind %d adopt-working-copy frames, want exactly one: %+v",
+					issue.name, len(ahead), ahead)
+			}
+			if adopted := rig.logged(idleRigAdoptedLine, map[string]string{
+				"claim": string(rig.token(issue)), "delivery": start.Delivery, "phase": string(phase.Implementing),
+			}); adopted != 1 {
+				t.Errorf("the daemon logged %d adoptions of the working copy for %s's start task %q of phase %s, want one",
+					adopted, issue.name, start.Delivery, phase.Implementing)
+			}
+		}
+	})
+
+	// Each of the five wakes gives its woken role a task of no phase: the row every wake writes
+	// names none (workflow's wakeRow), and the operator's delivery is the operator's own task,
+	// which names none either. The daemon adopts the working copy for no such task (supervise's
+	// Machine.adopts), so each wake's task reaches its role with no adopt-working-copy frame ahead
+	// of it, nor any since the release. A role-message wake whose task adopted the working copy is
+	// what LINUX-1529 and BET-846 at 04:54Z recorded on a release before cybermonklabs/legion#2539:
+	// the woken role's adoption ran its jj commands, `jj metaedit --update-author` or `jj new`, on
+	// the `@` of whichever role was working in the issue's one workspace (dispatch://INFRA-2695).
+	// The five-wake pass waited for every one of these tasks, and the daemon sends a frame before
+	// the task it is for and that task only once the frame is answered, so every frame a wake
+	// brought is on the record by now.
+	t.Run("ATaskWithNoPhaseReachesItsRoleWithNoAdoption", func(t *testing.T) {
+		for _, wake := range idleRigWakes(rig) {
+			if idleRigCount(rig.newPrompts(wake.issue), wake.task) == 0 {
+				t.Errorf("%s's woken role was never given its wake's task %q", wake.issue.name, wake.task)
+				continue
+			}
+			if frames := rig.newAdoptions(wake.issue); len(frames) != 0 {
+				t.Errorf("%s's woken role was sent %d adopt-working-copy frames since its release, want none: its wake's task names no phase: %+v",
+					wake.issue.name, len(frames), frames)
 			}
 		}
 	})
@@ -269,6 +323,10 @@ var idleRigWakePreamble = workflow.WakeTask("", "")[:len("Your issue's pod had b
 // idleRigDeliveredTask is the task the daemon has for the role of the delivery pod, which is R3
 // item 1's wake: the delivery is its own account of why the pod came back.
 const idleRigDeliveredTask = "the daemon had this task for you while your pod was gone"
+
+// idleRigAdoptedLine is the line the daemon logs for each adoption of the working copy the shim
+// answered ok (supervise's adopt), beside the claim, the task's delivery and the task's phase.
+const idleRigAdoptedLine = "supervise: the working copy was adopted for the phase task"
 
 // idleRigWake is one of the five wakes of R3: the issue whose pod it brings back, and the words
 // the task it gives its woken role names that wake with.
