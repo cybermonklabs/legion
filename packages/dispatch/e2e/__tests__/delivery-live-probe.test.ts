@@ -15,7 +15,7 @@ import error from "../../../contracts/fixtures/live/error.json";
 import heartbeat from "../../../contracts/fixtures/live/heartbeat.json";
 import snapshot from "../../../contracts/fixtures/live/snapshot.json";
 import { REQUEST_DEADLINE_MS } from "../../web/src/api/client";
-import { RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
+import { LIVE_SOCKET_SILENT_MS, RECONNECT_SPREAD_MS } from "../../web/src/api/live-socket";
 import type {
   DeliveryLiveDelta,
   DeliveryLiveSnapshot,
@@ -128,6 +128,12 @@ async function readLines(
   if (pending !== "") onLine(pending);
 }
 
+/** The probe as the six rows that drive it start it: a process of its own, which the row reads
+ *  line by line, waits on with `until` and signals itself, so no bound stands at it, since a bound
+ *  would kill a process the row still uses. Where the line a row awaits never comes, the probe
+ *  runs until `--minutes 1` after an open, or, where its dial never opens, until 45 s after that
+ *  dial. Where that is past the row's limit, the limit ends the row and `afterEach` kills the
+ *  probe; where the probe exits first, the wait fails as "the probe ended first". */
 function runProbe(args: readonly string[]): Run {
   const child = Bun.spawn([process.execPath, probe, ...args], {
     cwd: dispatchPackage,
@@ -383,13 +389,9 @@ test(
   },
   {
     // This row drives the probe: it waits for the error line, sends SIGINT, and then reads the
-    // body file the probe wrote. A bound at the child would kill a process this row still uses.
-    // 30 s is enough because the fake Dispatch sends every frame at the subscribe, so the row
-    // waits for the probe's start, one loopback watch and two loopback reads, in all under 1.5 s
-    // with six busy loops on two CPUs. Where the error line never comes, the probe outlives this
-    // limit (`--minutes 1` counts from an open, and a dial that never opens gets 45 s), so this
-    // limit ends the row and `afterEach` kills the probe; a probe that exits first fails the
-    // wait as "the probe ended first".
+    // body file the probe wrote. 30 s is enough because the fake Dispatch sends every frame at
+    // the subscribe, so the row waits for the probe's start, one loopback watch and two loopback
+    // reads; `runProbe` says what ends the row where the error line never comes.
     timeout: 30_000,
   }
 );
@@ -444,13 +446,9 @@ test(
   },
   {
     // This row drives the probe through --compare: it waits for the delta line and then sends
-    // SIGINT. A bound at the child would stop a process this row is still reading from. 30 s is
-    // enough because the fake Dispatch sends both frames at the subscribe, so the row waits for
-    // the probe's start, one loopback watch and two loopback reads, in all under 1 s with six
-    // busy loops on two CPUs. Where the delta line never comes, the probe outlives this limit
-    // (`--minutes 1` counts from an open, and a dial that never opens gets 45 s), so this limit
-    // ends the row and `afterEach` kills the probe; a probe that exits first fails the wait as
-    // "the probe ended first".
+    // SIGINT. 30 s is enough because the fake Dispatch sends both frames at the subscribe, so the
+    // row waits for the probe's start, one loopback watch and two loopback reads; `runProbe` says
+    // what ends the row where the delta line never comes.
     timeout: 30_000,
   }
 );
@@ -496,13 +494,9 @@ for (const [code, reason, what] of [[4001, "max age", "rotation"]] as const) {
     },
     {
       // This row drives the probe across a rotation close: it waits for the second subscribe
-      // and then sends SIGINT. A bound at the child would kill a process this row still uses.
-      // 30 s is enough because the probe dials again at once after a rotation, so the row waits
-      // for the probe's start and two loopback watches, in all under 1 s with six busy loops on
-      // two CPUs. Where the second subscribe never comes, the probe outlives this limit
-      // (`--minutes 1` counts from the first open, and a first dial that never opens gets 45 s),
-      // so this limit ends the row and `afterEach` kills the probe; a probe that exits first
-      // fails the wait as "the probe ended first".
+      // and then sends SIGINT. 30 s is enough because the probe dials again at once after a
+      // rotation, so the row waits for the probe's start and two loopback watches; `runProbe`
+      // says what ends the row where the second subscribe never comes.
       timeout: 30_000,
     }
   );
@@ -544,13 +538,9 @@ test(
   },
   {
     // This row drives the probe across a restart close: it waits for the second subscribe,
-    // sends SIGINT, and reads the close line. A bound would stop a process it still uses. 30 s is
-    // enough because the row waits for the probe's start, two loopback watches and a reconnect
-    // delay of at most `RECONNECT_SPREAD_MS` (2 s), in all under 2.5 s with six busy loops on two
-    // CPUs. Where the second subscribe never comes, the probe outlives this limit
-    // (`--minutes 1` counts from the first open, and a first dial that never opens gets 45 s),
-    // so this limit ends the row and `afterEach` kills the probe; a probe that exits first fails
-    // the wait as "the probe ended first".
+    // sends SIGINT, and reads the close line. 30 s is enough because the row waits for the
+    // probe's start, two loopback watches and a reconnect delay of at most `RECONNECT_SPREAD_MS`
+    // (2 s); `runProbe` says what ends the row where the second subscribe never comes.
     timeout: 30_000,
   }
 );
@@ -689,16 +679,37 @@ test(
 // that arms `--minutes` never comes, and the silence check, which acts only after a first open,
 // never redials. The row proves that `--open-within 1` ends that watch on its own with exit 1, as
 // a refused connection ends it, and not as a clean watch. Its stderr must name the flag's 1 s, so
-// a probe that ignores the value and waits out its 45 s default fails here, as does an exit 1 for
-// any other reason, a crash at load included.
+// a probe that misreads the value fails here, as does an exit 1 for any other reason, a crash at
+// load included. The server notes when it accepted the connection and when that connection
+// closed, and the row holds the time between to at least 500 ms, half the 1 s the flag gave, and
+// to under 22.5 s, half `LIVE_SOCKET_SILENT_MS`, the 45 s the probe waits without the flag. So
+// the row catches a timer set well short and one left at the default. Each bound stands at half
+// the time it guards rather than at that time itself, because the time between is the timer give
+// or take the scheduling of the probe's dial and of this process's accept and close handlers, so
+// load can shorten it as well as lengthen it, and a bound at the timer's own value is a verdict
+// load can turn: with six busy loops on two CPUs, 11 of 30 runs of the 1 s timer measured below
+// 1 000 ms, the lowest at 994.9 ms, and 3 of 5 runs of a timer left at the default measured
+// below 45 000 ms. So the row does not catch a timer set between 0.5 s and 1 s, nor one set near
+// the value above it, 2 s for 1 s: no upper time that is safe under load can tell 1 s from 2 s in
+// a child process, and fake timers cannot reach a subprocess.
 test(
   "a watch whose socket never opens ends on its own, and not as a clean watch",
   async () => {
+    const accepted: number[] = [];
+    const closed = Promise.withResolvers<number>();
     const silent = Bun.listen({
       hostname: "127.0.0.1",
       port: 0,
       // Accepts every connection and never answers it: an upgrade that hangs.
-      socket: { data() {}, open() {} },
+      socket: {
+        close() {
+          closed.resolve(performance.now());
+        },
+        data() {},
+        open() {
+          accepted.push(performance.now());
+        },
+      },
     });
     try {
       const argv = args({ url: `http://127.0.0.1:${silent.port}` }, TOKEN, "0.01");
@@ -713,6 +724,22 @@ test(
         endsOf(run.stdout),
         "the probe wrote an end line when its socket never opened"
       ).toEqual([]);
+      expect(
+        accepted,
+        "the silent server accepted no connection from the probe, or more than one"
+      ).toHaveLength(1);
+      // The probe has exited, so its connection is closed, and the close is on its way here.
+      const held = (await closed.promise) - accepted[0];
+      expect(
+        held,
+        "the probe gave up on its connection before 500 ms, half the 1 s that --open-within gave it"
+      ).toBeGreaterThanOrEqual(500);
+      expect(
+        held,
+        `the probe held its connection for ${LIVE_SOCKET_SILENT_MS / 2} ms or longer, half the ` +
+          `${LIVE_SOCKET_SILENT_MS} ms it waits without --open-within, rather than the 1 s the ` +
+          "flag gave it"
+      ).toBeLessThan(LIVE_SOCKET_SILENT_MS / 2);
     } finally {
       silent.stop(true);
     }
@@ -786,13 +813,9 @@ test(
   },
   {
     // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
-    // runs after that. A bound at the child would kill a process this row still uses. 30 s is
-    // enough because the row waits for the probe's start, one loopback watch and the 1 s of
-    // silence `--read-within 1` allows the read, in all under 2 s with six busy loops on two CPUs.
-    // Where the snapshot line never comes, the probe outlives this limit (`--minutes 1` counts
-    // from an open, and a dial that never opens gets 45 s), so this limit ends the row and
-    // `afterEach` kills the probe; a probe that exits first fails the wait as "the probe ended
-    // first".
+    // runs after that. 30 s is enough because the row waits for the probe's start, one loopback
+    // watch and the 1 s of silence `--read-within 1` allows the read; `runProbe` says what ends
+    // the row where the snapshot line never comes.
     timeout: 30_000,
   }
 );
@@ -839,11 +862,8 @@ test(
     // This row drives the probe: it waits for the snapshot line and sends SIGINT, and the read
     // runs after that. The 60 s, two `REQUEST_DEADLINE_MS`, covers the wait for the snapshot,
     // which the Dispatch here sends at the subscribe, and a read of about 4 s of pieces, in
-    // which any silence fails the probe by name at 30 s, half this limit; the row takes under
-    // 5 s with six busy loops on two CPUs. Where the snapshot line never comes, a dial that
-    // never opens ends the probe at 45 s, which fails the wait as "the probe ended first", and a
-    // socket that opens keeps the probe until `--minutes 1` after that open, past this limit, so
-    // this limit ends the row and `afterEach` kills the probe.
+    // which any silence fails the probe by name at 30 s, half this limit; `runProbe` says what
+    // ends the row where the snapshot line never comes.
     timeout: 2 * REQUEST_DEADLINE_MS,
   }
 );

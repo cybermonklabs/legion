@@ -526,20 +526,12 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
     drain(stdoutReader, stdoutChunks),
     drain(stderrReader, stderrChunks),
   ]);
-  let timer: Timer | undefined;
-  // A promise that answers "passed" once `ms` has gone by; the latest timer is the one `finally`
-  // clears.
-  const passing = (ms: number): Promise<"passed"> => {
-    const { promise, resolve } = Promise.withResolvers<"passed">();
-    timer = setTimeout(() => resolve("passed"), ms);
-    return promise;
-  };
   let stuck = false;
   try {
-    if ((await Promise.race([whole, passing(bounds[bound])])) === "passed") {
+    if ((await beforeDeadline(whole, performance.now() + bounds[bound])) === pastDeadline) {
       stuck = true;
       stopTree(run);
-      if ((await Promise.race([whole, passing(pipeGrace)])) === "passed") {
+      if ((await beforeDeadline(whole, performance.now() + pipeGrace)) === pastDeadline) {
         // Each pending read ends as the end of its stream would; what each pipe carried so far
         // stays in its chunks.
         stdoutReader.cancel().catch(() => {});
@@ -547,11 +539,10 @@ export async function runBounded(options: BoundedOptions): Promise<BoundedRun> {
       }
     }
   } finally {
-    // Every way out of this wait, a pipe that rejected included: the timer goes; this child
-    // leaves the set the exit listener kills; and, unless the bound's kill ran already, whatever
-    // the child left behind is killed, so nothing it started outlives it. A child that exited is
-    // found by its token here and never by its pid, which the runtime has reaped.
-    clearTimeout(timer);
+    // Every way out of this wait, a pipe that rejected included: this child leaves the set the
+    // exit listener kills; and, unless the bound's kill ran already, whatever the child left
+    // behind is killed, so nothing it started outlives it. A child that exited is found by its
+    // token here and never by its pid, which the runtime has reaped.
     running.delete(run);
     if (!stuck) stopTree(run);
   }
