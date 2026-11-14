@@ -76,8 +76,11 @@ So no line break from the directory gets into the log, and text from the directo
 The command also writes the `[` of every `##[` as `\x5b`.
 The escapes hold no `#` and no `[`, so no `##[` stays in a line.
 The runner finds `##[` with a search that can ignore some characters, such as U+034F.
-But it reads the command name at a fixed three characters after the start of the match, and it accepts only an exact name (`src/Runner.Common/ActionCommand.cs` in `actions/runner`).
-So if the match includes an ignored character, the name starts with `#`, `[` or that character, and no command has that name.
+But it reads the command name at a fixed three characters after the start of the match.
+It accepts only a name of its registered commands, and it compares the name without regard to case.
+So if the match includes an ignored character, the name starts with `#`, `[` or that character, and no command that the runner defines has that name.
+In `actions/runner` at commit `8cfa1049f86781d141056082d73802d56cd2b433`, `ActionCommand.TryParse` reads the name at `cmdIndex = prefixIndex + Prefix.Length` ([`src/Runner.Common/ActionCommand.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Common/ActionCommand.cs)).
+The registered commands are the `_registeredCommands` of `ActionCommandManager`, a set that compares with `StringComparer.OrdinalIgnoreCase` ([`src/Runner.Worker/ActionCommandManager.cs`](https://github.com/actions/runner/blob/8cfa1049f86781d141056082d73802d56cd2b433/src/Runner.Worker/ActionCommandManager.cs)).
 Only a literal `##[` can start a command.
 A problem whose text has several lines prints on one line, with each line break as `\n`.
 
@@ -109,8 +112,21 @@ The warning tells the author that the server does not read the entry.
 
 The action installs the Go version that `packages/envoy/go.mod` of this repository names, with `actions/setup-go`.
 That action puts this Go first on `PATH` and sets `GOTOOLCHAIN=local` for the rest of the caller's job.
-So put the action in a job of its own, or before the Go setup of the job.
-That job must have no `container:`, as [Runners](#runners) says.
+It also adds a problem matcher with the owner `go`, and the runner reads every later line of the job through it.
+The matcher makes an error annotation of each line that holds `.go: ` or `.go:<line>:<column>: `, with the rest of the line as its message.
+So a file name such as `cmd.go: forged annotation` in the notes directory would become an error annotation with the text of its author.
+The action builds only its own command and needs no Go matcher.
+So it removes the `go` matcher right after it sets up Go.
+
+The runner keeps one problem matcher for each owner.
+In a job that set up Go before the action, the Go setup of the action replaces the `go` matcher of the job, and the removal then deletes it.
+So the steps of that job after the action have no Go matcher, and a Go compiler error in their output gets no annotation.
+Put the action in a job of its own, or before the Go setup of the job, which adds the matcher again.
+The job must have no `container:`, as [Runners](#runners) says.
+
+A problem matcher that an earlier step of the job added also reads every line that the check prints.
+So a file name can become an annotation through that matcher too.
+That is one more reason to run the action in a job of its own.
 
 The build ignores the user environment file of the go command (`GOENV=off`).
 A caller that needs `GOPROXY`, `GOPRIVATE` or `GONOSUMDB` sets them as environment variables of the job.

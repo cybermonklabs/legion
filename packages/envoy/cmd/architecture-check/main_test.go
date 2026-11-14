@@ -415,7 +415,7 @@ func TestTheBuiltBinary(t *testing.T) {
 	t.Run("an unknown flag holding a newline is escaped in its error line", func(t *testing.T) {
 		t.Parallel()
 		got := runBinary(t, binary, "", "--x\n::error::forged", filepath.Join(testdata, "valid"))
-		if prefix := `flag provided but not defined: -x\n::error::forged` + "\nusage: architecture-check [--allow-empty] <directory>\n"; got.code != 2 ||
+		if prefix := `architecture-check: flag provided but not defined: -x\n::error::forged` + "\nusage: architecture-check [--allow-empty] <directory>\n"; got.code != 2 ||
 			got.stdout != "" || !strings.HasPrefix(got.stderr, prefix) {
 			t.Errorf("exit %d, stdout %q, stderr %q; want exit 2, no stdout and stderr starting %q", got.code, got.stdout, got.stderr, prefix)
 		}

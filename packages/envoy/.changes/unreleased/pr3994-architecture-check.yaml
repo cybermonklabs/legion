@@ -12,6 +12,8 @@ body: |-
   action `.github/actions/architecture-check` builds the command with its own Go and runs it over a
   directory of the calling repository's checkout, and hands the note count to the calling job as
   its `count` output. It saves its build cache only in a `push`, `schedule` or `workflow_dispatch`
-  run. The rules now live in one package, `internal/dispatch/architecture/notes`, which the
-  importer and the GitHub App client call. A server's refusal of an unknown front-matter key now
-  names the type `notes.frontMatter` where it named `architecture.frontMatter`.
+  run. It removes the `go` problem matcher that actions/setup-go adds, so a file name cannot become
+  an annotation through it, and a job that set up Go before the action loses that matcher. The
+  rules now live in one package, `internal/dispatch/architecture/notes`, which the importer and the
+  GitHub App client call. A server's refusal of an unknown front-matter key now names the type
+  `notes.frontMatter` where it named `architecture.frontMatter`.

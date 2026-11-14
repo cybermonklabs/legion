@@ -4762,26 +4762,6 @@ jobs:
       - name: Test the architecture-note rules and their command
         run: go test -count=1 ./internal/dispatch/architecture/notes/ ./cmd/architecture-check/
         working-directory: packages/envoy
-      # The composite action other repositories call, run over this repository's own
-      # .dispatch/architecture (its default path), so every part of it is exercised here before
-      # another repository relies on it: its setup-go, its path resolved against the workspace,
-      # its cache restore, and its count output, which the next step reads. In a pull request and
-      # a merge group it restores its cache and saves nothing (the header's "Caches" paragraph).
-      - id: architecture-notes
-        name: Check this repository's architecture notes with the composite action
-        uses: ./.github/actions/architecture-check
-      # A caller reads the count through env, never inside run:, and so does this step. It runs
-      # only when the action succeeded, which without allow-empty means a valid set of one note or
-      # more, so a count that is missing or not a positive whole number is the action's fault.
-      - name: Read the note count the action hands to the job
-        env:
-          COUNT: ${{ steps.architecture-notes.outputs.count }}
-        run: |
-          if ! [[ $COUNT =~ ^[1-9][0-9]*$ ]]; then
-            echo "::error::the architecture-check action's count output is '$COUNT', not a positive whole number"
-            exit 1
-          fi
-          echo "The architecture-check action judged $COUNT notes."
       - name: Check Go contracts are generated from the shared schema
         run: bun run check:go
         working-directory: packages/contracts
@@ -4855,6 +4835,30 @@ jobs:
           path: |
             out/pr-artifacts/legion-envoy-amd64.tar.gz
             out/pr-artifacts/legion-envoy-arm64.tar.gz
+      # The composite action other repositories call, run over this repository's own
+      # .dispatch/architecture (its default path), so every part of it is exercised here before
+      # another repository relies on it: its setup-go, its removal of setup-go's `go` problem
+      # matcher, its path resolved against the workspace, its cache restore, and its count output,
+      # which the next step reads. In a pull request and a merge group it restores its cache and
+      # saves nothing (the header's "Caches" paragraph). It runs last, with the step that reads its
+      # count: the action removes the `go` matcher for the rest of the job, and this job set Go up
+      # itself above, so a Go step after the action would lose the matcher (the action's README.md,
+      # "The Go toolchain").
+      - id: architecture-notes
+        name: Check this repository's architecture notes with the composite action
+        uses: ./.github/actions/architecture-check
+      # A caller reads the count through env, never inside run:, and so does this step. It runs
+      # only when the action succeeded, which without allow-empty means a valid set of one note or
+      # more, so a count that is missing or not a positive whole number is the action's fault.
+      - name: Read the note count the action hands to the job
+        env:
+          COUNT: ${{ steps.architecture-notes.outputs.count }}
+        run: |
+          if ! [[ $COUNT =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::the architecture-check action's count output is '$COUNT', not a positive whole number"
+            exit 1
+          fi
+          echo "The architecture-check action judged $COUNT notes."
       - name: Report ci-ok when this job decides a merge-group run
         if: always()
         uses: ./.github/actions/ci-ok-report

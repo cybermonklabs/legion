@@ -41,6 +41,17 @@ runs:
         go-version-file: ${{ github.action_path }}/../../../packages/envoy/go.mod
         cache: false
 
+    # setup-go adds its `go` problem matcher for the rest of the job, and the runner reads every
+    # later line of the job through it, so a file name or a front-matter value holding `.go: `
+    # (for example `cmd.go: forged annotation`) would become an error annotation with the
+    # author's text. The action builds only this repository's command and needs no Go matcher, so
+    # it removes it. The runner keeps one matcher per owner, so the action's setup-go already
+    # replaced a `go` matcher an earlier setup-go of the caller's job added, and this removal
+    # deletes it for the rest of the job (README.md, "The Go toolchain").
+    - name: Remove the Go problem matcher setup-go added
+      shell: bash
+      run: echo "::remove-matcher owner=go::"
+
     # The command's own module and build caches, which check.sh points the build at, so an entry
     # holds this build alone and never the caller's caches.
     - id: cache
