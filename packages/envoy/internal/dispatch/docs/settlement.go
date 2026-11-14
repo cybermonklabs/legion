@@ -609,15 +609,25 @@ func (st *settlement) commitStamp(ctx context.Context) (settleStep, settleOutcom
 // planRepairs reconciles the document's ask blocks on the tree the settlement read, which says
 // what each block's row and the document owe each other, and holds its check blocks to the four
 // rules (reconcileCICheckBlocks): the repairs to write into the room, the events to append, and
-// the copies to arm.
+// the copies to arm. On a closed issue the reconciliation changes no ask (reconcileAskBlocks), and
+// each event it appends - a block.repaired or a block.invalid, of an ask block or a check block -
+// is the settlement's own (SettlementActor), not the person whose edit the version saves: a
+// system actor's event notifies nobody (events.Broker.Notify), and a closed issue's settlement
+// wakes nobody. The person is still named in the event's payload (DisturbedBy) and in the
+// version's authors.
 func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcome) {
 	s := st.service
-	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown)
+	reconciliation, err := s.reconcileAskBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit, st.markdown, st.issueClosed)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
+	}
+	if st.issueClosed {
+		for index := range reconciliation.events {
+			reconciliation.events[index].Actor = SettlementActor
+		}
 	}
 	st.reconciliation = reconciliation
 	if s.afterSettleReconcile != nil {
@@ -723,6 +733,14 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event) er
 // commitVersion renders the document the settlement settled, writes its version when the document
 // now reads differently from the latest one, and commits the transaction all of that and the
 // settlement's stored updates are in.
+//
+// A settlement of a closed issue's document wakes nobody: the text it saves was in the live
+// document already, often for long, so an edit notice would report nothing new. Its version opens
+// no edit notice and deletes the one the document holds (document_edit_notices), moves no
+// approval request and carries no approval (versionWrite.closedIssue), and the settlement sweeps
+// no marks after it commits. The version still lists the people whose edits it saves, and its
+// artifact.version event keeps the actor its credit names, since an unnamed version is quiet
+// whoever its actor is (events.Quiet).
 func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state, tx, ledger := st.service, st.room, st.state, st.tx, st.ledger
 	// read is the settlement's private copy of the document (readSettlementTree), and nothing but
@@ -806,6 +824,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			authors:          st.credit.authors,
 			capture:          &st.credit.capture,
 			docUpdateVersion: &st.snapshotCursor,
+			closedIssue:      st.issueClosed,
 		})
 		if writeErr != nil {
 			return settleDone, st.abandon(writeErr)
@@ -821,8 +840,16 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 		}
 		// A person's version opens or moves on the document's edit notice, under the owner lock
 		// this settlement took first (lockArtifactOwner above): the sweep takes the two in that
-		// order too (sendEditNotice).
-		if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
+		// order too (sendEditNotice). A closed issue's version opens none, and deletes in that
+		// same order the notice a person's version opened before the close, due or held
+		// (holdEditNotice): neither a reopen inside its quiet time nor the first notice after the
+		// reopen, which would start from that row's from_version (openEditNotice), carries the
+		// edits this version saves.
+		if st.issueClosed {
+			if _, err := tx.Exec(ctx, `delete from document_edit_notices where artifact_id = $1`, room); err != nil {
+				return settleDone, st.abandon(fmt.Errorf("delete the closed issue's document's edit notice: %w", err))
+			}
+		} else if err := s.recordEditNotice(ctx, tx, room, result.version.Number, st.credit.authors, st.credit.capture.latest); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		st.published = append(st.published, ledger.events...)
@@ -877,6 +904,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	for _, copy := range st.reconciliation.owedCopies {
 		s.scheduleSettle(copy)
 	}
-	s.sweepUnrecordedMarks(room, st.versioned)
+	// A closed issue's settlement sweeps no marks: the unmark is an injection without the
+	// owner-verified mark, which allowInject refuses on a closed issue. The first settlement after
+	// the issue reopens sweeps them.
+	if !st.issueClosed {
+		s.sweepUnrecordedMarks(room, st.versioned)
+	}
 	return settleDone, settleOutcome{}
 }

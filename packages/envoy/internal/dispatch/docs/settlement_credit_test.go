@@ -1285,11 +1285,29 @@ func closeTestIssue(t *testing.T, service *Service) {
 	})
 }
 
+// reopenTestIssue reopens DOC-1 as the API's reopen does (api.restoreIssueAsksTx): in one
+// transaction joined with Service.Join, which holds the issue's row once it clears closed_at, it
+// marks owing a settlement each document of the issue that holds an ask block no settlement has
+// indexed (MarkUnindexedAskDocumentsOwed). Once that commits, the reopen is recorded on this
+// service's rooms, as room sync records it on the reopen's notification.
 func reopenTestIssue(t *testing.T, service *Service) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := service.store.Pool.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the reopen: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	joined, ledger := service.Join(ctx, tx)
+	defer ledger.Discard()
+	if _, err := tx.Exec(ctx, `update issues set closed_at = null where key = 'DOC-1'`); err != nil {
 		t.Fatalf("reopen the issue: %v", err)
+	}
+	if err := service.MarkUnindexedAskDocumentsOwed(joined, "DOC-1"); err != nil {
+		t.Fatalf("mark the reopened issue's documents holding an unindexed ask block owed: %v", err)
+	}
+	if err := ledger.Commit(ctx); err != nil {
+		t.Fatalf("commit the reopen: %v", err)
 	}
 	service.issueOpenChanged(ctx, "DOC-1")
 }

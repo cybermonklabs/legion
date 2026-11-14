@@ -134,6 +134,15 @@ func (s *server) recordWithdrawnAsksTx(ctx context.Context, tx pgx.Tx, issueKey 
 // gets one ask.opened event whose actor is actor, the reopener, as settlement's own restoration
 // of an ask appends.
 //
+// It also marks owing a settlement each document of the issue whose ask blocks a settlement while
+// the issue was closed left for the reopen (docs.MarkUnindexedAskDocumentsOwed): one that holds an
+// ask block no settlement has indexed, which that settlement saved resolved with no ask, recording
+// its author, and one holding the block of an ask a settlement retracted, which came back while
+// the issue was closed and stayed retracted. The settlement this mark leaves owed opens the first
+// kind's ask, credited to its recorded author, and restores the second. Its pending rows come
+// after the ask-state write and before the first event, and no copy lock comes after them
+// (docs.lockProjectCopies).
+//
 // ctx is joined to tx (Docs.Join); the caller holds the issue's row and has locked every event
 // owner it appends to before calling, and commits through the ledger and publishes the returned
 // events. It answers the restored asks, oldest id first.
@@ -165,6 +174,9 @@ func (s *server) restoreIssueAsksTx(ctx context.Context, tx pgx.Tx, issueKey str
 		restored = append(restored, ask)
 	}
 	if _, err := s.deps.Docs.WriteIssueAskStates(ctx, issueKey, restored, actor, false); err != nil {
+		return nil, nil, err
+	}
+	if err := s.deps.Docs.MarkUnindexedAskDocumentsOwed(ctx, issueKey); err != nil {
 		return nil, nil, err
 	}
 	appended := make([]model.Event, 0, len(restored))
