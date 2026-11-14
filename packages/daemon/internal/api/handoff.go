@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -67,22 +66,27 @@ type HandoffCompleteResponse struct{}
 // redeemed one), the record and the commit the call named, and the status and the refusal code
 // it was answered with. Every return of answerCompletion writes its answer through the one
 // completionAnswer, so every answer is one line and one call is one line: a client's retry is a
-// line of its own, which is how a reader of the log counts the requests one tool call made.
+// line of its own, which is how a reader of the log counts the requests one tool call made. The
+// status is the first one the answer's WriteHeader named, or net/http's 200 when it named none.
+// The code is the one writeFailure, which writes every coded refusal of this route, tells the
+// writer as it writes the refusal (refusalNoter); it is "" for a success and for a refusal that
+// carries none, an undecodable body's (refuseBadBody). Nothing reads the answer's body back.
 func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 	answer := &completionAnswer{ResponseWriter: w}
 	grant, req := s.answerCompletion(answer, r)
 	s.log.Info("api: handoff completion answered", "issue", grant.Issue, "role", grant.Role, "claim", grant.Claim,
 		"handoffId", req.HandoffID, "handoffVersion", req.HandoffVersion, "commit", req.Commit,
-		"status", answer.status, "code", answer.code())
+		"status", answer.answered(), "code", answer.code)
 }
 
-// completionAnswer is the writer answerCompletion answers through: it keeps the status written and
-// the body of a refusal, whose code (Failure.Code) the route's line names. A success's body is not
-// kept, since it carries nothing (HandoffCompleteResponse).
+// completionAnswer is the writer answerCompletion answers through: it keeps the first status
+// written and the code writeFailure tells it of the refusal it writes (noteRefusal), which the
+// route's line names. It has no Write of its own, so the body goes to the wrapped writer as
+// writeJSON wrote it, under the Content-Type writeJSON set.
 type completionAnswer struct {
 	http.ResponseWriter
-	status  int
-	refusal []byte
+	status int
+	code   string
 }
 
 func (a *completionAnswer) WriteHeader(status int) {
@@ -92,24 +96,18 @@ func (a *completionAnswer) WriteHeader(status int) {
 	a.ResponseWriter.WriteHeader(status)
 }
 
-func (a *completionAnswer) Write(body []byte) (int, error) {
-	if a.status == 0 {
-		a.status = http.StatusOK
-	}
-	if a.status >= http.StatusBadRequest {
-		a.refusal = append(a.refusal, body...)
-	}
-	return a.ResponseWriter.Write(body)
+// noteRefusal is writeFailure telling the answer the code (Failure.Code) of the refusal it writes.
+func (a *completionAnswer) noteRefusal(code string) {
+	a.code = code
 }
 
-// code is the refusal's code, "" for a success and for a refusal that carries none: an
-// undecodable body's, which names no code (refuseBadBody).
-func (a *completionAnswer) code() string {
-	var failure Failure
-	if json.Unmarshal(a.refusal, &failure) != nil {
-		return ""
+// answered is the status the answer went out with: the first WriteHeader named, and
+// http.StatusOK, which net/http sends, when none was named.
+func (a *completionAnswer) answered() int {
+	if a.status == 0 {
+		return http.StatusOK
 	}
-	return failure.Code
+	return a.status
 }
 
 // answerCompletion records a phase completion or a production check report (checkReport), and
