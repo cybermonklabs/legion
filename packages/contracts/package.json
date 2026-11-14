@@ -44,7 +44,7 @@
     "check:api": "bun run scripts/gen-api.ts --check",
     "build": "bun build src/index.ts src/repo.ts src/dispatch-snippet.ts src/dispatch-tools.ts src/legion-api.ts src/trailing-slash.ts --outdir dist --target bun --format esm",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ schemas/"
   },
   "dependencies": {

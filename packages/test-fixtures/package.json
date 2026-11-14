@@ -13,6 +13,10 @@
       "types": "./src/host-tools.ts",
       "bun": "./src/host-tools.ts"
     },
+    "./row-deadline": {
+      "types": "./src/row-deadline.ts",
+      "bun": "./src/row-deadline.ts"
+    },
     "./temporary-directories": {
       "types": "./src/temporary-directories.ts",
       "bun": "./src/temporary-directories.ts"
@@ -28,11 +32,15 @@
     "./version-control-environment": {
       "types": "./src/version-control-environment.ts",
       "bun": "./src/version-control-environment.ts"
+    },
+    "./wait": {
+      "types": "./src/wait.ts",
+      "bun": "./src/wait.ts"
     }
   },
   "scripts": {
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "test": "bun test --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/"
   },
   "devDependencies": {

@@ -31,7 +31,7 @@
     "prepack": "bash scripts/pack-skills.sh",
     "postpack": "bash scripts/pack-skills.sh --restore",
     "typecheck": "bunx tsc --noEmit",
-    "test": "bun test --timeout=60000",
+    "test": "bun test --timeout=60000 --preload @legion/test-fixtures/row-deadline",
     "lint": "bunx biome check src/ hooks/ scripts/"
   },
   "devDependencies": {

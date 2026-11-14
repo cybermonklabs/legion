@@ -43,7 +43,7 @@
     "upstream-declarations": "bun scripts/upstream-declarations.ts",
     "build-upstream-tarball": "bun scripts/build-upstream-tarball.ts",
     "parity-fuzz": "bun scripts/parity-fuzz.ts",
-    "test": "bun test src/tests tests",
+    "test": "bun test --preload @legion/test-fixtures/row-deadline src/tests tests",
     "lint": "bunx biome check ."
   },
   "dependencies": {
