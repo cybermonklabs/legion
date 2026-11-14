@@ -695,15 +695,50 @@ type PullRequest struct {
 	// nullable `mergeable` field: MergeabilityUnknown while GitHub is still computing it (never a
 	// transient conflict - GitHub reports no checks run on a mergeability GitHub has not computed
 	// yet, either), MergeabilityMergeable once GitHub can merge the head automatically, and
-	// MergeabilityConflicting once it cannot. "" means the read has never run.
+	// MergeabilityConflicting once it cannot. "" means the record holds none for this head
+	// (StateReadAt below says when that is).
 	Mergeability Mergeability
 	// MergeState is GitHub's own merge state for this head, read from `mergeable_state` on the
 	// same /pulls/{number} answer Mergeability is decoded from (daemon.readIssuePullRequest), in
-	// GitHub's lowercase spelling; "" means the read has never run. It is kept beside
+	// GitHub's lowercase spelling; "" means the record holds none for this head (StateReadAt below
+	// says when that is). It is kept beside
 	// Mergeability because the tri-state cannot tell a head GitHub holds on the repository's own
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
+	// StateReadAt is the moment the daemon last got GitHub's answer about the merge state of the
+	// head this record stands at, taken from the reader's own clock when that answer was in hand.
+	// This is the one full account of the stamp; every other comment that needs part of it points
+	// here.
+	//
+	// Who stamps it: both readers of the pull request, the per-issue read (daemon's
+	// readIssuePullRequest) and the merge-state ladder (daemon's readMergeState), each through the
+	// mergeability fact (workflow's mergeability). An answer about a head the record has moved past
+	// is dropped with its time. A read that only confirms what is recorded moves the stamp exactly
+	// as one that changes something does: it is the age of the knowledge, not of the last change to
+	// it, and that is what tells a head read a minute ago from one nothing has read for a day. No
+	// webhook stamps it, and a fact with no read time behind it writes none and erases none.
+	//
+	// What clears it, always with MergeState and Mergeability: any fact that moves the head
+	// (classify's advance: a synchronize, a reopen or a close at another head), because the stamp
+	// would then be the time of a read about the head before; and a reopen at any head, which
+	// builds the record afresh (workflow's pullRequestOpened).
+	//
+	// What carries it: a replay of the head run moves it with MergeState and Mergeability
+	// (classify's replayRun and withJudgement), so a replay never pairs one read's state with
+	// another read's time. withJudgement decides on MergeState and not on the stamp: wherever the
+	// record holds no state, a replay puts in place of the record's pair the one the replayed run
+	// ends with, which is the anchor's pair as the run's steps leave it, a head step among them
+	// clearing it (advance). So a stamp held beside no state can go with no head move of the record
+	// and no reopen. A run anchored before migration 20261112070503 holds a state with no stamp,
+	// and a replay gives that pair back as it is.
+	//
+	// What the zero time means, after any of those: the record holds no read time for its head.
+	// Beside a recorded MergeState it is a state whose read time the record does not hold, a row
+	// written before migration 20261112070503 or a pair a replay gave back from an anchor that
+	// predates it; beside MergeState's "" the record holds no read of its head at all. Neither says
+	// when GitHub was last asked.
+	StateReadAt time.Time
 	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
 	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
 	// CONFLICTING for this head (workflow's mergeability), and the merge queue reporting its entry
@@ -753,7 +788,8 @@ type Named struct {
 }
 
 // Judgement is the part of a pull request a head run replays: its head, its CI settlement, the
-// moves it has made, and GitHub's verdict on merging the head it stood at.
+// moves it has made, and GitHub's verdict on merging the head it stood at with the time that
+// verdict was read.
 //
 // The verdict is the anchor's alone to give back, and only to a record that holds none: a move no
 // push links yet takes the verdict with it (classify's advance), and the push that links the move
@@ -772,6 +808,10 @@ type Judgement struct {
 	Moves        []Move       `json:"moves,omitempty"`
 	Mergeability Mergeability `json:"mergeability,omitempty"`
 	MergeState   MergeState   `json:"mergeState,omitempty"`
+	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
+	// anchored before any read answered carries none, and so does one anchored before migration
+	// 20261112070503 (PullRequest.StateReadAt says what that means).
+	StateReadAt time.Time `json:"stateReadAt,omitzero"`
 }
 
 // Move is a move from the head Before to the head SHA, which a push with the same two heads makes.
@@ -855,9 +895,10 @@ func LetsImplementationMove(pr *PullRequest) bool {
 	return pr != nil && slices.Contains(implementationMoveStates, pr.State)
 }
 
-// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be
-// merged into its base without a conflict, decoded from GitHub's nullable `mergeable` field
-// (daemon.readIssuePullRequest). "" (the zero value) means the daemon has never read it.
+// Mergeability is GitHub's lazily computed verdict for whether a pull request's head can be merged
+// into its base without a conflict, decoded from GitHub's nullable `mergeable` field
+// (daemon.readIssuePullRequest). "" (the zero value) means the record holds no verdict for its
+// head; PullRequest.StateReadAt's doc says when that is.
 type Mergeability string
 
 const (
@@ -868,9 +909,10 @@ const (
 
 // MergeState is GitHub's merge state for a pull request's head, read from `mergeable_state` on
 // GitHub's /pulls/{number} answer (daemon.readIssuePullRequest). It is kept in GitHub's own
-// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing
-// the repository's required checks and reviews, and the daemon only records what it read.
-// "" (the zero value) means the daemon has never read it, which no GitHub answer ever spells.
+// lowercase spelling rather than one of the daemon's: the state is GitHub's judgement, weighing the
+// repository's required checks and reviews, and the daemon only records what it read. "" (the zero
+// value) means the record holds no merge state for its head; PullRequest.StateReadAt's doc says
+// what that means beside a read time and beside none.
 type MergeState string
 
 // The eight states GitHub spells in `mergeable_state`: clean, which GitHub would merge now;

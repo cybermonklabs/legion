@@ -117,7 +117,11 @@ func canonicalRecordJSON(raw []byte) ([]byte, error) {
 }
 
 // TestProductionImportsArePure protects the pure decision package from gaining transport, clock,
-// database, or workflow dependencies.
+// database, or workflow dependencies. internal/phase is allowed beside the record: it is the
+// vocabulary of the phases themselves, a package of words that imports internal/claim alone, so
+// it carries no transport, no clock, no database and no workflow, and a decision whose question
+// is which phase an issue stands in (RoundWaitsOnMergeState) must name the phase in that
+// vocabulary rather than restate its spelling here.
 func TestProductionImportsArePure(t *testing.T) {
 	packageDirectory := sourceDirectory(t)
 	files, err := filepath.Glob(filepath.Join(packageDirectory, "*.go"))
@@ -141,6 +145,7 @@ func TestProductionImportsArePure(t *testing.T) {
 	allowed := map[string]bool{
 		"sort": true,
 		"time": true,
+		"github.com/sjawhar/legion/daemon/internal/phase":  true,
 		"github.com/sjawhar/legion/daemon/internal/record": true,
 	}
 	for imported := range imports {

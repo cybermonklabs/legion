@@ -99,31 +99,45 @@ func (w *workflowRuntime) openRecord(ctx context.Context, pr record.PullRequest)
 }
 
 // applyMergeability applies what GitHub's read of a pull request (pull, one GET /pulls/{number})
-// says about merging its head into its base, for the per-issue read (readIssuePullRequest). It
-// applies an intake.PullRequestMergeability fact
-// whenever GitHub's lazily computed mergeability is CONFLICTING, or when either it or GitHub's
-// merge state differs from the one recorded, or when the base GitHub names is not the recorded
-// one, or when a push onto that base is recorded with no read of it yet
-// (record.PullRequest.BaseMoved): workflow's mergeability decides a CONFLICTING read every time,
-// even one that only confirms the stored value, so a conflict recorded while the issue stood in a
-// phase the trigger has no row for is still acted on once it reaches one that has; a merge state
-// that moved while the mergeability stood still is recorded as the read found it; and this read
-// is the one that records the base, both for a pull request whose record has none and as the
-// answer to a push onto its base, which GitHub recomputed the mergeability for and sent no event
-// about. A read that says what is recorded applies nothing, so a second read of an unchanged pull
-// request changes nothing.
+// says about merging its head into its base, for the per-issue read (readIssuePullRequest). Every
+// read that GitHub answers applies an intake.PullRequestMergeability fact: GitHub's lazily
+// computed mergeability, its own merge state for the head, the base it names - this read is the
+// one that records the base, both for a pull request whose record has none and as the answer to a
+// push onto its base, which GitHub recomputed the mergeability for and sent no event about - and
+// the moment the answer was in hand (intake.PullRequestMergeability.ReadAt).
+//
+// A read that only confirms what is recorded applies the fact too, and then the read time is the
+// only thing that moves, which is the point of applying it: a head read a minute ago and found
+// `blocked` must read differently from a head nothing has read for a day, and the stamp
+// is the only thing that tells them apart (record.PullRequest.StateReadAt). readAt is the moment
+// the caller had GitHub's answer in hand, read by the caller straight after readPullRequest
+// returned and before anything else it does with the answer: the per-issue read follows a head
+// GitHub shows before it applies this (followHead), which makes more GitHub calls and waits on the
+// fact lock, so a clock read here would date the answer to the end of that follow and make it
+// look fresher than it is, which is the one thing the stamp exists not to do. It is spent twice,
+// on the fact's ReadAt and on the event id, so the stamp recorded and the id the fact is applied
+// under come from one reading rather than two. The confirming read is
+// needed for its own sake as well: workflow's mergeability decides a CONFLICTING read every time
+// it sees one, so a conflict recorded while the issue stood in a phase the conflict trigger has no
+// row for is acted on once the issue reaches one that has, with no change in GitHub's answer to
+// key off.
+//
+// What a confirming read costs is one fact and one round settlement each time: the merge-state
+// ladder makes at most five reads per wait (mergeStateLadderReads), the review-stuck notice such a
+// settlement would write is deduplicated by the round's own mark
+// (record.ReviewDecision.ToldStuckHead), and a settlement that finds the round mergeable advances
+// the issue, which is the right answer whenever it is true.
+//
 // The fact names the head GitHub answered for (`head.sha` of the same answer), which the engine
 // records the verdict against only while the record still stands at it: this read and the merge
 // state ladder's (daemon's readMergeState) both run outside the record's transaction, so a push
 // can land between GitHub's answer and the apply.
 // An apply that fails is logged, and the next read of the pull request applies it again.
-func (w *workflowRuntime) applyMergeability(ctx context.Context, pr record.PullRequest, pull githubPullRequest) {
+func (w *workflowRuntime) applyMergeability(ctx context.Context, pr record.PullRequest, pull githubPullRequest, readAt time.Time) {
 	base, mergeable, state := pull.Base.Ref, pull.mergeability(), pull.mergeState()
-	if pr.Mergeability == mergeable && pr.MergeState == state && pr.Base == base && pr.BaseMoved == "" && mergeable != record.MergeabilityConflicting {
-		return
-	}
-	eventID := fmt.Sprintf("mergeability:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, time.Now().UnixNano())
-	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA, Mergeable: mergeable, MergeState: state}
+	eventID := fmt.Sprintf("mergeability:%s:%s:%s#%d:%d", w.dispatchProject, w.bootID, pr.Repo, pr.Number, readAt.UnixNano())
+	fact := intake.PullRequestMergeability{Repo: pr.Repo, Number: pr.Number, Base: base, HeadSHA: pull.Head.SHA,
+		Mergeable: mergeable, MergeState: state, ReadAt: readAt}
 	if _, err := intake.ApplyFact(ctx, w.pool, "github", eventID, fact, w.handlers...); err != nil {
 		w.log.Warn("apply whether a pull request's head can be merged into its base", "repo", pr.Repo, "pullRequest", pr.Number, "error", err)
 	}

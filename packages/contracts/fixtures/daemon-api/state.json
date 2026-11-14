@@ -7,15 +7,17 @@
     "startedAt": "2026-09-22T09:15:02Z"
   },
   "contract": {
-    "daemon": 123,
-    "caller": 123
+    "daemon": 129,
+    "caller": 129
   },
   "admission": {
-    "cap": 3,
+    "cap": 5,
     "active": [
       "LEGION-208",
       "LEGION-210",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-218",
+      "LEGION-219"
     ],
     "waiting": [
       "LEGION-212",
@@ -25,7 +27,9 @@
       "LEGION-208",
       "LEGION-210",
       "LEGION-211",
-      "LEGION-212"
+      "LEGION-212",
+      "LEGION-218",
+      "LEGION-219"
     ],
     "blocked": [
       {
@@ -444,6 +448,124 @@
       "repo": "zeta/tools",
       "defaultBranch": "release/v7.1",
       "workers": {}
+    },
+    "LEGION-218": {
+      "key": "LEGION-218",
+      "generation": 1,
+      "phase": "reviewing",
+      "status": "needs_review",
+      "tree": "LEGION-218",
+      "repo": "acme/widgets",
+      "defaultBranch": "main",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_218",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "handoffCommit": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+          "pass": 1,
+          "rounds": 0
+        },
+        "reviewer": {
+          "claim": {
+            "session": "ses_reviewer_218",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "pass": 1,
+          "rounds": 0
+        }
+      },
+      "pullRequest": {
+        "repo": "acme/widgets",
+        "number": 1251,
+        "head": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+        "state": "open",
+        "reviewDecision": "approved"
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "f3b8d205-7c41-4e69-9a02-5d7e1c6b4f38",
+          "currentVersion": 5,
+          "approvedVersion": 5,
+          "status": "approved"
+        }
+      ],
+      "mergeWait": {
+        "waitsOn": "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
+        "headUpdatedAt": "2026-09-22T08:58:40Z",
+        "checkRuns": 0
+      },
+      "phaseEntry": 1,
+      "givenEntry": 1,
+      "treeMovedAt": "2026-09-22T09:07:21Z",
+      "quietHours": 0.1775
+    },
+    "LEGION-219": {
+      "key": "LEGION-219",
+      "generation": 3,
+      "phase": "reviewing",
+      "status": "needs_review",
+      "tree": "LEGION-219",
+      "repo": "zeta/tools",
+      "defaultBranch": "release/v7.1",
+      "workers": {
+        "implementer": {
+          "claim": {
+            "session": "ses_implementer_219",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "handoffCommit": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+          "pass": 2,
+          "rounds": 1,
+          "backwardMoves": {
+            "reviewing-implementing": 1
+          }
+        },
+        "reviewer": {
+          "claim": {
+            "session": "ses_reviewer_219",
+            "state": "idle",
+            "pluginContract": 0
+          },
+          "pass": 2,
+          "rounds": 1
+        }
+      },
+      "pullRequest": {
+        "repo": "zeta/tools",
+        "number": 642,
+        "head": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "state": "open",
+        "mergeState": "blocked",
+        "reviewDecision": "approved"
+      },
+      "gatedSteps": [
+        {
+          "step": "spec",
+          "artifactId": "a9142c7e-0b63-4d85-8f17-3e6a0d9b2c54",
+          "currentVersion": 2,
+          "approvedVersion": 2,
+          "status": "approved"
+        }
+      ],
+      "mergeWait": {
+        "waitsOn": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "mergeState": "blocked",
+        "stateReadAt": "2026-09-22T09:16:12Z",
+        "headUpdatedAt": "2026-09-20T14:05:33Z",
+        "checkRuns": 2,
+        "toldHead": "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
+        "toldState": "blocked"
+      },
+      "phaseEntry": 2,
+      "givenEntry": 2,
+      "treeMovedAt": "2026-09-20T16:42:58Z",
+      "quietHours": 40.583888888888886
     }
   },
   "pendingStatusWrites": [],

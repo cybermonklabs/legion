@@ -101,7 +101,15 @@ func (e *Engine) checks(ctx context.Context, tx pgx.Tx, fact intake.PullRequestC
 // A read that answers for another head than the record stands at is dropped whole, and logged: a
 // push landed between GitHub's answer and this apply, so the verdict is about a tree the record
 // has moved past, and an approval must never advance on it. Nothing is lost by dropping it - that
-// push is itself a fact that asks for a read of the head it left (askMergeState).
+// push is itself a fact that asks for a read of the head it left (askMergeState). The read time
+// goes with it: a stamp is never recorded against a head the record has already left, since it
+// would say that head's state was read when it was another head's that was.
+//
+// The read time the fact carries (intake.PullRequestMergeability.ReadAt) is what
+// record.PullRequest.StateReadAt is written from, and it is the one thing a read that confirms
+// what is recorded still moves: the row is written for it alone. A fact that carries none - every
+// one minted by something that did not read GitHub, as a test's PullRequestMergeability is -
+// writes no stamp and erases none, so the recorded one stands as the last real read left it.
 //
 // Whatever the read decides, it is also the judgement the conflict-round exemption is read from
 // (record.PullRequest.ConflictingHead, recordRound): a CONFLICTING read holds the pull request's
@@ -136,8 +144,16 @@ func (e *Engine) mergeability(ctx context.Context, tx pgx.Tx, fact intake.PullRe
 			conflicting = ""
 		}
 	}
-	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" || pr.ConflictingHead != conflicting {
-		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead = fact.Mergeable, fact.MergeState, base, "", conflicting
+	stateReadAt := pr.StateReadAt
+	if !fact.ReadAt.IsZero() {
+		stateReadAt = fact.ReadAt
+	}
+	// The last clause is the confirming read's: it answers what is already recorded, and the time
+	// it was read is the whole of what it has to say.
+	if pr.Mergeability != fact.Mergeable || pr.MergeState != fact.MergeState || pr.Base != base || pr.BaseMoved != "" ||
+		pr.ConflictingHead != conflicting || !stateReadAt.Equal(pr.StateReadAt) {
+		pr.Mergeability, pr.MergeState, pr.Base, pr.BaseMoved, pr.ConflictingHead, pr.StateReadAt =
+			fact.Mergeable, fact.MergeState, base, "", conflicting, stateReadAt
 		if err := e.putPullRequest(ctx, tx, *pr); err != nil {
 			return intake.Result{}, err
 		}
@@ -210,15 +226,15 @@ func settledChecks(pr record.PullRequest) string {
 // and a required check whose run is missing here is the thing its reader looks for.
 //
 // Each run of the fence carries the head it ran on and its conclusion (record.AttemptRun), so
-// this is a reading of the fence and not of a settlement: a check run on this head that a newer
-// run of the same name on another head has replaced in the fence is not named, and nor is a run
-// stored before the fence carried its head.
+// this is a reading of the fence and not of a settlement, through classify.HeadRuns, the one test
+// of a run's head the daemon's readers share: a check run on this head that a newer run of the
+// same name on another head has replaced in the fence is not named, and nor is a run stored before
+// the fence carried its head.
 func headChecks(pr record.PullRequest) string {
-	conclusions := make(map[string]record.RunConclusion, len(pr.CheckRuns))
-	for _, run := range pr.CheckRuns {
-		if run.Head != "" && run.Head == pr.HeadSHA {
-			conclusions[run.Name] = run.Conclusion
-		}
+	runs := classify.HeadRuns(pr)
+	conclusions := make(map[string]record.RunConclusion, len(runs))
+	for _, run := range runs {
+		conclusions[run.Name] = run.Conclusion
 	}
 	if len(conclusions) == 0 {
 		return ""
@@ -630,7 +646,9 @@ const (
 // issue may advance on, which the daemon reads GitHub for (settleRound, daemon's readMergeState).
 // It is set for the round that waits for a first answer and for the stuck one alike, since the
 // state GitHub gives a head changes under it - a base push clears `behind`, a required check that
-// runs clears `blocked` - and a read is the only thing that would ever say so.
+// runs clears `blocked` - and a read is the only thing that would ever say so. Which round that
+// is, is classify.RoundWaitsOnMergeState: the engine and the state build read that one rule, so
+// the issue's view carries a mergeWait exactly for the rounds the daemon reads GitHub for.
 type round struct {
 	outcome           roundOutcome
 	cause             stuckCause
@@ -660,8 +678,8 @@ func (r round) stuckAs(other round) bool {
 // the head's own CI. There is always one to name: the only caller builds this reason for a round
 // it has already reported a head for, which it does only once GitHub has reported a check run on
 // that head itself and every one of them has concluded (reviewRound,
-// classify.ChecksConcludedOnHead), and that gate reads the same fence for the same thing -
-// a run stamped with the current head - so headChecks names at least the run the gate found.
+// classify.ChecksConcludedOnHead), and that gate and headChecks read the same runs of the fence
+// (classify.HeadRuns), so headChecks names at least the run the gate found.
 //
 // It names the head's own check runs rather than everything the settlement standing for the head
 // reports, which can be the code head's below it: GitHub weighs the current head for the merge,
@@ -686,11 +704,15 @@ func stuckMergeStateReason(pr record.PullRequest) string {
 // reviewer has completed, and the completion that follows is recorded on the reviewer's own row
 // (engine's leftItsPhase). An approval ends it once it approves the head's code
 // (classify.ApprovalStands) and GitHub reports that head one the issue may advance on
-// (record.MergeState.Mergeable). An approval GitHub has given no answer for yet - the state
-// unread, or `unknown` while GitHub computes it - waits where it stands, and the read that lands
-// moves it (mergeability, the ladder behind daemon's readMergeState). So does an approval whose
-// head still has a check running: a check the base requires holds the head `blocked` while it
-// runs, which says nothing about the round. What tells the two apart is the head's own check
+// (record.MergeState.Mergeable). An approval that stands with any other answer waits on GitHub's
+// next answer about that head, which is classify.RoundWaitsOnMergeState - the rule the state
+// build reads too, so the two never drift. An approval with no merge state on record for its
+// head - no read of the head on record, or a read whose answer carried no state
+// (record.PullRequest.StateReadAt) - or with `unknown` while GitHub computes it, waits where it
+// stands, and the read that lands moves it (mergeability, the ladder behind daemon's
+// readMergeState). So does an approval
+// whose head still has a check running: a check the base requires holds the head `blocked` while
+// it runs, which says nothing about the round. What tells the two apart is the head's own check
 // runs (classify.ChecksConcludedOnHead): the round reports a head only once GitHub has reported
 // a check run on that head itself and every one of them has concluded. A settlement of an
 // earlier head never satisfies it, and must not: the push that left this head starts CI of its
@@ -726,15 +748,18 @@ func (e *Engine) reviewRound(issue record.Issue, row record.PhaseRow, pr *record
 	}
 	switch {
 	case decided == "approved" && classify.ApprovalStands(*pr, row.Decision.Head):
-		if pr.MergeState.Mergeable() {
+		if !classify.RoundWaitsOnMergeState(issue, row, pr) {
 			return round{outcome: roundApproved}
 		}
-		// Everything below here waits on GitHub's answer for this head: the unread state and
+		// The approval stands on the head and GitHub's answer for that head is not one the issue
+		// may advance on, so the round waits on GitHub's answer for it: the unread state and
 		// `unknown` because GitHub has given none yet, every other because the one it gave can
 		// change under the head, and a head GitHub has reported no concluded check run on
 		// because a check still running there is what the state is waiting for. The daemon reads
 		// for each (settleRound), and the settlement that ends the last check is itself a fact
-		// that asks for a read.
+		// that asks for a read. Which approval waits is the rule the state build reads too
+		// (classify.RoundWaitsOnMergeState), so the view carries a mergeWait for exactly this
+		// round.
 		if pr.MergeState == record.MergeStateUnread || pr.MergeState == record.MergeStateUnknown || !classify.ChecksConcludedOnHead(*pr) {
 			return round{waitsOnMergeState: true}
 		}
