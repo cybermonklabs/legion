@@ -1,10 +1,10 @@
 // Package serverwait reads the wait a server names before the next request, in Retry-After or in
 // GitHub's X-RateLimit-Reset, by the one rule every reader of such a wait in this module keeps: a
-// wait past Longest reads as Longest, never as zero or a negative wait; a negative wait reads as no
-// wait; and any other wait reads as itself. A count of seconds that large wraps
-// time.Duration(seconds)*time.Second, and an epoch that large wraps time.Unix into the distant
-// past, so a reader that converted the value as it came would read a server's longest wait as no
-// wait at all and ask again at once.
+// wait past MaxWait, one hour, reads as MaxWait, never as zero or a negative wait; a negative wait
+// reads as no wait; and any other wait reads as itself. Converted as it came, a count of seconds
+// past what a time.Duration holds wraps time.Duration(seconds)*time.Second, and an epoch that
+// large wraps time.Unix into the distant past, so a reader would read a server's longest wait as
+// no wait at all and ask again at once.
 //
 // Its readers are Dispatch's GitHub client (internal/dispatch/githubapp, rateLimitWait), the
 // broker's mint (internal/broker/secrets, serverWait), the model loop's one retry (agentloop,
@@ -15,41 +15,36 @@ package serverwait
 
 import (
 	"errors"
-	"math"
 	"net/http"
 	"strconv"
 	"time"
 )
 
-// Longest is the longest wait a reader answers: the most whole seconds a time.Duration holds,
-// about 292 years.
-const Longest = math.MaxInt64 / time.Second * time.Second
+// MaxWait is the longest wait Read answers: one hour, GitHub's own longest. GitHub counts its
+// primary rate limits per hour, so its X-RateLimit-Reset is at most an hour ahead, and its
+// best-practices page asks a client for Retry-After's seconds, or a minute when there are none.
+// A longer bound buys nothing and costs much: Dispatch records the wait in github_rate_limits
+// under the App's scope, so every App-JWT call of every Dispatch process waits it out, and only
+// deleting the row ends it sooner. A wait cut to the bound costs at most one more request, which
+// a limit still in force answers with a fresh wait.
+const MaxWait = time.Hour
 
-// longestSeconds is Longest in seconds, the most a count of seconds is held to before it is
+// maxWaitSeconds is MaxWait in whole seconds, what a count of seconds is held to before it is
 // multiplied out.
-const longestSeconds = int64(Longest / time.Second)
+const maxWaitSeconds = int64(MaxWait / time.Second)
 
-// RetryAfter reads a Retry-After value against now, in either form RFC 9110 gives it: a count of
-// seconds, or an HTTP date, whose wait is the time from now until it. named is false for a value in
-// neither form, the empty value among them. A count past what an int64 holds still names a wait:
-// ParseInt answers it as the largest or the smallest int64 with ErrRange, which the rule reads as
-// Longest or as no wait.
-func RetryAfter(value string, now time.Time) (wait time.Duration, named bool) {
-	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
-		return time.Duration(min(max(seconds, 0), longestSeconds)) * time.Second, true
-	}
-	if at, err := http.ParseTime(value); err == nil {
-		return bounded(at.Sub(now)), true
-	}
-	return 0, false
-}
-
-// Read is the wait header names, read against now: Retry-After's (RetryAfter), else, when
-// X-RateLimit-Remaining is 0, the time until X-RateLimit-Reset's epoch seconds. named is false when
-// it names neither, and the caller's own fallback decides the wait.
+// Read is the wait header names, read against now: Retry-After's, in seconds or as an HTTP date
+// (RFC 9110), else, when X-RateLimit-Remaining is 0, the time until X-RateLimit-Reset's epoch
+// seconds. named is false when it names neither, and the caller's own fallback decides the wait.
+// A count past what an int64 holds still names a wait: ParseInt answers it as the largest or the
+// smallest int64 with ErrRange, which the rule reads as MaxWait or as no wait.
 func Read(header http.Header, now time.Time) (wait time.Duration, named bool) {
-	if wait, named := RetryAfter(header.Get("Retry-After"), now); named {
-		return wait, true
+	retryAfter := header.Get("Retry-After")
+	if seconds, err := strconv.ParseInt(retryAfter, 10, 64); err == nil || errors.Is(err, strconv.ErrRange) {
+		return time.Duration(min(max(seconds, 0), maxWaitSeconds)) * time.Second, true
+	}
+	if at, err := http.ParseTime(retryAfter); err == nil {
+		return bounded(at.Sub(now)), true
 	}
 	if header.Get("X-RateLimit-Remaining") != "0" {
 		return 0, false
@@ -59,14 +54,14 @@ func Read(header http.Header, now time.Time) (wait time.Duration, named bool) {
 		return 0, false
 	}
 	// time.Unix wraps an epoch this close to math.MaxInt64 into the distant past, so a reset
-	// further out than Longest is held first to one second past it, which the rule then reads as
-	// Longest whatever fraction of a second now carries.
-	return bounded(time.Unix(min(reset, now.Unix()+longestSeconds+1), 0).Sub(now)), true
+	// further out than MaxWait is held first to one second past it, which the rule then reads as
+	// MaxWait whatever fraction of a second now carries.
+	return bounded(time.Unix(min(reset, now.Unix()+maxWaitSeconds+1), 0).Sub(now)), true
 }
 
 // bounded is the rule on a wait already read as a Duration: a negative wait is none, and one past
-// Longest is Longest. time.Time.Sub answers the largest or the smallest Duration for a gap past
+// MaxWait is MaxWait. time.Time.Sub answers the largest or the smallest Duration for a gap past
 // what one holds, so a date or a reset never wraps before it reaches here.
 func bounded(wait time.Duration) time.Duration {
-	return min(max(wait, 0), Longest)
+	return min(max(wait, 0), MaxWait)
 }

@@ -15,7 +15,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
-	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 const deliveriesClientID = "Iv1.deliveries"
@@ -246,12 +245,13 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 
 // TestRateLimitBoundsTheWaitGitHubNames: RateLimit's wait, which rateLimitWait reads, keeps the
 // one rule every reader of a server's wait in this module keeps (internal/serverwait). A
-// Retry-After of 9999999999 seconds, an X-RateLimit-Reset of math.MaxInt64 with no requests left
-// and a Retry-After date in the year 9999 are each past what a Duration holds, and read as
-// serverwait.Longest: converted as they came, the first two read as zero or a negative wait, which
-// every caller takes for no wait at all. A negative Retry-After and a reset already past read as
-// no wait, and an ordinary value of each header reads as itself. The test counts the rows it drove
-// and fails under the number the table must hold.
+// Retry-After of 9999999999 seconds and an X-RateLimit-Reset of math.MaxInt64 with no requests
+// left are past what a Duration holds, and a Retry-After of two hours is past GitHub's own longest
+// wait; each reads as one hour. Converted as they came, the first two read as zero or a negative
+// wait, which every caller takes for no wait at all, and an unbounded third would hold every
+// App-JWT call for two hours. A negative Retry-After and a reset already past read as no wait,
+// and an ordinary value of each header reads as itself. The test counts the rows it drove and
+// fails under the number the table must hold.
 func TestRateLimitBoundsTheWaitGitHubNames(t *testing.T) {
 	const rowsToDrive = 7
 	now := time.Now()
@@ -263,9 +263,9 @@ func TestRateLimitBoundsTheWaitGitHubNames(t *testing.T) {
 		header   http.Header
 		min, max time.Duration
 	}{
-		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, serverwait.Longest, serverwait.Longest},
-		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), serverwait.Longest, serverwait.Longest},
-		{"a Retry-After date in the year 9999", http.Header{"Retry-After": {"Fri, 31 Dec 9999 23:59:59 GMT"}}, serverwait.Longest, serverwait.Longest},
+		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, time.Hour, time.Hour},
+		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), time.Hour, time.Hour},
+		{"a Retry-After of two hours", http.Header{"Retry-After": {"7200"}}, time.Hour, time.Hour},
 		{"a negative Retry-After", http.Header{"Retry-After": {"-30"}}, 0, 0},
 		{"an X-RateLimit-Reset an hour past with no requests left", exhausted(strconv.FormatInt(now.Add(-time.Hour).Unix(), 10)), 0, 0},
 		{"a Retry-After of 30 seconds", http.Header{"Retry-After": {"30"}}, 30 * time.Second, 30 * time.Second},

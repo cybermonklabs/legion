@@ -221,11 +221,13 @@ Each item below names a task and where its code is, then notes on it.
 
 - **A server's named wait**: `internal/serverwait/`
 
-  the one rule every reader of a server's `Retry-After` or GitHub's `X-RateLimit-Reset` in this module keeps (`Read`, `RetryAfter`):
-  a wait past `Longest`, the most whole seconds a Go duration holds (about 292 years), reads as `Longest`, never as zero or a negative wait, a negative wait reads as none, and any other wait reads as itself.
+  the one rule every reader of a server's `Retry-After` or GitHub's `X-RateLimit-Reset` in this module keeps (`Read`):
+  a wait past `MaxWait`, one hour, reads as an hour, never as zero or a negative wait, a negative wait reads as none, and any other wait reads as itself.
+  An hour is GitHub's own longest wait: it counts its primary rate limits per hour, so its `X-RateLimit-Reset` is at most an hour ahead.
+  A longer bound buys nothing and costs much, since Dispatch records the wait in `github_rate_limits` under the App's scope and every App-JWT call of every Dispatch process waits it out, while a wait cut to the bound costs at most one more request, which a limit still in force answers with a fresh wait.
   Its readers are Dispatch's GitHub client (`internal/dispatch/githubapp`, `rateLimitWait`), the broker's mint (`internal/broker/secrets`, `serverWait`), the model loop's one retry (`agentloop`, `retryable`) and the broker helper's refresh (`internal/broker/helper`, `retryAfter`), and each keeps its own fallback for an answer that names no wait.
-  Converted as it comes, a count of seconds or an epoch that large wraps into a negative wait, which a caller takes for no wait and asks again at once.
-  Dispatch's GitHub client records the wait it reads in `github_rate_limits` under the App's scope, and the redelivery sweep under its own backoff as well, so the sweep never sleeps on it: every later sweep stops before it asks GitHub anything until the wait passes or the rows are deleted, and the sweep's loop still ends with its context.
+  Converted as it comes, a count of seconds or an epoch past what a Go duration holds wraps into a negative wait, which a caller takes for no wait and asks again at once.
+  Dispatch's GitHub client records the wait it reads in `github_rate_limits` under the call's scope, and the redelivery sweep under its own backoff as well, so the sweep never sleeps on it: every later sweep stops before it asks GitHub anything until the wait passes or the rows are deleted, at most an hour (64 minutes once the sweep's own doubling reaches its ceiling), and the sweep's loop still ends with its context.
   It imports the standard library alone, so no binary gains a module through it
 
 - **GitHub webhook redelivery**: `internal/dispatch/redeliver/`, `cmd/dispatch/redeliver.go`
@@ -5690,7 +5692,7 @@ a retag to a kind reread during the reads ends the grant for good, and one the p
 A minter's error names an upstream status by its number and a failed call by its class (`transportFailure`), never Go's transport text, the reason phrase or the body, and a Google `error_subtype` only when it is `invalid_rapt` or `rapt_required` (`googleReauthSubtypes`), else `unknown`.
 Every call through `mintCall` is retried under one policy, `secrets.Retry` (`retry.go`), which `cmd/broker` builds once with `secrets.NewRetry` and sets on the three HTTP minters:
 a 5xx, a rate limit, and a call or body read that failed while the caller's context lives are attempted again, at most 3 attempts of a call, each under a 5 s timeout, with full jitter under ceilings of 2 s and 4 s and at most 10 s of added wait over every call one mint makes;
-a wait the server names (`Retry-After`, or `X-RateLimit-Reset` with `X-RateLimit-Remaining: 0`, read by `internal/serverwait`, which holds one past what a Go duration holds to about 292 years and reads a negative one as none) is waited in full when it fits in what is left of that budget and of the context's deadline and ends the mint when it does not, and a rate limit that names none counts as 60 s;
+a wait the server names (`Retry-After`, or `X-RateLimit-Reset` with `X-RateLimit-Remaining: 0`, read by `internal/serverwait`, which holds one past an hour, GitHub's own longest wait, to an hour and reads a negative one as none) is waited in full when it fits in what is left of that budget and of the context's deadline and ends the mint when it does not, and a rate limit that names none counts as 60 s;
 a 4xx that is no rate limit, an ended context, an answer past its cap and an unwanted 2xx or 3xx are not retried (`classify`).
 Every retry of the process draws from one token bucket of 60 that refills one a second, and each attempt counts in `broker_mint_attempts_total{kind,outcome,attempt}`.
 `policy.TagRollbackGuard` and `RollbackGuardValue` (`mint-service-account: kind-secret`) are what `agent-secrets secret` writes beside every kind, so a broker of legion-envoy-v13.19.0 to the release before kinds refuses the secret (`mint-target-malformed`) rather than serve its stored key;
@@ -5911,7 +5913,7 @@ A file that is there but is not exactly one machine login stops `serve`, naming 
 The refresh loop refreshes at half the time left until the held credential's expiry, at most every 24 h, rescheduled whenever a credential is installed;
 a refresh the broker did not answer (any transport error:
 a refused, unanswered or unresolved dial, a timeout, a lost answer, a cancelled request) or answered 5xx is retried every 15 s, with no backoff (`retrySchedule`), and so is every refresh after it until the broker settles one (a success or `invalid_grant`), answered 4xx and 429s between included (its `unknown` flag);
-otherwise a 429 (the token endpoint's rate limit) waits its `Retry-After` (`internal/serverwait`, so one past what a Go duration holds waits the minute and a negative one the 15 s), at least 15 s and at most a minute, and keeps the login, and any other refusal but `invalid_grant` waits a minute, doubling to an hour.
+otherwise a 429 (the token endpoint's rate limit) waits the wait it names (`internal/serverwait`: its `Retry-After`, the only one the broker sends, held to an hour, so one past that waits the minute and a negative one the 15 s), at least 15 s and at most a minute, and keeps the login, and any other refusal but `invalid_grant` waits a minute, doubling to an hour.
 A token answer naming no new refresh token (`x/oauth2` copies the presented one into an answer without the field) is an error answer:
 nothing is saved, and the refresh is retried.
 A lost answer keeps the login only while a retry lands inside the broker's five-minute rotation grace:

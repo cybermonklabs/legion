@@ -7,15 +7,15 @@ import (
 	"context"
 	"errors"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
 	"golang.org/x/oauth2"
-
-	"github.com/sjawhar/envoy/internal/serverwait"
 )
 
 func answered(status int, retryAfter string) error {
@@ -78,32 +78,47 @@ func TestARetryAfterIsCappedAtAMinute(t *testing.T) {
 	}
 }
 
-// TestARetryAfterIsReadByTheOneBound: retryAfter reads the broker's Retry-After by the one rule
-// every reader of a server's wait in this module keeps (internal/serverwait), and the schedule
-// clamps what it reads. A Retry-After of 9999999999 seconds and one dated in the year 9999 are
-// past what a Duration holds and read as serverwait.Longest, so the schedule waits its cap, a
-// minute: converted as it came, the count read as a negative wait, which the schedule's floor
-// turned into the shortest wait it has, the fixed 15 s retry. A negative Retry-After reads as no
-// wait, which waits that retry, and an ordinary one reads as itself. The test counts the rows it
-// drove and fails under the number the table must hold.
+// TestARetryAfterIsReadByTheOneBound: retryAfter reads the wait a 429 names by the one rule every
+// reader of a server's wait in this module keeps (internal/serverwait), and the schedule clamps
+// what it reads. A Retry-After of 9999999999 seconds and an X-RateLimit-Reset of math.MaxInt64
+// with no requests left are past what a Duration holds and read as one hour, so the schedule
+// waits its cap, a minute: converted as it came, the count read as a negative wait, which the
+// schedule's floor turned into the shortest wait it has, the fixed 15 s retry. A negative
+// Retry-After reads as no wait, which waits that retry, and an ordinary value of each header reads
+// as itself. The test counts the rows it drove and fails under the number the table must hold.
 func TestARetryAfterIsReadByTheOneBound(t *testing.T) {
-	const rowsToDrive = 4
+	const rowsToDrive = 5
+	now := time.Now()
+	limited := func(header http.Header) error {
+		return &oauth2.RetrieveError{Response: &http.Response{StatusCode: http.StatusTooManyRequests, Header: header}, ErrorCode: "invalid_request"}
+	}
+	exhausted := func(reset string) http.Header {
+		return http.Header{"X-Ratelimit-Remaining": {"0"}, "X-Ratelimit-Reset": {reset}}
+	}
 	rows := []struct {
-		retryAfter  string
-		read, waits time.Duration
+		name     string
+		header   http.Header
+		min, max time.Duration
+		// waits is the schedule's wait after the 429: its read held to 15 s at least and a minute
+		// at most.
+		waits time.Duration
 	}{
-		{"9999999999", serverwait.Longest, maxRetryAfter},
-		{"Fri, 31 Dec 9999 23:59:59 GMT", serverwait.Longest, maxRetryAfter},
-		{"-30", 0, defaultRefreshRetry},
-		{"30", 30 * time.Second, 30 * time.Second},
+		{"a Retry-After of 9999999999 seconds", http.Header{"Retry-After": {"9999999999"}}, time.Hour, time.Hour, maxRetryAfter},
+		{"an X-RateLimit-Reset of math.MaxInt64 with no requests left", exhausted(strconv.FormatInt(math.MaxInt64, 10)), time.Hour, time.Hour, maxRetryAfter},
+		{"a negative Retry-After", http.Header{"Retry-After": {"-30"}}, 0, 0, defaultRefreshRetry},
+		{"a Retry-After of 30 seconds", http.Header{"Retry-After": {"30"}}, 30 * time.Second, 30 * time.Second, 30 * time.Second},
+		// The reset is whole seconds, and retryAfter reads it against its own clock a moment
+		// later, so the wait is up to two seconds short of the 90 it names, and the schedule
+		// waits its cap.
+		{"an X-RateLimit-Reset 90 seconds out with no requests left", exhausted(strconv.FormatInt(now.Add(90*time.Second).Unix(), 10)), 88 * time.Second, 90 * time.Second, maxRetryAfter},
 	}
 	driven := 0
 	for _, row := range rows {
-		t.Run("Retry-After "+row.retryAfter, func(t *testing.T) {
+		t.Run(row.name, func(t *testing.T) {
 			driven++
-			err := answered(http.StatusTooManyRequests, row.retryAfter)
-			if read := retryAfter(err); read != row.read {
-				t.Errorf("retryAfter = %s, want %s", read, row.read)
+			err := limited(row.header)
+			if read := retryAfter(err); read < row.min || read > row.max {
+				t.Errorf("retryAfter = %s, want %s to %s", read, row.min, row.max)
 			}
 			s := (&Broker{}).newRetrySchedule()
 			if wait := s.next(err); wait != row.waits {

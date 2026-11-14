@@ -88,11 +88,12 @@ func rateLimited(response *http.Response, body []byte) bool {
 // it names one: serverwait.Read's wait, Retry-After's seconds or HTTP date, else the time until
 // X-RateLimit-Reset's epoch seconds when X-RateLimit-Remaining is 0; else, for a rate limit,
 // rateLimitedWait, the one minute GitHub asks for when it gives neither; and for any other answer
-// no wait at all. Read keeps the one rule internal/dispatch/githubapp's rateLimitWait keeps too:
-// a wait already past, or a negative one, is no wait, and one past serverwait.Longest, about 292
-// years, is that. Multiplied out, a larger count of seconds wraps
+// no wait at all. Read keeps the one rule every reader of a server's wait in this module keeps,
+// internal/dispatch/githubapp's rateLimitWait among them: a wait already past, or a negative one,
+// is no wait, and one past serverwait.MaxWait, one hour, GitHub's own longest wait, is an hour.
+// Multiplied out, a count of seconds past what a Duration holds wraps
 // time.Duration(seconds)*time.Second and can come out negative, so a call whose answer named a
-// wait past the budget would be made again at once; held to Longest, which is far past
+// wait past the budget would be made again at once; held to an hour, which is far past
 // mintWaitBudget, it ends the call (mintRetry.again) as any wait past the budget does.
 func serverWait(header http.Header, rateLimited bool, now time.Time) (time.Duration, bool) {
 	if wait, named := serverwait.Read(header, now); named {

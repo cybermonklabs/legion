@@ -46,7 +46,7 @@ func (t *modelTransport) client() *http.Client {
 	}}
 }
 
-// defaultRetryWait is how long the retry waits when the response names no Retry-After.
+// defaultRetryWait is how long the retry waits when the response names no wait (retryable).
 const defaultRetryWait = time.Second
 
 func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -110,11 +110,14 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // retryable is whether a model call's outcome is retried, and after how long: a transport error,
-// 429 or a 5xx, after the response's Retry-After or a second. Retry-After is read by the one rule
-// every reader of a server's wait in this module keeps (serverwait.RetryAfter): a wait past
-// serverwait.Longest, about 292 years, is that, which no run's deadline leaves time for, so the
-// call is not made again (waitable); a negative wait is none; and any other is itself, in seconds
-// or as an HTTP date.
+// 429 or a 5xx, after the wait the response names or a second. The wait is read by the one rule
+// every reader of a server's wait in this module keeps (serverwait.Read): Retry-After, in seconds
+// or as an HTTP date, else X-RateLimit-Reset's epoch seconds when X-RateLimit-Remaining is 0; a
+// wait past serverwait.MaxWait, one hour, is an hour, which no run's bound leaves time for, so the
+// call is not made again (waitable); a negative wait is none; and any other is itself. The
+// providers this package speaks to name their own limits under other headers (OpenAI's
+// x-ratelimit-reset-requests and -tokens, Anthropic's anthropic-ratelimit-*), which Read does not
+// read, so for them the wait is Retry-After's or the second.
 func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if err != nil {
 		return defaultRetryWait, !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
@@ -122,7 +125,7 @@ func retryable(resp *http.Response, err error) (time.Duration, bool) {
 	if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
 		return 0, false
 	}
-	if wait, named := serverwait.RetryAfter(resp.Header.Get("Retry-After"), time.Now()); named {
+	if wait, named := serverwait.Read(resp.Header, time.Now()); named {
 		return wait, true
 	}
 	return defaultRetryWait, true
