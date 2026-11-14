@@ -19,12 +19,13 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
-// eventWait is how long a test here waits FOR AN EVENT: a heartbeat landing, a prune deleting a
-// row, a registration losing its key. It is where the test gives up, never a measurement - the
-// test still fails when the event never comes, and on an idle machine the wait returns in
-// milliseconds - so it allows for a loaded runner: every package of this module now runs at once,
-// four CI cores to some 3,800 parallel tests, under the race detector besides
-// (dispatch://INFRA-1075). A test whose SUBJECT is a span keeps its own number.
+// eventWait is how long a test here waits FOR AN EVENT: a prune deleting a row, a live row's
+// heartbeats landing. It is where the test gives up, never a measurement - the test still fails
+// when the event never comes, and on an idle machine the wait returns in milliseconds - so it
+// allows for a loaded runner: every package of this module now runs at once, four CI cores to
+// some 3,800 parallel tests, under the race detector besides (dispatch://INFRA-1075). A test
+// whose SUBJECT is a span keeps its own number: a lapsed or pruned row acting on its next
+// heartbeat keeps heartbeatBound.
 const eventWait = 30 * time.Second
 
 // fingerprints is the fingerprint list a process holding setting (DISPATCH_SIGNING_KEY's form)
@@ -153,21 +154,30 @@ func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T
 }
 
 // The heartbeat keeps a registered process live: a row the database dates past the live window
-// is live again within a heartbeat, since no live process disagrees with its key set.
+// is live again within a heartbeat, since no live process disagrees with its key set. The wait
+// is 10 s of 100 ms heartbeats, short of the 15 s LiveWindow a heartbeat stamping only once a
+// window would take; the row runs serial, as every row of this package does (setInterval writes
+// HeartbeatInterval).
 func TestTheHeartbeatKeepsARegisteredProcessLive(t *testing.T) {
 	setInterval(t, &HeartbeatInterval, 100*time.Millisecond)
 	database := storetest.Open(t)
 	registration := mustRegister(t, database, "c1", "K0")
 	ageHeartbeat(t, database, registration.ID, time.Hour)
 
-	deadline := time.Now().Add(eventWait)
+	deadline := time.Now().Add(heartbeatBound)
 	for !slices.Contains(liveIDs(t, database), registration.ID) {
 		if time.Now().After(deadline) {
-			t.Fatalf("a registered process aged past the live window was not live again within %s of heartbeats", eventWait)
+			t.Fatalf("a registered process aged past the live window was not live again within %s of heartbeats", heartbeatBound)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
 }
+
+// heartbeatBound is how long a row here may take to act on its next heartbeat - be live again,
+// be written again, or report a refusal - when the test sets HeartbeatInterval to 50 or 100 ms:
+// 10 s, short of the 15 s LiveWindow, so a heartbeat that acted only once a live window would
+// fail it. It is the rows' subject, not a give-up wait, and each row keeps it serial.
+const heartbeatBound = 10 * time.Second
 
 // Deregister deletes the row and stops the heartbeat, so the process is neither live nor written
 // again.
@@ -459,13 +469,13 @@ func livePeer(t *testing.T, tx pgx.Tx, setting string) string {
 	return id
 }
 
-// waitForLive waits up to 10 s of heartbeats for id to be live again.
+// waitForLive waits up to heartbeatBound (10 s) of heartbeats for id to be live again.
 func waitForLive(t *testing.T, database *store.Store, id, what string) {
 	t.Helper()
-	deadline := time.Now().Add(eventWait)
+	deadline := time.Now().Add(heartbeatBound)
 	for !slices.Contains(liveIDs(t, database), id) {
 		if time.Now().After(deadline) {
-			t.Fatalf("%s was not live again within %s of heartbeats", what, eventWait)
+			t.Fatalf("%s was not live again within %s of heartbeats", what, heartbeatBound)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -481,16 +491,16 @@ func requireNotLost(t *testing.T, registration *Registration, what string) {
 	}
 }
 
-// requireRefusal waits up to 10 s for the registration's heartbeat to report a refusal naming the
-// peer and the rotation advice, then requires that, a few heartbeats later, nothing made the
-// process live again.
+// requireRefusal waits up to heartbeatBound (10 s) for the registration's heartbeat to report a
+// refusal naming the peer and the rotation advice, then requires that, a few heartbeats later,
+// nothing made the process live again.
 func requireRefusal(t *testing.T, database *store.Store, registration *Registration, peer, what string) {
 	t.Helper()
 	var refusal error
 	select {
 	case refusal = <-registration.Lost():
-	case <-time.After(eventWait):
-		t.Fatalf("%s reported no refusal within %s of heartbeats; live = %v", what, eventWait, liveIDs(t, database))
+	case <-time.After(heartbeatBound):
+		t.Fatalf("%s reported no refusal within %s of heartbeats; live = %v", what, heartbeatBound, liveIDs(t, database))
 	}
 	if !errors.Is(refusal, ErrKeySetMismatch) {
 		t.Fatalf("%s reported %v, want ErrKeySetMismatch", what, refusal)

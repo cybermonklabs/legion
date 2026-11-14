@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,18 +90,27 @@ func TestAnUnreachableNATSReleasesTheBatchAndSendsNothingAfterIt(t *testing.T) {
 	publisher := &countingPublisher{fail: unreachable}
 	outbox := outboxOn(t, database, publisher, broker)
 	atRest := restingOutbox(t, outbox)
+	// Every retry timer the holder arms: a released batch arms none, since nothing about it is
+	// due again on a clock, and a batch sent again a back-off later is one that armed one.
+	var armed atomic.Int64
+	outbox.afterRetryArmed = func(time.Duration) { armed.Add(1) }
 	stop := started(t, outbox)
 	defer stop()
 
 	waitFor(t, eventWait, "the first event's three destinations tried", func() bool { return len(publisher.attempted()) >= 3 })
 	// The hold's first scan and the LISTEN connection's catch-up each wake one scan; after them
 	// nothing does, and this is the reading of that: the outbox parked with nothing pending and
-	// nothing scanned since it parked (restingOutbox). A batch sent again while NATS stays
-	// unreachable is a wake the outbox gave itself, and an outbox that wakes itself never comes
-	// to rest at all, so that defect fails this wait rather than a count read a second after
-	// another - two instants a parallel batch's load can push an honest scan between, which is
-	// how this row reached a CI red (run 42779139068, dispatch://INFRA-1075).
+	// nothing scanned since it parked (restingOutbox), and no retry timer armed on the way there.
+	// A batch sent again while NATS stays unreachable is a wake the outbox gave itself, either at
+	// once, and an outbox that wakes itself never comes to rest at all, or on a retry timer, which
+	// parks the outbox like any rest and is read here as the timer armed. Either defect fails
+	// here rather than on a count read a second after another - two instants a parallel batch's
+	// load can push an honest scan between, which is how this row reached a CI red (run
+	// 42779139068, dispatch://INFRA-1075).
 	atRest("the outbox resting with every send the wakes it was given made")
+	if timers := armed.Load(); timers != 0 {
+		t.Fatalf("the outbox armed %d retry timers while NATS was unreachable, want none: a released batch is sent again on a wake, not on a back-off", timers)
+	}
 	topics := publisher.attempted()
 	firstHeads := []string{"notifications.dispatch.issue.T-1.comment.created", roleTopic, "notifications.agent.writer"}
 	for index, topic := range topics {

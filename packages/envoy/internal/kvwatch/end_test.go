@@ -245,8 +245,9 @@ func TestAFailedConsumerDeleteAtTheEndIsAnError(t *testing.T) {
 
 // End is bounded by its context: against a server that does not answer, it returns at the
 // deadline and logs the unanswered delete as an ERROR rather than holding the shutdown.
+//
+// Serial: its assertion is a time (End returns within 2 s of its 300 ms deadline).
 func TestEndIsBoundedByItsContext(t *testing.T) {
-	t.Parallel()
 	srv, uri := testnats.Start(t)
 	_, kv := bucket(t, uri)
 	logger, records := jsonLogger(t)

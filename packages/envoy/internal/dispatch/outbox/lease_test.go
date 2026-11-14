@@ -485,8 +485,12 @@ func backOffState(t *testing.T, database *store.Store, eventID int64) (published
 //
 // Real time, at publisherHoldOptions: the hold is a Postgres row the two processes renew, and
 // each publishes to a live NATS server, which no synctest bubble can hold.
+//
+// Serial: it measures the process - a holder whose renewals a parallel batch starves for the 4 s
+// from a confirmed renewal to its loss deadline (publisherHoldOptions, TTL less Margin) reports
+// the hold lost, and a sample then reads no outbox publishing, which is the machine's load and not
+// the product (docs/testing.md).
 func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
-	t.Parallel()
 	url := testnats.URL(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
@@ -514,8 +518,11 @@ func TestOnlyOneOutboxPublishesAtATime(t *testing.T) {
 
 // A process that stops gracefully releases the publisher hold, and the other takes it over at once
 // rather than when the hold would have lapsed.
+//
+// Serial: its assertion is a time - the standby must publish within publisherHoldOptions.TTL less
+// its Renew of the stop's start, the span a lapsed hand-over cannot fit, and a parallel batch's
+// load spends that span on the stop and the take, besides starving the holder's renewals.
 func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
-	t.Parallel()
 	url := testnats.URL(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
@@ -528,17 +535,19 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 		standby = second
 	}
 
+	// The span this wait proves, read from before the stop: a take-over that waited for the hold
+	// to lapse could not come before publisherHoldOptions.TTL less its Renew after the stop
+	// began, since the lapse falls one TTL after a renewal and the last renewal was at most one
+	// Renew before it. The release instead deletes the hold's row and notifies the standbys in
+	// one transaction (duty.Hold.Release), so the hand-over takes milliseconds. Taking the time
+	// after stop returned would hand a slow stop - closing its LISTEN connection is allowed
+	// seconds - to a lapsed hand-over as slack, and the span could then no longer tell the two
+	// apart.
+	stopping := time.Now()
 	holder.stop()
-	stopped := time.Now()
-	// The span this wait proves: a take-over that waited for the hold to lapse could not come
-	// before publisherHoldOptions.TTL less its Renew after the stop, since the lapse falls one
-	// TTL after a renewal and the last renewal was at most one Renew before the stop. The
-	// release instead deletes the hold's row and notifies the standbys in one transaction
-	// (duty.Hold.Release), so the hand-over takes milliseconds. The row measures that span and
-	// still runs parallel: the margin between the two is thousands of milliseconds, which no
-	// batch's load on this machine fills (dispatch://INFRA-1075).
-	waitFor(t, publisherHoldOptions.TTL-publisherHoldOptions.Renew, "the standby publishing once the holder stopped", standby.outbox.Publishing)
-	t.Logf("the standby took the publisher hold %s after the holder stopped", time.Since(stopped).Round(time.Millisecond))
+	waitFor(t, publisherHoldOptions.TTL-publisherHoldOptions.Renew-time.Since(stopping),
+		"the standby publishing within publisherHoldOptions.TTL less its Renew of the holder's stop", standby.outbox.Publishing)
+	t.Logf("the standby took the publisher hold %s after the holder began to stop", time.Since(stopping).Round(time.Millisecond))
 	event := writeMessage(t, standby, "after the hand-over")
 	waitForPublished(t, eventWait, database, counter, event)
 }
@@ -550,28 +559,28 @@ func TestAStoppedOutboxHandsThePublisherToTheOtherAtOnce(t *testing.T) {
 // Real time, at natsLossGrace: the cut is of a TCP proxy in front of a live NATS server, which no
 // synctest bubble can hold.
 //
-// The grace is held from below and not from above. Below, the release may not come before
-// natsLossGrace has run since the cut: the holder reads its client disconnected and arms one
-// timer of that grace (lease.go:500-503), and only that timer firing with the client still down
-// ends the turn as NATS lost (lease.go:551-557), so a release inside the grace is a holder that
-// gave the hold up early. Load can only make that bound safer, since a loaded machine delays the
-// release and never hastens it. Above there is nothing honest to hold it to: the cut closes the
-// connection, so the loss is reported by the client's own connection event (bus.Client.Connected
-// reads the connection's status, nats.go:573-577) and nothing polls on an interval, which leaves
-// the longest release the grace plus a run of goroutine wakes - the client's callback, the
-// holder's wake, the timer, serve's return and publish's clearing of the hold
-// (lease.go:443-451) - every one of which a batch on the next core stretches, and a reconnect
-// that lands and drops again arms the grace afresh. So the wait on the release is this package's
-// hang guard, eventWait, which fails on a release that never comes at all, and the 500 ms of
-// slack it replaces is what ran out under CI's eight concurrent go test calls (run 42949344199,
-// dispatch://INFRA-1075).
+// The grace is held from both sides. Below, the release may not come before natsLossGrace has run
+// since the cut: the holder reads its client disconnected and arms one timer of that grace
+// (lease.go:500-503), and only that timer firing with the client still down ends the turn as NATS
+// lost (lease.go:551-557), so a release inside the grace is a holder that gave the hold up early.
+// Load can only make that bound safer, since a loaded machine delays the release and never
+// hastens it. Above, the release must come within 500 ms of the grace, and the event written
+// after it must be published within 10 s of the cut, the bounds this row held before
+// dispatch://INFRA-1075: the cut closes the connection, so the loss is reported by the client's
+// own connection event (bus.Client.Connected reads the connection's status, nats.go:573-577) and
+// nothing polls on an interval, which leaves between the grace and the release only a run of
+// goroutine wakes - the client's callback, the holder's wake, the timer, serve's return and
+// publish's clearing of the hold (lease.go:443-451). A release well past the grace is a holder
+// that kept the hold through an outage it should have given up, and a wait on eventWait would
+// pass it. Those 500 ms ran out once under CI's eight concurrent go test calls (run
+// 42949344199); the row keeps them all the same, and keeps this package's other tests off the
+// machine while it runs.
 //
-// Serial: it measures the process - the bound below is on how long something took
-// (docs/testing.md). It is the lower bound that needs the machine to itself: a holder whose
-// renewals are starved for the 4 s from a confirmed renewal to the loss deadline
+// Serial: its assertion is a time - the release must fall between natsLossGrace and 500 ms past
+// it, and the publish within 10 s of the cut (docs/testing.md). Besides, a holder whose renewals
+// a parallel batch starves for the 4 s from a confirmed renewal to the loss deadline
 // (publisherHoldOptions, TTL less Margin) reports the hold lost and ends its turn before the
-// grace runs out, and the row would then be reading a parallel batch's load rather than the
-// product.
+// grace runs out, and the row would then be reading that load rather than the product.
 func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
@@ -583,11 +592,12 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 	waitFor(t, eventWait, "the first process taking the publisher hold", cut.outbox.Publishing)
 	working := startProcess(t, "working", storetest.SecondProcess(t, database), url, counter)
 
-	// Read before the cut, so the grace is armed after this moment and the bound below holds
-	// whatever the scheduler does between the two statements.
+	// Read before the cut, so the grace is armed after this moment and the lower bound below holds
+	// whatever the scheduler does between the two statements. The upper bound runs from the
+	// wait's own start, just after the cut.
 	downAt := time.Now()
 	proxy.Cut()
-	waitFor(t, eventWait, "the cut process releasing the publisher hold", func() bool {
+	waitFor(t, natsLossGrace+500*time.Millisecond, "the cut process releasing the publisher hold within 500 ms of natsLossGrace", func() bool {
 		return cut.outbox.hold.Load() == nil
 	})
 	released := time.Since(downAt)
@@ -597,7 +607,7 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 			released.Round(time.Millisecond), natsLossGrace)
 	}
 	event := writeMessage(t, working, "after the cut")
-	waitForPublished(t, eventWait, database, counter, event)
+	waitForPublished(t, 10*time.Second-time.Since(downAt), database, counter, event)
 	if !working.outbox.Publishing() || cut.outbox.Publishing() {
 		t.Fatalf("publishing %v after the cut, want only the process whose NATS works", publishing(cut, working))
 	}
@@ -611,8 +621,13 @@ func TestAnOutboxThatLosesNATSReleasesThePublisher(t *testing.T) {
 //
 // Real time, at probeTimeout and holdRetry: the silence is a frozen TCP proxy in front of a live
 // NATS server, which no synctest bubble can hold.
+//
+// Serial: its assertion is a time - the working process must take the hold and publish within
+// 10 s of the silence, after the silent holder's probe times out and the working process's own
+// retry of the hold, each step of which a parallel batch's load stretches; and a holder whose
+// renewals that load starves for the 4 s from a confirmed renewal to its loss deadline
+// (publisherHoldOptions, TTL less Margin) gives the hold up again (docs/testing.md).
 func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
-	t.Parallel()
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url)
 	database := storetest.Open(t)
@@ -645,8 +660,12 @@ func TestAnOutboxWhoseNATSGoesSilentGivesThePublisherToTheOther(t *testing.T) {
 // lapse reads the standby's timer to the holder's lapse makes over that span (each renewal moves the
 // lapse 6 s on), not one take and one read per event, which would put a write on duty_holds for
 // every event on every standby.
+//
+// Serial: it measures the process - a holder whose renewals a parallel batch starves for the 4 s
+// from a confirmed renewal to its loss deadline (publisherHoldOptions, TTL less Margin) reports
+// the hold lost, and the standby then takes it and reads its lapse again, which the counts below
+// would charge to the events (docs/testing.md).
 func TestAStandbyDoesNotTryTheHoldForEveryEventTheHolderWrites(t *testing.T) {
-	t.Parallel()
 	url := testnats.URL(t)
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
@@ -806,10 +825,14 @@ func TestAHolderConnectedAgainWhenTheGraceEndsKeepsTheHold(t *testing.T) {
 	waitFor(t, eventWait, "the holder scanning once the grace ended with its client connected", func() bool {
 		return outbox.claims.Load() > 0 || len(ended) > 0
 	})
+	// Serving on is more than the one scan: a holder that scanned as the grace ended and gave
+	// the hold up a moment later would pass a read taken at the scan. So serve must not end for
+	// a second after it, as the base required for natsLossGrace and a second after the
+	// reconnect; load can only lengthen this window, never cut it short.
 	select {
 	case end := <-ended:
 		t.Fatalf("the holder stopped serving (%s) though its client read connected when the grace ended", end)
-	default:
+	case <-time.After(time.Second):
 	}
 	if outbox.claims.Load() == 0 {
 		t.Fatal("the holder did not scan once it found its client connected at the grace's end")

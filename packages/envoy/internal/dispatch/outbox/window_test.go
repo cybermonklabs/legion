@@ -273,15 +273,20 @@ func TestABacklogPublishedAcrossANATSOutageKeepsItsOrder(t *testing.T) {
 
 	// The cut happens inside the outbox's first send, so by the time anything is sent the outbox
 	// holds the publisher hold and has read its batch, and that send and every send after it meet
-	// a connection that is gone. Waiting for a send is then waiting for the outage to be in force
-	// on the outbox itself, which the twelve seconds this slept for waited for with nothing
-	// watching (dispatch://INFRA-1075).
+	// a connection that is gone. The outage is then held until the outbox has run out
+	// natsLossGrace and given the publisher hold up for it (Publishing turns false): that is the
+	// sustained outage this row is about, which the twelve seconds this slept for waited out with
+	// nothing watching (dispatch://INFRA-1075). Only then are the events read, every one still
+	// unpublished, and only then is NATS given back.
 	counter := &sendCounter{}
 	cutting := countingClient{Client: client, counter: counter, before: sync.OnceFunc(proxy.Cut)}
-	stop := runOutboxThrough(t, database, client, cutting, broker)
+	outbox, stop := runningOutbox(t, database, client, cutting, broker)
 	defer stop()
-	waitFor(t, 30*time.Second, "the outbox's sends meeting the cut connection", func() bool {
+	waitFor(t, eventWait, "the outbox's sends meeting the cut connection", func() bool {
 		return counter.attempts() > 0
+	})
+	waitFor(t, eventWait, "the outbox giving the publisher hold up for the outage", func() bool {
+		return !outbox.Publishing()
 	})
 	if left := unpublishedCount(t, database); left != count {
 		t.Fatalf("%d events were marked published while NATS was down", count-left)
@@ -448,8 +453,12 @@ func issueSubjectOrder(t *testing.T, url string) (map[string][]int, []int64) {
 // to send again without its id is the exception, which the stream stores as a message of its own.
 // Once the backlog is published, the stream holds every destination once, each issue's events in
 // id order on each, and no event counted an attempt.
+//
+// Serial: its assertion is a time - the cut must land before the first issue's events are marked,
+// about 25 sends of 150 ms each (3.7 s) after the first send, since a chain waits for each answer
+// before its next send and an owner is recorded only once its chains end; a parallel batch's load
+// can hold the test past that window between seeing the first message and cutting.
 func TestABatchCutOffInFlightKeepsItsOrder(t *testing.T) {
-	t.Parallel()
 	const issues, count = 4, 2 * batchSize
 	url := testnats.URL(t)
 	proxy := testnats.StartProxy(t, url, testnats.ProxyLatency(150*time.Millisecond))
@@ -561,14 +570,16 @@ func TestAnOutboxThatDiesBetweenAckAndMarkPublishesAgainWithoutDuplicates(t *tes
 		t.Fatalf("%d events were marked published though every mark failed", count-left)
 	}
 	// What a process killed mid-batch leaves: the hold's row still naming it, lapsing a TTL after
-	// its last renewal.
+	// its last renewal. The death is dated before the insert whose now() that lapse counts from,
+	// so the floor below is a lower bound alone: the row lapses a TTL after a moment no earlier
+	// than this one, and however long the insert takes to commit and return only lengthens took.
+	died := time.Now()
 	dead := uuid.New()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into duty_holds (name, holder, expires_at) values ($1, $2, now() + make_interval(secs => $3))
 	`, publisherHold, dead, publisherHoldOptions.TTL.Seconds()); err != nil {
 		t.Fatalf("leave the dead holder's row: %v", err)
 	}
-	died := time.Now()
 
 	if _, err := database.Pool.Exec(context.Background(), `drop trigger refuse_mark on events`); err != nil {
 		t.Fatalf("let the mark succeed: %v", err)

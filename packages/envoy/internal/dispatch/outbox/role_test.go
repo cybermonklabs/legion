@@ -845,16 +845,18 @@ func TestARoleRouteWhoseHolderIsTheActorIsPublishedWithoutAForward(t *testing.T)
 // the stream stores, the 49 others are published with no attempt counted, and the denied one is
 // left unpublished, backed off, its role route unreached and its publish_error naming the denial.
 //
-// How often the denied forward was sent is no part of that, and the row holds nothing about its
-// attempt_count beyond the one attempt a denial counts. One scan is not one send: it reads batches
-// until nothing is due (Outbox.scan), and an unpublished event whose next_attempt_at has fallen
-// due is due again (readBatchSQL's retried). The denied event's owner is settled, recorded and
-// released as soon as its own chains have finished (publishBatch's settleOwner), which counts its
-// first attempt and backs it off by retry.Delay(1), one second, while the 49 forwards still
-// waiting for the stream's acknowledgements of their copies hold the batch open; on a loaded
-// runner the rest of that batch outlasts that second, and a later batch of the same scan reads
-// the back-off as due and sends the denied forward again. Requiring exactly one attempt made the
-// row fail on a busy machine with attempt_count 2.
+// How often the denied forward is sent is bounded by the scan's own span, not fixed at one. One
+// scan is not one send: it reads batches until nothing is due (Outbox.scan), and an unpublished
+// event whose next_attempt_at has fallen due is due again (readBatchSQL's retried). The denied
+// event's owner is settled, recorded and released as soon as its own chains have finished
+// (publishBatch's settleOwner), which counts its first attempt and backs it off by
+// retry.Delay(1), one second, while the 49 forwards still waiting for the stream's
+// acknowledgements of their copies hold the batch open; on a loaded runner the rest of that
+// batch outlasts that second, and a later batch of the same scan reads the back-off as due and
+// sends the denied forward again. Requiring exactly one attempt made the row fail on a busy
+// machine with attempt_count 2. So the row allows the first attempt and one more for each whole
+// retry.Delay(1) the scan ran, the most a back-off of at least that length lets through, and
+// fails a denial resent inside its back-off - one backed off for less, or counted twice a send.
 //
 // Serial: it swaps process-wide state, the nkey seed its granted client reads from the
 // environment (t.Setenv, docs/testing.md).
@@ -886,12 +888,19 @@ func TestOneRefusedSubjectFailsOnlyItsOwnEvent(t *testing.T) {
 		seeded[index] = rig.routedEvent(t, fmt.Sprintf("T-%d", index+1), role, model.Actor{Kind: "user", ID: "alice"})
 	}
 
+	started := time.Now()
 	holding(t, rig.deps()).scan(context.Background(), unfenced{})
+	elapsed := time.Since(started)
+	most := 1 + int(elapsed/retry.Delay(1))
 
 	for index, event := range seeded {
 		attempts, failure, destinations := eventState(t, rig.database, event.ID)
 		if index == denied {
 			_, due := nextAttempt(t, rig.database, event.ID)
+			if attempts > most {
+				t.Fatalf("the denied holder's event counted %d attempts in a scan of %s, want at most %d: one, and one more for each %s back-off the scan outlasted",
+					attempts, elapsed.Round(time.Millisecond), most, retry.Delay(1))
+			}
 			if publishedAt(t, rig.database, event.ID) != nil || attempts < 1 || due == nil || failure == nil ||
 				!strings.Contains(*failure, bus.ErrPublishDenied.Error()) ||
 				strings.Contains(strings.Join(destinations, ","), contracts.RoleTopicPrefix) {

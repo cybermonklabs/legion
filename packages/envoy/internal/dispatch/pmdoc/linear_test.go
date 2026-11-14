@@ -521,11 +521,15 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 				// sample writes the same want into a document of its own, so the first sample's
 				// read-back answers for the rung: reading back what a later sample wrote costs
 				// another Read of a mebibyte and another tree comparison to prove what that one
-				// proved.
-				readBack := sync.OnceFunc(func() {
+				// proved. It runs inside the measured call, on runWithDeadline's goroutine, so it
+				// hands its verdict back as the call's error for timedWithDeadline to report on the
+				// test's own goroutine: a t.Fatalf here would end that goroutine instead, and inside
+				// sync.OnceFunc the Goexit becomes a panic that kills every test in the binary.
+				readBack := sync.OnceValue(func() error {
 					if got, err := Read(fragment); err != nil || !got.Equal(want) {
-						t.Fatalf("%s: %d blocks read back otherwise (%v)", test.name, blocks, err)
+						return fmt.Errorf("%s: %d blocks read back otherwise (%v)", test.name, blocks, err)
 					}
+					return nil
 				})
 				return func() (time.Duration, error) {
 					took, err := cpuTimeOf(func() func() {
@@ -537,8 +541,7 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 						fragment = written
 						return func() { writeUpdate(t, doc, written, want) }
 					})
-					readBack()
-					return took, err
+					return took, errors.Join(err, readBack())
 				}
 			})
 		})
@@ -562,8 +565,10 @@ func TestUpdateIsLinearInTheBlockCount(t *testing.T) {
 					fragment = written
 					return func() { writeUpdate(t, doc, written, want) }
 				})
-				if got, err := Read(fragment); err != nil || !got.Equal(want) {
-					t.Fatalf("replacing every other block: %d blocks read back otherwise (%v)", blocks, err)
+				if got, readErr := Read(fragment); readErr != nil || !got.Equal(want) {
+					// Returned rather than failed here: this runs on runWithDeadline's goroutine
+					// (timedWithDeadline reports it on the test's own).
+					return took, errors.Join(err, fmt.Errorf("replacing every other block: %d blocks read back otherwise (%v)", blocks, readErr))
 				}
 				return took, err
 			}
@@ -1010,7 +1015,7 @@ func waitForLeakToClear(t *testing.T, cleared <-chan struct{}) {
 	t.Helper()
 	select {
 	case <-cleared:
-	case <-time.After(30 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("a synthetic leaked call never deregistered")
 	}
 }

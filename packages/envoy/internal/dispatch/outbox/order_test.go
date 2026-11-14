@@ -373,8 +373,12 @@ func shiftedClock(t *testing.T, database *store.Store) *store.Store {
 // event's next attempt is set on the database's clock, so it is not sent again before then. A
 // connection that is lost instead releases the event with no attempt, and it is sent once NATS is
 // back.
+//
+// Serial: its assertion is a time - in "no responders" the read of the next attempt and the second
+// scan must both fall inside the event's first one-second back-off (retry.BaseDelay), and in "a
+// stream that never answers" the probe after the thaw must answer within probeTimeout (2 s). The
+// subtests run beside each other alone, never beside a parallel batch of the package.
 func TestAnEventNATSNeverAcknowledgesIsBackedOffAndRecorded(t *testing.T) {
-	t.Parallel()
 	seed := func(t *testing.T, database *store.Store) model.Event {
 		t.Helper()
 		seedIssue(t, database, "T-1", nil)

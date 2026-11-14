@@ -273,9 +273,12 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 }
 
 // TestIntakesWithoutTheAppConnectNothing: with no GitHub App neither intake reads anything, so
-// StartIntakes opens no connection and its stop returns at once.
+// StartIntakes opens no connection and its stop returns at once - within 5 s, well under the 15 s
+// an intake with work in hand may take to stop (intakeStopBudget).
+//
+// Serial: with no GitHub App, stop must return within 5 s, under intakeStopBudget; its assertion
+// is a time, which a parallel batch's load would stretch.
 func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
-	t.Parallel()
 	stop, err := StartIntakes(t.Context(), func(string) (*bus.Client, error) {
 		t.Error("connected a client for intakes that have no GitHub App")
 		return nil, errors.New("no connection here")
@@ -290,8 +293,8 @@ func TestIntakesWithoutTheAppConnectNothing(t *testing.T) {
 	}()
 	select {
 	case <-stopped:
-	case <-time.After(eventWait):
-		t.Fatal("stopping intakes with no GitHub App did not return")
+	case <-time.After(5 * time.Second):
+		t.Fatal("stopping intakes with no GitHub App did not return within 5 s")
 	}
 }
 

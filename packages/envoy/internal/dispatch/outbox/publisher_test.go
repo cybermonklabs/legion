@@ -1117,8 +1117,10 @@ func TestRunRetriesSubscriptionRemovedWhenTheAuthorRoutePublishFails(t *testing.
 	}
 }
 
+// Serial: its assertion is a time - the walk over a cyclic reply_to chain must end within 2 s,
+// since a walk that spins the cycle for longer stalls every outbox scan that long, and a parallel
+// batch's load would stretch an honest walk toward that bound (docs/testing.md).
 func TestLoadRootCommentAuthorsTerminatesOnACycle(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "T-1", nil)
 	commentID := seedComment(t, database, "T-1", model.Actor{Kind: "session", ID: "session-writer"}, "Draft done.", nil)
@@ -1141,8 +1143,8 @@ func TestLoadRootCommentAuthorsTerminatesOnACycle(t *testing.T) {
 	}()
 	select {
 	case <-done:
-	case <-time.After(eventWait):
-		t.Fatal("loadRootCommentAuthors did not terminate on a cyclic reply_to chain")
+	case <-time.After(2 * time.Second):
+		t.Fatal("loadRootCommentAuthors did not terminate within 2 s on a cyclic reply_to chain")
 	}
 	if err != nil {
 		t.Fatalf("load the comment's root author: %v", err)

@@ -423,7 +423,10 @@ func recheckIdentity(ctx context.Context, deps Deps) (identityRun, error) {
 // is out the loop reads nothing, writes nothing and wakes nobody. That report, not the
 // goroutine's return, is what a test waits for to know the pass is done, since this loop returns
 // only when the process stops. It is made with the wait already armed, so a test that takes it
-// and then measures a quiet period cannot catch the loop between its pass and its timer.
+// and then measures a quiet period cannot catch the loop between its pass and its timer. It
+// reports the other wait too, on the embedder's first answer after a skipped run
+// (Deps.coverageAwaitingAnswer), and only while that answer has not come: a test that takes
+// it knows the run proved nothing and left the rows it skipped alone.
 func runCoverage(ctx context.Context, deps Deps) {
 	pass := coverPass
 	for {
@@ -443,6 +446,13 @@ func runCoverage(ctx context.Context, deps Deps) {
 		timer := time.NewTimer(duty.Jittered(identityRecheckInterval))
 		if err == nil && answered == nil && deps.coverageWaiting != nil {
 			deps.coverageWaiting()
+		}
+		if answered != nil && deps.coverageAwaitingAnswer != nil {
+			select {
+			case <-answered:
+			default:
+				deps.coverageAwaitingAnswer()
+			}
 		}
 		select {
 		case <-ctx.Done():

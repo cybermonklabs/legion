@@ -849,11 +849,25 @@ func TestCoverLeavesAnotherIdentitysRowsUntilTheEmbedderAnswers(t *testing.T) {
 	requireUnchanged("a pass while the deployment is missing")
 	requireOneCanary("a pass while the deployment is missing")
 
-	// Run's boot pass sends its canary from a goroutine of its own, and the fake records a
-	// request before it answers it, so the fact that the pass has sent the one request this row
-	// counts is the fake holding it; the run then stops, and what it left behind is read below.
-	stop := runQueue(t, deps)
-	eventually(t, eventWait, "the canary Run's boot pass sends", func() bool { return fake.served() >= 1 })
+	// Run's boot pass sends its canary from a goroutine of its own, and the row reads what Run
+	// left behind only once that pass has read the 404 and its loop has parked on the embedder's
+	// first answer with that answer still to come (Deps.coverageAwaitingAnswer). Stopping Run as
+	// soon as the fake held the request, which it records before it answers, read the rows before
+	// the pass could have acted on its answer, and passed a loop that took a failed canary for
+	// proof. Such a loop never parks there: it runs the identity steps again at once and settles
+	// with nothing owed (Deps.coverageWaiting), which fails the row here.
+	parked, settled := make(chan struct{}), make(chan struct{})
+	running := deps
+	running.coverageAwaitingAnswer = sync.OnceFunc(func() { close(parked) })
+	running.coverageWaiting = sync.OnceFunc(func() { close(settled) })
+	stop := runQueue(t, running)
+	select {
+	case <-parked:
+	case <-settled:
+		t.Fatal("Run's coverage loop settled with nothing owed while the deployment is missing: it took the failed canary for proof")
+	case <-time.After(eventWait):
+		t.Fatalf("Run's coverage loop did not park on the embedder's answer within %s", eventWait)
+	}
 	stop()
 	requireUnchanged("Run while the deployment is missing")
 	requireOneCanary("Run while the deployment is missing")
@@ -1025,7 +1039,7 @@ func TestTheIdentityRecheckDropsAVectorTheOldConfigurationCommitsAfterTheBootPas
 	shortenIdentityRecheck(t, 3*time.Second)
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
 	// The boot pass has dropped ROLL-2's vector, and the queue has embedded ROLL-1 here.
-	eventually(t, 10*time.Second, "the boot pass and the boot drain", func() bool {
+	eventually(t, eventWait, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "ROLL-1") == configuredIdentity && modelOf(t, database, "ROLL-2") != foreignIdentity
 	})
 	commitForeignVector(t, database, "ROLL-1")
@@ -1047,7 +1061,7 @@ func TestTheIdentityRecheckDropsAVectorCommittedAfterAPassThatFoundNone(t *testi
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
 	// The boot drain embeds the issue here, so the boot pass's look for rows of another identity
 	// finds none: the database holds one row and this process made its vector.
-	eventually(t, 15*time.Second, "the boot pass and the boot drain", func() bool {
+	eventually(t, eventWait, "the boot pass and the boot drain", func() bool {
 		return modelOf(t, database, "CLEAN-1") == configuredIdentity
 	})
 	commitForeignVector(t, database, "CLEAN-1")
@@ -1068,7 +1082,7 @@ func TestTheIdentityStepsRunOnceTheQueueFirstEmbeds(t *testing.T) {
 	embedder.setErr(errors.New("simulated: the deployment does not answer yet"))
 	runQueue(t, Deps{Store: database, Embedder: embedder})
 	// Two canaries fail: the boot pass's, and the one confirming ANSR-1's own failed embed.
-	eventually(t, 10*time.Second, "the boot pass's canary", func() bool { return embedder.canaryCalls() >= 2 })
+	eventually(t, eventWait, "the boot pass's canary", func() bool { return embedder.canaryCalls() >= 2 })
 	if got := modelOf(t, database, "ANSR-2"); got != foreignIdentity {
 		t.Fatalf("ANSR-2 holds %q before the embedder answered, want the foreign vector left in place", got)
 	}

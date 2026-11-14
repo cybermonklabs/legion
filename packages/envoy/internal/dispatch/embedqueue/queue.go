@@ -94,11 +94,14 @@ type Deps struct {
 	// owed and nothing due (duty.WokenLoop.Idle), and coverageWaiting each time the coverage
 	// loop settles into its wait with nothing left to do (runCoverage). The coverage loop is
 	// not a thing that ends - it rechecks the identity for as long as the process runs - so
-	// what a test can wait for is the loop parked, not the loop returned. Nil in production and
-	// for a caller that builds Deps itself; a test of this package sets them
-	// (dispatch://INFRA-1075).
-	idle            func()
-	coverageWaiting func()
+	// what a test can wait for is the loop parked, not the loop returned. coverageAwaitingAnswer
+	// is the coverage loop's other wait: called each time it parks on the embedder's first
+	// answer after a pass that skipped the identity steps for want of one, while that answer is
+	// still to come (runCoverage). Nil in production and for a caller that builds Deps itself;
+	// a test of this package sets them (dispatch://INFRA-1075).
+	idle                   func()
+	coverageWaiting        func()
+	coverageAwaitingAnswer func()
 }
 
 // proof is a record, set once, that an Embed call this process's queue made has succeeded.

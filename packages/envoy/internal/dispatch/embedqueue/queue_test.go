@@ -21,12 +21,13 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
 
-// eventWait is how long a test here waits FOR AN EVENT, and the floor eventually runs on: a row
-// embedded, a hub listening, Run returning once its context ended. It is where the test gives up,
-// never a measurement - the test still fails when the event never comes, and on an idle machine
-// the wait returns in milliseconds - so it allows for a loaded runner: every package of this
-// module now runs at once, four CI cores to some 3,800 parallel tests, under the race detector
-// besides (dispatch://INFRA-1075). A test whose SUBJECT is a span keeps its own number.
+// eventWait is how long a test here waits FOR AN EVENT: a row embedded, a hub listening, Run
+// parking. It is where the test gives up, never a measurement - the test still fails when the
+// event never comes, and on an idle machine the wait returns in milliseconds - so it allows for a
+// loaded runner: every package of this module now runs at once, four CI cores to some 3,800
+// parallel tests, under the race detector besides (dispatch://INFRA-1075). A test whose SUBJECT is
+// a span keeps its own number: a write embedded within 6 s of its notification, Run returning
+// within runReturnBound of its context ending.
 const eventWait = 30 * time.Second
 
 // bedrockShaped gives a test embedder the Identity and Limits embed.Embedder asks for: Bedrock's
@@ -194,8 +195,11 @@ func TestProcessBatchEmbedsAPendingRowTheWriteTimeTriggerEnqueued(t *testing.T) 
 // TestProcessBatchRetriesWithBackoffOnEmbedFailure is the durable-retry-queue acceptance
 // criterion: a write never fails because the embedder did, and a failed attempt leaves the row
 // pending, retried later rather than lost.
+//
+// Serial: its assertion is a time - the row's first back-off is retry.BaseDelay, one second of
+// real time, and both checks after the failure (the next attempt still ahead, and a second batch
+// finding nothing) must land inside it.
 func TestProcessBatchRetriesWithBackoffOnEmbedFailure(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "RETR", "RETR-1", "A title")
 	embedder := &fakeEmbedder{err: errors.New("bedrock: simulated outage")}
@@ -636,8 +640,12 @@ func TestClaimRenewalExtendsNextAttemptAtPastClaimWindow(t *testing.T) {
 // memory, so two distinct Deps values - standing in for the pollers of two envoy-dispatch
 // processes, which share nothing else - draw from, and wait out debt against, the very same
 // budget.
+//
+// Serial: its assertion is a time - the seeded deficit refills at 2 tokens a second from the
+// seed's now(), so the reservation must start within half a second of the seed for its wait to
+// reach the 1.5 s it is held to, and a parallel batch's load can hold the test longer than that
+// between the two.
 func TestReserveTokensSharesItsBudgetAcrossConnections(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	const ceiling = 120 // tokens/minute = 2 tokens/second, so a small deficit waits a short, deterministic time
@@ -1431,19 +1439,22 @@ func (e *syncEmbedder) canaryCalls() int {
 	return e.canaries
 }
 
-// eventually polls done until it reports true, failing once within passes.
+// eventually polls done until it reports true, failing once within passes. within is the
+// caller's own: a wait for an event passes eventWait, and a wait whose span is the row's subject
+// passes that span.
 func eventually(t *testing.T, within time.Duration, what string, done func() bool) {
 	t.Helper()
-	within = max(within, eventWait)
 	if !testwait.Holds(within, 50*time.Millisecond, done) {
 		t.Fatalf("%s: not within %v", what, within)
 	}
 }
 
 // runQueue runs Run with deps until the test ends, or until the stop it returns is called, and
-// fails the test if Run does not return promptly once its context ends. A test that must observe
-// the state Run leaves behind, rather than the state it keeps working on, stops it itself and
-// reads afterwards; the cleanup stops it either way, and stopping twice waits once.
+// fails the test if Run has not returned within eventWait of its context ending: a hang guard,
+// not a bound on how soon Run returns, which is TestRunReturnsWithinItsBoundOnceItsContextEnds's
+// subject. A test that must observe the state Run leaves behind, rather than the state it keeps
+// working on, stops it itself and reads afterwards; the cleanup stops it either way, and stopping
+// twice waits once.
 func runQueue(t *testing.T, deps Deps) (stop func()) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1462,6 +1473,68 @@ func runQueue(t *testing.T, deps Deps) (stop func()) {
 	})
 	t.Cleanup(stop)
 	return stop
+}
+
+// runReturnBound is how soon Run must return once its context ends: its loops wait on nothing
+// that does not also end with it, so a statement in flight is cancelled and each loop returns
+// from its wait at once. Ten seconds is the bound runQueue held every Run to before
+// dispatch://INFRA-1075, kept for the one row whose subject it is.
+const runReturnBound = 10 * time.Second
+
+// Run returns within runReturnBound of its context ending, from its loops' waits: the scan loop
+// idle and the coverage loop parked, the state a running process spends its time in.
+//
+// Serial: its assertion is a time - Run must return within runReturnBound of its context ending.
+func TestRunReturnsWithinItsBoundOnceItsContextEnds(t *testing.T) {
+	database := storetest.Open(t)
+	seedIssue(t, database, "STOP", "STOP-1", "Embedded at boot")
+	coverageWaiting := make(chan struct{})
+	idle := make(chan struct{}, 1)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		Run(ctx, Deps{
+			Store:           database,
+			Embedder:        newSyncEmbedder(configuredIdentity),
+			coverageWaiting: sync.OnceFunc(func() { close(coverageWaiting) }),
+			idle: func() {
+				select {
+				case idle <- struct{}{}:
+				default:
+				}
+			},
+		})
+	}()
+	// A Run that never returns is still waited for, so it cannot run on into the next test.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(eventWait):
+			t.Errorf("Run did not return within %s of its context ending", eventWait)
+		}
+	})
+	select {
+	case <-coverageWaiting:
+	case <-time.After(eventWait):
+		t.Fatalf("Run's coverage loop did not report itself parked within %s", eventWait)
+	}
+	eventually(t, eventWait, "STOP-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
+	select {
+	case <-idle:
+	case <-time.After(eventWait):
+		t.Fatalf("Run's scan loop did not go idle within %s", eventWait)
+	}
+
+	cancel()
+	ended := time.Now()
+	select {
+	case <-done:
+		t.Logf("Run returned %s after its context ended", time.Since(ended).Round(time.Millisecond))
+	case <-time.After(runReturnBound):
+		t.Fatalf("Run did not return within %s of its context ending", runReturnBound)
+	}
 }
 
 // runHub runs hub until the test ends.
@@ -1592,7 +1665,7 @@ func TestAWriteIsEmbeddedOnItsNotification(t *testing.T) {
 	case <-time.After(eventWait):
 		t.Fatalf("the hub did not connect within %s", eventWait)
 	}
-	eventually(t, 10*time.Second, "NTFY-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
+	eventually(t, eventWait, "NTFY-1 embedded at boot", func() bool { return pendingCount(t, database) == 0 })
 	// The catch-up signal earns a scan no sooner than retryInterval after the boot scan began.
 	time.Sleep(time.Until(started.Add(retryInterval + time.Second)))
 	storetest.AwaitQuiet(t, counter, 500*time.Millisecond, 10*time.Second)
@@ -1623,7 +1696,7 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 		t.Fatalf("move the claim's lapse: %v", err)
 	}
 	runQueue(t, Deps{Store: database, Embedder: newSyncEmbedder(configuredIdentity)})
-	eventually(t, 15*time.Second, "CLAM-1 embedded", func() bool { return pendingCount(t, database) == 0 })
+	eventually(t, eventWait, "CLAM-1 embedded", func() bool { return pendingCount(t, database) == 0 })
 	var embeddedAt time.Time
 	if err := database.Pool.QueryRow(ctx, `select embedded_at from embeddings where id = 'CLAM-1'`).Scan(&embeddedAt); err != nil {
 		t.Fatalf("read embedded_at: %v", err)
@@ -1637,8 +1710,10 @@ func TestAClaimLeftByAnotherProcessIsTakenWhenItLapses(t *testing.T) {
 // one is; and never a time sooner than retryInterval from its end - not for a claim lapsing
 // sooner, and not for a row already due that another process holds under skip locked, which the
 // scan could not claim and an immediate rescan would not either.
+//
+// Serial: its assertion is a time - the claim it plants lapses one second of real time later, and
+// the pass must scan before then.
 func TestScanPassReturnsWhenThePendingRowsFallDue(t *testing.T) {
-	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "DUE", "DUE-1", "Drained at once")

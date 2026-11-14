@@ -308,13 +308,16 @@ func databaseAddress(database *store.Store) string {
 // still reaches OnNotify on it.
 //
 // Real time, at the idle period and ping timeout this sets: both are waits on a live Postgres
-// connection, which no synctest bubble can hold.
+// connection, which no synctest bubble can hold. The ping timeout is ten seconds, twice
+// DefaultPingTimeout: the row runs beside a parallel batch, and a ping that outlasted a short
+// timeout under that load would replace the connection and fail the row on the machine's speed.
+// What the row holds - a healthy idle connection is pinged and kept - needs no short timeout.
 func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, time.Second
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 10*time.Second
 	runListener(t, probe, listener)
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()
@@ -584,14 +587,15 @@ func TestTheListenerBacksOffFromOneSecondToThirtyWithJitter(t *testing.T) {
 // they run in it.
 //
 // Real time, at the idle period and ping timeout this sets: both are waits on a live Postgres
-// connection, which no synctest bubble can hold.
+// connection, which no synctest bubble can hold. The ping timeout is ten seconds for the reason
+// TestTheListenerKeepsAHealthyIdleConnection gives.
 func TestAListenerWithNoOnNotifyDropsItsNotificationsAndDoesNotPanic(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	probe := newListenerProbe()
 	listener := probe.listener(database.Pool.Listener)
 	listener.OnNotify = nil
-	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, time.Second
+	listener.ListenIdle, listener.PingTimeout = 200*time.Millisecond, 10*time.Second
 	runListener(t, probe, listener)
 	probe.waitConnected(t, 5*time.Second, "first connection")
 	pid := probe.lastConn(t).PgConn().PID()

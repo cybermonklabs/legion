@@ -76,14 +76,21 @@ func differs(base, head *string) bool {
 // writes in its own words. Parts of a write run outside recoverPanic, and the dump step ran this
 // same call under diffStep, which records a panic rather than dying of it; so this one recovers
 // too and answers the panic, which the comparison counts as a gate of its own instead of losing
-// the whole summary to it.
+// the whole summary to it. The counter it mints the write's block ids from replaces the
+// package's generator, which every parse in the process reads, so it puts back the generator it
+// found once the write has answered: a run filtered to this file's rows skips the later tests
+// that reset it, and the parallel parses after it would otherwise share one counter.
 func refusesItsRendering(markdown string) (refuses bool, panicked string) {
 	defer func() {
 		if value := recover(); value != nil {
 			refuses, panicked = false, fmt.Sprint(value)
 		}
 	}()
+	blockIDGenerator.RLock()
+	previous := blockIDGenerator.mint
+	blockIDGenerator.RUnlock()
 	SetBlockIDGenerator(counterBlockIDs())
+	defer SetBlockIDGenerator(previous)
 	_, err := gateWrite(markdown)
 	return errors.Is(err, ErrMisreadRendering) || errors.Is(err, ErrRenderingRefused), ""
 }

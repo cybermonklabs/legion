@@ -106,11 +106,12 @@ func TestFreeSessionLockClosesTheConnectionWhenItsUnlockAnsweredFalse(t *testing
 // An unlock that does not answer within leaseCallTimeout fails at the bound, and the connection is
 // closed: a half-open connection would otherwise hold the caller until TCP gave it up.
 //
-// What says it failed at its own bound is the error: the statement below answers after a minute,
-// and an unlock that waited for that answer returns no error at all. What the elapsed time adds
-// is that the bound was not cut short - it is read from below, against duty.LeaseCallTimeout
-// itself, so a loaded runner that returns the call late cannot fail the row. It carried a ceiling
-// of that bound plus ten seconds until this round, which measured the runner (dispatch://INFRA-1075).
+// The error says some deadline ended the call; the elapsed time says it was this one. The
+// statement below answers after a minute, and an unlock that waited for that answer returns no
+// error at all. The floor holds that the bound was not cut short, and the ceiling, ten seconds
+// past duty.LeaseCallTimeout, holds that no longer bound stood in for it - an unlock bounded by a
+// 30 s context would also answer DeadlineExceeded. The row runs serial, as every row of this
+// package does.
 func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 	database := storetest.Open(t)
 	leases := leasesOf(t, database)
@@ -122,8 +123,8 @@ func TestFreeSessionLockBoundsAnUnlockThatDoesNotAnswer(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("FreeSessionLock of an unlock that never answers answered %v, want its deadline", err)
 	}
-	if elapsed < duty.LeaseCallTimeout {
-		t.Fatalf("FreeSessionLock returned after %v, before its %v bound", elapsed, duty.LeaseCallTimeout)
+	if elapsed < duty.LeaseCallTimeout || elapsed > duty.LeaseCallTimeout+10*time.Second {
+		t.Fatalf("FreeSessionLock returned after %v, want about its %v bound", elapsed, duty.LeaseCallTimeout)
 	}
 	requireConnections(t, leases, 0, 0, "a connection whose unlock reached its bound is closed")
 	requireLockFree(t, database.Pool, 7003)

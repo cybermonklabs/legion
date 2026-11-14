@@ -618,10 +618,8 @@ func TestRunCountsADeniedSubjectOncePerRefusedMessage(t *testing.T) {
 // A destination NATS is unreachable for is counted, once: it is the outage the metric exists
 // for. Its send stops the batch, so the event's other destinations are not attempted and count
 // nothing, and the event is released for the next batch rather than backed off.
-//
-// Serial: it swaps process-wide state, the nkey seed grantedNATS puts in the environment
-// (docs/testing.md).
 func TestAPublishFailureThatEndsTheAttemptIsCountedOnce(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", nil)

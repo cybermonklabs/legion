@@ -20,16 +20,13 @@ import (
 // language and an image with no title hold "", that editor's own default.
 // One run of gen/decode.ts reads every fixture's bytes: the Go side writes them all first, since
 // starting bun and building the headless engine costs about a second and a fixture's own decode a
-// few milliseconds (decodeAllWithYProsemirror).
+// few milliseconds (decodeAllWithYProsemirror). The Go side's own read-back is checked as each
+// fixture is written, before that run: the decode skips the test where bun is missing outside CI,
+// and that skip must take the browser's half alone.
 func TestUpdateFromEmptyEqualsAuthoredByBrowser(t *testing.T) {
 	t.Parallel()
 	fixtures := loadFixtures(t)
-	type authored struct {
-		want    *Node
-		read    *Node
-		readErr error
-	}
-	written := make([]authored, len(fixtures))
+	wants := make([]*Node, len(fixtures))
 	updates := make([][]byte, len(fixtures))
 	for index, fx := range fixtures {
 		want, err := FromJSON(fx.PMJSON)
@@ -44,8 +41,12 @@ func TestUpdateFromEmptyEqualsAuthoredByBrowser(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", fx.Name, err)
 		}
-		read, readErr := Read(frag)
-		written[index] = authored{want: want, read: read, readErr: readErr}
+		if read, err := Read(frag); err != nil {
+			t.Errorf("%s: Read after Update: %v", fx.Name, err)
+		} else if !read.Equal(want) {
+			t.Errorf("%s: Read after Update differs from want", fx.Name)
+		}
+		wants[index] = want
 		updates[index] = crdt.EncodeStateAsUpdateV1(doc, nil)
 	}
 	decoded := decodeAllWithYProsemirror(t, updates)
@@ -53,14 +54,7 @@ func TestUpdateFromEmptyEqualsAuthoredByBrowser(t *testing.T) {
 	for index, fx := range fixtures {
 		t.Run(fx.Name, func(t *testing.T) {
 			t.Parallel()
-			authored := written[index]
-			if authored.readErr != nil {
-				t.Fatal(authored.readErr)
-			}
-			if !authored.read.Equal(authored.want) {
-				t.Fatal("Read after Update differs from want")
-			}
-			if live := asTheLiveDocumentHoldsIt(authored.want); !decoded[index].Equal(live) {
+			if live := asTheLiveDocumentHoldsIt(wants[index]); !decoded[index].Equal(live) {
 				actual, _ := decoded[index].JSON()
 				expected, _ := live.JSON()
 				t.Fatalf("y-prosemirror decodes Go-authored bytes differently\n got: %s\nwant: %s", actual, expected)
