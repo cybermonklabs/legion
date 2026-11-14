@@ -656,8 +656,9 @@ type movedApprovalDocument struct {
 // (docs.MoveApprovalAsk) and the approval carry, so it reads the state the write left and not
 // the state it found.
 //
-// The rule is docs.ApprovalAwaitsHandBack, the same one the quiet move and the SQL approvalMoved
-// (ask_rows.go) apply, asked here of the request as this write left it.
+// The rule is docs.ApprovalAwaitsHandBack, the same one the SQL approvalMoved (ask_rows.go) and
+// the quiet flag of a later move (docs.MoveApprovalAsk) apply, asked here of the request as this
+// write left it.
 //
 // Like every other advice query this runs behind a savepoint of its own (adviceSavepoint),
 // because a failed statement aborts the transaction it ran in and this must never fail the write

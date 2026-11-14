@@ -468,7 +468,9 @@ func Quiet(e model.Event) bool {
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was
-		// opened or last handed back changes only the version it names.
+		// opened or last handed back changes only the version it names, and a move that keeps the
+		// request waiting on the human (a version byte for byte the text the request names,
+		// docs.MoveApprovalAsk) changes only the number that text is stored under.
 		if quietAskEdit(e.Payload) {
 			return true
 		}
@@ -537,8 +539,8 @@ func targetedMessage(payload any) bool {
 	}
 }
 
-// quietAskEdit reports whether an ask edit marks itself a version move that changes only the
-// version the request names (model.AskEditEventPayload.Quiet), from either payload shape.
+// quietAskEdit reports whether an ask edit marks itself a quiet version move of an approval
+// request (model.AskEditEventPayload.Quiet), from either payload shape.
 func quietAskEdit(payload any) bool {
 	switch edit := payload.(type) {
 	case model.AskEditEventPayload:

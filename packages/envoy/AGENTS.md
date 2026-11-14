@@ -2678,6 +2678,8 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   both are checked on every request, including one that opens nothing, and a request without one gets the bare question.
   An open approval ask follows every document version in the same transaction, preserving its thread and summary:
   the move rewords its question to the new version, stamps `edited_at` and appends `ask.edited`, while `requested_version` remains the version the agent last handed to the human, so a moved request is Waiting on agents.
+  The one exception is a document that waits on the human (its `requested_version` is the version the request names) whose new version stores byte for byte the text of that version (`docs.sameStoredText`):
+  the move then sets `requested_version` to the new version too and carries `quiet: true`, so the request keeps its turn as if it had not moved, because the text the person was asked about did not change.
   Only the first move since the request was opened or handed back wakes anyone, even when a thread reply had already left the request waiting on the agent:
   a later move, while `requested_version` is already below the version it named, carries `quiet: true` (`model.AskEditEventPayload.Quiet`), so `events.Broker.Notify` records it with `notify` false and the outbox routes it to no follower, as a human's unnamed `artifact.version` is recorded;
   the log and the live event feed still carry it, so a person typing in the document wakes the asker once rather than at every settled version.
@@ -2689,7 +2691,7 @@ Why it is not a read-path repair is `cmd/dispatch/README.md`'s ("Pre-deploy cens
   While it is `human` the call hands nothing back:
   the same summary, or none, writes nothing, and a different one is `409 APPROVAL_WAITS_ON_HUMAN`, naming the question the human is reading, since rewording it would rewrite that card with no turn of theirs and refuse an answer they had started.
   The route answers 201 when it wrote anything and 200 when it wrote nothing, with the document's `approval` as the call left it.
-  `docs.OpenApprovalAsk` locks that one row, `docs.RewriteApprovalAsk` is the one rewording a version move and a new summary share, and `handBackApprovalAsk` (`api/reviews.go`) the one hand-back.
+  `docs.OpenApprovalAsk` locks that one row, `docs.rewriteApprovalAsk` is the one rewording a version move (`docs.MoveApprovalAsk`) and a new summary (`docs.RewriteApprovalAsk`) share, and `handBackApprovalAsk` (`api/reviews.go`) the one hand-back.
   Every writer passes `MoveApprovalAsk` the actor whose edit moved the request:
   a route passes its own actor, settlement its latest known browser editor, and ambiguous browser content `SettlementActor`, `{kind: "system", id: "document-settlement"}`;
   how many authors the version credits does not choose the mover.
@@ -5264,8 +5266,8 @@ a token the issuer never signed, one naming a key id the issuer publishes nothin
   a role no live holder can take is kept on that role's kept lane for its next holder instead ("Dispatch's outbox"), which is also no publish on `notifications.role.*`.
   An ask-scoped event - `ask.answered`, `ask.edited`, `ask.handed_back`, `ask.resolved`, and `comment.created`, `comment.resolved`, `comment.reopened` or `comment.edited` carrying an `ask_id` - is additionally published straight to each follower's `notifications.agent.<session_id>` regardless of `notify` and of the issue's route, so a session-authored reply on an ask reaches its followers even though it wakes nobody through the issue topic;
   the acting session is skipped, and so is a follower whose own mention of a new comment (`comment.created`) delivers it (the mention rule below) - the comment's edit, resolution and reopening reach every follower - and a session already reached by the issue's route is not sent the envelope twice.
-  A quiet `ask.edited` (a version move of an approval request that an earlier version already moved since it was opened or last handed back, `quiet: true`) has `notify` false and reaches no follower, as a human's unnamed `artifact.version` reaches nobody;
-  the first move after an opening or a hand-back is not quiet.
+  A quiet `ask.edited` (a version move of an approval request that an earlier version already moved since it was opened or last handed back, or a move that keeps a request waiting on the human because the new version holds byte for byte the text of the version it names, `quiet: true`) has `notify` false and reaches no follower, as a human's unnamed `artifact.version` reaches nobody;
+  the first move after an opening or a hand-back is not quiet, unless it keeps the request waiting on the human.
 
 - A notifying comment-thread or message-reply event without an `ask_id` keeps the author routes:
   a person's comment reply (`reply_to` set), and its edit, reaches every session that wrote a comment in its thread - the root and every reply, walked to `maxCommentThreadDepth` for legacy nested rows - and, where no session claims the issue, every session the thread's document credits;

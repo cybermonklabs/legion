@@ -1901,13 +1901,16 @@ type AskEditEventPayload struct {
 	ReferenceChangesPayload
 	Previous AskEditPrevious `json:"previous"`
 	EditedBy Actor           `json:"edited_by"`
-	// Quiet marks a version move of an approval request that an earlier version already moved
-	// since it was opened or last handed back (requested_version below the version it named): it
-	// changes only the version the request names, so like a human's unnamed artifact.version it
-	// wakes nobody (events.Broker.Notify) and reaches no follower (the outbox's follower routes),
-	// while the event log and the event feed carry it as they carry every event. The first move
-	// after an opening or a hand-back is not quiet, even when a thread reply left the request
-	// waiting on its agent.
+	// Quiet marks either of two version moves of an approval request: a move of a request
+	// that an earlier version already moved since it was opened or last handed back
+	// (requested_version below the version it named), which changes only the version the request
+	// names, and a move that keeps the request waiting on the human because the new version holds
+	// byte for byte the text of the version the request names (docs.MoveApprovalAsk), which
+	// changes only the number that text is stored under. Like a human's unnamed artifact.version,
+	// such a move wakes nobody (events.Broker.Notify) and reaches no follower (the outbox's
+	// follower routes), while the event log and the event feed carry it as they carry every
+	// event. The first move after an opening or a hand-back is not quiet, even when a thread reply
+	// left the request waiting on its agent, unless it keeps the request waiting on the human.
 	Quiet bool `json:"quiet,omitempty"`
 }
 
