@@ -19,12 +19,12 @@ const busyAnswer = "Agent is already processing. Use steer() or followUp() to qu
 // of a second start line (busyTurnBegun).
 const busyTurnBegunLine = "supervise: the turn a busy answer recorded has begun"
 
-// marks reads the machine's three marks of the turn it is in, under its lock: a send's goroutine
+// marks reads the machine's two marks of the turn it is in, under its lock: a send's goroutine
 // may be handling its outcome.
-func (h *harness) marks() (busyTurn, unseenTurn, askFirst bool) {
+func (h *harness) marks() (busyTurn, askFirst bool) {
 	h.m.mu.Lock()
 	defer h.m.mu.Unlock()
-	return h.m.busyTurn, h.m.unseenTurn, h.m.askFirst
+	return h.m.busyTurn, h.m.askFirst
 }
 
 // busyRecorded delivers the task of run 7 to a ready worker whose agent is in a turn of its own,
@@ -252,8 +252,8 @@ func TestAWorkerInNoTurnIsSentAtOnce(t *testing.T) {
 		t.Fatalf("sent %+v, want the task at once under its pending id %s", sent, h.pending().ID)
 	}
 	h.wantState(StateReady)
-	if busy, unseen, _ := h.marks(); busy || unseen {
-		t.Fatalf("marks after the acknowledgement: busy turn %v, unseen turn %v, want neither", busy, unseen)
+	if busy, _ := h.marks(); busy {
+		t.Fatalf("marks after the acknowledgement: busy turn %v, want none", busy)
 	}
 	if lines := h.logs.lines("busy answer"); len(lines) != 0 {
 		t.Fatalf("a busy record was made with no busy answer: %v", lines)
@@ -298,8 +298,8 @@ func TestABusyRecordedClaimEndsAtTheSweepWhenTheAgentStopsStreaming(t *testing.T
 		if ends := h.logs.lines(turnEndedLine); len(ends) != 0 {
 			t.Fatalf("turn ends = %v, want none: the agent is still streaming", ends)
 		}
-		if busy, unseen, _ := h.marks(); !busy || !unseen {
-			t.Fatalf("marks after three sweeps of a streaming agent: busy turn %v, unseen turn %v, want both standing", busy, unseen)
+		if busy, _ := h.marks(); !busy {
+			t.Fatalf("marks after three sweeps of a streaming agent: busy turn %v, want it standing", busy)
 		}
 	})
 
@@ -327,8 +327,8 @@ func TestABusyRecordedClaimEndsAtTheSweepWhenTheAgentStopsStreaming(t *testing.T
 			t.Fatalf("sent %+v at the sweep's end of the turn, want the task under its pending id %s", sent, h.pending().ID)
 		}
 		h.wantState(StateIdle)
-		if busy, unseen, _ := h.marks(); busy || unseen {
-			t.Fatalf("marks after the end: busy turn %v, unseen turn %v, want neither", busy, unseen)
+		if busy, _ := h.marks(); busy {
+			t.Fatalf("marks after the end: busy turn %v, want none", busy)
 		}
 	})
 
@@ -383,8 +383,8 @@ func TestABusyRecordedClaimEndsAtTheSweepWhenTheAgentStopsStreaming(t *testing.T
 // The record is durable (durableWrite): the daemon hears the claim working once (OnDurableState),
 // as it hears a turn's start, and a daemon restarted inside the turn restores the claim working
 // with the question armed (askFirst), so its first sweep asks the agent rather than prompting it.
-// The agent answers that it is still streaming, which disarms the question and leaves the turn one
-// this daemon never saw begin (unseenTurn), and the turn's own end sends the task.
+// The agent answers that it is still streaming, which disarms the question and leaves the claim
+// in the turn, and the turn's own end sends the task.
 func TestABusyRecordedClaimIsRestoredWorkingAndAskedAgain(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -405,14 +405,14 @@ func TestABusyRecordedClaimIsRestoredWorkingAndAskedAgain(t *testing.T) {
 
 	h.restart()
 	h.wantState(StateWorking)
-	if _, _, askFirst := h.marks(); !askFirst {
+	if _, askFirst := h.marks(); !askFirst {
 		t.Fatal("the restored claim has no question armed for its agent")
 	}
 	h.observe(runtime.Alive) // still streaming: the claim stays working, and nothing is sent
 	h.wantState(StateWorking)
 	h.wantPrompts(1)
-	if _, unseen, askFirst := h.marks(); askFirst || !unseen {
-		t.Fatalf("marks after the sweep: unseen turn %v, question armed %v, want the question asked and answered streaming", unseen, askFirst)
+	if _, askFirst := h.marks(); askFirst {
+		t.Fatalf("marks after the sweep: question armed %v, want the question asked and answered streaming", askFirst)
 	}
 
 	h.conn.SetStreaming(false)
@@ -426,9 +426,9 @@ func TestABusyRecordedClaimIsRestoredWorkingAndAskedAgain(t *testing.T) {
 
 // The agent_start of a turn a busy answer recorded is the start of that turn, and the first frame
 // of it the daemon reads (turnStartedWhileBusy). It is decided and recorded as any start is — the
-// moment it began, the turn's step, a turn this daemon saw begin — but it writes no second start
-// line, since the record wrote the turn's one: one start line and one end line bracket the turn,
-// and the start writes a line of its own instead. The record dated the turn from the busy answer,
+// moment it began and the turn's step — but it writes no second start line, since the record wrote
+// the turn's one: one start line and one end line bracket the turn, and the start writes a line
+// of its own instead. The record dated the turn from the busy answer,
 // its first word of it (recordBusyTurn), and the start dates it again at its own moment. It
 // answers the record's question, so the sweep stops asking, and the turn's agent_end ends it. A
 // turn of the agent's own confirms nothing.
@@ -467,8 +467,8 @@ func TestTheStartOfATurnABusyAnswerRecordedWritesNoSecondStartLine(t *testing.T)
 	if step := h.store.step(testToken); !step.TurnStartedAt.Equal(started) {
 		t.Errorf("the step after the start begins its turn at %v, want the start's %v", step.TurnStartedAt, started)
 	}
-	if busy, unseen, _ := h.marks(); busy || unseen {
-		t.Fatalf("marks after the start: busy turn %v, unseen turn %v, want neither: the daemon read this start", busy, unseen)
+	if busy, _ := h.marks(); busy {
+		t.Fatalf("marks after the start: busy turn %v, want none: the daemon read this start", busy)
 	}
 
 	// The start answered the record's question: the sweep asks nothing of the turn any more.
@@ -491,9 +491,9 @@ func TestTheStartOfATurnABusyAnswerRecordedWritesNoSecondStartLine(t *testing.T)
 // While a prompt of the task Oh My Pi acknowledged is still outstanding, the turn a later send's
 // busy answer refused that send for is that prompt's (Machine.outstanding). The busy answer records
 // the claim working all the same, and the turn's agent_start, when it comes, confirms the task as a
-// start of a ready claim would (turnStartedWhileBusy, beginTurn): its line names the task, the turn
-// counts as one this daemon saw begin, and the end line names the task the start named. The
-// prompt's own result settles the task, and nothing is sent after it.
+// start of a ready claim would (turnStartedWhileBusy, beginTurn): its line names the task, and the
+// end line names the task the start named. The prompt's own result settles the task, and nothing
+// is sent after it.
 func TestTheStartOfATurnABusyAnswerRecordedConfirmsAnOutstandingPromptsTask(t *testing.T) {
 	h := newHarness(t)
 	h.reach(StateReady)
@@ -520,8 +520,8 @@ func TestTheStartOfATurnABusyAnswerRecordedConfirmsAnOutstandingPromptsTask(t *t
 	if delivery, named := begun[0].attr("delivery"); !named || delivery.String() != task {
 		t.Fatalf("the start's line names delivery %v (named %v), want the task %s it confirms", delivery, named, task)
 	}
-	if busy, unseen, _ := h.marks(); busy || unseen {
-		t.Fatalf("marks after the start: busy turn %v, unseen turn %v, want neither: it is the outstanding prompt's turn", busy, unseen)
+	if busy, _ := h.marks(); busy {
+		t.Fatalf("marks after the start: busy turn %v, want none: it is the outstanding prompt's turn", busy)
 	}
 	if starts := h.records.of(turnStartedLine); len(starts) != 1 {
 		t.Fatalf("start lines = %d, want only the record's", len(starts))

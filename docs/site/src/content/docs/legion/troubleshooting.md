@@ -348,8 +348,9 @@ person closed the question), `turn` (a session handed it back to the agent's tur
 (Dispatch's settlement), and `approved` also when the spec's gate stands open with nobody's
 approval on a deployment that gates no step, or when the last gated step was taken out of
 `gates.design` while the root waited on it. The root is in `admission.active` throughout, since an
-issue keeps its admission slot from the moment the daemon starts it
-until it is done or leaves the workflow;
+issue holds one of the cap's slots from the moment the daemon starts it until its work is past its
+review — `accepting`, `retro` and `merging` hold none — or until it is done or
+Dispatch takes it out of the workflow;
 once it is answered it stands in `admission.waiting` too,
 among the issues whose work came back, oldest first, until the pass that resumes it. That resume
 takes no further slot, so it happens however full the cap is, whether or not the design gate has
@@ -481,10 +482,9 @@ too: a credential error is the fleet's rather than this claim's work, so it clim
 any other and the controller's notice at six is what tells a person. A newer
 task for that claim replaces the one the error took back and is sent at once, so it does not wait
 out a ladder that reaches ten minutes a step; while that claim's session is being compacted it
-waits for the compaction's end instead, as everything the claim is owed does. An update round's
-question waits behind the owed task, as any other task does: the question needs a turn of the
-worker's own, and that turn would fail the way the task's did, so the pod's round waits until a
-turn of the owed task ends with no provider error.
+waits for the compaction's end instead, as everything the claim is owed does. An update round
+waits for none of this: the daemon publishes the round's message to the role's own topic, and the
+round ends at its bound whether or not a turn of that role succeeds.
 
 **One provider error does hold the issue**, for its architect: one whose HTTP status is a client
 error, 400 to 499, that is none of 401, 403, 408 and 429. A malformed request is
@@ -550,9 +550,9 @@ listing alone. What follows the colon says where to look:
 - `the daemon runs with no GitHub App, so it cannot read theorem-labs/agent-infra`, or `the daemon
   could not mint its read-only token for theorem-labs/agent-infra: …`: the daemon's GitHub App
   configuration, and the implement App's installation on theorem-labs.
-- `GitHub refused to narrow the daemon's implement App token to theorem-labs/agent-infra alone, …`:
-  the implement App's installation must reach theorem-labs/agent-infra. The daemon asks for no
-  wider token in its place.
+- `GitHub refused the daemon's implement App the reading permissions on theorem-labs, …`: what the
+  account grants the implement App's installation on theorem-labs. The read lease needs contents,
+  pull requests and metadata read. The daemon asks for no wider token in its place.
 - `GitHub answered the read of theorem-labs/agent-infra at <tag> with HTTP <status>…`, or `the
   tarball of theorem-labs/agent-infra at <tag> …`: check that the tag the worker image pins exists
   in that repository and holds its `leak-check` directory.
@@ -1050,8 +1050,8 @@ On such a daemon, an update round or a message wake can take the author of the c
   the next pod unscheduled until the daemon reads it dead past `worker_boot_timeout_seconds` and,
   once its launch failures run out, fails the claim. `kubectl -n legion describe pod <pod>` names the
   reason. `admission_cap` counts the issues the daemon has started rather than the pods, and an
-  issue that only waits keeps both its slot and its pod,
-  so keep the pods a deployment's open trees run within what the pool's limits
+  issue keeps its pod past its slot — through its acceptance, its retro and its merge, on to its
+  own close — so keep the pods a deployment's open trees run within what the pool's limits
   can place ([The cluster](/legion/legion/running-legion/#the-cluster)). A pod replaced on another
   node waits for no volume to detach: an issue's disk is its own pod's, created with it and
   deleted with it, so a replacement brings a disk of its own. The image probe pod,
@@ -1206,8 +1206,9 @@ On such a daemon, an update round or a message wake can take the author of the c
   in a delivery of the daemon's own (`supervise: the claim holds no task; a delivery of the
   daemon's own tells its agent what the relaunch ended`, whose id starts `relaunch:` and which a
   newer task replaces while no prompt of it is outstanding). That delivery is also given when the
-  claim's held task is dropped at its send: the issue left the task's phase, the task's update
-  round is over, or a root architect's held task names nothing any more. A root
+  claim's held task is dropped at its send: the issue left the task's phase, the task is an ask
+  an older daemon queued for an update round, or a root architect's held task names nothing any
+  more. A root
   architect's catch-up opens with the same sentence, and the daemon-launched controller reads it
   in front of its start message. Every turn cut off is told that its subagents and background
   jobs are gone. A process whose newest activity report is older than the start of its last

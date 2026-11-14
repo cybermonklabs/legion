@@ -7,7 +7,7 @@ package daemon
 // podupdate.go, and reaches all of this through the podUpdateSweep each sweep begins before its
 // walk over the issues (beginPodUpdateSweep) and carries into every issue of that walk: the walk
 // asks the sweep whether a limit holds this issue's opening back (holds) and whether its round is
-// an opening of this daemon's own that is still in flight (reasks), and charges an opening that
+// an opening of this daemon's own that is still in flight (reposts), and charges an opening that
 // reached a worker to it (recordPodUpdateOpening).
 
 import (
@@ -63,12 +63,13 @@ func (a *podUpdateAllowance) take() {
 // has held back so far, and the issues it reads as being in a round. slots is how many more
 // issues may hold an open round, counted over the whole project at the top of the sweep; budget
 // is how many more rounds this one sweep may open. Both are spent only by an opening that
-// reached a worker (openPodUpdate), because an ask that reached nobody opens no round.
+// reached a worker (openPodUpdate), because an opening whose post reaches no claim records no
+// round.
 //
 // inFlight is this daemon's own openings whose claims record no round yet, by issue, as
 // podUpdateOpenings read them once before the walk. An issue whose round is one of them is that
-// opening being asked again rather than a new one (reasks), and the walk reads it here rather
-// than taking the openings' own mutex at every issue.
+// opening posted again rather than a new one (reposts), and the walk reads it here rather than
+// taking the openings' own mutex at every issue.
 type podUpdateSweep struct {
 	slots    podUpdateAllowance
 	budget   podUpdateAllowance
@@ -103,11 +104,12 @@ func (sweep *podUpdateSweep) charge(issue string) {
 	sweep.inRound = append(sweep.inRound, issue)
 }
 
-// reasks is whether this issue's round is an opening of this daemon's own that is still in
+// reposts is whether this issue's round is an opening of this daemon's own that is still in
 // flight — the sweep that made it charged a slot for it, and the machine it was posted to has
-// not recorded it yet — and records the issue as being in a round where it is.
+// not recorded it yet — and records the issue as being in a round where it is. The post this
+// sweep makes of such a round is the opening's own post again, and it records the same round.
 //
-// Such an ask is that opening again rather than a second one, and it is a round for both of the
+// Such a post is that opening again rather than a second one, and it is a round for both of the
 // sweep's readings. No limit holds it back: the slot it is held behind is the one it is itself
 // holding (beginPodUpdateSweep), and an issue whose workers the daemon has already told their
 // pod is going waits for nothing. Nothing more is charged for it either: charged a second slot,
@@ -119,7 +121,7 @@ func (sweep *podUpdateSweep) charge(issue string) {
 // claim records a process in is dropped before the walk (podUpdateOpenings), and the walk passes
 // over an issue whose claims run in two pods. So false here means no opening of this daemon's
 // own is in flight for the issue.
-func (sweep *podUpdateSweep) reasks(issue, round string) bool {
+func (sweep *podUpdateSweep) reposts(issue, round string) bool {
 	if sweep.inFlight[issue] != round {
 		return false
 	}
@@ -151,7 +153,7 @@ func (sweep podUpdateSweep) held() []string {
 // is asynchronous and a machine in a relaunch can take minutes to take it, so a sweep that counted
 // only the claims would read one slot short and open an issue above the limit. Those openings are
 // carried in the sweep, because its walk weighs them again at the issue each was made for
-// (podUpdateSweep.reasks).
+// (podUpdateSweep.reposts).
 //
 // The sweep's own budget is the whole of the per-minute limit, spent at this one sweep rather
 // than paced inside it, and nothing at all within podUpdateOpeningGap of the last opening.
@@ -239,7 +241,7 @@ func (s *supervision) recordPodUpdateOpening(sweep *podUpdateSweep, issue, round
 // where the walk read it in one of this daemon's own openings, which those same claims cannot
 // yet say: the post that carries a round to a machine is asynchronous, and the slot is held from
 // the opening — this sweep's own (podUpdateSweep.charge), or an earlier sweep's that is still in
-// flight (podUpdateSweep.reasks). The walk is in key order, so reading the issues back in that
+// flight (podUpdateSweep.reposts). The walk is in key order, so reading the issues back in that
 // order names each of them once and in the order the operator's line prints them.
 //
 // The waiting issues are the walk's own record of them (podUpdateSweep.holds), where an issue

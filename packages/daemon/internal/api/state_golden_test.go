@@ -317,11 +317,14 @@ func populatedState(t *testing.T) State {
 									Container: "roles", Generation: 2,
 								},
 							},
-							// The pod's update round, which every claim of that pod shares: the daemon
-							// replaces the pod only once each has answered. This one has, and reported
-							// the head it pushed. The reasons are the round's own, so every claim of
-							// the pod carries the same text: what the worker answering is told to act
-							// on.
+							// The pod's update round, which every claim of that pod shares: the round
+							// asks each role, and the daemon replaces the pod once every asked role has
+							// answered and no turn runs, or at the round's bound
+							// (pod_update_grace_minutes) whatever the roles answered, an operator's
+							// suspension excepted; the push check runs before every replacement. This
+							// one has answered, and reported the head it pushed. The reasons are the
+							// round's own, so every claim of the pod carries the same text: what the
+							// worker answering is told to act on.
 							UpdateRound:   "pod:7f0c2f9a-6a4b-4f2e-9a1c-2f0d5a3b7e11",
 							UpdateHead:    "4c1b8e2a6f9d3047b5e1c8a2f6d940b3e7c5a128",
 							UpdateReasons: "the pod template changed: image ghcr.io/cybermonklabs/legion-worker moved",
@@ -773,6 +776,37 @@ func populatedState(t *testing.T) State {
 		MemoryDrawMode: string(config.MemoryRandom),
 		MemoryDrawnAt:  &memoryDrawnAt,
 	}
+	// Every issue standing in a tree the admission block names carries that tree's quiet time,
+	// the two keys contract 111 added: the measure is the tree's, so each member of one tree
+	// carries the same pair. LEGION-207's tree closed and LEGION-209 stands in no tree of this
+	// fixture, so neither of them is measured, which is what a reader is served for an issue no
+	// live tree holds. The four pairs are one reading, at quietReadAt, a little after the newest
+	// step record of this state.
+	//
+	// Each tree's movement is the newest fact the measure reads of it — the `MovedAt` of its
+	// members and the step times of their claims (record.QuietTrees) — and its hours are the
+	// reading less that movement, worked out here rather than written beside it: a second
+	// number can disagree with the first, and one did. LEGION-208's pair said the tree had been
+	// still for half an hour while its own implementer's step stood 48 seconds before the
+	// reading, so the fixture showed a pair no daemon would serve, which is why the movement of
+	// that tree is the step record itself. The other three trees hold no claim with a step, so
+	// each of them moves at a time of its own.
+	quietReadAt := time.Date(2026, 9, 22, 9, 18, 0, 0, time.UTC)
+	quietMoved := map[string]time.Time{
+		"LEGION-208": implementerStep.At,
+		"LEGION-210": time.Date(2026, 9, 22, 6, 18, 0, 0, time.UTC),
+		"LEGION-211": time.Date(2026, 9, 21, 9, 18, 0, 0, time.UTC),
+		"LEGION-212": time.Date(2026, 9, 22, 9, 3, 0, 0, time.UTC),
+	}
+	for key, issue := range state.Issues {
+		movedAt, measured := quietMoved[issue.Tree]
+		if !measured {
+			continue
+		}
+		hours := quietReadAt.Sub(movedAt).Hours()
+		issue.TreeMovedAt, issue.QuietHours = &movedAt, &hours
+		state.Issues[key] = issue
+	}
 	return state
 }
 
@@ -954,8 +988,8 @@ func TestReadyRequestGolden(t *testing.T) {
 	})
 }
 
-// The ready-for-update request is the worker's answer to its pod's update task: the claim it
-// holds, the generation it answers for, the round the task it read named — the one round the
+// The ready-for-update request is the worker's answer to its update round's ask: the claim it
+// holds, the generation it answers for, the round the ask it read named — the one round the
 // answer counts for — and the head of `legion/<issue>@origin` it reports, which the daemon
 // records and verifies nothing of.
 func TestReadyForUpdateRequestGolden(t *testing.T) {

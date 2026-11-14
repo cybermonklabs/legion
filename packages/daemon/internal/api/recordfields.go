@@ -128,8 +128,6 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "UpdateHead", Column: ColumnAgents, Keys: []string{"updateHead"},
 		Reason: "the commit the worker reported when it answered its round, which says what the replacement must carry"},
 	{Field: "UpdateToldAt", Column: ColumnWithheld, Reason: BookkeepingReason},
-	{Field: "UpdateAnsweredByTurnEnd", Column: ColumnWithheld, Reason: BookkeepingReason},
-	{Field: "UpdateReaskedForPushCheck", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "UpdateLeftRound", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "ProviderErrorRun", Column: ColumnAgents, Keys: []string{"providerErrorRun"},
 		Reason: "the run of provider-error turns, which bounds nothing and which the controller is told of once at six, so without it the number behind that telling stands on no surface its reader can reach"},
@@ -208,4 +206,8 @@ var IssueRecordFields = []RecordFieldDecision{
 	{Field: "MemoryDrawnAt", Column: ColumnAgents, Keys: []string{"memoryDrawnAt"},
 		Reason: "when the tree was drawn, which says the draw happened rather than was never reached"},
 	{Field: "ToldParent", Column: ColumnWithheld, Reason: BookkeepingReason},
+	{Field: "MovedAt", Column: ColumnWithheld,
+		Reason: "when this one issue last moved reaches no surface of its own: what a reader is served is its whole tree's measure, `treeMovedAt` and `quietHours`, which the projection builds from every member's movement and from their claims' steps (record.QuietTrees) and which no field of one record carries"},
+	{Field: "TreeStalledToldAt", Column: ColumnWithheld,
+		Reason: "the mark that holds one stall to one notice, written on a tree's root as the stalled-tree notice is queued: it is the daemon's own record of what it has already told a controller, and a reader of the state is told the tree's quiet time instead"},
 }

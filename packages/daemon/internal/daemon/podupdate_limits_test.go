@@ -331,7 +331,9 @@ func TestPodUpdateMaxOpenRoundsPodless(t *testing.T) {
 // So the count of the slots at the top of the sweep leaves it out, and an issue waiting for the
 // one slot opens in that same sweep. The waiting issue is walked before the dead round's own, so
 // nothing the walk does to the dead round can be what freed the slot: the slots are counted once,
-// before the walk, and no end in the walk gives one back.
+// before the walk, and no end in the walk gives one back. The opening is read off the waiting
+// issue's claim recording its round: the sweep asks the round's roles only at a tick after the
+// one that opened it, once the claims record the round (askRound).
 func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
 	// LEGION-483 sorts before the rig's own LEGION-484, so the walk reaches it first.
 	const waiting, waitingPod = "LEGION-483", "7d2b5e90-1c4a-4e36-b8f7-03a9c6d1e5b8"
@@ -350,8 +352,7 @@ func TestPodUpdateADeadRoundHoldsNoSlot(t *testing.T) {
 	rig.tick()
 
 	testwait.Eventually(t, waiting+" to hold the round over its own pod after the one sweep", func() bool {
-		c := rig.machineClaim(token)
-		return c.UpdateRound == supervise.PodRound(waitingPod) && c.UpdateTaskedAt != nil
+		return rig.machineClaim(token).UpdateRound == supervise.PodRound(waitingPod)
 	})
 	rounds := rig.s.podUpdateRoundsView()
 	if !slices.Equal(rounds.InRound, []string{waiting}) || len(rounds.WaitingOnMaxOpenRounds) != 0 {
@@ -769,27 +770,41 @@ func TestPodUpdateRoundsPerMinute(t *testing.T) {
 	rig.s.cfg.PodUpdateRoundsPerMinute = new(1)
 
 	asked := map[string]time.Time{}
-	for i, key := range keys {
+	for i := range keys {
 		if i > 0 {
 			rig.clock.advance(time.Minute)
 		}
 		rig.tick()
 		rig.awaitRounds(fmt.Sprintf("sweep %d at one round a minute", i+1), keys[:i+1]...)
-		opened := rig.claimOf(key, claim.RoleArchitect)
-		if opened.UpdateTaskedAt == nil {
-			t.Fatalf("%s holds the round with no ask recorded: %+v", key, opened)
+		// The sweep asks a round's roles at the tick after the one that opened it, once the
+		// claims record the round, and never again.
+		for _, prev := range keys[:i] {
+			c := rig.claimOf(prev, claim.RoleArchitect)
+			if c.UpdateTaskedAt == nil {
+				t.Fatalf("%s holds the round with no ask recorded a sweep after it opened: %+v", prev, c)
+			}
+			if at, ok := asked[prev]; ok && !c.UpdateTaskedAt.Equal(at) {
+				t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", prev, c.UpdateTaskedAt, at)
+			}
+			asked[prev] = *c.UpdateTaskedAt
 		}
-		asked[key] = *opened.UpdateTaskedAt
+	}
+	// The last key opened is asked at the sweep after its opening, as every key before it was.
+	rig.clock.advance(time.Minute)
+	rig.tick()
+	for _, key := range keys {
+		c := rig.claimOf(key, claim.RoleArchitect)
+		if c.UpdateTaskedAt == nil {
+			t.Fatalf("%s holds the round with no ask recorded a sweep after the last opening: %+v", key, c)
+		}
+		if at, ok := asked[key]; ok && !c.UpdateTaskedAt.Equal(at) {
+			t.Errorf("%s was asked at %v, want the first ask at %v: the limit asks no open round again", key, c.UpdateTaskedAt, at)
+		}
 	}
 
 	for _, key := range keys {
-		held := rig.claimOf(key, claim.RoleArchitect)
-		if held.UpdateRound != rig.round(key) {
+		if held := rig.claimOf(key, claim.RoleArchitect); held.UpdateRound != rig.round(key) {
 			t.Errorf("%s records round %q after the five sweeps, want its own open round: the limit ends none", key, held.UpdateRound)
-		}
-		if held.UpdateTaskedAt == nil || !held.UpdateTaskedAt.Equal(asked[key]) {
-			t.Errorf("%s was asked at %v, want the ask it was opened with at %v: the limit asks no open round again",
-				key, held.UpdateTaskedAt, asked[key])
 		}
 	}
 

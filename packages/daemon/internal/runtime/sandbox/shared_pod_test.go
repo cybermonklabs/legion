@@ -40,10 +40,10 @@ func endOf(t *testing.T, observations <-chan runtime.Observation, loc runtime.Lo
 // running in its issue pod, built from the earlier image, and launches again the implementer's
 // launch its predecessor did not finish (LEGION-729). The launch keeps the drifted pod — ending it
 // there would end the architect's turn and take the issue's disk with it — and the pod is replaced
-// only by its update round, once every worker in it has pushed (ReplacePod). That replacement is
-// the daemon's own act: the runtime reports the architect Displaced, and its Machine resumes its
-// kept session in the new pod at once, charging nothing, and registers and is ready there, its
-// process alive.
+// only by its update round, once every worker in it has answered or at the round's bound, after
+// the daemon's push check (ReplacePod). That replacement is the daemon's own act: the runtime
+// reports the architect Displaced, and its Machine resumes its kept session in the new pod at
+// once, charging nothing, and registers and is ready there, its process alive.
 func TestReplacingADriftedPodResumesItsOtherLiveRoleOnItsSessionUncharged(t *testing.T) {
 	g := newRig(t, nil)
 	architect := rootSpec(t)

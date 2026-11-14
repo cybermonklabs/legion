@@ -223,19 +223,28 @@ func (c *fakeClock) After(d time.Duration) <-chan time.Time {
 	return w.fire
 }
 
-// next is the shim's next wait, which must be of d.
-func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+// nextAny is the shim's next wait whatever its span, named by what the caller expected to be
+// waited for: what a test reads when the span is the thing under test rather than a constant it
+// already knows (drainCommands' bound, which is what is left of a span).
+func (c *fakeClock) nextAny(t *testing.T, what string) clockWait {
 	t.Helper()
 	select {
 	case w := <-c.waits:
-		if w.d != d {
-			t.Fatalf("the shim waited %v, want %v", w.d, d)
-		}
 		return w
 	case <-time.After(waitLimit):
-		t.Fatalf("the shim never waited %v", d)
+		t.Fatalf("the shim never waited %s", what)
 		return clockWait{}
 	}
+}
+
+// next is the shim's next wait, which must be of d.
+func (c *fakeClock) next(t *testing.T, d time.Duration) clockWait {
+	t.Helper()
+	w := c.nextAny(t, fmt.Sprintf("%v", d))
+	if w.d != d {
+		t.Fatalf("the shim waited %v, want %v", w.d, d)
+	}
+	return w
 }
 
 func (w clockWait) elapse() { w.fire <- time.Time{} }
@@ -466,6 +475,46 @@ func (p *peer) next(t *testing.T) shimwire.Frame {
 		t.Fatalf("decode a frame from the shim: %v", err)
 	}
 	return frame
+}
+
+// nextWhole is the shim's next frame as the daemon's reader takes it (stream.Conn.read), read
+// within limit: an rpc_chunk sequence is put back together and read as the frame it carries. A
+// whole frame in the middle of a sequence would make the daemon drop that sequence, so it fails
+// the test.
+func (p *peer) nextWhole(t *testing.T, limit time.Duration) shimwire.Frame {
+	t.Helper()
+	if err := p.conn.SetReadDeadline(time.Now().Add(limit)); err != nil {
+		t.Fatalf("set a read deadline: %v", err)
+	}
+	var chunks shimwire.Reassembler
+	for {
+		line, err := p.r.ReadLine()
+		if err != nil {
+			t.Fatalf("read a frame from the shim: %v", err)
+		}
+		frame, err := shimwire.Decode(line)
+		if err != nil {
+			t.Fatalf("decode a frame from the shim: %v", err)
+		}
+		chunk, ok := frame.(shimwire.RPCChunk)
+		if !ok {
+			if err := chunks.Interrupt(); err != nil {
+				t.Fatalf("the shim sent a %s frame in the middle of an rpc_chunk sequence: %v", frame.FrameType(), err)
+			}
+			return frame
+		}
+		whole, err := chunks.Push(chunk)
+		if err != nil {
+			t.Fatalf("reassemble the shim's rpc_chunk sequence: %v", err)
+		}
+		if whole == nil {
+			continue
+		}
+		if frame, err = shimwire.Decode(whole); err != nil {
+			t.Fatalf("decode the shim's reassembled frame: %v", err)
+		}
+		return frame
+	}
 }
 
 func (p *peer) expect(t *testing.T, want shimwire.Frame) {
@@ -1167,9 +1216,11 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 }
 
 // `rescue-unpushed` is answered by the shim itself, as its role and in its role's environment: it
-// checks every workspace on the disk its LEGION_WORKSPACE is on, pushes what the remote lacks to a
-// rescue branch, and answers one entry per workspace; OMP never sees the frame. A shim with no
-// LEGION_WORKSPACE has no disk to check and refuses.
+// checks every workspace on the disk its LEGION_WORKSPACE is on, pushes the issue's own work the
+// remote lacks to the branch the frame's target names, and answers one entry per workspace; OMP
+// never sees the frame. A shim with no LEGION_WORKSPACE has no disk to check and refuses. A target
+// the shim dropped would send the check to the frame's per-pod branch, with nothing failing, so
+// the branch it pushed to is read back as the frame's target.
 //
 // The test process's own environment names a decoy disk in LEGION_WORKSPACE, as a Legion issue
 // pod's does its live workspace: neither case may check it or push from it, so the disk's
@@ -1213,7 +1264,7 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 			// check a pod's pre-push hook makes (rescue.GuardReserve), and a smaller bound here
 			// would be refused for want of time rather than checked.
 			request := shimwire.RescueUnpushed{
-				ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a",
+				ID: "r1", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", Target: "legion/WIDGETS-42-rescue",
 				WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
 			}
 			p.send(t, request)
@@ -1226,12 +1277,21 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 					t.Fatalf("the shim answered %#v, want a refusal naming LEGION_WORKSPACE", got)
 				}
 			} else {
-				want := []shimwire.RescueWorkspace{{Dir: d.Workspace, Status: "rescued", Branches: []shimwire.RescueBranch{{Name: request.Branch + "-1", Commit: commit}}}}
-				if !got.OK || !reflect.DeepEqual(got.Workspaces, want) {
-					t.Fatalf("the shim answered %#v, want %+v", got, want)
+				if !got.OK || len(got.Workspaces) != 1 || got.Workspaces[0].Dir != d.Workspace || got.Workspaces[0].Status != "rescued" || len(got.Workspaces[0].Branches) != 1 {
+					t.Fatalf("the shim answered %#v, want one rescued branch of %s", got, d.Workspace)
 				}
-				if held := d.RemoteBranch(request.Branch + "-1"); held != commit {
-					t.Fatalf("the remote holds %s-1 at %q, want %s", request.Branch, held, commit)
+				b := got.Workspaces[0].Branches[0]
+				if b.Name != request.Target || !b.Pushed || b.Previous != "" || len(b.Commits) == 0 {
+					t.Fatalf("the shim reported %+v, want the frame's target %s pushed as a new branch, with its commits", b, request.Target)
+				}
+				if held := d.RemoteBranch(request.Target); held != b.Commit {
+					t.Fatalf("the remote holds %s at %q, want %s", request.Target, held, b.Commit)
+				}
+				if parents := strings.Fields(d.Run(d.Remote, "git", "log", "-1", "--format=%P", b.Commit)); !reflect.DeepEqual(parents, []string{commit}) {
+					t.Fatalf("the rescue commit %s's parents are %v, want the workspace's own %s", b.Commit, parents, commit)
+				}
+				if held := d.RemoteBranch(request.Branch); held != "" {
+					t.Fatalf("the remote holds the per-pod %s at %s, want only the frame's target", request.Branch, held)
 				}
 			}
 
@@ -1244,6 +1304,77 @@ func TestRescueUnpushedChecksTheDiskAndAnswersTheDaemon(t *testing.T) {
 				t.Fatalf("the decoy's remote holds %v after the check, want %v: the check reached the process's LEGION_WORKSPACE", got, decoyBranches)
 			}
 		})
+	}
+}
+
+// The push check's answer carries every commit each branch carries, each with a subject of up to
+// 200 bytes, so the answer for a long line of work is longer than one line of the stream
+// (shimwire.MaxFrameBytes). A writer refuses such a line, and the shim's outbox would close the
+// connection and send the same line again on every reconnect, so the role's stream would stay down
+// and the replacement would be refused. The shim sends that answer as an rpc_chunk sequence, as it
+// sends a bundle, and the daemon's reader puts it back together: a report of 8,000 commits with
+// 200-byte subjects reaches the daemon whole, with every commit id in order.
+//
+// The disk is in the state a second check of the same pod meets: the issue's rescue branch on the
+// remote already holds the line, so the check pushes nothing and reports the 8,000 commits only
+// that branch holds. A push of them would have the leak guard read the records of each commit,
+// which takes minutes for 8,000, and the answer is the same frame either way.
+func TestRescueUnpushedAnswersAReportLongerThanALineInChunksTheDaemonReassembles(t *testing.T) {
+	d := rescuetest.New(t, "WIDGETS-42")
+	line := d.CommitLine(8000, func(i int) string {
+		subject := fmt.Sprintf("work %d of the issue's own line, ", i)
+		return subject + strings.Repeat("x", 200-len(subject))
+	})
+	const target = "legion/WIDGETS-42-rescue"
+	// A fetch into the remote, rather than a push from the clone: a pod's git runs the pre-push
+	// hook, and with it the leak guard, on every push.
+	d.Run(d.Remote, "git", "fetch", "--quiet", d.Clone, "refs/heads/"+d.Branch+":refs/heads/"+target)
+	path := socketPath(t)
+	daemon := listen(t, path)
+	child := newOMP(t)
+	cfg := config(t, path, child)
+	cfg.Env = append(slices.Clone(d.Env), fakeOMPEnv+"=1", "FAKE_OMP_MARKER="+child.marker, "FAKE_OMP_LOG="+child.log,
+		"LEGION_WORKSPACE="+d.Workspace)
+	run(t, cfg, newClock())
+	p := daemon.accept(t)
+	p.open(t)
+
+	request := shimwire.RescueUnpushed{
+		ID: "long", Branch: "legion/WIDGETS-42-rescue-9d3f0c7a", Target: target,
+		WorkspaceTimeoutMs: int(rescue.WorkspaceTimeout.Milliseconds()), TimeoutMs: int(rescue.Timeout.Milliseconds()),
+	}
+	p.send(t, request)
+	got, ok := p.nextWhole(t, rescue.Timeout).(shimwire.RescueUnpushedResult)
+	if !ok || got.ID != request.ID {
+		t.Fatalf("the shim answered %#v, want a result for %s", got, request.ID)
+	}
+	if !got.OK || len(got.Workspaces) != 1 || got.Workspaces[0].Status != "rescued" || len(got.Workspaces[0].Branches) != 1 {
+		t.Fatalf("the shim answered OK %v, error %q, workspaces %+v, want one rescued branch of %s",
+			got.OK, got.Error, got.Workspaces, d.Workspace)
+	}
+	if encoded, err := json.Marshal(got); err != nil || len(encoded) < shimwire.MaxFrameBytes {
+		t.Fatalf("the answer is %d bytes (%v), want one longer than a line's %d: the case is a report that does not fit one line",
+			len(encoded), err, shimwire.MaxFrameBytes)
+	}
+	b := got.Workspaces[0].Branches[0]
+	if b.Name != target || b.Pushed || b.Commit != line[len(line)-1] {
+		t.Fatalf("the shim reported the branch %s at %s, pushed %v, want %s at the line's tip %s, pushed by no check of this one",
+			b.Name, b.Commit, b.Pushed, target, line[len(line)-1])
+	}
+	// rev-list's order: the line, newest first.
+	want := slices.Clone(line)
+	slices.Reverse(want)
+	ids := make([]string, len(b.Commits))
+	for i, c := range b.Commits {
+		ids[i] = c.ID
+	}
+	if !slices.Equal(ids, want) {
+		same := 0
+		for same < len(ids) && same < len(want) && ids[same] == want[same] {
+			same++
+		}
+		t.Fatalf("the report carries %d commits, want the %d the branch holds; the first %d are as it holds them, then %q, want %q",
+			len(ids), len(want), same, ids[same:min(same+3, len(ids))], want[same:min(same+3, len(want))])
 	}
 }
 
@@ -1525,11 +1656,13 @@ func treeOf(t *testing.T, root string) map[string]string {
 }
 
 // A git lock an interrupted git or jj left in a running pod's workspace fails the adoption on
-// every write of what it locks, and nothing under a running pod removes it: another role's live git
-// may hold it. The failure names the lock and how long ago it was last written, says not to remove
-// it while the pod runs and that replacing the pod removes it, and says what holds under tmux,
-// whether jj's own git backend reported it (the index jj rewrites as it snapshots the working copy,
-// as in LEGION-731) or a git command jj ran; and the lock stays.
+// every write of what it locks, and the role that reads the failure removes nothing: the launcher
+// of the pod's roles container sweeps such a lock once no process of the container holds it open
+// and it is more than 15 minutes old (internal/launcher's gitLockSweep). The failure names the
+// lock and how long ago it was last written, says what that sweep does and how long it takes,
+// tells the role to run the command again, and says what holds under tmux, whether jj's own git
+// backend reported it (the index jj rewrites as it snapshots the working copy, as in LEGION-731)
+// or a git command jj ran; and the lock stays.
 func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 	jj, err := exec.LookPath("jj")
 	if err != nil {
@@ -1587,9 +1720,10 @@ func TestAdoptWorkingCopyNamesTheStaleGitLockItFailedOn(t *testing.T) {
 			for _, want := range []string{
 				"Command failed (exit 1)",
 				"git lock " + lock + " was last written 31m",
-				"Do not remove it while the issue's pod runs: another role's git, which this container cannot see, may hold it.",
-				"Replacing the issue's pod removes it.",
+				"The launcher of the issue's pod removes a git lock that no process of the pod holds open and that is more than 15 minutes old, and it looks again every minute.",
+				"Run the command again in about 16 minutes.",
 				"Under the tmux runtime nothing removes it",
+				"If the lock is still there after that time, tell the issue's architect.",
 			} {
 				if !strings.Contains(got.Error, want) {
 					t.Errorf("the result's error %q does not mention %q", got.Error, want)

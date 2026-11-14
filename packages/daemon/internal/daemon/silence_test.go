@@ -301,14 +301,11 @@ func TestSilentPhaseWorkerGetsItsTaskAgainAfterAPodReplacement(t *testing.T) {
 	rig.tick()
 	for _, role := range []claim.Role{worker, healthy} {
 		rig.awaitRound(role, podUpdateRound)
-		rig.signal(role, "a1b2c3d")
-		// The turn the worker answered from ends, which retires the round's own ask: from here
-		// it holds nothing at all.
-		answered := rig.claimOf(role).Pending.ID
+		// The worker answers from inside a turn of its own, which then ends: from here it holds
+		// nothing at all, and that turn is the last step it took.
 		rig.handle(role, supervise.StreamTurnStart{Claim: rig.tokens[role]})
-		rig.endTurn(role, answered)
-		rig.awaitClaim(role, "the round's own ask to retire with its turn",
-			func(c supervise.Claim) bool { return c.Pending == nil })
+		rig.signal(role, "a1b2c3d")
+		rig.handle(role, supervise.StreamTurnEnd{Claim: rig.tokens[role]})
 	}
 	rig.awaitReplacement(1, "once both its workers had answered")
 	rig.awaitSwept(worker, "its round to end with the pod", func(c supervise.Claim) bool { return c.UpdateRound == "" })

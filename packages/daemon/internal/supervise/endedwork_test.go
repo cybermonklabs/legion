@@ -735,7 +735,7 @@ func TestARelaunchRecordsAReportOlderThanATurnTheAgentSaysItIsInAsNoReport(t *te
 				h.wantPrompts(2)
 
 				h.restart()
-				if _, _, askFirst := h.marks(); !askFirst {
+				if _, askFirst := h.marks(); !askFirst {
 					t.Fatal("the restored claim has nothing to ask its agent; this test needs the question a restart leaves open")
 				}
 				holds = !through.drops
