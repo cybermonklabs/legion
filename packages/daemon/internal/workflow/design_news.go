@@ -403,7 +403,9 @@ func changeLines(tree string, item NewsChange) []string {
 	return append(lines, fmt.Sprintf("Read it: `dispatch doc-read --issue %s --artifact %s --version %d`", tree, changes.ArtifactID, changes.To))
 }
 
-// sectionsLine names each `##` section that changed, by its heading, and how.
+// sectionsLine names each `##` section that changed, by its heading, and how, in Dispatch's own
+// word for it: changed, added, removed, or moved for a section that kept its text and changed its
+// place (record.SectionChange).
 func sectionsLine(sections []record.SectionChange) string {
 	named := make([]string, len(sections))
 	for i, section := range sections {

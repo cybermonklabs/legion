@@ -289,17 +289,17 @@ type ArtifactChanges struct {
 	From         int    `json:"from"`
 	To           int    `json:"to"`
 	DecisionOnly bool   `json:"decision_only"`
-	// Sections are the document's `##` sections whose text differs, in the later version's order
-	// and then the sections only the earlier version holds. The text outside every `##` section is
-	// one section of its own, first, under the heading "" and occurrence 0.
+	// Sections are the document's `##` sections whose text differs or that moved, in the later
+	// version's order, and then the sections only the earlier version holds. The text outside
+	// every `##` section is one section of its own, first, under the heading "" and occurrence 0.
 	Sections []SectionChange `json:"sections"`
 	// Blocks are the typed blocks other than ask blocks whose text or any attribute differs.
 	Blocks []BlockChange `json:"blocks"`
 }
 
 // SectionChange is one `##` section that changed: its heading's text, how many sections before
-// it carry that heading (0 for the first), and how it changed: ChangeChanged, ChangeAdded or
-// ChangeRemoved.
+// it carry that heading (0 for the first), and how it changed: ChangeChanged, ChangeAdded,
+// ChangeRemoved or ChangeMoved.
 type SectionChange struct {
 	Heading    string `json:"heading"`
 	Occurrence int    `json:"occurrence"`
@@ -315,13 +315,15 @@ type BlockChange struct {
 }
 
 // ChangeChanged, ChangeAdded and ChangeRemoved are the three ways a section or a block stands
-// between two versions of a document, as Dispatch spells them (its api.changeChanged and the two
-// beside it). No mechanism shares a value between this module and Dispatch's, so the spellings
-// change together.
+// between two versions of a document, and ChangeMoved a fourth that a section alone takes: both
+// versions hold it with the same text, at another place among the sections both hold. They are
+// as Dispatch spells them (its api.changeChanged and the three beside it). No mechanism shares a
+// value between this module and Dispatch's, so the spellings change together.
 const (
 	ChangeChanged = "changed"
 	ChangeAdded   = "added"
 	ChangeRemoved = "removed"
+	ChangeMoved   = "moved"
 )
 
 // ErrNoChangesRoute is a Dispatch that cannot say what changed between two versions: it answered

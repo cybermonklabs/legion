@@ -719,10 +719,15 @@ The walk lays each table out once, in document order, on the one budget of span 
 `GET .../text` returns the full-document Proof-state token and the document's latest version number, or `null` when it has none (the live markdown beside it and that version are two unsynchronised reads, in both directions; `token` is the concurrency primitive).
 `GET /api/v1/artifacts/{id}/changes?from=<n>&to=<m>` (`getArtifactChanges`, `api/artifacts.go`) answers what changed between two stored versions of one document, which it reads as `GET .../versions/{number}` reads them:
 `decision_only`, true when the two stored texts differ and are the same once every ask block is cut (`docs.WithoutAskBlocks`), with `sections` and `blocks` empty then;
-`sections`, each `##` section whose text differs with ask blocks cut, named by heading and occurrence as `decisionSums` names a decision, the text outside every `##` section being the one section under the heading "" and occurrence 0;
-and `blocks`, each typed block other than an ask block whose text or any attribute differs, by its `#id` and type, each section and block marked `changed`, `added` or `removed`.
+`sections`, each `##` section whose text differs with ask blocks cut, or that moved, named by heading and occurrence as `decisionSums` names a decision, the text outside every `##` section being the one section under the heading "" and occurrence 0;
+and `blocks`, each typed block other than an ask block whose text or any attribute differs, by its `#id` and type, each section and block marked `changed`, `added` or `removed`, and a section also `moved`.
+A section is `moved` when both versions hold it with the same text and it stands outside one longest common subsequence of the two versions' orders of the sections both hold, the text outside every section left out (`movedSections`);
+of several that long, the one kept holds the later version's earliest sections, so of two sections that swapped places the later version's second is `moved`, and a reorder alone is never `decision_only`.
+A section whose text differs is `changed` wherever it stands, and a block is never `moved`, since a block that moves changes the text of the sections it moves within or between.
+Each list holds the later version's items in its order, a moved section where the later version holds it, and then what only the earlier version holds.
 It parses the two versions' stored markdown and never the block index, so it does not wait for the deferred pass over a large document's blocks (`docs.deferBlockIndexBlocks`).
-It answers `400 INVALID_VERSION` unless both numbers are positive and `from` is below `to`, `404 NOT_FOUND` for a version the document does not have, and `400 NOT_DOCUMENT` for an artifact that is not a document;
+It answers `400 INVALID_VERSION` unless both numbers are positive, at most 2147483647, and `from` is below `to`, `404 NOT_FOUND` for a version the document does not have, and `400 NOT_DOCUMENT` for an artifact that is not a document;
+`artifact_versions.number` is an `integer`, so a larger number names no version, and the route and `GET .../versions/{number}` both refuse it before they read a version (`parseVersionNumber`) rather than answer `500`;
 the Legion daemon reads it for the news it sends of an approved new version of a gated document.
 The server resolves the block when it creates a quote or browser-mark anchor;
 `envoy-dispatch backfill-anchor-blocks` fills legacy anchors only when their cached quote has one current match.
@@ -1700,6 +1705,7 @@ The sum, not the version, is what the view's `waiting_review` compares - an agen
 The document Keep takes is its issue's `decisions.md` resolved as the view resolves it, by slug and then by filename; any other document, and any other block - one that is no decision heading, or a decision under `## Replaced` - is `404 TARGET_NOT_FOUND`.
 It appends `decision.kept` (`{artifact_id, block_id, changed_version}`) on the decision's issue, which wakes nobody (`events.Quiet`): a Keep asks its agent for nothing.
 `GET` and `PUT /api/v1/me/documents/{id}/read` `{version}` are one person's last read version of a document (`user_document_reads`, keyed on `model.CanonicalLogin` as `user_ask_snooze` is), which the Spec tab marks each block changed since; they serve per-person state as `GET /api/v1/me/state` and `PUT /api/v1/me/issues/{key}/state` do, need the `person` scope as those two do, and announce nothing.
+A `version` that is negative or above 2147483647 is `400 INVALID_STATE` before the write, since `user_document_reads.version` is an `integer` (`versionNumberInRange`, the bound `parseVersionNumber` reads a path's or a query's version number with).
 
 A comment and a message are collections of blocks too (migrations 0142-0144, `itemblocks`, `refs/item_blocks.go`).
 `itemblocks.Split` reads a body as the document parser reads a document (`pmdoc.ParseWithSourceStarts`) and cuts it at its top-level blocks, each block the body's own text from the start of the line where it starts to where the next one starts, less the spaces, tabs and line endings that end it, so its stored text, its excerpt and its identity are what its author wrote, never the canonical rendering.

@@ -1,0 +1,7 @@
+kind: Fixed
+custom:
+  Issue: pr3995
+body: |-
+  Dispatch refuses a document version number above 2147483647, the largest one the store holds,
+  as the caller's input: `GET .../artifacts/.../versions/{number}` answers `400 INVALID_VERSION`
+  and `PUT /api/v1/me/documents/{id}/read` answers `400 INVALID_STATE`. Both answered `500` before.

@@ -354,7 +354,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description What changed between two stored versions of one document, ?from=<n>&to=<m>: {artifact_id, from, to, decision_only, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. decision_only is true when the two stored texts differ and cut to the same text; sections and blocks are empty then. sections is each `##` section whose text differs, by heading and occurrence (0 for the first section of that heading); the text outside every `##` section (the title, what stands above the first `##`, and what follows a later `#` up to the next `##`), joined in document order, is one section of its own with heading "" and occurrence 0, so a `##` heading with no words counts from occurrence 1. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each section and block is marked changed, added or removed: the later version's in its order, then what only the earlier holds. from and to must be positive and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT. */
+    /** @description What changed between two stored versions of one document, ?from=<n>&to=<m>: {artifact_id, from, to, decision_only, sections, blocks}, both versions read from their stored markdown with every ask block cut out, so the block index's deferred pass is never waited for. decision_only is true when the two stored texts differ and cut to the same text; sections and blocks are empty then. sections is each `##` section whose text differs or that moved, by heading and occurrence (0 for the first section of that heading); the text outside every `##` section (the title, what stands above the first `##`, and what follows a later `#` up to the next `##`), joined in document order, is one section of its own with heading "" and occurrence 0, so a `##` heading with no words counts from occurrence 1. blocks is each typed block but an ask whose text or any attribute differs, by id and type. Each section and block is marked changed, added or removed, and a section whose text is the same is marked moved when its place among the sections both versions hold is another: it stands outside one longest common subsequence of the two versions' orders of those sections, the text outside every section left out, and of several that long the one kept holds the later version's earliest sections, so of two sections that swapped places the later version's second is moved. A block is never marked moved. Each is listed in the later version's order, a moved section where the later version holds it, then what only the earlier holds. from and to must be positive, at most 2147483647 (the largest version number the store holds), and from below to (400 INVALID_VERSION); a version the document does not have is 404 NOT_FOUND, and a file or an image 400 NOT_DOCUMENT. */
     get: operations["getApiV1ArtifactsByIdChanges"];
     put?: never;
     post?: never;
@@ -1989,7 +1989,7 @@ export interface paths {
     };
     /** @description The caller's last read version of a document {artifact_id, version, read_at}; version and read_at are null when they have read none. */
     get: operations["getApiV1MeDocumentsByIdRead"];
-    /** @description Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing or negative is 400 INVALID_STATE. */
+    /** @description Record the caller's last read version of a document {version}: the Spec tab marks each block that changed since it. Answers the stored read; a version that is missing, negative or above 2147483647 (the largest version number the store holds) is 400 INVALID_STATE. */
     put: operations["putApiV1MeDocumentsByIdRead"];
     post?: never;
     delete?: never;
@@ -3317,7 +3317,7 @@ export interface components {
     };
     ArtifactSectionChange: {
       /** @enum {string} */
-      change: "changed" | "added" | "removed";
+      change: "changed" | "added" | "removed" | "moved";
       heading: string;
       occurrence: number;
     };

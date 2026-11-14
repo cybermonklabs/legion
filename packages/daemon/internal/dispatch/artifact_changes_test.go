@@ -31,6 +31,7 @@ func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 				{"heading": "", "occurrence": 0, "change": "changed"},
 				{"heading": "Requirements", "occurrence": 0, "change": "changed"},
 				{"heading": "Rollout", "occurrence": 1, "change": "added"},
+				{"heading": "Scope", "occurrence": 0, "change": "moved"},
 			},
 			"blocks": []map[string]any{
 				{"id": "r2", "type": "requirement", "change": "changed"},
@@ -50,6 +51,7 @@ func TestArtifactChangesReadsTheChangeSetDispatchAnswers(t *testing.T) {
 			{Heading: "", Occurrence: 0, Change: ChangeChanged},
 			{Heading: "Requirements", Occurrence: 0, Change: ChangeChanged},
 			{Heading: "Rollout", Occurrence: 1, Change: ChangeAdded},
+			{Heading: "Scope", Occurrence: 0, Change: ChangeMoved},
 		},
 		Blocks: []BlockChange{
 			{ID: "r2", Type: "requirement", Change: ChangeChanged},

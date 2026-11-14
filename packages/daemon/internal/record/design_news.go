@@ -106,7 +106,8 @@ type DesignChanges struct {
 
 // SectionChange is one `##` section of a document that changed between two versions, named by its
 // heading and how many sections before it carry that heading, and how it changed (`changed`,
-// `added` or `removed`).
+// `added`, `removed`, or `moved` for a section both versions hold with the same text at another
+// place).
 type SectionChange struct {
 	Heading    string `json:"heading"`
 	Occurrence int    `json:"occurrence"`

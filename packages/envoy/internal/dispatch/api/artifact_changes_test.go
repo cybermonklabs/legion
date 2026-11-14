@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -224,6 +225,79 @@ func TestTwoSectionsOfOneHeadingAreToldApartByOccurrence(t *testing.T) {
 
 	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
 		[]servedSection{{Heading: "Step", Occurrence: 1, Change: "changed"}}, []servedBlockRef{})
+}
+
+// The `##` sections the reorder tests put in one order or another, each holding the same text
+// wherever it stands.
+const (
+	goalSection    = "## Goal\n\nShip the service behind a flag.\n"
+	scopeSection   = "## Scope\n\nTwo regions.\n"
+	risksSection   = "## Risks\n\nNone known.\n"
+	rolloutSection = "## Rollout\n\nOne region a day.\n"
+)
+
+// sectionedPlan is a plan under its title holding sections, in the order given.
+func sectionedPlan(sections ...string) string {
+	return "# Plan\n\n" + strings.Join(sections, "\n")
+}
+
+// A version that only swaps two sections changes the document, so it is no decision-only change,
+// and it names exactly one of the two moved: the one the later version holds second, the other
+// keeping its place among the sections both versions hold. The section after them is not named.
+func TestTheChangeSetNamesOneOfTwoSwappedSectionsMoved(t *testing.T) {
+	handler := newTestHandler(t)
+	artifactID := uploadVersions(t, handler, "plan.md",
+		sectionedPlan(goalSection, scopeSection, risksSection),
+		sectionedPlan(scopeSection, goalSection, risksSection),
+	)
+
+	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
+		[]servedSection{{Heading: "Goal", Occurrence: 0, Change: "moved"}}, []servedBlockRef{})
+}
+
+// A section lifted from last to first is the only section named: the three it passed keep their
+// order, so none of them moved, though each stands one place lower.
+func TestTheChangeSetNamesASectionLiftedToTheTopAsTheOnlyOneMoved(t *testing.T) {
+	handler := newTestHandler(t)
+	artifactID := uploadVersions(t, handler, "plan.md",
+		sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection),
+		sectionedPlan(rolloutSection, goalSection, scopeSection, risksSection),
+	)
+
+	requireChanges(t, readChanges(t, handler, artifactID, 1, 2),
+		[]servedSection{{Heading: "Rollout", Occurrence: 0, Change: "moved"}}, []servedBlockRef{})
+}
+
+// A section that moved and whose text changed is named changed, once, and never moved: its text
+// is what a reader must read again. Two pairs of sections swap here, and the one moved of the
+// first pair is the one whose words changed, while the one moved of the second kept its words and
+// is named moved.
+func TestAMovedSectionWhoseTextChangedIsNamedChangedNotMoved(t *testing.T) {
+	handler := newTestHandler(t)
+	artifactID := uploadVersions(t, handler, "plan.md",
+		sectionedPlan(goalSection, scopeSection, risksSection, rolloutSection),
+		sectionedPlan(scopeSection, "## Goal\n\nShip the service behind a flag and a canary.\n", rolloutSection, risksSection),
+	)
+
+	requireChanges(t, readChanges(t, handler, artifactID, 1, 2), []servedSection{
+		{Heading: "Goal", Occurrence: 0, Change: "changed"},
+		{Heading: "Risks", Occurrence: 0, Change: "moved"},
+	}, []servedBlockRef{})
+}
+
+// A reorder beside an added section names both, in the later version's order: the moved section
+// where the later version holds it, and the added one after it.
+func TestTheChangeSetNamesAReorderBesideAnAddedSection(t *testing.T) {
+	handler := newTestHandler(t)
+	artifactID := uploadVersions(t, handler, "plan.md",
+		sectionedPlan(goalSection, scopeSection, risksSection),
+		sectionedPlan(scopeSection, goalSection, rolloutSection, risksSection),
+	)
+
+	requireChanges(t, readChanges(t, handler, artifactID, 1, 2), []servedSection{
+		{Heading: "Goal", Occurrence: 0, Change: "moved"},
+		{Heading: "Rollout", Occurrence: 0, Change: "added"},
+	}, []servedBlockRef{})
 }
 
 // Every block the change set names carries an id its own stored version names. The parse gives a
