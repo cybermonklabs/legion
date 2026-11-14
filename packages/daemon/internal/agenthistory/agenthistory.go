@@ -28,6 +28,10 @@ type Store interface {
 	// FinishedIssues says, of every issue the project's conversations name, whether it has left
 	// the workflow, which the mirror writes as each entry's `finished` (store.FinishedIssues).
 	FinishedIssues(ctx context.Context, project string, outOfWorkflow func(status string) bool) (map[string]bool, error)
+	// ReleasedSessions names the session of every claim of the project suspended by idle release,
+	// with the issue it works, which the mirror writes as each entry's `released`
+	// (store.ReleasedSessions).
+	ReleasedSessions(ctx context.Context, project string) (map[string]string, error)
 }
 
 // Title is the title a Legion agent's session gives itself (packages/pi-legion/src/session-title.ts,

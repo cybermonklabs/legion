@@ -92,7 +92,7 @@ wait:
 }
 
 // Running is whether session's conversation is its claim's current one and the claim runs it, is
-// starting, or was started (answerloop.Gate).
+// starting, or was started, or is released (answerloop.Gate).
 func (g *answerGate) Running(token claim.Token, session string) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -101,6 +101,17 @@ func (g *answerGate) Running(token claim.Token, session string) bool {
 
 // runningLocked is Running under g.mu. A start's mark lasts until the machine shows a launch after
 // it (a later generation) that runs nothing any more: the process the start began has ended.
+//
+// A claim suspended by idle release (supervise.Claim.Released) answers true though it runs
+// nothing. The loop answers for three states alone: a claim the workflow suspended (a parked
+// child, or a tree whose root left the workflow during its linger), one retired, and one closed.
+// A released claim is none of them: the daemon released its idle issue pod and keeps the session,
+// its phase and its pending task, and the next message for it is the wake that brings the pod
+// back and resumes that session (INFRA-945). The listener hands no message for a released session
+// off (the registry's `released`), but one can race the mirror's minute; answering it here would
+// write into a conversation about to run again and answer in the name of a worker that is coming
+// back. So the loop forwards it to the role topic instead, where a message nobody holds wakes the
+// role's released claim, and offers it again until the resumed worker holds the role.
 func (g *answerGate) runningLocked(token claim.Token, session string) bool {
 	view, ok := g.view(token)
 	if !ok || view.Session == "" || view.Session != session {
@@ -112,7 +123,7 @@ func (g *answerGate) runningLocked(token claim.Token, session string) bool {
 		}
 		st.started = false
 	}
-	return !view.RunsNothing()
+	return view.Released() || !view.RunsNothing()
 }
 
 // Append runs write while no start of the claim can pass its check, unless the claim runs the

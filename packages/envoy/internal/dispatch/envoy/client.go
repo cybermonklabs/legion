@@ -553,6 +553,10 @@ func (c *Client) Session(ctx context.Context, sessionID string) (Session, error)
 // token is coming. The listener omits it while the issue runs, which decodes as false: a role
 // whose issue still runs is nobody's to answer for, because its next worker will claim the role
 // and take what was kept for it.
+//
+// Released is whether the entry's claim is suspended by idle release: its daemon released the
+// idle issue pod and keeps the session to resume on the wake its next message raises
+// (legionagents.Entry.Released). The listener omits it otherwise, which decodes as false.
 type LegionAgent struct {
 	SessionID     string  `json:"session_id"`
 	LegionProject string  `json:"legion_project"`
@@ -565,6 +569,7 @@ type LegionAgent struct {
 	RecordedAt    string  `json:"recorded_at"`
 	Live          bool    `json:"live"`
 	Finished      bool    `json:"finished"`
+	Released      bool    `json:"released"`
 	ReplacedBy    *string `json:"replaced_by"`
 	ReplacedAt    *string `json:"replaced_at"`
 }

@@ -84,6 +84,8 @@ type legionHandoff struct {
 //     newest session, and for a role token that session's entry is finished - its issue has left
 //     the workflow, so no next holder of the role is coming (answeringAgent). A role whose issue
 //     still runs keeps its message for that next holder instead;
+//   - that session's entry is not released: a claim suspended by idle release is resumed by the
+//     wake its message raises, so the message stays the agent's (legionagents.Entry.Released);
 //   - that session's project last said it answers (project.<legion_project>, legionagents.Project).
 //     Only the flag counts, never its age: a daemon that stated answering: true and then stopped
 //     still gets its agents' messages, which JetStream holds until it reads them (spec v21,
@@ -161,6 +163,13 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 // (INFRA-514's 202, roleSend.noHolder), which is what it was before the hand-off existed. A
 // session addressed by id is answered for whether its issue is finished or not: that session has
 // stopped, and the message is for it, not for a role another session will take.
+//
+// Neither path answers for an entry that is released (legionagents.Entry.Released): the daemon
+// released that session's idle issue pod and keeps its claim to resume, so the message is a wake
+// for that very session, not a question its daemon answers in its name. Naming no agent leaves
+// each caller where it was before the hand-off existed: the send route's 404 beside the wake it
+// reported first, the give-up's no_holder notice and its wake, the interest path's refusal, and a
+// role's message kept on its kept lane for the resumed worker.
 func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoffTarget) (*legionagents.Entry, error) {
 	agents := h.agents.store()
 	if agents == nil {
@@ -190,6 +199,9 @@ func (h *legionHandoff) answeringAgent(ctx context.Context, target legionHandoff
 			return nil, err
 		}
 		entry = agent.Entry
+	}
+	if entry.Released {
+		return nil, nil
 	}
 	record, found, err := agents.Project(ctx, entry.LegionProject)
 	if err != nil {

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -391,6 +392,169 @@ func TestAnInterestPathMissForASessionTheLegionRegistryDoesNotHoldIsRefusedAsBef
 	}
 	if count, data := handoffs(t, harness.client, sessionID); count != 0 {
 		t.Fatalf("the stream holds %d hand-offs for %s, want none: the registry names no such agent; the last: %s", count, sessionID, data)
+	}
+}
+
+// releasedLegionEntry is legionEntry's entry for a session whose claim the daemon suspended by idle
+// release, keeping the session to resume on the next message's wake (legionagents.Entry.Released).
+func releasedLegionEntry(id, issue, role, started string) string {
+	return strings.TrimSuffix(legionEntry(id, issue, role, started), "}") + `,"released":true}`
+}
+
+// subscribeWakes subscribes to the wake topic the Legion daemons read, before anything that
+// raises a wake runs.
+func subscribeWakes(t *testing.T, conn *nats.Conn) *nats.Subscription {
+	t.Helper()
+	wakes, err := conn.SubscribeSync(bus.LegionWakeTopic)
+	if err != nil {
+		t.Fatalf("subscribe to %s: %v", bus.LegionWakeTopic, err)
+	}
+	t.Cleanup(func() { _ = wakes.Unsubscribe() })
+	if err := conn.Flush(); err != nil {
+		t.Fatalf("flush the wake subscription: %v", err)
+	}
+	return wakes
+}
+
+// awaitAgentWake reads wakes until an agent_message report names sessionID, and fails when none
+// does within ten seconds.
+func awaitAgentWake(t *testing.T, wakes *nats.Subscription, sessionID string) {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		left := time.Until(deadline)
+		if left <= 0 {
+			t.Fatalf("no %s wake report named %s within 10s", wakeKindAgent, sessionID)
+		}
+		message, err := wakes.NextMsg(left)
+		if err != nil {
+			t.Fatalf("no %s wake report named %s within 10s: %v", wakeKindAgent, sessionID, err)
+		}
+		var item contracts.Envelope
+		if err := json.Unmarshal(message.Data, &item); err != nil {
+			t.Fatalf("decode a wake report's envelope: %v", err)
+		}
+		var report wakeReport
+		if err := json.Unmarshal([]byte(item.Payload), &report); err != nil {
+			t.Fatalf("decode a wake report: %v", err)
+		}
+		if report.Kind == wakeKindAgent && report.Session == sessionID {
+			return
+		}
+	}
+}
+
+// A send to a session gone from the session bucket whose registry entry is released - the daemon
+// released its idle issue pod and keeps the claim to resume (INFRA-945) - is the wake it was
+// before the hand-off existed: answered 404, the wake reported for that session, and nothing
+// handed to the daemon, whose answer loop would otherwise answer a worker that is about to come
+// back. The same entry not released is handed off and answered 200, which is the control: the
+// rig reaches the hand-off, and only the flag turns it away.
+func TestASendToAReleasedLegionAgentIsItsWakeAndNotAHandOff(t *testing.T) {
+	rig := newHandoffRig(t, 0)
+	lifetime, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	rig.deps.wakes = newWakeReporter(lifetime, rig.client)
+	wakes := subscribeWakes(t, rig.client.Conn)
+	const released = "ses-released"
+	rig.want(t, http.StatusOK, http.MethodPut, "/v1/legion/agents/sessions/"+released,
+		releasedLegionEntry(released, "INFRA-204", "tester", "2026-10-26T03:00:00Z"))
+	rig.register(t, handoffAgent, "INFRA-204", "implementer", "2026-10-26T03:00:00Z")
+	rig.beat(t, true, time.Now())
+
+	send := func(sessionID string) *httptest.ResponseRecorder {
+		return rig.do(t, http.MethodPost, "/v1/messages/send",
+			fmt.Sprintf(`{"target_session":%q,"source":"agent","message":"can you answer this?"}`, sessionID))
+	}
+
+	if recorder := send(released); recorder.Code != http.StatusNotFound || !strings.Contains(recorder.Body.String(), released) {
+		t.Fatalf("a send to the released session %s = %d %s, want the 404 naming it that a send to a stopped session got before the hand-off",
+			released, recorder.Code, recorder.Body.String())
+	}
+	awaitAgentWake(t, wakes, released)
+	if count, data := handoffs(t, rig.client, released); count != 0 {
+		t.Fatalf("the stream holds %d hand-offs for the released session %s, want none: its message is a wake for the worker, not a question for the daemon; the last: %s",
+			count, released, data)
+	}
+
+	recorder := send(handoffAgent)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("a send to the stopped session %s, not released = %d %s, want 200 handed off", handoffAgent, recorder.Code, recorder.Body.String())
+	}
+	var answer struct {
+		Recipient string `json:"recipient"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || answer.Recipient != handoffAgent {
+		t.Fatalf("the send to %s answered %s (%v), want %s as its recipient", handoffAgent, recorder.Body.String(), err, handoffAgent)
+	}
+	if count, _ := handoffs(t, rig.client, handoffAgent); count != 1 {
+		t.Fatalf("the stream holds %d hand-offs for %s, want the one its send made", count, handoffAgent)
+	}
+}
+
+// The give-up of an agent delivery nothing can place, for a session whose registry entry is
+// released, is the give-up it was before the hand-off existed: its no_holder notice, and the wake
+// reported for that session, which is what brings the released pod back. Nothing is handed off.
+// A session of the same project that is not released is handed off at the same point instead,
+// and so is never given up: the control that the run reaches the hand-off at all.
+func TestAGiveUpForAReleasedLegionAgentReachesItsWake(t *testing.T) {
+	harness := newListenerDeliveryHarness(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	const released, stopped = "ses_released_giveup", "ses_stopped_giveup"
+	agents, err := legionagents.Open(harness.client.Conn, legionagents.WithReplicas(1))
+	if err != nil {
+		t.Fatalf("open the legion agent registry: %v", err)
+	}
+	for _, entry := range []legionagents.Entry{
+		{SessionID: released, Issue: "INFRA-204", Role: "tester", Released: true},
+		{SessionID: stopped, Issue: "INFRA-204", Role: "implementer"},
+	} {
+		entry.LegionProject, entry.Harness, entry.StartedAt = "infra", "omp", "2026-10-26T03:00:00Z"
+		entry.RoleToken, entry.Title = legionagents.RoleToken("infra", entry.Issue, entry.Role), "Legion "+entry.Role+" · "+entry.Issue
+		if _, err := agents.Put(ctx, entry); err != nil {
+			t.Fatalf("record %s: %v", entry.SessionID, err)
+		}
+	}
+	if _, err := agents.PutProject(ctx, "infra", legionagents.Project{
+		Answering: true, UpdatedAt: time.Now().UTC().Format("2006-01-02T15:04:05Z"),
+	}); err != nil {
+		t.Fatalf("state that the project answers: %v", err)
+	}
+
+	cfg := harness.config
+	cfg.unplaceableRetryWindow = 0
+	cfg.handoff = &legionHandoff{
+		client: cfg.client, registry: cfg.registry, sessions: cfg.sessions,
+		agents: newLegionAgentRegistry(agents), logger: logging.NewWithWriter("test", harness.logs),
+	}
+	cfg.wakes = newWakeReporter(ctx, harness.client)
+	wakes := subscribeWakes(t, harness.client.Conn)
+
+	run := startUnplaceableDelivery(t, harness, cfg, released, 0)
+	waitFor(t, 15*time.Second, "the released session "+released+"'s delivery to be given up", func() bool {
+		for _, record := range deliveryRecords(t, harness.logs.String(), "listener agent delivery given up") {
+			if record.SessionID == released {
+				return true
+			}
+		}
+		return false
+	})
+	assertDeliveryException(t, run.exceptions, run.item, "no_holder")
+	awaitAgentWake(t, wakes, released)
+	if count, data := handoffs(t, harness.client, released); count != 0 {
+		t.Fatalf("the stream holds %d hand-offs for the released session %s, want none: its give-up is its wake; the last: %s", count, released, data)
+	}
+
+	startUnplaceableDelivery(t, harness, cfg, stopped, 0)
+	waitFor(t, 15*time.Second, "the stopped session "+stopped+"'s delivery to be handed off", func() bool {
+		count, _ := handoffs(t, harness.client, stopped)
+		return count == 1
+	})
+	for _, record := range deliveryRecords(t, harness.logs.String(), "listener agent delivery given up") {
+		if record.SessionID == stopped {
+			t.Fatalf("the stopped session %s, not released, was given up as well as handed off:\n%s", stopped, harness.logs.String())
+		}
 	}
 }
 

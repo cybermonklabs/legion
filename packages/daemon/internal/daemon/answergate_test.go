@@ -151,3 +151,38 @@ func TestARefusedStartAndAnOlderConversationLeaveTheLoopItsAppend(t *testing.T) 
 		t.Fatalf("an append to an older conversation = %t, %v; want it written", ran, err)
 	}
 }
+
+// The loop answers for three states alone: a claim the workflow suspended (a parked child, a tree
+// whose root left the workflow during its linger), one retired, and one closed (no machine holds
+// it any more). A claim suspended by idle release is none of them: the daemon keeps its session to
+// resume on the next wake for it (INFRA-945), so the gate says it runs its conversation, and a
+// question that raced the registry's `released` is forwarded to the role topic - whose message
+// wakes the role - rather than answered in the name of a worker that is coming back.
+func TestTheGateHoldsAReleasedClaimsConversationAndNoOtherStoppedOne(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		state   supervise.ClaimState
+		by      supervise.SuspendSource
+		closed  bool
+		running bool
+	}{
+		{name: "released", state: supervise.StateSuspended, by: supervise.SuspendedByReleased, running: true},
+		{name: "suspended by the workflow", state: supervise.StateSuspended, by: supervise.SuspendedByDaemon},
+		{name: "retired", state: supervise.StateRetired},
+		{name: "closed", state: supervise.StateRetired, closed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			view := supervise.ClaimView{Claim: supervise.Claim{Token: gateToken, Session: "ses_tester", State: tc.state, SuspendedBy: tc.by, Generation: 3}}
+			gate := newAnswerGate(&launchChecks{}, func(claim.Token) (supervise.ClaimView, bool) { return view, !tc.closed },
+				slog.New(slog.NewTextHandler(io.Discard, nil)))
+			if got := gate.Running(gateToken, "ses_tester"); got != tc.running {
+				t.Fatalf("Running(%s) for the claim %s %s by %q = %t, want %t", "ses_tester", gateToken, tc.state, tc.by, got, tc.running)
+			}
+			wrote := false
+			ran, err := gate.Append(gateToken, "ses_tester", func() error { wrote = true; return nil })
+			if err != nil || ran != !tc.running || wrote != !tc.running {
+				t.Fatalf("Append for the claim %s %s by %q = %t, %v, wrote %t; want it written %t", gateToken, tc.state, tc.by, ran, err, wrote, !tc.running)
+			}
+		})
+	}
+}

@@ -201,6 +201,11 @@ func (s *server) registeredTarget(ctx context.Context, route model.Route, answer
 // workflow, so no next holder of the role is coming (legionagents.Entry.Finished). A role whose
 // issue still runs names none: nobody holds it for a while between two of its workers, and the
 // message is the next worker's, which Envoy keeps for it.
+//
+// Neither a session nor a role names an entry that is released (dispatchenvoy.LegionAgent.Released):
+// the daemon released that session's idle issue pod and resumes it on the wake the message raises,
+// so the listener hands it to no daemon and answers it as before the registry existed, and the
+// delivery records that answer.
 func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispatchenvoy.LegionAgent, bool) {
 	if route.Kind == "role" {
 		agents, err := s.deps.Envoy.RoleAgents(ctx, route.ID)
@@ -209,7 +214,7 @@ func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispat
 				"role", route.ID, "error", err)
 			return dispatchenvoy.LegionAgent{}, false
 		}
-		if len(agents) == 0 || !agents[0].Finished {
+		if len(agents) == 0 || !agents[0].Finished || agents[0].Released {
 			return dispatchenvoy.LegionAgent{}, false
 		}
 		return agents[0], true
@@ -221,6 +226,9 @@ func (s *server) registeredAgent(ctx context.Context, route model.Route) (dispat
 	if err != nil {
 		slog.Warn("dispatch: read the Legion agent registry for a session with no live record",
 			"session", route.ID, "error", err)
+		return dispatchenvoy.LegionAgent{}, false
+	}
+	if agent.Released {
 		return dispatchenvoy.LegionAgent{}, false
 	}
 	return agent, true

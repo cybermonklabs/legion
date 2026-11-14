@@ -30,14 +30,17 @@ const (
 // Legion agent registry holds two stopped sessions of the role legion-test-planner, stopped-2
 // newest and stopped-1 before it, each of an issue that has left the workflow (`finished`). Its
 // registry reads fail while registryDown is set, and its entries carry no `finished` while
-// roleRuns is set, as the registry's entries of an issue the workflow still runs do. It takes
-// every send, as its hand-off does, and records the session each one is for; while refuseSends is
-// set it records each and refuses it as a listener with no daemon answering for the agent does.
+// roleRuns is set, as the registry's entries of an issue the workflow still runs do, and carry
+// `released` while released is set, as the entries of a claim whose idle pod the daemon released
+// do. It takes every send, as its hand-off does, and records the session each one is for; while
+// refuseSends is set it records each and refuses it as a listener with no daemon answering for
+// the agent does.
 type stoppedAgentListener struct {
 	*httptest.Server
 	registryDown atomic.Bool
 	refuseSends  atomic.Bool
 	roleRuns     atomic.Bool
+	released     atomic.Bool
 
 	mu    sync.Mutex
 	sends []string
@@ -56,6 +59,11 @@ func newStoppedAgentListener(t *testing.T) *stoppedAgentListener {
 		// one that has left it (legionagents.Entry.Finished).
 		if !listener.roleRuns.Load() {
 			entry["finished"] = true
+		}
+		// It writes `released` for a claim whose idle issue pod the daemon released
+		// (legionagents.Entry.Released), and omits it otherwise.
+		if listener.released.Load() {
+			entry["released"] = true
 		}
 		return entry
 	}
@@ -301,15 +309,18 @@ func TestMentionOfAStoppedRegisteredAgentIsSentToItsSessionAndTakesItsReply(t *t
 	}
 }
 
-// A target the registry does not name, every target while the registry does not answer, and a
+// A target the registry does not name, every target while the registry does not answer, a
 // target the registry names whose daemon does not answer - the listener refuses the send, having
-// handed it to no daemon - are refused exactly as before the registry existed: the listener's own
-// failure recorded, with the session it recorded then.
+// handed it to no daemon - and a target whose entry is released - its daemon released the idle
+// issue pod and resumes the session on the message's wake, so the listener hands it to no daemon
+// - are refused exactly as before the registry existed: the listener's own failure recorded, with
+// the session it recorded then.
 func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
 		registryDown bool
 		refuseSends  bool
+		released     bool
 		session      string
 		role         string
 		// wantSends is the least number of sends each named session takes, nil when the
@@ -325,11 +336,14 @@ func TestTargetTheRegistryDoesNotNameKeepsTheListenersFailure(t *testing.T) {
 			name: "no daemon answers", refuseSends: true, session: stoppedAgent, role: registeredRole,
 			wantSends: map[string]int{stoppedAgent: 3, stoppedNewest: 2},
 		},
+		// Finished as well, so the role path's own check is the one that names no session.
+		{name: "released", released: true, session: stoppedAgent, role: registeredRole},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			listener := newStoppedAgentListener(t)
 			listener.registryDown.Store(tc.registryDown)
 			listener.refuseSends.Store(tc.refuseSends)
+			listener.released.Store(tc.released)
 			handler, database := newTargetedMessageHandler(t, listener.URL)
 			issue := createInteractionIssue(t, handler, "TEST", "Unanswered", "before")
 

@@ -102,6 +102,30 @@ func TestAReleasedClaimIsReadByItsTokenAndItsSessionUntilAnotherPathTakesItOver(
 	}
 }
 
+// ReleasedSessions names the session a released claim kept, with its issue, for the registry's
+// `released`, and names it no longer once another path takes the claim over.
+func TestReleasedSessionsNamesTheSessionOfEveryReleasedClaim(t *testing.T) {
+	store := migratedStore(t)
+	ctx := context.Background()
+	seedReleasedPod(t, store, "session-1")
+
+	released, err := store.ReleasedSessions(ctx, "legion")
+	if err != nil || len(released) != 1 || released["session-1"] != rootIssue {
+		t.Fatalf("ReleasedSessions = %v, %v; want session-1 of %s", released, err, rootIssue)
+	}
+	if other, err := store.ReleasedSessions(ctx, "another"); err != nil || len(other) != 0 {
+		t.Fatalf("another project's ReleasedSessions = %v, %v; want none", other, err)
+	}
+
+	if _, err := store.Pool().Exec(ctx, `update claims set suspended_by = $2 where token = $1`,
+		string(releasedToken), string(supervise.SuspendedByDaemon)); err != nil {
+		t.Fatalf("take the claim over: %v", err)
+	}
+	if released, err := store.ReleasedSessions(ctx, "legion"); err != nil || len(released) != 0 {
+		t.Fatalf("ReleasedSessions once the workflow suspended the claim = %v, %v; want session-1 named no longer", released, err)
+	}
+}
+
 // A wake mark is taken once per key, which is what makes one head that settles again as each of
 // its checks finishes wake a pod once; a different key is a different wake.
 func TestAWakeMarkIsTakenOncePerKey(t *testing.T) {

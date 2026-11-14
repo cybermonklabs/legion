@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -77,6 +78,8 @@ type fakeStore struct {
 	rows []store.AgentConversation
 	// finished is what FinishedIssues says of each issue; an issue it does not name is running.
 	finished map[string]bool
+	// released is what ReleasedSessions says: the session of each released claim, with its issue.
+	released map[string]string
 	// standingErr is what FinishedIssues fails with while it is set.
 	standingErr error
 }
@@ -90,6 +93,21 @@ func (s *fakeStore) setFinished(issue string, finished bool) {
 		s.finished = map[string]bool{}
 	}
 	s.finished[issue] = finished
+}
+
+// setReleased is the daemon releasing the idle issue pod of the claim that kept session, on
+// issue, or, with released false, a wake resuming it.
+func (s *fakeStore) setReleased(session, issue string, released bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.released == nil {
+		s.released = map[string]string{}
+	}
+	if released {
+		s.released[session] = issue
+	} else {
+		delete(s.released, session)
+	}
 }
 
 func (s *fakeStore) failStandings(err error) {
@@ -154,6 +172,19 @@ func (s *fakeStore) FinishedIssues(_ context.Context, project string, outOfWorkf
 		}
 	}
 	return finished, nil
+}
+
+// ReleasedSessions is the released claims the test set, each read its own map, as
+// store.ReleasedSessions reads a new one every time.
+func (s *fakeStore) ReleasedSessions(_ context.Context, project string) (map[string]string, error) {
+	if project != legionProject {
+		return nil, fmt.Errorf("the mirror read the released claims of %s, want %s", project, legionProject)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	released := map[string]string{}
+	maps.Copy(released, s.released)
+	return released, nil
 }
 
 // beat is one heartbeat the stand-in took.
@@ -290,11 +321,12 @@ func (s *standIn) entry(raw []byte) (Entry, error) {
 	want := []string{"harness", "issue", "legion_project", "role", "role_token", "session_id", "started_at", "title"}
 	got := make([]string, 0, len(fields))
 	for key := range fields {
-		// finished is the one optional field: it is written only for an issue that has left the
-		// workflow, and omitted while the issue runs, which is what the listener reads as false.
-		if key == "finished" {
+		// finished and released are the optional fields: each is written only when it is true -
+		// an issue that has left the workflow, a claim suspended by idle release - and omitted
+		// otherwise, which is what the listener reads as false.
+		if key == "finished" || key == "released" {
 			if value, ok := fields[key].(bool); !ok || !value {
-				return Entry{}, fmt.Errorf("finished is %v, want it written only when it is true", fields[key])
+				return Entry{}, fmt.Errorf("%s is %v, want it written only when it is true", key, fields[key])
 			}
 			continue
 		}
@@ -739,5 +771,59 @@ func TestTheMirrorWritesTheStandingItLastReadAndRetriesAReadThatFailed(t *testin
 	})
 	if _, puts, _ := listener.snapshot(); !puts[2].Finished {
 		t.Fatalf("a registration of a finished issue is %+v, want it finished", puts[2])
+	}
+}
+
+// An entry's `released` is its claim's: true while the daemon has released the claim's idle issue
+// pod and keeps the session to resume (supervise.Claim.Released), so the listener hands a message
+// to that session to no daemon and it reaches the wake path instead, and false again once a wake
+// has resumed it. The mirror writes the issue's conversations again on each change, only the
+// released claim's own session carrying the flag.
+func TestTheMirrorWritesReleasedWhileAClaimIsReleasedAndWithoutItOnceResumed(t *testing.T) {
+	listener, server := newStandIn(t)
+	st := &fakeStore{rows: []store.AgentConversation{testerRow(t, "ses-0", 0), testerRow(t, "ses-1", 1)}}
+	_, clock := runMirror(t, server, st, &logs{})
+	w := clock.wait(t)
+	batches, _, _ := listener.snapshot()
+	if len(batches) != 1 || len(batches[0]) != 2 {
+		t.Fatalf("the boot wrote %+v, want one batch holding both conversations", batches)
+	}
+	for _, entry := range batches[0] {
+		if entry.Released {
+			t.Fatalf("the boot wrote %s released while no claim of it is", entry.SessionID)
+		}
+	}
+
+	// The daemon releases the pod of ses-1's claim: its entry says so, ses-0's does not.
+	st.setReleased("ses-1", "LEGION-7", true)
+	clock.fire(w)
+	fireUntil(t, clock, "wrote the released claim's issue again", func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) == 2
+	})
+	_, puts, _ := listener.snapshot()
+	if puts[0].SessionID != "ses-0" || puts[0].Released || puts[1].SessionID != "ses-1" || !puts[1].Released {
+		t.Fatalf("the release wrote %+v, want ses-0 as it was and ses-1 released: a message to the released session ses-1 must reach its wake, not the answer loop", puts)
+	}
+
+	// A release that did not change writes nothing.
+	for range 2 {
+		clock.fire(clock.wait(t))
+	}
+	if _, again, _ := listener.snapshot(); len(again) != 2 {
+		t.Fatalf("a release that did not change wrote %+v, want only the two writes the release made", again)
+	}
+
+	// A wake resumes the claim: the next refresh writes ses-1 without the flag.
+	st.setReleased("ses-1", "LEGION-7", false)
+	fireUntil(t, clock, "wrote the resumed claim's issue again", func() bool {
+		_, puts, _ := listener.snapshot()
+		return len(puts) == 4
+	})
+	_, puts, _ = listener.snapshot()
+	for _, entry := range puts[2:] {
+		if entry.Released {
+			t.Fatalf("the resume wrote %+v, want %s without released once its claim was resumed", puts[2:], entry.SessionID)
+		}
 	}
 }

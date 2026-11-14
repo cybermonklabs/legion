@@ -1388,6 +1388,19 @@ refusing it, and the loop writes it into the asking agent's conversation rather 
   loop already made for it and its result, goes to the running agent on its role topic, held and
   offered again until a live session holds the role, and back to the loop if the claim stops first.
   A claim's start waits at most 10 seconds for an answer being appended to its conversation.
+- **Never a released claim.** The loop answers for three stopped states alone: a claim the
+  workflow suspended (a parked child, or a tree whose root left the workflow during its linger),
+  one retired, and one closed. A claim the daemon suspended by idle release is none of them: its
+  idle issue pod was released with its session, phase and pending task kept, and the next message
+  to it is the wake that brings the pod back and resumes that very session. So the mirror writes
+  such a session's registry entry `released` each minute, and again without it once a wake resumes
+  the claim, and the listener hands no message for a `released` session or role off: a send is
+  answered `404` beside its wake, a delivery nothing can place is given up with its `no_holder`
+  notice and its wake, and Dispatch records the listener's own answer, each as before the hand-off
+  existed. A question that raced the mirror's minute is treated as one to a running conversation
+  (above): forwarded to the role topic, where a message nobody holds wakes the released role, and
+  offered again until the resumed worker holds it, never answered in the name of a worker that is
+  coming back.
 - **The model** is the conversation's own: an `anthropic/…` model run on `anthropic-messages`
   through Anthropic's Messages API, an `openai/…` model run on `openai-responses` through OpenAI's
   Responses API, a Claude Code conversation's model through Anthropic's. Any other is not answered
