@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { z } from "zod";
-import { ISSUE_TITLE_MAX, PROJECT_NAME_MAX } from "./dispatch-api";
+import { ISSUE_TITLE_MAX, MAX_ISSUE_ADVANCES, PROJECT_NAME_MAX } from "./dispatch-api";
 import {
   ARTIFACT_STORED_TEXT_RULE,
   DISPATCH_HANDOFF_BODY_MAX,
@@ -191,6 +191,7 @@ const validCalls = {
   dispatch_issues: { project: "ACME" },
   dispatch_project: { key: "CORE", name: "Core" },
   dispatch_projects: {},
+  dispatch_priorities: { project: ["DSP"] },
   dispatch_architecture_sync: { project: "CORE" },
   dispatch_open_asks: {},
   dispatch_answers: {},
@@ -206,7 +207,7 @@ function schemaFor(name: keyof typeof validCalls) {
 }
 
 const ISSUE_UPDATE_FIELDS_RULE =
-  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, components, repo, before, or after.";
+  "Issue update requires at least one field besides issue: status, title, labels, priority, assignee, external_links, route, parent, blocked_by, advances, components, repo, before, or after.";
 const ISSUE_UPDATE_DONE_RULE =
   "status done requires reason, a non-empty note saying why the issue is closing, posted on the issue before it closes so the close carries its note.";
 const reasonOnlyWithDone = (status: string): string =>
@@ -292,6 +293,7 @@ describe("dispatchToolSpecs", () => {
       "dispatch_issues",
       "dispatch_project",
       "dispatch_projects",
+      "dispatch_priorities",
       "dispatch_architecture_sync",
       "dispatch_open_asks",
       "dispatch_answers",
@@ -480,6 +482,63 @@ describe("dispatchToolSpecs", () => {
     expect(schema.safeParse({}).success).toBe(true);
     expect(schema.safeParse({ project: "ACME" }).success).toBe(true);
     expect(schema.safeParse({ session_id: "another-session" }).success).toBe(false);
+  });
+
+  // The route takes `project` repeatable, so the tool takes a list and the command derives one
+  // `--project` per key; a bare string is the shape `dispatch open-asks` takes, not this one.
+  test("dispatch_priorities takes no arguments or a list of projects and names the two faults", () => {
+    const schema = schemaFor("dispatch_priorities");
+
+    expect(schema.safeParse({}).success).toBe(true);
+    expect(schema.safeParse({ project: ["DSP", "CORE"] }).success).toBe(true);
+    expect(schema.safeParse({ project: "DSP" }).success).toBe(false);
+    expect(schema.safeParse({ summary: true }).success).toBe(false);
+    const { description } = specFor("dispatch_priorities");
+    expect(description).toContain("advances no priority");
+    expect(description).toContain("backlog or icebox");
+  });
+
+  // A priority is advanced by an issue, which states at most MAX_ISSUE_ADVANCES of them; the
+  // bound is the contract's one literal, which the server reads through its generated copy.
+  test("both issue tools bound advances by MAX_ISSUE_ADVANCES", () => {
+    const ids = Array.from({ length: MAX_ISSUE_ADVANCES }, (_, index) => `priority-${index}`);
+
+    for (const [tool, call] of [
+      ["dispatch_issue", { project: "DSP", title: "Native workspace" }],
+      ["dispatch_issue_update", { issue: "DSP-1" }],
+    ] as const) {
+      const schema = schemaFor(tool);
+      expect(schema.safeParse({ ...call, advances: ids }).success, tool).toBe(true);
+      expect(schema.safeParse({ ...call, advances: [...ids, "one-too-many"] }).success, tool).toBe(
+        false
+      );
+      expect(schema.safeParse({ ...call, advances: [""] }).success, tool).toBe(false);
+      expect(schema.safeParse({ ...call, advances: "ship-the-daemon" }).success, tool).toBe(false);
+    }
+  });
+
+  // A whole-set write of `advances` carries the revision the read it answers returned, or the
+  // server refuses a write moving two relations (409 ADVANCES_REVISION). The update takes that
+  // revision so an agent can answer the refusal against the revision it named; a create answers
+  // no read and takes none. The revision alone changes nothing, so it is not a field an update
+  // may stand on.
+  test("dispatch_issue_update takes advances_revision beside advances, never alone", () => {
+    const update = schemaFor("dispatch_issue_update");
+
+    for (const advances of [["ship-the-daemon", "cut-the-latency"], []]) {
+      const args = { issue: "DSP-1", advances, advances_revision: 7 };
+      expect(update.safeParse(args).success, JSON.stringify(args)).toBe(true);
+    }
+    expect(update.safeParse({ issue: "DSP-1", advances: [], advances_revision: "7" }).success).toBe(
+      false
+    );
+    const alone = update.safeParse({ issue: "DSP-1", advances_revision: 7 });
+    expect(alone.success).toBe(false);
+    if (alone.success) return;
+    expect(alone.error.issues.map((issue) => issue.message)).toEqual([ISSUE_UPDATE_FIELDS_RULE]);
+    const createFields = specFor("dispatch_issue").arguments(schemaApi) as Record<string, unknown>;
+    expect(Object.keys(createFields)).toContain("advances");
+    expect(Object.keys(createFields)).not.toContain("advances_revision");
   });
 
   test("dispatch_answers accepts no arguments and rejects any key", () => {
@@ -764,6 +823,8 @@ describe("dispatchToolSpecs", () => {
       { issue: "DSP-1", parent: "" },
       { issue: "DSP-1", blocked_by: ["DSP-2"] },
       { issue: "DSP-1", blocked_by: [] },
+      { issue: "DSP-1", advances: ["ship-the-daemon"] },
+      { issue: "DSP-1", advances: [] },
       { issue: "DSP-1", components: { mode: "inherit" } },
       { issue: "DSP-1", components: { mode: "explicit", ids: ["web", "dispatch-server"] } },
       { issue: "DSP-1", components: { mode: "none", reason: "hiring" } },
