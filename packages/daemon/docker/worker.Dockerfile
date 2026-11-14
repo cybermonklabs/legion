@@ -1092,12 +1092,13 @@ COPY --from=go /out/agent-secrets /opt/legion/bin/agent-secrets
 # packages/daemon/docker/gh, the same script a tmux pane's launcher directory holds
 # (packages/daemon/internal/runtime/workerbin).
 COPY --chmod=0755 packages/daemon/docker/gh /opt/legion/bin/gh
-# git in a pod is Legion's wrapper, first on the image PATH, which runs the real git at
-# /usr/bin/git with the arguments it was given — except for a push, which it runs with
-# `-c core.hooksPath=/opt/legion/githooks` in front and the push's `--no-verify` taken out, so
-# git's own pre-push hook runs the leak guard over the update lines git computed and a role can
-# neither edit that hook nor skip it. The `-c` outranks the runtime's core.hooksPath=/dev/null
-# pin, which still holds for every other command (mainEnvironment,
+# git in a pod is Legion's wrapper, first on the image PATH. It changes a commit and a push and runs
+# every other command unchanged with the real git at /usr/bin/git. A commit goes to `legion git`,
+# which adds the commit's Omp-Session and Legion-Role trailers and then runs the real git. A push
+# runs with `-c core.hooksPath=/opt/legion/githooks` in front and the push's `--no-verify` taken
+# out, so git's own pre-push hook runs the leak guard over the update lines git computed and a
+# role can neither edit that hook nor skip it. The `-c` outranks the runtime's
+# core.hooksPath=/dev/null pin, which still holds for every other command (mainEnvironment,
 # packages/daemon/internal/runtime/sandbox/manifest.go): packages/daemon/docker/git.
 COPY --chmod=0755 packages/daemon/docker/git /opt/legion/bin/git
 # jj in a pod is Legion's wrapper too, which runs the real jj at /usr/local/bin/jj with the
@@ -1140,7 +1141,11 @@ ENV LEGION_LEAK_CHECK_TAG=${LEAK_CHECK_TAG}
 # and prints its version: /usr/bin/git, /usr/local/bin/jj and /usr/local/bin/gh. So the three
 # absolute paths stay as fixed as they were when git and jj were reached by their own names, and
 # a pod environment can name all three; what has moved is that a push now passes through the git
-# wrapper's hook. The pre-push hook itself is root's, executable, and in the root-owned
+# wrapper's hook and a commit through `legion git`. One commit through the PATH's git, in a scratch
+# repository under /tmp with a probe identity, LEGION_ROLE=tester and the Oh My Pi session
+# image-probe, must carry the lines `Omp-Session: image-probe` and `Legion-Role: tester`. That
+# runs the image's own git wrapper with the image's own `legion`, which no pod runs before the
+# image rolls out. The pre-push hook itself is root's, executable, and in the root-owned
 # directory checked above, so no role can edit it or put another in its place. flock is pinned
 # the same way, and for a reason the other gates do not
 # cover: the installs Legion renders call it as /usr/bin/flock — the plugin pair's for an
@@ -1236,6 +1241,15 @@ RUN --mount=type=bind,source=packages/pi-envoy/package.json,target=/tmp/source/p
     flock="$(command -v flock)"; echo "flock: $flock"; test "$flock" = /usr/bin/flock; \
     nc="$(command -v nc)"; echo "nc: $nc"; test "$nc" = /usr/bin/nc; \
     legion="$(command -v legion)"; echo "legion: $legion"; test "$legion" = /opt/legion/bin/legion; \
+    probe="$(mktemp -d)"; git init -q "$probe"; \
+    GIT_AUTHOR_NAME='Image probe' GIT_AUTHOR_EMAIL=image-probe@example.invalid \
+      GIT_COMMITTER_NAME='Image probe' GIT_COMMITTER_EMAIL=image-probe@example.invalid \
+      LEGION_ROLE=tester DISPATCH_HOST=omp DISPATCH_SESSION_ID=image-probe \
+      git -C "$probe" commit --allow-empty -q -m probe; \
+    message="$(git -C "$probe" log -1 --format=%B)"; printf 'probe commit:\n%s\n' "$message"; \
+    printf '%s\n' "$message" | grep -qx 'Omp-Session: image-probe'; \
+    printf '%s\n' "$message" | grep -qx 'Legion-Role: tester'; \
+    rm -rf "$probe"; \
     gh="$(command -v gh)"; echo "gh: $gh"; test "$gh" = /opt/legion/bin/gh; /usr/local/bin/gh --version; \
     npm="$(command -v npm)"; echo "npm: $npm"; test "$npm" = /usr/local/bin/npm; \
     DISPATCH_HOST=omp DISPATCH_SESSION_ID=image-check HOME=/tmp \

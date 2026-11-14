@@ -1,11 +1,18 @@
 #!/bin/sh
-# The git first on a pod's PATH, /opt/legion/bin/git (worker.Dockerfile). It runs the real git,
-# /usr/bin/git, with the arguments it was given and nothing else — except for a push, which it
-# runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand and with
-# the push's own `--no-verify` taken out. So git itself computes the update lines, hands them to
-# the root-owned pre-push hook in that directory, and the hook runs Legion's leak guard before a
-# byte reaches the remote; a role can neither write that hook nor name a hooks path that
-# outranks this one.
+# The git first on a pod's PATH, /opt/legion/bin/git (worker.Dockerfile). It changes two commands,
+# a commit and a push, and runs every other one unchanged: the real git, /usr/bin/git, gets "$@"
+# as it came.
+#
+# A commit goes to `legion git --real /usr/bin/git` (packages/daemon/cmd/legion/git.go), which
+# adds the commit's Omp-Session and Legion-Role trailers and then runs the real git. It adds each
+# line only when its value is valid and git alone would accept the message. The two lines name the
+# session and the role that made the commit.
+#
+# A push runs with `-c core.hooksPath=/opt/legion/githooks` immediately before the subcommand and
+# with the push's own `--no-verify` taken out. So git itself computes the update lines, hands them
+# to the root-owned pre-push hook in that directory, and the hook runs Legion's leak guard before a
+# byte reaches the remote; a role can neither write that hook nor name a hooks path that outranks
+# this one.
 #
 # The `-c` goes after the caller's own global options and before the subcommand, rather than
 # ahead of every argument, because git takes the last `-c` of a name: a caller's own
@@ -16,7 +23,7 @@
 # reason, which every pod's git carries in GIT_CONFIG_KEY_n (mainEnvironment,
 # packages/daemon/internal/runtime/sandbox/manifest.go): measured on the same git, a
 # `-c core.hooksPath=<dir>` beside that pin reads back as <dir>. The pin still holds for every
-# other command, which is the whole point of leaving them alone.
+# other command, a commit included: `legion git` names no hooks path.
 #
 # What this does not stop is a role that runs /usr/bin/git itself, PATH unread. Nothing here
 # tries to: the spec's Design says of every layer of this guard that none of them stops somebody
@@ -33,21 +40,24 @@
 # A push is a command whose subcommand word is `push` or `send-pack`. A git alias that expands to
 # one (`git p` with alias.p=push) is neither: git expands it after this wrapper has read the word,
 # so it runs under the runtime's core.hooksPath=/dev/null with no pre-push hook and no leak check,
-# as it always has.
+# as it always has. A commit is a command whose subcommand word is `commit`, and an alias that
+# expands to one (`git ci` with alias.ci=commit) gets no trailers for the same reason.
 set -u
 
 real=/usr/bin/git
 hooks=/opt/legion/githooks
+legion=/opt/legion/bin/legion
 
 # One pass finds the subcommand: the first word that is no global option. The global options
 # whose value is the next argument are git's own (`git --help`, and handle_options in git.c for
 # `--attr-source` and `--shallow-file`, which the usage line leaves out): a wrapper that read one
-# of those values as the subcommand would miss a push — jj's own `--git-dir <dir> push` is
-# exactly that shape — or rewrite a command that is none. Measured on git 2.47.3,
+# of those values as the subcommand would miss a push or a commit — jj's own `--git-dir <dir>
+# push` is exactly that shape — or change a command that is neither. Measured on git 2.47.3,
 # `git --shallow-file X version` runs `version`, so `--shallow-file` is one of them. The
 # `--opt=value` spellings need nothing: they are one word, and this skips over them as it does
 # over any other option. ahead counts the words in front of the subcommand.
 push=0
+commit=0
 value=0
 ahead=0
 for arg; do
@@ -58,18 +68,23 @@ for arg; do
       -C | -c | --git-dir | --work-tree | --namespace | --config-env | --attr-source | --shallow-file) value=1 ;;
       -*) ;;
       push | send-pack) push=1; break ;;
+      commit) commit=1; break ;;
       *) break ;;
     esac
   fi
   ahead=$((ahead + 1))
 done
 
-# Only a push has its list rebuilt; every other command gets "$@" as it came. A POSIX shell edits
-# its own positional parameters by taking each from the front and putting the kept ones back at
-# the end with `set -- "$@" "$arg"`, and dash copies the whole list each time, so a rebuild costs
-# time that grows with the square of the argument count: a rescue push's leak check spent 62 s of
-# its 78 s in this wrapper, rebuilding a `git rev-list` of about 4,970 `^<sha>` arguments
-# (dispatch://INFRA-3456).
+# Only a push has its list rebuilt here. A commit goes to `legion git` with "$@" as it came, and
+# legion git, in Go, puts the trailer arguments in. Every other command goes to the real git with
+# "$@" as it came. A POSIX shell edits its own positional parameters by taking each from the front
+# and putting the kept ones back at the end with `set -- "$@" "$arg"`, and dash copies the whole
+# list each time, so a rebuild costs time that grows with the square of the argument count: a
+# rescue push's leak check spent 62 s of its 78 s in this wrapper, rebuilding a `git rev-list` of
+# about 4,970 `^<sha>` arguments (dispatch://INFRA-3456).
+if [ "$commit" -eq 1 ]; then
+  exec "$legion" git --real "$real" -- "$@"
+fi
 if [ "$push" -eq 0 ]; then
   exec "$real" "$@"
 fi

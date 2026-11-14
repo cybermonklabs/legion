@@ -102,9 +102,11 @@ func TestTheGitWrappersHooksPathOutranksTheCallersOwn(t *testing.T) {
 	}
 }
 
-// Everything that is no push reaches the real git exactly as it was written: no hooks path of
-// the wrapper's, and no `--no-verify` taken out. The pin that keeps hooks off for every other
-// command is the runtime's, and this wrapper leaves it alone.
+// A command that is neither a push nor a commit reaches the real git with its arguments as they
+// came: no hooks path of the wrapper's, and no `--no-verify` taken out. A commit is the other
+// command the wrapper changes: it goes to `legion git` (TestTheGitWrapperHandsACommitToLegionGit).
+// The pin that keeps hooks off for every other command is the runtime's, and this wrapper leaves
+// it alone.
 func TestTheGitWrapperPassesANonPushThroughByteForByte(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv")
@@ -121,15 +123,37 @@ func TestTheGitWrapperPassesANonPushThroughByteForByte(t *testing.T) {
 	}
 }
 
-// A command that is no push reaches the real git with its arguments as they came, however many
-// there are, because the wrapper does not rebuild the list of one: in dash a rebuild costs time
-// that grows with the square of the argument count, and a leak check's `git rev-list` with one
-// `^<sha>` for each commit a remote holds is about 4,970 arguments long for a clone of this
-// repository. Among the 20,000 here are the ones a rebuild could get wrong: a space, a newline, a
-// leading `-`, a `--no-verify`, which only a push loses, and a `push` that is no subcommand. The
-// arguments alone would pass through a rebuild as well, so the run is also held to 10 s: without
-// a rebuild it takes milliseconds, and the rebuild the wrapper made before took four minutes in a
-// pod.
+// A commit goes to `legion git --real /usr/bin/git`, with the caller's arguments after `--` as
+// they came, the global options in front of the subcommand included. legion git adds the trailers
+// and then runs the real git itself. The logging stand-in cannot be that real git under legion
+// git, whose reads it would answer with nothing, so what legion git adds is its own tests'
+// (packages/daemon/cmd/legion/git_test.go). Here the stand-in is legion, and the real git is not
+// run at all.
+func TestTheGitWrapperHandsACommitToLegionGit(t *testing.T) {
+	dir := t.TempDir()
+	log := filepath.Join(dir, "argv")
+	script := wrapperCopy(t, dir, "git", [2]string{
+		"legion=/opt/legion/bin/legion", "legion=" + logging(t, filepath.Join(dir, "stand-in-legion"), log),
+	})
+	run := fixturegit.Isolated(t, filepath.Join(dir, "home"))
+	if out, err := run.Try(dir, script, "-C", dir, "commit", "-m", "x"); err != nil {
+		t.Fatalf("the wrapper failed: %v\n%s", err, out)
+	}
+	want := []string{"git", "--real", "/usr/bin/git", "--", "-C", dir, "commit", "-m", "x"}
+	if got := ranAs(t, log); !slices.Equal(got, want) {
+		t.Fatalf("the wrapper ran legion with %q, want %q", got, want)
+	}
+}
+
+// A command that is neither a push nor a commit reaches the real git with its arguments as they
+// came, however many there are, because the wrapper does not rebuild the list of one: in dash a
+// rebuild costs time that grows with the square of the argument count, and a leak check's `git
+// rev-list` with one `^<sha>` for each commit a remote holds is about 4,970 arguments long for a
+// clone of this repository. Among the 20,000 here are the ones a rebuild could get wrong: a space,
+// a newline, a leading `-`, a `--no-verify`, which only a push loses, and a `push` that is no
+// subcommand. The arguments alone would pass through a rebuild as well, so the run is also held to
+// 10 s: without a rebuild it takes milliseconds, and the rebuild the wrapper made before took four
+// minutes in a pod.
 func TestTheGitWrapperPassesTwentyThousandArgumentsOfANonPushThroughWithoutARebuild(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv")
