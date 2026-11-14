@@ -61,7 +61,7 @@ func (g *Guard) GhCall(ctx context.Context, req GhRequest) ([]byte, error) {
 	argv := append([]string{check, "gh-guard"}, req.Args...)
 	status, printed, err := g.run(ctx, child{argv: argv})
 	if err != nil {
-		return nil, &SetupFailure{What: whatGhCall, Why: "the shared public leak check could not be run", Err: err}
+		return nil, sharedNotRun(whatGhCall, err)
 	}
 	var buffered []byte
 	if status == checkWantsStdin {
@@ -410,7 +410,7 @@ func (g *Guard) askAgain(ctx context.Context, argv []string, req GhRequest) ([]b
 		},
 	})
 	if err != nil {
-		return buffered, 0, "", &SetupFailure{What: whatGhCall, Why: "the shared public leak check could not be run", Err: err}
+		return buffered, 0, "", sharedNotRun(whatGhCall, err)
 	}
 	if status == checkWantsStdin {
 		return buffered, 0, printed, &SetupFailure{

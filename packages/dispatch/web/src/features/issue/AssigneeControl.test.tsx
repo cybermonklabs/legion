@@ -16,6 +16,8 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { AssigneeControl } from "./AssigneeControl";
 
 const issue: Issue = {
+  advances: [],
+  advances_revision: 0,
   assignee: "alice",
   claim: null,
   components: { mode: "inherit", ids: [], unknown: [], reason: null, inherited_from: null },
@@ -59,6 +61,8 @@ const details: IssueDetails = {
   referenced_by_count: 0,
 };
 const summary: IssueSummary = {
+  advances: [],
+  advances_revision: 0,
   route: null,
   repo: null,
   resolved_repo: null,

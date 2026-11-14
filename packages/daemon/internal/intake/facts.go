@@ -762,6 +762,34 @@ type PullRequestClosed struct {
 
 func (PullRequestClosed) isFact() {}
 
+// PullRequestDequeued is GitHub's pull_request action `dequeued`: the pull request left the merge
+// queue, and HeadSHA is the head it left the queue at. GitHub's payload names why it left (its
+// `reason`), but the listener drops that field (packages/envoy/internal/contracts/normalize.go,
+// the pull_request payload), so the fact carries no reason.
+type PullRequestDequeued struct {
+	Repo    string
+	Number  int
+	HeadSHA string
+}
+
+func (PullRequestDequeued) isFact() {}
+
+// MergeQueueReadDone is the outbox's merge-queue read (record.MergeQueueRead) finishing with no
+// merge: never decoded from an event. GitHub answered that pull request Number of Issue is open,
+// or closed unmerged, or, with Unread, no read of it succeeded, so the daemon does not know
+// whether GitHub merged it. Head is the head that left the merge queue (PullRequestDequeued). The
+// workflow writes the message that tells the issue's merger, while the issue still stands in
+// merging at Head (workflow's mergeQueueReadDone). A merged answer applies PullRequestMerged
+// instead, as the webhook's merge would.
+type MergeQueueReadDone struct {
+	Issue  string
+	Number int
+	Head   string
+	Unread bool
+}
+
+func (MergeQueueReadDone) isFact() {}
+
 // PullRequestMissing is the daemon's per-issue read of GitHub finding no open pull request on
 // Branch, the branch of Issue, whose implementer recorded its handoff at HandoffCommit while Issue
 // is in implementing with no open or merged pull request recorded: never decoded from an event.
@@ -1081,6 +1109,17 @@ type DaemonBooted struct {
 }
 
 func (DaemonBooted) isFact() {}
+
+// CutoverMergerRepair is the one-time boot repair of the mergers the `awaiting_merge` cutover
+// left stopped (dispatch://INFRA-3274/spec R2): an earlier build's idle release stopped the
+// merger's pod while its issue waited in `awaiting_merge`, which no role worked, so it armed no
+// backstop, and the migration that moved the issue to `merging` gave the merger no task. It is
+// never decoded from an event. The boot applies it once per Dispatch project, under a fixed
+// event id (`cutover-merger-repair:<project>`), before the consumers start, so processed_events
+// is its once-only record: a later boot's apply is a duplicate, and no handler runs.
+type CutoverMergerRepair struct{}
+
+func (CutoverMergerRepair) isFact() {}
 
 // CheckReport is the checking role's report on one look of its closed issue's production check:
 // the `legion` tool's `handoff_complete` on an issue whose check is open (api/handoff.go),
