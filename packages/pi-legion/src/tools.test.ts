@@ -163,9 +163,10 @@ const OMP_LEGION_TOOL_DESCRIPTION =
   "pull request on `legion/<issue>` and none recorded " +
   "merged (HANDOFF_NO_PULL_REQUEST: open it; one naming a closed pull request is the architect's to decide); a refused completion changed " +
   "nothing, so fix what it names and complete again. " +
-  "ready_for_update answers the daemon's update task on this issue's pod: `round` is the round id that task names, and the " +
+  "ready_for_update answers the daemon's update message on this issue's pod: `round` is the round id that message names, and the " +
   "daemon takes your answer for that round alone. Push every commit you want kept to the issue branch " +
-  "first, because the pod and its disk are replaced after every worker of the pod has answered. The call ends no phase. The " +
+  "first. The daemon replaces the pod and its disk when the round ends: at the moment the message names, or earlier when every " +
+  "role has answered and no turn runs. No answer delays that moment, and the end of a turn is no answer. The call ends no phase. The " +
   "daemon holds your next task until your process comes back on the new pod, in this same session. " +
   "request_backward_move returns an issue to an earlier phase (`to`, `reason`): " +
   "a phase worker moves its own issue; the tree's architect moves an issue in accepting, named by `issue`, back to implementing or testing, which " +
@@ -1490,7 +1491,7 @@ function controllerTool(daemon: () => LegionDaemonClient, minted: string[]): Reg
       throw new Error("a controller completes no phase");
     },
     onUpdateAnswered: () => {
-      throw new Error("a controller answers no update task");
+      throw new Error("a controller answers no update message");
     },
     handoffReport: noHandoffReport,
     branchHead: noBranchHead,

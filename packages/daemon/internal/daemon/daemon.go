@@ -1377,8 +1377,8 @@ type supervision struct {
 
 // live is the configuration the daemon is running on now (plan.live): where every decision of
 // this supervision reads a value the class table answers `at once` for — the update round's
-// notice bound and the deployment's recorded capability decisions — so an operator's change
-// reaches the next sweep and the next read of the state with nothing rebuilt.
+// bound and the deployment's recorded capability decisions — so an operator's change reaches the
+// next sweep and the next read of the state with nothing rebuilt.
 //
 // Every supervision is built with that holder, a test's own as much as the daemon's: cfg is
 // what boot settled and nothing moves it, so reading a live value from it would answer the
@@ -1605,9 +1605,8 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		Clock:                   p.clock,
 		Log:                     log,
 		// Every budget and every bound a decision is held to is read as that decision is made
-		// (liveBudgets): `launch_failure_limit`, `worker_rpc_timeout_seconds`,
-		// `pod_update_retask_hours` and their neighbours take effect at once, with no machine
-		// rebuilt.
+		// (liveBudgets): `launch_failure_limit`, `worker_rpc_timeout_seconds` and their
+		// neighbours take effect at once, with no machine rebuilt.
 		Settings: liveBudgets{live: p.live},
 		// A timer that fires and a prompt's send each apply their decision on a goroutine of
 		// their own, beside the machine's feeding goroutine, so each takes a hold mark of its own.
@@ -1893,10 +1892,10 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 // launch budget fails the claim. The contract decides nothing: a claim at this release's own
 // contract is as unreachable by an install as one below it, and the next bump would walk exactly
 // that claim to failed. Nothing here can move such a worker's plugin; a new image can, which is
-// what the pod round replaces the pod for. So it is left running and answers its round like any
-// other worker, with the op or by ending the turn the round's task starts (supervise's
-// turnEnded). staleRegistration accepts such a registration and charges it nothing, for the same
-// reason (supervise.Deps.NoPluginInstall).
+// what the pod round replaces the pod for. So it is left running and is asked its round like any
+// other worker, on its role's own Envoy topic (supervision.openPodUpdate). staleRegistration
+// accepts such a registration and charges it nothing, for the same reason
+// (supervise.Deps.NoPluginInstall).
 //
 // A claim in a pod round is passed over and a claim in a plugin round is not. That term is the
 // lane's own rather than this pass's: staleForTheLane holds it and says what each kind of round

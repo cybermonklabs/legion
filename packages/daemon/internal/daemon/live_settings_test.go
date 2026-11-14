@@ -338,18 +338,17 @@ func stillOpen(t *testing.T, s *shim) {
 	}
 }
 
-// The two bounds of an update round are read where the round is decided, not off the
-// configuration the daemon booted on: the notice bound at every sweep (supervision.live) and
-// the re-task bound at every ask the machine decides (supervise.Timeouts.PodUpdateRetask,
-// through liveBudgets). The rig runs the daemon's own sweep and machines over a settings holder
-// a real legion.yaml backs, so a change here is the change an operator makes.
+// The bound of an update round is read where the round is decided, not off the configuration the
+// daemon booted on: at every sweep (supervision.live), both where the sweep tells the operator's
+// side of a round held past it and where it replaces the pod at it. The rig runs the daemon's own
+// sweep and machines over a settings holder a real legion.yaml backs, so a change here is the
+// change an operator makes.
 //
-// The notice bound: a round pinned by an operator-suspended claim waits. Past the bound the
-// rig's own configuration carries, and under the holder's, nothing is told — the sweep reads
-// the holder — and the controller is told at the next sweep once the holder's bound is under
-// the wait.
-func TestThePodUpdateNoticeChangedUnderTheRunningSweepIsToldAtTheNextTick(t *testing.T) {
-	live := liveSettings(t, "pod_update_notice_hours: 8")
+// The notice: a round pinned by an operator-suspended claim waits. Past the bound the rig's own
+// configuration carries, and under the holder's, nothing is told — the sweep reads the holder —
+// and the controller is told at the next sweep once the holder's bound is under the wait.
+func TestThePodUpdateGraceChangedUnderTheRunningSweepIsToldAtTheNextTick(t *testing.T) {
+	live := liveSettings(t, "pod_update_grace_minutes: 480")
 	rig := newPodUpdateRigOn(t, live,
 		podUpdateRole{role: claim.RoleImplementer, state: supervise.StateSuspended, session: true,
 			contract: api.DaemonAPIVersion, suspendedBy: supervise.SuspendedByOperator},
@@ -360,15 +359,15 @@ func TestThePodUpdateNoticeChangedUnderTheRunningSweepIsToldAtTheNextTick(t *tes
 	rig.tick()
 	rig.awaitRound(claim.RoleTester, podUpdateRound)
 	rig.signal(claim.RoleTester, "a1b2c3d")
-	rig.clock.advance(podUpdateNotice)
+	rig.clockAt(podUpdateBound.Add(time.Hour))
 	rig.tick()
 
 	if notices := rig.notices(); len(notices) != 0 {
 		t.Fatalf("the controller was told %d times %s after the round opened; the holder's bound is 8 hours",
-			len(notices), podUpdateNotice)
+			len(notices), rig.clock.Now().Sub(podUpdateStart))
 	}
 
-	apply(t, live, map[string]any{"pod_update_notice_hours": 1})
+	apply(t, live, map[string]any{"pod_update_grace_minutes": 60})
 	rig.tick()
 
 	notices := rig.notices()
@@ -376,46 +375,37 @@ func TestThePodUpdateNoticeChangedUnderTheRunningSweepIsToldAtTheNextTick(t *tes
 		t.Fatalf("the controller was told %d times under the bound the operator changed to an hour, want once", len(notices))
 	}
 	if notices[0].Update == nil || notices[0].Update.Round != podUpdateRound {
-		t.Fatalf("the notice is %+v, want the stalled round's", notices[0])
+		t.Fatalf("the notice is %+v, want the held round's", notices[0])
 	}
 }
 
-// The re-task bound: a worker that answered nothing is asked again only once the bound has
-// passed since the last ask, and the bound is the holder's at that ask. Past the rig's own and
-// under the holder's, the worker is not asked; once the operator shortens it, the next sweep
-// asks again.
-func TestThePodUpdateRetaskChangedUnderTheRunningSweepIsReadByTheNextAsk(t *testing.T) {
-	live := liveSettings(t, "pod_update_retask_hours: 2", "pod_update_notice_hours: 8")
+// The replacement: a worker that answers nothing holds the pod until the bound, and the bound is
+// the holder's at that sweep. Past the rig's own and under the holder's, the pod is not replaced;
+// once the operator shortens it, the next sweep replaces the pod at the bound.
+func TestThePodUpdateGraceChangedUnderTheRunningSweepIsReadByTheNextReplacement(t *testing.T) {
+	live := liveSettings(t, "pod_update_grace_minutes: 120")
 	rig := newPodUpdateRigOn(t, live, readyWorker(claim.RoleImplementer))
 	rig.drifts(podUpdateDrift)
 
 	rig.tick()
-	asked := rig.awaitRound(claim.RoleImplementer, podUpdateRound)
-	first := asked.UpdateTaskedAt
-	// The ask ends with a turn of the worker's own, which answers nothing: what leaves a claim
-	// asked and unanswered for the next ask to reach (TestPodUpdateAsksAgainAfterTheRetaskBound).
-	token := rig.tokens[claim.RoleImplementer]
-	rig.handle(claim.RoleImplementer, supervise.StreamTurnStart{Claim: token, DeliveryID: "a-delivery-of-the-worker-s-own"})
-	rig.endTurn(claim.RoleImplementer, asked.Pending.ID)
-	rig.awaitClaim(claim.RoleImplementer, "the unanswered ask to end with its turn", func(c supervise.Claim) bool {
-		return c.Pending == nil
-	})
-
-	rig.clock.advance(podUpdateRetask)
+	rig.awaitRound(claim.RoleImplementer, podUpdateRound)
+	rig.clockAt(podUpdateBound.Add(time.Minute))
+	rig.tick()
 	rig.tick()
 
-	if at := rig.claimOf(claim.RoleImplementer).UpdateTaskedAt; !at.Equal(*first) {
-		t.Fatalf("the worker was asked again at %s, %s after the first ask; the holder's bound is two hours", at, podUpdateRetask)
+	if calls := rig.replacements(); len(calls) != 0 {
+		t.Fatalf("the pod was replaced %d times %s after the round opened; the holder's bound is two hours",
+			len(calls), rig.clock.Now().Sub(podUpdateStart))
 	}
 
-	apply(t, live, map[string]any{"pod_update_retask_hours": 0.25})
-	rig.tick()
+	apply(t, live, map[string]any{"pod_update_grace_minutes": 15})
 
-	again := rig.awaitSwept(claim.RoleImplementer, "the worker to be asked again under the bound the operator shortened",
-		func(c supervise.Claim) bool { return c.UpdateTaskedAt != nil && c.UpdateTaskedAt.After(*first) })
-	if again.Pending == nil || again.Pending.ID == asked.Pending.ID {
-		t.Errorf("the second ask = %+v, want a delivery of its own", again.Pending)
+	rig.awaitReplacement(1, "at the bound the operator shortened")
+	bounded := loggedLines(t, rig.logs.String(), podUpdateBoundLine)
+	if len(bounded) != 1 {
+		t.Fatalf("the bounded end was logged %d times, want once: %+v", len(bounded), bounded)
 	}
+	wantField(t, bounded[0], "unanswered", claim.RoleImplementer)
 }
 
 // A capability decision an operator records reaches the next read of the state: the deployment's

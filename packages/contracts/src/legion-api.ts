@@ -1170,12 +1170,13 @@ export const LegionTurnOutcomeResponse = z.object({
 export type LegionTurnOutcome = z.output<typeof LegionTurnOutcomeResponse>;
 
 /** `claim.ReadyForUpdateRequest`, the body of `POST /legion/v1/claims/ready-for-update`: the
- * worker's answer to its pod's update task, which says it has pushed everything it wants kept and
- * its process may be replaced. `round` is the round the worker answers for, as the update task it
- * read named it: the daemon takes the answer only for the round its claim stands in, and refuses
- * one naming any other round with 409 and a sentence naming both. `head` is the commit the worker
- * reports as the head of `legion/<issue>@origin`, empty or absent when the branch is not there (a
- * planner before its first push); the daemon records it and verifies nothing of it. */
+ * worker's answer to its pod's update message, which says it has pushed everything it wants kept
+ * and its process may be replaced. `round` is the round the worker answers for, as the update
+ * message it read named it: the daemon takes the answer only for the round its claim stands in,
+ * and refuses one naming any other round with 409 and a sentence naming both. `head` is the
+ * commit the worker reports as the head of `legion/<issue>@origin`, empty or absent when the
+ * branch is not there (a planner before its first push); the daemon records it and verifies
+ * nothing of it. */
 export const LegionReadyForUpdateRequest = z.strictObject({
   claimToken: nonEmptyString,
   sessionId: nonEmptyString,

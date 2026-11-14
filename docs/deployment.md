@@ -711,9 +711,8 @@ The table is the daemon's own (`Classes`, `packages/daemon/internal/config/class
 | `omp_invocation` | launch | `runtime` |
 | `omp_launch_prefix` | launch | `runtime` |
 | `operator_token_file` | rebuild | `api-server` |
+| `pod_update_grace_minutes` | decision | — |
 | `pod_update_max_open_rounds` | fixed | — |
-| `pod_update_notice_hours` | decision | — |
-| `pod_update_retask_hours` | decision | — |
 | `pod_update_rounds_per_minute` | fixed | — |
 | `port` | fixed | — |
 | `postgres_dsn` | fixed | — |

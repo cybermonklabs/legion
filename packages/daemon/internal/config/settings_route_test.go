@@ -62,7 +62,7 @@ func TestAProjectedCallerSetsThePlainDataRowsAndNothingElse(t *testing.T) {
 	for _, path := range []string{
 		"admission_cap", "review_round_cap", "linger_hours",
 		"launch_failure_limit", "prompt_failure_limit", "prompt_retire_limit",
-		"pod_update_retask_hours", "pod_update_notice_hours", "tree_stop_timeout_seconds",
+		"pod_update_grace_minutes", "tree_stop_timeout_seconds",
 	} {
 		if admitted, why := CallerProjected.Admits(path); !admitted {
 			t.Errorf("a projected token may not set %s (%s), and it is plain data", path, why)

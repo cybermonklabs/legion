@@ -20,6 +20,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/rescue"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // olderShimRequest is the push check's request as a shim built before the issue's one rescue
@@ -145,7 +146,9 @@ func TestPodUpdateRescueThroughAnOlderShimNamesOnlyItsOwnPodsBranch(t *testing.T
 // An older shim's report of many per-pod branches is told in a summary that Dispatch takes in one
 // post, and the message links the full list. Such a shim reports no commits, so the message
 // names how many branches it reported and the first 20 of them with their commits, and the
-// document it links lists all 217.
+// document it links lists all 217. Such a shim's branches can hold another session's commits, so
+// the message tells the reader to take only the commits it needs and gives the warning the
+// round's ask gives (supervise.RescueBranchWarning).
 func TestPodUpdateRescueThroughAnOlderShimOfManyBranchesFitsOnePostAndLinksThemAll(t *testing.T) {
 	remote := map[string]string{"main": fmt.Sprintf("%040x", 1), claim.IssueBranch(podUpdateIssue): fmt.Sprintf("%040x", 2)}
 	var own []string
@@ -169,7 +172,7 @@ func TestPodUpdateRescueThroughAnOlderShimOfManyBranchesFitsOnePostAndLinksThemA
 	if pairs := strings.Count(post.Body, "` (commit "); pairs != rescueListed {
 		t.Errorf("the rescue message names %d branches with their commits, want the first %d:\n%s", pairs, rescueListed, post.Body)
 	}
-	for _, want := range []string{"217 rescue branches", "and 197 more", "Merge each of these branches into the issue branch, or delete the branch"} {
+	for _, want := range []string{"217 rescue branches", "and 197 more", "Take the commits that you need from each of these branches into the issue branch, or delete the branch", supervise.RescueBranchWarning} {
 		if !strings.Contains(post.Body, want) {
 			t.Errorf("the rescue message does not say %q:\n%s", want, post.Body)
 		}

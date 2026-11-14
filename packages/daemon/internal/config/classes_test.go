@@ -169,7 +169,7 @@ func loaderTopLevelKeys() []string {
 		"instructions", "worker_stream_port", "operator_token_file", "envoy_url", "nats_urls",
 		"envoy_token_file", "nats_nkey_seed_file", "nats_daemon_nkey_seed_file", "dispatch_url",
 		"dispatch_token_file", "projects", "gates", "github_apps", "linger_hours",
-		"production_check_hours", "pod_update_retask_hours", "pod_update_notice_hours",
+		"production_check_hours", "pod_update_grace_minutes",
 		"review_round_cap", "controller", "capabilities", "worker_backends",
 		"role_config_files", repositoryRenamesKey, hooksKey,
 	}

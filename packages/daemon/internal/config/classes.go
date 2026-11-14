@@ -198,8 +198,8 @@ func (c Caller) Admits(path string) (bool, string) {
 // one, the path of a file holding one, or an address that may carry one. Today the rows it
 // admits are `admission_cap`, the supervision limits (`launch_failure_limit`,
 // `prompt_failure_limit`, `prompt_retire_limit`, `tree_stop_timeout_seconds`), the workflow's
-// own bounds (`linger_hours`, `production_check_hours`, `pod_update_retask_hours`,
-// `pod_update_notice_hours`, `review_round_cap`) and `capabilities` with
+// own bounds (`linger_hours`, `production_check_hours`, `pod_update_grace_minutes`,
+// `review_round_cap`) and `capabilities` with
 // `capabilities.decided`.
 func (r Row) Plain() bool { return r.Class == ClassDecision && !r.Secret && r.Holder == "" }
 
@@ -250,12 +250,10 @@ var Classes = []Row{
 	// The workflow's own decisions, each read as the decision is made.
 	{Field: "Config.Linger", Path: "linger_hours", Class: ClassDecision},
 	{Field: "Config.ProductionCheckBound", Path: "production_check_hours", Class: ClassDecision},
-	// The update round's two bounds, each read at the decision it holds: the re-task bound by
-	// the machine deciding whether to ask a claim again (supervise.Timeouts.PodUpdateRetask,
-	// through the daemon's liveBudgets), and the notice bound by the sweep deciding whether to
-	// tell the operator's side (internal/daemon's supervision.live).
-	{Field: "Config.PodUpdateRetask", Path: "pod_update_retask_hours", Class: ClassDecision},
-	{Field: "Config.PodUpdateNotice", Path: "pod_update_notice_hours", Class: ClassDecision},
+	// The update round's bound, read by the sweep at each decision it holds — whether the round
+	// has reached its replacement, whether it is told late, and the end its ask states
+	// (internal/daemon's supervision.live).
+	{Field: "Config.PodUpdateGrace", Path: "pod_update_grace_minutes", Class: ClassDecision},
 	// The pod-update sweep's two limits, which it reads off the configuration the daemon booted
 	// on (internal/daemon's supervision.cfg) rather than at each sweep.
 	{Field: "Config.PodUpdateMaxOpenRounds", Path: "pod_update_max_open_rounds", Class: ClassFixed, Why: whyPodSweep},
