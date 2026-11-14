@@ -1863,7 +1863,8 @@ A `merge_queue_removal` row is the message that tells the issue's merger of that
 The migration changes no column.
 
 **The rows of the two new kinds must go before the earlier image is pinned.**
-An earlier release decodes an outbox payload strictly (`DecodeOutboxPayload` and `DisallowUnknownFields` in `record/outbox.go`) and knows neither kind, so it delivers no row of either kind.
+An earlier release puts neither kind in an outbox lane (`laneKinds` in `record/outbox.go`), so it never decodes or runs a row of either kind, and such a row holds back no other row.
+Left in place, the row waits through the rollback and runs at the roll forward, when the removal it tells of may be long over.
 Run this with the daemon stopped, before the earlier image is pinned:
 
 ```sql

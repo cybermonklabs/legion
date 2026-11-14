@@ -37,10 +37,11 @@ import (
 // phase entry, and it is named here with the rest. So are dispatch://INFRA-2981's kind list with
 // the update ask (20261113082214) and its drop of the claim's two update answer marks
 // (20261113110610), and dispatch://INFRA-3274's kind list with the merge-queue read and removal
-// (20261114031356), which stand above all of them and are applied last, in that order. The last of them is
-// the last word of outbox_kind_check: the upgrade applies it after 20261029120800 has deleted
-// main's merge-lane rows, and it names every other kind main's daemon writes, update_ask among
-// them.
+// (20261114031356), which stand above all of them and are applied last, in that order. The last
+// of them is the last word of outbox_kind_check: the upgrade applies it after 20261029120800 has
+// deleted main's merge-lane rows, and it names every other kind main's daemon writes
+// (mainsOutboxKinds), with update_ask and the two merge-queue kinds besides, which main's daemon
+// never writes.
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,

@@ -17,8 +17,14 @@
 -- version is the last word on any database. Numbered below it, this list would have dropped
 -- update_ask from a database main had migrated, and main's list would have dropped these two
 -- kinds from a fresh one. No release carries the version this branch first gave the file
--- (20261113072437), so no deployment's database records it. A database that does record it
--- applies this file as well, which writes the check whole whatever the check held before.
+-- (20261113072437), so no deployment's database records it. Only a database that a build of this
+-- branch migrated before the forward merge does, and that database records neither of the update
+-- round's migrations, so it applies 20261113082214 before this file. That migration's list names
+-- neither kind of this one, so a queued merge_queue_read or merge_queue_removal row stops the
+-- upgrade there (SQLSTATE 23514) and this file never runs. Delete those rows first, with the
+-- statement of docs/kubernetes.md's rollback of this release; each costs a merger one message
+-- about one removal. With none of them queued, the upgrade reaches this file, which writes the
+-- check whole.
 alter table outbox drop constraint if exists outbox_kind_check;
 alter table outbox add constraint outbox_kind_check check (kind in (
   'dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed',
