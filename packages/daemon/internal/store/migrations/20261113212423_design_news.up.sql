@@ -74,28 +74,49 @@ alter table outbox add constraint outbox_kind_check check (kind in (
   'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release',
   'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'design_changes'));
 
--- The seed. Each tree root's approved versions, one object per root whose gate has released its
--- tree's work: a root holding a gate row with an approved version, at those versions, and a root
--- whose gate opened once (ever_opened) and holds no approved version now, at the empty object. A
--- row whose approval a changes request cleared (classify.ApplyDesignGateEvent) names no version and
--- is left out of the object, and a row a newer version closed keeps the approval it closed and is
--- in. A root whose gate never opened is left out: nothing of its tree has started, so each member's
--- first working phase takes its baseline (workflow's Engine.enter) and its architect's row is
--- taken at the tree's first opening (workflow's putGateTold), and neither is owed anything there.
+-- The seed. Each tree root holding gate rows, with the approved version of each row that holds
+-- one (versions) and whether it holds any (approved). A row whose approval a changes request
+-- cleared (classify.ApplyDesignGateEvent) names no version and is left out of the object, so a
+-- root a changes request closed holds the empty object, and a row a newer version closed keeps the
+-- approval it closed and is in. Which roots and members take a row is the two inserts' rule below.
 -- It is a temporary table where one statement would hold a CTE, because the two inserts below read
 -- the same set, and it is dropped when the transaction store.apply runs this migration in commits.
 create temporary table design_news_seed on commit drop as
 select issue as root,
-  coalesce(jsonb_object_agg(step, approved_version) filter (where approved_version is not null), '{}'::jsonb) as versions
+  coalesce(jsonb_object_agg(step, approved_version) filter (where approved_version is not null), '{}'::jsonb) as versions,
+  bool_or(approved_version is not null) as approved
 from design_gates
-group by issue
-having bool_or(approved_version is not null) or bool_or(ever_opened);
+group by issue;
 
--- A holder row for each issue in the workflow (record.InWorkflow: its status is none the workflow
--- leaves, record.OutOfWorkflowStatuses, and its phase is short of done) whose tree root is in the
--- seed, at that root's versions: the work in flight stands on the version approved when it started
--- or since, so the upgrade owes nobody news of what the record already shows as taken. A done issue
--- gets none: no holder of it is owed anything.
+-- A holder row for each issue whose work has started: an issue in the workflow (record.InWorkflow:
+-- its status is none the workflow leaves, record.OutOfWorkflowStatuses, and its phase is short of
+-- done) whose phase has work, and whose tree root is in the seed, at that root's versions. The work
+-- in flight stands on the version approved when it started or since, so the upgrade owes nobody
+-- news of what the record already shows as taken.
+--
+-- A phase has work unless it is admitted, awaiting_person or done, and a held issue is read at the
+-- phase it returns to, the one its hold left (held_from, as record.Issue.WorkingPhase reads it). An
+-- issue at admitted has not started work of its own: a child waiting for its gate or its turn, or a
+-- root whose architect writes the design or whose children do the work. It gets no row, so its
+-- first working entry takes the version approved then as its baseline (workflow's Engine.enter,
+-- record.Store.BaselineTold) and is owed nothing of an approval its work never stood on. A root in
+-- awaiting_person waits on a person and no phase worker holds it (phase.RoleFor), and the holder of
+-- a done issue is owed nothing. An issue held from a phase with work keeps its row: it has worked,
+-- and it returns to that phase with what it took. One held from admitted gets none, as one standing
+-- there does, since it has not started its work either: this release holds only a phase a role
+-- works (workflow's claimFailed), but issues_held_from_check still takes admitted, so a row an
+-- earlier release held there can stand at the upgrade.
+--
+-- This phase filter, and no read of design_gates.ever_opened, is what leaves out a tree whose gate
+-- never opened. The gate holds the root's first phase and the start of every child it releases, so
+-- no member of such a tree stands in a phase with work and none gets a row; its first opening takes
+-- its architect's row (workflow's putGateTold), and each member's first working entry its own. The
+-- filter is also more exact than reading the gate alone about whom a row is for: a member of an
+-- opened tree that has not started gets no row, where an approved version or that mark gave it the
+-- versions of an approval its work never stood on. And it keeps the seed off every column
+-- 20261103183833_issue_slots adds, ever_opened among them: the first-boot tests of internal/daemon
+-- build a store with every migration but that one and apply it after this one, to watch its
+-- backfill (preReleaseStore).
 --
 -- An issue whose root's gate a changes request closed gets a row that knows no version, the empty
 -- object, and not no row at all. What its holder took is unknown, and an empty object says exactly
@@ -109,15 +130,31 @@ insert into design_news_told (issue, audience, versions, opening_owed, told_at)
 select i.key, 'holder', seed.versions, false, now()
 from issues i
 join design_news_seed seed on seed.root = i.tree
-where i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done');
+where coalesce(case when i.phase = 'held' then i.held_from end, i.phase) not in ('admitted', 'awaiting_person', 'done')
+  and i.status not in ('triage', 'icebox', 'backlog', 'done');
 
--- An architect row for each such root: the root of an issue the statement above seeded, which is a
--- tree root (issues.tree names one) in the seed, at those same versions, the empty object for a
--- root a changes request closed, for the same reason as its members': the tree's next opening is
--- not its first, so nothing else would write the row, and the architect is owed what that
--- approval changed from the version the review history names.
+-- An architect row for each root whose gate released its tree's work, at the root's versions.
+--
+-- A root of an issue the statement above seeded takes one: work of its tree has started, so its
+-- gate opened. For a root a changes request closed the row is the empty object, for the same
+-- reason as its members': the tree's next opening is not its first, so nothing else would write
+-- the row, and the architect is owed what that approval changed from the version the review
+-- history names. Every row the table holds here is a holder row that statement wrote, since this
+-- migration creates the table.
+--
+-- A root holding an approved version takes one too while an issue of its tree is in the workflow,
+-- though none has started work yet: its gate opened, since a deployment that gates spec alone,
+-- which every deployment this release upgrades does (dispatch://INFRA-175), holds an approval only
+-- of a document that opened the gate. Its architect took those versions at that opening
+-- (workflow's putGateTold), and with no row record.OwedNews would owe it each of them as a version
+-- it does not know, which the sweep (the daemon's queueOwedDesignNews) would send as news.
+--
+-- A root holding no approved version and no issue at work holds a gate that never opened, and gets
+-- none.
 insert into design_news_told (issue, audience, versions, opening_owed, told_at)
 select seed.root, 'architect', seed.versions, false, now()
 from design_news_seed seed
-where exists (select 1 from issues i where i.tree = seed.root
-  and i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done'));
+where exists (select 1 from design_news_told told join issues i on i.key = told.issue
+    where i.tree = seed.root)
+  or (seed.approved and exists (select 1 from issues i where i.tree = seed.root
+    and i.phase <> 'done' and i.status not in ('triage', 'icebox', 'backlog', 'done')));

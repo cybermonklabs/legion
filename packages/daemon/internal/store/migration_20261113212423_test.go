@@ -18,16 +18,22 @@ const designNewsVersion = 20261113212423
 // (design_changes), and seeds the told rows from the gates the release before it left, so the
 // upgrade owes nobody news of what the record already shows as taken.
 //
-// The seed is read on five trees that release can leave: a tree whose spec gate stands open at
-// version 4 with two members in the workflow; a tree whose gate a changes request closed, which
-// cleared its approved version (classify.ApplyDesignGateEvent), so what its holders took is
-// unknown; a tree whose gate a new version closed, which keeps the approval of version 4 it closed;
-// a tree whose gate never opened, waiting for its first approval; and a member already done. Each
-// member in the workflow under an approved version gets a holder row at that version and each such
-// root an architect row. The tree a changes request closed gets the same rows, each knowing no
-// version, so the member's next phase entry takes no baseline over the news it is owed. The tree
-// that never opened gets none: nothing of it has started, so its first opening and each member's
-// first phase take their own. The done member gets none.
+// The seed is read on six trees that release can leave: a tree whose spec gate stands open at
+// version 4, with a member at work, a member held from implementing, a member held from admitted, a
+// member the gate released that has not started, and a member done; a tree whose gate a changes
+// request closed, which cleared its approved version (classify.ApplyDesignGateEvent), so what its
+// holders took is unknown; a tree whose gate a new version closed, which keeps the approval of
+// version 4 it closed; a tree whose gate opened at version 2 and none of whose members has started;
+// and a tree whose gate never opened, waiting for its first approval. Each member in the workflow
+// whose phase has work, the member held from implementing among them, gets a holder row at its
+// root's approved version. A member or a root at admitted, or held from it, gets none, so its first
+// working entry takes the version approved then as its baseline. Each root of a member at work, and
+// each root holding an approved version, gets an architect row: the architect of the tree that
+// opened at version 2 took that version though no member has started. The tree a changes request
+// closed gets the same rows, each knowing no version, so the member's next phase entry takes no
+// baseline over the news it is owed. The tree that never opened gets none: nothing of it has
+// started, so its first opening and each member's first phase take their own. The done member gets
+// none.
 //
 // The negative control is the schema before the migration, which holds no told rows table and
 // refuses a design_changes outbox row; after it, every kind the constraint already named is still
@@ -41,12 +47,21 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261113212423(t 
 		return `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
 			values ('` + key + `', '` + tree + `', 'LEGION', '` + key + `', '` + phase + `', 1, '` + status + `', '` + key + `', 1)`
 	}
+	held := func(key, tree, from string) string {
+		return `insert into issues (key, tree, project, title, phase, held_from, generation, status, rank, last_dispatch_seq)
+			values ('` + key + `', '` + tree + `', 'LEGION', '` + key + `', 'held', '` + from + `', 1, 'in_progress', '` + key + `', 1)`
+	}
 	for _, seed := range []string{
-		// The tree whose spec gate stands open at version 4, with two members in the workflow and
-		// one done.
+		// The tree whose spec gate stands open at version 4, with a member at work, a member held
+		// from implementing, a member held from admitted, which an earlier release could write and
+		// issues_held_from_check still takes, a member the gate released that waits admitted for its
+		// turn, and a member done.
 		issue("LEGION-100", "LEGION-100", "admitted", "in_progress"),
 		issue("LEGION-101", "LEGION-100", "implementing", "in_progress"),
 		issue("LEGION-102", "LEGION-100", "done", "done"),
+		issue("LEGION-103", "LEGION-100", "admitted", "todo"),
+		held("LEGION-104", "LEGION-100", "implementing"),
+		held("LEGION-105", "LEGION-100", "admitted"),
 		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened)
 			values ('LEGION-100', 'spec', 'doc-100', 4, 4, true)`,
 		// The tree a changes request closed: the review cleared the approval and was told.
@@ -60,6 +75,12 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261113212423(t 
 		issue("LEGION-301", "LEGION-300", "reviewing", "needs_review"),
 		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened)
 			values ('LEGION-300', 'spec', 'doc-300', 5, 4, true)`,
+		// The tree whose gate opened at version 2 and none of whose members has started: its root
+		// stands admitted while its child waits admitted for its turn.
+		issue("LEGION-500", "LEGION-500", "admitted", "in_progress"),
+		issue("LEGION-501", "LEGION-500", "admitted", "todo"),
+		`insert into design_gates (issue, step, artifact_id, latest_version, approved_version, ever_opened)
+			values ('LEGION-500', 'spec', 'doc-500', 2, 2, true)`,
 		// The tree whose gate never opened: its architect registered the spec, and no person has
 		// approved it yet, so its member waits admitted.
 		issue("LEGION-400", "LEGION-400", "admitted", "in_progress"),
@@ -113,14 +134,15 @@ func TestTheDesignNewsSeedOwesNobodyWhatTheRecordShowsTakenWith20261113212423(t 
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the seeded told rows: %v", err)
 	}
-	at4, unknown := map[string]int{"spec": 4}, map[string]int{}
+	at4, at2, unknown := map[string]int{"spec": 4}, map[string]int{"spec": 2}, map[string]int{}
 	want := map[string]map[string]int{
-		"LEGION-100/architect": at4, "LEGION-100/holder": at4, "LEGION-101/holder": at4,
-		"LEGION-200/architect": unknown, "LEGION-200/holder": unknown, "LEGION-201/holder": unknown,
-		"LEGION-300/architect": at4, "LEGION-300/holder": at4, "LEGION-301/holder": at4,
+		"LEGION-100/architect": at4, "LEGION-101/holder": at4, "LEGION-104/holder": at4,
+		"LEGION-200/architect": unknown, "LEGION-201/holder": unknown,
+		"LEGION-300/architect": at4, "LEGION-301/holder": at4,
+		"LEGION-500/architect": at2,
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("the seeded told rows = %v, want %v: a holder row at version 4 for each member in the workflow under an approval and an architect row for its root, rows that know no version for the tree a changes request closed, none for the tree that never opened, and none for the done member", got, want)
+		t.Fatalf("the seeded told rows = %v, want %v: a holder row at version 4 for each member at work or held from a phase with work under an approval and an architect row for its root, none for a member or root at admitted or held from it, rows that know no version for the tree a changes request closed, an architect row alone for the tree that opened with no member started, none for the tree that never opened, and none for the done member", got, want)
 	}
 
 	if _, err := store.Pool().Exec(ctx, `insert into design_changes (artifact_id, from_version, to_version, state, reason, read_at)
