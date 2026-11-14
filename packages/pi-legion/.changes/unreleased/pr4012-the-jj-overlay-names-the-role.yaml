@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  The jj overlay that a Legion pane writes adds a `Legion-Role: <role>` trailer after
+  `Omp-Session: <id>`, from the pane's `LEGION_ROLE` when it names a Legion role or the
+  controller. The overlay also sets `templates.revert_description` and
+  `templates.duplicate_description`, so a `jj revert` and a `jj duplicate` carry both lines too.
