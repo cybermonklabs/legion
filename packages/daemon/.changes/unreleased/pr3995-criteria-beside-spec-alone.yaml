@@ -1,0 +1,17 @@
+kind: Added
+custom:
+  Issue: pr3995
+body: |-
+  Under a `gates.design` that names `spec` and not `criteria`, `root-issues` among them,
+  `register_gate` takes `criteria` for the root's Verification document. A tree whose root's
+  architect registers that row is held on it as on the spec: its work, its merger's start and the
+  start of a released child wait until a person approves both documents. One approval of a
+  `dispatch request-approval --include-verification` request opens both rows, and a new version of
+  the Verification document closes the gate. A tree that registers no `criteria` row, every gate
+  registered before this release among them, stays held on `spec` alone. `legion state` names the
+  registered `criteria` step in such an issue's `gatedSteps`, and the root architect's
+  `Design gate steps:` line says that a root that registers it is held on it too.
+
+  The daemon's design-gate publish to Dispatch now carries `holds` for each row. Deploy Dispatch
+  first: a Dispatch without the field refuses each publish with `400 INVALID_JSON`, and the daemon
+  retries the publish on its backoff until Dispatch carries the field.

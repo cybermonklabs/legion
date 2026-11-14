@@ -888,7 +888,7 @@ A parent with children puts the work into them, and its own pull request joins a
 **Acceptance:** the reviewer's approval moves the issue to `accepting` (Dispatch status `needs_review`) once GitHub reports the approved head one it would merge, and there no worker runs:
 the tree's architect reads the tester's handoff, each `check` block of the issue's Verification document with the results recorded against it (`dispatch results --issue <issue>`), and the reviewer's approval of the head by SHA, then accepts with the `legion` tool's `sign_off` (→ `retro`;
 refused in every other phase, `SIGNOFF_OUTSIDE_ACCEPTING`;
-refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
+refused while an issue beneath the one being accepted is still in the workflow, `SIGNOFF_CHILD_IN_WORKFLOW` naming each one, since a parent's head proves its children's merged work) or sends the issue back to `planning`, `implementing` or `testing` with `request_backward_move`, which counts a review round, or a conflict round that `review_round_cap` does not count when the record holds the pull request's head as conflicting with its base.
 An architect's `handoff_complete` there is refused (`ACCEPTANCE_IS_SIGN_OFF`); CI red there moves nothing, and is the architect's own read before it accepts.
 The architect's `catch-up` at each launch names, in its `reason`, every issue of the tree in `accepting`, since the reviewer's notice that moved it there is dropped while the architect's claim has failed.
 
@@ -1104,16 +1104,26 @@ Its parked-root walk, at its start and on each `tick`, finds a decision sent whi
 The walk also sets the root of the controller's own hold back to `todo` when its mark, the `Parked by Legion while it waits on:` comment, names a cause that is gone or an event that has happened, with a comment that cites the mark.
 The machinery's notices to a stopped tree (a child's status or close, a dead worker) stay dropped.
 
-**Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, each step one document of the root issue a human approves at a version in Dispatch:
+**Gate:** the design gate is the list of steps `gates.design` names in `legion.yaml`, and the one step a root may register beyond that list (below), each step one document of the root issue a human approves at a version in Dispatch:
 `decisions` the issue's decisions document, `criteria` its Verification document, `spec` its primary document.
 The default is the single step `spec`, which the word `root-issues` also means, and the empty list, which the word `off` also means, gates nothing.
 The daemon keeps one gate record per step, and every configured step holds the tree's work, the merger's start and the start of a released child until a person approves that step's document.
+`gates.design` names the steps every root must register, and a list that names `spec` and not `criteria`, `root-issues` among them, also takes `criteria` for the root's Verification document:
+a tree whose architect registered that row is held on it as on the spec, and a tree without one is held on `spec` alone (`record.TreeSteps`).
 Once the spec's decision blocks are settled and the human has agreed to every point in it, the architect requests the approval with `dispatch request-approval` and a summary of what the human is approving, and registers the step, the document id and the version with the daemon, and the daemon opens that step on the `artifact.approved` event for that document at its current version
 — or at registration itself, when Dispatch already shows the human approved that version before the architect registered (the daemon reads the approval; it never writes one).
-One request with `--include-verification` covers the spec and the Verification document, so it opens the `criteria` and the `spec` step together, each registered on its own document.
+One request with `--include-verification` covers the spec and the Verification document, so one approval opens the `criteria` and the `spec` step together, each registered on its own document, under a list that names `spec` and not `criteria` as under one that names both.
 A later version of a step's document closes that step until someone approves the new version, which Dispatch does in the human's own name when the version is his answer to a decision block and that answer is the whole change since the version he approved (it records an `approved` review pinned to the new version and emits `artifact.approved`, and the step reopens on that event), and a `changes_requested` review closes it with the reviewer's reason.
+When a person approves a new version of a gated document, each worker holding an affected issue's phase gets a task, sent between its turns, that names the version its phase last took, the new version, and the `##` sections, requirements and checks that changed:
+a `spec` or `decisions` version affects every issue of the tree, a `criteria` version the root alone, and a version whose only change is to decision blocks sends no list of changes.
+The tree's root architect gets one task that names every issue of the tree and what it is told, and an issue in `accepting` is told through the architect that owns it.
+The worker reads the change and, when its work is stale, moves its issue back with `request_backward_move`.
+The daemon moves no issue and stops no turn for it.
+An issue whose pull request has merged gets no such task and never moves back: `request_backward_move` on it answers `BACKWARD_REFUSED`.
+The change set comes from Dispatch's `GET /api/v1/artifacts/{id}/changes` and is kept in `design_changes`, and `design_news_told` keeps what each holder confirmed taking, so news a holder did not confirm stays owed and goes with its next start or the sweep.
+At the opening, a holder owed news is told it by that task, whose news begins with the opened sentence, and every other holder gets the opened role message, which says, where the record shows it, that nothing its issue holds changed.
 
-register_gate takes the step the document is for, and refuses a call that names none where the deployment gates more than one step (`GATE_STEP_REQUIRED`, 400), a step the deployment does not gate (`GATE_STEP_NOT_CONFIGURED`, 409) and a document that is not that step's document of that issue (`GATE_STEP_DOCUMENT_MISMATCH`, 409).
+register_gate takes the step the document is for, and refuses a call that names none where the deployment gates more than one step (`GATE_STEP_REQUIRED`, 400), a step the deployment does not gate, other than `criteria` under a list that names `spec` and not `criteria` (`GATE_STEP_NOT_CONFIGURED`, 409), and a document that is not that step's document of that issue (`GATE_STEP_DOCUMENT_MISMATCH`, 409).
 It reads the issue's Dispatch event sequence, then the document's approval, and refuses a version above the latest one Dispatch shows (`VERSION_NOT_IN_DISPATCH`), since no person's review could open a gate on a version Dispatch never wrote;
 the gate is registered at the newer of the caller's version and Dispatch's.
 A registration Dispatch already shows approved at its latest version opens the gate at registration, and the root starts planning at its next slot, once no open child stands under it;

@@ -1,0 +1,21 @@
+kind: Added
+custom:
+  Issue: pr3995
+body: |-
+  When a person approves a new version of a gated document, each worker that holds an affected
+  issue's phase gets a task. The task names the version its phase last took, the new version, the
+  `##` sections and the requirements or checks that changed, and the `dispatch doc-read` command
+  that prints the new version. A `spec` or `decisions` version affects every issue of the tree, a
+  `criteria` version the root alone, and a version that changes only decision blocks sends no list
+  of changes. The tree's root architect gets one task that names every issue of the tree and what
+  it is told, and an issue in `accepting` is told through the architect that owns it. The daemon
+  moves no issue and stops no turn: a running worker gets the task between its turns, and news that
+  a worker did not confirm goes with its next start or with the entry sweep.
+
+  The daemon reads the change set from Dispatch (`GET /api/v1/artifacts/{id}/changes`). Against a
+  Dispatch without that route, the task names the two versions and says why it lists no change. A
+  merger's start waits until that read is recorded. At the gate's opening, a holder owed news gets
+  the opening as the first sentence of that task's news, and every other holder gets the opened
+  message, which now says, where the record shows it, that nothing its issue holds changed.
+  Migration `20261113212423_design_news` adds the tables `design_news_told` and `design_changes`
+  and the column `pending_task_deliveries.design_news`. A rollback needs no schema restore.
