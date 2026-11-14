@@ -52,8 +52,34 @@ runs:
       shell: bash
       run: echo "::remove-matcher owner=go::"
 
+    # The cache key carries the SHA-256 of this repository's packages/envoy/go.sum at the pinned
+    # commit, so a caller that moves its pin to a commit with other modules gets a new key. The
+    # step hashes the file itself and does not use the hashFiles() expression: hashFiles() matches
+    # only files under $GITHUB_WORKSPACE, and a remote caller's action path is outside it, so there
+    # it would hash nothing. This repository's own `uses: ./` run, whose action path is inside the
+    # workspace, would hide that. The hash goes into a variable before it is written, so a go.sum
+    # that is missing or cannot be read fails the step. A macOS runner has shasum and can lack
+    # sha256sum. Both read the file from standard input, because each starts its line with `\`
+    # when the file name holds a backslash or a line break.
+    - id: gosum
+      name: Hash packages/envoy/go.sum for the cache key
+      shell: bash
+      run: |
+        f="$GITHUB_ACTION_PATH/../../../packages/envoy/go.sum"
+        if command -v sha256sum > /dev/null; then
+          sum=$(sha256sum < "$f")
+        else
+          sum=$(shasum -a 256 < "$f")
+        fi
+        echo "hash=${sum%% *}" >> "$GITHUB_OUTPUT"
+
     # The command's own module and build caches, which check.sh points the build at, so an entry
-    # holds this build alone and never the caller's caches.
+    # holds this build alone and never the caller's caches. The key holds the runner's OS and
+    # architecture, the Go version and the go.sum hash. On a miss of that exact key, the restore
+    # falls back to the newest entry of the same Go version (restore-keys, the key without the
+    # hash), so the build fetches only the modules that changed. actions/cache/restore sets
+    # cache-hit to true only for an exact match of the key and not for a restore-keys match, so
+    # the save step below runs after such a fallback too.
     - id: cache
       name: Restore the command's module and build caches
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -61,13 +87,16 @@ runs:
         path: |
           ${{ runner.temp }}/architecture-check/mod
           ${{ runner.temp }}/architecture-check/build
-        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
+        key: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-${{ steps.gosum.outputs.hash }}
+        restore-keys: architecture-check-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}-
 
     - name: Build the architecture-check command
       shell: bash
       run: bash "$GITHUB_ACTION_PATH/check.sh" build
 
-    # Saves on a miss only, and only in a push, schedule or workflow_dispatch run. Any other run,
+    # Saves on a miss of the exact key only, and only in a push, schedule or workflow_dispatch run.
+    # A restore-keys fallback is a miss too: after a go.sum change the build starts from the older
+    # entry, a push run saves the new key, and later runs fetch no new module again. Any other run,
     # pull_request, pull_request_target, merge_group, issue_comment and workflow_run among them,
     # may hold another person's code, so it restores and never saves. A step runs only after every
     # step above it succeeded, so this one also follows a successful build.

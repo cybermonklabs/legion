@@ -147,11 +147,16 @@ So a Go flag or a target platform of the caller's job does not change the build.
 
 ## The cache
 
-The action keeps the module cache and the build cache of the command under the key `architecture-check-<os>-<arch>-go<version>`.
+The action keeps the module cache and the build cache of the command under the key `architecture-check-<os>-<arch>-go<version>-<hash>`.
+`<hash>` is the SHA-256 of `packages/envoy/go.sum` of this repository at the commit that the caller pins.
 It restores the cache on every run.
 It saves the cache only on a miss, and only in a `push`, `schedule` or `workflow_dispatch` run.
 A run of any other event can hold the code of another person, for example a `pull_request`, `pull_request_target`, `merge_group`, `issue_comment` or `workflow_run` run.
 Go trusts the module cache and the build cache that it reads, so such a run restores the cache and never saves it.
+
+On a miss, the restore falls back to the newest entry of the same Go version, which has the prefix `architecture-check-<os>-<arch>-go<version>-`.
+A fallback to an older entry is also a miss, so a `push`, `schedule` or `workflow_dispatch` run then saves the new key.
+So when a caller moves its pin to a commit with another `go.sum`, its runs download the new modules only until the first such run saves the new key.
 
 A pull request of a caller reads the cache only from a run on the default branch of the caller, or on its own base branch when that is another branch.
 A `push`, `schedule` or `workflow_dispatch` run on the default branch saves into the scope of that branch, and every pull request reads that scope.

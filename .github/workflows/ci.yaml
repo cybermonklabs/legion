@@ -68,7 +68,8 @@ name: CI
 # prefix, when the exact key misses, now applies on every run, a dispatched one on main
 # included: it was held off main so that the entry a run saved after a Go bump held nothing the
 # older Go built, and no step of this workflow saves a family any more (the architecture-check
-# action below restores its exact key alone). There is no browser cache beside the Go
+# action below falls back only to an entry of its own Go version, so an entry it saves holds
+# nothing an older Go built). There is no browser cache beside the Go
 # families any more: dispatch-browser.yaml's shard and alone jobs run in the image this
 # repository builds, which carries Chromium, WebKit and Firefox at /ms-playwright, so a
 # ~/.cache/ms-playwright restore would carry nothing they do not already have, and
@@ -78,16 +79,17 @@ name: CI
 # not in the tool-fallback and tool-fallback-arm jobs at all: that action reads the id of the
 # job that called it and passes no-cache for those two on every ref, so a restored Bun cannot
 # stand in for the install each of their cases is a reading of. A seventh family,
-# architecture-check-<os>-<arch>-go<version>, is the composite action
+# architecture-check-<os>-<arch>-go<version>-<hash>, is the composite action
 # .github/actions/architecture-check's own, which envoy-go-checks runs: the action restores it
 # and saves it itself, from $RUNNER_TEMP/architecture-check and not from the Go caches above,
-# keyed on the Go version its own setup-go installed, and ci-caches.yaml's architecture-check job
-# fills it on main. The action saves only in a push, schedule or workflow_dispatch run, so within
-# this workflow, which runs on no push and no schedule, only a dispatched run can save it (the
-# bypass check dispatches one at main), only on a miss, and into the scope of the ref it was
-# dispatched on. check-ci-filters.sh's cache-family rule reads a workflow's own actions/cache
-# steps and not a composite action's, so this paragraph is the one record of the action's restore
-# and save.
+# keyed on the Go version its own setup-go installed and on the SHA-256 of packages/envoy/go.sum
+# (a miss restores the newest entry of that Go version), and ci-caches.yaml's architecture-check
+# job fills it on main. The action saves only in a push, schedule or workflow_dispatch run, so
+# within this workflow, which runs on no push and no schedule, only a dispatched run can save it
+# (the bypass check dispatches one at main), only on a miss of the exact key, and into the scope
+# of the ref it was dispatched on. check-ci-filters.sh's cache-family rule reads a workflow's own
+# actions/cache steps and not a composite action's, so this paragraph is the one record of the
+# action's restore and save.
 
 # No `paths:`: every change starts this workflow, and `changes` selects what runs. No `branches:`
 # on pull_request: a pull request on any base is tested. No `edited`: a title or body edit starts

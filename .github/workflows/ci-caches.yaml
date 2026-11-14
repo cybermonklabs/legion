@@ -31,17 +31,19 @@ name: CI caches
 # families it fills the smaller one first, so the entry that carries the other's objects too is
 # the one that was large already.
 #
-# Beside those five, the architecture-check job fills architecture-check-<os>-<arch>-go<version>,
-# the family of the composite action .github/actions/architecture-check, which ci.yaml's
-# envoy-go-checks runs. It is no lookup step of this workflow: the action restores and saves that
-# entry itself, keyed on the Go version its own setup-go installs from packages/envoy/go.mod. It
-# saves only on a miss in a push, schedule or workflow_dispatch run: a run of any other event
-# (pull_request, pull_request_target, merge_group, issue_comment, workflow_run and the rest) may
-# hold another person's code, so it restores the entry and never saves it. This workflow's push to
-# main is where the entry lands in the scope every later run reads. check-ci-filters.sh's
-# cache-family rule reads this workflow's own actions/cache steps and not a composite action's, so
-# it holds nothing of this family; ci.yaml's "Caches" paragraph is the record of its restore and
-# save.
+# Beside those five, the architecture-check job fills
+# architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
+# .github/actions/architecture-check, which ci.yaml's envoy-go-checks runs. It is no lookup step
+# of this workflow: the action restores and saves that entry itself, keyed on the Go version its
+# own setup-go installs from packages/envoy/go.mod and on the SHA-256 of packages/envoy/go.sum.
+# On a miss it restores the newest entry of that Go version (restore-keys, which this workflow's
+# own lookups do not use). It saves only on a miss of the exact key in a push, schedule or
+# workflow_dispatch run: a run of any other event (pull_request, pull_request_target,
+# merge_group, issue_comment, workflow_run and the rest) may hold another person's code, so it
+# restores the entry and never saves it. This workflow's push to main is where the entry lands in
+# the scope every later run reads. check-ci-filters.sh's cache-family rule reads this workflow's
+# own actions/cache steps and not a composite action's, so it holds nothing of this family;
+# ci.yaml's "Caches" paragraph is the record of its restore and save.
 #
 # One entry here is no Go family: the elan home the airlock-lean job restores, whose key is the
 # content of the Lean toolchain the model names rather than a Go version. Two others that were
@@ -245,12 +247,13 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-test-${{ runner.os }}-go${{ steps.setup-go.outputs.go-version }}
 
-  # architecture-check-<os>-<arch>-go<version>, the family of the composite action
+  # architecture-check-<os>-<arch>-go<version>-<hash>, the family of the composite action
   # .github/actions/architecture-check, run as ci.yaml's envoy-go-checks runs it. The action sets
   # its own Go up, from packages/envoy/go.mod, and restores and saves the entry itself. It saves
   # only in a push, schedule or workflow_dispatch run, so on a push to main it fills the entry in
   # main's scope, where every pull request and merge group of this repository finds it: on a hit
-  # it restores the entry and builds nothing new, on a miss it builds the command cold and saves
+  # it restores the entry and builds nothing new; on a miss, as after a go.sum change, it builds
+  # the command from the newest entry of that Go version, or cold when there is none, and saves
   # the entry. It also checks main's notes; the action saves before it checks, so a refused set
   # does not cost the entry. A job of its own is one of the two placements the action's README.md
   # gives ("The Go toolchain"). The other, in the envoy job, would run the action first, before
