@@ -76,6 +76,9 @@ export interface ReferenceTarget {
   /** The bytes route of the picture a reference to an image artifact names - the version it pins,
    *  else the latest - for a thumbnail beside the title; undefined for anything else. */
   readonly picture: string | undefined;
+  /** Whether Dispatch answered that the target does not exist (`ReferenceData.missing`): such a
+   *  reference reads as the words its writer wrote, with no link (R8). */
+  readonly missing: boolean;
 }
 
 /** How much of a target's own text becomes a reference link's title: an ask's question, a
@@ -267,6 +270,13 @@ export interface ReferenceData {
   /** The component a component reference names, once its project's architecture is read: the
    *  one record behind that kind, and what gives the reference the component's own title. */
   readonly component: ArchitectureComponentRead | undefined;
+  /** Whether Dispatch answered that the target does not exist: a read of the record behind the
+   *  reference answered 404, or the project's architecture came back without the component it
+   *  names. False while loading and for any other failure, so a reference that names a real
+   *  target never loses its link to a slow or dropped read. A document of an issue that exists
+   *  is not judged here: its reference carries its own name, which the document editor draws
+   *  whether or not the document exists, and the two surfaces keep to one answer. */
+  readonly missing: boolean;
 }
 
 export interface ReferenceReadOptions {
@@ -418,6 +428,11 @@ export function useWholeRouteRead(route: DispatchReferenceRoute | undefined): Wh
   };
 }
 
+/** Whether a read failed because Dispatch answered that its record does not exist. */
+function answeredNotFound(error: unknown): boolean {
+  return error instanceof ApiError && error.status === 404;
+}
+
 export function useReferenceData(
   given: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
@@ -500,6 +515,9 @@ export function useReferenceData(
     ...architectureQuery(componentRoute?.project),
     enabled: componentRoute !== undefined,
   });
+  const component = (architecture.data?.components ?? []).find(
+    (candidate) => candidate.id === componentRoute?.id
+  );
   return {
     issue: issue.data,
     artifact,
@@ -509,9 +527,12 @@ export function useReferenceData(
     ask: ask.data,
     comment: comment.data,
     message: messageQueryResult.data,
-    component: (architecture.data?.components ?? []).find(
-      (candidate) => candidate.id === componentRoute?.id
-    ),
+    component,
+    missing:
+      [issue, messageQueryResult, projectDocument, sessionArtifact, block, ask, comment].some(
+        (read) => answeredNotFound(read.error)
+      ) ||
+      (componentRoute !== undefined && architecture.data !== undefined && component === undefined),
     // TanStack keeps a query's last data through a failed refetch, so a link or card open when an
     // edit deletes its block would go on showing text its document or item no longer holds. The
     // read answers 404 `NOT_FOUND` for that block, and the link and card then read as a freshly
@@ -595,8 +616,18 @@ export function useReferenceTarget(
   route: DispatchReferenceRoute | undefined,
   options: ReferenceReadOptions
 ): ReferenceTarget {
-  const { artifact, ask, block, comment, component, issue, markdown, markdownTree, message } =
-    useReferenceData(route, options);
+  const {
+    artifact,
+    ask,
+    block,
+    comment,
+    component,
+    issue,
+    markdown,
+    markdownTree,
+    message,
+    missing,
+  } = useReferenceData(route, options);
   const kind = route === undefined ? undefined : referenceTargetKind(route);
   let authored: string | undefined;
   let authoredTree: DisplayTree | undefined;
@@ -634,6 +665,7 @@ export function useReferenceTarget(
       description: message?.message.body,
       descriptionTree: message?.message.body_tree,
       picture: undefined,
+      missing,
     };
   }
   if (kind === "component") {
@@ -645,6 +677,7 @@ export function useReferenceTarget(
       description: component?.prose,
       descriptionTree: component?.prose_tree,
       picture: undefined,
+      missing,
     };
   }
   if (kind === "ask" || kind === "comment" || kind === "block") {
@@ -653,6 +686,7 @@ export function useReferenceTarget(
       description: headline?.cut === true ? authored : undefined,
       descriptionTree: headline?.cut === true ? authoredTree : undefined,
       picture: undefined,
+      missing,
     };
   }
   const text = markdown !== undefined && markdown.trim() !== "" ? markdown : undefined;
@@ -662,6 +696,7 @@ export function useReferenceTarget(
     description: text ?? (artifact === undefined ? issue?.status : undefined),
     descriptionTree: text === undefined ? undefined : markdownTree,
     picture: named === undefined ? undefined : picturePath(named, artifact),
+    missing,
   };
 }
 

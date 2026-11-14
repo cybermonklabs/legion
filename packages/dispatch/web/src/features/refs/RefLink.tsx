@@ -49,9 +49,10 @@ export interface ReferenceLinking {
  * every other record: an address standing on its own, and a link whose words are that same
  * address, read as the target's current name once `useReferenceTarget` has it (`addressed`); a
  * link whose words its author wrote keeps those words, since the author already said what the
- * reference is there to say. A reference whose target Dispatch cannot resolve, or that the
- * reader may not see, is the same case as the words themselves: the words the writer wrote,
- * with no title drawn over them.
+ * reference is there to say. A reference the reader may not see is the same case as the words
+ * themselves: the words the writer wrote, with no title drawn over them. A reference whose target
+ * Dispatch answered does not exist is its words with no link at all (R8), as the document editor
+ * draws it: the element it renders into stops being a link (`unlinkMissingReference`).
  *
  * Beside the words goes the picture's thumbnail when the reference names an image artifact. It
  * shows no document text, so it reads none. A thumbnail the browser cannot draw (a pinned
@@ -73,15 +74,21 @@ export function RefLink({
    *  author wrote it, or a Markdown link's own text. */
   text: string;
 }): ReactNode {
-  const { picture, title } = useReferenceTarget(route, { text: false });
+  const { missing, picture, title } = useReferenceTarget(route, { text: false });
   // A reference opening no page of this dashboard - a person, whom nothing shows (R5), and any
   // path the gate refuses - leaves the words standing where a link would be.
   const href = useReferenceHref(route);
   useLayoutEffect(() => {
-    if (anchor instanceof HTMLAnchorElement && href !== undefined) {
+    if (anchor instanceof HTMLAnchorElement && href !== undefined && !missing) {
       anchor.setAttribute("href", href);
     }
-  }, [anchor, href]);
+  }, [anchor, href, missing]);
+  useLayoutEffect(() => {
+    if (anchor === undefined || !missing) {
+      return;
+    }
+    return unlinkMissingReference(anchor);
+  }, [anchor, missing]);
   // The address that failed, not a flag: a plain reference names the latest version, so a version
   // uploaded since gets its own load instead of inheriting the last one's failure.
   const [failedPicture, setFailedPicture] = useState<string>();
@@ -113,6 +120,33 @@ export function RefLink({
       )}
     </>
   );
+}
+
+/** What makes a reference element a link, or a link-styled span a reader and the hover card take
+ *  for one (`useRenderedMarkdown`'s `inertLinks`, `RefPreview`'s trigger). */
+const LINK_ATTRIBUTES = ["href", "data-dispatch-ref", "data-dispatch-href", "data-markdown-link"];
+
+/** Takes from `anchor` everything that makes it a link, and marks it as a reference whose target
+ *  does not exist (`data-dispatch-missing`, holding the reference, which the stylesheet draws as
+ *  plain words); answers the function that puts it all back, for a target that comes to exist
+ *  while the page is open - an issue created after the comment that named it. */
+function unlinkMissingReference(anchor: HTMLElement): () => void {
+  const saved = LINK_ATTRIBUTES.flatMap((name) => {
+    const value = anchor.getAttribute(name);
+    return value === null ? [] : [[name, value] as const];
+  });
+  const reference =
+    anchor.getAttribute("data-dispatch-ref") ?? anchor.getAttribute("data-dispatch-href") ?? "";
+  for (const name of LINK_ATTRIBUTES) {
+    anchor.removeAttribute(name);
+  }
+  anchor.setAttribute("data-dispatch-missing", reference);
+  return () => {
+    anchor.removeAttribute("data-dispatch-missing");
+    for (const [name, value] of saved) {
+      anchor.setAttribute(name, value);
+    }
+  };
 }
 
 const excludedRefAncestorTags: Record<string, true> = { A: true, CODE: true, PRE: true };

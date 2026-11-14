@@ -313,14 +313,42 @@ test("a link its author worded keeps its words in the document, and an address w
     await answered;
     await expectWordsAndAddresses(documentEditor(page), seeded);
 
-    // The comment's one-line preview, on its collapsed card, and the comment itself.
+    // The comment's one-line preview, on its collapsed card, and the comment itself: each missing
+    // address is its words with no link (R8), beside a present target in the same comment that
+    // still reads as its title and, in the comment itself, links.
+    const present = world.targets.Issue;
     const collapsed = await collapsedMarginThread(page, testInfo.project.name, seeded.comment);
+    await expect(collapsed.locator(`[data-dispatch-ref="${present.address}"]`)).toHaveText([
+      present.title,
+      present.title,
+    ]);
     for (const { address } of seeded.missing) {
-      await expect(collapsed.locator(`[data-dispatch-ref="${address}"]`)).toHaveText(address);
+      await expectWordsWithNoLink(collapsed, address);
     }
     const card = await openMarginThread(page, testInfo.project.name, seeded.comment);
+    await expect(card.locator(`a[data-dispatch-ref="${present.address}"]`)).toHaveText([
+      present.title,
+      present.title,
+    ]);
     for (const { address } of seeded.missing) {
-      await expect(card.locator(`a[data-dispatch-ref="${address}"]`)).toHaveText(address);
+      await expectWordsWithNoLink(card, address);
+    }
+
+    // A reply that is nothing but the address, where a reader meets it on the Inbox: the same
+    // words with no link, while a reply naming a present target links.
+    await openInboxReplies(page);
+    const presentReply = seeded.written.get(present.address);
+    await expect(
+      inboxReplyTurn(page, presentReply?.thread ?? "", presentReply?.reply ?? "").locator(
+        `a[data-dispatch-ref="${present.address}"]`
+      )
+    ).toHaveText(present.title);
+    for (const { address } of seeded.missing) {
+      const where = seeded.written.get(address);
+      await expectWordsWithNoLink(
+        inboxReplyTurn(page, where?.thread ?? "", where?.reply ?? ""),
+        address
+      );
     }
 
     const pastAnswered = missingAnswered(page, seeded);
@@ -335,9 +363,24 @@ test("a link its author worded keeps its words in the document, and an address w
     await answersAnswered;
     for (const { address } of seeded.missing) {
       const preview = answeredQuestionPreview(page, seeded.written.get(address)?.ask ?? "");
-      await expect(preview.locator(`[data-dispatch-ref="${address}"]`)).toHaveText(address);
+      await expectWordsWithNoLink(preview, address);
     }
   } finally {
     await context.close();
   }
 });
+
+/** Checks that `scope` shows `address` as its writer's words with no link: drawn as a reference
+ *  whose target does not exist (`data-dispatch-missing`), carrying no `href`, and no reference a
+ *  hover card or a reader takes for one. It asks of the reference itself rather than of every link
+ *  whose name is the address, since a host that is itself a link - an Inbox row's line, which
+ *  opens its thread - is named by the very words the reply wrote. */
+async function expectWordsWithNoLink(scope: Locator, address: string): Promise<void> {
+  const words = scope.locator(`[data-dispatch-missing="${address}"]`);
+  await expect(words.first()).toHaveText(address);
+  for (const each of await words.all()) {
+    await expect(each).toHaveText(address);
+    await expect(each).not.toHaveAttribute("href");
+  }
+  await expect(scope.locator(`[data-dispatch-ref="${address}"]`)).toHaveCount(0);
+}

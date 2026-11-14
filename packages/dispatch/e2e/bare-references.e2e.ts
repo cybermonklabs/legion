@@ -16,7 +16,7 @@ import { connectedDot, documentEditor, openSpec } from "./editor";
 import {
   ANCHOR,
   answeredQuestionPreview,
-  DRAWN_REFERENCE,
+  FOUND_REFERENCE,
   HOST_KEY,
   OTHER_KEY,
   openMarginThread,
@@ -24,7 +24,6 @@ import {
   questionBlock,
   questionText,
   RENDERED_BODY,
-  RENDERED_REFERENCE,
   type ReferenceWorld,
   referenceAgent,
   referenceTargetsIn,
@@ -391,9 +390,16 @@ test("a margin thread's replies link each reference the shared table links and n
     await expect(replies).toHaveCount(cases.length);
     const body = (item: Case) => replies.nth(cases.indexOf(item)).locator(RENDERED_BODY).first();
     for (const item of cases) {
+      // The reader finds exactly the row's links; each whose target this world holds is a link,
+      // and each it does not hold is its writer's words (R8), which `reference-naming.e2e.ts`
+      // holds on its own rows.
       await expect
-        .poll(() => referenceTargetsIn(body(item), RENDERED_REFERENCE), { message: rowName(item) })
+        .poll(() => referenceTargetsIn(body(item), FOUND_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
+      await expect(
+        body(item).locator("[data-dispatch-ref]:not(a[href])"),
+        rowName(item)
+      ).toHaveCount(0);
       await expectMadeTitles(body(item), (link) => `a[data-dispatch-ref="${link}"]`, titles, item);
     }
 
@@ -483,14 +489,14 @@ test("the one-line preview shows each reference the shared table links as its ta
     for (const [item, ask] of asks) {
       const preview = answeredQuestionPreview(page, ask);
       await expect
-        .poll(() => referenceTargetsIn(preview, DRAWN_REFERENCE), { message: rowName(item) })
+        .poll(() => referenceTargetsIn(preview, FOUND_REFERENCE), { message: rowName(item) })
         .toEqual([...item.links]);
       await expectMadeTitles(preview, (link) => `[data-dispatch-ref="${link}"]`, titles, item);
       // The Answers row is a record a reader reads (`DISPATCH_READING_SURFACES`'s
       // `answers-subject`), so each reference it draws is a link into its target; a preview
       // inside a control draws the same text with no link in it.
-      await expect(preview.locator(RENDERED_REFERENCE), rowName(item)).toHaveCount(
-        item.links.length
+      await expect(preview.locator("[data-dispatch-ref]:not(a[href])"), rowName(item)).toHaveCount(
+        0
       );
     }
   } finally {

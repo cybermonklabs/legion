@@ -7,7 +7,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { graphNode } from "../../__tests__/graph-fixture";
-import { ApiError, api } from "../../api/client";
+import { api } from "../../api/client";
 import type { GraphReferences, IssueReferenceSummary, ReferenceQuestions } from "../../api/types";
 import { MarkdownBody } from "./MarkdownBody";
 import { MarkdownPreview } from "./MarkdownPreview";
@@ -45,21 +45,26 @@ function summaryOf(key: string): IssueReferenceSummary {
   };
 }
 
+/** A read the server has not answered yet, which is what each title read below is for the
+ *  length of a row: never a 404, since a record the server answers does not exist reads as its
+ *  words with no link (`RefLink`'s `unlinkMissingReference`), and a row names what its text
+ *  links, never whether the record behind it exists. */
+const stillOut = () => new Promise<never>(() => {});
+
 /**
  * The reads a drawn reference makes of the record it names, to title it. A row names what its
- * text links, never what a title says, so each is answered the way the two reads below are: as
- * the server answers a record this runtime holds none of, which leaves the reference drawn and
- * untitled. Hands back the restore for all of them.
+ * text links, never what a title says, so each is answered the way the two reads below are: a
+ * read still out (`stillOut`), which leaves the reference drawn, linked and untitled. Hands back
+ * the restore for all of them.
  */
 function spyTitleReads(): () => void {
-  const noRecord = () => new ApiError(404, { code: "NOT_FOUND", error: "no record" });
   const spies: { mockRestore: () => void }[] = [
-    spyOn(api, "getAgentArtifact").mockRejectedValue(noRecord()),
-    spyOn(api, "getAsk").mockRejectedValue(noRecord()),
-    spyOn(api, "getComment").mockRejectedValue(noRecord()),
-    spyOn(api, "getMessage").mockRejectedValue(noRecord()),
-    spyOn(api, "getProjectArtifact").mockRejectedValue(noRecord()),
-    spyOn(api, "getProjectDocumentSummary").mockRejectedValue(noRecord()),
+    spyOn(api, "getAgentArtifact").mockImplementation(stillOut),
+    spyOn(api, "getAsk").mockImplementation(stillOut),
+    spyOn(api, "getComment").mockImplementation(stillOut),
+    spyOn(api, "getMessage").mockImplementation(stillOut),
+    spyOn(api, "getProjectArtifact").mockImplementation(stillOut),
+    spyOn(api, "getProjectDocumentSummary").mockImplementation(stillOut),
   ];
   return () => {
     for (const spy of spies) spy.mockRestore();
@@ -111,11 +116,20 @@ function cacheOf(row: (typeof DISPATCH_TEXT_REFERENCES)[number], server: string)
     queryClient.setQueryData(["issue-summary", key], summaryOf(key));
   }
   // A component reference reads its project's architecture for the component's own title
-  // (`reference-target.ts`), so the cache holds one for every project a row's body names.
-  for (const project of new Set(
-    [...row.body.matchAll(/dispatch:\/\/([A-Z][A-Z0-9]*)\/component\//gu)].map((match) => match[1])
+  // (`reference-target.ts`), so the cache holds one for every project a row's body names, listing
+  // each component it names: an architecture that lists no such component says the component
+  // does not exist, which draws it as its words with no link.
+  const components = new Map<string, Set<string>>();
+  for (const match of row.body.matchAll(
+    /dispatch:\/\/([A-Z][A-Z0-9]*)\/component\/([a-z0-9-]+)/gu
   )) {
-    queryClient.setQueryData(["architecture", project], { components: [] });
+    const [, project = "", id = ""] = match;
+    components.set(project, (components.get(project) ?? new Set()).add(id));
+  }
+  for (const [project, ids] of components) {
+    queryClient.setQueryData(["architecture", project], {
+      components: [...ids].map((id) => ({ id, prose: "", title: `Component ${id}` })),
+    });
   }
   if (row.questions !== undefined) {
     queryClient.setQueryData(
@@ -161,20 +175,15 @@ test.each(
   )
 )("%s links, rendered against %s, its row's links", async (body, server, row, links) => {
   testWindow.happyDOM.setURL(`${server}/issues/CORE-1`);
-  const getIssueSummary = spyOn(api, "getIssueSummary").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no issue" })
-  );
-  const getReferences = spyOn(api, "getReferences").mockRejectedValue(
-    new ApiError(404, { code: "NOT_FOUND", error: "no node" })
-  );
+  const getIssueSummary = spyOn(api, "getIssueSummary").mockImplementation(stillOut);
+  const getReferences = spyOn(api, "getReferences").mockImplementation(stillOut);
   const restoreTitleReads = spyTitleReads();
   // The seeded reads are stale at once, so the answer behind each is the row's own: a refetch
   // of the question map must not replace the questions the row declares.
   // A component reference reads its project's architecture for the component's own title
-  // (`reference-target.ts`); the row's cache is stale at once, so the read is answered here.
-  const getArchitecture = spyOn(api, "getArchitecture").mockResolvedValue({
-    components: [],
-  } as never);
+  // (`reference-target.ts`), and an architecture read that lists no such component is one that
+  // says it does not exist; the read stays out instead, so the row reads linking alone.
+  const getArchitecture = spyOn(api, "getArchitecture").mockImplementation(stillOut);
   const getReferenceQuestions = spyOn(api, "getReferenceQuestions").mockResolvedValue(
     questionsOf(row.questions ?? {})
   );

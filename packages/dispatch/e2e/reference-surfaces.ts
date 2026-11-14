@@ -325,12 +325,19 @@ export const RENDERED_REFERENCE = "a[data-dispatch-ref], a[data-dispatch-picture
 /** Every reference a body draws, whether its host makes it a link or a link-styled span with
  *  no link inside it (a preview inside a control): the same attributes either way. */
 export const DRAWN_REFERENCE = "[data-dispatch-ref], [data-dispatch-picture]";
+/** Every reference a body's reader found in its text: each one it draws (`DRAWN_REFERENCE`),
+ *  and each whose target Dispatch answered does not exist, which it draws as its writer's words
+ *  with no link (`data-dispatch-missing`, holding the reference). Which of the two a reference
+ *  is depends on what the world holds; that it was found depends on the text alone, which is
+ *  what the shared table names. */
+export const FOUND_REFERENCE = `${DRAWN_REFERENCE}, [data-dispatch-missing]`;
 /** The rendered body of a turn or a card, which is never one of the one-line previews beside
  *  it (a reference card's two lines of its target, a reply's quote of its parent). */
 export const RENDERED_BODY = ".dispatch-markdown:not([data-markdown-preview])";
 
 /** The reference each element in scope matching `selector` names, in the order they are drawn:
- *  a Dispatch picture's `data-dispatch-picture`, any other's `data-dispatch-ref`. */
+ *  a Dispatch picture's `data-dispatch-picture`, a missing target's `data-dispatch-missing`,
+ *  any other's `data-dispatch-ref`. */
 export function referenceTargetsIn(scope: Locator, selector: string): Promise<string[]> {
   return scope
     .locator(selector)
@@ -338,6 +345,7 @@ export function referenceTargetsIn(scope: Locator, selector: string): Promise<st
       elements.map(
         (element) =>
           element.getAttribute("data-dispatch-picture") ??
+          element.getAttribute("data-dispatch-missing") ??
           element.getAttribute("data-dispatch-ref") ??
           ""
       )

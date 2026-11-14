@@ -585,6 +585,15 @@ a {
   text-decoration: underline;
 }
 
+/* A reference whose target Dispatch answered does not exist is its writer's words with no link
+   (`RefLink`'s `unlinkMissingReference`), so it reads as the text around it, not as Typography's
+   `a`. */
+.dispatch-markdown [data-dispatch-missing] {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+
 /* A body's drawn Mermaid diagram (features/refs/mermaid-diagrams.ts). The SVG's inline style reads
    `--bg:var(--bg-color);--fg:var(--text-color)`, and custom properties inherit into the preview's
    shadow root, so these give it the values documents use: no fill behind it, and the card's own
