@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -60,9 +61,62 @@ type HandoffCompleteRequest struct {
 // daemon merges nothing and reads no head, so no completion has anything to answer with.
 type HandoffCompleteResponse struct{}
 
-// handoffComplete records a phase completion or a production check report (checkReport). The grant
-// is redeemed and the record read before the two are told apart, so an invalid grant is refused
-// before a field only one of them requires. Which of the two a call is, is what the caller's own
+// handoffComplete is the completion route: it answers the call (answerCompletion) and writes one
+// line in the daemon's log for that answer, `api: handoff completion answered`, naming the issue,
+// the role and the claim of the grant the call redeemed (empty for a call refused before it
+// redeemed one), the record and the commit the call named, and the status and the refusal code
+// it was answered with. Every return of answerCompletion writes its answer through the one
+// completionAnswer, so every answer is one line and one call is one line: a client's retry is a
+// line of its own, which is how a reader of the log counts the requests one tool call made.
+func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
+	answer := &completionAnswer{ResponseWriter: w}
+	grant, req := s.answerCompletion(answer, r)
+	s.log.Info("api: handoff completion answered", "issue", grant.Issue, "role", grant.Role, "claim", grant.Claim,
+		"handoffId", req.HandoffID, "handoffVersion", req.HandoffVersion, "commit", req.Commit,
+		"status", answer.status, "code", answer.code())
+}
+
+// completionAnswer is the writer answerCompletion answers through: it keeps the status written and
+// the body of a refusal, whose code (Failure.Code) the route's line names. A success's body is not
+// kept, since it carries nothing (HandoffCompleteResponse).
+type completionAnswer struct {
+	http.ResponseWriter
+	status  int
+	refusal []byte
+}
+
+func (a *completionAnswer) WriteHeader(status int) {
+	if a.status == 0 {
+		a.status = status
+	}
+	a.ResponseWriter.WriteHeader(status)
+}
+
+func (a *completionAnswer) Write(body []byte) (int, error) {
+	if a.status == 0 {
+		a.status = http.StatusOK
+	}
+	if a.status >= http.StatusBadRequest {
+		a.refusal = append(a.refusal, body...)
+	}
+	return a.ResponseWriter.Write(body)
+}
+
+// code is the refusal's code, "" for a success and for a refusal that carries none: an
+// undecodable body's, which names no code (refuseBadBody).
+func (a *completionAnswer) code() string {
+	var failure Failure
+	if json.Unmarshal(a.refusal, &failure) != nil {
+		return ""
+	}
+	return failure.Code
+}
+
+// answerCompletion records a phase completion or a production check report (checkReport), and
+// answers the grant it redeemed — the zero grant for a call refused before it redeemed one — and
+// the request as it decoded it, for the route's line (handoffComplete). The grant is redeemed and
+// the record read before the two are told apart, so an invalid grant is refused before a field
+// only one of them requires. Which of the two a call is, is what the caller's own
 // live assignment says: a claim whose worker took a look of its issue's production check
 // (supervise.Claim.ServingCheck) reports on that look, so the report lands where the check's own
 // refusals are written — CHECK_NOT_OPEN when the issue has no open check, CHECK_ROLE_MISMATCH
@@ -80,8 +134,7 @@ type HandoffCompleteResponse struct{}
 // which records instead a completion that arrives after the daemon moved the issue on by an event
 // (workflow's leftItsPhase). A completion of a done issue, which runs no phase, by a session
 // working no look is neither of the two: CHECK_LOOK_NOT_SERVED.
-func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
-	var req HandoffCompleteRequest
+func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant credential.Grant, req HandoffCompleteRequest) {
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !requireFailureFields(w, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
 		return
 	}
@@ -316,6 +369,7 @@ func (s *server) handoffComplete(w http.ResponseWriter, r *http.Request) {
 		s.handoffCompleted(grant.Issue)
 	}
 	writeJSON(w, http.StatusOK, HandoffCompleteResponse{})
+	return
 }
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
@@ -386,7 +440,7 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 // of another run, of another phase, or there is no task at all — and answers "" when it is that
 // task: one of the issue's own generation and its own phase. The one rule has two readers, and
 // this is the one place it is written. The completion route's fallback to the held task's run and
-// entry applies exactly on the empty answer (handoffComplete), and the HANDOFF_NO_RUN
+// entry applies exactly on the empty answer (answerCompletion), and the HANDOFF_NO_RUN
 // refusal is written from the answer itself (noRunCompletion), so a change to which held task may
 // back a completion cannot leave the 409 describing a rule the route no longer applies.
 //
@@ -436,7 +490,7 @@ func staleCompletion(issue string, current, serving uint64, pending *supervise.D
 	return fmt.Sprintf("%s: the daemon has queued no task of generation %d for this claim, and may queue none (the new run's phase may be another claim's). End this turn without completing and tell the architect; if that task arrives, call the same handoff_complete in its turn", stale, current)
 }
 
-// entryFence is the completion route's entry fence (handoffComplete): it holds a phase completion
+// entryFence is the completion route's entry fence (answerCompletion): it holds a phase completion
 // to entry, the entry the claim's worker is on — what the claim serves, or the adopted task's own
 // on the fallback path, one value so that neither path can pass this fence unread — and answers
 // the refusal, nil when the completion goes on. Like a completion of a run that is over

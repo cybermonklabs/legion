@@ -1,0 +1,5 @@
+kind: Added
+body: 'The daemon logs `api: handoff completion answered` at Info once for every answer `POST /legion/v1/handoff/complete` gives, with the issue, role and claim of the grant it redeemed, the handoff record and commit the completion named, and the status and refusal code it was answered with, so an operator counts the requests one `handoff_complete` made and reads what each was answered.'
+time: 2026-11-14T01:30:12.000000000Z
+custom:
+    Issue: pr3793

@@ -7,7 +7,7 @@
 // admission_issues_live_test.go is built with `-tags e2e` by a script of its own
 // (scripts/e2e/child-adoption.sh, scripts/e2e/handoff-records.sh,
 // scripts/e2e/behind-entry-fence.sh, scripts/e2e/conflict-no-takeover.sh,
-// scripts/e2e/phase-entry-converge.sh and the three live_agent_proof_test.go names), which makes
+// scripts/e2e/phase-entry-converge.sh and the four live_agent_proof_test.go names), which makes
 // the same run around it through scripts/e2e/lib/live-daemon-proof.sh;
 // admission_issues_live_test.go runs in the ordinary `go test ./internal/daemon/` on the broker
 // that package's other tests take (newLiveProofOn over workflowNATS), which is why this file

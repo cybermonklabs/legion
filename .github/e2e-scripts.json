@@ -147,6 +147,10 @@
       "needs": "a Legion pod: its own model route for both agent runtimes (LEGION_E2E_MODEL_BASE_URL, LEGION_E2E_MODEL_KEY_FILE, LEGION_E2E_MODEL_ID and LEGION_E2E_CLAUDE_MODEL), the worker image's Oh My Pi and Claude Code pin, and a loopback PostgreSQL with pgvector (ENVOY_SESSION_STATES_PG_DSN); it starts its own NATS, listeners and Dispatch"
     },
     {
+      "script": "late-completion.sh",
+      "needs": "the pinned Oh My Pi every pane runs (LEGION_OMP_PATH, an absolute executable, which a GitHub-hosted runner has none of), a loopback PostgreSQL carrying pgvector whose role may create databases (LEGION_TEST_PG_DSN), go, awk, tar, python3, jj and bun with this repository's node_modules"
+    },
+    {
       "script": "leak-guard-image-job.sh",
       "needs": "a pod whose projected Kubernetes credential may create a Job (kubectl -n <namespace> auth can-i create jobs answers yes), the worker image digest to prove (--image, from the Worker Image run's Record digest step) and the deployment's compute class (--node-selector), with the base branch's digest as the negative control (--control); it starts one Job of that image and nothing of its own"
     },
