@@ -127,6 +127,9 @@ func TestTheDaemonLaunchesItsControllerAndHandsItTheStartMessage(t *testing.T) {
 	if task := worker.mustTake(t, "the controller takes its start message"); task.Text != ControllerStartMessage {
 		t.Fatalf("the controller took %q, want the start message %q", task.Text, ControllerStartMessage)
 	}
+	if pending := storedClaim(t, cfg, token).Pending; pending == nil || pending.Origin != supervise.OriginControllerStart {
+		t.Fatalf("the controller's start message is stored as %+v, want it under origin %q", pending, supervise.OriginControllerStart)
+	}
 	worker.mustStartTurn(t)
 	// The turn's end, and the report naming the task's number behind it: the start message's life
 	// ends on that report.

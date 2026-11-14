@@ -67,6 +67,17 @@ import (
 // (ResumePhaseTask), which the outbox does not deliver to a claim still holding its phase's
 // task. Either start resumes the claim by rule and waits for the issue's admission slot as
 // every start of a phase worker does. A role a start already covers (StartFor) gets no second.
+//
+// A level claim that finished the last task written to it, in the session it still holds
+// (finishedInItsSession, dispatch://INFRA-2811 R4), is resumed with no task: a start row that
+// names the phase, carries none and resumes by rule, the row a cancelled idle release writes for
+// the claims it suspended (the daemon's releaseResume) with the phase and the rule's mark added.
+// The claim is still brought back, since nothing else would, but the resume task would ask a
+// worker that waits to do again what it already did; its session's own resume reminder is what
+// wakes it while its phase is open, as at the ready of any relaunch (readyWorkerTask). That row
+// waits for no admission slot, as no start that carries no task does (record's validation of
+// NeedsSlot): it puts no worker to work.
+//
 // The sweep runs first so the resume reads the trees it closed as lingering.
 func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (intake.Result, error) {
 	if err := e.sweepMerged(ctx, tx); err != nil {
@@ -137,12 +148,12 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 		if err != nil {
 			return intake.Result{}, err
 		}
-		// Neither start raises an entry (Engine.enter is called on neither): the boot hands the
-		// role no number the record does not already name. The ruleResume mark is what tells the
+		// No start here raises an entry (Engine.enter is called on none): the boot hands the role
+		// no number the record does not already name. The ruleResume mark is what tells the
 		// outbox to finish the row rather than retry a claim that spends its launch budget
 		// resuming (record.SuperviseRequest.RuleResume); it names this door — the boot's resume
-		// of a claim the daemon suspended by rule — and not the task's text, so both starts
-		// carry it.
+		// of a claim the daemon suspended by rule — and not the task's text, so every start here
+		// carries it, the one that carries no task included.
 		if OwedEntry(run, root, row.Entry) {
 			if err := e.sendOwedEntry(ctx, tx, issue, role, row, startMarks{ruleResume: true}); err != nil {
 				return intake.Result{}, err
@@ -151,9 +162,21 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
 				"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "suspendedBy", held.SuspendedBy)
 			continue
 		}
-		// The entry is 0: this start hands the role the work it is already on rather than a new
-		// entry, so it moves no phases row either.
-		if err := e.started(ctx, tx, issue, role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true, ruleResume: true}); err != nil {
+		// A claim that finished its last task in the session it holds is resumed with no task;
+		// any other is given the phase's resume task, at entry 0: that start hands the role the
+		// work it is already on rather than a new entry, so it moves no phases row either.
+		if finishedInItsSession(*held) {
+			if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
+				Generation: issue.Generation, Phase: issue.Phase, RuleResume: true}); err != nil {
+				return intake.Result{}, err
+			}
+			e.logOnCommit(ctx, "workflow: the boot resumes a suspended claim that finished its last task in this session with no task; its own reminder wakes it",
+				"claim", token, "issue", issue.Key, "role", role, "phase", issue.Phase, "suspendedBy", held.SuspendedBy, "task", held.TaskFinished,
+				"session", held.Session)
+			continue
+		}
+		if err := e.started(ctx, tx, issue, role, ResumePhaseTask(issue), supervise.OriginResume, 0,
+			startMarks{resumeTask: true, ruleResume: true}); err != nil {
 			return intake.Result{}, err
 		}
 		e.logOnCommit(ctx, "workflow: the boot starts a suspended claim that owns its issue's phase", "issue", issue.Key, "role", role,

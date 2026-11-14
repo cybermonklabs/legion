@@ -446,7 +446,7 @@ func (s *server) spawn(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Task != "" {
-		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task}); err != nil {
+		if err := m.Handle(ctx, supervise.RequestDeliver{Claim: token, Task: req.Task, Origin: supervise.OriginOperator}); err != nil {
 			s.operatorFailure(w, "deliver", token, err)
 			return
 		}
@@ -547,7 +547,7 @@ func (s *server) deliverEvent(w http.ResponseWriter, r *http.Request, c supervis
 	if !s.readBody(w, r, &req, nil) || !requireFields(w, field{"task", req.Task}) {
 		return nil, false
 	}
-	return supervise.RequestDeliver{Claim: c.Token, Task: req.Task}, true
+	return supervise.RequestDeliver{Claim: c.Token, Task: req.Task, Origin: supervise.OriginOperator}, true
 }
 
 func suspendEvent(_ http.ResponseWriter, _ *http.Request, c supervise.Claim) (supervise.Event, bool) {

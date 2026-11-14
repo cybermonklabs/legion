@@ -706,9 +706,10 @@ func issueOutboxOf(t *testing.T, pool *pgxpool.Pool, issue, kind string) []outbo
 }
 
 // superviseRowsOf decodes issue's supervise rows of op, oldest first, with no start passed over:
-// in this package every start carries a task — a phase worker's is one row and carries it
-// (StartOrOwe) — and the task-less starts admission brings back are written in internal/admit,
-// never here.
+// a phase worker's start is one row and carries its task (StartOrOwe), and the one start this
+// package writes with no task is the boot's resume of a claim that finished its last task in the
+// session it holds (booted), which a reader of this helper is meant to see as it stands. The
+// task-less starts admission brings back are written in internal/admit.
 func superviseRowsOf(t *testing.T, pool *pgxpool.Pool, issue, op string) []record.SuperviseRequest {
 	t.Helper()
 	var requests []record.SuperviseRequest

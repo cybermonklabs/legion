@@ -11,6 +11,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // workerSilentNotice is the notice of a worker that stopped between turns, which the daemon
@@ -129,7 +130,11 @@ type phaseWorkerReading struct {
 // the role no number the record does not already name and moves no phases row, and resumeTask
 // is what keeps the outbox from delivering a second prompt to a claim that holds its phase's
 // task by the time the start runs (record.SuperviseRequest.ResumeTask). It is built through
-// Engine.started, so it waits for the issue's admission slot as the boot's level start does.
+// Engine.started, so it waits for the issue's admission slot as the boot's level start does, and
+// its origin is a resume's. Unlike those two branches it is sent to a claim that finished its
+// last task in the session it runs too (finishedInItsSession): such a claim is silent past its
+// bound with no reminder ahead of it, and this repair is the backup of that very reminder
+// (ReportExplainsQuiet).
 //
 // The log line goes through warnOnCommit, so a fact that rolls back logs no repair.
 func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root record.Issue, run record.RoleRun, row record.PhaseRow,
@@ -141,7 +146,7 @@ func (e *Engine) repairSilence(ctx context.Context, tx pgx.Tx, issue, root recor
 		if err := e.sendOwedEntry(ctx, tx, issue, fact.Role, row, startMarks{}); err != nil {
 			return err
 		}
-	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), 0, startMarks{resumeTask: true}); err != nil {
+	} else if err := e.started(ctx, tx, issue, fact.Role, ResumePhaseTask(issue), supervise.OriginResume, 0, startMarks{resumeTask: true}); err != nil {
 		return err
 	}
 	found := workerSilentRecord(issue, fact.Role, fact.LastStep, now.Sub(fact.LastStep), workerSilentDid(behind, row.Entry, given))

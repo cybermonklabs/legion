@@ -1724,9 +1724,15 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 				}
 				// The architect start is not one of the starts that wait for a slot: this very
 				// transaction grants the tree whatever slot it needs, and an architect starts no
-				// phase worker.
-				if err := a.engine.EnqueueNaming(ctx, tx, issue.Key, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree,
-					Role: claim.RoleArchitect, Generation: issue.Generation, Task: task, Kept: kept}, kept, now); err != nil {
+				// phase worker. Its task, when it carries one, is a notice of the decisions a person
+				// made on the tree while nobody in it could hear them (ParkedDecisionTask), and an
+				// origin describes a task, so a start that carries none names none.
+				start := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation,
+					Task: task, Kept: kept}
+				if task != "" {
+					start.Origin = supervise.OriginNotice
+				}
+				if err := a.engine.EnqueueNaming(ctx, tx, issue.Key, issue.Key, start, kept, now); err != nil {
 					return admitted, released, fmt.Errorf("enqueue the architect start of %s: %w", issue.Key, err)
 				}
 				if err := a.startMidPhaseMembers(ctx, tx, issue, append(issues, issue), now); err != nil {

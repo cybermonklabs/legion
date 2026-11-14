@@ -461,7 +461,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, role 
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, entry, startMarks{freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, task, supervise.OriginPhaseStart, entry, startMarks{freshSession: freshSession})
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -489,7 +489,7 @@ func (e *Engine) restart(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry, startMarks{resend: true, freshSession: freshSession})
+	return e.started(ctx, tx, issue, role, task, supervise.OriginPhaseStart, row.Entry, startMarks{resend: true, freshSession: freshSession})
 }
 
 // SendOwedEntry sends role the work the entry of its phases row names, at that entry, for a claim
@@ -518,14 +518,15 @@ func (e *Engine) SendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // comes through (startMarks). A mark names that door and not the task's text, so what a claim
 // behind its entry is sent is composed in one place however the start is made, and the boot's
 // resume of a claim the daemon suspended by rule goes on telling the outbox whose launch budget
-// is at risk.
+// is at risk. Whatever the door, the task is the work of a phase entry, so its origin is a phase
+// start's.
 func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, row record.PhaseRow,
 	marks startMarks) error {
 	task := row.EntryTask
 	if task == "" {
 		task = ResumePhaseTask(issue)
 	}
-	return e.started(ctx, tx, issue, role, task, row.Entry, marks)
+	return e.started(ctx, tx, issue, role, task, supervise.OriginPhaseStart, row.Entry, marks)
 }
 
 // StartPromotedWorker starts the phase worker of a mid-phase member a re-admitted tree's
@@ -537,14 +538,15 @@ func (e *Engine) sendOwedEntry(ctx context.Context, tx pgx.Tx, issue record.Issu
 // the rest of the generation (record.Store.ClearTreeGeneration), so the entry the record now
 // holds names work nothing would send. The start is marked a resume task, so the outbox still
 // hands no second prompt to a claim that holds its phase's task
-// (record.SuperviseRequest.ResumeTask).
+// (record.SuperviseRequest.ResumeTask). Its origin is a phase start's and not a resume's for the
+// same reason it raises the entry: the re-admission hands the role its phase anew.
 func (e *Engine) StartPromotedWorker(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role) error {
 	task := ResumePhaseTask(issue)
 	entry, err := e.enter(ctx, tx, issue, role, task)
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, task, entry, startMarks{resumeTask: true})
+	return e.started(ctx, tx, issue, role, task, supervise.OriginPhaseStart, entry, startMarks{resumeTask: true})
 }
 
 // startMarks are the marks a start's request carries beside its entry, which tell the outbox and
@@ -586,8 +588,11 @@ type startMarks struct {
 // that works a phase and composed the task itself, at the entry that task is of — 0 for a
 // resume that hands the role no new work, which is the boot's resume and the silence repair of
 // a claim level with the entry its phases row names (booted, repairSilence) — and each of which
-// names its own marks. It is the one place a start of a phase worker is built, so a reader
-// asking what such a row carries reads this request and no other, and a field added here
+// names its own marks and the origin of its task (record.SuperviseRequest.Origin): the phase's
+// resume task those two hand a level claim is a resume's (supervise.OriginResume), and every
+// other start here hands the role a phase entry's work, a phase start's
+// (supervise.OriginPhaseStart). It is the one place a start of a phase worker is built, so a
+// reader asking what such a row carries reads this request and no other, and a field added here
 // reaches every one of those starts. It goes through StartOrOwe, so the worker comes back on
 // the one row that carries its new task, and that row waits for the issue's admission slot: a
 // transition's start puts a worker to work, which is exactly what the cap counts.
@@ -601,10 +606,10 @@ type startMarks struct {
 // (repairSilence). A ready worker level with that row is given the phase's resume task
 // instead, and that one start is enqueued directly rather than built here, for the reason
 // StartOrOwe's own comment gives.
-func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task string, entry int64, marks startMarks) error {
+func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, task, origin string, entry int64, marks startMarks) error {
 	return StartOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, ResumeTask: marks.resumeTask,
-		RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now())
+		Origin: origin, Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend,
+		ResumeTask: marks.resumeTask, RuleResume: marks.ruleResume, FreshSession: marks.freshSession}, e.now())
 }
 
 // StartOrOwe writes the start of a phase worker as one outbox row in the caller's own

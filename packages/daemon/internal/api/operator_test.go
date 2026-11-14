@@ -110,8 +110,9 @@ func TestSpawnCreatesTheClaimQueuesItsTaskAndLaunchesIt(t *testing.T) {
 	if h.supervisor.prompts[architectToken] != body.Prompt {
 		t.Errorf("the role prompt handed to the supervisor = %q, want %q", h.supervisor.prompts[architectToken], body.Prompt)
 	}
-	if stored := h.stored(architectToken); stored.State != supervise.StateLaunching || stored.Pending == nil {
-		t.Errorf("stored %+v, want the launched claim with its task", stored)
+	if stored := h.stored(architectToken); stored.State != supervise.StateLaunching || stored.Pending == nil ||
+		stored.Pending.Origin != supervise.OriginOperator {
+		t.Errorf("stored %+v, want the launched claim with its task, under origin %q", stored, supervise.OriginOperator)
 	}
 }
 
@@ -216,6 +217,9 @@ func TestDeliverQueuesATaskOnTheClaim(t *testing.T) {
 	decodeInto(t, recorder, &got)
 	if got.Pending == nil || got.Pending.Task != "Review the plan." {
 		t.Fatalf("deliver answered pending %+v, want the task", got.Pending)
+	}
+	if pending := h.stored(architectToken).Pending; pending == nil || pending.Origin != supervise.OriginOperator {
+		t.Fatalf("the stored task = %+v, want it under origin %q", pending, supervise.OriginOperator)
 	}
 
 	wantRefusal(t, h.operator(http.MethodPost, "/legion/v1/operator/claims/"+string(architectToken)+"/deliver",

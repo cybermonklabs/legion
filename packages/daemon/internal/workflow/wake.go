@@ -62,15 +62,17 @@ type Pods interface {
 }
 
 // wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
-// generation, naming no phase, carrying the task that says why the pod came back. It is the same
-// row a phase start writes, which is the point — the outbox's start executor already resumes a
-// suspended claim by rule (RequestRuleResume), already records the start that cancels a release
-// still in flight (StartedBy, read by store.IssueReleaseStop), and already delivers the row's
-// task once the relaunched agent is ready. Naming no phase keeps the row out of every phase
-// fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
-// never the phase's work.
+// generation, naming no phase, carrying the task that says why the pod came back, under a
+// wake's origin. It is the same row a phase start writes, which is the point — the outbox's
+// start executor already resumes a suspended claim by rule (RequestRuleResume), already records
+// the start that cancels a release still in flight (StartedBy, read by store.IssueReleaseStop),
+// and already delivers the row's task once the relaunched agent is ready. Naming no phase keeps
+// the row out of every phase fence: the issue's phase may move between the wake and the
+// relaunch, and the wake's task is never the phase's work. Every wake writes it, the backstop's
+// among them (wakeReleased).
 func wakeRow(issue record.Issue, role claim.Role, task string) record.SuperviseRequest {
-	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task}
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task,
+		Origin: supervise.OriginWake}
 }
 
 // WakeTask is the one task a woken role is given, the sentence its first turn reads before

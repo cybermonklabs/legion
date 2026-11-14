@@ -540,6 +540,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 	task := resumeTask(root.Key, waiting, step, gate, asks[root.Key], e.armed())
 	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
 		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Task: task,
+		Origin: supervise.OriginNotice,
 	}); err != nil {
 		return err
 	}

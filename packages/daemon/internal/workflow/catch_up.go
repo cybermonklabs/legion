@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
 // claimReady gives a tree's root architect its first instruction. Nothing else starts a turn of it:
@@ -171,13 +172,24 @@ func queuedRowCovers(run record.RoleRun, root record.Issue, current phase.Phase)
 // on the wrong prompt, since the completion it answers with is refused as behind that entry and
 // the entry's own task follows from the next admission pass or the entry sweep anyway.
 //
-// A claim level with its row is sent the phase's resume task, enqueued here and marked as a
-// resume task, so the one rule about already-delivered work stays the outbox's: it does not
-// deliver a resume task to a claim that by then holds its phase's task for this run. That row
-// reads no slot and carries no entry, the claim being on the entry its row names already; the
-// owed entry's start waits for the issue's admission slot as every start Engine.started builds
-// does (StartOrOwe). Either way the issue holds one: a claim whose agent has just said it is
-// ready is running, and admission has long since given its tree a slot.
+// A claim level with its row is sent the phase's resume task, enqueued here, marked as a resume
+// task and under a resume's origin, so the one rule about already-delivered work stays the
+// outbox's: it does not deliver a resume task to a claim that by then holds its phase's task for
+// this run. That row reads no slot and carries no entry, the claim being on the entry its row
+// names already; the owed entry's start waits for the issue's admission slot as every start
+// Engine.started builds does (StartOrOwe). Either way the issue holds one: a claim whose agent
+// has just said it is ready is running, and admission has long since given its tree a slot.
+//
+// A level claim that finished the last task written to it, in the session it runs now, is sent
+// nothing (finishedInItsSession, dispatch://INFRA-2811 R4). Such a worker is one that waits: it
+// did its work and ended its turn, and its process was relaunched under it — a death, a stale
+// plugin, a displacement, a cancelled idle release — with its session resumed. The resume task
+// would only ask it to do again what it already did, and the session's own resume reminder
+// (packages/pi-shared's armResumeReminder) is what wakes a worker whose phase is still open. A
+// claim never written a task is sent the resume, and so is one whose session is new since it
+// finished (a fresh session, or an abandoned one replaced), since a new session has no reminder
+// state to wake it. The rule covers the resume task alone: the owed entry's work above, a
+// transition's start, a wake's task and every other task are written as before.
 func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.ClaimReady) error {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || issue == nil || issue.Project != e.cfg.Project || record.OutOfWorkflow(issue.Status) {
@@ -207,7 +219,8 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 	if err != nil {
 		return err
 	}
-	if held := run.Claim; held == nil || held.Pending != nil {
+	held := run.Claim
+	if held == nil || held.Pending != nil {
 		return nil
 	}
 	if queuedRowCovers(run, *root, issue.Phase) {
@@ -225,13 +238,29 @@ func (e *Engine) readyWorkerTask(ctx context.Context, tx pgx.Tx, fact intake.Cla
 			"issue", issue.Key, "role", role, "phase", issue.Phase, "entry", row.Entry, "launch", fact.Launch)
 		return nil
 	}
+	if finishedInItsSession(*held) {
+		e.logOnCommit(ctx, "workflow: a ready worker that finished its last task in this session is given nothing; its own reminder wakes it",
+			"claim", token, "issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch, "task", held.TaskFinished,
+			"session", held.Session)
+		return nil
+	}
 	if err := e.enqueue(ctx, tx, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role,
-		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), ResumeTask: true}); err != nil {
+		Generation: issue.Generation, Phase: issue.Phase, Task: ResumePhaseTask(*issue), Origin: supervise.OriginResume,
+		ResumeTask: true}); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a ready worker that holds its issue's phase with nothing pending is given its phase's task",
 		"issue", issue.Key, "role", role, "phase", issue.Phase, "launch", fact.Launch)
 	return nil
+}
+
+// finishedInItsSession is whether held finished the last task written to it in the session it
+// runs now: the record has written it a task, and the session it finished its last one in is
+// the session it holds (dispatch://INFRA-2811 R4). The phase's resume task is queued for a claim
+// of which this is false — one never written a task, or whose session is new since it finished —
+// and for no other, at a ready (readyWorkerTask) and at the boot (booted).
+func finishedInItsSession(held record.RoleClaim) bool {
+	return held.TaskWritten != 0 && held.Session == held.TaskFinishedSession
 }
 
 // treeCatchUp is root's tree as the record holds it: whether a hand-over created the root at this
