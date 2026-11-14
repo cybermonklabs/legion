@@ -21,6 +21,8 @@ const issue: IssueDetails = {
   holder_state: null,
   last_seen: null,
   takeable_at: null,
+  advances: [],
+  advances_revision: 0,
   artifacts: [
     {
       created_at: "2026-09-09T00:00:00Z",
@@ -127,8 +129,21 @@ function stubIssueApi() {
   // real response shape.
   const patchIssue = answerIssuePatches().mockImplementation(
     // A null `status` or `title` in the body means "leave it as it is", which is what the server
-    // does with it; every other field the body names is written through.
-    async (_key, { rank: _rank, components: _components, status, title, ...update }) =>
+    // does with it; every other field the body names is written through. The body's `advances`
+    // is a list of priority ids, which the answer states as the resolved relations instead, so
+    // it is left to the issue's own.
+    async (
+      _key,
+      {
+        rank: _rank,
+        components: _components,
+        advances: _advances,
+        advances_revision: _advancesRevision,
+        status,
+        title,
+        ...update
+      }
+    ) =>
       narrowIssue({
         ...issue,
         ...update,

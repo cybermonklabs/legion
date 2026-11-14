@@ -329,8 +329,8 @@ func ensureRepoClone(ctx context.Context, run Runner, clock Clock, cloneDir, rem
 // GitHub, as a `jj git clone` of it would leave it; `jj git init --colocate` makes it jj's; and the
 // default branch's bookmark tracks origin's, as jj's own clone tracks it, so a later fetch moves it.
 // The clone takes no working tree (`git clone --no-checkout`), so the pod writes the repository's
-// working copy once, in the issue's own jj workspace: nothing but the rescue check ever read the
-// shared clone's, and that check reads commits, not files. The two jj steps that follow keep jj's
+// working copy once, in the issue's own jj workspace: nothing reads the shared clone's working
+// copy, so it is never written. The two jj steps that follow keep jj's
 // first snapshot from recording that absent tree as deleted — `jj sparse set --clear` leaves the
 // clone's working copy with no file in it, and `jj abandon @` drops the snapshot `jj git init`
 // already took. The order is load-bearing, and was measured both ways: clearing the patterns

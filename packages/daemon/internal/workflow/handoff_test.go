@@ -2,6 +2,7 @@ package workflow
 
 import (
 	"context"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -128,6 +129,39 @@ func TestIgnoredCompletionsAreRefused(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A role's completion of a phase is taken whether it names a commit or not: the planner, the
+// tester and the reviewer send one only when their record names a head, so a taken completion
+// can hold a record and no commit. Such a role has reported its phase. Once the issue has left
+// that phase, a further completion of the role - here the reviewer's, naming a newer record after
+// the request for changes moved the issue to implementing - is refused HANDOFF_NOT_CURRENT_PHASE,
+// and the row keeps the completion that was taken (engine's leftItsPhase).
+func TestAFurtherCompletionOfALeftPhaseWhoseTakenCompletionNamedNoCommitIsRefused(t *testing.T) {
+	pool := migratedPool(t)
+	seedReviewOf(t, pool, headOne, "green")
+	engine := testEngine(config.DesignGateRootIssues, nil)
+	applyRefusingNothing(t, pool, engine,
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
+		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, State: "changes_requested", CommitID: headOne, HeadSHA: headOne, Author: testReviewApp, Body: reviewBody("rename the widget", headOne)})
+	assertPhase(t, pool, phase.Implementing)
+	taken := phaseRowOf(t, pool, claim.RoleReviewer)
+	if taken.HandoffRecord != "review-1" || taken.HandoffCommit != "" {
+		t.Fatalf("the reviewer's row = %+v, want its taken completion naming review-1 and no commit", taken)
+	}
+
+	result, err := intake.ApplyFact(t.Context(), pool, "api", "review-again", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer,
+		Claim: "review-claim", Summary: "reviewed again", HandoffRecord: "review-2", HandoffVersion: 2}, engine, admissionStub{})
+	if err != nil {
+		t.Fatalf("ApplyFact: %v", err)
+	}
+	if result.Refusal == nil || result.Refusal.Code != "HANDOFF_NOT_CURRENT_PHASE" {
+		t.Fatalf("the reviewer's further completion = %+v, want HANDOFF_NOT_CURRENT_PHASE: its completion of reviewing was taken", result.Refusal)
+	}
+	if row := phaseRowOf(t, pool, claim.RoleReviewer); !reflect.DeepEqual(row, taken) {
+		t.Fatalf("the reviewer's row after the refusal = %+v, want it unchanged, %+v", row, taken)
+	}
+	assertPhase(t, pool, phase.Implementing)
 }
 
 func assertPhase(t *testing.T, pool *pgxpool.Pool, want phase.Phase) {
