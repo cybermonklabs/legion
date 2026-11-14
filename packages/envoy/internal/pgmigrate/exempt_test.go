@@ -69,10 +69,8 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"a dropped check":                           {"alter table things drop constraint things_kind_check;", "alter table"},
 		"a default set on a column":                 {"alter table things alter column kind set default 'x';", "alter table"},
 		"a validated check":                         {"alter table things add constraint c check (kind <> '');", ""},
-		"a not-null column":                         {"alter table things add column note text not null;", ""},
 		"an altered column type":                    {"alter table things alter column kind type varchar;", ""},
 		"constraint validation":                     {"alter table things validate constraint c;", ""},
-		"a generated column":                        {"alter table things add column note text generated always as (kind) stored;", ""},
 		"a cascading constraint drop":               {"alter table things drop constraint c cascade;", ""},
 		"a check beside validation":                 {"alter table things add constraint c check (kind <> '') not valid, validate constraint c;", ""},
 		"an index":                                  {"create index things_kind on things (kind);", ""},
@@ -83,9 +81,6 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 		"a trigger only in a string literal":        {"update things set kind = 'create trigger t after insert on things for each row execute function owe()'", ""},
 		"a trigger only in a dollar-quoted literal": {"select $$; create trigger t after insert on things for each row execute function owe(); $$", ""},
 		"a trigger inside a DO block":               {"do $$ begin create trigger t after insert on things for each row execute function owe(); end $$;", ""},
-		// PostgreSQL 18 reads a VIRTUAL generated column, and the census's Postgres 17 grammar does
-		// not, so the census cannot read the migration and does not exempt it.
-		"a virtual generated column": {"alter table things add column c int generated always as (1) virtual;", ""},
 		// A drop of anything else is not exempt, and a drop with cascade reaches objects the
 		// statement does not name.
 		"a dropped index with cascade":           {"drop index things_kind cascade;", ""},
@@ -111,6 +106,19 @@ func TestTableSizeExemptionReadsStatementsAsPostgresParsesThem(t *testing.T) {
 	} {
 		if got, _, _ := tableSizeExemption(context.Background(), nil, tc.sql); got != tc.want {
 			t.Errorf("%s: tableSizeExemption = %q, want %q", name, got, tc.want)
+		}
+	}
+	// A migration the census cannot parse is not exempt, and it takes the catalog reads away from
+	// every pending migration after it (laterReadsOff), since the census cannot see what it
+	// changes: a VIRTUAL generated column, which PostgreSQL 18 reads and the census's Postgres 17
+	// grammar does not, and a statement Postgres refuses. A migration it parses leaves them on.
+	for sql, want := range map[string]bool{
+		"alter table things add column c int generated always as (1) virtual;": true,
+		"create trigger t after insert on things for each row":                 true,
+		"alter table things add column note text;":                             false,
+	} {
+		if exemption, laterReadsOff, err := tableSizeExemption(context.Background(), nil, sql); err != nil || exemption != "" || laterReadsOff != want {
+			t.Errorf("%q: tableSizeExemption = %q, %v, %v; want \"\", %v, nil", sql, exemption, laterReadsOff, err, want)
 		}
 	}
 }

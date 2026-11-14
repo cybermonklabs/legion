@@ -203,7 +203,7 @@ func (*classifier) catalogOnlyDrop(node json.RawMessage) (string, error) {
 // FOREIGN TABLE parse as this node too, as do ALTER VIEW, ALTER INDEX and ALTER SEQUENCE. The
 // census sizes neither a type nor a foreign table, so admitting them serves nothing, and ALTER
 // TYPE alters a type, which takes the catalog reads away from every later migration
-// (catalogReadsOff). Before the census read objtype, it admitted both with a text column.
+// (catalogReadsOff).
 func (c *classifier) catalogOnlyAlterTable(node json.RawMessage) (string, error) {
 	var alter struct {
 		Objtype string `json:"objtype"`
@@ -880,11 +880,14 @@ func typeNameOf(node json.RawMessage) (name string, ok bool) {
 //
 // catalog is the census's transaction, which the classifier reads where a form needs it: an added
 // column's type, its default's cast and function, and whether the table a created index is built
-// on is new. With a nil catalog, or where the migration's own statements forbid the reads
-// (catalogReadsOff), it reads nothing, and every added column and every created index is judged
-// on size; the other kinds need no read. An error Postgres raises for a read refuses the form it
-// is for, and any other error is returned. The census's transaction is repeatable-read and
-// read-only, so every read sees the catalog as it stands before any pending migration applies.
+// on is new. Its first pass also reads, for a CREATE OR REPLACE FUNCTION or an ALTER FUNCTION,
+// whether a cast calls a function of that name (castFunction), since the answer decides
+// laterReadsOff. With a nil catalog, or where the migration's own statements forbid the reads
+// (catalogReadsOff), it reads nothing to admit a form, and every added column and every created
+// index is judged on size; the other kinds need no read. An error Postgres raises for a read
+// refuses the form it is for, and any other error is returned. The census's transaction is
+// repeatable-read and read-only, so every read sees the catalog as it stands before any pending
+// migration applies.
 //
 // The statements are read by Postgres's own parser, libpg_query (Postgres 17's scan.l and
 // gram.y), run as WebAssembly in pure Go by github.com/wasilibs/go-pgquery, so the reading is the
@@ -897,7 +900,6 @@ func typeNameOf(node json.RawMessage) (name string, ok bool) {
 func tableSizeExemption(ctx context.Context, catalog pgx.Tx, sql string) (exemption string, laterReadsOff bool, err error) {
 	statements, ok := parseStatements(sql)
 	if !ok {
-		// The census cannot see what a migration it cannot parse changes in the catalog.
 		return "", true, nil
 	}
 	c := &classifier{ctx: ctx, catalog: catalog}

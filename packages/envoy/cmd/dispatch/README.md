@@ -2303,8 +2303,9 @@ It refuses:
     The runner's `lock_timeout` bounds its wait, as it bounds the wait of every statement.
 
   The census reads the catalog of the database it judges, in its read-only transaction, for an added column's type, for the cast and the function of its default, and for whether the table of a created index is new.
-  No other kind needs a catalog read.
-  The census reads no catalog for the migrations below, so it admits none of their added columns, `text` included, and none of their created indexes:
+  No other kind needs a catalog read to be admitted.
+  For a `create or replace function` or an `alter function`, the census also reads whether a cast calls a function of that name, since the answer decides whether that migration and the later ones read the catalog (below).
+  The census reads no catalog to admit a statement of the migrations below, so it admits none of their added columns, `text` included, and none of their created indexes:
 
   - a migration that sets or resets `search_path`, `role` or `session_authorization`, `set local` included, or runs `reset all`, or a migration that itself holds a statement of the list in the next item.
     Such a setting can make the migration's names resolve to other objects than the census's names do, since the default `search_path` starts with `"$user"`.

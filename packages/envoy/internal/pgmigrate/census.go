@@ -159,10 +159,11 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 //     migration over, on the first pending migration.
 //
 // The classifier (tableSizeExemption) reads the catalog in the census's transaction where a form
-// needs it: an added column's type and default, and whether the table a created index is built on
-// is new. The census reads every pending migration against the catalog as it stands before any of
-// them applies, so from the first pending migration that changes what a name resolves to there
-// (a type, a domain, a cast, a schema or an extension changed, a session setting of search_path,
+// needs it: an added column's type and default, whether the table a created index is built on is
+// new, and, for a replaced or altered function, whether a cast calls a function of its name.
+// The census reads every pending migration against the catalog as it stands before any of them
+// applies, so from the first pending migration that changes what a name resolves to there (a
+// type, a domain, a cast, a schema or an extension changed, a session setting of search_path,
 // role or session_authorization, or a text the parser cannot read), every later one is classified
 // with no catalog, and its added columns and created indexes are judged on size (catalogTrusted).
 //
@@ -170,7 +171,7 @@ func (r *Report) Refused() bool { return r.refusals() > 0 }
 // search_path names no schema that exists among them, where current_schema() is null, so neither
 // versionTable nor any table is found, and a populated database would read as fresh, while the
 // runner can create nothing on that connection; or a catalog read of the classifier that fails
-// with an error that is not Postgres's (classify). It writes nothing: the transaction is
+// with an error that is not Postgres's (tableSizeExemption). It writes nothing: the transaction is
 // read-only, and a migration's census is sent through the extended protocol, so it cannot end that
 // transaction with a statement of its own (readCensus). What the report holds is counts, sizes,
 // versions, file names, session metadata, lock modes and SQLSTATEs, a refusing holder's query text
