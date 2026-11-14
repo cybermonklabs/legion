@@ -445,13 +445,7 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 	// silent list is read against (admit's UseWorkerSilence, config.Config.WorkerSilence and
 	// config.Config.WorkerBackground).
 	w.admission.UseWorkerSilence(cfg.WorkerSilence, cfg.WorkerBackground)
-	// The mirror runs before both deciders, and that order is load-bearing. The engine decides
-	// whether to start a child and admission whether to admit a root inside this same
-	// transaction, from the mirror's rows, so the row an event carries must already be written
-	// when they look. Neither could write it itself: the engine returns early on an event whose
-	// sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
-	// blocked-by-only edit this mirror exists for, and admission runs second in any case.
-	w.handlers, w.reviewAppLogin = []intake.Handler{blockers.NewMirror(w.records, cfg.Project), w.engine, w.admission}, reviewAppLogin
+	w.handlers, w.reviewAppLogin = factHandlers(w.records, cfg.Project, w.engine, w.admission), reviewAppLogin
 	w.gatedSteps = cfg.Gates.Steps()
 	w.pool = st.Pool()
 	if err := backfillRepositories(ctx, w.pool, w.records, w.dispatch, cfg.Project, cfg.StateDir, w.defaultBranches, cfg.RepositoryRenames, log); err != nil {
@@ -464,6 +458,25 @@ func openWorkflow(ctx context.Context, cfg config.Config, st *store.Store, proje
 		return nil, err
 	}
 	return w, nil
+}
+
+// factHandlers is the chain every fact of the project is applied through (intake.ApplyFact), in
+// the order the daemon applies them: the API's facts, the durable consumers', the outbox's and
+// supervision's alike.
+//
+// The mirror runs before both deciders, and that order is load-bearing. The engine decides
+// whether to start a child and admission whether to admit a root inside this same
+// transaction, from the mirror's rows, so the row an event carries must already be written
+// when they look. Neither could write it itself: the engine returns early on an event whose
+// sequence or status it has already seen (Engine.dispatchIssue), which is exactly the
+// blocked-by-only edit this mirror exists for, and admission runs second in any case.
+//
+// The wait reconciler runs last, after both deciders, and that order is load-bearing too: it
+// ends each wait the fact stopped standing from what the record reads once every other write of
+// the fact is made (workflow.WaitReconciler), admission's among them, so a re-admission's new
+// generation ends a wait in the fact that wrote it.
+func factHandlers(records record.Store, project string, engine *workflow.Engine, admission *admit.Admission) []intake.Handler {
+	return []intake.Handler{blockers.NewMirror(records, project), engine, admission, workflow.NewWaitReconciler(engine)}
 }
 
 // queueGatedStepsPublish queues the deployment's design-gate steps for the project's Dispatch
@@ -900,7 +913,15 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 	// changes register (intake.OnCommit), as ApplyFact does for a fact, and it records issues, so it
 	// takes the lock every fact applies under: a mapping refresh never unsubscribes a repository it
 	// is recording an issue on.
-	scoped, committed := intake.WithCommitHooks(ctx)
+	//
+	// The pass also names itself as the fact its writes are caused by (intake.WithAppliedFact), so
+	// a wait any of its writes ends — the engine's own transitions it applies among them — is ended
+	// by this pass, which has no event id of its own.
+	pass := "recovery"
+	if boot {
+		pass = "boot"
+	}
+	scoped, committed := intake.WithCommitHooks(intake.WithAppliedFact(ctx, "reconcile", pass+":"+w.bootID))
 	if err := pgx.BeginFunc(scoped, w.pool, func(tx pgx.Tx) error {
 		if err := intake.SerializeFacts(scoped, tx); err != nil {
 			return fmt.Errorf("serialize the reconcile with every fact: %w", err)
@@ -923,7 +944,13 @@ func (w *workflowRuntime) reconcileListing(ctx context.Context, issues []dispatc
 				return err
 			}
 		}
-		return w.admission.Reconcile(scoped, tx, listed, target, position)
+		if err := w.admission.Reconcile(scoped, tx, listed, target, position); err != nil {
+			return err
+		}
+		// The reconcile is the one admission pass outside a fact: its re-admissions, promotions
+		// and recorded observations are written in this transaction, so the waits they stopped end
+		// in it, as the last handler ends a fact's (workflow.WaitReconciler).
+		return w.engine.EndStaleWaits(scoped, tx, "reconcile/"+pass+":"+w.bootID)
 	}); err != nil {
 		return fmt.Errorf("reconcile admission: %w", err)
 	}

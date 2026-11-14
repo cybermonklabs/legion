@@ -229,6 +229,31 @@ func TestCommitScopedIsTrueOnlyWithinWithCommitHooks(t *testing.T) {
 	}
 }
 
+// Every handler of a fact is told the source and event id ApplyFact applies it under, each fact
+// its own, so a write a handler makes can name the fact that caused it (a wait's end). A context no
+// ApplyFact handed a handler names no fact.
+func TestEveryHandlerIsToldTheSourceAndEventIDOfTheFactItApplies(t *testing.T) {
+	pool := migratedPool(t)
+	ctx := context.Background()
+	if _, _, ok := AppliedFact(ctx); ok {
+		t.Fatal("AppliedFact names a fact outside ApplyFact")
+	}
+	var told []string
+	telling := handlerFunc(func(ctx context.Context, _ pgx.Tx, _ Fact) (Result, error) {
+		source, eventID, ok := AppliedFact(ctx)
+		told = append(told, fmt.Sprintf("%s/%s %t", source, eventID, ok))
+		return Result{}, nil
+	})
+	for _, event := range []struct{ source, id string }{{"api", "wait-declared:w-1"}, {"dispatch", "issue-7"}} {
+		if _, err := ApplyFact(ctx, pool, event.source, event.id, DispatchIssue{Key: "LEGION-208"}, telling, telling); err != nil {
+			t.Fatalf("apply %s/%s: %v", event.source, event.id, err)
+		}
+	}
+	if want := []string{"api/wait-declared:w-1 true", "api/wait-declared:w-1 true", "dispatch/issue-7 true", "dispatch/issue-7 true"}; !slices.Equal(told, want) {
+		t.Fatalf("the handlers were told %q, want %q", told, want)
+	}
+}
+
 func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 	updatedAt := time.Date(2026, 9, 23, 0, 0, 0, 0, time.UTC)
 	// mark is a captured Dispatch event's place in its issue's log: its seq and created_at.

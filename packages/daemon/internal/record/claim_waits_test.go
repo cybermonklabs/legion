@@ -258,3 +258,143 @@ func TestTheClaimReadCarriesTheClaimsSessionAndItsWaitWithNoEnd(t *testing.T) {
 	})
 	read(t, nil, "after the wait ended")
 }
+
+// The reconciler's one read (StaleWaits) keeps a wait with no end only once its record has moved
+// under it, and each column a term of the rule reads keeps it alone: the issue's phase, its
+// generation, its status out of the workflow with its phase unmoved, its root's linger, the phases
+// row's entry, a completion on that row, and the claim's session. A wait whose record stands as it
+// was declared is not read, nor one whose role has no phases row and that was declared on entry 0,
+// nor an ended wait, nor another project's. Each wait read comes, by token, with what the record
+// holds now of its issue, its root, its role's row and its claim's session.
+func TestStaleWaitsReadsOnlyTheWaitsWhoseRecordMovedUnderThem(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := func(key string) {
+		t.Helper()
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, records.PutIssue(ctx, tx, Issue{Key: key, Tree: key, Project: "LEGION", Title: key, Phase: phase.Planning,
+				Generation: 3, Status: "in_progress", Rank: "A", HandedOver: true, Repo: "acme/widgets", DefaultBranch: "main",
+				GitHubRepo: "acme/widgets"}))
+		})
+	}
+	// declare records key implementing in tree at generation 3, the claim of its implementer in
+	// session ses-<key>, the role's phases row on entry 4 (none, and the wait on entry 0, for
+	// noRow), and the claim's wait on all of it.
+	declare := func(project, key, tree string, noRow bool) ClaimWait {
+		t.Helper()
+		token, err := claim.NewToken(project, key, claim.RoleImplementer)
+		must(t, err)
+		wait := ClaimWait{ID: "wait-" + key, Project: project, Token: token, Issue: key, Role: claim.RoleImplementer,
+			Generation: 3, Phase: phase.Implementing, PhaseEntry: 4, TakenEntry: 4, Session: "ses-" + key,
+			WaitingOn: "the run on the branch's head", WakeAt: waitDeclaredAt.Add(2 * time.Hour), DeclaredAt: waitDeclaredAt}
+		if noRow {
+			wait.PhaseEntry = 0
+		}
+		must(t, st.PutClaim(ctx, supervise.Claim{Token: token, Project: project, Tree: tree, Issue: key, Role: claim.RoleImplementer,
+			Generation: 1, State: supervise.StateIdle, Session: wait.Session, SessionFile: "/tmp/" + key + ".jsonl"}))
+		inTx(t, st, func(tx pgx.Tx) {
+			must(t, records.PutIssue(ctx, tx, Issue{Key: key, Tree: tree, Project: "LEGION", Title: key, Parent: &tree,
+				Phase: phase.Implementing, Generation: 3, Status: "in_progress", Rank: "U", HandedOver: true,
+				Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets"}))
+			if !noRow {
+				must(t, records.PutPhase(ctx, tx, PhaseRow{Issue: key, Role: claim.RoleImplementer, Claim: token, Entry: 4}))
+			}
+			_, err := records.DeclareWait(ctx, tx, wait)
+			must(t, err)
+		})
+		return wait
+	}
+	exec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := st.Pool().Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("%s: %v", sql, err)
+		}
+	}
+	root("LEGION-300")
+	root("LEGION-310")
+	root("OTHER-1")
+	completedAt, lingerUntil := waitDeclaredAt.Add(10*time.Minute), waitDeclaredAt.Add(time.Hour)
+
+	declare("legion", "LEGION-301", "LEGION-300", false)
+	declare("legion", "LEGION-309", "LEGION-300", true)
+	moved := []ClaimWait{
+		declare("legion", "LEGION-302", "LEGION-300", false),
+		declare("legion", "LEGION-303", "LEGION-300", false),
+		declare("legion", "LEGION-304", "LEGION-300", false),
+		declare("legion", "LEGION-305", "LEGION-300", false),
+		declare("legion", "LEGION-306", "LEGION-300", false),
+		declare("legion", "LEGION-307", "LEGION-300", false),
+		declare("legion", "LEGION-308", "LEGION-310", false),
+	}
+	ended := declare("legion", "LEGION-311", "LEGION-300", false)
+	inTx(t, st, func(tx pgx.Tx) {
+		_, err := records.EndWait(ctx, tx, ended.Project, ended.Token, ended.ID, "completed", "api/handoff-1", completedAt)
+		must(t, err)
+	})
+	declare("other", "OTHER-2", "OTHER-1", false)
+	exec(`update issues set phase = 'testing' where key in ('LEGION-302', 'LEGION-311', 'OTHER-2')`)
+	exec(`update issues set generation = 4 where key = 'LEGION-303'`)
+	exec(`update issues set status = 'backlog' where key = 'LEGION-304'`)
+	exec(`update phases set entry = 5 where issue = 'LEGION-305'`)
+	exec(`update phases set completed_at = $1 where issue = 'LEGION-306'`, completedAt)
+	exec(`update claims set session = 'ses-fresh' where issue = 'LEGION-307'`)
+	exec(`update issues set linger_until = $1 where key = 'LEGION-310'`, lingerUntil)
+
+	var readings []WaitReading
+	inTx(t, st, func(tx pgx.Tx) {
+		var err error
+		readings, err = records.StaleWaits(ctx, tx, "legion")
+		must(t, err)
+	})
+	if len(readings) != len(moved) {
+		t.Fatalf("the stale waits = %+v, want the %d whose record moved", readings, len(moved))
+	}
+	for i, reading := range readings {
+		wait := moved[i]
+		if reading.Claim.Wait == nil || !sameWait(*reading.Claim.Wait, wait) {
+			t.Fatalf("stale wait %d = %+v, want %+v", i, reading.Claim.Wait, wait)
+		}
+		want := WaitReading{
+			Issue: Issue{Key: wait.Issue, Tree: "LEGION-300", Phase: phase.Implementing, Generation: 3, Status: "in_progress"},
+			Root:  Issue{Key: "LEGION-300", Tree: "LEGION-300"},
+			Row:   PhaseRow{Issue: wait.Issue, Role: claim.RoleImplementer, Entry: 4},
+			Claim: RoleClaim{Session: wait.Session},
+		}
+		switch wait.Issue {
+		case "LEGION-302":
+			want.Issue.Phase = phase.Testing
+		case "LEGION-303":
+			want.Issue.Generation = 4
+		case "LEGION-304":
+			want.Issue.Status = "backlog"
+		case "LEGION-305":
+			want.Row.Entry = 5
+		case "LEGION-306":
+			want.Row.CompletedAt = completedAt
+		case "LEGION-307":
+			want.Claim.Session = "ses-fresh"
+		case "LEGION-308":
+			want.Issue.Tree, want.Root = "LEGION-310", Issue{Key: "LEGION-310", Tree: "LEGION-310", LingerUntil: &lingerUntil}
+		}
+		got := reading
+		if got.Issue.Key != want.Issue.Key || got.Issue.Tree != want.Issue.Tree || got.Issue.Phase != want.Issue.Phase ||
+			got.Issue.Generation != want.Issue.Generation || got.Issue.Status != want.Issue.Status || got.Issue.LingerUntil != nil {
+			t.Errorf("the issue of %s reads %+v, want %+v", wait.ID, got.Issue, want.Issue)
+		}
+		if got.Root.Key != want.Root.Key || got.Root.Tree != want.Root.Tree || (got.Root.LingerUntil == nil) != (want.Root.LingerUntil == nil) ||
+			(got.Root.LingerUntil != nil && !got.Root.LingerUntil.Equal(*want.Root.LingerUntil)) {
+			t.Errorf("the root of %s reads %+v, want %+v", wait.ID, got.Root, want.Root)
+		}
+		if got.Row.Issue != want.Row.Issue || got.Row.Role != want.Row.Role || got.Row.Entry != want.Row.Entry ||
+			!got.Row.CompletedAt.Equal(want.Row.CompletedAt) {
+			t.Errorf("the phases row of %s reads %+v, want %+v", wait.ID, got.Row, want.Row)
+		}
+		if got.Claim.Session != want.Claim.Session {
+			t.Errorf("the claim of %s runs session %q, want %q", wait.ID, got.Claim.Session, want.Claim.Session)
+		}
+		if run := reading.Run(); run.Claim == nil || run.Claim.Wait != reading.Claim.Wait {
+			t.Errorf("the run of %s = %+v, want the reading's claim", wait.ID, run)
+		}
+	}
+}

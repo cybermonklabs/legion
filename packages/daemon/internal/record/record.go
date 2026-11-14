@@ -1810,6 +1810,13 @@ type Store interface {
 	// StandingWaits is every wait row of project's claims (the claim project token, as
 	// claims.project holds it) that has no end, by token, in one read.
 	StandingWaits(ctx context.Context, tx pgx.Tx, project string) ([]ClaimWait, error)
+	// StaleWaits is every wait row of project's claims that has no end and whose record has moved
+	// under it since its declaration, in one read: its issue's phase, generation or status, its
+	// tree root's linger, its role's phases row's entry or completion, or its claim's session no
+	// longer reads as the wait recorded them, or as the declaration required them. Each comes as a
+	// WaitReading, by token. What ends such a wait, and with what cause, is
+	// workflow.WaitEndCause's to say; a wait the design gate alone holds is none of these.
+	StaleWaits(ctx context.Context, tx pgx.Tx, project string) ([]WaitReading, error)
 }
 
 // RoleRunKey identifies one role's run of an issue generation.
@@ -1946,6 +1953,28 @@ type ClaimWait struct {
 	EndedAt    time.Time
 	EndCause   string
 	EndedBy    string
+}
+
+// WaitReading is one wait with no end beside what the record holds now of each thing the rule
+// over a wait reads (workflow.WaitStands, whose terms workflow.WaitEndCause names): the wait's
+// issue, the issue's tree root, the wait's role's phases row, and the claim that declared it, all
+// read by the one statement that reads the wait (Store.StaleWaits), so a reading costs no query of
+// its own. Only what that rule reads is filled: of the issue its key, tree, phase, generation,
+// status and linger; of the root its key, tree and linger; of the row its issue, role, entry and
+// completion, the zero row where the role has none (PhaseRowOf); of the claim the session it runs
+// now, and the wait itself as its Wait.
+type WaitReading struct {
+	Issue Issue
+	Root  Issue
+	Row   PhaseRow
+	Claim RoleClaim
+}
+
+// Run is the reading's claim as the rule over a wait takes it: the run whose claim declared the
+// wait.
+func (r WaitReading) Run() RoleRun {
+	held := r.Claim
+	return RoleRun{Claim: &held}
 }
 
 // TreeLingers says whether tree lingers after its close: its root is recorded with a linger

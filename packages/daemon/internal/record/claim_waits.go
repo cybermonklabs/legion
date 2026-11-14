@@ -101,6 +101,68 @@ func (s *Postgres) StandingWaits(ctx context.Context, tx pgx.Tx, project string)
 	return waits, nil
 }
 
+// StaleWaits is every wait row of project's claims that has no end and whose record has moved
+// under it since its declaration (Store.StaleWaits), each read beside its issue, its tree root, its
+// role's phases row and its claim by the one statement, so the reconciler that runs on every fact
+// (workflow.EndStaleWaits) costs one query however many waits stand. The standing rows are found
+// through claim_waits_standing, and each join is by a primary key.
+//
+// The filter keeps a row when any column a term of the rule over a wait reads (workflow.WaitStands)
+// no longer reads as the declaration recorded or required it: the issue's phase or generation, the
+// issue's status out of the workflow (OutOfWorkflowStatuses, handed to the statement rather than
+// spelled in it, as store's UnownedPods is handed it), the root's linger, the phases row's entry or
+// a completion recorded on it, or the claim's session. The term that the phase is the role's own
+// needs no column of its own: the declaration required it, and it changes only with the phase. Nor
+// does the design gate's hold, which the gate's closing ends where it closes (workflow's
+// putGateTold). A row the filter keeps is only a candidate: which term failed, and so whether and
+// how the wait ends, is workflow.WaitEndCause's to say.
+//
+// completed_at is never null: a row with no completion holds the zero time PutPhase writes for
+// it, which is the column's default too, so the filter compares it with that zero rather than with
+// null. A role with no phases row reads as the zero row, on entry 0 with no completion
+// (PhaseRowOf).
+func (s *Postgres) StaleWaits(ctx context.Context, tx pgx.Tx, project string) ([]WaitReading, error) {
+	rows, err := tx.Query(ctx, `select `+claimWaitColumns+`,
+		i.key, i.tree, i.phase, i.generation, i.status, i.linger_until, r.key, r.tree, r.linger_until,
+		p.entry, p.completed_at, c.session
+		from claim_waits w
+		join claims c on c.token = w.claim_token and c.project = w.project
+		join issues i on i.key = w.issue
+		join issues r on r.key = i.tree
+		left join phases p on p.issue = w.issue and p.role = w.role
+		where w.project = $1 and w.ended_at is null
+		and (i.phase <> w.phase or i.generation <> w.generation or i.status = any($2) or r.linger_until is not null
+			or coalesce(p.entry, 0) <> w.phase_entry or p.completed_at <> $3 or c.session <> w.session)
+		order by w.claim_token`, project, OutOfWorkflowStatuses, time.Time{})
+	if err != nil {
+		return nil, fmt.Errorf("read the stale waits of %s: %w", project, err)
+	}
+	defer rows.Close()
+	var readings []WaitReading
+	for rows.Next() {
+		var wait waitScan
+		var reading WaitReading
+		var issuePhase string
+		var generation int64
+		var entry *int64
+		var completed *time.Time
+		if err := rows.Scan(append(wait.dest(), &reading.Issue.Key, &reading.Issue.Tree, &issuePhase, &generation,
+			&reading.Issue.Status, &reading.Issue.LingerUntil, &reading.Root.Key, &reading.Root.Tree, &reading.Root.LingerUntil,
+			&entry, &completed, &reading.Claim.Session)...); err != nil {
+			return nil, fmt.Errorf("read the stale waits of %s: %w", project, err)
+		}
+		reading.Claim.Wait = wait.wait()
+		reading.Issue.Phase, reading.Issue.Generation = phase.Phase(issuePhase), uint64(generation)
+		reading.Row = PhaseRow{Issue: reading.Issue.Key, Role: reading.Claim.Wait.Role, Entry: valueOrZero(entry),
+			CompletedAt: valueOrZero(completed)}
+		readings = append(readings, reading)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read the stale waits of %s: %w", project, err)
+	}
+	return readings, nil
+}
+
 // scanClaimWait reads the one row of claimWaitColumns row holds, nil for none.
 func scanClaimWait(row pgx.Row) (*ClaimWait, error) {
 	var scan waitScan

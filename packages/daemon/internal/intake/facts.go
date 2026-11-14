@@ -1295,6 +1295,29 @@ func CommitScoped(ctx context.Context) bool {
 	return ok
 }
 
+type appliedFactKey struct{}
+
+// appliedFact is the source and event id ApplyFact applies a fact under.
+type appliedFact struct{ source, eventID string }
+
+// AppliedFact is the source and event id of the fact whose transaction ctx scopes, as ApplyFact
+// was handed them (or a pass outside a fact named itself with, WithAppliedFact), and false on a
+// context nothing named. A handler names by them the fact a write of its own was caused by, where
+// the record keeps that name beside the write: a wait's end keeps the fact that ended it
+// (workflow's EndStaleWaits, record.ClaimWait.EndedBy).
+func AppliedFact(ctx context.Context) (source, eventID string, ok bool) {
+	fact, ok := ctx.Value(appliedFactKey{}).(appliedFact)
+	return fact.source, fact.eventID, ok
+}
+
+// WithAppliedFact is ctx naming source and eventID as the fact whose transaction it scopes
+// (AppliedFact). ApplyFact names every fact it applies this way; a pass that writes the workflow
+// in a transaction of its own, outside any fact (internal/daemon's reconcileListing), names itself,
+// so a write it causes is named as a fact's would be.
+func WithAppliedFact(ctx context.Context, source, eventID string) context.Context {
+	return context.WithValue(ctx, appliedFactKey{}, appliedFact{source: source, eventID: eventID})
+}
+
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
 type Refusal struct {
 	Status  int
@@ -1340,7 +1363,8 @@ type Pool interface {
 // (settleObserved): the handlers see its view only while the workflow records no such issue. A
 // fact a durable consumer delivered (withStreamPosition) records that consumer's stream position
 // in the same transaction (recordStreamPosition), so a consumer found missing is created at the
-// last message it applied (openConsumer).
+// last message it applied (openConsumer). Every handler's context names the fact by the source
+// and event id it applies under (AppliedFact).
 //
 // Facts apply one at a time. Handlers read and rewrite whole records, and admission's slots span
 // every tree, so two facts in flight together would each act on what the other is about to change;
@@ -1393,6 +1417,7 @@ func ApplyFact(ctx context.Context, pool Pool, source, eventID string, fact Fact
 		handlers = nil
 	}
 	ctx, committedHooks := WithCommitHooks(ctx)
+	ctx = WithAppliedFact(ctx, source, eventID)
 	var result Result
 	for _, handler := range handlers {
 		candidate, err := handler.Apply(ctx, tx, fact)

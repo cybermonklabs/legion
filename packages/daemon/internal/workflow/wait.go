@@ -307,3 +307,161 @@ func notOpenPhase(fault string) *intake.Refusal {
 	return &intake.Refusal{Status: 409, Code: "WAIT_NOT_OPEN_PHASE", Message: fault +
 		": a wait is declared only by the worker of its issue's open phase, and this declaration recorded nothing"}
 }
+
+// WaitReconciler is the fact handler that ends, in each fact's own transaction, every wait the
+// fact stopped standing (Engine.EndStaleWaits): R3's fourth and fifth ends, a claim that stops
+// working its issue's open phase — a completion, a move of the phase, a move to held, the issue
+// leaving the workflow, its tree's linger, a new generation — and a claim that runs a fresh
+// session. No one function moves a phase, so no write of one ends a wait itself: this handler
+// reads, once every other handler of the fact has written, what each wait's terms read now.
+//
+// Its place is last among the daemon's fact handlers (internal/daemon's factHandlers), after the
+// engine and after admission, which writes inside the same fact (admit.Admission.Apply): a
+// re-admission's new generation and a promotion end the waits they stop in that fact too.
+type WaitReconciler struct{ engine *Engine }
+
+var _ intake.Handler = WaitReconciler{}
+
+// NewWaitReconciler is the handler that ends, through engine, the waits each fact stops.
+func NewWaitReconciler(engine *Engine) WaitReconciler { return WaitReconciler{engine: engine} }
+
+// Apply ends the waits the fact stopped, each ended by that fact (factEndedBy). It refuses
+// nothing, whatever the fact.
+func (r WaitReconciler) Apply(ctx context.Context, tx pgx.Tx, _ intake.Fact) (intake.Result, error) {
+	return intake.Result{}, r.engine.EndStaleWaits(ctx, tx, factEndedBy(ctx))
+}
+
+// EndStaleWaits ends, in tx, every wait of the project's claims that a term of the record no
+// longer lets stand (WaitEndCause), with that term's cause, ended by endedBy at the engine's now,
+// and logs each `wait: ended` once tx commits. The waits are read in one statement
+// (record.Store.StaleWaits), which keeps only those whose record moved under them, so the cost is
+// one indexed query whatever the number of waits.
+//
+// endedBy names what ended them: the fact's source and event id inside a fact (WaitReconciler),
+// or the pass that writes outside one (internal/daemon's reconcileListing, the boot's and a
+// recovery's admission of a Dispatch listing).
+//
+// Every term is asked but the design gate's: each wait is judged under no gate
+// (record.TreeGate{}), so no merger the gate holds is ended here. The gate's closing ends the
+// waits of the mergers it holds in its own fact, where it closes (putGateTold,
+// endHeldMergersWaits), so the end names the fact that closed the gate. A hold that began with
+// no gate row written — the steps `gates.design` names, changed across a restart — has no fact
+// that closed it, and is not ended under the name of whatever fact ran next: WaitStands answers
+// false for that wait from the moment the hold began, so nothing waits on its end, and its time
+// ends it, with the cause WaitEndCause names then (D5 of dispatch://INFRA-2040's plan).
+func (e *Engine) EndStaleWaits(ctx context.Context, tx pgx.Tx, endedBy string) error {
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return err
+	}
+	stale, err := e.store.StaleWaits(ctx, tx, project)
+	if err != nil {
+		return err
+	}
+	for _, reading := range stale {
+		cause := WaitEndCause(reading.Issue, reading.Root, reading.Row, reading.Run(), record.TreeGate{})
+		if cause == "" {
+			continue
+		}
+		if err := e.endWait(ctx, tx, *reading.Claim.Wait, cause, endedBy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// endHeldMergersWaits ends the wait of every merger of key's tree that the closing of the tree's
+// standing design gate now holds, in the transaction of the fact that closed it (putGateTold):
+// R3's seventh end, written with the cause WaitEndDesignGateClosed and ended by that fact. A tree
+// holds a merger in merging for each member that has reached its merge (dispatch://BET-790's held
+// six), and the closing ends every one's wait. gates is the tree's rows as the closing left them.
+//
+// Each merger's wait is judged by the one rule under the closed gate (WaitEndCause), and ended
+// here only where the gate is the term that ends it. A wait an earlier term stopped first — a
+// session the claim replaced since the last fact, say — is the reconciler's to end, with that
+// term's cause, at this same fact's end (WaitReconciler).
+func (e *Engine) endHeldMergersWaits(ctx context.Context, tx pgx.Tx, key string, gates map[record.DesignStep]record.DesignGate) error {
+	gated, err := e.store.Issue(ctx, tx, key)
+	if err != nil || gated == nil {
+		return err
+	}
+	members, err := e.store.TreeIssues(ctx, tx, gated.Tree)
+	if err != nil {
+		return err
+	}
+	project, err := claim.ProjectToken(e.cfg.Project)
+	if err != nil {
+		return err
+	}
+	type merger struct {
+		issue record.Issue
+		token claim.Token
+	}
+	var root record.Issue
+	var mergers []merger
+	tokens := make([]claim.Token, 0, len(members))
+	for _, member := range members {
+		if member.Key == gated.Tree {
+			root = member
+		}
+		if member.Phase != phase.Merging {
+			continue
+		}
+		// A key that yields no claim token has no claim, so no wait (phaseWorkerRecord).
+		token, err := claim.NewToken(project, member.Key, claim.RoleMerger)
+		if err != nil {
+			continue
+		}
+		mergers = append(mergers, merger{issue: member, token: token})
+		tokens = append(tokens, token)
+	}
+	if len(mergers) == 0 {
+		return nil
+	}
+	claims, err := e.store.RoleClaims(ctx, tx, tokens)
+	if err != nil {
+		return err
+	}
+	gate, endedBy := record.TreeGate{Steps: e.cfg.Steps, Rows: gates}, factEndedBy(ctx)
+	for _, m := range mergers {
+		held := claims[m.token]
+		if held == nil || held.Wait == nil {
+			continue
+		}
+		rows, err := e.store.Phases(ctx, tx, m.issue.Key)
+		if err != nil {
+			return err
+		}
+		if WaitEndCause(m.issue, root, record.PhaseRowOf(rows, claim.RoleMerger), record.RoleRun{Claim: held}, gate) != WaitEndDesignGateClosed {
+			continue
+		}
+		if err := e.endWait(ctx, tx, *held.Wait, WaitEndDesignGateClosed, endedBy); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// endWait ends wait with cause, ended by endedBy at the engine's now (record.Store.EndWait), and
+// logs `wait: ended` once the transaction commits, so a fact rolled back logs no end. A wait
+// another transaction ended first is left as that one ended it, and logged by it.
+func (e *Engine) endWait(ctx context.Context, tx pgx.Tx, wait record.ClaimWait, cause, endedBy string) error {
+	ended, err := e.store.EndWait(ctx, tx, wait.Project, wait.Token, wait.ID, cause, endedBy, e.now())
+	if err != nil || !ended {
+		return err
+	}
+	e.logOnCommit(ctx, "wait: ended", "claim", wait.Token, "issue", wait.Issue, "role", wait.Role, "wait", wait.ID,
+		"cause", cause, "ended_by", endedBy)
+	return nil
+}
+
+// factEndedBy is how a wait's end names the fact whose transaction ctx scopes
+// (record.ClaimWait.EndedBy): its source and event id, as ApplyFact applies it under them
+// (intake.AppliedFact), and "" outside a fact, which EndWait refuses to write.
+func factEndedBy(ctx context.Context) string {
+	source, eventID, ok := intake.AppliedFact(ctx)
+	if !ok {
+		return ""
+	}
+	return source + "/" + eventID
+}

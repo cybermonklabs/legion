@@ -1019,6 +1019,10 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 // document nobody had approved, or waiting for an opening it was never told of
 // (dispatch://INFRA-714/spec R5).
 //
+// A write that closes the standing gate also ends, in the same transaction, the wait of every
+// merger the closing now holds (endHeldMergersWaits): the closing is that end's own event (R3's
+// seventh end of dispatch://INFRA-2040), so the end names the fact that closed the gate.
+//
 // Two writes of a gate row stay outside it, each because its tree has nobody to tell: the record
 // of a person's approval on a parked root (recordHandover), whose roles are suspended and whose
 // decision goes to the controller instead, and the carry of a gate onto a re-admitted orphan
@@ -1042,6 +1046,11 @@ func (e *Engine) putGateTold(ctx context.Context, tx pgx.Tx, gate record.DesignG
 	stands := e.standingGateOpen(gates)
 	if stands == stood {
 		return nil
+	}
+	if !stands {
+		if err := e.endHeldMergersWaits(ctx, tx, gate.Issue, gates); err != nil {
+			return err
+		}
 	}
 	return e.tellGateMoved(ctx, tx, gate.Issue, step, gate.ArtifactID, version, stands)
 }

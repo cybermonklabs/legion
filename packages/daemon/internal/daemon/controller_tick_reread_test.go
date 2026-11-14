@@ -16,11 +16,9 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/admit"
-	"github.com/sjawhar/legion/daemon/internal/blockers"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
@@ -296,7 +294,8 @@ func tickRecords() record.Store {
 }
 
 // tickRuntime is a runtime whose turn reads client, with the production handler chain — the
-// mirror first, then the two handlers that judge from its rows — and one admission slot.
+// mirror first, then the two handlers that judge from its rows, then the wait reconciler
+// (factHandlers) — and one admission slot.
 func tickRuntime(t *testing.T, pool *store.Pool, client dispatch.Client) *workflowRuntime {
 	t.Helper()
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -305,7 +304,7 @@ func tickRuntime(t *testing.T, pool *store.Pool, client dispatch.Client) *workfl
 	admission := admit.New(records, engine, 1, "CAPTURE", log)
 	return &workflowRuntime{
 		pool: pool, records: records, admission: admission,
-		handlers:        []intake.Handler{blockers.NewMirror(records, "CAPTURE"), engine, admission},
+		handlers:        factHandlers(records, "CAPTURE", engine, admission),
 		dispatch:        client,
 		dispatchProject: "CAPTURE", bootID: "test-boot", log: log,
 	}
