@@ -78,8 +78,8 @@ func lockOwners(ctx context.Context, tx pgx.Tx, events []model.Event) ([]string,
 	})
 	locked := make(map[string]*lockedOwner, len(events))
 	for _, index := range order {
-		// An ownerless (session-addressed) event has no row to lock; AppendAll takes the
-		// transaction id itself.
+		// An ownerless (session-addressed or priority) event has no row to lock; AppendAll takes
+		// the transaction id itself.
 		if _, done := locked[keys[index]]; done || ownerless(events[index]) {
 			continue
 		}
@@ -106,8 +106,8 @@ func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Ev
 
 // AppendAll writes events in tx as if each were appended in turn, and returns them, in the order
 // given, with their database-assigned IDs. Each owner's events take that owner's next sequences
-// in slice order; an ownerless (session-addressed) event's sequence is 0. The caller must call
-// Publish only after tx commits.
+// in slice order; an ownerless (session-addressed or priority) event's sequence is 0. The caller
+// must call Publish only after tx commits.
 //
 // What the events cost does not grow with how many there are, only with how many owners they
 // have: every owner is validated before any is locked, each distinct owner is locked once, in
@@ -134,11 +134,11 @@ func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Ev
 //     write that drew id 7 can still be open after the write that drew id 8 has committed. A
 //     reader that pages the log by a global id cursor reads through a Horizon, only up to the
 //     safe horizon, never up to max(id).
-//   - An ownerless (session-addressed) event takes no lock of its own: its seq is 0, so there
-//     is no sequence to allocate, and two transactions that touch no common row have no defined
-//     order, so either commit order is a valid serialization. Order matters only between writes
-//     that conflict, and every ownerless append follows its transaction's own lock on the row
-//     it changes, which orders it against every write that changes that row. A message create
+//   - An ownerless (session-addressed or priority) event takes no lock of its own: its seq is 0,
+//     so there is no sequence to allocate, and two transactions that touch no common row have no
+//     defined order, so either commit order is a valid serialization. Order matters only between
+//     writes that conflict, and every ownerless append follows its transaction's own lock on the
+//     row it changes, which orders it against every write that changes that row. A message create
 //     (api/messages.go createStoredMessage) and a broadcast (api/broadcasts.go writeBroadcast)
 //     append after inserting the new message row, a reply's insert taking its parent message
 //     row for key share through the foreign key, and a broadcast's new broadcasts and
@@ -151,10 +151,14 @@ func (b *Broker) Append(ctx context.Context, tx pgx.Tx, e model.Event) (model.Ev
 //     user_agent_reply_read row. A delivery settle (api/envoy_resolve.go settleDeliveryAttempt)
 //     appends after its update writes the attempt row it claimed; on the branch where that
 //     update finds the row already settled by the session's committed reply, it only reads the
-//     row, which no transaction writes a receipt for again. A per-session lock would add no
-//     order these row locks do not give, only deadlock cycles: the accept path would take it
-//     before the message row and a pending delivery after, and a broadcast one per recipient
-//     in no sorted order.
+//     row, which no transaction writes a receipt for again. A priority's write (api/priorities.go
+//     createPriority, patchPriority, deletePriority) appends `priority.updated` after writing
+//     its priority_nodes row: a create's insert, which a second create of the same id waits on
+//     through the row's (kind, id) key and then finds written, and the update of a rename, a
+//     rank move or a delete, which holds the row locked until the transaction ends. A
+//     per-session or per-priority lock would add no order these row locks do not give, only
+//     deadlock cycles: the accept path would take it before the message row and a pending
+//     delivery after, and a broadcast one per recipient in no sorted order.
 func (b *Broker) AppendAll(ctx context.Context, tx pgx.Tx, events []model.Event) ([]model.Event, error) {
 	if b == nil {
 		return nil, fmt.Errorf("event broker required")
@@ -300,19 +304,28 @@ func queueOwnerSeq(b *pgx.Batch, e model.Event) {
 	}
 }
 
-// ownerless reports whether e names no owner row: a session-addressed event, which has no
-// sequence and no row to lock.
+// ownerless reports whether e names no owner row: a session-addressed event or a priority's
+// write, neither of which has a sequence or a row to lock.
 func ownerless(e model.Event) bool {
 	return e.IssueKey == nil && e.ArtifactID == nil && e.ProjectKey == nil
 }
 
-// eventOwnerKey requires exactly one of IssueKey/ArtifactID/ProjectKey (or a session-addressed
-// message payload, handled by its caller before this is reached) -- there is no "ownerless"
-// event for a plain configuration change. A cross-project singleton settings table (no project,
-// issue, or artifact of its own) has nothing valid to pass here: see
-// api/settings_delivery.go's putDeliverySettings doc comment for a worked example of a route
-// that checked this directly and deliberately skips appending an event rather than inventing an
-// owner.
+// eventOwnerKey requires at most one of IssueKey/ArtifactID/ProjectKey, and an event naming none
+// of them is one of exactly two kinds, each told by its payload: a session-addressed message or
+// viewer state (agentEventSessionID), keyed "agent:<session>", and a priority's write
+// (model.PriorityEventPayload, `priority.updated`), keyed "priority:<id>". Any other ownerless
+// event is refused, so there is still no ownerless event for a plain configuration change: a
+// cross-project singleton settings table (no project, issue, or artifact of its own) has
+// nothing valid to pass here. See api/settings_delivery.go's putDeliverySettings doc comment for
+// a worked example of a route that checked this directly and deliberately skips appending an
+// event rather than inventing an owner.
+//
+// The key of an ownerless event locks nothing: lockOwners skips it, and AppendAll advances no
+// sequence for it. It is the event's identity in lockOwners' sort, so it is per priority as it is
+// per session. What orders two writes of one priority is the priority_nodes row each wrote before
+// it appended (AppendAll's doc). Two writes of different priorities share no key, so the broker
+// adds no wait between them; they wait on each other only where their own writes do, as a create
+// and a rank move both take the order's allocation lock (prioritystore.RankAt).
 func eventOwnerKey(e model.Event) (string, error) {
 	owners := 0
 	if e.IssueKey != nil {
@@ -325,6 +338,12 @@ func eventOwnerKey(e model.Event) (string, error) {
 		owners++
 	}
 	if owners == 0 {
+		if payload, ok := e.Payload.(model.PriorityEventPayload); ok {
+			if e.Type != "priority.updated" || payload.ID == "" {
+				return "", fmt.Errorf("ownerless priority event requires type priority.updated and a priority id")
+			}
+			return "priority:" + payload.ID, nil
+		}
 		sessionID, err := agentEventSessionID(e)
 		if err != nil {
 			return "", err
@@ -440,10 +459,12 @@ func Quiet(e model.Event) bool {
 	case "project.created", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",
-		"user_thread_state.updated", "decision.kept":
+		"user_thread_state.updated", "decision.kept", "priority.updated":
 		// Settings, importer and per-viewer bookkeeping: retained on their log and carried by
 		// the event feed, but nobody is woken by them. A Keep records that a person read a
-		// decision and agreed with it, which asks its agent for nothing.
+		// decision and agreed with it, which asks its agent for nothing. A priority's write is
+		// the deployment's own configuration of what work advances, which open pages refetch on
+		// and nobody is asked anything by.
 		return true
 	case "ask.edited":
 		// A version move of an approval request that an earlier version already moved since it was
