@@ -599,8 +599,10 @@ func (d *launchers) restoreWorkspace(ctx context.Context, token claim.Token, pod
 		// Held ends the sequence: the launcher has the whole, digest-checked body and applies it
 		// before its first role runs. The daemon's copy stays as it is until the launcher reports
 		// what the restore itself did (restoreReported) — a restore can still fail, and the work
-		// is then in the daemon's database alone, which is where the launcher's notice says it is,
-		// and where it stays: this send was that copy's one attempt.
+		// is then in the daemon's database alone, which is where the launcher's notice says it is.
+		// This send was that copy's one attempt, so no pod is sent it again; a release bundle stays
+		// until the issue's work is over, and a running copy until the next copy of the issue's
+		// workspace replaces its row.
 		d.log.Info(reachedLine,
 			"issue", issue, "launcher", token, "copy", kind, "taken", bundle.At,
 			"bytes", len(bundle.Bundle), "slices", len(frames), "restore", bundle.Release)

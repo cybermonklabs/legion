@@ -1,0 +1,24 @@
+kind: Added
+body: |-
+  The daemon keeps a copy of each issue workspace's unpushed work while its pod runs: at the end of
+  each turn, every 5 minutes inside a turn, and at each push of the issue's branch it records. The
+  next pod of the issue restores the newer of that copy and the bundle an idle release saved,
+  before any role starts. A confirmed restore and a cancelled release keep the work as the pod's
+  own copy, so a second end of the pod before its next turn still restores it. No restore sets the
+  issue's branch `legion/<KEY>` or its rescue branch, and no running copy older than the newest
+  recorded push is restored. The restore reads times from the store's clock alone.
+
+  A pod the cluster ends, by an eviction, a preemption, a node going down or a delete the daemon
+  did not make, continues every role of the issue in its own session with no death and no launch
+  failure charged. An `Evicted` end with no `DisruptionTarget` condition is still charged. Two runs
+  bound repeated ends: `launch_failure_limit` of them while a ready agent has work outstanding are
+  charged a death, and `launch_failure_limit` of them before the agent is ready are charged a launch
+  failure.
+
+  An issue pod whose CPU or memory request is below its limit no longer carries
+  `cluster-autoscaler.kubernetes.io/safe-to-evict`, so such pods can share nodes and burst.
+
+  The migrations add `workspace_running_copies`, `issue_pushes`, `issue_push_heads`,
+  `workspace_restore_asks`, `claims.pod_ends_not_ours` and `claims.start_ends_not_ours`. Rolling
+  the image back deletes `workspace_running_copies` and clears the two claims columns
+  (`docs/kubernetes.md`, "Rolling back the running copy").
