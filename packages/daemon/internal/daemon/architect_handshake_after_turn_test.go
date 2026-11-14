@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/projection"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 )
 
@@ -25,8 +26,17 @@ import (
 // when the architect took it. Without them it reads exactly as a root of the release before this
 // one, and as a root that was queued nothing.
 //
+// They outlast the root's move past admitted too. A real architect requests approval and
+// registers its gate in that first turn, so the root then waits on a person, and after the
+// approval it stands in planning. The times are the architect's handshake for the root's current
+// generation, and they stay on the root through those phases, read as the architect's
+// (dispatch://INFRA-2614/comment/03dd9487-b44d-4508-bc0e-268fe951b17e, and k5 of the
+// Verification document at version 10).
+//
 // The path is main's own: admission queues the start, the outbox runner launches the architect on
 // it, the agent comes up and is prompted the task, and the turn that task starts runs and ends.
+// The two later phases are written onto the root's record, as the gate's registration and its
+// approval would leave it.
 func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
 	r := newMainPathRig(t, true)
 	r.put(r.waitingRoot())
@@ -72,15 +82,34 @@ func TestTheArchitectHandshakeOutlastsTheTurnThatConfirmedIt(t *testing.T) {
 		t.Fatalf("the root after its architect's turn = phase %s, entry %d, given %d; want admitted with both entries at 1",
 			after.Phase, after.PhaseEntry, after.GivenEntry)
 	}
-	if after.EntryQueuedAt == nil || after.EntryConfirmedAt == nil {
-		t.Fatalf("the state after the architect's turn ended carries entryQueuedAt %v and entryConfirmedAt %v, want the %s and %s "+
+	if after.EntryQueuedAt == nil || after.EntryConfirmedAt == nil ||
+		!after.EntryQueuedAt.Equal(*during.EntryQueuedAt) || !after.EntryConfirmedAt.Equal(*during.EntryConfirmedAt) {
+		t.Errorf("the state after the architect's turn ended carries entryQueuedAt %v and entryConfirmedAt %v, want the %s and %s "+
 			"the turn left: with neither, a root this release served reads as a root of the release before it (R8), "+
 			"and nothing is left for the live reading of R9", after.EntryQueuedAt, after.EntryConfirmedAt,
 			during.EntryQueuedAt, during.EntryConfirmedAt)
 	}
-	if !after.EntryQueuedAt.Equal(*during.EntryQueuedAt) || !after.EntryConfirmedAt.Equal(*during.EntryConfirmedAt) {
-		t.Fatalf("the state after the turn carries queued %s and confirmed %s, want the %s and %s the turn confirmed",
-			after.EntryQueuedAt, after.EntryConfirmedAt, during.EntryQueuedAt, during.EntryConfirmedAt)
+
+	for _, moved := range []struct {
+		to      phase.Phase
+		waiting *record.Awaiting
+	}{
+		{phase.AwaitingPerson, &record.Awaiting{GateVersion: 1, Artifact: "artifact-root", Since: record.EventMark{Seq: r.nextSeq()}}},
+		{phase.Planning, nil},
+	} {
+		root := r.issue()
+		root.Phase, root.Awaiting = moved.to, moved.waiting
+		r.put(root)
+		view := r.rootView()
+		if view.Phase != moved.to {
+			t.Fatalf("the root reads phase %s, want the %s this step wrote", view.Phase, moved.to)
+		}
+		if view.EntryQueuedAt == nil || view.EntryConfirmedAt == nil ||
+			!view.EntryQueuedAt.Equal(*during.EntryQueuedAt) || !view.EntryConfirmedAt.Equal(*during.EntryConfirmedAt) {
+			t.Errorf("the state of the root in %s carries entryQueuedAt %v and entryConfirmedAt %v, want the architect's %s and %s: "+
+				"the handshake is the root's for its generation, whatever phase it stands in", moved.to,
+				view.EntryQueuedAt, view.EntryConfirmedAt, during.EntryQueuedAt, during.EntryConfirmedAt)
+		}
 	}
 }
 
