@@ -204,8 +204,8 @@ func TestRoutesTablePinsEveryRegisteredRoute(t *testing.T) {
 			t.Fatalf("route %q has auth %q", key, route.Auth)
 		}
 	}
-	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+13 {
-		t.Fatalf("test hooks add thirteen routes: got %d, want %d", got, len(routes)+13)
+	if got := len((&server{deps: Deps{TestHooksEnabled: true}}).routes()); got != len(routes)+14 {
+		t.Fatalf("test hooks add fourteen routes: got %d, want %d", got, len(routes)+14)
 	}
 }
 
@@ -558,6 +558,15 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 		"DELETE /api/v1/issues/{key}/subscribers/{session_id}",
 		"GET /api/v1/inbox",
 		"GET /api/v1/me/answers",
+		// A person's command-bar runs are no older row: they are the person's own record, read by
+		// the person alone, as the answers above them are.
+		"GET /api/v1/me/going-runs",
+		// A run's writes, its undo and the person's own setting of the bar are the person's as
+		// their runs are: each acts on, or is, the person's own record.
+		"POST /api/v1/going/runs/{id}/writes",
+		"POST /api/v1/going/runs/{id}/undo",
+		"GET /api/v1/me/going/settings",
+		"PUT /api/v1/me/going/settings",
 		"GET /api/v1/me/replies",
 		"PUT /api/v1/me/threads/{id}/read",
 		// The Inbox's Mark all read is no older row either: it writes the person's own read

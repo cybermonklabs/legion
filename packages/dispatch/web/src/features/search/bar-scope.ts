@@ -60,6 +60,13 @@ function blockText(text: string): string {
   return `${(lastSpace === -1 ? cut : cut.slice(0, lastSpace)).trimEnd()}…`;
 }
 
+/** The block the writing cursor is in: its id, which the bar's answer is told the words were
+ *  typed in, and the words the chip names it by. */
+export interface CursorBlock {
+  readonly id: string;
+  readonly scope: string;
+}
+
 /**
  * The block the writing cursor is in, as the DOM has it right now. The bar reads this on the
  * render that opens it, while focus is still where the reader left it: a moment later the dialog
@@ -69,7 +76,7 @@ function blockText(text: string): string {
  * the id the editor stamps on it (`BLOCK_ID_ATTRIBUTE`). The cursor has to be inside the writing
  * surface: a reader scrolling an issue page has a selection somewhere too, and that is no cursor.
  */
-export function scopeAtCursor(): string | undefined {
+export function blockAtCursor(): CursorBlock | undefined {
   const focused = document.activeElement;
   if (!(focused instanceof HTMLElement) || !focused.isContentEditable) {
     return undefined;
@@ -79,7 +86,9 @@ export function scopeAtCursor(): string | undefined {
   const inside = focused.contains(from) ? from : focused;
   const block = inside.closest<HTMLElement>(`[${BLOCK_ID_ATTRIBUTE}]`);
   const text = block === null ? "" : blockText(block.textContent ?? "");
-  return text === "" ? undefined : `the block “${text}”`;
+  return block === null || text === ""
+    ? undefined
+    : { id: block.getAttribute(BLOCK_ID_ATTRIBUTE) ?? "", scope: `the block “${text}”` };
 }
 
 /** The project of the page the bar was opened from, which `Backspace` widens the chip to. */

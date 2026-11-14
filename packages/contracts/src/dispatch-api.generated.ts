@@ -270,7 +270,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
+    /** @description Open an approval ask for a document's latest version, with an optional summary, and with include_verification for the issue's Verification document beside it (409 NO_VERIFICATION_DOCUMENT when it has none), each at its own current version; the answer reviews every document the ask names. include_verification is for the issue's spec alone: on any other document, the Verification document itself included, it is 409 NOT_SPEC_DOCUMENT. A document a human approved before carries that approval on the ask (approval.approved: version, at, by). An open ask follows later versions of any document it names and waits on its agent until this route hands the same row back to a human. The answer's opened is true only where this request opened the ask it answers, and false where it renewed an ask already open over one of its documents or the documents stood approved. Every answer carries coverage, one line per requirement of the issue's spec with no check, or the single line `the spec marks no requirements` for a spec that marks none (GET /api/v1/issues/{key}/coverage), and none at all for a spec every requirement of which has a check; it is empty for a document that is not a spec, never names a missing plan task, and a gap refuses nothing. A coverage read that fails answers coverage_unread true and records the request all the same. */
     post: operations["postApiV1ArtifactsByIdApprovalRequests"];
     delete?: never;
     options?: never;
@@ -584,7 +584,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. */
+    /** @description Reword an open ask (its author, or a credential holding the person scope); a block ask's `:::ask` block is rewritten with it. expect {part: value} makes the edit conditional on the parts it names (question, options, multiple, urgency), each holding that value, an option as {label, description?}, when the edit takes the ask's lock: 409 ASK_CHANGED naming what each other part holds now, nothing written. */
     patch: operations["patchApiV1AsksById"];
     trace?: never;
   };
@@ -855,7 +855,7 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Reopen a resolved comment thread. */
+    /** @description Reopen a resolved comment thread. {expect_resolved_at} makes the reopen conditional on the thread still holding the resolution of that moment, as the comment's read answers resolved_at, when the reopen takes the comment's lock: 409 COMMENT_CHANGED otherwise, nothing written; with no body it reopens whatever resolution the thread holds. */
     post: operations["postApiV1CommentsByIdReopen"];
     delete?: never;
     options?: never;
@@ -1177,7 +1177,7 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included. */
+    /** @description What the command bar can do on this deployment, each part apart: {answer: {configured, model, blocks}, decision: {configured, model, reachable}, session: {configured}, label: {configured}}. answer is the model that answers, named as configured, its blocks true once it accepted a structured reply, false once its service refused the structured output itself (a refusal for another cause, such as a content filter, is that run's alone), "unknown" before either; decision is the measured decision model, a name the committed record does not hold reading unset, and reachable whether its token file reads now; session and label are the two new-issue settings. It calls no model, and names no endpoint and no credential. Any caller Dispatch admits reads it, a pod's own agent token included. */
     get: operations["getApiV1GoingCapability"];
     put?: never;
     post?: never;
@@ -1194,10 +1194,27 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
+    /** @description The catalogue of operations an agent may propose on Dispatch's graph: the dispatch tools that write, twenty of the thirty-three tool specs agents operate Dispatch with, each carried whole - its own name, its own description, the arguments it takes with an example call, the rows of this table it writes, each with how a write of it is undone (undo {kind, routes}: kind reverse, write_back, close_created or trace, routes the rows of this table the undo writes through), and the graph relations its verbs write. Twenty actions is a list read whole, so the route takes no query and serves no page. An action the catalogue does not hold is no action at all: nothing serves it. */
     get: operations["getApiV1GoingCatalogue"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/display-fit/_test": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Test hook: {off} (required, true or false; 400 INVALID_STATE without it) with off true makes the process the call lands on treat the configured decision model as having no display fit, so no answer run draws a chart the words did not ask for, as with a model whose record holds no chart-display threshold; off false reads the record's threshold again. Answers {off}. */
+    post: operations["postApiV1GoingDisplayFitTest"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1213,8 +1230,25 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Ask a question of what Dispatch holds {words, project}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own. */
+    /** @description Ask a question of what Dispatch holds {words, project, context}: records the question and answers 201 with its run - {id, author, project, words, created_at, ends_at}, whose ends_at is the 30s the run has to answer in - and answers it behind that, each frame of the answer stored for GET /api/v1/going/requests/{id}/stream to carry. words is required (400 GOING_INPUT when it is blank) and at most 2000 characters (400 CAP_EXCEEDED); project is the project key the question is asked of, empty asking of every project (400 INVALID_PROJECT when it is not a key), and a credential scoped to one project asks only of that project. context is the item the bar's context chip names where the words were typed, {path, project, issue, block}, each empty where the page names none (400 INVALID_PROJECT for a project that is not a key, 400 GOING_INPUT for an issue that is not a key or a path or block past its bound); with a measured decision model configured the run first decides which of the actions the caller's credential may run the words ask for, and fills an action's issue or project from the chip where the words are about the page. Each invocation the proposal offers is automatic - it may run at once, on submit - only where every item it names is the chip's issue or project, where the words are about the page, or is named whole in the words themselves; any other invocation is an offer the person picks, since the answer writes its invocations from text any person or agent stored. A caller presenting a broker-issued access token under DPoP is offered no action: the run's writes are made in-process, which carries the token and no proof. The run belongs to the credential that asked it, which the stream compares its reader with, so a credential that names nobody - the deployment's shared token - is refused 403 GOING_ASKER_NAMES_NOBODY and records nothing: no reader of that run could ever be served it. A credential that acts as a person keeps the run as a record GET /api/v1/me/going-runs answers. With no model configured the run is recorded all the same and its stream carries the error frame NO_MODEL_CONFIGURED, so a reader learns that from the stream, where every other failure of a run is reported, and not from a status of this route's own. */
     post: operations["postApiV1GoingRequests"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/requests/{id}/cancel": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Cancel one run its author typed past or closed: answers 200 {id, cancelled_at}, cancelled_at the first cancel's moment for a run cancelled before. From then on the run stores no frame that does not end its stream, so its answer ends at its next delta on whichever pod is writing it, and at once on the pod this call lands on; its record keeps what it reached and reads unfinished. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, as the stream answers them. */
+    post: operations["postApiV1GoingRequestsByIdCancel"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1228,10 +1262,44 @@ export interface paths {
       path?: never;
       cookie?: never;
     };
-    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (text, item, cut, changed, none, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
+    /** @description One run's answer as server-sent events: each frame is `id:` its sequence, `event:` its name (decision, text, item, cut, changed, none, block, roster, proposal, end, error) and `data:` the JSON that frame carries, flushed as it is written, and the stream ends on end or error. With a measured decision model the first frame is decision, what it chose before the answer was written, and the last before the ending is proposal, the arguments of each action it offered. After the answer's text frames and before the proposal come block, the one typed block the words asked for, filled from the read its spec names, and roster, {age_ms, source: live or stored}, when the run read the roster. Last-Event-ID resumes after that sequence, so a reader that drops rereads nothing. Any pod serves it, since the frames are rows and not the memory of the process that took the POST: a run past its ends_at that stored no ending is ended by the reader itself, with the error ANSWER_DID_NOT_ARRIVE, which is how a stream ends when the pod that took the POST is gone. A run the record does not hold, an id that is not a uuid, and a run that is another caller's are one answer, 404 GOING_REQUEST_NOT_FOUND, so an id tells a caller nothing it did not already know. */
     get: operations["getApiV1GoingRequestsByIdStream"];
     put?: never;
     post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/runs/{id}/undo": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Undo the caller's own command-bar run {reason?}: every write of it that went through and that no undo settled, newest first, each by the undo the catalogue row it went through states, as the write's record keeps it, and in-process as the caller. write_back writes the value before back (an issue's fields, an ask's text, a document's content as a further version); reverse runs the write's reverse (a claim released - none where the claim route answered claim_changed false, the claim already standing as asked - a release taken back only where the holder the claim route answered it released is the one the undo's own claim is recorded as, the session the caller's credential proved or else the person, a follow unfollowed, a resolved comment reopened, an opened ask or approval request retracted - none where the approval route answered opened false, having renewed an ask already open); close_created posts reason, or a default, on an issue the turn created and then closes it; trace records the write undone and erases nothing. Every undo that puts a value back has the route it writes through decide, under that write's own lock, that the item still holds what the turn left: a claim is released only while the holder it left holds it (expect_holder), a release taken back only while nobody holds the issue (expect_unclaimed), an issue's fields and rank and an ask's text are written back with expect, a document's content with expect_sha256, a created issue is closed only while its status is still the one the turn left it in, as the write recorded it (read before the reason is posted, and sent as expect), and a thread reopened only while it holds the resolution the turn left (expect_resolved_at). A field another writer changed since the write, before the undo's read or between that read and its write, is left as it is now, its undo refused 409 GOING_UNDO_CHANGED naming what it holds, and the rest is undone; a release of any other holder's claim - a session's the person released, another person's - is refused 409 GOING_UNDO_NOT_CALLERS_CLAIM naming that holder and settled, with nothing written, since the bar cannot claim for them; a write whose action the catalogue no longer holds, or whose record names no undo, is refused 409 GOING_UNDO_UNKNOWN, since its undo is unknown, and one whose row states an undo this server has no way to run is refused 501 GOING_UNDO_UNSERVED; a write whose value after was never read (after_unread) is refused 409 GOING_UNDO_AFTER_UNREAD by every undo but a trace, with nothing undone, since what it left is unknown. Answers 200 {lines: [{write_id, action, item, undo, now, outcome, fields: [{field, ok, message}]}]}, one line per write, fields one per field of the item the write changed, each recorded on the run's undos; an undo that was ok or refused with a verdict a retry would repeat settles its write, so a later undo of the run does not try it again, while one that failed on the server, or was refused 401, 408, 429 or CLAIM_CONTENDED by a route that did not commit, leaves it undoable. Each request an undo sends records its landing on the run in its route's own transaction, at its own index and by its own method, path and body's SHA-256, as a write's does, so one that committed and then answered 5xx is undone and never made again. A close_created undo records how each of its two requests went (requests on the run's undo): where its reason landed and its close was refused, its line names the reason it left posted, and the next undo of that write, under whatever key, resumes at the close and posts no second reason; a resumed close that committed is recorded done whatever it answered. The undo claims every write it undoes on the run, pending, holding the requests any earlier undo of it landed, before it undoes any, holding no lock and only while the run's undos are the ones it read, so a second undo of the run while one is under way is 429 GOING_UNDO_IN_PROGRESS with a Retry-After, whose retry reads what the first did; an undo made whose record failed keeps its claim, so the next undo of the run is that 429 too while any request can still be making it, and after that its write's line is 409 GOING_UNDO_UNSETTLED, since that undo may have been made, and it is never undone a second time. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days, the window a turn can be undone in. */
+    post: operations["postApiV1GoingRunsByIdUndo"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/going/runs/{id}/writes": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** @description Run one write of the caller's own command-bar run {offer, invocation, arguments?, fill?, approved}: offer is an action the run's proposal offered and invocation the index of one of its invocations; arguments replace those of the invocation they name, held to the action's own schema; fill is the value of the one argument the invocation was missing (for @session the id or the title of the session the write acts for); approved is auto, person or confirmed. The write is performed in-process as the caller, through this table with only the caller's Authorization, Cookie, Origin, Sec-Fetch-Site and Dispatch-Login headers (and, on a deployment that names its people by a trusted header, that header), so every check its route makes runs as on the caller's own request; the value before is read just before it and the value after just after, the same way, an upload's value before is the document its name finds under the owner its route writes to, at its version then, where the owner holds one, and a claim's value before and after are the claims the claim route answered it found and left (previous_claim, claim). Answers 200 {write_id, action, item, fields, before, now, outcome {ok, status, code, message}, delivery?} and records the write on the run, fields the names of the item's fields it changed, with the undo the row it went through states, sends, how many requests its call sends, recorded before any is sent, and requests [{method, path, body_sha256, outcome, made?, inherited?}], how each request the write sent went (a reasoned close posts its reason, then closes), inherited a request an earlier write of the invocation landed that this one resumes after; a write that landed and whose value after could not be read, or whose claim answer does not say claim_changed, says so in outcome.message and is recorded after_unread; a dispatch_send_to_agent carries delivery {state, error}, the state and error of the message's last delivery, since its route answers 201 when the delivery failed too. A request of the write has landed when its route's transaction committed, which the request records on the run in that same transaction, at its own index and by its own method, path and body's SHA-256, whatever status its answer then carried, and a request another of the write is sent after adds to that record the status it was answered and the item it made: a route that committed and then answered 5xx, or whose answer was lost, landed and is never sent again, and a write whose every request landed went through, recorded after_unread where its last answer was no 2xx, and answered status 200 where an earlier attempt landed it and ended before its answer was read. A write its route refused, or a read it needed refused, is answered as that route answered it, status, code and body, and recorded with that outcome; one refused after a request of it landed is answered the route's status and code in the shared error shape, its message naming each request that landed and stands, once. A write of several requests is one write to its Idempotency-Key: no request of it marks the key committed, and its record does once the write reached a final outcome; a refusal the key keeps an answer for (a 4xx but 401, 408 and 429) is the write's final answer, which a repeat under the key is replayed however much of the write landed, and one answered 5xx, 401, 408 or 429 by a route that did not commit leaves the key open. Every later write of the invocation that runs, under the same key or a new one, resumes after the requests the invocation's writes record as landed that it sends first, the same method, path and body, and sends none of them again, its claim landing only while the run's latest write of the invocation is the one it read them from; a press that changes a close's reason posts its own, and no landing of another request counts as its own. Each invocation of a run is written once: the write claims its invocation on the run, pending, before it reads or sends anything, holding no lock; a request for an invocation whose write went through writes nothing and answers 200 with that write's line as the run recorded it, one for an invocation another request is writing is 429 GOING_WRITE_IN_PROGRESS with a Retry-After, whose retry answers that write's line, and one for an invocation claimed longer ago than any request can still run and record what it did, and never recorded, resumes that write after the requests its record names as landed where it sends them first - one with other arguments never rewrites them: that write is recorded as it stands, gone through and answered as its line where every request it sends landed, else refused 409 GOING_WRITE_UNSETTLED naming what it landed itself and none it inherited, and the request runs as a write of its own - or, where its record names none, is 409 GOING_WRITE_UNSETTLED, since its request may have run, and is never written again; an invocation whose write was refused may be written again. 404 GOING_RUN_NOT_FOUND for a run that is not the caller's, that the record does not hold or that is older than thirty days; 409 GOING_RUN_UNPROPOSED for a run that has not proposed yet; 409 GOING_NOT_PROPOSED for an action or invocation the proposal did not offer; 409 GOING_APPROVAL_REQUIRED for auto on dispatch_send_to_agent or dispatch_issue, which always ask, or on any action but the one the decision chose at or above the action threshold; 409 GOING_NOT_AUTOMATIC for auto on an invocation the proposal did not mark automatic - one naming an item that is not the page's and that no reference in the words names (an issue key, a project key typed in upper case, an id, a dispatch:// reference; a document's name only under an owner so named), setting a route or an assignee the words do not name and the issue does not hold, uploading under a name its owner already holds a document of, which would write that document's next version, where the words do not write the name, or carrying an argument the catalogue does not class - for auto with arguments replacing the invocation's own, and for an upload sent auto whose name the owner its route writes to holds a document of when the write runs, or whose route names no owner the write can read, where the words do not write the name, with nothing written; 409 GOING_CONFIRMATION_REQUIRED for auto while the caller's confirm_writes is on; 400 GOING_ARGUMENTS for arguments the action's schema refuses or the bar cannot send. One write per request. */
+    post: operations["postApiV1GoingRunsByIdWrites"];
     delete?: never;
     options?: never;
     head?: never;
@@ -1321,7 +1389,7 @@ export interface paths {
     delete?: never;
     options?: never;
     head?: never;
-    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. */
+    /** @description Update title (over 1000 characters is 400 CAP_EXCEEDED), status, priority, labels (or labels_add, which adds to the labels the issue holds when the write commits rather than replacing them; not with labels), route, parent, rank, assignee (the email of a person who has signed in, or null; anyone may reassign), or components ({mode: inherit|explicit|none, ids, reason}; allowed on a closed issue). Closing the issue (status done) withdraws every open ask it holds, each recorded resolved with resolution kind withdrawn naming the closer; reopening it opens exactly those asks again. expected_sequence makes the write conditional: 409 ISSUE_CHANGED when the issue's last event is no longer that sequence. expect {field: value} makes it conditional on the fields it names (status, title, labels, priority, assignee, route, parent, blocked_by, components, repo, external_links, rank), each holding that value as the issue's read answers it (rank its rank string), compared under the issue's lock: 409 ISSUE_CHANGED naming what each other field holds now, nothing written. */
     patch: operations["patchApiV1IssuesByKey"];
     trace?: never;
   };
@@ -1335,7 +1403,7 @@ export interface paths {
     /** @description List an issue's documents and files. */
     get: operations["getApiV1IssuesByKeyArtifacts"];
     put?: never;
-    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. */
+    /** @description Upload an issue document or file (JSON or multipart). A text/markdown upload is a document; any other is an image only when its bytes are a PNG, JPEG, GIF or WebP, stored under the type its bytes are whatever was declared, and otherwise a file under its declared type. A name no artifact has yet is 400 INVALID_ARTIFACT when it, or the reference key <owner>/<slug> it gives the new artifact, is over 2692 bytes; an upload under an existing artifact's name is never refused for its length. A JSON upload's expect_sha256 makes it conditional: the document of the name must hold markdown of that hex SHA-256 when the upload takes its lock, else 409 DOCUMENT_CHANGED with nothing written (a name no document has is refused the same). */
     post: operations["postApiV1IssuesByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -1472,9 +1540,9 @@ export interface paths {
     };
     get?: never;
     put?: never;
-    /** @description Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry. */
+    /** @description Claim the issue for the calling session (or human): records who is working it. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where the claim already stood as asked (the caller already holds it, and keeps the time work started), so the request changed nothing; previous_claim is the claim that stood when the claim took the issue's lock, null for none. 409 ISSUE_CLAIMED names a live holder (or a human one, whose claim has no session to end); a caller whose credential holds the person scope may pass {force: true} to take it anyway, and one that does not is 403 OAUTH_SCOPE_REQUIRED. {expect_unclaimed: true} makes the claim conditional on nobody - the caller included - holding the issue when it takes the lock: 409 CLAIM_HOLDER_CHANGED carrying the claim otherwise, nothing written. 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked: read the issue and retry. */
     post: operations["postApiV1IssuesByKeyClaim"];
-    /** @description Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status beside it: true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked. */
+    /** @description Release the issue's claim: its holder, a caller whose credential holds the person scope, or anyone when the holding session is no longer live. The status does not move. The answer is the issue with legion_managed_status, claim_changed and previous_claim beside it: legion_managed_status is true when the issue carries the legion label in any case, or sits under one that does, which means the Legion daemon owns the status and a status another writer sets is undone; claim_changed is false where nobody held the claim, so the request changed nothing; previous_claim is the claim the release found when it took the issue's lock, the one it released, null for none. {expect_holder: actor} makes the release conditional on that holder holding the issue when it takes the lock: 409 CLAIM_HOLDER_CHANGED carrying the claim otherwise, nothing written. 409 ISSUE_CLAIMED names the holder this caller may not release (there is no force on this route); 409 CLAIM_CONTENDED means the holder changed twice while the request ran, so nothing was applied and nobody's liveness was checked. */
     delete: operations["deleteApiV1IssuesByKeyClaim"];
     options?: never;
     head?: never;
@@ -1981,6 +2049,41 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/me/going-runs": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own command-bar runs of the last thirty days, newest first, and nobody else's: each row is one answered pause with every part stored - the words, the context chip, the hits, the decision and the proposal (each the data of its stream frame, null where the run wrote none), each write {id, action, invocation, target, fields, before, after, outcome {ok, status, code, message}, approved (auto, person or confirmed), at, landed?, delivery?}, invocation the index of the invocation of the action's offer it ran, fields the names of the target's fields it changed, landed the ids of what the write made before its own request (a reasoned close's posted reason), whether that request then went through or was refused, delivery {state, error} the last delivery of the message a dispatch_send_to_agent wrote, each undo {write_id, outcome, settled, fields [{field, ok, message}], at}, settled when the undo reached a verdict a retry would only repeat (ok, or refused because another writer changed what the write left), the issues its hits and writes touched, structured_output, finished (whether it ended), created_at and finished_at. ?issue= keeps the runs that touched that issue, ?q= the runs whose words hold that text (any case), and ?undoable=true the runs holding a write that went through and that no undo settled; pages with limit (1-200, default 50) and offset; {rows, total, limit, offset}. */
+    get: operations["getApiV1MeGoingRuns"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/me/going/settings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The caller's own command-bar setting {confirm_writes}: whether every write the bar makes for them waits for their confirmation. A person who never set it reads false. */
+    get: operations["getApiV1MeGoingSettings"];
+    /** @description Set the caller's own command-bar setting {confirm_writes} (required, true or false; 400 INVALID_STATE without it), answered as it now stands. With it on, POST /api/v1/going/runs/{id}/writes refuses a write sent as auto, so the bar asks first and sends it confirmed. */
+    put: operations["putApiV1MeGoingSettings"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/me/inbox/dismiss": {
     parameters: {
       query?: never;
@@ -2186,6 +2289,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/v1/projects/{key}/activity": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** @description The events of a project's issues counted per ISO week over the last ?weeks= weeks (default 8, 1 to 52), this week last: {project, weeks: [{week (2026-W45), start (Monday 00:00 UTC), events, kinds: {event type: count}}]}, every week of the span listed, a week with no event as 0. 400 INVALID_PROJECT for a key that is no project key, 400 INVALID_QUERY for a weeks outside that bound, 404 PROJECT_NOT_FOUND for a project Dispatch does not hold. */
+    get: operations["getApiV1ProjectsByKeyActivity"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/v1/projects/{key}/architecture": {
     parameters: {
       query?: never;
@@ -2316,7 +2436,7 @@ export interface paths {
     /** @description List a project's documents. */
     get: operations["getApiV1ProjectsByKeyArtifacts"];
     put?: never;
-    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. */
+    /** @description Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are, and a JSON upload's expect_sha256 makes it conditional on the document's markdown as an issue upload's does (409 DOCUMENT_CHANGED). */
     post: operations["postApiV1ProjectsByKeyArtifacts"];
     delete?: never;
     options?: never;
@@ -2992,6 +3112,7 @@ export interface components {
       ask: components["schemas"]["AskWithTrees"] | null;
       coverage: string[] | null;
       coverage_unread?: boolean;
+      opened: boolean;
       version: number;
     };
     ApproverGrantResp: {
@@ -3720,12 +3841,14 @@ export interface components {
     };
     ClaimIssueInput: {
       actor?: components["schemas"]["Actor"] | null;
+      expect_unclaimed?: boolean;
       force?: boolean;
     };
     ClaimedIssue: {
       assignee: null | string;
       blocked_by: string[] | null;
       claim: components["schemas"]["IssueClaim"] | null;
+      claim_changed: boolean;
       /** Format: date-time */
       closed_at: null | string;
       components: components["schemas"]["IssueComponents"];
@@ -3741,6 +3864,7 @@ export interface components {
       number: number;
       parent: null | string;
       plan_artifact_id: string;
+      previous_claim: components["schemas"]["IssueClaim"] | null;
       primary_artifact_id: string;
       priority: null | number;
       project: string;
@@ -3932,6 +4056,7 @@ export interface components {
       sessions: string[] | null;
     };
     CreateGoingRequestInput: {
+      context?: components["schemas"]["GoingContextInput"];
       project?: string;
       words: string;
     };
@@ -4489,6 +4614,9 @@ export interface components {
     };
     EditAskInput: {
       actor?: components["schemas"]["Actor"] | null;
+      expect?: {
+        [key: string]: unknown;
+      } | null;
       multiple?: null | boolean;
       options?: null | components["schemas"]["AskOption"][];
       question?: null | string;
@@ -4578,12 +4706,54 @@ export interface components {
       request: components["schemas"]["ToolField"][] | null;
       routes: components["schemas"]["GoingRoute"][] | null;
     };
+    GoingAnswerCapability: {
+      blocks: components["schemas"]["GoingBlocks"];
+      configured: boolean;
+      model: string;
+    };
+    /** @description true once the model accepted a structured reply, false once its service refused one, "unknown" while neither has happened or with no answering model */
+    GoingBlocks: boolean | "unknown";
+    GoingCancellation: {
+      /** Format: date-time */
+      cancelled_at: string;
+      id: string;
+    };
     GoingCapability: {
-      model_configured: boolean;
+      answer: components["schemas"]["GoingAnswerCapability"];
+      decision: components["schemas"]["GoingDecisionCapability"];
+      label: components["schemas"]["GoingSettingCapability"];
+      session: components["schemas"]["GoingSettingCapability"];
     };
     GoingCatalogueBody: {
       actions: components["schemas"]["GoingAction"][] | null;
       total: number;
+    };
+    GoingContext: {
+      block: string;
+      issue: string;
+      path: string;
+      project: string;
+    };
+    GoingContextInput: {
+      block?: string;
+      issue?: string;
+      path?: string;
+      project?: string;
+    };
+    GoingDecisionCapability: {
+      configured: boolean;
+      model: string;
+      reachable: boolean;
+    };
+    GoingDelivery: {
+      error: null | string;
+      state: string;
+    };
+    GoingDisplayFit: {
+      off: boolean;
+    };
+    GoingDisplayFitInput: {
+      off: null | boolean;
     };
     GoingRequest: {
       author: components["schemas"]["Actor"];
@@ -4598,6 +4768,180 @@ export interface components {
     GoingRoute: {
       method: string;
       pattern: string;
+      undo: components["schemas"]["GoingUndo"];
+    };
+    GoingRun: {
+      author_login: string;
+      context: components["schemas"]["GoingContext"] | null;
+      /** Format: date-time */
+      created_at: string;
+      decision: components["schemas"]["GoingRunDecision"] | null;
+      finished: boolean;
+      /** Format: date-time */
+      finished_at: null | string;
+      hits: components["schemas"]["GoingRunHit"][] | null;
+      id: string;
+      issues: string[] | null;
+      proposal: components["schemas"]["GoingRunProposal"] | null;
+      structured_output: null | string;
+      undos: components["schemas"]["GoingRunUndo"][] | null;
+      words: string;
+      writes: components["schemas"]["GoingRunWrite"][] | null;
+    };
+    GoingRunDecidedAction: {
+      action: string;
+      confidence: null | number;
+      probability: null | number;
+    };
+    GoingRunDecidedDisplay: {
+      chart: boolean;
+      /** @enum {string} */
+      choice: "chart" | "prose";
+      /** Format: double */
+      confidence: number;
+    };
+    GoingRunDecision: {
+      act: boolean;
+      actions: components["schemas"]["GoingRunDecidedAction"][] | null;
+      /** @enum {string} */
+      context: "page" | "named" | "none";
+      display: components["schemas"]["GoingRunDecidedDisplay"];
+    };
+    GoingRunHit: {
+      href: string;
+      id: string;
+      kind: string;
+      title: string;
+    };
+    GoingRunInvocation: {
+      arguments: {
+        [key: string]: unknown;
+      } | null;
+      automatic: boolean;
+      missing: components["schemas"]["GoingRunMissingArgument"] | null;
+      target_argument: string;
+    };
+    GoingRunMissingArgument: {
+      choices?: string[];
+      field: string;
+      item?: string;
+      /** @enum {string} */
+      kind: "text" | "number" | "enum" | "item";
+    };
+    GoingRunOffer: {
+      action: string;
+      invocations: components["schemas"]["GoingRunInvocation"][] | null;
+      offered: boolean;
+    };
+    GoingRunProposal: {
+      offers: components["schemas"]["GoingRunOffer"][] | null;
+    };
+    GoingRunUndo: {
+      /** Format: date-time */
+      at: string;
+      fields: components["schemas"]["GoingUndoField"][] | null;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      pending: boolean;
+      requests?: components["schemas"]["GoingWriteRequest"][];
+      settled: boolean;
+      write_id: string;
+    };
+    GoingRunWrite: {
+      action: string;
+      after: unknown;
+      after_unread?: boolean;
+      /** @enum {string} */
+      approved: "auto" | "person" | "confirmed";
+      /** Format: date-time */
+      at: string;
+      before: unknown;
+      delivery?: components["schemas"]["GoingDelivery"];
+      fields: string[] | null;
+      id: string;
+      invocation: number;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      pending: boolean;
+      requests?: components["schemas"]["GoingWriteRequest"][];
+      sends?: number;
+      target: string;
+      unchanged?: boolean;
+      /** @enum {string} */
+      undo?: "reverse" | "write_back" | "close_created" | "trace";
+    };
+    GoingRunsPage: {
+      limit: number;
+      offset: number;
+      rows: components["schemas"]["GoingRun"][] | null;
+      total: number;
+    };
+    GoingSettingCapability: {
+      configured: boolean;
+    };
+    GoingSettings: {
+      confirm_writes: boolean;
+    };
+    GoingSettingsInput: {
+      confirm_writes: null | boolean;
+    };
+    GoingUndo: {
+      /** @enum {string} */
+      kind: "reverse" | "write_back" | "close_created" | "trace";
+      routes: string[] | null;
+    };
+    GoingUndoAnswer: {
+      lines: components["schemas"]["GoingUndoLine"][] | null;
+    };
+    GoingUndoField: {
+      field: string;
+      message: string;
+      ok: boolean;
+    };
+    GoingUndoInput: {
+      reason?: string;
+    };
+    GoingUndoLine: {
+      action: string;
+      fields: components["schemas"]["GoingUndoField"][] | null;
+      item: string;
+      now: unknown;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      /** @enum {string} */
+      undo: "reverse" | "write_back" | "close_created" | "trace";
+      write_id: string;
+    };
+    GoingWriteInput: {
+      /** @enum {string} */
+      approved: "auto" | "person" | "confirmed";
+      arguments?: {
+        [key: string]: unknown;
+      } | null;
+      fill?: unknown;
+      invocation?: number;
+      offer: string;
+    };
+    GoingWriteLine: {
+      action: string;
+      before: unknown;
+      delivery?: components["schemas"]["GoingDelivery"];
+      fields: string[] | null;
+      item: string;
+      now: unknown;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      write_id: string;
+    };
+    GoingWriteOutcome: {
+      code: string;
+      message: string;
+      ok: boolean;
+      status: number;
+    };
+    GoingWriteRequest: {
+      body_sha256?: string;
+      inherited?: boolean;
+      made?: string;
+      method: string;
+      outcome: components["schemas"]["GoingWriteOutcome"];
+      path: string;
     };
     GraphEdge: {
       block?: components["schemas"]["GraphNode"];
@@ -5118,6 +5462,7 @@ export interface components {
     JsonArtifactUpload: {
       actor?: components["schemas"]["Actor"] | null;
       content?: null | string;
+      expect_sha256?: string;
       name: string;
       /** @description refused whenever present, JSON or multipart (400 ARTIFACT_INPUT): an artifact is made the issue's spec at issue creation and never by an upload */
       primary?: boolean;
@@ -5438,6 +5783,19 @@ export interface components {
       name: string;
       open_asks: number;
     };
+    ProjectActivity: {
+      project: string;
+      weeks: components["schemas"]["ProjectActivityWeek"][] | null;
+    };
+    ProjectActivityWeek: {
+      events: number;
+      kinds: {
+        [key: string]: number;
+      } | null;
+      /** Format: date-time */
+      start: string;
+      week: string;
+    };
     ProjectDefaultAssignee: {
       assignee: string;
       project: string;
@@ -5577,8 +5935,16 @@ export interface components {
       total: number;
       total_ms: components["schemas"]["RelatedCheckTiming"];
     };
+    ReleaseClaimInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      expect_holder?: components["schemas"]["Actor"] | null;
+    };
     RenameArtifactInput: {
       name: string;
+    };
+    ReopenCommentInput: {
+      actor?: components["schemas"]["Actor"] | null;
+      expect_resolved_at?: null | string;
     };
     ReplyBlock: {
       block_id: string;
@@ -5889,6 +6255,9 @@ export interface components {
       assignee?: string | null;
       blocked_by?: null | string[];
       components?: components["schemas"]["IssueComponentsInput"] | null;
+      expect?: {
+        [key: string]: unknown;
+      } | null;
       expected_sequence?: null | number;
       external_links?: null | components["schemas"]["ExternalLink"][];
       labels?: null | string[];
@@ -8226,7 +8595,11 @@ export interface operations {
       };
       cookie?: never;
     };
-    requestBody?: never;
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["ReopenCommentInput"];
+      };
+    };
     responses: {
       /** @description OK */
       200: {
@@ -9007,6 +9380,42 @@ export interface operations {
       };
     };
   };
+  postApiV1GoingDisplayFitTest: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GoingDisplayFitInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingDisplayFit"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1GoingRequests: {
     parameters: {
       query?: {
@@ -9043,6 +9452,40 @@ export interface operations {
       };
     };
   };
+  postApiV1GoingRequestsByIdCancel: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingCancellation"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   getApiV1GoingRequestsByIdStream: {
     parameters: {
       query?: {
@@ -9064,6 +9507,82 @@ export interface operations {
         };
         content: {
           "text/event-stream": unknown;
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1GoingRunsByIdUndo: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: {
+      content: {
+        "application/json": components["schemas"]["GoingUndoInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingUndoAnswer"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  postApiV1GoingRunsByIdWrites: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        id: string;
+      };
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GoingWriteInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingWriteLine"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -9814,7 +10333,7 @@ export interface operations {
     };
     requestBody: {
       content: {
-        "application/json": components["schemas"]["ActorInput"];
+        "application/json": components["schemas"]["ReleaseClaimInput"];
       };
     };
     responses: {
@@ -11116,6 +11635,111 @@ export interface operations {
       };
     };
   };
+  getApiV1MeGoingRuns: {
+    parameters: {
+      query?: {
+        issue?: string;
+        q?: string;
+        undoable?: boolean;
+        limit?: number;
+        offset?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingRunsPage"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1MeGoingSettings: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingSettings"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  putApiV1MeGoingSettings: {
+    parameters: {
+      query?: {
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["GoingSettingsInput"];
+      };
+    };
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["GoingSettings"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
   postApiV1MeInboxDismiss: {
     parameters: {
       query?: {
@@ -11592,6 +12216,41 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["CreatedProject"];
+        };
+      };
+      /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
+      default: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorBody"];
+        };
+      };
+    };
+  };
+  getApiV1ProjectsByKeyActivity: {
+    parameters: {
+      query?: {
+        weeks?: number;
+        /** @description the session the caller's credential acts for, where that credential proved none; a credential that proved a session is refused a parameter naming another (403 ACTOR_SESSION_MISMATCH) */
+        session?: string;
+      };
+      header?: never;
+      path: {
+        key: string;
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description OK */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectActivity"];
         };
       };
       /** @description A refusal: its code and its message, which every refusal this route does not give a richer body writes (writeError). */
@@ -13346,10 +14005,43 @@ export type EditPreconditionMismatch = components["schemas"]["EditPreconditionMi
 export type ErrorBody = components["schemas"]["ErrorBody"];
 export type Event = components["schemas"]["Event"];
 export type GoingAction = components["schemas"]["GoingAction"];
+export type GoingAnswerCapability = components["schemas"]["GoingAnswerCapability"];
+export type GoingBlocks = components["schemas"]["GoingBlocks"];
+export type GoingCancellation = components["schemas"]["GoingCancellation"];
 export type GoingCapability = components["schemas"]["GoingCapability"];
 export type GoingCatalogueBody = components["schemas"]["GoingCatalogueBody"];
+export type GoingContext = components["schemas"]["GoingContext"];
+export type GoingContextInput = components["schemas"]["GoingContextInput"];
+export type GoingDecisionCapability = components["schemas"]["GoingDecisionCapability"];
+export type GoingDelivery = components["schemas"]["GoingDelivery"];
+export type GoingDisplayFit = components["schemas"]["GoingDisplayFit"];
+export type GoingDisplayFitInput = components["schemas"]["GoingDisplayFitInput"];
 export type GoingRequest = components["schemas"]["GoingRequest"];
 export type GoingRoute = components["schemas"]["GoingRoute"];
+export type GoingRun = components["schemas"]["GoingRun"];
+export type GoingRunDecidedAction = components["schemas"]["GoingRunDecidedAction"];
+export type GoingRunDecidedDisplay = components["schemas"]["GoingRunDecidedDisplay"];
+export type GoingRunDecision = components["schemas"]["GoingRunDecision"];
+export type GoingRunHit = components["schemas"]["GoingRunHit"];
+export type GoingRunInvocation = components["schemas"]["GoingRunInvocation"];
+export type GoingRunMissingArgument = components["schemas"]["GoingRunMissingArgument"];
+export type GoingRunOffer = components["schemas"]["GoingRunOffer"];
+export type GoingRunProposal = components["schemas"]["GoingRunProposal"];
+export type GoingRunUndo = components["schemas"]["GoingRunUndo"];
+export type GoingRunWrite = components["schemas"]["GoingRunWrite"];
+export type GoingRunsPage = components["schemas"]["GoingRunsPage"];
+export type GoingSettingCapability = components["schemas"]["GoingSettingCapability"];
+export type GoingSettings = components["schemas"]["GoingSettings"];
+export type GoingSettingsInput = components["schemas"]["GoingSettingsInput"];
+export type GoingUndo = components["schemas"]["GoingUndo"];
+export type GoingUndoAnswer = components["schemas"]["GoingUndoAnswer"];
+export type GoingUndoField = components["schemas"]["GoingUndoField"];
+export type GoingUndoInput = components["schemas"]["GoingUndoInput"];
+export type GoingUndoLine = components["schemas"]["GoingUndoLine"];
+export type GoingWriteInput = components["schemas"]["GoingWriteInput"];
+export type GoingWriteLine = components["schemas"]["GoingWriteLine"];
+export type GoingWriteOutcome = components["schemas"]["GoingWriteOutcome"];
+export type GoingWriteRequest = components["schemas"]["GoingWriteRequest"];
 export type GraphEdge = components["schemas"]["GraphEdge"];
 export type GraphExcerpt = components["schemas"]["GraphExcerpt"];
 export type GraphNode = components["schemas"]["GraphNode"];
@@ -13436,6 +14128,8 @@ export type PersonSignInRevokedResponse = components["schemas"]["PersonSignInRev
 export type PersonSignInsResponse = components["schemas"]["PersonSignInsResponse"];
 export type ProgressCount = components["schemas"]["ProgressCount"];
 export type Project = components["schemas"]["Project"];
+export type ProjectActivity = components["schemas"]["ProjectActivity"];
+export type ProjectActivityWeek = components["schemas"]["ProjectActivityWeek"];
 export type ProjectDefaultAssignee = components["schemas"]["ProjectDefaultAssignee"];
 export type ProjectDefaultAssigneeInput = components["schemas"]["ProjectDefaultAssigneeInput"];
 export type ProjectGatedSteps = components["schemas"]["ProjectGatedSteps"];
@@ -13455,7 +14149,9 @@ export type ReferencedBy = components["schemas"]["ReferencedBy"];
 export type RelatedCheckInput = components["schemas"]["RelatedCheckInput"];
 export type RelatedCheckTiming = components["schemas"]["RelatedCheckTiming"];
 export type RelatedChecksReport = components["schemas"]["RelatedChecksReport"];
+export type ReleaseClaimInput = components["schemas"]["ReleaseClaimInput"];
 export type RenameArtifactInput = components["schemas"]["RenameArtifactInput"];
+export type ReopenCommentInput = components["schemas"]["ReopenCommentInput"];
 export type ReplyBlockWithTrees = components["schemas"]["ReplyBlockWithTrees"];
 export type RepoProject = components["schemas"]["RepoProject"];
 export type RequirementCoverage = components["schemas"]["RequirementCoverage"];

@@ -1,0 +1,61 @@
+{
+  "offers": [
+    {
+      "action": "dispatch_issue_update",
+      "invocations": [
+        {
+          "arguments": {
+            "issue": "DEMO-12",
+            "status": "done"
+          },
+          "missing": null,
+          "automatic": true,
+          "target_argument": "issue"
+        }
+      ],
+      "offered": true
+    },
+    {
+      "action": "dispatch_follow",
+      "invocations": [
+        {
+          "arguments": {
+            "ask": "0199e2a0-2222-7000-8000-000000000002"
+          },
+          "missing": {
+            "field": "action",
+            "kind": "enum",
+            "choices": [
+              "follow",
+              "unfollow"
+            ]
+          },
+          "automatic": false,
+          "target_argument": "ask"
+        }
+      ],
+      "offered": true
+    },
+    {
+      "action": "dispatch_claim",
+      "invocations": [
+        {
+          "arguments": {},
+          "missing": {
+            "field": "issue",
+            "kind": "item",
+            "item": "issue"
+          },
+          "automatic": false,
+          "target_argument": "issue"
+        }
+      ],
+      "offered": true
+    },
+    {
+      "action": "dispatch_comment",
+      "invocations": [],
+      "offered": false
+    }
+  ]
+}

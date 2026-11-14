@@ -40,7 +40,8 @@ type setting struct {
 // where the server listens and how many document rooms and connections it holds, NATS, the Envoy
 // listener, projects and the issues the search bar files, the GitHub App, cookies,
 // service-account tokens, the secrets broker, meaning search's model service, the model the
-// server generates text with, the dashboard, and local and test runs.
+// server generates text with, the model the command bar decides with, the dashboard, and local
+// and test runs.
 var settings = []setting{
 	{Name: "DATABASE_URL", Required: "yes",
 		Description: "Postgres connection string. The server migrates the database before serving; `census`, `backfill-block-ids`, `backfill-anchor-blocks`, `backfill-files`, `rebuild-refs` and `stored-order` read it too. A `pool_max_conns` parameter is refused."},
@@ -168,6 +169,12 @@ var settings = []setting{
 		Description: "Path of the file holding the bearer token every call to that endpoint presents, re-read on each call, as `DISPATCH_AZURE_FEDERATED_TOKEN_FILE` is, so a rotation needs no restart. It names a file rather than being the `_FILE` form of a value: there is no `DISPATCH_CHAT_TOKEN`."},
 	{Name: "DISPATCH_CHAT_MODEL", Required: "when `DISPATCH_ANSWERER` is `endpoint`",
 		Description: "The model each request names."},
+	{Name: "DISPATCH_DECISION_MODEL", Required: "no",
+		Description: "The System One model the command bar's one decision call is put to before it answers: which action the words ask for, whether they point at the page's item, and chart or prose. It must be a model the committed measurement holds (`packages/envoy/going/decision_models.json`), whose two fitted thresholds the server reads; a name the record does not hold is no decision model, and the server starts, logs why and decides nothing, as it does unset or with no endpoint."},
+	{Name: "DISPATCH_DECISION_MODEL_ENDPOINT", Required: "when `DISPATCH_DECISION_MODEL_TOKEN_FILE` is set",
+		Description: "The base URL of the System One decision API, which `/v1/systemone` is appended to: an absolute https URL with a host and no query or fragment. Set together with `DISPATCH_DECISION_MODEL_TOKEN_FILE` or not at all."},
+	{Name: "DISPATCH_DECISION_MODEL_TOKEN_FILE", Required: "when `DISPATCH_DECISION_MODEL_ENDPOINT` is set",
+		Description: "Path of the file holding the bearer token every decision call presents, re-read on each call, so a rotation needs no restart. A file that is absent or empty at a call makes that call fail as the decision model that cannot be reached, which the capability route reports, and never refuses boot. It names a file rather than being the `_FILE` form of a value: there is no `DISPATCH_DECISION_MODEL_TOKEN`."},
 	{Name: "DISPATCH_WEB_DIST", Default: "the `packages/dispatch/web/dist` directory found from the binary's location", Required: "no",
 		Description: "Directory of the built dashboard the server serves."},
 	{Name: "DISPATCH_DEV_SIGNIN", Required: "no",

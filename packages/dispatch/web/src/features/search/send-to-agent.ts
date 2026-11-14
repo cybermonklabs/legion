@@ -29,8 +29,8 @@ export interface SendToAgentWrite {
   readonly words: string;
 }
 
-/** How the offer sends; the tests pass their own. It answers why the words did not reach the
- *  session, and undefined where they did. */
+/** How the offer sends: this direct send, or a write of the bar's run where its proposal offers
+ *  the send. It answers why the words did not reach the session, and undefined where they did. */
 export type SendToAgent = (writes: Writes, write: SendToAgentWrite) => Promise<string | undefined>;
 
 /**

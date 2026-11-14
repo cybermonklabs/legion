@@ -57,6 +57,19 @@ var schemaNames = map[reflect.Type]string{
 	reflect.TypeOf(checkResultInput{}):         "RecordCheckResultInput",
 	reflect.TypeOf(relatedRequest{}):           "RelatedCheckInput",
 
+	// The decision and the proposal as a command-bar run's record keeps them (GET
+	// /api/v1/me/going-runs), which are the data of the stream's decision and proposal frames.
+	// Those frames are hand-written in packages/contracts/src/going.ts (GoingDecisionEvent,
+	// GoingOffer, GoingInvocation, ...), held to these types by packages/contracts/fixtures/going,
+	// so the record's schemas take a name of their own rather than one of those exports.
+	reflect.TypeOf(goingDecision{}):        "GoingRunDecision",
+	reflect.TypeOf(goingDecidedAction{}):   "GoingRunDecidedAction",
+	reflect.TypeOf(goingDecidedDisplay{}):  "GoingRunDecidedDisplay",
+	reflect.TypeOf(goingProposal{}):        "GoingRunProposal",
+	reflect.TypeOf(goingOffer{}):           "GoingRunOffer",
+	reflect.TypeOf(goingInvocation{}):      "GoingRunInvocation",
+	reflect.TypeOf(goingMissingArgument{}): "GoingRunMissingArgument",
+
 	// The shaped reads: the body a route answers a caller who sent `Dispatch-Trees: 1`, which
 	// is the stored row with the display tree of every text it shows beside that text. Their Go
 	// names say that this package shaped them; the names here are the TypeScript names a client

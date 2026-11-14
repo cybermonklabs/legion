@@ -54,6 +54,12 @@ var keyedWriteGuardStops = map[string]string{
 	// (repo, number) and hold what GitHub says, so a repeat after a takeover writes exactly the
 	// same rows; a failure is only logged, and the result is never undone for it.
 	"api.server.readThroughPullRequests": "stores what GitHub says about a commit's pull requests, after the result marked its key",
+	// A command-bar write or undo calls the route table in-process (going_writes.go): each
+	// request it makes is served by a route of the table, which this guard holds to its own rule
+	// as it holds every route, and resolves its caller as every request does (optionalActor
+	// above). Its context keeps the writes route's commit step, so the write that route commits
+	// marks the writes route's key with it.
+	"api.goingInProcess.Do": "serves one request of the route table in-process, each route of which this guard holds on its own",
 	// The pool itself: its statement methods are what the guard looks for at their call sites.
 	"store.Pool.Exec": "", "store.Pool.Query": "", "store.Pool.QueryRow": "", "store.Pool.SendBatch": "",
 	"store.Pool.CopyFrom": "", "store.Pool.Begin": "", "store.Pool.BeginTx": "", "store.Pool.begin": "",

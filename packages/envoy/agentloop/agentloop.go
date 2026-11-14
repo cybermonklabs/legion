@@ -295,6 +295,13 @@ type Result struct {
 	// Detail says what happened, for a log rather than for a wire.
 	Fault  Fault
 	Detail string
+	// Status is the HTTP status the provider refused the last call with, on a
+	// FaultProviderError whose call drew an answer that was not a 2xx, after the retry where
+	// one was made. It is zero on every other outcome, and on a provider error that came with
+	// no such status: a transport error, a token that could not be read, or a stream that
+	// broke after a 2xx. A caller tells a request the provider will not serve (a 400) from
+	// one it could not serve now by it.
+	Status int
 }
 
 // Fault is why a run ended short of an answer. A caller that publishes a reason of its own maps

@@ -113,6 +113,7 @@ func Run(ctx context.Context, req Request) (Result, error) {
 		result.Fault, result.Detail = FaultTime, fmt.Sprintf("the run went past %s", req.Bounds.Time)
 	case stream.Err() != nil:
 		result.Fault, result.Detail = FaultProviderError, stream.Err().Error()
+		result.Status = transport.failedStatus()
 	case len(result.Steps) == 0:
 		result.Fault, result.Detail = FaultProviderError, "the model made no reply"
 	default:

@@ -158,6 +158,13 @@ type deliveryPipelineQuery struct {
 	At string `query:"at"`
 }
 
+// projectActivityQuery is GET /api/v1/projects/{key}/activity's query.
+type projectActivityQuery struct {
+	// Weeks is how many ISO weeks the read spans, this week included: 1 to 52, default 8. Any
+	// other value is 400 INVALID_QUERY.
+	Weeks int `query:"weeks"`
+}
+
 // issueListQuery is GET /api/v1/issues's query: the filters and the offset page.
 type issueListQuery struct {
 	// Pinned, `true`, lists the caller's pinned issues; it needs the person scope, the pins
@@ -281,6 +288,22 @@ type inboxQuery struct {
 
 // myAnswersQuery is GET /api/v1/me/answers's query: the offset page it always answers.
 type myAnswersQuery struct {
+	// Limit is the page size, 1 to 200, default 50.
+	Limit int `query:"limit"`
+	// Offset is where the page starts.
+	Offset int `query:"offset"`
+}
+
+// myGoingRunsQuery is GET /api/v1/me/going-runs's query: the filters it narrows the caller's
+// runs by, and the offset page GET /api/v1/me/answers answers.
+type myGoingRunsQuery struct {
+	// Issue keeps the runs whose hits or writes touched that issue key.
+	Issue string `query:"issue"`
+	// Q keeps the runs whose words hold that text, in any case.
+	Q string `query:"q"`
+	// Undoable, true, keeps the runs holding a write that went through and that no undo
+	// reverted; any value but true or false is 400 INVALID_QUERY.
+	Undoable bool `query:"undoable"`
 	// Limit is the page size, 1 to 200, default 50.
 	Limit int `query:"limit"`
 	// Offset is where the page starts.
@@ -522,7 +545,10 @@ var routeShapes = map[string]routeShape{
 	// The architecture read answers architectureTreeRead, whose components carry the prose's
 	// tree, so the row names that read: the document describes the body the handler sends, and
 	// a client generated from it holds the field a reader draws.
-	"GET /api/v1/projects/{key}/architecture":        {Status: http.StatusOK, Response: architectureTreeRead{}},
+	"GET /api/v1/projects/{key}/architecture": {Status: http.StatusOK, Response: architectureTreeRead{}},
+	"GET /api/v1/projects/{key}/activity": {
+		Status: http.StatusOK, Response: projectActivity{}, Params: projectActivityQuery{},
+	},
 	"GET /api/v1/settings/project-default-assignees": {Status: http.StatusOK, Response: []projectDefaultAssignee{}},
 	"PUT /api/v1/projects/{key}/default-assignee": {
 		Status: http.StatusOK, Response: projectDefaultAssignee{}, Request: projectDefaultAssigneeInput{},
@@ -600,7 +626,7 @@ var routeShapes = map[string]routeShape{
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"DELETE /api/v1/issues/{key}/claim": {
-		Status: http.StatusOK, Response: claimAnswer{}, Request: actorInput{},
+		Status: http.StatusOK, Response: claimAnswer{}, Request: releaseClaimInput{},
 		Refusals: []routeAnswer{{Status: http.StatusConflict, Body: issueClaimedError{}}},
 	},
 	"GET /api/v1/issues/{key}/events": {Status: http.StatusOK, Response: []model.Event{}, Params: eventListQuery{}},
@@ -667,6 +693,7 @@ var routeShapes = map[string]routeShape{
 	},
 	"GET /api/v1/inbox":                {Status: http.StatusOK, Response: []inboxAsk{}, Params: inboxQuery{}},
 	"GET /api/v1/me/answers":           {Status: http.StatusOK, Response: model.MyAnswersResponse{}, Params: myAnswersQuery{}},
+	"GET /api/v1/me/going-runs":        {Status: http.StatusOK, Response: goingRunsPage{}, Params: myGoingRunsQuery{}},
 	"GET /api/v1/me/replies":           {Status: http.StatusOK, Response: model.MyRepliesResponse{}, Params: myRepliesQuery{}},
 	"PUT /api/v1/me/threads/{id}/read": {Status: http.StatusNoContent, Request: threadReadInput{}},
 	"POST /api/v1/me/inbox/read": {
@@ -690,6 +717,20 @@ var routeShapes = map[string]routeShape{
 		Status:            http.StatusOK,
 		Opaque:            "the run's answer is a text/event-stream of hand-written id:/event:/data: frames, not one JSON body",
 		OpaqueContentType: "text/event-stream",
+	},
+	"POST /api/v1/going/requests/{id}/cancel": {Status: http.StatusOK, Response: goingCancellation{}},
+	"POST /api/v1/going/runs/{id}/writes": {
+		Status: http.StatusOK, Response: goingWriteLine{}, Request: goingWriteInput{},
+	},
+	"POST /api/v1/going/runs/{id}/undo": {
+		Status: http.StatusOK, Response: goingUndoAnswer{}, Request: goingUndoInput{}, OptionalRequest: true,
+	},
+	"GET /api/v1/me/going/settings": {Status: http.StatusOK, Response: goingSettings{}},
+	"PUT /api/v1/me/going/settings": {
+		Status: http.StatusOK, Response: goingSettings{}, Request: goingSettingsInput{},
+	},
+	"POST /api/v1/going/display-fit/_test": {
+		Status: http.StatusOK, Response: goingDisplayFit{}, Request: goingDisplayFitInput{},
 	},
 	"GET /api/v1/going/capability": {Status: http.StatusOK, Response: goingCapability{}},
 	"GET /api/v1/going/catalogue":  {Status: http.StatusOK, Response: goingCatalogueBody{}},
@@ -741,7 +782,7 @@ var routeShapes = map[string]routeShape{
 		Status: http.StatusCreated, Response: commentWriteResponse{}, Request: commentInput{}, Advice: writeAdvice{},
 	},
 	"POST /api/v1/comments/{id}/resolve": {Status: http.StatusOK, Response: shapedComment{}, Request: actorInput{}, OptionalRequest: true},
-	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}},
+	"POST /api/v1/comments/{id}/reopen":  {Status: http.StatusOK, Response: shapedComment{}, Request: reopenCommentInput{}, OptionalRequest: true},
 	"GET /api/v1/comments/{id}":          {Status: http.StatusOK, Response: commentRead{}},
 	"GET /api/v1/comments/{id}/blocks":   {Status: http.StatusOK, Response: model.ItemBlocks{}},
 	"POST /api/v1/comments/{id}/deliveries": {

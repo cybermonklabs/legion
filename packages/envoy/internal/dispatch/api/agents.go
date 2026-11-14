@@ -117,17 +117,10 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	roster, err := s.readRouteRoster(r.Context())
+	roster, err := s.agentRoster(r.Context())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
-	}
-	if !roster.answered && s.lifetime.Err() != nil {
-		// The process is shutting down: the shared fetch runs on its lifetime, so it has ended or
-		// failed at once, and its silence says nothing about the listener. A request the drain
-		// still serves asks the listener on its own context instead, as every agents list did
-		// before the copy existed.
-		roster = s.listRouteRoster(r.Context())
 	}
 	if !roster.answered {
 		// The roster's reason is the one every process reads, stored on the row beside the
@@ -141,13 +134,42 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 		s.writeEnvoyError(w, roster.err)
 		return
 	}
-	if len(roster.sessions) == 0 {
-		// Nothing to look up: both aggregates would bind an empty id list and return no rows.
-		WriteJSON(w, http.StatusOK, []agentResponse{})
+	rows, err := s.agentRows(r.Context(), roster.sessions)
+	if err != nil {
+		s.writeHandlerError(w, err)
 		return
 	}
-	// The roster's list is every read's, so the sort orders a copy of it.
-	sessions := slices.Clone(roster.sessions)
+	WriteJSON(w, http.StatusOK, rows)
+}
+
+// agentRoster is the roster the agents list and the going run's roster read serve: the stored
+// copy every process shares (readRouteRoster), or, once the process is shutting down and that
+// copy did not answer, the listener asked on ctx. The shared fetch runs on the process's
+// lifetime, so it has ended or failed at once and its silence says nothing about the listener; a
+// request the drain still serves asks the listener on its own context instead, as every agents
+// list did before the copy existed. With no listener configured there is none to ask, and the
+// unanswered copy stands.
+func (s *server) agentRoster(ctx context.Context) (routeRoster, error) {
+	roster, err := s.readRouteRoster(ctx)
+	if err != nil {
+		return routeRoster{}, err
+	}
+	if !roster.answered && s.lifetime.Err() != nil && s.deps.Envoy != nil {
+		roster = s.listRouteRoster(ctx)
+	}
+	return roster, nil
+}
+
+// agentRows is the agents list's rows for the listed sessions: newest seen first, each with its
+// open asks and last activity, the machine standing in for a host a listener left out. The
+// listed sessions are every read's (routeRoster), so the sort orders a copy of them. GET
+// /api/v1/agents and the going run's roster read (going_reads.go) answer through it alike.
+func (s *server) agentRows(ctx context.Context, listed []envoy.Session) ([]agentResponse, error) {
+	if len(listed) == 0 {
+		// Nothing to look up: both aggregates would bind an empty id list and return no rows.
+		return []agentResponse{}, nil
+	}
+	sessions := slices.Clone(listed)
 	sort.SliceStable(sessions, func(left, right int) bool {
 		if sessions[left].LastSeen != sessions[right].LastSeen {
 			return sessions[left].LastSeen > sessions[right].LastSeen
@@ -158,15 +180,13 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 	for index, session := range sessions {
 		sessionIDs[index] = session.SessionID
 	}
-	openAsks, err := s.agentOpenAskCounts(r.Context(), sessionIDs)
+	openAsks, err := s.agentOpenAskCounts(ctx, sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
-	activity, err := s.agentLastActivity(r.Context(), sessionIDs)
+	activity, err := s.agentLastActivity(ctx, sessionIDs)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+		return nil, err
 	}
 
 	rows := make([]agentResponse, 0, len(sessions))
@@ -185,5 +205,5 @@ func (s *server) listAgents(w http.ResponseWriter, r *http.Request) {
 			LastActivity: lastActivity,
 		})
 	}
-	WriteJSON(w, http.StatusOK, rows)
+	return rows, nil
 }

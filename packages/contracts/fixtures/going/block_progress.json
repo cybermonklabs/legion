@@ -1,0 +1,21 @@
+{
+  "kind": "progress",
+  "title": "DEMO-12's progress",
+  "spec": {
+    "source": "read_progress",
+    "params": {
+      "issue": "DEMO-12"
+    },
+    "table": "progress",
+    "label": "label",
+    "done": "done",
+    "total": "total"
+  },
+  "rows": [
+    {
+      "done": 2,
+      "label": "tasks",
+      "total": 5
+    }
+  ]
+}

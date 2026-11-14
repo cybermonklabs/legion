@@ -3,6 +3,12 @@
  * holds, and the answer is streamed to the browser as server-sent events. Every name, code and
  * bound of that stream is declared here once, and generated into Go (`contracts.Going*`), so the
  * server that writes a frame and the page that reads it cannot drift apart.
+ *
+ * The frames' shapes are written by hand here and in Go (`going_decision.go`, `going/blocks.go`,
+ * `going_reads.go`), since a frame union is no OpenAPI response. `fixtures/going/` holds the two
+ * together: the server's own Go test writes each frame's data there
+ * (`TestTheGoingFrameFixturesAreWhatTheServerWrites`), and `going.test.ts` holds every fixture to
+ * the types below key for key, so a field one side gains or loses fails a test.
  */
 
 /** The frame carrying the next piece of the answer's text, in the order the model wrote it.
@@ -47,6 +53,26 @@ export const GOING_EVENT_END = "end";
 /** The frame ending a stream that failed, carrying one of the `GOING_ERROR_*` codes.
  *  Generated into Go as `contracts.GoingEventError`. */
 export const GOING_EVENT_ERROR = "error";
+
+/** The frame carrying what the decision model chose before the answer is written: the two best
+ *  actions, whether the bar runs the first at once, what the words are about, and how the answer
+ *  is shown. It is the stream's first frame when a decision model is configured and answered,
+ *  and the stream carries none otherwise. Generated into Go as `contracts.GoingEventDecision`. */
+export const GOING_EVENT_DECISION = "decision";
+
+/** The frame carrying the arguments of each action the decision offered, parsed against that
+ *  action's own schema, after the answer's last text frame and before the frame that ends the
+ *  stream. A stream that carries a `decision` frame and answers carries one of these.
+ *  Generated into Go as `contracts.GoingEventProposal`. */
+export const GOING_EVENT_PROPOSAL = "proposal";
+
+/** The frame carrying one typed block drawn beside the answer, filled from a read the server
+ *  serves, after the answer's text frames. Generated into Go as `contracts.GoingEventBlock`. */
+export const GOING_EVENT_BLOCK = "block";
+
+/** The frame saying how fresh the roster an answer read was, written when the run read it.
+ *  Generated into Go as `contracts.GoingEventRoster`. */
+export const GOING_EVENT_ROSTER = "roster";
 
 /** The error code of a run the model never answered inside `GOING_RUN_MS`.
  *  Generated into Go as `contracts.GoingErrorAnswerDidNotArrive`. */
@@ -151,6 +177,171 @@ export interface GoingErrorEvent {
   readonly data: { readonly code: string };
 }
 
+/** One action the decision model ranked: the catalogue action's name, or `none` for words that
+ *  ask for nothing to change. `confidence` is the confidence the model reported for its choice,
+ *  which is the number the action threshold is compared with, and is set on the first action
+ *  alone: the model reports none for the runner-up. `probability` is the share the model gave
+ *  that choice, null where it reported none. */
+export interface GoingDecidedAction {
+  readonly action: string;
+  readonly confidence: number | null;
+  readonly probability: number | null;
+}
+
+/** What the words are about, as the decision model chose: the item the bar's context chip names
+ *  (`page`), items the words name themselves (`named`), or nothing in particular (`none`). The
+ *  server fills an action's target from the chip on `page` alone. */
+export type GoingDecidedContext = "page" | "named" | "none";
+
+/** What the decision model chose before the answer was written. `actions` is the two best
+ *  choices, the model's own first; `act` is true where the bar runs the first at once on submit:
+ *  it is a catalogue action, its confidence is at or above the measured action threshold, and it
+ *  is none of the writes that always ask. `display.chart` is true where the display choice is a
+ *  chart at or above the measured chart-display threshold, so the answer draws one unasked. */
+export interface GoingDecisionEvent {
+  readonly event: typeof GOING_EVENT_DECISION;
+  readonly data: {
+    readonly actions: readonly GoingDecidedAction[];
+    readonly act: boolean;
+    readonly context: GoingDecidedContext;
+    readonly display: {
+      readonly choice: "chart" | "prose";
+      readonly confidence: number;
+      readonly chart: boolean;
+    };
+  };
+}
+
+/** The one argument an invocation still needs, which the bar asks the person for: a `text`, a
+ *  `number`, one of the `enum`'s `choices`, or an `item` the search finds, `item` naming the kind
+ *  searched for (`issue`, `ask`, `comment`, `document` or `message`). `field` is the action's own
+ *  argument, or `@session` for a row that addresses the caller's own session where the caller's
+ *  credential proved none, which the person names as text. */
+export interface GoingMissingArgument {
+  readonly field: string;
+  readonly kind: "text" | "number" | "enum" | "item";
+  readonly choices?: readonly string[];
+  readonly item?: string;
+}
+
+/** One run of an action: the arguments the answer and the page filled, each checked against the
+ *  action's own schema, the one argument still missing, null where none is, and whether it may
+ *  run at once on submit: only where every item it names is the chip's issue or project, where the
+ *  words are about the page, or is named by a reference in the person's own words (an issue key,
+ *  a project key typed in upper case, an id, a `dispatch://` reference; a document's name only
+ *  under an owner so named), and every route or assignee it sets is named in the words or already
+ *  the issue's. Any other invocation came from text someone stored and is an offer the person
+ *  picks, which the server refuses to run as `auto` (`GOING_NOT_AUTOMATIC`). `target_argument` is
+ *  the argument naming the item the invocation acts on, as the row it reaches binds that item into
+ *  its path, `""` for none: a write that makes its item, or one addressing the caller's own
+ *  session. */
+export interface GoingInvocation {
+  readonly arguments: Readonly<Record<string, unknown>>;
+  readonly missing: GoingMissingArgument | null;
+  readonly automatic: boolean;
+  readonly target_argument: string;
+}
+
+/** One action the decision offered: one invocation per item it changes, and `offered` false
+ *  where no invocation survived the checks, which leaves `invocations` empty. */
+export interface GoingOffer {
+  readonly action: string;
+  readonly invocations: readonly GoingInvocation[];
+  readonly offered: boolean;
+}
+
+/** The arguments of each action the decision offered, in the decision's order. */
+export interface GoingProposalEvent {
+  readonly event: typeof GOING_EVENT_PROPOSAL;
+  readonly data: { readonly offers: readonly GoingOffer[] };
+}
+
+/** The seven kinds of block an answer may draw. */
+export type GoingBlockKind =
+  | "chart"
+  | "progress"
+  | "table"
+  | "issue_list"
+  | "agent_status"
+  | "metric"
+  | "timeline";
+
+/** The part of every block's spec that names the read filling it: `source` is the read tool
+ *  (`read_progress`, `read_architecture`, `read_project_activity`, `read_delivery` or
+ *  `read_roster`), `params` the arguments the server ran it with, and `table` the table of its
+ *  answer the block's rows come from. A spec names fields and never carries a number. */
+export interface GoingBlockSource {
+  readonly source: string;
+  readonly params: Readonly<Record<string, unknown>>;
+  readonly table: string;
+}
+
+/** A chart: one series of at least two points, `x` the field along the axis (a week, a status, a
+ *  component, a day) and `y` the numeric field plotted, drawn as bars or a line. */
+export interface GoingChartSpec extends GoingBlockSource {
+  readonly x: string;
+  readonly y: string;
+  readonly mark: "bar" | "line";
+}
+
+/** A table: the rows' `columns`, in order. */
+export interface GoingTableSpec extends GoingBlockSource {
+  readonly columns: readonly string[];
+}
+
+/** A metric: one number, the one row's `field`, named by `label`, and at most one comparison,
+ *  the row's `compare` field named by `compare_label`; both absent for none. No axes, no series. */
+export interface GoingMetricSpec extends GoingBlockSource {
+  readonly field: string;
+  readonly label: string;
+  readonly compare?: string;
+  readonly compare_label?: string;
+}
+
+/** Progress: one bar per row, named by its `label` field, `done` of `total`. */
+export interface GoingProgressSpec extends GoingBlockSource {
+  readonly label: string;
+  readonly done: string;
+  readonly total: string;
+}
+
+/** Fields shared by every block frame: its title, and its rows, the records the server's own
+ *  read of the spec's source answered, cut to the fields the block draws. Every number a block
+ *  shows is a value of these rows. */
+interface GoingBlockFrame<K extends GoingBlockKind, S> {
+  readonly kind: K;
+  readonly title: string;
+  readonly spec: S;
+  readonly rows: readonly Readonly<Record<string, unknown>>[];
+}
+
+/** One block drawn beside the answer, after the answer's text frames and outside its word cut.
+ *  `issue_list` rows carry `key`, `title` and `status`; `agent_status` rows `session_id`,
+ *  `title`, `state`, `open_asks` and `last_activity`; `timeline` rows `at` (RFC3339), `lane`
+ *  and `label`; every other kind's rows carry the fields its spec names. */
+export type GoingBlockData =
+  | GoingBlockFrame<"chart", GoingChartSpec>
+  | GoingBlockFrame<"table", GoingTableSpec>
+  | GoingBlockFrame<"metric", GoingMetricSpec>
+  | GoingBlockFrame<"progress", GoingProgressSpec>
+  | GoingBlockFrame<"issue_list", GoingBlockSource>
+  | GoingBlockFrame<"agent_status", GoingBlockSource>
+  | GoingBlockFrame<"timeline", GoingBlockSource>;
+
+/** The frame carrying one typed block, filled from a read the server serves. */
+export interface GoingBlockEvent {
+  readonly event: typeof GOING_EVENT_BLOCK;
+  readonly data: GoingBlockData;
+}
+
+/** How fresh the roster the answer read was: `age_ms` since Dispatch's copy of the listener's
+ *  session list was read, from the live roster (`live`) or from the stored rows alone because the
+ *  live roster was unavailable (`stored`). */
+export interface GoingRosterEvent {
+  readonly event: typeof GOING_EVENT_ROSTER;
+  readonly data: { readonly age_ms: number; readonly source: "live" | "stored" };
+}
+
 /** Every frame a reader of the stream sees; `end` and `error` are the two that end it. */
 export type GoingEvent =
   | GoingTextEvent
@@ -158,5 +349,9 @@ export type GoingEvent =
   | GoingCutEvent
   | GoingChangedEvent
   | GoingNoneEvent
+  | GoingDecisionEvent
+  | GoingProposalEvent
+  | GoingBlockEvent
+  | GoingRosterEvent
   | GoingEndEvent
   | GoingErrorEvent;

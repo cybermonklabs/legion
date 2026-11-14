@@ -403,10 +403,14 @@ api() {
   curl -fsS -H "X-Dispatch-User: ${person}" -H 'Content-Type: application/json' "$@"
 }
 
-capability="$(api "${base}/api/v1/going/capability" | tr -d '[:space:]')" ||
+capability="$(api "${base}/api/v1/going/capability" | jq -c .)" ||
   refuse 'the capability route could not be read'
-[[ "$capability" == '{"model_configured":true}' ]] ||
-  refuse "the capability route answered ${capability}, want {\"model_configured\":true}"
+# The answering model is the fake this run configured, named as configured; the run configures no
+# decision model, session or label, so those read unset.
+jq -e '.answer.configured == true and .answer.model == "going-smoke-fake"
+  and .decision.configured == false and .session.configured == false and .label.configured == false' \
+  <<<"$capability" >/dev/null ||
+  refuse "the capability route answered ${capability}, want answer configured with going-smoke-fake and the rest unset"
 printf 'going-smoke: capability %s\n' "$capability"
 
 # The seed is one project and one issue whose own text is worth citing, written through the API as

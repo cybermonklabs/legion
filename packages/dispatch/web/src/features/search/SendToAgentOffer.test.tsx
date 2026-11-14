@@ -130,7 +130,7 @@ async function typeWords(user: UserEvent): Promise<void> {
 }
 
 /** The writing cursor inside a block of the page behind the bar, as a reader writing in the
- *  document leaves it. The bar reads it on the render that opens it (`scopeAtCursor`), so this
+ *  document leaves it. The bar reads it on the render that opens it (`blockAtCursor`), so this
  *  is put in place before `openBar`; it answers what that render will find, and the caller
  *  takes it off the page again. */
 function placeCaretInBlock(text: string): { readonly chip: string; readonly remove: () => void } {

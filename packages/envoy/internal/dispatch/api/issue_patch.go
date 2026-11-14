@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"strconv"
@@ -41,7 +42,52 @@ type updateIssueInput struct {
 	BlockedBy     *[]string             `json:"blocked_by"`
 	Components    json.RawMessage       `json:"components"`
 	Repo          json.RawMessage       `json:"repo"`
-	Actor         *model.Actor          `json:"actor"`
+	// Expect makes the write conditional on the fields it names: each must hold, when the write
+	// takes the issue's lock, the value given, as the issue's own read answers it (rank its rank
+	// string, components {mode, ids, reason}), or the write is refused whole, 409 ISSUE_CHANGED,
+	// naming what each changed field holds now (issueExpectationRefusal).
+	Expect map[string]json.RawMessage `json:"expect"`
+	Actor  *model.Actor               `json:"actor"`
+}
+
+// issueExpectableFields are the fields of an issue an update's expect may name: those an update
+// writes.
+var issueExpectableFields = map[string]bool{
+	"status": true, "title": true, "labels": true, "priority": true, "assignee": true, "route": true, "parent": true,
+	"blocked_by": true, "components": true, "repo": true, "external_links": true, "rank": true,
+}
+
+// issueExpectationRefusal is the refusal of an update whose expect names a field the issue, as
+// the update's transaction read it under the issue's lock, no longer holds as expected, nil where
+// it holds every one: a write back undoing another write puts its value back only while the
+// issue still holds what that write left, decided under the lock the update itself takes, so a
+// change another writer makes in between is never written over. Values are compared as the
+// issue's own read answers them, whatever their spelling (goingIssueFieldValue, goingSameJSON).
+func issueExpectationRefusal(issue model.Issue, expect map[string]json.RawMessage) error {
+	if len(expect) == 0 {
+		return nil
+	}
+	encoded, err := json.Marshal(issue)
+	if err != nil {
+		return err
+	}
+	var held map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &held); err != nil {
+		return err
+	}
+	var changed []string
+	for _, field := range slices.Sorted(maps.Keys(expect)) {
+		if !issueExpectableFields[field] {
+			return errorf(http.StatusBadRequest, "INVALID_ISSUE", "expect names %q, which is no field of an issue an update writes", field)
+		}
+		if now := goingJSONOrNull(goingIssueFieldValue(held, field)); !goingSameJSON(now, expect[field]) {
+			changed = append(changed, fmt.Sprintf("%s holds %s", field, now))
+		}
+	}
+	if len(changed) > 0 {
+		return errorf(http.StatusConflict, "ISSUE_CHANGED", "the issue no longer holds what expect names: %s", strings.Join(changed, "; "))
+	}
+	return nil
 }
 
 func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
@@ -215,6 +261,10 @@ func (s *server) patchIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	if input.ExpectedSeq != nil && *input.ExpectedSeq != int64(before.LastSeq) {
 		writeError(w, "ISSUE_CHANGED", http.StatusConflict, "issue changed since the hand-over read")
+		return
+	}
+	if refusal := issueExpectationRefusal(before, input.Expect); refusal != nil {
+		s.writeHandlerError(w, refusal)
 		return
 	}
 	if parentProvided && parent != nil {

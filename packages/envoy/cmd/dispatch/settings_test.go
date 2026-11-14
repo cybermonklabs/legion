@@ -206,6 +206,36 @@ func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
 	}
 }
 
+// The three decision-model settings are rows of the table, none required of a server that sets
+// none of them and none with a value in its place: each defaults to empty, and the server starts
+// with all three unset and no decision model.
+func TestDecisionModelSettings(t *testing.T) {
+	names := []string{"DISPATCH_DECISION_MODEL", "DISPATCH_DECISION_MODEL_ENDPOINT", "DISPATCH_DECISION_MODEL_TOKEN_FILE"}
+	for _, name := range names {
+		index := slices.IndexFunc(settings, func(row setting) bool { return row.Name == name })
+		if index < 0 {
+			t.Errorf("%s is no row of the settings table", name)
+			continue
+		}
+		if row := settings[index]; row.Default != "" || row.File || row.Required == "yes" {
+			t.Errorf("%s: Default %q, File %v, Required %q; want no default, no _FILE form, and not required", name, row.Default, row.File, row.Required)
+		}
+	}
+	unset := envGetter(signInEnvironment(nil))
+	for _, name := range names {
+		if value, set := unset.lookup(name); set || value != "" {
+			t.Errorf("%s reads %q, %v with nothing set, want empty", name, value, set)
+		}
+	}
+	boot, err := resolveBootConfig(unset)
+	if err != nil {
+		t.Fatalf("a server with no decision setting refuses to start: %v", err)
+	}
+	if boot.Decision != (decisionConfig{}) {
+		t.Fatalf("Decision = %+v with nothing set, want no decision model", boot.Decision)
+	}
+}
+
 // `envoy-dispatch settings` is what the docs site's configuration reference is generated from, so
 // it carries every row whole: the _FILE form by name, and null where a row has no default.
 func TestSettingsSubcommandPrintsEveryRow(t *testing.T) {
@@ -1671,6 +1701,29 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, endpointChatEnvironment(map[string]string{"DISPATCH_CHAT_MODEL": ""}), "DISPATCH_CHAT_MODEL is required")
 			refusedWith(t, map[string]string{"DISPATCH_CHAT_MODEL": "llama-3-70b"}, "DISPATCH_CHAT_MODEL set, but DISPATCH_ANSWERER is unset")
+		},
+		"DISPATCH_DECISION_MODEL": func(t *testing.T) {
+			if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL": " jev-latest "})); boot.Decision.Model != "jev-latest" {
+				t.Errorf("Model = %q, want the trimmed model", boot.Decision.Model)
+			}
+			if boot := resolveWith(t, nil); boot.Decision.Model != "" {
+				t.Errorf("unset: Model = %q, want no decision model", boot.Decision.Model)
+			}
+		},
+		"DISPATCH_DECISION_MODEL_ENDPOINT": func(t *testing.T) {
+			if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": " https://Decide.Example/base "})); boot.Decision.Endpoint != "https://Decide.Example/base" {
+				t.Errorf("Endpoint = %q, want the trimmed URL", boot.Decision.Endpoint)
+			}
+			refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": "http://decide.example"}), "DISPATCH_DECISION_MODEL_ENDPOINT=")
+			refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_ENDPOINT": ""}), "DISPATCH_DECISION_MODEL_ENDPOINT is required")
+		},
+		"DISPATCH_DECISION_MODEL_TOKEN_FILE": func(t *testing.T) {
+			// A path, read on each call, not at boot: a file that is not there yet boots.
+			missing := filepath.Join(t.TempDir(), "decision-token")
+			if boot := resolveWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_TOKEN_FILE": " " + missing + " "})); boot.Decision.TokenFile != missing {
+				t.Errorf("TokenFile = %q, want %q", boot.Decision.TokenFile, missing)
+			}
+			refusedWith(t, decisionEnvironment(map[string]string{"DISPATCH_DECISION_MODEL_TOKEN_FILE": ""}), "DISPATCH_DECISION_MODEL_TOKEN_FILE is required")
 		},
 		"DISPATCH_WEB_DIST": func(t *testing.T) {
 			if dir, err := defaultWebDistDir(resolveWith(t, map[string]string{"DISPATCH_WEB_DIST": "/srv/dispatch/dist"}).WebDist); err != nil || dir != "/srv/dispatch/dist" {

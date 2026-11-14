@@ -477,6 +477,39 @@ export function setNewIssueSettings(
   );
 }
 
+/** `GET /api/v1/going/capability`: what the command bar can do on this stack - the answering
+ *  model, the deciding model, and the session and label a new issue is filed under. */
+export function getGoingCapability(options: ApiOptions = {}) {
+  return get("/api/v1/going/capability", {}, options);
+}
+
+/** `POST /api/v1/going/display-fit/_test`: with `off` the running server treats its decision
+ *  model as having no display fit, so no answer draws a chart its words did not ask for. Test-only
+ *  endpoint (mounted when DISPATCH_TEST_HOOKS=1, see run-server.sh); it holds for the process
+ *  until set back, so a row that turns it on turns it off again. */
+export function setGoingDisplayFit(off: boolean, options: ApiOptions = {}) {
+  return post("/api/v1/going/display-fit/_test", { body: { off } }, options);
+}
+
+/** `GET /api/v1/me/going-runs`: the caller's own command-bar runs, newest first, each with every
+ *  write it made and every undo of it. */
+export function listMyGoingRuns(
+  query: Query<"/api/v1/me/going-runs", "get"> = {},
+  options: ApiOptions = {}
+) {
+  return get("/api/v1/me/going-runs", { query }, options);
+}
+
+/** `GET /api/v1/me/going/settings`: the caller's own command-bar setting (`confirm_writes`). */
+export function getMyGoingSettings(options: ApiOptions = {}) {
+  return get("/api/v1/me/going/settings", {}, options);
+}
+
+/** `GET /api/v1/projects/{key}/artifacts`: the project's documents. */
+export function listProjectArtifacts(project: string, options: ApiOptions = {}) {
+  return get("/api/v1/projects/{key}/artifacts", { params: { key: project } }, options);
+}
+
 /** `GET /api/v1/issues/{key}/coverage`: what each requirement of the issue's spec lacks. */
 export function getIssueCoverage(issue: string, options: ApiOptions = {}) {
   return get("/api/v1/issues/{key}/coverage", { params: { key: issue } }, options);

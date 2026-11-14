@@ -1,7 +1,6 @@
 package api
 
 import (
-	"bytes"
 	"cmp"
 	"context"
 	"crypto/rand"
@@ -475,7 +474,7 @@ func (s *server) runTestHook(ctx context.Context, call testHookCall) (int, []byt
 		s.shutAllLiveSockets(contracts.LiveSocketMaxAgeClose, liveSocketMaxAgeReason)
 	case hookQuiesceDocuments:
 		if err := s.deps.Docs.Quiesce(ctx); err != nil {
-			answer := &testHookAnswer{header: http.Header{}}
+			answer := &recordedAnswer{header: http.Header{}}
 			s.writeHandlerError(answer, err)
 			return answer.status, answer.body.Bytes()
 		}
@@ -506,18 +505,6 @@ func testHookFailure(status int, code, message string) (int, []byte) {
 	body, _ := json.Marshal(errorBody{Code: code, Error: message})
 	return status, body
 }
-
-// testHookAnswer records what a handler's error writer writes, so a process can send it to the
-// caller as its acknowledgement.
-type testHookAnswer struct {
-	header http.Header
-	status int
-	body   bytes.Buffer
-}
-
-func (a *testHookAnswer) Header() http.Header         { return a.header }
-func (a *testHookAnswer) Write(p []byte) (int, error) { return a.body.Write(p) }
-func (a *testHookAnswer) WriteHeader(status int)      { a.status = status }
 
 // splitTestHookCall splits encoded into the payloads of its notifications, each
 // "<id> <part> <parts> <piece>" with part counted from 1. A piece ends on a character boundary,

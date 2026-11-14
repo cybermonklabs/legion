@@ -83,6 +83,12 @@ export interface WriteBase<D = unknown> {
  *  or discarded. */
 export type Write<D = unknown> = WriteBase<D> & WriteState;
 
+/** Whether a write is still to be decided: waiting its turn (`queued`) or out (`sending`, `late`).
+ *  Takes any row named by a write's status, a surface's own row of a write included. */
+export function writeUnsettled(write: { readonly status: string }): boolean {
+  return write.status === "queued" || write.status === "sending" || write.status === "late";
+}
+
 /** `write` apart from where it stands, for a new state to be put on. */
 function baseOf<D>(write: Write<D>): WriteBase<D> {
   const { detail, id, inline, joined, key, kind, label, login, presentation, pressedAt } = write;

@@ -34,7 +34,8 @@ export interface RefusedWrite {
 
 /** What one acceptance made. */
 export interface FiledIssue {
-  readonly issue: Issue;
+  /** The issue made, by its key: the one thing of it the bar reads. */
+  readonly issue: Pick<Issue, "key">;
   /** The session the issue was routed to and its first message went to; `""` where the
    *  deployment names none, which is the issue made with no conversation started on it. */
   readonly session: string;
@@ -63,6 +64,25 @@ async function writeOnto<T>(
   }
 }
 
+/** How a filing makes the issue itself: the create, answered with the issue made, or `null` for a
+ *  create Dispatch made and had no answer to give for. */
+export type CreateNewIssue = (
+  writes: Writes,
+  write: NewIssueWrite
+) => Promise<Pick<Issue, "key"> | null>;
+
+/** The fields a new issue from the bar is created with: the project, the person's words as its
+ *  title, and the label the deployment set, where it set one. */
+export function newIssueFields({ project, settings, words }: NewIssueWrite) {
+  return { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) };
+}
+
+/** The create through the issues route every other client creates through. */
+const createThroughRoute: CreateNewIssue = (writes, write) =>
+  press(writes, `New issue “${write.words}”`, (bounds) =>
+    api.createIssue(newIssueFields(write), bounds)
+  );
+
 /**
  * Files the person's typed words as an issue, through the routes every other client writes
  * through: the create, whose own related-item check answers whether anything already in the
@@ -73,21 +93,20 @@ async function writeOnto<T>(
  * whatever becomes of the writes onto it: the first of those Dispatch refuses ends the filing
  * and is answered as the issue's `refused`, so the bar reports it against the issue it has
  * rather than offering to make another one. A refused create throws, because then there is no
- * issue and the row is still the way to make one.
+ * issue and the row is still the way to make one. The create is `create`'s: the issues route,
+ * or a write of the bar's run where the bar's decision chose a new issue, so the turn's undo
+ * closes it.
  *
  * Answers `undefined` for a create Dispatch made and had no answer to give for: the issue is
  * made, and nothing here knows which one, so the rest is the person's to write on it.
  */
 export async function fileNewIssue(
   writes: Writes,
-  { project, settings, words }: NewIssueWrite
+  write: NewIssueWrite,
+  create: CreateNewIssue = createThroughRoute
 ): Promise<FiledIssue | undefined> {
-  const issue = await press(writes, `New issue “${words}”`, (bounds) =>
-    api.createIssue(
-      { project, title: words, ...(settings.label === "" ? {} : { labels: [settings.label] }) },
-      bounds
-    )
-  );
+  const { settings, words } = write;
+  const issue = await create(writes, write);
   if (issue === null) {
     return undefined;
   }

@@ -9,17 +9,29 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"sync/atomic"
 	"time"
 )
 
 // modelTransport carries every model call of a run. It puts the endpoint's token, read again for
 // the attempt, on each request; adds the endpoint's own query parameters to it; and makes the
-// run's one retry, on a 429, a 5xx or a transport error, within the run's time.
+// run's one retry, on a 429, a 5xx or a transport error, within the run's time. It keeps the
+// status of the last response it handed back, which is how a provider error is given the HTTP
+// status the provider answered with.
 type modelTransport struct {
 	base  http.RoundTripper
 	kind  Kind
 	token func(context.Context) (string, error)
 	query url.Values
+	// status is the last attempt's response status where it was not a 2xx, and zero where
+	// it was, or where the attempt drew no response at all.
+	status atomic.Int32
+}
+
+// failedStatus is the status the last attempt was refused with, or zero where the last attempt
+// was answered with a 2xx or drew no response.
+func (t *modelTransport) failedStatus() int {
+	return int(t.status.Load())
 }
 
 // newModelTransport is the transport one Run or one Decide makes its model calls through, over
@@ -60,6 +72,9 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	ctx := req.Context()
 	for attempt := 0; ; attempt++ {
+		// Each attempt starts with no status of its own, so a token that could not be read,
+		// or a request that drew no response, is never given an earlier attempt's.
+		t.status.Store(0)
 		var key string
 		// Azure signs its own calls: the provider's credential middleware sets the header,
 		// and this transport reads no token for it.
@@ -89,6 +104,9 @@ func (t *modelTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 			r.URL.RawQuery = q.Encode()
 		}
 		resp, err := t.base.RoundTrip(r)
+		if err == nil && resp.StatusCode/100 != 2 {
+			t.status.Store(int32(resp.StatusCode))
+		}
 		if wait, retry := retryable(resp, err); retry && attempt == 0 && waitable(ctx, wait) {
 			if resp != nil {
 				_, _ = io.Copy(io.Discard, resp.Body)

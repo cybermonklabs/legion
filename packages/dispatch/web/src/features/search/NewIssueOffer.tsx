@@ -20,7 +20,8 @@ type OfferState =
   | { readonly filed: FiledIssue | undefined; readonly kind: "made"; readonly words: string }
   | { readonly kind: "refused"; readonly refusal: string; readonly words: string };
 
-/** How the offer writes; the tests pass their own. */
+/** How the offer writes: `fileNewIssue` through the issues route, or with its create a write of
+ *  the bar's run where the decision chose a new issue. */
 export type FileNewIssue = (
   writes: Writes,
   write: NewIssueWrite
@@ -45,7 +46,8 @@ export function useNewIssueOffer({
   project,
   words,
 }: {
-  /** Write seam for tests; defaults to the real sequence. */
+  /** How the press writes: the bar's run supplies it where its decision chose a new issue;
+   *  defaults to the filing through the issues route. */
   readonly file?: FileNewIssue;
   /** Whether the words matched nothing, so there is an offer to make at all. */
   readonly offered: boolean;

@@ -1134,27 +1134,40 @@ jobs:
   # (e2e/fake-embedder.ts) the server calls as it calls Bedrock, under DISPATCH_E2E_EMBEDDER=fake
   # (e2e/harness-embedder.ts). That switch is the server's, chosen before Playwright starts, so
   # no project of another lane can carry it and e2e/search-tiers.e2e.ts skips everywhere else.
-  # This job is where it runs.
+  # This job is where it runs, and the models lane beside it: the command bar's answers,
+  # blocks, operations and thresholds against the fake writing model and the fake decision
+  # model (e2e/fake-chat-model.ts, e2e/fake-decision-model.ts) under DISPATCH_E2E_MODELS=fake
+  # (e2e/harness-models.ts), a switch of the server's too, whose rows skip everywhere else. A
+  # second step of this job rather than a job of its own, since this job already holds the
+  # server's build and the browser install that lane needs.
   #
   # On both lanes, where the alone and multiprocess jobs above run on `full` alone: this is one
-  # Chromium install and two rows of about 90 s, and it holds a check of the pull request it is
-  # on (check k2 of dispatch://INFRA-1042) rather than a clock reading or a second server shape.
-  # A lane that skipped it would leave the claim unread until the merge queue.
+  # Chromium install, two rows of about 90 s and the models lane's specs, and it holds checks of
+  # the pull request it is on (check k2 of dispatch://INFRA-1042, and the command bar's answer
+  # checks) rather than a clock reading or a second server shape. A lane that skipped it would
+  # leave those claims unread until the merge queue.
   #
   # Its rows upload no blob report, as the multiprocess job's do not: the merge job joins the
   # shard and alone legs, and this job's own conclusion is what the caller's `dispatch-browser`
   # job reads. It is in the merge job's `needs` and in that job's name filter, where it gets a
   # null leg and is passed over by reading one, exactly as multiprocess is.
   #
-  # No budget measured on this file's own runs yet, so the two below are derived from the
+  # No budget measured on this file's own runs yet, so the ones below are derived from the
   # multiprocess job's measured steps, which are the same steps on the same machine: its install
-  # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The job
-  # budget is those two plus that job's measured 135 s maximum for every step without one,
-  # rounded up: 4 + 4 min plus 135 s = 11 min. The first runs replace these with readings of
-  # their own, as this file's head requires.
+  # step's 4 min, and 4 min for a browser step whose two rows run in about 90 s locally. The
+  # models step reuses the contracts and the dashboard the embedder step has just built, as the
+  # multiprocess job's sign-in step reuses its neighbour's, and runs the six model spec files its
+  # four filters match (`going-answer` also matches `going-answer-cancel` and
+  # `going-answer-safety`) on this config's one worker. Its reading is an estimate: the six ran
+  # their 21 and 16 rows in 1.6 and 1.7 min of wall time on 3 workers on a farm runner, so on one
+  # worker about three times 3.3 min, 9.9 min, and under this file's rule 9.9 min plus 15 per
+  # cent, rounded up, is 12 min, until its first runs give it a reading of its own. The job
+  # budget is those three plus the multiprocess job's measured 135 s maximum for every step
+  # without one, rounded up: 4 + 4 + 12 min plus 135 s = 23 min. The first runs replace these
+  # with readings of their own, as this file's head requires.
   embedder:
     runs-on: ubuntu-24.04
-    timeout-minutes: 11
+    timeout-minutes: 23
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -1212,8 +1225,20 @@ jobs:
         timeout-minutes: 4
         run: bun run e2e:embedder
         working-directory: packages/dispatch
+      - name: Browser-test the bar's answers against fake models
+        # The models lane: run-server.sh points the server at the two fake models the harness
+        # starts over TLS on loopback, and finds the server the build step above made current.
+        # Playwright directly, as the multiprocess job's sign-in step runs it: `bun run
+        # e2e:models` would build the contracts and the dashboard a second time, and the step
+        # before built both from this checkout. `e2e:models` stays the command for a local run.
+        timeout-minutes: 12
+        run: DISPATCH_E2E_MODELS=fake bunx playwright test --config e2e/playwright.config.ts --project=chromium going-answer going-blocks going-operations going-thresholds
+        working-directory: packages/dispatch
       # `if: failure()`, as the multiprocess job's upload is: the chromium project retries a
       # failed row, but a row that fails after its retries fails this job and this upload runs.
+      # One upload serves both browser steps: a failed step skips the one after it, and each
+      # Playwright run empties e2e/test-results before it starts, so the directory holds the
+      # results of the step that failed.
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: failure()
         with:

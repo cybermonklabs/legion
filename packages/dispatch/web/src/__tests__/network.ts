@@ -26,6 +26,7 @@ import { FetchInterceptor } from "@mswjs/interceptors/fetch/web";
 import { XMLHttpRequestInterceptor } from "@mswjs/interceptors/XMLHttpRequest/web";
 import { http, type RequestHandler } from "msw";
 import { defineNetwork, InterceptorSource } from "msw/experimental";
+import type { GoingCapability } from "../api/types";
 import { TEST_ORIGIN } from "./register-dom";
 
 /** Every request a test let reach the network since the last report, each `<METHOD> <path>`. */
@@ -39,6 +40,16 @@ const reached: string[] = [];
 export function requestsThatReachedNetwork(): string[] {
   return reached.splice(0);
 }
+
+/** What a Dispatch with nothing configured answers for what the command bar can do
+ *  (`GET /api/v1/going/capability`): the server's own answer with every setting unset, so a bar
+ *  under it asks no model. */
+export const UNCONFIGURED_CAPABILITY: GoingCapability = {
+  answer: { blocks: "unknown", configured: false, model: "" },
+  decision: { configured: false, model: "", reachable: false },
+  label: { configured: false },
+  session: { configured: false },
+};
 
 /**
  * The routes the application shell reads on every rendered page, answered with the API's empty
@@ -70,6 +81,18 @@ const shellHandlers: RequestHandler[] = [
   http.get("/api/v1/me/replies", () => Response.json({ rows: [], total: 0, limit: 50, offset: 0 })),
   http.get("/api/v1/credential-requests", () => Response.json({ pending: [] })),
   http.get("/api/v1/me/agents/state", () => Response.json({})),
+  // The command bar reads what this Dispatch can do as it opens (`goingCapabilityQuery`), on
+  // every page the bar opens over. The answer is a Dispatch with nothing configured - the
+  // server's own answer with every setting unset - so a bar under test asks no model; a test of
+  // the answer spies `api.goingCapability` above this. It is answered at any origin (`*/`):
+  // a test that renders the bar on a page whose origin is not the suite's still opens it, as
+  // the bar's other reads are answered there by that test's own spies.
+  http.get("*/api/v1/going/capability", () => Response.json(UNCONFIGURED_CAPABILITY)),
+  // The Settings page's Command bar section reads the person's own setting
+  // (`goingSettingsQuery`) wherever the page renders. The answer is a person who never set it -
+  // the server's own default, off - and a test of the setting spies `api.myGoingSettings`. It is
+  // answered at any origin, as the capability read above is.
+  http.get("*/api/v1/me/going/settings", () => Response.json({ confirm_writes: false })),
 ];
 
 const network = defineNetwork({

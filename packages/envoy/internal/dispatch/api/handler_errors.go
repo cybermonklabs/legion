@@ -171,6 +171,10 @@ func (s *server) writeHandlerError(w http.ResponseWriter, err error) {
 		writeError(w, "EDIT_QUEUE_FULL", http.StatusTooManyRequests, docs.ErrPreconditionBusy.Error())
 		return
 	}
+	if errors.Is(err, docs.ErrDocumentChanged) {
+		writeError(w, "DOCUMENT_CHANGED", http.StatusConflict, docs.ErrDocumentChanged.Error()+", so nothing was written")
+		return
+	}
 	var invalidAskBlock *docs.ErrInvalidAskBlock
 	if errors.As(err, &invalidAskBlock) {
 		writeError(w, "INVALID_ASK_BLOCK", http.StatusBadRequest, invalidAskBlock.Error())

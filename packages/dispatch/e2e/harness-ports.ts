@@ -22,6 +22,9 @@
  * broker takes the issuer's URL as its token issuer and its sign-in provider. `FAKE_EMBEDDER_PORT`
  * is the fake embedder's (`e2e/fake-embedder.ts`), started only by a run whose server embeds
  * there (`e2e/harness-embedder.ts`), so it takes part in the collision check only then.
+ * `FAKE_CHAT_MODEL_PORT` and `FAKE_DECISION_MODEL_PORT` are the fake writing model's and the fake
+ * decision model's (`e2e/fake-chat-model.ts`, `e2e/fake-decision-model.ts`), started only by the
+ * models lane (`e2e/harness-models.ts`), so they take part in the collision check only then.
  *
  * A set value that is not a port in canonical decimal is refused naming its variable, because
  * every later consumer turns it into something that names nothing: `net.connect` raises
@@ -56,6 +59,7 @@
  */
 
 import { usesFakeEmbedder } from "./harness-embedder";
+import { usesFakeModels } from "./harness-models";
 import { harnessProcessCount } from "./harness-processes";
 import { usesRealBroker } from "./harness-real-broker";
 import { harnessSignIn } from "./harness-signin";
@@ -139,6 +143,8 @@ export const harnessVariables = {
   dispatchA: "DISPATCH_E2E_PORT_A",
   dispatchB: "DISPATCH_E2E_PORT_B",
   fakeBroker: "FAKE_BROKER_PORT",
+  fakeChatModel: "FAKE_CHAT_MODEL_PORT",
+  fakeDecisionModel: "FAKE_DECISION_MODEL_PORT",
   fakeEmbedder: "FAKE_EMBEDDER_PORT",
   fakeEnvoy: "FAKE_ENVOY_PORT",
   fakeGithub: "FAKE_GITHUB_PORT",
@@ -215,6 +221,8 @@ export function harnessPorts(
     dispatchA: harnessPort(env, harnessVariables.dispatchA),
     dispatchB: harnessPort(env, harnessVariables.dispatchB),
     fakeBroker: harnessPort(env, harnessVariables.fakeBroker),
+    fakeChatModel: harnessPort(env, harnessVariables.fakeChatModel),
+    fakeDecisionModel: harnessPort(env, harnessVariables.fakeDecisionModel),
     fakeEmbedder: harnessPort(env, harnessVariables.fakeEmbedder),
     fakeEnvoy: harnessPort(env, harnessVariables.fakeEnvoy),
     fakeGithub: harnessPort(env, harnessVariables.fakeGithub),
@@ -228,7 +236,8 @@ export function harnessPorts(
       (harnessProcessCount === 2 || (entry !== ports.dispatchA && entry !== ports.dispatchB)) &&
       (harnessSignIn === "oidc" || entry !== ports.signinIssuer) &&
       (usesRealBroker || (entry !== ports.devIssuer && entry !== ports.realBroker)) &&
-      (usesFakeEmbedder || entry !== ports.fakeEmbedder)
+      (usesFakeEmbedder || entry !== ports.fakeEmbedder) &&
+      (usesFakeModels || (entry !== ports.fakeChatModel && entry !== ports.fakeDecisionModel))
   );
   const collisions = [...new Set(given.map((entry) => entry.port))]
     .map((port) => ({

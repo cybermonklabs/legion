@@ -37,7 +37,10 @@
 // Both of the SDK's retry layers are off, and this package retries once itself: on a transport
 // error, a 429 or a 5xx, decided from the response status before any of the body is read, and
 // only while Bounds.Time is left. A stream that breaks after its first byte is FaultProviderError
-// and is never retried, so a caller's OnText never sees the same text twice.
+// and is never retried, so a caller's OnText never sees the same text twice. A FaultProviderError
+// whose last call was answered with an error status carries that status in Result.Status, read
+// by the transport off the response, so a caller can tell a request the provider refuses outright
+// (a 400) from one it failed to serve.
 //
 // # The provider's own chunks
 //
@@ -45,7 +48,8 @@
 // stream carried it, and a Chat Completions refusal is what an openai-chat call says in place of
 // a reply. Both are read off the SDK's stream of raw provider chunks, which the run asks for on
 // those two protocols and no other. The HTTP transport keeps no response body of its own: it is
-// the token, the endpoint's query parameters and the retry, and nothing else.
+// the token, the endpoint's query parameters, the retry and the last refused status, and nothing
+// else.
 //
 // # Cache marks
 //

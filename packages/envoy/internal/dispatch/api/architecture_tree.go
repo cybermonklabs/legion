@@ -19,50 +19,63 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
 	}
-	project := r.PathValue("key")
-	pool := s.deps.Store.Pool
-	var tree model.ArchitectureTree
-	rows, err := pool.Query(r.Context(), `
-		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
-		where project_key = $1 order by id
-	`, project)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	tree.Sources, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.ArchitectureTreeSource])
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if len(tree.Sources) == 0 {
-		writeError(w, "SOURCE_NOT_FOUND", http.StatusNotFound, "no architecture source configured for "+project)
-		return
-	}
-	components, byID, err := loadTreeComponents(r.Context(), pool, project)
+	tree, err := s.architectureTree(r.Context(), r.PathValue("key"))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	// Each component's prose is registered with the request's reader as the component is shaped
-	// into the answer below: the trees are the table's rows where it holds them, and the read
-	// stores what it did not.
+	// into the answer: the trees are the table's rows where it holds them, and the read stores
+	// what it did not.
 	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	issues, err := loadTreeIssues(r.Context(), pool, project)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	answer := architectureTreeRead{ArchitectureTree: tree, Components: make([]architectureComponentRead, len(tree.Components))}
+	for index, component := range tree.Components {
+		answer.Components[index].ArchitectureTreeComponent = component
+		reader.text(&answer.Components[index].ProseTree, component.Prose)
 	}
-	if err := attachTreeIssues(r.Context(), pool, project, issues, byID); err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// The trees are filled before the answer is written, and the store of what the table did
+	// not hold runs on a goroutine of its own, beside the rest of the request.
+	reader.resolve()
+	WriteJSON(w, http.StatusOK, answer)
+}
+
+// architectureTree is GET /api/v1/projects/{key}/architecture's answer for project, and a 404
+// SOURCE_NOT_FOUND apiError for a project with no architecture source. The route and the going
+// run's architecture read (going_reads.go) answer through it alike.
+func (s *server) architectureTree(ctx context.Context, project string) (model.ArchitectureTree, error) {
+	pool := s.deps.Store.Pool
+	var tree model.ArchitectureTree
+	rows, err := pool.Query(ctx, `
+		select repo, branch, last_commit, last_sync_at, last_error from architecture_sources
+		where project_key = $1 order by id
+	`, project)
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	tree.Sources, err = pgx.CollectRows(rows, pgx.RowToStructByPos[model.ArchitectureTreeSource])
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	if len(tree.Sources) == 0 {
+		return model.ArchitectureTree{}, errorf(http.StatusNotFound, "SOURCE_NOT_FOUND", "no architecture source configured for %s", project)
+	}
+	components, byID, err := loadTreeComponents(ctx, pool, project)
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	issues, err := loadTreeIssues(ctx, pool, project)
+	if err != nil {
+		return model.ArchitectureTree{}, err
+	}
+	if err := attachTreeIssues(ctx, pool, project, issues, byID); err != nil {
+		return model.ArchitectureTree{}, err
 	}
 
-	answer := architectureTreeRead{Components: make([]architectureComponentRead, len(components))}
+	tree.Components = make([]model.ArchitectureTreeComponent, 0, len(components))
 	tree.Unassigned = []model.ArchitectureTreeIssueRef{}
 	tree.NotArchitectural = []model.ArchitectureTreeNone{}
 	tree.RetiredLinks = []model.ArchitectureTreeRetired{}
-	for index, component := range components {
+	for _, component := range components {
 		for _, row := range component.Issues {
 			component.Total++
 			if row.Status == "done" {
@@ -78,8 +91,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 		if component.Total == 0 && !component.External {
 			tree.Totals.ComponentsWithoutWork++
 		}
-		answer.Components[index].ArchitectureTreeComponent = *component
-		reader.text(&answer.Components[index].ProseTree, component.Prose)
+		tree.Components = append(tree.Components, *component)
 	}
 	for _, issue := range issues {
 		tree.Totals.IssuesTotal++
@@ -107,11 +119,7 @@ func (s *server) getArchitectureTree(w http.ResponseWriter, r *http.Request) {
 	tree.Totals.Unassigned = len(tree.Unassigned)
 	tree.Totals.NotArchitectural = len(tree.NotArchitectural)
 	tree.Totals.RetiredLinks = len(tree.RetiredLinks)
-	// The trees are filled before the answer is written, and the store of what the table did
-	// not hold runs on a goroutine of its own, beside the rest of the request.
-	reader.resolve()
-	answer.ArchitectureTree = tree
-	WriteJSON(w, http.StatusOK, answer)
+	return tree, nil
 }
 
 // loadTreeComponents reads the project's current model — every source's components — in id

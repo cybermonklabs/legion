@@ -94,10 +94,19 @@ type Deps struct {
 	// Answerer answers one question from what Dispatch holds (INFRA-1279), for the three going
 	// routes; nil means the deployment configured no model, where a run is still recorded and
 	// its stream carries the error frame contracts.GoingErrorNoModelConfigured, and the
-	// capability route says no model is configured.
+	// capability route says no model is configured. Its Blocks is the capability's answer.blocks.
 	Answerer Answerer
-	Envoy    *envoy.Client
-	Events   *events.Broker
+	// AnswerModel is the model the Answerer was configured with, as the capability route names
+	// it (cmd/dispatch: DISPATCH_AZURE_CHAT_DEPLOYMENT or DISPATCH_CHAT_MODEL); empty with no
+	// Answerer.
+	AnswerModel string
+	// Decider is the decision model, a measured one (NewDecider), or nil where the deployment
+	// configured none or named a model the record does not hold (cmd/dispatch:
+	// DISPATCH_DECISION_MODEL and its endpoint and token file), which the capability route
+	// reports unset.
+	Decider *Decider
+	Envoy   *envoy.Client
+	Events  *events.Broker
 	// GitHub calls the GitHub App API for architecture-source access checks and the web app's
 	// GitHub reads; nil is the "no app credentials yet" state and answers ErrNoAppKey.
 	GitHub *githubapp.Client
@@ -209,7 +218,12 @@ type DepsInput struct {
 	// Answerer answers a going request's question (INFRA-1279); nil means no model is
 	// configured. See Deps.Answerer; cmd/dispatch builds it (newAnswerer).
 	Answerer Answerer
-	Events   *events.Broker
+	// AnswerModel is the model the Answerer was configured with; see Deps.AnswerModel.
+	AnswerModel string
+	// Decider is the measured decision model, nil for none; see Deps.Decider. cmd/dispatch
+	// builds it (newDecider).
+	Decider *Decider
+	Events  *events.Broker
 
 	// App is the loaded GitHub App credentials (nil when unconfigured);
 	// GitHubAPIBase overrides the GitHub API origin (DISPATCH_GITHUB_API_BASE).
@@ -316,6 +330,8 @@ func NewDeps(input DepsInput) (Deps, error) {
 		Docs:                   input.Docs,
 		Embedder:               input.Embedder,
 		Answerer:               input.Answerer,
+		AnswerModel:            strings.TrimSpace(input.AnswerModel),
+		Decider:                input.Decider,
 		Envoy:                  envoyClient,
 		Events:                 input.Events,
 		GitHub:                 github,
@@ -378,7 +394,15 @@ type server struct {
 	routeIndex []routeIndexEntry
 	// going is the action catalogue GET /api/v1/going/catalogue serves: the dispatch tools that
 	// write, held to the table this server mounts (going_catalogue.go).
-	going           GoingCatalogue
+	going GoingCatalogue
+	// goingReads is the route rows each read tool of a going run reads through, held to the
+	// table this server mounts (going_reads.go).
+	goingReads map[string][]GoingRoute
+	// inProcess is the route table this server mounts, behind the cross-site origin check
+	// routes.New puts in front of the whole server (EnforceCookieOrigin): what a command-bar write
+	// is performed through, as its caller, so every check a route makes runs on it exactly as on
+	// a request off the network (going_writes.go). register sets it.
+	inProcess       http.Handler
 	adviceQueryHook func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
@@ -485,6 +509,15 @@ type server struct {
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
 	// server without TestHooksEnabled, since that mounts no hook.
 	newIssueOverride atomic.Pointer[newIssueSettings]
+	// displayFitOff is what the display-fit test hook last set
+	// (POST /api/v1/going/display-fit/_test): while it is set, no decision of this process draws
+	// a chart unasked, as with a decision model whose record holds no chart-display threshold.
+	// It is false on every server without TestHooksEnabled, since that mounts no hook.
+	displayFitOff atomic.Bool
+	// goingCancels is the cancel function of every going run this process is answering, by its
+	// request id, so a cancel that lands on this process ends that run at once rather than at
+	// its next frame (cancelGoingRequest). startGoingRun adds and removes its own entry.
+	goingCancels sync.Map
 	// warnedUnmatchedRuns holds a warnedProductionRun for each deploy run productionApplies has
 	// asked about - one with no production job or no configured apply step - so this process asks
 	// delivery_run_warnings, which decides which process logs the warning (firstToWarn), once per
@@ -707,6 +740,14 @@ func register(mux *http.ServeMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table holds a row the going catalogue cannot hold: " + err.Error())
 	}
 	s.going = going
+	s.inProcess = EnforceCookieOrigin(deps.ServerURL, mux)
+	goingReads, err := goingReadRoutesOf(routes)
+	if err != nil {
+		// A read tool naming a row this table does not serve would offer a read nothing judges
+		// the caller's credential against, so the table is refused rather than mounted.
+		panic("api.Register: the route table does not serve a row a going read tool reads: " + err.Error())
+	}
+	s.goingReads = goingReads
 	if shapeless := shapelessRoutes(routes); len(shapeless) > 0 {
 		// A row with no shape is a row the generated OpenAPI document would leave out, so the
 		// one definition of the API would stop being one; the table is refused rather than
@@ -1275,8 +1316,8 @@ func (s *server) actingPerson(w http.ResponseWriter, r *http.Request) (model.Act
 }
 
 // actSessionFromBody records on actor's act the session the request body names, for the
-// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk and
-// the follower routes. A
+// person-scope handlers that already decode a body actor: answerAsk, putUserState, editAsk,
+// reopenComment and the follower routes. A
 // credential that proved no session of its own - a personal token - names its agent nowhere
 // else on a route whose body is already read, so the body's actor is taken for it, exactly as
 // `?session=` is taken on every other route (actingPerson). A credential that did prove one - a

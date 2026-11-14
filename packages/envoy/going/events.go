@@ -1,8 +1,9 @@
 // Package going answers a question from what Dispatch holds: it searches, shows the hits to a
 // text model, and streams the model's answer to the reader as server-sent events. It sits outside
-// internal/ so the daemon can speak the same stream, and it holds no store and no HTTP route of
-// its own: the frames of the stream, the hit they name, the chat-completions client that
-// generates the text, and the filter that clears that text before a reader sees a byte of it.
+// internal/ so the daemon can speak the same stream, and it holds no store, no HTTP route and no
+// model loop of its own: the frames of the stream, the hit they name, the answer call it makes
+// through agentloop.Run, and the filter that clears the model's text before a reader sees a byte
+// of it.
 //
 // Every name, code and bound of the stream comes from contracts, generated from
 // packages/contracts, so the server that writes a frame and the page that reads it cannot drift
