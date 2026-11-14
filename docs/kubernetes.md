@@ -1993,7 +1993,7 @@ and the daemon reports such a round to the project's controller as `update-stall
 After this release deploys, move the project's controller onto this release's `skills/legion-controller`.
 The earlier playbook reads an `update-stalled` notice by its `waiting` entries, and for a role that did not answer and is not suspended it opens no ask: it sends that role the round's steps instead.
 This release sends the notice once the bound has passed whatever the roles answered, so the usual notice names roles that did not answer, and on the earlier playbook such a notice reaches no operator.
-For a daemon-launched controller, suspend its claim and resume it (`legion claims suspend --claim <token>`, then `legion claims resume --claim <token>`), which launches it on the new image (below).
+For a daemon-launched controller, suspend its claim and resume it (`legion claims suspend --operator-token-file <file> --claim <token>`, then `legion claims resume --operator-token-file <file> --claim <token>`), which launches it on the new image (below).
 For an operator-launched controller, stop `legion controller start` and run it again with this release's `pi-legion` installed: this release does not move the daemon API contract, so `legion controller start` accepts the earlier `pi-legion` and nothing else moves that controller.
 
 The daemon-launched controller's pod is in scope for the warning and in no round:
