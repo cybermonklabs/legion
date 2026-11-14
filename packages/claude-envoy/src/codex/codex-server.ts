@@ -211,15 +211,18 @@ export async function runCodexEnvoyServer(): Promise<void> {
     const parsed = DispatchToolArguments.safeParse(raw)
     if (!parsed.success)
       return `dispatch: the tool takes args (a list of strings) and an optional stdin\n[exit 2]`
-    const sessionId = identity?.id
-    if (sessionId === undefined || record === undefined) {
+    // The hook writes the record before the turn's first request, but the server reads it on a
+    // poll, so a call in the session's first turn can arrive first: it reads the record itself.
+    const current = record ?? (await readCodexSessionRecord(recordFile))
+    const sessionId = identity?.id ?? current?.session_id
+    if (sessionId === undefined || current === undefined) {
       return `dispatch: this session has no id yet; Codex records it at the session's first prompt\n[exit 2]`
     }
     const env: Record<string, string> = {}
     for (const [name, value] of Object.entries(process.env)) {
       if (value !== undefined) env[name] = value
     }
-    env["CODEX_HOME"] = record.codex_home
+    env["CODEX_HOME"] = current.codex_home
     env["CODEX_THREAD_ID"] = sessionId
     env["DISPATCH_HOST"] = "codex"
     if (configFile.path !== null) env["ENVOY_CONFIG_FILE"] = configFile.path
@@ -227,7 +230,7 @@ export async function runCodexEnvoyServer(): Promise<void> {
       join(pluginRoot, "dist", "dispatch.js"),
       parsed.data.args,
       parsed.data.stdin ?? "",
-      { cwd: record.cwd, env },
+      { cwd: current.cwd, env },
     )
     return `${output}${output.endsWith("\n") || output === "" ? "" : "\n"}[exit ${code}]`
   }
