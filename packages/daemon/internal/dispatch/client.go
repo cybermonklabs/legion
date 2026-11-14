@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -221,14 +222,13 @@ func (c *HTTPClient) PostMessage(ctx context.Context, key, body string) error {
 	}, nil)
 }
 
-// ArtifactSlugs reads GET /api/v1/issues/{key}/artifacts and returns the slug of every document
-// and file the issue holds. A caller that names its own document reads it before an upload, so
-// a retry finds the document its first attempt made rather than writing it a second version.
+// ArtifactSlugs reads GET /api/v1/issues/{key}/artifacts (Artifacts) and returns the slug of every
+// document and file the issue holds. A caller that names its own document reads it before an
+// upload, so a retry finds the document its first attempt made rather than writing it a second
+// version.
 func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, error) {
-	var artifacts []struct {
-		Slug string `json:"slug"`
-	}
-	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &artifacts); err != nil {
+	artifacts, err := c.Artifacts(ctx, key)
+	if err != nil {
 		return nil, err
 	}
 	slugs := make([]string, len(artifacts))
@@ -236,6 +236,28 @@ func (c *HTTPClient) ArtifactSlugs(ctx context.Context, key string) ([]string, e
 		slugs[i] = artifact.Slug
 	}
 	return slugs, nil
+}
+
+// Artifacts reads GET /api/v1/issues/{key}/artifacts: every document and file the issue holds, in
+// the order Dispatch lists them, each with its id, its slug, its kind, its primary flag, its role
+// and its latest version, the newest of the versions Dispatch lists for it.
+func (c *HTTPClient) Artifacts(ctx context.Context, key string) ([]Artifact, error) {
+	var response []issueArtifactResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/issues/"+url.PathEscape(key)+"/artifacts", nil, &response); err != nil {
+		return nil, err
+	}
+	artifacts := make([]Artifact, len(response))
+	for i, artifact := range response {
+		latest := 0
+		for _, version := range artifact.Versions {
+			latest = max(latest, version.Number)
+		}
+		artifacts[i] = Artifact{
+			ID: artifact.ID, Slug: artifact.Slug, Kind: artifact.Kind, Primary: artifact.Primary, Role: artifact.Role,
+			LatestVersion: latest,
+		}
+	}
+	return artifacts, nil
 }
 
 // UploadArtifact writes a markdown document on the issue through POST
@@ -425,6 +447,41 @@ func (c *HTTPClient) Approval(ctx context.Context, artifactID string) (Approval,
 	return approved, nil
 }
 
+// Reviews reads GET /api/v1/artifacts/{id}/reviews: every review Dispatch keeps of the document,
+// newest first in the order their events committed, as Dispatch lists them.
+func (c *HTTPClient) Reviews(ctx context.Context, artifactID string) ([]Review, error) {
+	var response []reviewResponse
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/reviews", nil, &response); err != nil {
+		return nil, err
+	}
+	reviews := make([]Review, len(response))
+	for i, review := range response {
+		reviews[i] = Review{
+			Version: review.Version, State: review.State, Kind: review.Kind, Actor: Actor(review.Actor),
+			At: review.CreatedAt.UTC(), AskID: deref(review.AskID),
+		}
+	}
+	return reviews, nil
+}
+
+// DocumentVersion reads GET /api/v1/artifacts/{id}/versions/{number} and returns the markdown that
+// version of the document holds, as Dispatch stored it. A version the document does not have is
+// Dispatch's 404 (Missing). It reads a document's version alone (Artifact.Document): Dispatch
+// answers a version of an image or a file with its bytes, which are no answer this reads, so such
+// a read is an error and never an empty document.
+func (c *HTTPClient) DocumentVersion(ctx context.Context, artifactID string, version int) (string, error) {
+	var response struct {
+		Markdown *string `json:"markdown"`
+	}
+	if err := c.request(ctx, http.MethodGet, "/api/v1/artifacts/"+url.PathEscape(artifactID)+"/versions/"+strconv.Itoa(version), nil, &response); err != nil {
+		return "", err
+	}
+	if response.Markdown == nil {
+		return "", fmt.Errorf("Dispatch artifact %q version %d answered no markdown: it is no document", artifactID, version)
+	}
+	return *response.Markdown, nil
+}
+
 // Handoff reads GET /api/v1/handoffs/{id}: one handoff record with its issue, phase, version and
 // author. A record Dispatch does not have is its 404 HANDOFF_NOT_FOUND (Missing).
 func (c *HTTPClient) Handoff(ctx context.Context, id string) (Handoff, error) {
@@ -538,37 +595,41 @@ type issueSummaryResponse struct {
 }
 
 type issueResponse struct {
-	Key               string         `json:"key"`
-	Project           string         `json:"project"`
-	Title             string         `json:"title"`
-	Status            string         `json:"status"`
-	Parent            *string        `json:"parent"`
-	Rank              string         `json:"rank"`
-	Labels            []string       `json:"labels"`
-	PrimaryArtifactID string         `json:"primary_artifact_id"`
-	LastSeq           int64          `json:"last_seq"`
-	ResolvedRepo      *string        `json:"resolved_repo"`
-	BlockedBy         []string       `json:"blocked_by"`
-	Claim             *claimResponse `json:"claim"`
+	Key                    string         `json:"key"`
+	Project                string         `json:"project"`
+	Title                  string         `json:"title"`
+	Status                 string         `json:"status"`
+	Parent                 *string        `json:"parent"`
+	Rank                   string         `json:"rank"`
+	Labels                 []string       `json:"labels"`
+	PrimaryArtifactID      string         `json:"primary_artifact_id"`
+	VerificationArtifactID string         `json:"verification_artifact_id"`
+	DecisionsArtifactID    string         `json:"decisions_artifact_id"`
+	LastSeq                int64          `json:"last_seq"`
+	ResolvedRepo           *string        `json:"resolved_repo"`
+	BlockedBy              []string       `json:"blocked_by"`
+	Claim                  *claimResponse `json:"claim"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
 func (r issueResponse) issue() Issue {
 	return Issue{
-		Key:               r.Key,
-		Project:           r.Project,
-		Title:             r.Title,
-		Status:            r.Status,
-		Parent:            r.Parent,
-		Rank:              r.Rank,
-		Labels:            r.Labels,
-		HandedOver:        CarriesLegionLabel(r.Labels),
-		PrimaryArtifactID: r.PrimaryArtifactID,
-		LastSeq:           r.LastSeq,
-		ResolvedRepo:      deref(r.ResolvedRepo),
-		BlockedBy:         r.BlockedBy,
-		Claim:             r.Claim.claim(),
-		ClaimUnread:       r.Claim.unread(),
+		Key:                    r.Key,
+		Project:                r.Project,
+		Title:                  r.Title,
+		Status:                 r.Status,
+		Parent:                 r.Parent,
+		Rank:                   r.Rank,
+		Labels:                 r.Labels,
+		HandedOver:             CarriesLegionLabel(r.Labels),
+		PrimaryArtifactID:      r.PrimaryArtifactID,
+		VerificationArtifactID: r.VerificationArtifactID,
+		DecisionsArtifactID:    r.DecisionsArtifactID,
+		LastSeq:                r.LastSeq,
+		ResolvedRepo:           deref(r.ResolvedRepo),
+		BlockedBy:              r.BlockedBy,
+		Claim:                  r.Claim.claim(),
+		ClaimUnread:            r.Claim.unread(),
 	}
 }
 
@@ -615,6 +676,30 @@ type artifactResponse struct {
 	Primary  bool              `json:"primary"`
 	Role     string            `json:"role"`
 	Approval *approvalResponse `json:"approval"`
+}
+
+// issueArtifactResponse is one entry of an issue's artifact list as Dispatch answers it, with the
+// number of each version it lists and none of the rest of the version.
+type issueArtifactResponse struct {
+	ID       string `json:"id"`
+	Slug     string `json:"slug"`
+	Kind     string `json:"kind"`
+	Primary  bool   `json:"primary"`
+	Role     string `json:"role"`
+	Versions []struct {
+		Number int `json:"number"`
+	} `json:"versions"`
+}
+
+// reviewResponse is one review of a document's review list as Dispatch answers it, its reason and
+// its content digests left undecoded.
+type reviewResponse struct {
+	Version   int       `json:"version"`
+	State     string    `json:"state"`
+	Kind      string    `json:"kind"`
+	Actor     actor     `json:"actor"`
+	AskID     *string   `json:"ask_id"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 type approvalResponse struct {

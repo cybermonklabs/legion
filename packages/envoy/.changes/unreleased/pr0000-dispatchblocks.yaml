@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+  A public package, `dispatchblocks`, reads one version of a Dispatch document as its typed blocks
+  in document order, each with its id, its type and the references its `block[]` attributes hold
+  (a check's `serves`), with the reader Dispatch shows a past version with, so a caller outside
+  this module, the Legion daemon among them, reads a named version as Dispatch reads it.
+custom:
+    Issue: pr0000

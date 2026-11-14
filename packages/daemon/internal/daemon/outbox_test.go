@@ -201,12 +201,20 @@ func (d *outboxDispatch) PutDesignGates(context.Context, string, []dispatch.Desi
 }
 
 // noArtifacts is the issue's documents as a fake Dispatch that keeps none: the read of an issue's
-// artifacts answers none, and an upload answers the slug Dispatch files the name under, which for
-// a message's document is its name (record.MessageArtifact). Every fake of the client that no
-// test drives through a message's document embeds it.
+// artifacts answers none, a document's reviews none, a version of a document Dispatch's 404, and
+// an upload answers the slug Dispatch files the name under, which for a message's document is its
+// name (record.MessageArtifact). Every fake of the client that no test drives through a message's
+// document embeds it.
 type noArtifacts struct{}
 
 func (noArtifacts) ArtifactSlugs(context.Context, string) ([]string, error) { return nil, nil }
+func (noArtifacts) Artifacts(context.Context, string) ([]dispatch.Artifact, error) {
+	return nil, nil
+}
+func (noArtifacts) Reviews(context.Context, string) ([]dispatch.Review, error) { return nil, nil }
+func (noArtifacts) DocumentVersion(context.Context, string, int) (string, error) {
+	return "", &dispatch.Error{Status: http.StatusNotFound, Code: "NOT_FOUND", Message: "not found"}
+}
 func (noArtifacts) UploadArtifact(_ context.Context, _, name, _ string) (string, error) {
 	return name, nil
 }
