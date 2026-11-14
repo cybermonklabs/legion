@@ -9,15 +9,17 @@
 -- one nothing has read for a day: both rows hold the same state and the same silence about its age.
 -- The stamp is what tells them apart, and it is what a reader of the daemon's state looks at to see
 -- how old the recorded state is. The daemon makes no periodic read: a head is read again only at
--- the daemon's start, after a handoff, and on the merge-state ladder, which a review round or a
--- push onto the base asks for (daemon's issue_reads.go and merge_state_reads.go), so the stamp ages
--- between those reads.
+-- the daemon's start, after a handoff, and on a merge-state ladder, which every fact that can
+-- change GitHub's answer starts while an approved round waits on it - the pull request's own
+-- events, a push to it, a review, a CI settlement and a push to its base (workflow's askMergeState;
+-- daemon's issue_reads.go and merge_state_reads.go) - so the stamp ages between those reads.
 --
 -- Every existing row takes the zero time, the default 20261108190000 set for a time column with
--- nothing to derive. The zero time reads as "never read", exactly as merge_state's '' does: a row
--- written before this migration carries no read of its own, and is read as never read rather than
--- as read at the migration's own moment, which would date every upgraded row to the deploy and
--- call knowledge that may be a day old fresh. The daemon's next read of the pull request fills it.
+-- nothing to derive. The zero time reads as "no read since this column existed": a row written
+-- before this migration keeps the merge_state its last read gave and carries no moment of that
+-- read, and is read that way rather than as read at the migration's own moment, which would date
+-- every upgraded row to the deploy and call knowledge that may be a day old fresh. The daemon's
+-- next read of the pull request fills it.
 --
 -- The column is cleared with merge_state when the head moves: it is the time of a read about the
 -- head before it, which says nothing about how recently the head now recorded has been read.

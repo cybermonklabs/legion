@@ -1555,8 +1555,9 @@ package api
 // approval stands on; `mergeState`, the merge state the record holds for that head in GitHub's own
 // lowercase spelling (`blocked`, `behind`, `dirty`, `draft`, `unknown`), absent until a read has
 // answered for the head; `stateReadAt`, the moment of the daemon's last answering read of the pull
-// request (record.PullRequest.StateReadAt), absent for a round no read has answered, since a reader
-// must never take "never read" for a read at the zero instant; `headUpdatedAt`, the newest
+// request (record.PullRequest.StateReadAt), absent for a round no read has answered since migration
+// 20261112070503, since a reader must never take "never read" for a read at the zero instant;
+// `headUpdatedAt`, the newest
 // `updated_at` GitHub has given the pull request among its lifecycle observations, absent when the
 // record holds none; `checkRuns`, how many of the fence's runs are stamped with that head, which is
 // the runs a CI settlement has applied for it and so 0 until a settlement has arrived, which is no

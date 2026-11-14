@@ -1236,14 +1236,14 @@ type MergeWaitView struct {
 	// read of that pull request.
 	MergeState string `json:"mergeState,omitempty"`
 	// StateReadAt is record.PullRequest.StateReadAt, the moment of the daemon's last read of the
-	// pull request that answered — a read that only confirmed the state already recorded
-	// included, since this is the age of the knowledge and not the age of the answer. The zero
-	// time is a read that never ran, which is why the field is a pointer and absent rather than
-	// zero: a reader must never take "never read" for a read at the zero instant. The stamp is
-	// absent for one further row: one written before migration 20261112070503, which stamped
-	// every existing row with the zero time and left MergeState alone. That is why a missing
-	// stamp beside a recorded MergeState reads as a row no read has answered for since that
-	// migration, never as "GitHub has given no answer yet".
+	// pull request that answered — a read that only confirmed the state already recorded included,
+	// since this is the age of the knowledge and not the age of the answer. The zero time is no
+	// read on record, which is why the field is a pointer and absent rather than zero: a reader
+	// must never take "never read" for a read at the zero instant. The stamp is absent for one
+	// further row: one written before migration 20261112070503, which stamped every existing row
+	// with the zero time and left MergeState alone. That is why a missing stamp beside a recorded
+	// MergeState reads as a row no read has answered for since that migration, never as "GitHub has
+	// given no answer yet".
 	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
 	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
 	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose

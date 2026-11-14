@@ -978,10 +978,15 @@ func olderHead(a, b *time.Time) int {
 // read most recently. It is printed beside the open production checks because both are work that
 // has left the agents and stands on something outside Legion.
 //
-// A round GitHub has answered nothing about yet says `no answer yet` in place of the state and
-// `never read` in place of the time, which is what the absence of `mergeState` and `stateReadAt`
-// means: the daemon has read no answer for this head, not that GitHub answered with nothing or
-// read at the zero instant.
+// A round GitHub has answered nothing about yet, with neither `mergeState` nor `stateReadAt`, says
+// `no answer yet` in place of the state and `never read` in place of the time: the daemon has read
+// no answer for this head, not that GitHub answered with nothing or that a read ran at the zero
+// instant. A round with a state and no stamp says `read time not recorded` beside its state
+// instead, because GitHub did answer it: the read ran before the daemon recorded the moment of its
+// reads, and migration 20261112070503 gave every row it found the zero time and kept its merge
+// state, which the daemon serves as no `stateReadAt`. Printed `never read`, such a row would tell
+// the operator no read happened of a head GitHub has answered for; the time is what is missing,
+// never the read.
 //
 // The pull request number is the issue's own view of it. An issue that carries a merge wait and
 // no pull request view cannot happen — the daemon builds the wait from the pull request record,
@@ -1006,11 +1011,15 @@ func mergeWaitsSummary(waits []issueMergeWait) string {
 	if said == "" {
 		said = "no answer yet"
 	}
-	read := "never read"
 	if at := oldest.wait.StateReadAt; at != nil {
-		read = at.UTC().Format(time.RFC3339)
+		return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s read %s",
+			len(waits), oldest.issue, number, head, said, at.UTC().Format(time.RFC3339))
 	}
-	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s read %s",
+	read := "never read"
+	if oldest.wait.MergeState != "" {
+		read = "read time not recorded"
+	}
+	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s, %s",
 		len(waits), oldest.issue, number, head, said, read)
 }
 

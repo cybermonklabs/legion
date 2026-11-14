@@ -686,9 +686,12 @@ type PullRequest struct {
 	// (daemon.readIssuePullRequest). A read that only confirms what is already recorded moves it
 	// exactly as one that changes something does: it is the age of the knowledge, not the age of
 	// the last change to it, and that is what tells a head read a minute ago from one nothing has
-	// read for a day. The zero time means no read has ever run, as MergeState's "" does. It is
-	// cleared with MergeState when the head moves (classify's decisions), because it is then the
-	// time of a read about the head before this one.
+	// read for a day. The zero time means no read has answered since this field existed: a row
+	// written before migration 20261112070503 took the zero time beside whatever MergeState it
+	// held, so a zero stamp beside a recorded MergeState is a read made before the migration, and
+	// only a zero stamp beside MergeState's "" means GitHub has given no answer yet. It is cleared
+	// with MergeState when the head moves (classify's decisions), because it is then the time of a
+	// read about the head before this one.
 	StateReadAt time.Time
 	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
 	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's

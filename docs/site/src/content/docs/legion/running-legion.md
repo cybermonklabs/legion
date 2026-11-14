@@ -1126,10 +1126,14 @@ Closing the terminal leaves the project without one, and the daemon logs
 
   The `merge waits` line counts the review rounds whose approved head waits on GitHub's merge
   state and names the oldest head: its issue, its pull request, the head, what GitHub last said of
-  that head and when the daemon last read it (`merge waits: none` when no round waits). Where the
-  state would be, `no answer yet` says the daemon has read no answer for this head, never that
-  GitHub answered with nothing; where the time would be, `never read` says no read of this head
-  has answered yet, never that a read ran at the zero instant. The line says "the oldest head"
+  that head and when the daemon last read it (`merge waits: none` when no round waits). The part
+  after `GitHub said` reads one of three ways. `blocked read 2026-10-19T09:00:00Z` is a state and
+  the moment of the daemon's last read that answered. `no answer yet, never read` says the daemon
+  has read no answer for this head, never that GitHub answered with nothing or that a read ran at
+  the zero instant. `blocked, read time not recorded` says GitHub did answer, before the daemon
+  recorded the moment of its reads: the upgrade that added that moment kept each pull request's
+  state and gave it no time, which the daemon's next read of that pull request fills, so the time
+  is what is missing, never the read. The line says "the oldest head"
   because that is what it is oldest by: the head that has stood longest, the smallest
   `headUpdatedAt`, and not the round read longest ago, although the read is the only moment the
   line prints — the wait an operator acts on is the one a head has sat through.

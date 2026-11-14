@@ -8,10 +8,10 @@ import (
 
 // 20261112070503 records when the daemon last read a pull request and got an answer. A pull request
 // written before it carries no read of its own: no release before this one stamped a read at all,
-// and the row holds nothing to derive one from. The column takes the zero time, which reads as
-// "never read" exactly as merge_state's empty value does, rather than the migration's own moment,
-// which would date every upgraded row to the deploy and call a merge state read a day ago fresh.
-// The daemon's next read of the pull request fills it.
+// and the row holds nothing to derive one from. The column takes the zero time, which reads as no
+// read since the column existed, beside whatever merge_state the row already held, rather than the
+// migration's own moment, which would date every upgraded row to the deploy and call a merge state
+// read a day ago fresh. The daemon's next read of the pull request fills it.
 func TestAPullRequestRecordedBefore20261112070503HasNoStateReadAt(t *testing.T) {
 	store := emptyStore(t)
 	ctx := context.Background()
