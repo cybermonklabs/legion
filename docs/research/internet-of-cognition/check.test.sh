@@ -487,8 +487,8 @@ pair "a for loop" \
     "for f in a; do cat /nonexistent-ioc 2>/dev/null; done; printf 'ran once\\n'" \
     "for f in a; do grep -q zzz /dev/null; done; printf 'ran once\\n'"
 pair "a command substitution" \
-    "x=\"\$(cat /nonexistent-ioc 2>/dev/null)\"; printf 'ran once\\n'" \
-    "x=\"\$(grep zzz /dev/null)\"; printf 'ran once\\n'"
+    "o=\"\$(cat /nonexistent-ioc 2>/dev/null)\"; printf 'ran once\\n'" \
+    "o=\"\$(grep zzz /dev/null)\"; printf 'ran once\\n'"
 pair "xargs running a program" \
     "printf '/nonexistent-ioc\\n' | xargs cat 2>/dev/null; printf 'ran once\\n'" \
     "printf 'ran once\\n' | xargs echo"
@@ -567,14 +567,14 @@ done
 # 39. The classifier admits a $ expansion only in the forms the rows use: a parameter,
 # $NAME or ${NAME}, the one special parameter $?, a command substitution
 # and a literal $. Any other $ form is refused by name, so a spelling nobody named lands on
-# a refusal: here a parameter with a default, ${X:-y}. The honest form beside it, the same
-# parameter as ${X}, is read and passes.
+# a refusal: here a parameter with a default, ${o:-y}. The honest form beside it, the same
+# parameter as ${o}, is read and passes. The parameter is o, a name the rows assign.
 dir="$(fresh dollar-default-refused)"
-plant_behaviour "$dir" "X=once; printf 'ran %s\\n' \"\${X:-y}\"" '{"contains":"ran once"}'
-case_result "a \$ form the classifier does not list is refused: \${X:-y}" replay-command "$(fixture_run "$dir" --replay)"
+plant_behaviour "$dir" "o=once; printf 'ran %s\\n' \"\${o:-y}\"" '{"contains":"ran once"}'
+case_result "a \$ form the classifier does not list is refused: \${o:-y}" replay-command "$(fixture_run "$dir" --replay)"
 dir="$(fresh dollar-parameter-admitted)"
-plant_behaviour "$dir" "X=once; printf 'ran %s\\n' \"\${X}\"" '{"contains":"ran once"}'
-honest_result "a parameter written as \${X} is admitted and passes" replay-command "$(fixture_run "$dir" --replay)"
+plant_behaviour "$dir" "o=once; printf 'ran %s\\n' \"\${o}\"" '{"contains":"ran once"}'
+honest_result "a parameter written as \${o} is admitted and passes" replay-command "$(fixture_run "$dir" --replay)"
 
 # 40. The rows use one special parameter, $? (6 rows), and check.sh's header lists only
 # that one, but dollar_forms admits every one-character special (SPECIAL holds
@@ -624,13 +624,14 @@ case_result "an entry the rows use, taken out of ADMITTED, refuses those rows" '
 # c2ab1b7c56 the name pattern matched it, so it was admitted as the entry "$NAME or
 # ${NAME}" that no row uses it through (the tester's note of test round 16). $_ and ${_}
 # are refused by name; a name that starts with _, such as $_x, is a parameter and passes.
+# No row assigns _x, so the honest form reads it unset, which expands to nothing.
 for form in '"$_"' '"${_}"'; do
     dir="$(fresh "special-underscore-$(printf '%s' "$form" | tr -dc 'a-z{}' | tr '{}' 'bb')")"
     plant_behaviour "$dir" "true x; printf '%s' $form >/dev/null; printf 'ran once\\n'" '{"contains":"ran once"}'
     case_result "the special parameter \$_ is refused: $form" replay-command "$(fixture_run "$dir" --replay)"
 done
 dir="$(fresh underscore-name-admitted)"
-plant_behaviour "$dir" "_x=once; printf 'ran %s\\n' \"\$_x\"" '{"contains":"ran once"}'
+plant_behaviour "$dir" "printf 'ran once%s\\n' \"\$_x\"" '{"contains":"ran once"}'
 honest_result "a name that starts with _, \$_x, is a parameter and passes" replay-command "$(fixture_run "$dir" --replay)"
 
 # 44-49 come from the fifth review of the pull request. Each fault plants into
@@ -639,21 +640,22 @@ honest_result "a name that starts with _, \$_x, is a parameter and passes" repla
 # case asks for the refusal by name. Where the review wrote the read with ls, which no row
 # runs and the gate now refuses, the review's form is planted as it wrote it and again
 # with cat, so that the case tests the rule it plants. planted_run <name> <command>
-# [python] plants a command into a fresh fixture and sets PLANTED_OUT to the gate's
+# [python|evid] plants a command into a fresh fixture and sets PLANTED_OUT to the gate's
 # --replay output, planting in this shell so that a command that cannot be planted stops
-# the run; with python the run sets IOC_PY, which env.sh sets and the fixture does not.
-# refused_read <name> <command> <refusal, an extended regular expression> [python] plants
-# one fault; admitted_read <name> <command> [python] plants the honest form beside it,
-# which passes.
+# the run; with python the run sets IOC_PY, and with evid IOC_EVID, to the fixture's own
+# directory, each of which env.sh sets and the fixture does not.
+# refused_read <name> <command> <refusal, an extended regular expression> [python|evid]
+# plants one fault; admitted_read <name> <command> [python|evid] plants the honest form
+# beside it, which passes.
 planted_run() {
     local dir
     dir="$(fresh "$1")"
     plant_behaviour "$dir" "$2" '{"contains":"ran once"}'
-    if [ "${3:-}" = python ]; then
-        PLANTED_OUT="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)"
-    else
-        PLANTED_OUT="$(fixture_run "$dir" --replay)"
-    fi
+    case "${3:-}" in
+    python) PLANTED_OUT="$(IOC_PY="$(command -v python3)" fixture_run "$dir" --replay)" ;;
+    evid) PLANTED_OUT="$(IOC_EVID="$dir/repo/docs/research/internet-of-cognition" fixture_run "$dir" --replay)" ;;
+    *) PLANTED_OUT="$(fixture_run "$dir" --replay)" ;;
+    esac
 }
 refused_read() {
     planted_run "$1" "$2" "${4:-}"
@@ -741,14 +743,14 @@ case_result "a program variable taken out of PROGRAM_VARIABLES fails --admitted"
 plant_gate runner-name-unreserved 's/__ioc_stages/__gate_stages/g' '__gate_stages' holds
 case_result "a name of the runner that no reserved prefix covers fails --admitted" 'admitted-reserved: the runner or the shims record with a name no prefix of RUNNER_PREFIXES reserves: __gate_stages' "$(bash "$GATE" --admitted 2>&1)"
 
-# 52. A script path a variable builds could name a stream as well: X=/dev/stdin and then
-# sh "$X" reads its commands from the pipe. A script's path is held to a literal file,
-# or one under $IOC_EVID, ending in .sh, so the path built from $X is refused by name.
+# 52. A script path a variable builds could name a stream as well: o=/dev/stdin and then
+# sh "$o" reads its commands from the pipe. A script's path is held to a literal file,
+# or one under $IOC_EVID, ending in .sh, so the path built from $o is refused by name.
 # The one real row runs sh "$IOC_EVID/concord-build-run.sh"; a script under $IOC_EVID
-# that the row writes passes (the fixture sources no env.sh, so the row sets IOC_EVID).
+# that the row writes passes (the fixture sources no env.sh, so the run sets IOC_EVID).
 # The expected text is an extended regular expression, so each $ of the message is a dot.
-refused_read sh-variable-path "X=/dev/stdin; printf 'cat /nonexistent-ioc 2>/dev/null; true\\n' | sh \"\$X\"; printf 'ran once\\n'" 'sh .X, a script path that is no literal file and not under .IOC_EVID'
-admitted_read sh-evid-script "IOC_EVID=\"\$PWD\"; printf 'true\\n' > \"\$IOC_EVID/ioc-script.sh\"; sh \"\$IOC_EVID/ioc-script.sh\"; printf 'ran once\\n'"
+refused_read sh-variable-path "o=/dev/stdin; printf 'cat /nonexistent-ioc 2>/dev/null; true\\n' | sh \"\$o\"; printf 'ran once\\n'" 'sh .o, a script path that is no literal file and not under .IOC_EVID'
+admitted_read sh-evid-script "printf 'true\\n' > \"\$IOC_EVID/ioc-script.sh\"; sh \"\$IOC_EVID/ioc-script.sh\"; printf 'ran once\\n'" evid
 
 # 53-57 come from the sixth review of the pull request. Each fault plants a failed read
 # the gate must catch, and each is now refused by name; each but the second form of 56
@@ -759,10 +761,10 @@ admitted_read sh-evid-script "IOC_EVID=\"\$PWD\"; printf 'true\\n' > \"\$IOC_EVI
 # pointed the record at /dev/null or set the declared status for the rest of the row. A
 # format is now a literal word that starts with no - and holds no $ or substitution; the
 # substitution's own printf -- is refused by the same rule, before the format it makes.
-refused_read printf-variable-option "X=-v; printf \$X __ioc_failed /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .X, a format that is no literal word'
-refused_read printf-variable-joined "X=-v__ioc_failed; printf \$X /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .X, a format that is no literal word'
+refused_read printf-variable-option "o=-v; printf \$o __ioc_failed /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .o, a format that is no literal word'
+refused_read printf-variable-joined "o=-v__ioc_failed; printf \$o /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .o, a format that is no literal word'
 refused_read printf-substitution-option "printf \"\$(printf -- -v)\" __ioc_failed /dev/null; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf --, a format that is no literal word'
-refused_read printf-variable-status "X=-v; printf \$X IOC_EXPECT_STATUS 1; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .X, a format that is no literal word'
+refused_read printf-variable-status "o=-v; printf \$o IOC_EXPECT_STATUS 1; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'printf .o, a format that is no literal word'
 admitted_read printf-literal-format "printf '%s %s\\n' ran once"
 
 # 54. env -S hands env a command line of its own, which ran a shell string past every
@@ -793,9 +795,56 @@ refused_read carriage-return "cat"$'\r'" /nonexistent-ioc 2>/dev/null; printf 'r
 refused_read no-break-space "cat"$'\xc2\xa0'"/nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'the character U.00A0, which bash reads as part of a word'
 
 # 57. Each function finds the program it wraps on PATH, and at 0da660be6e a row could
-# set PATH, so cat found a copy of true and the read of cat passed. PATH is a reserved
-# name, from RUNNER_READS, and assigning it is refused by name.
-refused_read path-assigned "d=\$(mktemp -d); cp /bin/true \"\$d/cat\"; PATH=\"\$d:\$PATH\"; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'PATH=.d:.PATH, an assignment to PATH'
+# set PATH, so cat found a copy of true and the read of cat passed. The row now stops at
+# its first assignment, to d, a name no row assigns; case 59 plants PATH again without it.
+refused_read path-assigned "d=\$(mktemp -d); cp /bin/true \"\$d/cat\"; PATH=\"\$d:\$PATH\"; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'd=IOCSUBSTITUTION, an assignment to d, a name the evaluator does not admit'
+
+# 58-60 come from the seventh review of the pull request. Each fault plants a failed read
+# the gate must catch.
+#
+# 58. install-pinned reads uv run's options from UV_RUN_OPTIONS, the classifier's own
+# table. At e9e39c35e5 its own walk stepped one word past --python, read 3.12 as the
+# program and stopped, so the --with after it was never read, in the shape all four
+# tc-run rows have. An unpinned --with in that shape is now refused; the real form, a
+# local path under $IOC_CLONES, passes.
+dir="$(fresh uv-run-python-with)"
+sed -i "s#\"command\":\"printf 'ran once#\"command\":\"true || uv run --no-project --python 3.12 --with requests python -c 1; printf 'ran once#" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+case_result "an unpinned --with after uv run --python is refused" install-pinned "$(fixture_run "$dir" --replay)"
+dir="$(fresh uv-run-python-with-local)"
+sed -i "s#\"command\":\"printf 'ran once#\"command\":\"true || uv run --no-project --python 3.12 --with \$IOC_CLONES/cognition-protocols/packages/ioc-concord python -c 1; printf 'ran once#" "$dir/repo/docs/research/internet-of-cognition/claims.jsonl"
+grep -qF 'uv run --no-project --python 3.12 --with $IOC_CLONES/' "$dir/repo/docs/research/internet-of-cognition/claims.jsonl" || {
+    printf 'FAIL the honest uv run --with form could not be planted\n'
+    exit 1
+}
+honest_result "a local path after uv run --python passes install-pinned" install-pinned "$(fixture_run "$dir" --replay)"
+
+# 59. A row assigns only a name the rows assign: an assignment, alone or as a prefix, and
+# a for loop's variable are admitted to a name of ASSIGNED_NAMES alone, and every other
+# name is refused by name. At e9e39c35e5 FUNCNEST=1 made each function's call to the
+# record go past the limit, so bash ended that command and nothing was recorded, alone,
+# in a subshell or as a loop's variable; BASH_ENV pointed a shim at a file that emptied
+# its record. IFS and LC_ALL are names an author could write by accident, and PATH is
+# planted here without case 57's d. The honest forms assign o and f, names the rows use.
+refused_read funcnest-alone "FUNCNEST=1; cat /nonexistent-ioc 2>/dev/null
+printf 'ran once\\n'" 'FUNCNEST=1, an assignment to FUNCNEST, a name the evaluator does not admit'
+refused_read funcnest-subshell "( FUNCNEST=1; cat /nonexistent-ioc 2>/dev/null )
+printf 'ran once\\n'" 'FUNCNEST=1, an assignment to FUNCNEST, a name the evaluator does not admit'
+refused_read funcnest-loop "for FUNCNEST in 1; do cat /nonexistent-ioc 2>/dev/null; done
+printf 'ran once\\n'" 'for FUNCNEST, a loop that assigns FUNCNEST, a name the evaluator does not admit'
+refused_read bash-env-prefix "printf '__IO%s=\\n' C_FAILED > ioc-env.sh; BASH_ENV=./ioc-env.sh \$IOC_PY -c 'import sys; sys.exit(3)'; printf 'ran once\\n'" 'BASH_ENV=./ioc-env.sh, an assignment to BASH_ENV, a name the evaluator does not admit' python
+refused_read ifs-alone "IFS=x; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'IFS=x, an assignment to IFS, a name the evaluator does not admit'
+refused_read lc-all-prefix "LC_ALL=C cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'LC_ALL=C, an assignment to LC_ALL, a name the evaluator does not admit'
+refused_read path-alone "mkdir -p ioc-bin; cp /bin/true ioc-bin/cat; PATH=\"\$PWD/ioc-bin:\$PATH\"; cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'" 'PATH=.PWD/ioc-bin:.PATH, an assignment to PATH, a name the evaluator does not admit'
+admitted_read assigned-name "o=once; printf 'ran %s\\n' \"\$o\""
+admitted_read assigned-loop "for f in once; do printf 'ran %s\\n' \"\$f\"; done"
+
+# 60. The declared status covers the one command it prefixes and nothing a prefix
+# substitution runs. bash expands prefixes from left to right, so at e9e39c35e5 a
+# substitution in a prefix after IOC_EXPECT_STATUS=1 ran with the status declared, and
+# its failed read was taken for the declared one. IOC_EXPECT_STATUS is now the last
+# prefix of its command or refused; written alone before its command, it passes.
+refused_read expect-status-before-prefix "IOC_EXPECT_STATUS=1 X=\$(cat /nonexistent-ioc 2>/dev/null) cat /dev/null; printf 'ran once\\n'" 'IOC_EXPECT_STATUS=1, IOC_EXPECT_STATUS before another prefix'
+admitted_read expect-status-last-prefix "IOC_EXPECT_STATUS=1 cat /nonexistent-ioc 2>/dev/null; printf 'ran once\\n'"
 
 total=$((CASES_PASSED + CASES_FAILED))
 if [ "$CASES_FAILED" -eq 0 ]; then
