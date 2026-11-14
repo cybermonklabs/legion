@@ -377,6 +377,15 @@ func splittingStatistics(fold *metrics.SplittingFold, base string) Statistics {
 	return Statistics{}
 }
 
+// readsSamples reports whether the fold of series, one of definition's eval, reads its day rows'
+// sample lists, so a window read sends them only where it does (DayWindow). A computed eval's fold
+// reads what its builders store, and they store a sample list only for a series whose fold merges
+// one; a logged series' agg reads them for a quantile alone (aggStatistics), though the readings
+// write keeps every value whatever the agg, so a later change of agg still folds every day.
+func readsSamples(definition Definition, series Series) bool {
+	return definition.Computed() || series.Agg == AggQuantile
+}
+
 // aggStatistics is a logged series folded by its agg over the parts of series among parts, every
 // figure nil where they hold none:
 //

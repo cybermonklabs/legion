@@ -19,10 +19,11 @@
 // the parameters the server bound, which Postgres's statement log holds. At this head the reads
 // are GET /api/v1/projects/INFRA/evals at 84 days with an 84-day compare range and at 28 days with
 // none, each with no repository and with one, and an evals view snapshot over /ws/live, followed by
-// k2's six statements and its refusals and controls, k13's named-jobs read and P0 count, and k16's
-// hand folds. At the base head (-mode base) they are the base Delivery page's timeline, measures,
-// pipeline and compare views at 84 days, k8's negative control, and the base statements k13's
-// control names. -info measures the first paint alone and judges no budget, for the round after a
+// k2's six statements and its refusals and controls, k13's named-jobs read and P0 count, k16's
+// hand folds, and the probe of the 84-day compare read's day-row statement (probe.go). At the base
+// head (-mode base) they are the base Delivery page's timeline, measures, pipeline and compare
+// views at 84 days, k8's negative control, and the base statements k13's control names. -info
+// measures the first paint alone and judges no budget, for the round after a
 // Postgres restart that the Job records for information.
 //
 // The server runs background loops that touch the database between requests. Each read's

@@ -218,20 +218,18 @@ func scanReading(row pgx.Row) (Reading, error) {
 	return reading, nil
 }
 
-// dayColumns is the column list scanDay reads from eval_days, after the range a DayWindow read
-// selects first.
+// dayColumns is the column list scanDay reads from eval_days.
 const dayColumns = `project_key, eval_id, series, repo, day, listed, n, sum, num, den, max, samples,
 	last_value, last_at, counts, via_repository, built_by, updated_at`
 
-func scanDay(row pgx.Row, extra ...any) (DayRow, error) {
+func scanDay(row pgx.Row) (DayRow, error) {
 	var day DayRow
 	var counts []byte
-	targets := append(extra,
+	if err := row.Scan(
 		&day.ProjectKey, &day.EvalID, &day.Series, &day.Repo, &day.Day, &day.Listed, &day.N, &day.Sum,
 		&day.Num, &day.Den, &day.Max, &day.Samples, &day.LastValue, &day.LastAt, &counts,
 		&day.ViaRepository, &day.BuiltBy, &day.UpdatedAt,
-	)
-	if err := row.Scan(targets...); err != nil {
+	); err != nil {
 		return DayRow{}, err
 	}
 	if err := json.Unmarshal(counts, &day.Counts); err != nil {
@@ -242,6 +240,29 @@ func scanDay(row pgx.Row, extra ...any) (DayRow, error) {
 	if day.LastAt != nil {
 		lastAt := day.LastAt.UTC()
 		day.LastAt = &lastAt
+	}
+	return day, nil
+}
+
+// scanWindowRow reads one row of a DayWindow read: whether it answers for the window or the
+// compare range, then its eval, series and day, its parts and its updated_at.
+func scanWindowRow(row pgx.CollectableRow) (WindowRow, error) {
+	var inWindow bool
+	var day WindowRow
+	part := &day.Part
+	if err := row.Scan(&inWindow, &day.EvalID, &part.Series, &part.Day, &part.N, &part.Sum, &part.Num, &part.Den, &part.Max,
+		&part.Samples, &part.LastValue, &part.LastAt, &part.Counts, &part.ViaRepository, &day.UpdatedAt); err != nil {
+		return WindowRow{}, err
+	}
+	day.Range = RangeCompare
+	if inWindow {
+		day.Range = RangeWindow
+	}
+	part.Day = part.Day.UTC()
+	day.UpdatedAt = day.UpdatedAt.UTC()
+	if part.LastAt != nil {
+		lastAt := part.LastAt.UTC()
+		part.LastAt = &lastAt
 	}
 	return day, nil
 }

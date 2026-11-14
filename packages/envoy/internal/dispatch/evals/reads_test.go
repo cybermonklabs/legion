@@ -12,7 +12,9 @@ import (
 // TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays: one read answers the day rows of
 // the window and of the compare range, each row tagged with its range and holding the days of
 // its range alone; with no repository named it answers the project's rows, and with one named
-// that repository's rows.
+// that repository's rows; and a row sends its sample list only where its series' fold reads one:
+// none while the series is folded by its last value (the fold a reading's eval registers it
+// with), every value of its day once a register write folds it as a quantile.
 func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	r := newRig(t)
 	var rows []json.RawMessage
@@ -31,34 +33,49 @@ func TestDayWindowAnswersTheWindowsDaysAndTheCompareRangesDays(t *testing.T) {
 	window := Range{From: at(4, 0, 0), To: at(7, 0, 0)}
 	compare := Range{From: at(1, 0, 0), To: at(4, 0, 0)}
 
-	days, err := r.registry.DayWindow(t.Context(), r.project, nil, nil, window, &compare)
+	days, err := r.registry.DayWindow(t.Context(), r.project, r.entries(t, evalID), nil, window, &compare)
 	if err != nil {
 		t.Fatalf("read the window and the compare range: %v", err)
 	}
 	got := dayLabels(days)
 	t.Logf("project rows: %v", got)
-	want := []string{"compare 2026-11-01 '' 10", "compare 2026-11-02 '' 20", "compare 2026-11-03 '' 30",
-		"window 2026-11-04 '' 40", "window 2026-11-05 '' 50", "window 2026-11-06 '' 60"}
+	want := []string{"compare 2026-11-01 10 no samples", "compare 2026-11-02 20 no samples", "compare 2026-11-03 30 no samples",
+		"window 2026-11-04 40 no samples", "window 2026-11-05 50 no samples", "window 2026-11-06 60 no samples"}
 	if !slices.Equal(got, want) {
 		t.Errorf("the read answers %v, want %v", got, want)
 	}
 
-	repoDays, err := r.registry.DayWindow(t.Context(), r.project, []string{evalID}, []string{"acme/web"}, window, &compare)
+	repoDays, err := r.registry.DayWindow(t.Context(), r.project, r.entries(t, evalID), []string{"acme/web"}, window, &compare)
 	if err != nil {
 		t.Fatalf("read acme/web's window and compare range: %v", err)
 	}
 	got = dayLabels(repoDays)
 	t.Logf("acme/web rows: %v", got)
-	if want := []string{"compare 2026-11-02 acme/web 20", "window 2026-11-04 acme/web 40", "window 2026-11-06 acme/web 60"}; !slices.Equal(got, want) {
+	if want := []string{"compare 2026-11-02 20 no samples", "window 2026-11-04 40 no samples", "window 2026-11-06 60 no samples"}; !slices.Equal(got, want) {
 		t.Errorf("the repository's read answers %v, want %v", got, want)
 	}
 
-	windowOnly, err := r.registry.DayWindow(t.Context(), r.project, []string{"EVAL/no-such-eval"}, nil, window, nil)
+	windowOnly, err := r.registry.DayWindow(t.Context(), r.project, []Entry{{Definition: Definition{EvalID: "EVAL/no-such-eval"}}}, nil, window, nil)
 	if err != nil {
 		t.Fatalf("read another eval's window: %v", err)
 	}
 	if len(windowOnly) != 0 {
 		t.Errorf("a read of an eval with no day rows answers %v, want none", dayLabels(windowOnly))
+	}
+
+	if _, err := r.registry.Register(t.Context(), Registration{
+		Project: r.project, Slug: "visits", Caller: alice, Series: []SeriesChange{{Series: "visits", Agg: Set(AggQuantile)}},
+	}); err != nil {
+		t.Fatalf("fold visits as a quantile: %v", err)
+	}
+	quantiles, err := r.registry.DayWindow(t.Context(), r.project, r.entries(t, evalID), []string{"acme/web"}, window, &compare)
+	if err != nil {
+		t.Fatalf("read acme/web's rows of a quantile: %v", err)
+	}
+	got = dayLabels(quantiles)
+	t.Logf("acme/web rows of a quantile: %v", got)
+	if want := []string{"compare 2026-11-02 20 [20]", "window 2026-11-04 40 [40]", "window 2026-11-06 60 [60]"}; !slices.Equal(got, want) {
+		t.Errorf("the rows of a series folded as a quantile answer %v, want %v", got, want)
 	}
 }
 
@@ -99,15 +116,15 @@ func TestItemsAnswersTheStandingReadingsOfOneRowKindNewestFirst(t *testing.T) {
 	}
 }
 
-// dayLabels names each day row by its range, day, repository and sum, sorted.
-func dayLabels(days []DayRow) []string {
+// dayLabels names each day row by its range, day, sum and sample list, sorted.
+func dayLabels(days []WindowRow) []string {
 	labels := make([]string, len(days))
 	for index, day := range days {
-		repo := day.Repo
-		if repo == "" {
-			repo = "''"
+		samples := "no samples"
+		if day.Part.Samples != nil {
+			samples = fmt.Sprint(day.Part.Samples)
 		}
-		labels[index] = fmt.Sprintf("%s %s %s %v", day.Range, day.Day.Format(time.DateOnly), repo, *day.Sum)
+		labels[index] = fmt.Sprintf("%s %s %v %s", day.Range, day.Part.Day.Format(time.DateOnly), *day.Part.Sum, samples)
 	}
 	sort.Strings(labels)
 	return labels

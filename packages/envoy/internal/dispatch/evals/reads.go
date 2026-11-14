@@ -243,46 +243,51 @@ func (s *Store) CountedIn(ctx context.Context, project, family string, repos []s
 	return items, nil
 }
 
-// DayWindow reads a project's listed day rows for a window of days and, where compare is not
-// nil, for a compare range too, as one statement: the `union all` of one read of each range,
-// each an index range of eval_days_window, so the compare range is a second windowed read of the
-// same rows and never one read with two windows (R2, R12). Each row says which range it answers
-// for (RangeWindow, RangeCompare). A range's days are the UTC dates d with From's date <= d <
-// To's date.
+// DayWindow reads the listed day rows of entries, evals of project, for a window of days and,
+// where compare is not nil, for a compare range too, as one statement: the `union all` of one read
+// of each range, each an index range of eval_days_window, so the compare range is a second
+// windowed read of the same rows and never one read with two windows (R2, R12). Each row says
+// which range it answers for (RangeWindow, RangeCompare). A range's days are the UTC dates d with
+// From's date <= d < To's date. repos empty reads the project's own rows (repo is the empty
+// string); repos named reads those repositories' rows, a repository filter's fold.
 //
-// repos empty reads the project's own rows (repo is the empty string); repos named reads those
-// repositories' rows, a repository filter's fold. evalIDs empty reads every eval of the project;
-// named, only those evals' rows.
-func (s *Store) DayWindow(ctx context.Context, project string, evalIDs, repos []string, window Range, compare *Range) ([]DayRow, error) {
+// A row answers what the folds and the answer read and nothing more (WindowRow), since what the
+// read costs is the bytes it sends: no project, repository, listing or build, and a sample list
+// only for a series whose fold reads one (readsSamples), so a logged series folded by anything but
+// a quantile, whose rows keep every value of their day, sends none.
+func (s *Store) DayWindow(ctx context.Context, project string, entries []Entry, repos []string, window Range, compare *Range) ([]WindowRow, error) {
 	if len(repos) == 0 {
 		repos = []string{""}
 	}
-	var evals []string
-	if len(evalIDs) > 0 {
-		evals = evalIDs
+	evalIDs := make([]string, len(entries))
+	var sampledEvals, sampledSeries []string
+	for index, entry := range entries {
+		evalIDs[index] = entry.Definition.EvalID
+		for _, series := range entry.Series {
+			if readsSamples(entry.Definition, series) {
+				sampledEvals, sampledSeries = append(sampledEvals, entry.Definition.EvalID), append(sampledSeries, series.Series)
+			}
+		}
 	}
-	ranged := func(name string, from, to int) string {
-		return `select '` + name + `', ` + dayColumns + ` from eval_days
-			where project_key = $1 and repo = any($2) and listed
-			  and day >= $` + strconv.Itoa(from) + `::date and day < $` + strconv.Itoa(to) + `::date
-			  and ($3::text[] is null or eval_id = any($3))`
+	ranged := func(inWindow string, from, to int) string {
+		return `select ` + inWindow + `, eval_id, series, day, n, sum, num, den, max,
+				case when (eval_id, series) in (select * from unnest($4::text[], $5::text[])) then samples end,
+				last_value, last_at, nullif(counts, '{}'), via_repository, updated_at
+			from eval_days
+			where project_key = $1 and repo = any($2) and listed and eval_id = any($3)
+			  and day >= $` + strconv.Itoa(from) + `::date and day < $` + strconv.Itoa(to) + `::date`
 	}
-	query := ranged(RangeWindow, 4, 5)
-	args := []any{project, repos, evals, window.From.UTC(), window.To.UTC()}
+	query := ranged("true", 6, 7)
+	args := []any{project, repos, evalIDs, sampledEvals, sampledSeries, window.From.UTC(), window.To.UTC()}
 	if compare != nil {
-		query += "\n\t\tunion all\n\t\t" + ranged(RangeCompare, 6, 7)
+		query += "\n\t\tunion all\n\t\t" + ranged("false", 8, 9)
 		args = append(args, compare.From.UTC(), compare.To.UTC())
 	}
 	rows, err := s.database.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("read the day rows of %s: %w", project, err)
 	}
-	days, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (DayRow, error) {
-		var name string
-		day, err := scanDay(row, &name)
-		day.Range = name
-		return day, err
-	})
+	days, err := pgx.CollectRows(rows, scanWindowRow)
 	if err != nil {
 		return nil, fmt.Errorf("read the day rows of %s: %w", project, err)
 	}

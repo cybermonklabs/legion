@@ -170,11 +170,9 @@ type Reading struct {
 	SupersededAt      *time.Time     `json:"superseded_at"`
 }
 
-// DayRow is one stored day row, every column of eval_days, and the range of a DayWindow read it
-// answered for (RangeWindow or RangeCompare; "" outside that read). Day is the day's UTC midnight.
-// Sum, Num, Den, Max and LastValue are nil where the row holds no such part.
+// DayRow is one stored day row, every column of eval_days. Day is the day's UTC midnight. Sum,
+// Num, Den, Max and LastValue are nil where the row holds no such part.
 type DayRow struct {
-	Range         string             `json:"range,omitempty"`
 	ProjectKey    string             `json:"project_key"`
 	EvalID        string             `json:"eval_id"`
 	Series        string             `json:"series"`
@@ -196,8 +194,8 @@ type DayRow struct {
 }
 
 // Part is the row as the folds read it (measures.DayPart): every column but its key's project,
-// eval and repository, its listing and its bookkeeping (built_by, updated_at, the read's range),
-// which WithPart keeps.
+// eval and repository, its listing and its bookkeeping (built_by, updated_at), which WithPart
+// keeps.
 func (d DayRow) Part() measures.DayPart {
 	return measures.DayPart{
 		Series: d.Series, Day: d.Day, N: d.N, Sum: d.Sum, Num: d.Num, Den: d.Den, Max: d.Max,
@@ -207,12 +205,23 @@ func (d DayRow) Part() measures.DayPart {
 }
 
 // WithPart is the row holding part's columns in place of its own, and its own project, eval,
-// repository, listing, bookkeeping and range: the row a builder's part is written as, so
+// repository, listing and bookkeeping: the row a builder's part is written as, so
 // row.WithPart(row.Part()) is row.
 func (d DayRow) WithPart(part measures.DayPart) DayRow {
 	d.Series, d.Day, d.N, d.Sum, d.Num, d.Den, d.Max = part.Series, part.Day, part.N, part.Sum, part.Num, part.Den, part.Max
 	d.Samples, d.Counts, d.LastValue, d.LastAt, d.ViaRepository = part.Samples, part.Counts, part.LastValue, part.LastAt, part.ViaRepository
 	return d
+}
+
+// WindowRow is one day row as a DayWindow read answers it: the range it answers for
+// (RangeWindow or RangeCompare), its eval, its part as the folds read it, and when it was last
+// written. The part holds a sample list only where its series' fold reads one (readsSamples),
+// and no counts where the row holds none (Counts nil, not an empty map).
+type WindowRow struct {
+	Range     string
+	EvalID    string
+	Part      measures.DayPart
+	UpdatedAt time.Time
 }
 
 // The two ranges a DayWindow read answers rows for.

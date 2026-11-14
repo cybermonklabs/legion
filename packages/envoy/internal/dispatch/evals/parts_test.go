@@ -27,7 +27,7 @@ func TestADayRowAndItsPartConvertWithNothingLost(t *testing.T) {
 		}
 	}
 	key := DayRow{
-		Range: RangeWindow, ProjectKey: "EVAL", EvalID: "EVAL/pr-ci", Repo: "acme/web", Listed: true,
+		ProjectKey: "EVAL", EvalID: "EVAL/pr-ci", Repo: "acme/web", Listed: true,
 		BuiltBy: testBuild, UpdatedAt: day.Add(20 * time.Hour),
 	}
 
@@ -38,7 +38,7 @@ func TestADayRowAndItsPartConvertWithNothingLost(t *testing.T) {
 	if got := row.WithPart(row.Part()); !reflect.DeepEqual(got, row) {
 		t.Errorf("the row read as a part and written again is\n%+v\nwant\n%+v", got, row)
 	}
-	if row.Range != key.Range || row.ProjectKey != key.ProjectKey || row.EvalID != key.EvalID || row.Repo != key.Repo ||
+	if row.ProjectKey != key.ProjectKey || row.EvalID != key.EvalID || row.Repo != key.Repo ||
 		row.Listed != key.Listed || row.BuiltBy != key.BuiltBy || !row.UpdatedAt.Equal(key.UpdatedAt) {
 		t.Errorf("writing a part replaced the row's key or bookkeeping: %+v, want those of %+v", row, key)
 	}

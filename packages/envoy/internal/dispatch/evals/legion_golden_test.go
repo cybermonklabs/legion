@@ -333,20 +333,23 @@ func showValue(value *float64) string {
 func compareLegionWindows(t *testing.T, r rig, project string, windows []goldenReports) *legionCheck {
 	t.Helper()
 	ctx := t.Context()
-	evalIDs := make([]string, len(legionDaySlugs))
+	entries := make([]Entry, len(legionDaySlugs))
 	for i, slug := range legionDaySlugs {
-		evalIDs[i] = EvalID(project, slug)
+		// Each eval as the seed writes it (Ensure): its catalogue definition and series.
+		catalogued := entryOf(t, slug)
+		entries[i] = Entry{Definition: catalogued.definition, Series: catalogued.series}
+		entries[i].Definition.EvalID = EvalID(project, slug)
 	}
 	check := &legionCheck{}
 	for _, window := range windows {
-		read, err := r.registry.DayWindow(ctx, project, evalIDs, nil, Range{From: window.Window.From, To: window.Window.To}, nil)
+		read, err := r.registry.DayWindow(ctx, project, entries, nil, Range{From: window.Window.From, To: window.Window.To}, nil)
 		if err != nil {
 			t.Fatalf("read the day rows of %s: %v", window.Window.Name, err)
 		}
 		parts := map[string][]measures.DayPart{}
 		for _, row := range read {
 			slug := strings.TrimPrefix(row.EvalID, project+"/")
-			parts[slug] = append(parts[slug], row.Part())
+			parts[slug] = append(parts[slug], row.Part)
 		}
 		closed, err := legionfacts.ReadClosedIn(ctx, r.database.Pool, project, window.Window.From, window.Window.To)
 		if err != nil {

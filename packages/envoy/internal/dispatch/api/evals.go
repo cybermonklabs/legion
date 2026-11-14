@@ -653,7 +653,7 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, project
 	for index, entry := range entries {
 		ids[index] = entry.Definition.EvalID
 	}
-	rows, err := registry.DayWindow(ctx, project, ids, repos, ranges.window, ranges.compare)
+	rows, err := registry.DayWindow(ctx, project, entries, repos, ranges.window, ranges.compare)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -661,11 +661,17 @@ func (s *server) evalItemsOf(ctx context.Context, registry *evals.Store, project
 	if err != nil {
 		return nil, nil, err
 	}
-	byEval := map[string][]evals.DayRow{}
+	byEval := map[string][]evals.WindowRow{}
 	var oldest *time.Time
+	if len(rows) > 0 {
+		first := rows[0].UpdatedAt
+		oldest = &first
+	}
 	for _, row := range rows {
 		byEval[row.EvalID] = append(byEval[row.EvalID], row)
-		oldest = olderOf(oldest, &row.UpdatedAt)
+		if row.UpdatedAt.Before(*oldest) {
+			*oldest = row.UpdatedAt
+		}
 	}
 	items := make([]evalItem, len(entries))
 	for index, entry := range entries {
@@ -689,7 +695,7 @@ func evalOwnerOf(definition evals.Definition) evalOwner {
 // before a series' first day, or a series with no first day at all, reads "no data": every
 // statistic of that range null, whatever rows the range holds; the per-day array still answers
 // each day that holds a row (R12, D8c).
-func evalSeriesOf(entry evals.Entry, rows []evals.DayRow, firsts map[string]time.Time, ranges evalRanges) []evalSeriesValues {
+func evalSeriesOf(entry evals.Entry, rows []evals.WindowRow, firsts map[string]time.Time, ranges evalRanges) []evalSeriesValues {
 	var listed, headline []evals.Series
 	for _, series := range entry.Series {
 		if !series.Listed {
@@ -704,14 +710,14 @@ func evalSeriesOf(entry evals.Entry, rows []evals.DayRow, firsts map[string]time
 	byDay := map[time.Time][]measures.DayPart{}
 	via := map[string]int{}
 	for _, row := range rows {
-		part := row.Part()
+		part := row.Part
 		if row.Range == evals.RangeCompare {
 			compareParts = append(compareParts, part)
 			continue
 		}
 		windowParts = append(windowParts, part)
-		byDay[row.Day] = append(byDay[row.Day], part)
-		via[row.Series] += row.ViaRepository
+		byDay[part.Day] = append(byDay[part.Day], part)
+		via[part.Series] += part.ViaRepository
 	}
 	definition := entry.Definition
 	window := evals.FoldStatistics(definition, listed, windowParts, ranges.window)

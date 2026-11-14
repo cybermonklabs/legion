@@ -72,6 +72,7 @@ type measuredCase struct {
 	background []statement
 	plans      map[int64]string
 	statements map[int64]string
+	params     map[int64][]string
 }
 
 // dbMs is the database time of statements.
@@ -223,6 +224,7 @@ func paint(ctx context.Context, r *report, o options) error {
 	checks.k13()
 	checks.k16()
 	checks.k2()
+	checks.probe(measured)
 	return nil
 }
 
@@ -358,9 +360,9 @@ func serverTime(path string, from int64, one paintCase) (float64, error) {
 }
 
 // planCase explains each of the read's own statements with the parameters of its first execution
-// in the read's span of the statement log, [t0, end).
+// in the read's span of the statement log, [t0, end), and keeps the text and parameters it explained.
 func planCase(ctx context.Context, r *report, explain *explainer, one *measuredCase, executions []logged, end time.Time) {
-	one.plans, one.statements = map[int64]string{}, map[int64]string{}
+	one.plans, one.statements, one.params = map[int64]string{}, map[int64]string{}, map[int64][]string{}
 	for _, own := range one.own {
 		var found *logged
 		for index := range executions {
@@ -375,7 +377,7 @@ func planCase(ctx context.Context, r *report, explain *explainer, one *measuredC
 				one.name, own.queryID, one.t0.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano), oneLine(own.query))
 			continue
 		}
-		one.statements[own.queryID] = found.text
+		one.statements[own.queryID], one.params[own.queryID] = found.text, found.params
 		plan, _, err := explain.explain(ctx, found.text, found.params)
 		if err == errUtility {
 			continue

@@ -91,6 +91,21 @@ func (r rig) write(t *testing.T, slug string, caller model.Actor, rows ...json.R
 	return written
 }
 
+// entries answers the current entry of each of evalIDs, as the list read holds it, failing the
+// test when no version holds one.
+func (r rig) entries(t *testing.T, evalIDs ...string) []Entry {
+	t.Helper()
+	entries := make([]Entry, len(evalIDs))
+	for index, evalID := range evalIDs {
+		entry, found, err := r.registry.Eval(t.Context(), evalID)
+		if err != nil || !found {
+			t.Fatalf("read the eval %s: found %t, %v", evalID, found, err)
+		}
+		entries[index] = entry
+	}
+	return entries
+}
+
 // document answers the text and the blocks of the project's evals-md, failing the test when the
 // project has none.
 func (r rig) document(t *testing.T) (string, []model.ArtifactBlock) {
