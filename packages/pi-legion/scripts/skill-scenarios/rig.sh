@@ -1982,6 +1982,24 @@ red_fixture() {
        {match:"^gh run view", stdout:($run + {jobs:$jobs})},
        {match:("^gh api .*actions/runs/" + ($run_id|tostring) + "/jobs"),
         stdout:{total_count:($jobs|length), jobs:$jobs}},
+       # The spend as the page reads it on each earlier attempt of a run whose `run_attempt` is
+       # above 1, in world `e` alone: attempt 1 of the e2e run ($spent) is the superseded e2e
+       # failure the commit endpoint carries ($earlier), so the spend still reads as spent. No
+       # other world has a run with an earlier attempt, so no other world answers one.
+       (if $world == "e" then
+          {match:("^gh api .*actions/runs/" + (($run_id - 1)|tostring) + "/attempts/1/jobs"),
+           stdout:{total_count:1,
+                   jobs:[{id:($job_id - 1), run_id:($run_id - 1), run_attempt:1, name:"e2e",
+                          status:"completed", conclusion:"failure", head_sha:$head,
+                          started_at:$t0, completed_at:$t0,
+                          html_url:("https://github.com/" + $repo + "/actions/runs/"
+                                    + (($run_id - 1)|tostring) + "/job/"
+                                    + (($job_id - 1)|tostring)),
+                          steps:[{number:1, name:"Set up job", status:"completed",
+                                  conclusion:"success"},
+                                 {number:2, name:"Run bun run e2e", status:"completed",
+                                  conclusion:"failure"}]}]}}
+        else empty end),
        {match:"^gh api .*actions/runs",
         stdout:{total_count:($head_runs|length), workflow_runs:$head_runs}}] as $new
     | .routes |= map(

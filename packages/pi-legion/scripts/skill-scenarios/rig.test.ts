@@ -1604,6 +1604,28 @@ describe("red_fixture", () => {
     });
   });
 
+  // The page reads the spend on each earlier attempt of a run whose `run_attempt` is above 1.
+  // Catches: a world `e` whose attempt read answers no jobs (the catch-all's runs list), which
+  // leaves a role following the page unable to judge the spend, and an attempt answer in every
+  // world.
+  test("the spent head's attempt 1 answers the superseded e2e failure, in world e alone", async () => {
+    const seen: Record<string, string[]> = {};
+    for (const world of RED_WORLDS) {
+      const jobs = await gh(redFixture(world), [
+        "api",
+        "--paginate",
+        `repos/${RED_REPO}/actions/runs/${RED_RUN_ID - 1}/attempts/1/jobs?per_page=100`,
+        "--jq",
+        ".total_count, (.jobs[] | [.name,.conclusion] | @tsv)",
+      ]);
+      seen[world] = outputLines(jobs.stdout);
+    }
+    const attempt = ["1", "e2e\tfailure"];
+    const answered = RED_WORLDS.filter((world) => seen[world].join("\n") === attempt.join("\n"));
+    expect(seen.e).toEqual(attempt);
+    expect(answered).toEqual(["e"]);
+  });
+
   // The commit endpoint of world `e` keeps the superseded e2e runs, which the page lets no role
   // judge the spend on. Catches: a seed that moved them out with the spend, which would leave the
   // world unable to tell a role judging there from one judging on the head's runs, and one that
