@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -226,7 +227,7 @@ func TestASweepsOwnDeleterIsNoHoldHelper(t *testing.T) {
 	start := inProcessRemovals
 	if sweep != ownHoldInProcess {
 		useContainedDeleter(t)
-		start = startRemover
+		start = startRemover(&pidGuard{})
 	}
 	f := newTrimFixture(t, 0)
 	f.cover = coverUnder(t, namespaceScratch(t))
@@ -294,4 +295,46 @@ func standIn(t *testing.T, dir string) {
 		target, err := os.Readlink(cwd)
 		return err == nil && target == dir
 	})
+}
+
+// The sweep's deleter is the launcher's own child, and PID 1's reaper reaps every exited process
+// of the container's PID namespace but the ones it is told to leave (reapOrphans). Started through
+// the launcher's pidGuard, the deleter is one of those: a pass of the reaper made after the
+// deleter has exited and before the remover's close waits on it leaves the exit to that wait,
+// which reads the deleter's own exit status, and the guard forgets the pid once it has.
+func TestTheReaperLeavesTheSweepsDeleterToItsOwnWait(t *testing.T) {
+	requireRoleNamespaces(t)
+	useContainedDeleter(t)
+	guard := &pidGuard{}
+	remover, err := startContainedRemover(guard, coverUnder(t, namespaceScratch(t)), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pid := remover.process()
+	// The end of the requests, which the deleter answers by exiting: it then waits, a zombie,
+	// for whoever reaps it.
+	_ = remover.requests.Close()
+	testwait.Eventually(t, fmt.Sprintf("the deleter %d to exit", pid), func() bool { return zombie(pid) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	signals := make(chan os.Signal)
+	done := make(chan struct{})
+	managers := []*manager{{role: "architect", namespaced: true, log: &roleLog{}}}
+	go func() { reapOrphans(ctx, signals, managers, guard); close(done) }()
+	// The channel is unbuffered, so the second signal is taken only once the first pass is over.
+	signals <- syscall.SIGCHLD
+	signals <- syscall.SIGCHLD
+	cancel()
+	<-done
+
+	remover.close()
+	if state := remover.cmd.ProcessState; state == nil || state.ExitCode() != 0 {
+		t.Errorf("the remover's close read %v for the deleter, want its own exit 0: the reaper took the exit before the remover's wait", state)
+	}
+	guard.mu.Lock()
+	held := guard.held()
+	guard.mu.Unlock()
+	if len(held) != 0 {
+		t.Errorf("the guard still holds %v after the close read the deleter's exit, want nothing", held)
+	}
 }

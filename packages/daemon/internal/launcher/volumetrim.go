@@ -228,13 +228,15 @@ type trimmer struct {
 
 // newTrimmer is the pod's trimmer: the volume at VolumeRoot, the container's own /proc, the four
 // reclaimable roots and the real clock, with an identifier minted for the life of this launcher
-// process (randomID, as the launcher mints a connection's).
+// process (randomID, as the launcher mints a connection's). Each sweep's deleter starts through
+// guard, the launcher's pidGuard (startRemover).
 func newTrimmer(
 	settings func() *shimwire.LauncherVolumeTrim,
 	trimming func() bool,
 	send func(shimwire.LauncherVolumeReport) error,
 	logf func(format string, args ...any),
 	cover RoleCover,
+	guard *pidGuard,
 ) *trimmer {
 	return &trimmer{
 		id:         randomID(),
@@ -250,7 +252,7 @@ func newTrimmer(
 		self:       os.Getpid(),
 		roots:      ReclaimableRoots,
 		measure:    measureTree,
-		removals:   startRemover,
+		removals:   startRemover(guard),
 	}
 }
 

@@ -673,7 +673,7 @@ func sweepTrial(t *testing.T, f *trimFixture, target string, planted map[string]
 	f.setSettings(trimSettings())
 	return func(_ int, swapped <-chan bool) bool {
 		tr := f.trimmer()
-		tr.removals = startRemover // the contained deleter, and no fallback behind it
+		tr.removals = startRemover(&pidGuard{}) // the contained deleter, and no fallback behind it
 		out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
 		*deletions += out.deletions
 
@@ -815,7 +815,7 @@ func TestTheDeleterOverTheImagesOwnPathsDeletesWhatTheSweepLists(t *testing.T) {
 	f.useVolume(steady(90))
 	f.setSettings(trimSettings())
 	tr := f.trimmer()
-	tr.removals = startRemover // the deleter the pod runs, and no fallback behind it
+	tr.removals = startRemover(&pidGuard{}) // the deleter the pod runs, and no fallback behind it
 	out := tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
 
 	if out.deletions != len(f.entries) {

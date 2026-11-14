@@ -106,7 +106,8 @@ func Run(ctx context.Context, cfg Config) error {
 		return err
 	}
 	// The guard comes before the managers: the pod's put-back of a released workspace starts its
-	// jj and git through it (newManagers), as the test database's script starts through it below.
+	// jj and git through it (newManagers), as the test database's script and each sweep's deleter
+	// start through it below.
 	guard := &pidGuard{}
 	managers, err := newManagers(cfg, guard)
 	if err != nil {
@@ -150,7 +151,7 @@ func Run(ctx context.Context, cfg Config) error {
 	// (serveVolumeTrim). It is built before any role starts, as the test database is, and its
 	// loop is waited on with the roles below, so Run returns with nothing of the launcher's
 	// still running.
-	trim := serveVolumeTrim(ctx, managers[0])
+	trim := serveVolumeTrim(ctx, managers[0], guard)
 	var running sync.WaitGroup
 	for _, m := range managers {
 		running.Add(1)
@@ -198,9 +199,10 @@ func Run(ctx context.Context, cfg Config) error {
 // bound at. Every path a role's namespace replaces is an empty filesystem in that namespace, and
 // the deleter is the one thing that keeps a link a role left in a cache out of them (RoleCover,
 // volumedelete.go). Only an issue pod's container reaches here, and that is the launcher that
-// names a roles directory.
-func serveVolumeTrim(ctx context.Context, m *manager) <-chan struct{} {
-	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, roleCoverFor(m.cfg.RolesDir))
+// names a roles directory. guard is the launcher's pidGuard, which each sweep's deleter starts
+// through so PID 1's reaper leaves its exit to the deleter's own wait (startRemover).
+func serveVolumeTrim(ctx context.Context, m *manager, guard *pidGuard) <-chan struct{} {
+	trim := newTrimmer(m.volumeTrim, m.volumeTrimming, m.sendVolumeReport, m.logf, roleCoverFor(m.cfg.RolesDir), guard)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)

@@ -40,7 +40,7 @@ func TestTheShippedDeletersRemovalFollowsNoLinkIntoTheVolume(t *testing.T) {
 
 	raceSwaps(t, racedVictim(f), workspace, 3, 8, at, func(_ int, swapped <-chan bool) bool {
 		tr := f.trimmer()
-		tr.removals = startRemover // the contained deleter, with the removal it ships with
+		tr.removals = startRemover(&pidGuard{}) // the contained deleter, with the removal it ships with
 		_ = tr.sweep(context.Background(), *trimSettings(), steady(90)(0))
 		made := <-swapped
 		assertBaitHeld(t, bait, fmt.Sprintf("the shipped deleter's removal followed a link a role left where a subdirectory of the entry stood, into %s", workspace))

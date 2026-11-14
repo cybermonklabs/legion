@@ -164,9 +164,13 @@ var errRemoverGone = errors.New("the sweep's deleter is gone")
 
 // startRemover is what the pod's trimmer takes for every sweep (trimmer.removals): the contained
 // deleter, answered as the interface the sweep holds it by. A sweep is given no other, and a
-// start that fails is a sweep that deletes nothing (sweep, volumetrim.go).
-func startRemover(cover RoleCover, dirs []*sweepDir) (entryRemover, error) {
-	return startContainedRemover(cover, dirs)
+// start that fails is a sweep that deletes nothing (sweep, volumetrim.go). The deleter is the
+// launcher's own child and starts through guard, the launcher's pidGuard, so PID 1's reaper
+// leaves its exit to the remover's own wait (containedRemover.close).
+func startRemover(guard *pidGuard) func(RoleCover, []*sweepDir) (entryRemover, error) {
+	return func(cover RoleCover, dirs []*sweepDir) (entryRemover, error) {
+		return startContainedRemover(guard, cover, dirs)
+	}
 }
 
 // trimDeleteLaunch is the command line and the extra environment that run one sweep's deleter:
@@ -187,7 +191,10 @@ var trimDeleteLaunch = func(cover RoleCover) (argv, env []string, err error) {
 // containedRemover is one sweep's deleter: the child process, the pipe its requests go down, the
 // pipe its answers come back on, and which descriptor of the child's each listed directory is.
 type containedRemover struct {
-	cmd      *exec.Cmd
+	cmd *exec.Cmd
+	// guard holds the child's pid out of PID 1's reaper from its start until close has read its
+	// exit (pidGuard).
+	guard    *pidGuard
 	requests io.WriteCloser
 	replies  *bufio.Reader
 	// at is the child's descriptor number for each directory the listing opened. The
@@ -201,7 +208,8 @@ type containedRemover struct {
 // startContainedRemover starts the deleter for one sweep: the child in its own user, mount, PID
 // and IPC namespaces (roleNamespaceAttr, the same clone a role generation is started with),
 // holding the descriptor of every directory the listing opened and nothing else of the volume.
-func startContainedRemover(cover RoleCover, dirs []*sweepDir) (*containedRemover, error) {
+// It starts through guard, as the test database's script does (runTestPG).
+func startContainedRemover(guard *pidGuard, cover RoleCover, dirs []*sweepDir) (*containedRemover, error) {
 	attr, err := roleNamespaceAttr()
 	if err != nil {
 		return nil, err
@@ -213,7 +221,7 @@ func startContainedRemover(cover RoleCover, dirs []*sweepDir) (*containedRemover
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Env = mergeEnv(os.Environ(), extra)
 	cmd.SysProcAttr = attr
-	remover := &containedRemover{cmd: cmd, at: make(map[*sweepDir]int, len(dirs)), said: &saidBuffer{}}
+	remover := &containedRemover{cmd: cmd, guard: guard, at: make(map[*sweepDir]int, len(dirs)), said: &saidBuffer{}}
 	for _, dir := range dirs {
 		if _, held := remover.at[dir]; held {
 			continue
@@ -230,7 +238,7 @@ func startContainedRemover(cover RoleCover, dirs []*sweepDir) (*containedRemover
 		return nil, fmt.Errorf("the sweep's deleter: %w", err)
 	}
 	remover.replies = bufio.NewReader(replies)
-	if err := cmd.Start(); err != nil {
+	if _, err := guard.start(cmd); err != nil {
 		return nil, fmt.Errorf("start the sweep's deleter in a mount namespace of its own: %w", err)
 	}
 	return remover, nil
@@ -286,7 +294,8 @@ func (r *containedRemover) process() int {
 }
 
 // close ends the deleter: the requests pipe is closed, which the child reads as the end of its
-// work, and it is killed if it has not gone when the grace is over.
+// work, and it is killed if it has not gone when the grace is over. The guard forgets its pid
+// once this wait has read its exit.
 func (r *containedRemover) close() {
 	_ = r.requests.Close()
 	ended := make(chan error, 1)
@@ -297,6 +306,7 @@ func (r *containedRemover) close() {
 		_ = r.cmd.Process.Kill()
 		<-ended
 	}
+	r.guard.done(r.cmd.Process.Pid)
 }
 
 // VolumeTrimDelete is `legion launcher volume-trim-delete`'s body: the containment, then one

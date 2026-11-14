@@ -553,7 +553,7 @@ func (f *trimFixture) assertPrefixed() {
 // anything at all without it, are volumedelete_test.go's cases, which give the trimmer the
 // deleter the pod runs (entryRemover, volumedelete.go).
 func (f *trimFixture) trimmer() *trimmer {
-	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover)
+	tr := newTrimmer(f.settings, f.trimming, f.send, f.log, f.cover, &pidGuard{})
 	tr.volumeRoot, tr.procRoot, tr.self, tr.roots = f.root, f.proc, f.self, f.roots
 	tr.now, tr.ticks = f.clock.now, f.ticks.make
 	tr.removals = inProcessRemovals
