@@ -228,6 +228,10 @@ type Guard struct {
 	signal   Signaler
 	id       string
 	self     int
+	// observe, when set, is called with each reading the guard takes, on its loop and before it
+	// acts on the reading. The live test (live_test.go) sets it to time the guard's decisions
+	// and falls from the guard's own readings; production leaves it nil.
+	observe func(now time.Time, reading, limit uint64)
 
 	mu       sync.Mutex
 	settings Settings
@@ -379,6 +383,9 @@ func (g *Guard) tick(first bool) bool {
 	if reason != "" {
 		g.die(reason)
 		return false
+	}
+	if g.observe != nil {
+		g.observe(now, reading, limit)
 	}
 	s, on := g.current()
 	if first {
