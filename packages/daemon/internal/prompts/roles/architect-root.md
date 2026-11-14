@@ -27,7 +27,7 @@ workers'.
 
 The `Design gate steps` sentence that ends your `Legion addressing` line names the design gate
 steps this deployment gates, in the order it gates them, and says `none` when it gates no step.
-Each step it names holds this tree's work until a person approves that step's document, so apply
+Each step it names holds this tree's work until a person's approval opens it, so apply
 the gate in the skill before the tree's work starts: extend the issue's own primary document in
 place as the root specification (never post a second "spec" artifact — that replaces the human's
 document), written as `skill://dispatch-writing-specs` says. Before you design, research how
@@ -47,7 +47,9 @@ step, before `register_gate`: the gate's opening starts the root's own first pha
 Dispatch shows an open child under it, so a child filed later leaves the root working beside its
 children. Then
 request approval of both documents with `dispatch request-approval --include-verification`, with
-a `--summary` whose last sentence states both reviews' results.
+a `--summary` whose last sentence states both reviews' results. A view on an approved ancestor
+holds no `requirement` block and registers on its approval instead
+(`skill://legion-architect/references/design-gate.md`).
 A question you ask a person with `dispatch ask` goes on the root issue, and once you have handed it
 to them, end your turn: that hand-back moves the root to `awaiting_person`, which keeps its
 admission slot, while you stay live to
@@ -82,7 +84,7 @@ wait.
 Act on neither the place nor the wait.
 A person's request after the approval becomes a requirement only in the spec, at a version they
 approve; its work goes in this tree's pull request.
-Approval is pinned to the spec version: any new version closes the gate until it is approved,
+Approval is pinned to the spec version: any new version closes the gate,
 except the version a human's own answer to a decision block writes when that answer is the whole
 change since the version they approved, and a version whose text is exactly the text of the
 version they approved with no decision block in it decided since, such as an accidental edit

@@ -56,6 +56,11 @@ A session's reply on an ask of a parked tree is no decision. The daemon sends no
 logs `workflow: a session's reply on a parked tree is not relayed`; the reply stays on the Dispatch
 ask for the person who asked, and the walk below skips it.
 
+The daemon relays no `basis-ended`, `basis-changes-requested` or `resting-root` notice of a parked
+tree. A root that comes back from the backlog starts a new generation with no gate, and its
+architect registers again, which reads the ancestor's state anew. The ancestor's own start task
+names the roots that rest on its approval.
+
 A person's own approval of a parked root's own spec (its primary document), when its tree is not
 live, is no notice either: it is that person's handover, and the daemon sets the root `todo`
 itself, whoever parked it (`admission: queued a person's handover`, `source=approval`). Two
@@ -141,8 +146,10 @@ document that is not the root's primary one.
      `issues.<root>.designGate.currentVersion`, and also when it is lower: then the architect's
      start task names both versions, and the architect requests approval of the current one.
      Where `gatedSteps` carries more than one entry, read each one the same way: the tree runs
-     again only once every entry is `approved`, and an entry still `waiting`, `unregistered` or
-     `changes_requested` is work the architect holds.
+     again only once every entry is `approved` or `open_on_basis` (open on a person's approval of
+     an ancestor's document), and an entry still `waiting`, `unregistered` or
+     `changes_requested` is work the architect holds. An entry `pending_on_basis` waits on the
+     ancestor's approval request that its `basis` names.
      - It is your own hold (step 2): set the root to `todo` (`set_status`). Admission queues it,
        the tree runs again at a new generation and its architect starts with the decision. That
        `todo` releases no hold. Post one comment on the issue where the decision was made

@@ -23,6 +23,33 @@ Sign off an issue with no children once its evidence holds for its goal and ever
 its spec, none unmet; a parent only after its last round (below), because
 before it the approved head does not carry its children's merges.
 
+A view's requirements are the parts of its ancestor's requirements that its `Delivers:` line
+names, at the version that line pins. Accept a view on those parts, and read its empty requirement
+list as no gap ("A root that is a view on an approved ancestor" in
+`skill://legion-architect/references/design-gate.md`).
+
+Each requirement block of the issue needs a check that serves it, whose latest result passed and is
+current. That check stands in the issue's own Verification document, or in the Verification
+document of an issue under it on Dispatch's `child_of` chain, a root of another tree included. Read
+them before you decide:
+
+1. Read the issue's coverage:
+   `curl -sS -H "Authorization: Bearer $(cat $DISPATCH_TOKEN_FILE)" "$DISPATCH_URL/api/v1/issues/<KEY>/coverage"`.
+   It names each requirement that no check of those issues serves (`<block id> has no check`).
+2. List the issues under it with `dispatch issues --project <PROJECT> --parent <KEY>`, and again
+   for each issue that lists.
+3. Read the checks and results of each of them with `dispatch results --issue <key>`.
+4. A check of an issue under it counts only once that issue is `done`, with its result at that
+   issue's final head. A check that runs `after_merge` counts with its result after that merge. An
+   issue under it that is not `done` is a wait, not a pass: hold the acceptance until it is done.
+5. Read a check in another repository as "The last round" says.
+6. Where views deliver parts of one requirement, as their `Delivers:` lines name them, the
+   requirement counts only when those parts together make the whole of it.
+
+The acceptance comment names each requirement with the issue and the check that proved it, and each
+part of a requirement with its issue and its check. A requirement with no such check stops the
+sign-off, as any unmet requirement does.
+
 ```text
 dispatch comment --issue LEGION-40 --body-file - <<'EOF'
 <acceptance: scope, integration evidence, the tester's handoff, each check with its result, the approved head>
@@ -47,6 +74,15 @@ legion({ op: "sign_off", issue: "LEGION-40" })
   (below). The daemon then closes a parent that is not the root at its own merge, which under this
   rule comes after its children's. One issue beneath never holds it: one the daemon itself holds
   at `admitted` under an ancestor it has already accepted, which starts when that ancestor closes.
+- Past that refusal, the daemon refuses `sign_off` while a root whose step rests on the issue's
+  approval is still in the workflow (`SIGNOFF_RESTING_ROOT_IN_WORKFLOW`, naming each one). That
+  root's own architect, or a person, moves it. Sign off again once each one is done or out of the
+  workflow.
+- Last, it refuses `sign_off` while a Dispatch child of the issue is open, a child that runs as a
+  tree of its own included (`SIGNOFF_CHILD_OPEN`, naming each one with its Dispatch status). Run
+  each one to done, or close or icebox one under the rule above, and sign off again.
+- `close_root` refuses with the same three codes, in the same order. For `close_root`, also close
+  or icebox a child that was never released.
 - `request_backward_move` names the issue, because your grant serves the tree; the daemon starts
   that phase's role with your reason in its task.
 - `handoff_complete` from you in `accepting` is refused `ACCEPTANCE_IS_SIGN_OFF`. CI red at the head

@@ -469,6 +469,8 @@ issue reference, because a wrong token reaches nobody.
 A person who asks how to let a root past its design gate approves, in Dispatch, the document of
 each step the deployment gates, which your system prompt's `Design gate steps:` sentence names:
 the `Approve` control in that document's header, or the approval question the architect's request
-opened in the Inbox. The root's work starts when every one of those steps is approved. No
+opened in the Inbox. The root's work starts when every one of those steps is open: approved, or
+registered by the root's architect on a person's approval of an ancestor's document, which
+`gatedSteps` reads as `open_on_basis`. No
 operator command opens a gate; a project that wants no gate sets `gates.design` to the empty list
 (`design: []`) in `legion.yaml`.
