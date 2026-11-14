@@ -267,7 +267,9 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 	if err != nil {
 		return 0, fmt.Errorf("resolve the legion executable the controller's launcher runs: %w", err)
 	}
-	if err := workerbin.Install(stateDir, executable); err != nil {
+	// The controller inherits the operator's PATH (controllerEnvironment), so Install reads its
+	// first git there to decide whether the launcher directory holds a git wrapper.
+	if err := workerbin.Install(stateDir, executable, os.Getenv("PATH")); err != nil {
 		return 0, err
 	}
 	instructionsFile := ""
@@ -313,7 +315,8 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr i
 // controllerEnvironment is what the controller's Oh My Pi is told on top of the operator's own
 // environment: the controller marker and role, the daemon, project and state directory, the Envoy,
 // GitHub and Dispatch settings every pane carries, PI_SHELL_PREFIX, which keeps this state
-// directory's legion launcher and gh wrapper first in the agent's bash tool as on every pane, and
+// directory's bin (the legion launcher, the gh wrapper and, where Install writes one, the git
+// wrapper) first in the agent's bash tool as on every pane, and
 // LEGION_CONTROLLER_START_MESSAGE, which the pi-legion extension's daemon.ControllerStartCommand,
 // the word on Oh My Pi's command line, sends as the session's first turn
 // (daemon.ControllerStartMessage). LEGION_GH_OWNERS_DIR names

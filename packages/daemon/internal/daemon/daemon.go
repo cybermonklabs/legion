@@ -379,7 +379,9 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 			st.Close()
 			return fmt.Errorf("resolve this daemon's executable for the pane legion launcher: %w", err)
 		}
-		if err := workerbin.Install(cfg.StateDir, executable); err != nil {
+		// The panes inherit this daemon's PATH (tmux.PaneEnvironment), so Install reads its first
+		// git there to decide whether the launcher directory holds a git wrapper.
+		if err := workerbin.Install(cfg.StateDir, executable, os.Getenv("PATH")); err != nil {
 			workflow.stop()
 			st.Close()
 			return err

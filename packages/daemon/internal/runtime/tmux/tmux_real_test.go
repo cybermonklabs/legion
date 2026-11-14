@@ -1892,7 +1892,7 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 		o.GH = realGH
 		o.Environ = append(slices.Clone(o.Environ), leakguard.CheckVar+"=", "XDG_CONFIG_HOME="+config)
 	})
-	if err := workerbin.Install(r.stateDir, r.legion); err != nil {
+	if err := workerbin.Install(r.stateDir, r.legion, os.Getenv("PATH")); err != nil {
 		t.Fatalf("workerbin.Install: %v", err)
 	}
 	decoy := t.TempDir()
@@ -1947,6 +1947,85 @@ func TestRealTmuxPaneResolvesThisDaemonsLegionCLI(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(r.stateDir, "worker-bin")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the state directory holds a worker-bin (%v), want the launcher directory alone", err)
+	}
+}
+
+// compiledGit is the first git on the test process's PATH that is no script (its first two bytes
+// are not `#!`): the runner's own git on CI, and /usr/bin/git in a Legion pod, whose
+// /opt/legion/bin/git ahead of it is the image's git wrapper.
+func compiledGit(t *testing.T) string {
+	t.Helper()
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if dir == "" {
+			continue
+		}
+		git := filepath.Join(dir, "git")
+		if info, err := os.Stat(git); err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		f, err := os.Open(git)
+		if err != nil {
+			continue
+		}
+		head := make([]byte, 2)
+		n, _ := io.ReadFull(f, head)
+		f.Close()
+		if n == 2 && string(head) == "#!" {
+			continue
+		}
+		return git
+	}
+	t.Fatal("no git on PATH that is no script: this test commits with a real git")
+	return ""
+}
+
+// A pane's git is its launcher directory's git wrapper, which runs `legion git --after`. In the
+// pane's own environment, which the agent's bash tool inherits, `command -v git` names that
+// wrapper, and a commit in a new repository carries the pane's role and the session that Oh My
+// Pi's shell adds (DISPATCH_HOST and DISPATCH_SESSION_ID). Install gets the pane's PATH, whose
+// first git is the tests' compiled git, so a host whose own PATH leads with the image's git
+// wrapper still gets a git wrapper here. The rig's spec gives the pane no git identity, so the
+// shell adds one.
+func TestRealTmuxAPanesGitWrapperTrailsACommit(t *testing.T) {
+	ctx := context.Background()
+	r := newRig(t)
+	git := compiledGit(t)
+	spec := r.spec("LEGION-11", "LEGION-11", claim.RoleArchitect)
+	spec.Env["PATH"] = filepath.Dir(git) + ":" + spec.Env["PATH"]
+	if err := workerbin.Install(r.stateDir, r.legion, spec.Env["PATH"]); err != nil {
+		t.Fatalf("workerbin.Install: %v", err)
+	}
+	loc, err := r.rt.Spawn(ctx, spec)
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	r.daemon.awaitReady(t, spec.BootToken)
+	env := procEnviron(t, descendant(t, panePid(t, loc), "omp"))
+	bin := filepath.Join(r.stateDir, "bin")
+	if want := bin + ":" + spec.Env["PATH"]; env["PATH"] != want || env["LEGION_ROLE"] != "architect" {
+		t.Fatalf("OMP's PATH = %q and LEGION_ROLE = %q, want %q and architect", env["PATH"], env["LEGION_ROLE"], want)
+	}
+	repo := filepath.Join(t.TempDir(), "repo")
+	if out, err := exec.Command(git, "init", "-q", repo).CombinedOutput(); err != nil {
+		t.Fatalf("git init: %v: %s", err, out)
+	}
+	session := "tmux-pane-" + randomHex(t, 4)
+	shell := exec.Command("/bin/sh", "-c", "command -v git && git commit --allow-empty -q -m pane && git log -1 --format=%B")
+	shell.Dir = repo
+	for _, name := range []string{"PATH", "HOME", "XDG_CONFIG_HOME", "LEGION_ROLE"} {
+		shell.Env = append(shell.Env, name+"="+env[name])
+	}
+	shell.Env = append(shell.Env, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID="+session,
+		"GIT_AUTHOR_NAME=Pane test", "GIT_AUTHOR_EMAIL=pane-test@example.invalid",
+		"GIT_COMMITTER_NAME=Pane test", "GIT_COMMITTER_EMAIL=pane-test@example.invalid")
+	out, err := shell.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git in the pane environment: %v: %s", err, out)
+	}
+	got := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	want := []string{filepath.Join(bin, "git"), "pane", "", "Omp-Session: " + session, "Legion-Role: architect"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("the pane's git and its commit = %q, want %q", got, want)
 	}
 }
 

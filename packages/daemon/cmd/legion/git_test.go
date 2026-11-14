@@ -13,6 +13,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 )
 
 // trailerGit is the tests' git: the first git on the test process's PATH that is no script. In a
@@ -349,6 +351,58 @@ func TestGitWrapperAfterExecsTheNextGit(t *testing.T) {
 	}
 	if got, want := out.String(), strconv.Itoa(pid)+"\n"+self+"\n"; got != want {
 		t.Fatalf("the next git printed %q, want its pid and its parent's executable %q", got, want)
+	}
+}
+
+// workerbin.Install writes a tmux pane's git where the first git on the PATH it is given is not
+// the image's wrapper. A commit through the launcher directory reaches the host's git script after
+// it, with the trailers among its arguments, and the commit carries both lines. A command in an
+// environment that holds no LEGION_* variable still runs through it.
+func TestGitWrapperInstallsAPanesTrailers(t *testing.T) {
+	git := trailerGit(t)
+	legion := trailerLegion(t)
+	host := t.TempDir()
+	log := filepath.Join(host, "calls")
+	writeTrailerScript(t, filepath.Join(host, "git"), trailerLogging(log)+"exec '"+git+"' \"$@\"\n")
+	root := t.TempDir()
+	if err := workerbin.Install(root, legion, host+":"+filepath.Dir(git)); err != nil {
+		t.Fatalf("workerbin.Install: %v", err)
+	}
+	path := workerbin.LauncherDir(root) + ":" + host + ":" + trailerPath(git)
+	repo := trailerRepo(t, git)
+	sh, err := exec.LookPath("sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	env := trailerEnv(t, path, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=pane-session", "LEGION_ROLE=tester")
+	if code, _, stderr := trailerRun(t, repo, env, "", sh, "-c", "git commit --allow-empty -m one"); code != 0 {
+		t.Fatalf("git commit through the installed git = %d: %s", code, stderr)
+	}
+	calls := trailerCalls(t, log)
+	want := []string{
+		"-c", "trailer.Omp-Session.ifExists=addIfDifferent", "-c", "trailer.Legion-Role.ifExists=addIfDifferent",
+		"commit", "--trailer", "Omp-Session: pane-session", "--trailer", "Legion-Role: tester",
+		"--allow-empty", "-m", "one",
+	}
+	if len(calls) != 1 || !slices.Equal(calls[0], want) {
+		t.Fatalf("the host's git received %q, want one run with %q", calls, want)
+	}
+	if got, want := trailerMessage(t, git, repo), "one\n\nOmp-Session: pane-session\nLegion-Role: tester\n"; got != want {
+		t.Fatalf("message = %q, want %q", got, want)
+	}
+
+	env = trailerEnv(t, path, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=pane-session")
+	for _, entry := range env {
+		if strings.HasPrefix(entry, "LEGION_") {
+			t.Fatalf("the environment holds %s", entry)
+		}
+	}
+	if code, _, stderr := trailerRun(t, repo, env, "", sh, "-c", "git status --short"); code != 0 {
+		t.Fatalf("git status through the installed git = %d: %s", code, stderr)
+	}
+	if calls = trailerCalls(t, log); len(calls) != 2 || !slices.Equal(calls[1], []string{"status", "--short"}) {
+		t.Fatalf("the host's git received %q, want the commit and then [status --short]", calls)
 	}
 }
 
