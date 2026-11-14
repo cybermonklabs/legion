@@ -202,6 +202,11 @@ function opensOf(stdout: string): ProbeOpenLine[] {
   return linesOf(stdout).filter((line): line is ProbeOpenLine => line.type === "open");
 }
 
+/** The `end` lines of the probe's whole stdout. */
+function endsOf(stdout: string): ProbeEndLine[] {
+  return linesOf(stdout).filter((line): line is ProbeEndLine => line.type === "end");
+}
+
 function args(dispatch: { readonly url: string }, token = TOKEN, minutes = "1"): string[] {
   const tokenFile = join(scratch(), "token");
   writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
@@ -535,7 +540,7 @@ test(
     expect(dispatch.upgrades).toEqual(["Bearer not-the-token"]);
     expect(run.stderr).toContain("Dispatch refused the connection to ws://127.0.0.1:");
     expect(
-      linesOf(run.stdout).filter((line) => line.type === "end"),
+      endsOf(run.stdout),
       "the probe wrote an end line when Dispatch refused its connection"
     ).toEqual([]);
   },
@@ -563,7 +568,7 @@ test(
       "Dispatch refused the view: INVALID_QUERY: window is wider than 84 days"
     );
     expect(
-      linesOf(run.stdout).filter((line) => line.type === "end"),
+      endsOf(run.stdout),
       "the probe wrote an end line when Dispatch refused its view"
     ).toEqual([]);
   },
@@ -578,8 +583,11 @@ test(
     const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
     expect(run.code).toBe(0);
     const opens = opensOf(run.stdout);
-    const ends = linesOf(run.stdout).filter((line): line is ProbeEndLine => line.type === "end");
-    expect(opens).toHaveLength(1);
+    const ends = endsOf(run.stdout);
+    expect(
+      opens,
+      "the probe wrote no open line, or more than one, for its one connection"
+    ).toHaveLength(1);
     expect(ends, "the probe wrote no end line when its watch stopped").toHaveLength(1);
     expect(
       Date.parse(ends[0].at) - Date.parse(opens[0].at),
@@ -633,9 +641,14 @@ test(
     const run = await runProbeToEnd(args(dispatch, TOKEN, "0.01"));
     expect(run.code).toBe(0);
     const opens = opensOf(run.stdout);
-    const ends = linesOf(run.stdout).filter((line): line is ProbeEndLine => line.type === "end");
-    expect(dispatch.released).toHaveLength(1);
-    expect(opens).toHaveLength(1);
+    const ends = endsOf(run.stdout);
+    expect(dispatch.released, "the held Dispatch let no upgrade go, or more than one").toHaveLength(
+      1
+    );
+    expect(
+      opens,
+      "the probe wrote no open line, or more than one, for its one connection"
+    ).toHaveLength(1);
     expect(Date.parse(opens[0].at)).toBeGreaterThanOrEqual(dispatch.released[0]);
     expect(ends, "the probe wrote no end line when its late-opening watch stopped").toHaveLength(1);
     expect(
@@ -667,7 +680,7 @@ test(
       const run = await runProbeToEnd(argv);
       expect(run.code).toBe(1);
       expect(
-        linesOf(run.stdout).filter((line) => line.type === "end"),
+        endsOf(run.stdout),
         "the probe wrote an end line when its socket never opened"
       ).toEqual([]);
     } finally {

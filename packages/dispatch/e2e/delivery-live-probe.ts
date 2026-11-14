@@ -490,8 +490,8 @@ async function watch(options: Options, token: string): Promise<ProbeHeld | null>
   // Armed at the first dial for `--open-within`, which fails the watch; the first open arms it
   // again for `--minutes` from then, which ends the watch cleanly.
   let timer: Timer | undefined;
-  // The first open, by the clock its `open` line and the `end` line both read; undefined until
-  // that open.
+  // Set at the first open and read only as whether that open has come; the time `--minutes`
+  // counts from goes to `timeUp` as its argument.
   let openedAt: number | undefined;
   // Settles once, with why the watch ended early, or with nothing once its time is up.
   const ended = Promise.withResolvers<Error | undefined>();

@@ -211,9 +211,8 @@ connection that is refused or does not open is dialled again, as the page does. 
 is up, the probe writes an `end` line, `{ at, type: "end" }`; a signal, a refusal or a failure
 writes none. When the time is up, `--compare` reads the GET routes for the last window it applied
 and writes, for each, whether the pull request ids, run ids and every measure equal what it holds;
-it exits 1 when one does
-not, when no snapshot arrived to compare, or when a read receives nothing for
-`--read-within <seconds>`, a time that starts over as each piece of the answer arrives; without
+it exits 1 when one does not, when no snapshot arrived to compare, or when a read receives nothing
+for `--read-within <seconds>`, a time that starts over as each piece of the answer arrives; without
 that flag a read has the page's own request deadline, `REQUEST_DEADLINE_MS` (30 s).
 `--body-file <file>` writes the body it holds.
 

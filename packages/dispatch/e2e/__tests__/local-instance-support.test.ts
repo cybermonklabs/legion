@@ -77,9 +77,21 @@ function killLeft(pid: number): void {
   }
 }
 
-/** One macrotask turn: the runtime reports an unhandled rejection only after the microtask queue
- *  drains, so a test that waits for that report yields one turn rather than a guessed duration. */
+/** One macrotask turn. It resolves on a `setImmediate`, which comes only once the microtask
+ *  queue has drained, and which Bun's fake clock leaves real. So the runtime's report of an
+ *  unhandled rejection has come by then, and so has every promise already chained, however deep,
+ *  without a fake clock moving. */
 const nextTurn = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+/** Answers whether `waiting` has settled yet, without awaiting it. */
+function watch(waiting: Promise<unknown>): () => boolean {
+  let settled = false;
+  const done = () => {
+    settled = true;
+  };
+  waiting.then(done, done);
+  return () => settled;
+}
 
 /** A `Supervisor.stop` the row started and did not await. A stop that never sees a leader exit
  *  never returns, so the row waits for `returned` with `eventually`, which fails naming the stop,
@@ -134,8 +146,8 @@ afterEach(async () => {
 
 describe("Supervisor.stop", () => {
   // Each of the two rows holds one leader past the SIGTERM until the row lets it go, so the row,
-  // and not the scheduler, decides which leader exits last. A stop that waits for only some of its
-  // leaders then returns while the held one still runs, whichever leader it skips.
+  // and not the scheduler, decides which leader exits last. Each row catches a stop that skips
+  // its held leader, so the two rows together catch a stop that skips either.
   for (const held of ["leader", "quiet"] as const) {
     test(
       `ends every process group it started, a grandchild included, when the ${held} process exits last`,
@@ -145,9 +157,11 @@ describe("Supervisor.stop", () => {
         const heldPidFile = join(directory, "held.pid");
         const release = join(directory, "release");
         // The held leader ignores SIGTERM and exits once the row writes a line to the FIFO
-        // `release`. It opens the FIFO for reading and writing, so its open waits for no writer,
-        // and the row's write finds a reader as long as the held leader runs.
-        const hold = `mkfifo ${release}; exec 3<> ${release}; trap '' TERM`;
+        // `release`, or once `outlastsRow` has passed, so it ends by itself after the row when
+        // the run is killed. It opens the FIFO for reading and writing, so its open waits for no
+        // writer, and the row's write finds a reader as long as the held leader runs. It writes
+        // its pid once it ignores SIGTERM.
+        const hold = `mkfifo ${release}; exec 3<> ${release}; trap '' TERM; echo $$ > ${heldPidFile}; read -t ${outlastsRow} _ <&3`;
         const made = supervisor();
         const leaderRunning = made.start(
           "leader",
@@ -156,34 +170,28 @@ describe("Supervisor.stop", () => {
             "-c",
             held === "leader"
               ? // The sleep starts ahead of the trap, so it does not ignore SIGTERM too.
-                `sleep ${outlastsRow} & child=$!; ${hold}; echo $child > ${pidFile}; read _ <&3`
+                `sleep ${outlastsRow} & echo $! > ${pidFile}; ${hold}`
               : `sleep ${outlastsRow} & echo $! > ${pidFile}; wait`,
           ],
           "/"
         );
         const quietRunning = made.start(
           "quiet",
-          held === "quiet"
-            ? ["bash", "-c", `${hold}; echo $$ > ${heldPidFile}; read _ <&3`]
-            : ["sleep", `${outlastsRow}`],
+          held === "quiet" ? ["bash", "-c", hold] : ["sleep", `${outlastsRow}`],
           "/"
         );
         const leader = pidOf(leaderRunning);
         const quiet = pidOf(quietRunning);
-        const [heldPid, other, otherRunning] =
-          held === "leader" ? [leader, "quiet", quietRunning] : [quiet, "leader", leaderRunning];
-        const otherPid = pidOf(otherRunning);
-        let otherExited = false;
-        const exited = () => {
-          otherExited = true;
-        };
-        otherRunning.exited.then(exited, exited);
+        const [other, otherPid, otherRunning] =
+          held === "leader"
+            ? (["quiet", quiet, quietRunning] as const)
+            : (["leader", leader, leaderRunning] as const);
+        const otherExited = watch(otherRunning.exited);
         let grandchild: number | undefined;
         try {
           grandchild = await pidFrom(pidFile);
           const alone = grandchild;
-          // The held leader writes its pid once it ignores SIGTERM.
-          if (held === "quiet") await pidFrom(heldPidFile);
+          const heldPid = await pidFrom(heldPidFile);
           expect(groupAlive(leader)).toBe(true);
           expect(groupAlive(quiet)).toBe(true);
 
@@ -197,7 +205,7 @@ describe("Supervisor.stop", () => {
           }));
           await eventually(
             `the ${other} process ${otherPid} to exit on the stop's SIGTERM`,
-            () => otherExited
+            otherExited
           );
           // A stop that waited for that leader alone settles in the microtasks its exit
           // released, and one macrotask turn runs them all.
@@ -245,8 +253,8 @@ describe("Supervisor.stop", () => {
         }
       },
       // Five waits the short bound of `eventually` ends, one after another: the grandchild's pid
-      // in its file, the held quiet process's pid in its file (in the row that holds it), the
-      // other leader's exit, the stop's return, then the leader's group leaving the process table.
+      // in its file, the held leader's pid in its file, the other leader's exit, the stop's
+      // return, then the leader's group leaving the process table.
       rowLimit("short", "short", "short", "short", "short")
     );
   }
@@ -566,24 +574,12 @@ describe("awaitSeededInbox", () => {
     return made;
   }
 
-  /** Answers whether `waiting` has settled yet, without awaiting it. */
-  function watch(waiting: Promise<unknown>): () => boolean {
-    let settled = false;
-    const done = () => {
-      settled = true;
-    };
-    waiting.then(done, done);
-    return () => settled;
-  }
-
   /** Moves the fake clock `ms` on one millisecond at a time, and lets what each step released run
    *  before the next, so a sleep or a read the helper starts inside the span is timed from the
    *  moment it starts. One jump is not enough: once the process has spawned a child, Bun fires
    *  every timer of the span before the helper's continuations run, and the next sleep then
-   *  starts at the end of the span. Each step ends on `nextTurn`, which lets every promise the
-   *  helper chained run as far as it goes, however deep, without the clock moving: a macrotask
-   *  turn comes only once the microtask queue has drained, and Bun's fake clock leaves
-   *  `setImmediate` real. */
+   *  starts at the end of the span. Each step ends on `nextTurn`, so every promise the helper
+   *  chained runs as far as it goes before the clock moves again. */
   async function pass(ms: number): Promise<void> {
     await nextTurn();
     for (let step = 0; step < ms; step += 1) {
