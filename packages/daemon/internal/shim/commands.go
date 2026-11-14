@@ -131,12 +131,14 @@ func (s *shim) adopt(request shimwire.AdoptWorkingCopy) {
 	s.toDaemon(result)
 }
 
-// rescue answers `rescue-unpushed`: every workspace on the pod's disk is checked for work its
-// remote lacks, and that work is pushed to rescue branches, as this role and with its own
-// credential (internal/rescue). The disk is the one the shim's LEGION_WORKSPACE is on; a shim
-// without one (the project controller's) has no workspace and refuses. The timeout runs on the
-// shim's command context (s.commands), so the shim's own end — a signal or the `shutdown` the
-// daemon stops a pane with — ends the git and jj of the rescue with it.
+// rescue answers `rescue-unpushed`: every workspace on the pod's disk is checked for the issue's
+// own work its remote lacks, and that work is pushed to the issue's one rescue branch, as this
+// role and with its own credential (internal/rescue). The disk is the one the shim's
+// LEGION_WORKSPACE is on; a shim without one (the project controller's) has no workspace and
+// refuses. The timeout runs on the shim's command context (s.commands), so the shim's own end — a
+// signal or the `shutdown` the daemon stops a pane with — ends the git and jj of the rescue with
+// it. The report names every commit each branch carries, so the result crosses the lane as an
+// rpc_chunk sequence when it is larger than one line.
 func (s *shim) rescue(request shimwire.RescueUnpushed) {
 	result := shimwire.RescueUnpushedResult{ID: request.ID, OK: true}
 	workspace := envValue(s.cfg.Env, "LEGION_WORKSPACE")
@@ -152,13 +154,13 @@ func (s *shim) rescue(request shimwire.RescueUnpushed) {
 		timeout := time.Duration(request.TimeoutMs) * time.Millisecond
 		ctx, cancel := context.WithTimeout(s.commands, timeout)
 		result.Workspaces = rescue.Run(ctx, rescue.Request{
-			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Env: s.cfg.Env,
+			StateDir: rescue.StateDirOf(workspace), Branch: request.Branch, Target: request.Target, Env: s.cfg.Env,
 			WorkspaceTimeout: time.Duration(request.WorkspaceTimeoutMs) * time.Millisecond,
 			Deadline:         time.Now().Add(timeout),
 		})
 		cancel()
 	}
-	s.toDaemon(result)
+	s.toDaemonChunked(result)
 }
 
 // adoptionArgs is the one adoption command both executors run (adoptWorkingCopyCommand,
@@ -204,7 +206,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	defer cancel()
 	env := append(slices.Clone(s.cfg.Env), "JJ_USER="+request.JJUser, "JJ_EMAIL="+request.JJEmail)
 	started := time.Now()
-	described, err := workspace.RunCommand(ctx, budget, started, env, dir, nil, describedArgs(jj, dir))
+	described, err := workspace.RunCommand(ctx, nil, budget, started, env, dir, nil, describedArgs(jj, dir))
 	if err != nil {
 		return err
 	}
@@ -212,6 +214,6 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) error {
 	if described != "" {
 		change = []string{jj, "new", "-R", dir}
 	}
-	_, err = workspace.RunCommand(ctx, budget, started, env, dir, nil, change)
+	_, err = workspace.RunCommand(ctx, nil, budget, started, env, dir, nil, change)
 	return err
 }
