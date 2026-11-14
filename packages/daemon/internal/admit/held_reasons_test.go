@@ -1,8 +1,6 @@
 package admit
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"go/ast"
@@ -11,17 +9,15 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
-	"io"
 	"maps"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // recordPackage is the import path of the package whose words these tests read, and recordDir
@@ -92,7 +88,7 @@ func recordSource(t *testing.T) map[string][]byte {
 // above it — is a word someone meant to add that would otherwise read as that other word. It
 // fails too when it reads no word at all, since a test over none would pass.
 func heldReasonsIn(source map[string][]byte) (map[string]record.HeldReason, error) {
-	exports, err := recordDependencies()
+	compiled, err := testtypes.CompiledDependencies(recordPackage)
 	if err != nil {
 		return nil, err
 	}
@@ -104,13 +100,6 @@ func heldReasonsIn(source map[string][]byte) (map[string]record.HeldReason, erro
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 		parsed = append(parsed, file)
-	}
-	compiled := func(path string) (io.ReadCloser, error) {
-		export, found := exports[path]
-		if !found {
-			return nil, fmt.Errorf("the go command reported no compiled types for %s", path)
-		}
-		return os.Open(export)
 	}
 	defs := map[*ast.Ident]types.Object{}
 	config := types.Config{Importer: importer.ForCompiler(files, "gc", compiled)}
@@ -171,35 +160,6 @@ func heldReasonsIn(source map[string][]byte) (map[string]record.HeldReason, erro
 	}
 	return declared, nil
 }
-
-// recordDependencies is where the compiler left the types of everything the record package
-// imports, asked of the go command once per test binary: it reports the file of each from its
-// build cache. heldReasonsIn reads those rather than type-checking the record package's whole
-// dependency tree from its source. That tree holds supervise's, whose read from source is the
-// tens of seconds supervise's own compiledDependencies is there to avoid by reading its package's
-// the same way.
-var recordDependencies = sync.OnceValues(func() (map[string]string, error) {
-	listed, err := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", recordPackage).Output()
-	if err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return nil, fmt.Errorf("ask the go command where the record package's dependencies were compiled: %w: %s", err, exit.Stderr)
-		}
-		return nil, fmt.Errorf("ask the go command where the record package's dependencies were compiled: %w", err)
-	}
-	exports := make(map[string]string)
-	decoder := json.NewDecoder(bytes.NewReader(listed))
-	for decoder.More() {
-		var dependency struct{ ImportPath, Export string }
-		if err := decoder.Decode(&dependency); err != nil {
-			return nil, fmt.Errorf("read the go command's answer: %w", err)
-		}
-		if dependency.Export != "" {
-			exports[dependency.ImportPath] = dependency.Export
-		}
-	}
-	return exports, nil
-})
 
 // withWordInHeldBlock is the record package's source with spec written as the last line of
 // record/held.go's block of words. The file is changed in memory only; the one on disk is left as
