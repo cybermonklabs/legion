@@ -672,9 +672,13 @@ func TestGitWrapperRefusesAnyOtherForm(t *testing.T) {
 // git hands git the text it read as standard input again, and the commit carries both lines. A
 // process substitution, which git reads once, is left for git to read when the git to run is a
 // script, so its commit is git alone's: through that host both fail alike, and through a host's
-// script that keeps the descriptor both commit `msg`, with no line added. A path that names a
-// descriptor, `-F /dev/stdin` from a regular file, is left for git in the same way: through that
-// host both commit `msg`, with no line added.
+// script that keeps the descriptor both commit `msg`, with no line added.
+//
+// A path that names descriptor 0 goes to git on descriptor 0 too, through a host's script and
+// through a compiled host's git (closingGitSource) alike. So each commit is git alone's. With
+// `-F /dev/stdin` from a regular file and from a pipe, both commit `msg`, and the pane's git adds
+// both lines. With `-t /dev/stdin` beside --amend, from a template that is HEAD's message, both
+// refuse the commit, and HEAD stays as it was.
 func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
@@ -682,48 +686,91 @@ func TestGitWrapperAfterHandsStandardInputThroughAHostThatClosesDescriptors(t *t
 	if err != nil {
 		t.Fatal(err)
 	}
-	closer, keeper := t.TempDir(), t.TempDir()
+	closer, keeper, compiledCloser := t.TempDir(), t.TempDir(), t.TempDir()
+	// The loop has no `2>/dev/null`. For that redirection bash keeps stderr on a descriptor above 2,
+	// the loop closes that descriptor, and bash cannot put stderr back: git would print to /dev/null.
 	closing := "#!" + bash + "\n" +
-		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done 2>/dev/null\n" +
+		"for fd in /proc/self/fd/*; do n=${fd##*/}; if [ \"$n\" -gt 2 ] && [ \"$n\" != 255 ]; then eval \"exec $n>&-\"; fi; done\n" +
 		"exec '" + git + "' \"$@\"\n"
 	if err := os.WriteFile(filepath.Join(closer, "git"), []byte(closing), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	writeTrailerScript(t, filepath.Join(keeper, "git"), "exec '"+git+"' \"$@\"\n")
+	copyExecutable(t, goGitProgram(t, strings.Replace(closingGitSource, "REAL_GIT", strconv.Quote(git), 1)), filepath.Join(compiledCloser, "git"))
 	lines := "\nOmp-Session: closer-session\nLegion-Role: implementer\n"
-	for _, tc := range []struct {
+	type row struct {
 		name, host, command, stdin string
-		// commits is whether git alone commits, and added what the pane's git adds then.
+		// commits is whether git alone commits, and added what the pane's git adds then. refusal is
+		// a line that git alone prints when it makes no commit.
 		commits bool
 		added   string
-	}{
-		{"-F - through a host that closes descriptors", closer, "git commit -q --allow-empty -F -", "msg", true, lines},
-		{"-F <(printf msg) through a host that closes descriptors", closer, "git commit -q --allow-empty -F <(printf msg)", "", false, ""},
-		{"-F <(printf msg) through a host's script that keeps them", keeper, "git commit -q --allow-empty -F <(printf msg)", "", true, ""},
-		{"-F /dev/stdin from a regular file through a host that closes descriptors", closer,
-			`printf msg > "$TMPDIR/msg" && git commit -q --allow-empty -F /dev/stdin < "$TMPDIR/msg"`, "", true, ""},
-	} {
+		refusal string
+	}
+	rows := []row{
+		{"-F - through a host that closes descriptors", closer, "git commit -q --allow-empty -F -", "msg", true, lines, ""},
+		{"-F <(printf msg) through a host that closes descriptors", closer, "git commit -q --allow-empty -F <(printf msg)", "", false, "", "could not read log file"},
+		{"-F <(printf msg) through a host's script that keeps them", keeper, "git commit -q --allow-empty -F <(printf msg)", "", true, "", ""},
+	}
+	for _, host := range []struct{ name, dir string }{{"a host's script", closer}, {"a compiled host's git", compiledCloser}} {
+		rows = append(rows,
+			row{"-F /dev/stdin from a regular file through " + host.name + " that closes descriptors", host.dir,
+				`printf msg > "$TMPDIR/msg" && git commit -q --allow-empty -F /dev/stdin < "$TMPDIR/msg"`, "", true, lines, ""},
+			row{"-F /dev/stdin from a pipe through " + host.name + " that closes descriptors", host.dir,
+				"printf msg | git commit -q --allow-empty -F /dev/stdin", "", true, lines, ""},
+			row{"-t /dev/stdin beside --amend, HEAD's message, through " + host.name + " that closes descriptors", host.dir,
+				"'" + git + `' commit -q --allow-empty -m msg && printf 'msg\n' > "$TMPDIR/template" && ` +
+					`git commit -q --allow-empty --amend -t /dev/stdin < "$TMPDIR/template"`,
+				"", false, "", "Aborting commit; you did not edit the message."},
+		)
+	}
+	for _, tc := range rows {
 		t.Run(tc.name, func(t *testing.T) {
-			outcome := func(path string) (int, string) {
+			// outcome runs the command and answers its exit status, its stderr and HEAD's message
+			// after it, "" when there is no HEAD.
+			outcome := func(path string) (code int, stderr, message string) {
 				repo := trailerRepo(t, git)
 				env := trailerEnv(t, path, "DISPATCH_HOST=omp", "DISPATCH_SESSION_ID=closer-session", "LEGION_ROLE=implementer")
-				code, _, stderr := trailerRun(t, repo, env, tc.stdin, bash, "-c", tc.command)
-				if code != 0 {
-					return code, stderr
+				code, _, stderr = trailerRun(t, repo, env, tc.stdin, bash, "-c", tc.command)
+				if head, _, _ := trailerRun(t, repo, trailerEnv(t, trailerPath(git)), "", git, "rev-parse", "-q", "--verify", "HEAD"); head == 0 {
+					message = trailerMessage(t, git, repo)
 				}
-				return 0, trailerMessage(t, git, repo)
+				return code, stderr, message
 			}
-			aloneCode, alone := outcome(tc.host + ":" + trailerPath(git))
-			wrappedCode, wrapped := outcome(trailerWrapperDir(t, legion) + ":" + tc.host + ":" + trailerPath(git))
+			aloneCode, aloneErr, alone := outcome(tc.host + ":" + trailerPath(git))
+			wrappedCode, wrappedErr, wrapped := outcome(trailerWrapperDir(t, legion) + ":" + tc.host + ":" + trailerPath(git))
 			if (aloneCode == 0) != tc.commits || wrappedCode != aloneCode {
-				t.Fatalf("git alone exited %d (%q) and through the pane's git %d (%q); want a commit: %v, both alike", aloneCode, alone, wrappedCode, wrapped, tc.commits)
+				t.Fatalf("git alone exited %d (%q) and through the pane's git %d (%q); want a commit: %v, both alike", aloneCode, aloneErr, wrappedCode, wrappedErr, tc.commits)
 			}
 			if tc.commits && (alone != "msg\n" || wrapped != "msg\n"+tc.added) {
 				t.Fatalf("git alone committed %q and the pane's git %q, want %q and %q", alone, wrapped, "msg\n", "msg\n"+tc.added)
 			}
+			if !tc.commits && (wrapped != alone || !strings.Contains(aloneErr, tc.refusal) || !strings.Contains(wrappedErr, tc.refusal)) {
+				t.Fatalf("git alone left HEAD %q and printed %q, the pane's git left %q and printed %q; want the same HEAD and %q from both", alone, aloneErr, wrapped, wrappedErr, tc.refusal)
+			}
 		})
 	}
 }
+
+// closingGitSource is a compiled host's git wrapper that closes every descriptor from 3 to 255, as
+// Python's subprocess, Node's spawn and sudo do, and then runs the git that REAL_GIT names: the
+// test puts a quoted path there.
+const closingGitSource = `package main
+
+import (
+	"os"
+	"syscall"
+)
+
+const git = REAL_GIT
+
+func main() {
+	for fd := 3; fd < 256; fd++ {
+		syscall.Close(fd)
+	}
+	syscall.Exec(git, append([]string{git}, os.Args[1:]...), os.Environ())
+	os.Exit(126)
+}
+`
 
 // A host's git that is a script with no `#!` line, which the kernel refuses to run, runs as a
 // shell and execvp run it, with /bin/sh. It counts as a script, not the real git: the helper is the

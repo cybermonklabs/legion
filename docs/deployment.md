@@ -175,10 +175,14 @@ A host's git wrapper script can run a different `git`, and `legion git` does not
 of that `git`. When that different `git` is older than 2.32, it refuses the two `--trailer`
 options with its unknown-option error, so the commit fails, although the same commit succeeds
 without `bin/git`.
-Every `git` command of a pane runs through `legion git`, so `git` dies of SIGTERM, SIGPIPE,
-SIGQUIT, SIGUSR1 or SIGUSR2 even when the caller of `git` ignores that signal.
-The Go runtime handles these five signals, and the exec sets each handled signal back to its
-default action (an ignored SIGINT or SIGHUP stays ignored).
+Every `git` command of a pane runs through `legion git`, so `git` can die of a signal that its
+caller ignores.
+The Go runtime puts its own handler over an ignore that the caller set, for each signal that it
+handles except SIGHUP and SIGINT.
+It does not handle SIGTSTP, SIGTTIN or SIGTTOU.
+The exec sets each handled signal back to its default action.
+So `git` dies of an ignored SIGTERM, SIGPIPE or SIGQUIT, for example, but an ignored SIGHUP,
+SIGINT, SIGTSTP, SIGTTIN or SIGTTOU stays ignored.
 `legion controller start` writes the same `git` into the `bin/` of its own state directory, by the
 same rule, for the operator's controller.
 The two lines record which session and which role made a commit, and they guard nothing.

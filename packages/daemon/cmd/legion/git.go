@@ -61,10 +61,12 @@ const wrappedGitAt = "WRAPPED_GIT_AT"
 // a death by that signal as (endedBySignal), before it reads anything or runs git.
 //
 // This has a limit. The Go runtime puts its own handler over an ignore that the caller set for
-// every signal but SIGHUP and SIGINT (sigInstallGoHandler, runtime/signal_unix.go), and the exec
-// sets each handled signal back to its default action. So where the caller ignores SIGTERM,
-// SIGPIPE, SIGQUIT, SIGUSR1 or SIGUSR2, git alone lives through that signal, but legion git and
-// the git it runs die of it.
+// each signal it handles, except SIGHUP and SIGINT (sigInstallGoHandler, runtime/signal_unix.go).
+// It does not handle SIGTSTP, SIGTTIN or SIGTTOU (_SigDefault, runtime/sigtab_linux_generic.go).
+// The exec sets each handled signal back to its default action. So where the caller ignores a
+// signal that the runtime handles, such as SIGTERM, SIGPIPE or SIGQUIT, git alone lives through
+// that signal, but legion git and the git it runs die of it. An ignored SIGHUP, SIGINT, SIGTSTP,
+// SIGTTIN or SIGTTOU stays ignored.
 func runGit(ctx context.Context, args []string, _, stderr io.Writer) int {
 	if len(args) > 0 && helpRequested(args[0]) {
 		fmt.Fprint(stderr, gitUsage)

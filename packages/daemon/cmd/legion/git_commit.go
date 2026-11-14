@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -147,14 +148,22 @@ func commitWithTrailers(git gitReader, script bool, args []string, env map[strin
 // commitStash is a message or template that the wrapper read, that git reads once, and that git
 // can no longer read: standard input for -F -, or a -F path, or a -t path that template_untouched
 // alone reads, that is no regular file (a FIFO, a process substitution) or that names a descriptor
-// (namesADescriptor). It is in file, an unlinked regular file under TMPDIR, at offset 0: git reads
-// it from its start through the descriptor it gets, also on macOS, where git's open of
-// /dev/fd/<n> shares the descriptor's offset (fd(4)).
+// (namesADescriptor). It is in file, an unlinked regular file under TMPDIR, at offset 0
+// (stashSource).
 //
-// Standard input (stdin) becomes git's standard input again: the file goes onto descriptor 0
-// before the exec (asStandardInput), and `-F -` stays as written in every spelling. Descriptors 0
-// to 2 reach git through any host wrapper, and a wrapper that closes the ones above 2 (Python's
-// subprocess, Node's spawn, sudo) leaves them open.
+// Standard input, and a path that names descriptor 0, go to git on descriptor 0 (stdin): the file
+// goes onto descriptor 0 before the exec (asStandardInput), and the argument stays as written:
+// `-F -` in every spelling, or the path. Descriptors 0 to 2 reach git through any host wrapper, a
+// script too. A wrapper that closes the ones above 2 (Python's subprocess, Node's spawn, sudo)
+// leaves them open.
+//
+// For a path that names descriptor 0, the file gives git the text that git alone reads, on Linux
+// and on macOS. The wrapper reads the path as git alone opens it. On Linux that open opens the
+// source on descriptor 0 again, a regular file at offset 0. On macOS it is a dup of descriptor 0
+// that shares its offset (fd(4)). So the wrapper's read starts where git's read would start, and it
+// reads what git would read. Then git's own open of the path reads the file from its start. On
+// Linux that open opens the file again at offset 0. On macOS it shares the offset of descriptor 0,
+// now the file's offset, which is 0.
 //
 // Any other source keeps its descriptor open across the exec, and git gets /dev/fd/<that
 // descriptor> in place of the value at args[arg][at:]. The descriptor is the one the open
@@ -168,24 +177,75 @@ type commitStash struct {
 	at    int
 }
 
+// stashSource keeps a source that git can read once in a new stash for the file option f
+// (commitStash), and answers the text it read. It reads standard input when readStdin is true,
+// and path otherwise. stdin is the stash's field of that name: whether the stash goes to git on
+// descriptor 0. It makes the file before it reads, so a source that it cannot keep is left unread
+// for git (readDeclined). A read that fails gives readFailed, as git's own read fails.
+//
+// After it writes the text, it rewinds the file to offset 0, so git reads the text from its start
+// through the descriptor it gets. On Linux git's open of /dev/fd/<n> or /dev/stdin opens the file
+// again at offset 0. On macOS that open shares the descriptor's offset (fd(4)), which the rewind
+// puts at 0. A stash that git gets through /dev/fd/<n> has its close-on-exec flag cleared, so its
+// descriptor stays open across the exec. The error is a write, a rewind or a flag change that
+// failed after the read, and then it returns no stash.
+func stashSource(f commitFile, path string, readStdin, stdin bool) (string, commitReadStatus, *commitStash, error) {
+	file, err := os.CreateTemp("", "legion-git-message-*")
+	if err != nil {
+		return "", readDeclined, nil, nil
+	}
+	if err := os.Remove(file.Name()); err != nil {
+		file.Close()
+		return "", readDeclined, nil, nil
+	}
+	var read []byte
+	if readStdin {
+		read, err = io.ReadAll(os.Stdin)
+	} else {
+		read, err = os.ReadFile(path)
+	}
+	if err != nil {
+		file.Close()
+		return "", readFailed, nil, nil
+	}
+	if _, err := file.Write(read); err != nil {
+		file.Close()
+		return "", readDeclined, nil, fmt.Errorf("keep the text git can no longer read: %w", err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		file.Close()
+		return "", readDeclined, nil, fmt.Errorf("rewind the text kept for git: %w", err)
+	}
+	if !stdin {
+		if _, err := unix.FcntlInt(file.Fd(), unix.F_SETFD, 0); err != nil {
+			file.Close()
+			return "", readDeclined, nil, fmt.Errorf("keep the text git can no longer read open for git: %w", err)
+		}
+	}
+	return string(read), readDone, &commitStash{file: file, stdin: stdin, arg: f.arg, at: f.at}, nil
+}
+
 // namesADescriptor is whether path, a -F or -t value as git opens it, names a descriptor of the
 // process that opens it: /dev/stdin, /dev/stdout, /dev/stderr, or a path under /dev/fd/ or
-// /proc/self/fd/. It reads path cleaned, each symbolic link it leads to in turn, and path with
-// every link resolved (filepath.EvalSymlinks), where each can be read. On macOS an open of such a
-// path shares the descriptor's offset (fd(4)), so the wrapper's read of a regular file there would
-// leave git's own read at its end. So the wrapper reads such a path once, as it reads a source that
-// is no regular file (readFile), on every system.
-func namesADescriptor(path string) bool {
-	names := func(path string) bool {
+// /proc/self/fd/. standardInput is whether that descriptor is 0: /dev/stdin, /dev/fd/0 or
+// /proc/self/fd/0. It reads path cleaned, each symbolic link it leads to in turn, and path with
+// every link resolved (filepath.EvalSymlinks), where each can be read, and the first of them that
+// names a descriptor gives both answers. On macOS an open of such a path shares the descriptor's
+// offset (fd(4)), so the wrapper's read of a regular file there would leave git's own read at its
+// end. So the wrapper reads such a path once, as it reads a source that is no regular file
+// (readFile), on every system.
+func namesADescriptor(path string) (names, standardInput bool) {
+	named := func(path string) (bool, bool) {
 		path = filepath.Clean(path)
-		return path == "/dev/stdin" || path == "/dev/stdout" || path == "/dev/stderr" ||
-			strings.HasPrefix(path, "/dev/fd/") || strings.HasPrefix(path, "/proc/self/fd/")
+		zero := path == "/dev/stdin" || path == "/dev/fd/0" || path == "/proc/self/fd/0"
+		return zero || path == "/dev/stdout" || path == "/dev/stderr" ||
+			strings.HasPrefix(path, "/dev/fd/") || strings.HasPrefix(path, "/proc/self/fd/"), zero
 	}
 	// 40 is the number of links Linux follows in one path before it fails with ELOOP.
 	link := path
 	for range 40 {
-		if names(link) {
-			return true
+		if names, zero := named(link); names {
+			return true, zero
 		}
 		target, err := os.Readlink(link)
 		if err != nil {
@@ -197,20 +257,17 @@ func namesADescriptor(path string) bool {
 		link = target
 	}
 	resolved, err := filepath.EvalSymlinks(path)
-	return err == nil && names(resolved)
+	if err != nil {
+		return false, false
+	}
+	return named(resolved)
 }
 
-// asStandardInput makes file, a stash of standard input (commitStash), descriptor 0 of this
-// process, so git reads it as the standard input it was. A dup onto 0 leaves the new descriptor
-// open across the exec, and file's own descriptor closes there. A file that is already descriptor
-// 0 (this process started with none) has its close-on-exec flag cleared.
+// asStandardInput makes file, a stash that goes to git on descriptor 0 (commitStash), descriptor 0
+// of this process, so git reads it as the standard input it was. A dup onto 0 leaves the new
+// descriptor open across the exec, and file's own descriptor closes there.
 func asStandardInput(file *os.File) error {
-	fd := int(file.Fd())
-	if fd == 0 {
-		_, err := unix.FcntlInt(0, unix.F_SETFD, 0)
-		return err
-	}
-	if err := dupOnto(fd, 0); err != nil {
+	if err := dupOnto(int(file.Fd()), 0); err != nil {
 		return fmt.Errorf("hand git the standard input kept for it: %w", err)
 	}
 	return nil

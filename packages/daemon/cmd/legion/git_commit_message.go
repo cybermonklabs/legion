@@ -1,14 +1,10 @@
 package main
 
 import (
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
-
-	"golang.org/x/sys/unix"
 )
 
 // This file builds and checks a commit's message as git 2.47.3 does: prepare_to_commit and
@@ -132,10 +128,13 @@ func (b commitBuild) prepare(cfg commitConfig, mode commitCleanupMode) (commitDr
 	if o.statusWritten {
 		includeStatus = o.includeStatus
 	}
-	// readSource is readFile, and it keeps the stash readFile makes: once d holds a stash, a
-	// source that would need another is declined.
-	readSource := func(f commitFile, path string, stdin, written bool) (string, commitReadStatus, error) {
-		read, status, stash, err := b.readFile(f, path, stdin, written && d.stash == nil)
+	// readSource is readFile, and it keeps the stash readFile makes. Only two reads may keep a
+	// stash: the -F read, and the read for template_untouched (mayStash is false for the template
+	// that is the message). plan() turns templateOn off whenever -F is set, so no commit makes both
+	// reads, and a second stash cannot arise. The guard `d.stash == nil` keeps that rule if plan()
+	// changes: a source that would need a second stash is declined.
+	readSource := func(f commitFile, path string, stdin, mayStash bool) (string, commitReadStatus, error) {
+		read, status, stash, err := b.readFile(f, path, stdin, mayStash && d.stash == nil)
 		if stash != nil {
 			d.stash = stash
 		}
@@ -245,8 +244,9 @@ func (b commitBuild) prepare(cfg commitConfig, mode commitCleanupMode) (commitDr
 		// git reads the template twice here: as the message, and again in template_untouched. A
 		// template that is no regular file gives git's second read nothing, and template_untouched
 		// then refuses nothing. A stash would give that read the whole text again, and git would
-		// refuse a commit it accepts alone. So such a template is left for git to read (written is
-		// false), and no line is added.
+		// refuse a commit it accepts alone. A template on descriptor 0 is no different: a pipe there
+		// gives git's second read nothing, and a stash on descriptor 0 would not. So such a template
+		// is left for git to read (mayStash is false), and no line is added.
 		read, status, err := readSource(template, templatePath, false, false)
 		if status != readDone {
 			return d, false, err
@@ -415,64 +415,37 @@ const (
 
 // readFile reads what git reads for the file option f at path, standard input when stdin is true.
 // It reads a regular file that names no descriptor (namesADescriptor) and leaves it for git to read
-// again. git cannot read any other source twice, so readFile keeps it in a stash (commitStash) and
-// returns the stash when written is true: an argument names the source, and git reads it once. It
-// declines such a source when written is false: no argument can name a stash of it, git reads it
-// twice, or a stash is kept already (commitBuild.prepare). It declines such a source but standard
-// input when the git to run is a script, which may close the stash's descriptor. It declines every
-// such source when --interactive, -p or --pathspec-from-file is given, since git reads standard
-// input for each before the message. The error is a stash it could not write after it read the
-// source, and then it returns no stash.
-func (b commitBuild) readFile(f commitFile, path string, stdin, written bool) (string, commitReadStatus, *commitStash, error) {
+// again. git cannot read any other source twice, so readFile keeps it in a stash (stashSource) and
+// returns the stash when mayStash is true: git reads the source once. Standard input and a path
+// that names descriptor 0 go to git on descriptor 0, and any other source through the descriptor
+// that an argument names (commitStash). It declines such a source when mayStash is false: git
+// reads it twice, no argument can name a stash of it, or a stash is kept already
+// (commitBuild.prepare). It declines such a source that goes to git through an argument when the
+// git to run is a script, which may close the stash's descriptor. It declines every such source
+// when --interactive, -p or --pathspec-from-file is given, since git reads standard input for each
+// before the message. The error is a stash it could not write after it read the source, and then
+// it returns no stash.
+func (b commitBuild) readFile(f commitFile, path string, stdin, mayStash bool) (string, commitReadStatus, *commitStash, error) {
+	onStandardInput := stdin
 	if !stdin {
 		info, err := os.Stat(path)
 		if err != nil {
 			return "", readFailed, nil, nil
 		}
-		if info.Mode().IsRegular() && !namesADescriptor(path) {
+		descriptor, zero := namesADescriptor(path)
+		if info.Mode().IsRegular() && !descriptor {
 			read, err := os.ReadFile(path)
 			if err != nil {
 				return "", readFailed, nil, nil
 			}
 			return string(read), readDone, nil, nil
 		}
+		onStandardInput = zero
 	}
-	if !written || !stdin && b.script || b.opts.interactive || b.opts.patch || b.opts.pathspecFromFile.set {
+	if !mayStash || !onStandardInput && b.script || b.opts.interactive || b.opts.patch || b.opts.pathspecFromFile.set {
 		return "", readDeclined, nil, nil
 	}
-	file, err := os.CreateTemp("", "legion-git-message-*")
-	if err != nil {
-		return "", readDeclined, nil, nil
-	}
-	if err := os.Remove(file.Name()); err != nil {
-		file.Close()
-		return "", readDeclined, nil, nil
-	}
-	var read []byte
-	if stdin {
-		read, err = io.ReadAll(os.Stdin)
-	} else {
-		read, err = os.ReadFile(path)
-	}
-	if err != nil {
-		file.Close()
-		return "", readFailed, nil, nil
-	}
-	if _, err := file.Write(read); err != nil {
-		file.Close()
-		return "", readDeclined, nil, fmt.Errorf("keep the text git can no longer read: %w", err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		file.Close()
-		return "", readDeclined, nil, fmt.Errorf("rewind the text kept for git: %w", err)
-	}
-	if !stdin {
-		if _, err := unix.FcntlInt(file.Fd(), unix.F_SETFD, 0); err != nil {
-			file.Close()
-			return "", readDeclined, nil, fmt.Errorf("keep the text git can no longer read open for git: %w", err)
-		}
-	}
-	return string(read), readDone, &commitStash{file: file, stdin: stdin, arg: f.arg, at: f.at}, nil
+	return stashSource(f, path, stdin, onStandardInput)
 }
 
 // withSignoff is text with the line -s adds, as append_signoff (sequencer.c) adds it with no

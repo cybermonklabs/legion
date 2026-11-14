@@ -288,8 +288,9 @@ func TestGitWrapperTrailerAgreesWithGitOnEveryMessageForm(t *testing.T) {
 // `legion git --real`, with both lines added: a -F process substitution and a -t one beside
 // --amend, each of which the wrapper keeps in a file of its own, and -F /dev/stdin from a regular
 // file. On macOS the wrapper's own read of /dev/stdin moves standard input to its end, and a Linux
-// run cannot show that, since Linux opens the file again for that read. So for standard input the
-// stand-in must also read another descriptor than 0: the file the wrapper kept.
+// run cannot show that, since Linux opens the file again for that read. So for -F /dev/stdin the
+// stand-in must read the file the wrapper kept, not the caller's: git gets /dev/stdin as written,
+// and descriptor 0 holds the kept file at offset 0, which is another file than the caller's.
 func TestGitWrapperTrailerHandsGitTheMessageFromItsStart(t *testing.T) {
 	git := fixturegit.CompiledGit(t)
 	legion := trailerLegion(t)
@@ -300,10 +301,11 @@ func TestGitWrapperTrailerHandsGitTheMessageFromItsStart(t *testing.T) {
 	}
 	const message = "the caller message\n"
 	type report struct {
-		Args       []string
-		File       string
-		Descriptor int
-		Read       string
+		Args          []string
+		File          string
+		Descriptor    int
+		Device, Inode uint64
+		Read          string
 	}
 	// commit runs `legion git --real <stand-in> -- commit <args…> <file>` under bash, with stdin
 	// and the session's variables, in a new repository whose HEAD is a commit `base`, and answers
@@ -353,8 +355,15 @@ func TestGitWrapperTrailerHandsGitTheMessageFromItsStart(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer stdin.Close()
-		if got := commit(t, stdin, "/dev/stdin", "--allow-empty", "-F"); got.Read != message || got.Descriptor == 0 {
-			t.Fatalf("the stand-in read %q from %s, descriptor %d; want %q from the file the wrapper kept", got.Read, got.File, got.Descriptor, message)
+		info, err := stdin.Stat()
+		if err != nil {
+			t.Fatal(err)
+		}
+		caller := info.Sys().(*syscall.Stat_t)
+		got := commit(t, stdin, "/dev/stdin", "--allow-empty", "-F")
+		if got.Read != message || got.File != "/dev/stdin" || got.Descriptor != 0 || got.Device == uint64(caller.Dev) && got.Inode == uint64(caller.Ino) {
+			t.Fatalf("the stand-in read %q from %s, descriptor %d, file %d:%d (the caller's is %d:%d); want %q from /dev/stdin, descriptor 0, the file the wrapper kept",
+				got.Read, got.File, got.Descriptor, got.Device, got.Inode, caller.Dev, caller.Ino, message)
 		}
 	})
 }
@@ -362,8 +371,8 @@ func TestGitWrapperTrailerHandsGitTheMessageFromItsStart(t *testing.T) {
 // descriptorGitSource is a stand-in for the real git. For a `commit` whose last -F or -t value is
 // /dev/stdin or /dev/fd/<n>, it reads descriptor 0 or n itself, from its current offset to its
 // end, as macOS's open of that path does, and prints one JSON object: its arguments, that value,
-// the descriptor and what it read. It runs every other command, the wrapper's reads among them,
-// with the real git that STAND_IN_REAL_GIT names.
+// the descriptor, the device and inode of the descriptor's file, and what it read. It runs every
+// other command, the wrapper's reads among them, with the real git that STAND_IN_REAL_GIT names.
 const descriptorGitSource = `package main
 
 import (
@@ -395,25 +404,33 @@ func main() {
 		descriptor = n
 	}
 	read := []byte{}
+	var device, inode uint64
 	if descriptor >= 0 {
+		var stat syscall.Stat_t
+		if err := syscall.Fstat(descriptor, &stat); err != nil {
+			os.Exit(1)
+		}
+		device, inode = uint64(stat.Dev), uint64(stat.Ino)
 		var err error
 		if read, err = io.ReadAll(os.NewFile(uintptr(descriptor), file)); err != nil {
 			os.Exit(1)
 		}
 	}
 	json.NewEncoder(os.Stdout).Encode(struct {
-		Args       []string
-		File       string
-		Descriptor int
-		Read       string
-	}{args, file, descriptor, string(read)})
+		Args          []string
+		File          string
+		Descriptor    int
+		Device, Inode uint64
+		Read          string
+	}{args, file, descriptor, device, inode, string(read)})
 }
 `
 
 // A -F or -t path names a descriptor when it is /dev/stdin, /dev/stdout, /dev/stderr, or a path
 // under /dev/fd/ or /proc/self/fd/: as written, once cleaned, or through symbolic links, of the
-// path itself or of a directory on it. No other path names one, a link loop and a path that is
-// not there included.
+// path itself or of a directory on it. It names descriptor 0 when that path is /dev/stdin,
+// /dev/fd/0 or /proc/self/fd/0. No other path names one, a link loop and a path that is not there
+// included.
 func TestGitWrapperTrailerKnowsAPathThatNamesADescriptor(t *testing.T) {
 	dir := t.TempDir()
 	regular := filepath.Join(dir, "regular")
@@ -425,6 +442,7 @@ func TestGitWrapperTrailerKnowsAPathThatNamesADescriptor(t *testing.T) {
 		"to-link":    filepath.Join(dir, "to-stdin"),
 		"relative":   "to-stdin",
 		"to-fd":      "/dev/fd/0",
+		"to-stdout":  "/dev/stdout",
 		"dev":        "/dev",
 		"to-regular": regular,
 		"loop-a":     filepath.Join(dir, "loop-b"),
@@ -435,33 +453,35 @@ func TestGitWrapperTrailerKnowsAPathThatNamesADescriptor(t *testing.T) {
 		}
 	}
 	for _, tc := range []struct {
-		path  string
-		names bool
+		path                 string
+		names, standardInput bool
 	}{
-		{"/dev/stdin", true},
-		{"/dev/stdout", true},
-		{"/dev/stderr", true},
-		{"/dev/fd/0", true},
-		{"/dev/fd/12", true},
-		{"/proc/self/fd/3", true},
-		{"//dev/./stdin", true},
-		{"/dev/../dev/fd/3", true},
-		{filepath.Join(dir, "to-stdin"), true},
-		{filepath.Join(dir, "to-link"), true},
-		{filepath.Join(dir, "relative"), true},
-		{filepath.Join(dir, "to-fd"), true},
-		{filepath.Join(dir, "dev", "stdin"), true},
-		{regular, false},
-		{filepath.Join(dir, "to-regular"), false},
-		{filepath.Join(dir, "loop-a"), false},
-		{filepath.Join(dir, "missing"), false},
-		{"/dev/null", false},
-		{"/dev/fd", false},
-		{"/dev/stdinx", false},
-		{"/dev/fdx/0", false},
+		{"/dev/stdin", true, true},
+		{"/dev/stdout", true, false},
+		{"/dev/stderr", true, false},
+		{"/dev/fd/0", true, true},
+		{"/dev/fd/12", true, false},
+		{"/proc/self/fd/0", true, true},
+		{"/proc/self/fd/3", true, false},
+		{"//dev/./stdin", true, true},
+		{"/dev/../dev/fd/3", true, false},
+		{filepath.Join(dir, "to-stdin"), true, true},
+		{filepath.Join(dir, "to-link"), true, true},
+		{filepath.Join(dir, "relative"), true, true},
+		{filepath.Join(dir, "to-fd"), true, true},
+		{filepath.Join(dir, "to-stdout"), true, false},
+		{filepath.Join(dir, "dev", "stdin"), true, true},
+		{regular, false, false},
+		{filepath.Join(dir, "to-regular"), false, false},
+		{filepath.Join(dir, "loop-a"), false, false},
+		{filepath.Join(dir, "missing"), false, false},
+		{"/dev/null", false, false},
+		{"/dev/fd", false, false},
+		{"/dev/stdinx", false, false},
+		{"/dev/fdx/0", false, false},
 	} {
-		if got := namesADescriptor(tc.path); got != tc.names {
-			t.Errorf("namesADescriptor(%q) = %v, want %v", tc.path, got, tc.names)
+		if names, standardInput := namesADescriptor(tc.path); names != tc.names || standardInput != tc.standardInput {
+			t.Errorf("namesADescriptor(%q) = %v, %v; want %v, %v", tc.path, names, standardInput, tc.names, tc.standardInput)
 		}
 	}
 }
