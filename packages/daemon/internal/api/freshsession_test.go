@@ -906,7 +906,7 @@ func podPlacedHarness(t *testing.T, claims []supervise.Claim) *harness {
 
 // A caller that states no contract is placed by its pod, and the fresh session's answer follows
 // the pod's lowest contract, as a value strip does (api's readsTheStopAsAFailure). The pod's
-// claims record 103, 104 and 115. A claim that records 115 states its contract in the header,
+// claims record 103, 104 and 118. A claim that records 118 states its contract in the header,
 // so the pod's reading leaves it out (api's podContracts). The pod reads as lowest 103 and
 // highest 104, and the two readings give different answers: the 103 process reads the 200 as a
 // claim that runs again, so the whole pod gets the failure that the daemon gave before 104.

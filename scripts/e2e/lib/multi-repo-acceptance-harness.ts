@@ -306,7 +306,7 @@ export function makeStateBody(overrides: Record<string, unknown> = {}): string {
 }
 export const stateBody = makeStateBody();
 
-// healthBody is what the daemon's `GET /healthz` answers from contract 115 on (`api.Health`):
+// healthBody is what the daemon's `GET /healthz` answers from contract 118 on (`api.Health`):
 // its status and the project it serves. The stub answers the whole typed body, so the script's
 // own health check is exercised against a body that carries more than `status`.
 const healthBody = { project: "legion", status: "ok" };

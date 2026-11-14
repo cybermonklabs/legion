@@ -1195,7 +1195,7 @@ package api
 // `mergeState`, `pass`, `lastTurnStart` and `lastTurnEnd` are keys a plugin of an older contract
 // does not name, which one built before sjawhar/legion#2788 refuses the body for and one built
 // after strips, so the boot gate and `legion probe-image` are what refuse the mixed pair.
-// (The entry at 115 below serves this contract's own shape down, so none of the keys above
+// (The entry at 118 below serves this contract's own shape down, so none of the keys above
 // reaches a caller under 86. Three claim-view keys ride with the four this entry names and are
 // served down with them: `lastDeathCause`, `lastStartFailure` and `lastReady`. Two more keys go
 // at 86 beside `checksVerdict`. `checksVerdict` and `HandoffCompleteResponse.note` are written
@@ -1206,7 +1206,7 @@ package api
 // `merge_queue_role` — leave those records for the same reason read a second way:
 // `legionSettings` types two keys and passes the rest loosely, and `projects` is typed by
 // nothing, so no reader names those keys at all. The `ready` this contract takes out of the
-// request is read by name again for the plugins below 86 that still send it, which entry 115
+// request is read by name again for the plugins below 86 that still send it, which entry 118
 // says.)
 // (This branch took 42, then 43 when main landed the consumer-lag state at 43;
 // main landed the background-task contract at 44 and the Dispatch handoff records at 45, and
@@ -1564,7 +1564,7 @@ package api
 // Read the base's own number and every open head again at the next forward merge rather than
 // from this line.)
 //
-// 115: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
+// 118: dispatch://INFRA-2694 -- the daemon shapes every answer down to the contract the caller's
 // own plugin speaks, and reads every request an older plugin still sends, so a roll that replaces
 // one pod at a time leaves the `legion` tool working in every pod it has not replaced yet. A
 // request carries the caller's contract in the
@@ -1639,7 +1639,8 @@ package api
 // at the merge that brought main in at 85, 89 at the merge that brought main in at 86, 95 at
 // the merge that brought main in at 94, 99 at the merge that brought main in at 98, 105
 // before the push of that merge, and 115 at the merge that brought main in at 111, where open
-// heads held 111 to 114. 87 was
+// heads held 111 to 114, and 118 before the push that followed, when #3519, #3793 and #3937 had
+// taken 115. 87 was
 // free when this head took it and was gone when the
 // head was pushed: the gate holds a head against main alone and sees no other head's number, so
 // a reading of `const DaemonAPIVersion` at refs/pull/<n>/head for every open pull request of this
@@ -1666,4 +1667,4 @@ package api
 // answers.go gives the two answers this change adds as their arrival, and it is the last number
 // of answers.go's SupportedContracts, which names the constant rather than its number for that
 // reason.)
-const DaemonAPIVersion = 115
+const DaemonAPIVersion = 118

@@ -16803,7 +16803,7 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "compact",
     "noBody": false,
     "keyPaths": [
@@ -16813,14 +16813,14 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "empty-object",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "fresh-session",
     "noBody": false,
     "keyPaths": [
@@ -16829,7 +16829,7 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "grant",
     "noBody": false,
     "keyPaths": [
@@ -16839,14 +16839,14 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "handoff-complete",
     "noBody": false,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "health",
     "noBody": false,
     "keyPaths": [
@@ -16856,7 +16856,7 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "issue-record",
     "noBody": false,
     "keyPaths": [
@@ -17236,14 +17236,14 @@
     }
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "no-content",
     "noBody": true,
     "keyPaths": [],
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "refusal",
     "noBody": false,
     "keyPaths": [
@@ -17253,7 +17253,7 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "register",
     "noBody": false,
     "keyPaths": [
@@ -17278,7 +17278,7 @@
     }
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "register-controller",
     "noBody": false,
     "keyPaths": [
@@ -17290,7 +17290,7 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "release-records",
     "noBody": false,
     "keyPaths": [
@@ -17327,7 +17327,7 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "state",
     "noBody": false,
     "keyPaths": [
@@ -18039,7 +18039,7 @@
     }
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "turn-outcome",
     "noBody": false,
     "keyPaths": [
@@ -18049,7 +18049,7 @@
     "domains": {}
   },
   {
-    "contract": 115,
+    "contract": 118,
     "answer": "wave-release",
     "noBody": false,
     "keyPaths": [
