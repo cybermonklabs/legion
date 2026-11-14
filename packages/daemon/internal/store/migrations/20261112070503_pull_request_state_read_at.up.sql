@@ -1,8 +1,8 @@
 -- 20261112070503_pull_request_state_read_at.up.sql — when the daemon last read this pull request
--- and got an answer (record.PullRequest.StateReadAt): the reader's own clock at the moment
--- GitHub's /pulls/{number} answer was in hand, whatever that answer held. A read that only
--- confirms the state already recorded stamps the column exactly as one that changes it does,
--- because what the column records is the read, not the change.
+-- and got an answer (record.PullRequest.StateReadAt, whose doc is the full account of who stamps it
+-- and what clears it): the reader's own clock at the moment GitHub's answer was in hand. A read
+-- that only confirms the state already recorded stamps the column exactly as one that changes it
+-- does, because what the column records is the read, not the change.
 --
 -- The row carries GitHub's merge state for the head (merge_state, 20261029120200) and nothing of
 -- when it was read, so a head the daemon read a minute ago and found 'blocked' cannot be told from
@@ -15,12 +15,9 @@
 -- daemon's issue_reads.go and merge_state_reads.go) - so the stamp ages between those reads.
 --
 -- Every existing row takes the zero time, the default 20261108190000 set for a time column with
--- nothing to derive. The zero time reads as "no read since this column existed": a row written
--- before this migration keeps the merge_state its last read gave and carries no moment of that
--- read, and is read that way rather than as read at the migration's own moment, which would date
--- every upgraded row to the deploy and call knowledge that may be a day old fresh. The daemon's
--- next read of the pull request fills it.
---
--- The column is cleared with merge_state when the head moves: it is the time of a read about the
--- head before it, which says nothing about how recently the head now recorded has been read.
+-- nothing to derive, beside the merge_state its last read gave, which it keeps. Such a row carries
+-- no moment of that read and is read as one with no read time on record, rather than as read at the
+-- migration's own moment, which would date every upgraded row to the deploy and call knowledge that
+-- may be a day old fresh. The daemon's next read of the pull request fills it. The column is
+-- cleared with merge_state whenever the head moves or the pull request is reopened.
 alter table pull_requests add column state_read_at timestamptz not null default '0001-01-01 00:00:00+00';

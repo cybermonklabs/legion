@@ -549,9 +549,9 @@ func checkView(check record.ProductionCheck) *api.CheckView {
 // number here can never drift from the test the engine makes. The fence holds only runs a CI
 // settlement brought, so a zero is a head whose CI is still running as much as one GitHub
 // reported no check run on. The two times are absent when they are zero: a read time the record
-// does not hold (no read has answered, or one answered before migration 20261112070503 recorded
-// none) and a lifecycle observation that carried no clock are each a fact of their own, which a
-// zero instant on the wire would read as a moment in 1 CE.
+// does not hold (record.PullRequest.StateReadAt says when that is) and a lifecycle observation
+// that carried no clock are each a fact of their own, which a zero instant on the wire would read
+// as a moment in 1 CE.
 func mergeWaitView(issue record.Issue, reviewer record.PhaseRow, pr *record.PullRequest) *api.MergeWaitView {
 	if pr == nil || pr.State != record.PullRequestOpen || !classify.RoundWaitsOnMergeState(issue, reviewer, pr) {
 		return nil

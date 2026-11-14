@@ -390,20 +390,13 @@ const legionMergeWaitView = z.object({
    * on, and the head GitHub's answer is about. */
   waitsOn: nonEmptyString,
   /** The merge state the record holds for that head (`record.PullRequest.MergeState`), the same
-   * word `pullRequest.mergeState` carries. Absent while the state is unread, which is a round
-   * GitHub has given no answer for yet. `stateReadAt`'s absence does not say the same thing:
-   * migration `20261112070503` gave every row that already existed the zero time and left its
-   * merge state as it was, so such a row carries a state with no stamp beside it until the
-   * daemon's next read of that pull request. */
+   * word `pullRequest.mergeState` carries. Absent while the state is unread: no read has answered
+   * for this head since the pull request was last opened or its head last moved. */
   mergeState: legionMergeState.optional(),
-  /** `record.PullRequest.StateReadAt`, the moment of the daemon's last read of the pull request
-   * that answered — a read that only confirmed the state already recorded included, since this is
-   * the age of the knowledge and not the age of the answer. Absent for a read that never ran,
-   * which no reader may take for a read at the zero instant. Absent for one further row as well:
-   * one written before migration `20261112070503`, which stamped every existing row with the zero
-   * time and left `mergeState` alone. That is why a missing stamp beside a recorded `mergeState`
-   * reads as a row no read has answered for since that migration, never as "GitHub has given no
-   * answer yet". */
+  /** `record.PullRequest.StateReadAt`, the moment GitHub's last answer about this head was in
+   * hand, a confirming answer included; that field's doc says who stamps it, what clears it and
+   * what its absence means. Absent when the record holds none, and absent beside a recorded
+   * `mergeState` it is a state read before the daemon recorded read times. */
   stateReadAt: timestamp.optional(),
   /** The newest `updated_at` GitHub gave among the pull request's lifecycle observations: a
    * reopen at the same head moves it, and a push whose event carried no clock does not raise it.

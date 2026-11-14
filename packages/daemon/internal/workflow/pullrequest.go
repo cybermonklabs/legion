@@ -87,11 +87,11 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 // of the daemon's own passes rebuilt first, write those and nothing else; marked as movements they
 // would refresh the quiet time of a tree that has not moved since its work ended, and that tree
 // would never be found (record.QuietTrees). The moment of the daemon's last answering read
-// (StateReadAt) is left out too, and no webhook stamps it: only a merge-state read does
-// (review.go's mergeability), and one that only confirms what is recorded writes that field alone.
-// The stamp says how old the daemon's knowledge of the head is, never that the pull request moved.
-// A synchronize that moves the head clears it, and that write is news of its own (classify's
-// decisions). The daemon's own suites hold that line: a late push webhook is asserted to change
+// (StateReadAt) is left out too: a read that only confirms what is recorded writes that field
+// alone, and it says how old the daemon's knowledge of the head is, never that the pull request
+// moved. Every fact that clears it moves the head or reopens the pull request, which is news of its
+// own (record.PullRequest.StateReadAt says who stamps and clears it). The daemon's own suites hold
+// that line: a late push webhook is asserted to change
 // nothing of the issue record (internal/daemon's lateWebhookPushDecidesNothing), and a settlement
 // that decides nothing — the listener's redelivery and its settlement of a commit that is not the
 // head while a head run is open, the one that closes that run among them — is asserted to move no

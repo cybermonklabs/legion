@@ -681,17 +681,35 @@ type PullRequest struct {
 	// required checks or reviews (MergeStateBlocked) from one GitHub would merge now
 	// (MergeStateClean): GitHub answers `mergeable: true` for both.
 	MergeState MergeState
-	// StateReadAt is when the daemon last read this pull request and got an answer, taken from the
-	// reader's own clock at the moment GitHub's answer was in hand, whatever that answer was
-	// (daemon.readIssuePullRequest). A read that only confirms what is already recorded moves it
-	// exactly as one that changes something does: it is the age of the knowledge, not the age of
-	// the last change to it, and that is what tells a head read a minute ago from one nothing has
-	// read for a day. The zero time means no read has answered since this field existed: a row
-	// written before migration 20261112070503 took the zero time beside whatever MergeState it
-	// held, so a zero stamp beside a recorded MergeState is a read made before the migration, and
-	// only a zero stamp beside MergeState's "" means GitHub has given no answer yet. It is cleared
-	// with MergeState when the head moves (classify's decisions), because it is then the time of a
-	// read about the head before this one.
+	// StateReadAt is the moment the daemon last got GitHub's answer about the merge state of the
+	// head this record stands at, taken from the reader's own clock when that answer was in hand.
+	// This is the one full account of the stamp; every other comment that needs part of it points
+	// here.
+	//
+	// Who stamps it: both readers of the pull request, the per-issue read (daemon's
+	// readIssuePullRequest) and the merge-state ladder (daemon's readMergeState), each through the
+	// mergeability fact (workflow's mergeability). An answer about a head the record has moved past
+	// is dropped with its time. A read that only confirms what is recorded moves the stamp exactly
+	// as one that changes something does: it is the age of the knowledge, not of the last change to
+	// it, and that is what tells a head read a minute ago from one nothing has read for a day. No
+	// webhook stamps it, and a fact with no read time behind it writes none and erases none.
+	//
+	// What clears it, always with MergeState: any fact that moves the head (classify's advance: a
+	// synchronize, a reopen or a close at another head), because the stamp would then be the time
+	// of a read about the head before; and a reopen at any head, which builds the record afresh
+	// (workflow's pullRequestOpened).
+	//
+	// What the zero time means: no read is recorded for this record since it was created or last
+	// cleared. That includes a row written before migration 20261112070503, which took the zero
+	// time beside whatever MergeState it held. So a zero stamp beside a recorded MergeState is a
+	// state read before the daemon recorded read times, and a zero stamp beside MergeState's "" is
+	// a head no read has answered for since the pull request was last opened or its head last
+	// moved.
+	//
+	// What carries it: a replay of the head run moves it and MergeState as a pair, under the same
+	// guard (classify's replayRun and withJudgement), so a replay never pairs one read's state with
+	// another read's time; a run anchored before migration 20261112070503 holds a state with no
+	// stamp, and a replay gives that pair back as it is.
 	StateReadAt time.Time
 	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
 	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's
@@ -762,8 +780,9 @@ type Judgement struct {
 	Moves        []Move       `json:"moves,omitempty"`
 	Mergeability Mergeability `json:"mergeability,omitempty"`
 	MergeState   MergeState   `json:"mergeState,omitempty"`
-	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON, and
-	// a run anchored before a read of GitHub was ever made carries none.
+	// omitzero, as HeadRun.Since and Named.At are: omitempty leaves a zero time in the JSON. A run
+	// anchored before any read answered carries none, and so does one anchored before migration
+	// 20261112070503 (PullRequest.StateReadAt says what that means).
 	StateReadAt time.Time `json:"stateReadAt,omitzero"`
 }
 

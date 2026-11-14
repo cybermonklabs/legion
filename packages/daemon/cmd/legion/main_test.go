@@ -1740,11 +1740,14 @@ func TestPlainStateSummarizesTheOpenProductionChecks(t *testing.T) {
 // the line prints — so the round read a minute ago is the one named over the round read an hour
 // ago when its head is the older. A round whose record holds no `headUpdatedAt` sorts last,
 // however long it has waited, because an unknown time is no evidence of age; among such rounds
-// the issue key decides. A round GitHub has answered nothing about yet says so in place of both
-// the state and the time (`no answer yet`, `never read`); a round whose state GitHub gave before
-// the daemon recorded the moment of its reads (migration 20261112070503 gave such a row the zero
-// time and kept its state) prints that state and says the read time is not recorded, never that
-// no read happened; and with no round waiting the line says so.
+// the issue key decides. What follows `GitHub said` reads one of four ways, each with a row: a
+// state and the moment of the read (`blocked, read <time>`); a state GitHub gave before the daemon
+// recorded the moment of its reads (migration 20261112070503 gave such a row the zero time and
+// kept its state), which says the read time is not recorded, never that no read happened
+// (`blocked, read time not recorded`); neither, which says no answer has been read since the pull
+// request was last opened and no more, since a reopen leaves reads before the close off the
+// record (`no answer yet, not read since last opened`); and a read that carried no state (`no
+// merge state, read <time>`). With no round waiting the line says so.
 func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 	daemon := `"daemon":{"project":"LEGION","schemaVersion":6,"boots":1,"firstBootAt":"2026-09-23T00:00:00Z","startedAt":"2026-09-23T00:00:00Z"},` +
 		`"admission":{"cap":2,"active":[],"waiting":[]},"pendingStatusWrites":[]`
@@ -1776,6 +1779,21 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		`"pullRequest":{"repo":"zeta/tools","number":644,"head":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","state":"open","mergeState":"blocked","reviewDecision":"approved"},` +
 		`"mergeWait":{"waitsOn":"e5f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4","mergeState":"blocked",` +
 		`"headUpdatedAt":"2026-10-17T10:00:00Z","checkRuns":1}}`
+	// A round on a pull request just reopened: the reopen built the record afresh with neither a
+	// merge state nor the moment of a read, so whatever the daemon read of this head before the
+	// close is not on record, and the line must not say it was never read. The reopen moved its
+	// `headUpdatedAt` to the reopen's clock, which still stands before LEGION-209's head went up.
+	reopened := `"LEGION-213":{"key":"LEGION-213","generation":2,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":645,"head":"f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"f6a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5",` +
+		`"headUpdatedAt":"2026-10-19T07:30:00Z","checkRuns":0}}`
+	// A round whose last read answered with an empty `mergeable_state`: the reader keeps it as no
+	// state, and the daemon records the moment of the read all the same. Its head stood before
+	// LEGION-208's went up, so it is the oldest head.
+	stateless := `"LEGION-214":{"key":"LEGION-214","generation":1,"phase":"reviewing","status":"needs_review",` +
+		`"pullRequest":{"repo":"zeta/tools","number":646,"head":"a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6","state":"open","reviewDecision":"approved"},` +
+		`"mergeWait":{"waitsOn":"a7b8c9d0a1b2c3d4e5f6a7b8c9d0a1b2c3d4e5f6","stateReadAt":"2026-10-19T09:30:00Z",` +
+		`"headUpdatedAt":"2026-10-18T12:00:00Z","checkRuns":1}}`
 	// An issue whose round waits on nothing at GitHub: it carries no `mergeWait` at all.
 	working := `"LEGION-207":{"key":"LEGION-207","generation":1,"phase":"implementing","status":"in_progress"}`
 	for _, tc := range []struct {
@@ -1784,27 +1802,37 @@ func TestPlainStateSummarizesTheMergeWaits(t *testing.T) {
 		{
 			name:   "two waiting, the oldest head not the first listed",
 			issues: `{` + newer + `,` + working + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "one waiting",
 			issues: `{` + working + `,` + newer + `}`,
-			want:   "merge waits: 1; the oldest head, LEGION-209 #1302, head b2c3d4e, GitHub said behind read 2026-10-19T09:59:00Z\n",
+			want:   "merge waits: 1; the oldest head, LEGION-209 #1302, head b2c3d4e, GitHub said behind, read 2026-10-19T09:59:00Z\n",
 		},
 		{
 			name:   "a round GitHub has answered nothing about sorts behind one it has",
 			issues: `{` + unanswered + `,` + oldest + `}`,
-			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked read 2026-10-19T09:00:00Z\n",
+			want:   "merge waits: 2; the oldest head, LEGION-208 #1301, head a1b2c3d, GitHub said blocked, read 2026-10-19T09:00:00Z\n",
 		},
 		{
 			name:   "no round carries a head time, so the issue key decides and both substitutions show",
 			issues: `{` + alsoUnanswered + `,` + unanswered + `}`,
-			want:   "merge waits: 2; the oldest head, LEGION-210 #642, head c3d4e5f, GitHub said no answer yet, never read\n",
+			want:   "merge waits: 2; the oldest head, LEGION-210 #642, head c3d4e5f, GitHub said no answer yet, not read since last opened\n",
 		},
 		{
 			name:   "a round GitHub answered before read times were recorded keeps its state and says the time is not recorded",
 			issues: `{` + oldest + `,` + unstamped + `,` + unanswered + `}`,
 			want:   "merge waits: 3; the oldest head, LEGION-212 #644, head e5f6a7b, GitHub said blocked, read time not recorded\n",
+		},
+		{
+			name:   "a round on a pull request just reopened says no answer has been read since it was opened, not that none ever was",
+			issues: `{` + newer + `,` + reopened + `}`,
+			want:   "merge waits: 2; the oldest head, LEGION-213 #645, head f6a7b8c, GitHub said no answer yet, not read since last opened\n",
+		},
+		{
+			name:   "a read that answered with no state names the read and says GitHub gave no state",
+			issues: `{` + oldest + `,` + stateless + `}`,
+			want:   "merge waits: 2; the oldest head, LEGION-214 #646, head a7b8c9d, GitHub said no merge state, read 2026-10-19T09:30:00Z\n",
 		},
 		{name: "none waiting", issues: `{` + working + `}`, want: "merge waits: none\n"},
 		{name: "no issues", issues: `{}`, want: "merge waits: none\n"},

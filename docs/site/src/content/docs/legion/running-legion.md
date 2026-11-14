@@ -1068,7 +1068,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   memory: none
   roots waiting on a person: 1, 0 answered and standing in the admission line — WIDGETS-9 waits on ask 7f3c2a10, unanswered
   open production checks: 1; the oldest, WIDGETS-12 #42 at 4b7d2a1, worked by the tester, look 1 woken by merge at 2026-10-03T10:15:02Z, next look 2026-10-03T14:15:02Z
-  merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked read 2026-10-03T10:40:11Z
+  merge waits: 2; the oldest head, WIDGETS-11 #38, head 9c1f0be, GitHub said blocked, read 2026-10-03T10:40:11Z
   open update rounds: none
   agents in a tool call: 1 — WIDGETS-12 implementer "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
@@ -1127,16 +1127,18 @@ Closing the terminal leaves the project without one, and the daemon logs
   The `merge waits` line counts the review rounds whose approved head waits on GitHub's merge
   state and names the oldest head: its issue, its pull request, the head, what GitHub last said of
   that head and when the daemon last read it (`merge waits: none` when no round waits). The part
-  after `GitHub said` reads one of three ways. `blocked read 2026-10-19T09:00:00Z` is a state and
-  the moment of the daemon's last read that answered. `no answer yet, never read` says the daemon
-  has read no answer for this head, never that GitHub answered with nothing or that a read ran at
-  the zero instant. `blocked, read time not recorded` says GitHub did answer, before the daemon
-  recorded the moment of its reads: the upgrade that added that moment kept each pull request's
-  state and gave it no time, which the daemon's next read of that pull request fills, so the time
-  is what is missing, never the read. The line says "the oldest head"
-  because that is what it is oldest by: the head that has stood longest, the smallest
-  `headUpdatedAt`, and not the round read longest ago, although the read is the only moment the
-  line prints — the wait an operator acts on is the one a head has sat through.
+  after `GitHub said` reads one of four ways. `blocked, read 2026-10-19T09:00:00Z` is the state
+  GitHub gave and the moment of the daemon's last read that answered. `blocked, read time not
+  recorded` says GitHub did answer, before the daemon recorded the moment of its reads: the
+  upgrade that added that moment kept each pull request's state and gave it no time, which the
+  daemon's next read of that pull request fills, so the time is what is missing, never the read.
+  `no answer yet, not read since last opened` says the daemon has read no answer for this head
+  since the pull request was last opened, and no more: a reopen starts the record afresh, so a
+  read made before the close is not on record. `no merge state, read 2026-10-19T09:00:00Z` says a
+  read answered and GitHub's answer carried no merge state, which is rare. The line says "the
+  oldest head" because that is what it is oldest by: the head that has stood longest, the
+  smallest `headUpdatedAt`, and not the round read longest ago, although the read is the only
+  moment the line prints — the wait an operator acts on is the one a head has sat through.
 
   The `agents in a tool call` line names every claim whose agent is in a tool call the daemon has
   seen the start of and no end of: how many, and each by issue and role with the tool, the call id

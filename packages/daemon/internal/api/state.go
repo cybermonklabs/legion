@@ -1229,21 +1229,14 @@ type MergeWaitView struct {
 	WaitsOn string `json:"waitsOn"`
 	// MergeState is the merge state the record holds for that head
 	// (record.PullRequest.MergeState), in GitHub's own spelling — `blocked`, `behind`, `draft`,
-	// `dirty`, `unknown`. It is absent while the state is unread, which is a round GitHub has
-	// given no answer for yet. StateReadAt's absence does not say the same thing: migration
-	// 20261112070503 gave every row that already existed the zero time and left its merge state
-	// as it was, so such a row carries a state with no stamp beside it until the daemon's next
-	// read of that pull request.
+	// `dirty`, `unknown`. It is absent while the state is unread: no read has answered for this
+	// head since the pull request was last opened or its head last moved.
 	MergeState string `json:"mergeState,omitempty"`
-	// StateReadAt is record.PullRequest.StateReadAt, the moment of the daemon's last read of the
-	// pull request that answered — a read that only confirmed the state already recorded included,
-	// since this is the age of the knowledge and not the age of the answer. The zero time is no
-	// read on record, which is why the field is a pointer and absent rather than zero: a reader
-	// must never take "never read" for a read at the zero instant. The stamp is absent for one
-	// further row: one written before migration 20261112070503, which stamped every existing row
-	// with the zero time and left MergeState alone. That is why a missing stamp beside a recorded
-	// MergeState reads as a row no read has answered for since that migration, never as "GitHub has
-	// given no answer yet".
+	// StateReadAt is record.PullRequest.StateReadAt, the moment GitHub's last answer about this
+	// head was in hand, a confirming answer included; that field's doc says who stamps it, what
+	// clears it and what its zero means. It is absent rather than zero when the record holds none,
+	// so a reader never takes a read at the zero instant for a time, and absent beside a recorded
+	// MergeState it is a state read before the daemon recorded read times.
 	StateReadAt *time.Time `json:"stateReadAt,omitempty"`
 	// HeadUpdatedAt is the record's HeadUpdatedAt, the newest `updated_at` GitHub gave among the
 	// pull request's lifecycle observations: a reopen at the same head moves it, and a push whose

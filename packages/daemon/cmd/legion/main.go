@@ -978,15 +978,20 @@ func olderHead(a, b *time.Time) int {
 // read most recently. It is printed beside the open production checks because both are work that
 // has left the agents and stands on something outside Legion.
 //
-// A round GitHub has answered nothing about yet, with neither `mergeState` nor `stateReadAt`, says
-// `no answer yet` in place of the state and `never read` in place of the time: the daemon has read
-// no answer for this head, not that GitHub answered with nothing or that a read ran at the zero
-// instant. A round with a state and no stamp says `read time not recorded` beside its state
-// instead, because GitHub did answer it: the read ran before the daemon recorded the moment of its
-// reads, and migration 20261112070503 gave every row it found the zero time and kept its merge
-// state, which the daemon serves as no `stateReadAt`. Printed `never read`, such a row would tell
-// the operator no read happened of a head GitHub has answered for; the time is what is missing,
-// never the read.
+// What follows `GitHub said` is one value, chosen by the one switch below over whether the wait
+// carries a merge state and whether it carries the moment of the read, and that switch is the
+// whole model: there are four readings and no other. `<state>, read <time>` is the state GitHub
+// gave for this head and the moment of the daemon's last read that answered, in UTC. `<state>,
+// read time not recorded` is a state GitHub gave before the daemon recorded the moment of its
+// reads: migration 20261112070503 gave every row it found the zero time and kept its merge state,
+// which the daemon serves as no `stateReadAt`, so the time is what is missing, never the read.
+// `no answer yet, not read since last opened` is a wait holding neither: the daemon has read no
+// answer for this head since the pull request was last opened, and it says no more than that,
+// because a reopen builds the record afresh with neither state nor stamp, so a read made before
+// the close is not on record and "never read" would be false of it. `no merge state, read <time>`
+// is a read that answered with an empty `mergeable_state`, which the reader keeps as no state; it
+// is rare, but the daemon records whatever state and moment a read carries, so the line names the
+// read and says GitHub gave no state rather than claiming no answer came.
 //
 // The pull request number is the issue's own view of it. An issue that carries a merge wait and
 // no pull request view cannot happen — the daemon builds the wait from the pull request record,
@@ -1007,20 +1012,20 @@ func mergeWaitsSummary(waits []issueMergeWait) string {
 	if oldest.pull != nil {
 		number = strconv.Itoa(oldest.pull.Number)
 	}
-	said := oldest.wait.MergeState
-	if said == "" {
-		said = "no answer yet"
+	var said string
+	state, at := oldest.wait.MergeState, oldest.wait.StateReadAt
+	switch {
+	case state != "" && at != nil:
+		said = state + ", read " + at.UTC().Format(time.RFC3339)
+	case state != "":
+		said = state + ", read time not recorded"
+	case at != nil:
+		said = "no merge state, read " + at.UTC().Format(time.RFC3339)
+	default:
+		said = "no answer yet, not read since last opened"
 	}
-	if at := oldest.wait.StateReadAt; at != nil {
-		return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s read %s",
-			len(waits), oldest.issue, number, head, said, at.UTC().Format(time.RFC3339))
-	}
-	read := "never read"
-	if oldest.wait.MergeState != "" {
-		read = "read time not recorded"
-	}
-	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s, %s",
-		len(waits), oldest.issue, number, head, said, read)
+	return fmt.Sprintf("merge waits: %d; the oldest head, %s #%s, head %s, GitHub said %s",
+		len(waits), oldest.issue, number, head, said)
 }
 
 // issueRound is one update round an issue has open, and the claims in it, by role: the round a

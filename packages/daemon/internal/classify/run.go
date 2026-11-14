@@ -222,8 +222,9 @@ func judgementOf(pr record.PullRequest) record.Judgement {
 // (advance), but a read made while the run was open answered for the head the run had reached by
 // then - a read is dropped unless the record still stands at the head GitHub answered for
 // (workflow's mergeability) - and that answer is newer than the anchor's about an older head.
-// The read time moves under the same guard as the merge state it belongs to, so no replay gives
-// back a merge state with no time of reading, or a time of reading with no merge state.
+// The read time moves under the same guard as the merge state it belongs to, so a replay moves the
+// pair together and never pairs one read's state with another read's time; a pair written without
+// a time stays without one (record.PullRequest.StateReadAt says when that is).
 func withJudgement(pr record.PullRequest, j record.Judgement) record.PullRequest {
 	pr.HeadSHA = j.HeadSHA
 	pr.CheckedHead, pr.Failing, pr.Cancelled, pr.CheckRuns = j.CheckedHead, clone(j.Failing), clone(j.Cancelled), clone(j.CheckRuns)
