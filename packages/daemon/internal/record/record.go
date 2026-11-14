@@ -696,23 +696,23 @@ type PullRequest struct {
 	//
 	// What clears it, always with MergeState: any fact that moves the head (classify's advance: a
 	// synchronize, a reopen or a close at another head), because the stamp would then be the time
-	// of a read about the head before; a reopen at any head, which builds the record afresh
-	// (workflow's pullRequestOpened); and a step of an open head run, a push or a settlement, whose
-	// replay gives back the anchor's pair wherever the record holds no state (classify's
-	// withJudgement decides on MergeState, not on the stamp), so a stamp held beside no state goes
-	// with no head move and no reopen.
+	// of a read about the head before; and a reopen at any head, which builds the record afresh
+	// (workflow's pullRequestOpened).
 	//
-	// What the zero time means: no read is recorded for this record since it was created or last
-	// cleared. That includes a row written before migration 20261112070503, which took the zero
-	// time beside whatever MergeState it held. So a zero stamp beside a recorded MergeState is a
-	// state read before the daemon recorded read times, and a zero stamp beside MergeState's "" is
-	// a head no read has answered for since the pull request was last opened or its head last
-	// moved.
+	// What carries it: a replay of the head run moves it and MergeState as a pair (classify's
+	// replayRun and withJudgement), so a replay never pairs one read's state with another read's
+	// time. withJudgement decides on MergeState and not on the stamp: wherever the record holds no
+	// state, a replay puts in place of the record's pair the one the replayed run ends with, which
+	// is the anchor's pair as the run's steps leave it, a head step among them clearing it
+	// (advance). So a stamp held beside no state can go with no head move of the record and no
+	// reopen. A run anchored before migration 20261112070503 holds a state with no stamp, and a
+	// replay gives that pair back as it is.
 	//
-	// What carries it: a replay of the head run moves it and MergeState as a pair, under the same
-	// guard (classify's replayRun and withJudgement), so a replay never pairs one read's state with
-	// another read's time; a run anchored before migration 20261112070503 holds a state with no
-	// stamp, and a replay gives that pair back as it is.
+	// What the zero time means, after any of those: the record holds no read time for its head.
+	// Beside a recorded MergeState it is a state whose read time the record does not hold, a row
+	// written before migration 20261112070503 or a pair a replay gave back from an anchor that
+	// predates it; beside MergeState's "" the record holds no read of its head at all. Neither says
+	// when GitHub was last asked.
 	StateReadAt time.Time
 	// ConflictingHead is the head the daemon last judged conflicting with its base, written by
 	// whichever read made that judgement: the daemon's read of the pull request finding GitHub's

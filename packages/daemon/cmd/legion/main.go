@@ -982,19 +982,13 @@ func olderHead(a, b *time.Time) int {
 // carries a merge state and whether it carries the moment of the read, and that switch is the
 // whole model: there are four readings and no other, and each says what the record holds rather
 // than what did or did not happen at GitHub, so only a reading with a state on record says
-// `GitHub said`. `GitHub said <state>, read <time>` is the state GitHub gave for this head and
-// the moment of the daemon's last read that answered, in UTC. `GitHub said <state>, read time not
-// recorded` is a state GitHub gave before the daemon recorded the moment of its reads: migration
-// 20261112070503 gave every row it found the zero time and kept its merge state, which the
-// daemon serves as no `stateReadAt`, so the time is what is missing, never the read. `read <time>
-// with no merge state` is a read on record whose answer carried no state: GitHub answered with an
-// empty `mergeable_state`, which the reader keeps as no state; it is rare, but the daemon records
-// whatever state and moment a read carries, so the line names the read rather than claiming no
-// answer came. `no read recorded for this head` is a wait holding neither: the record holds no
-// read for the head the wait names, as it does after the pull request was opened or reopened and
-// after its head moved, and since the record does not say which of those it was, the line names
-// none of them and says nothing of reads made before. `record.PullRequest.StateReadAt`'s doc is
-// the full account of when the read time is set and when it is cleared.
+// `GitHub said`. `GitHub said <state>, read <time>` is a wait holding a merge state for this head
+// and the moment of the read that gave it, in UTC. `GitHub said <state>, read time not recorded`
+// is a wait holding a merge state and no moment of the read: the time is what the record lacks,
+// so the line never says no read was made. `read <time> with no merge state` is a wait holding the
+// moment of a read and no merge state, so the line names the read rather than claiming no answer
+// came. `no read recorded for this head` is a wait holding neither: no merge state and no read
+// time for the head the wait names, and `record.PullRequest.StateReadAt`'s doc says when that is.
 //
 // The pull request number is the issue's own view of it. An issue that carries a merge wait and
 // no pull request view cannot happen — the daemon builds the wait from the pull request record,

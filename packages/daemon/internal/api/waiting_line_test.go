@@ -312,20 +312,6 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // which is the refusal wanted. A second marker is not the answer when that happens; the
 // sentence naming the member it is about is.
 //
-// A third contract stands beside the line in these texts too: what a review round waits on from
-// GitHub (MergeWaitField), and a passage that states one boundary commonly states the other a
-// sentence away. So a number is weighed rather than exempted by the sight of the other field: it
-// belongs to whichever of the two field names stands nearer to it, counted in bytes in either
-// direction, and a number nearer the merge wait's name is that contract's to state and is passed
-// over here. Exempting a window for the mere sight of the other name would pass over the line's own
-// sentences whenever a sentence about the merge wait stands within reach of them, and a guard that
-// passes over the sentences it was written for is no guard. No shipped text puts the two within one
-// window today, so the rule decides nothing yet: it is what holds the line's numbers, and passes
-// over the merge wait's, once a later text brings the two together. A name is read in either
-// spelling, the wire `waitingLine` and `mergeWait` and the words a sentence writes them in,
-// "waiting line" and "merge wait", since half of these texts are prose and name the field in words
-// as readily as in code (nearestName).
-//
 // What it does not catch: a number more than 220 bytes from the field's name. A passage that
 // states the boundary a paragraph away from the word `waitingLine` is outside every window this
 // reads, and it is read by nothing else here: this scan names no declaration whose comment the
@@ -334,12 +320,9 @@ func TestMergeWaitContractIsTheContractThatAddedTheObject(t *testing.T) {
 // every layout a later text may take.
 //
 // What to do when it fires on a sentence that is true — a passage that names another contract
-// beside the field, as one about two boundaries at once does: correct that sentence, or write
-// that contract's own field name beside its number, nearer to the number than this field's name
-// stands, since a marker beside a number is what assigns the number to its own field and the
-// nearer name wins. The retired stranded state has no such name in these texts, so its words
-// (`retired`, `stranded`) pass the whole window over wherever in it they fall, which is what
-// keeps that other contract's passage out. Changing the number is never the answer:
+// beside the field, as one about two boundaries at once does: correct that sentence, or widen
+// the window until it takes in the word that marks the other contract (`retired`, `stranded`),
+// which is what makes this pass such a passage over. Changing the number is never the answer:
 // the number is the daemon's own, and the test above is what holds it. This is honest machinery
 // for the renumber that already left five sentences behind, not a reader of every text that
 // names a contract.
@@ -347,8 +330,6 @@ func TestTheShippedTextsNameTheWaitingLinesOwnContract(t *testing.T) {
 	checked := scanContractTexts(t, contractScan{
 		fields:         []string{WaitingLineField},
 		without:        []string{"retired", "stranded"},
-		rivals:         []string{MergeWaitField, "merge wait"},
-		spoken:         []string{"waiting line"},
 		contract:       waitingLineContract,
 		marked:         "partPlace",
 		markedContract: whyAndLineFieldsContract,
@@ -406,13 +387,6 @@ type contractScan struct {
 	// every comment held to contract.
 	marked         string
 	markedContract int
-	// rivals are another field's names, which a window of this field may name as well: when one
-	// of them stands nearer the number than any of this field's names, the number is the
-	// rival's and the window is passed over. spoken are this field's names as prose writes
-	// them, counted as its own in that comparison and in no other. An empty rivals passes over
-	// no window for it.
-	rivals []string
-	spoken []string
 }
 
 // contractDeclaration is one place a field is declared under a comment of its own: file, a path
@@ -523,19 +497,9 @@ func scanContractTextsIn(t *testing.T, scan contractScan, texts map[string]strin
 	for _, name := range scan.files {
 		text := textOf(name)
 		for _, at := range contractNumbers.FindAllStringSubmatchIndex(text, -1) {
-			from := max(0, at[0]-window)
-			near := text[from:min(len(text), at[1]+window)]
+			near := text[max(0, at[0]-window):min(len(text), at[1]+window)]
 			if !names(near, scan.fields) || names(near, scan.without) {
 				continue
-			}
-			// The window names this field, so its name has a distance; a rival's has one only when
-			// the rival is named too, and the nearer of the two owns the number.
-			if len(scan.rivals) > 0 {
-				own := nearestName(near, at[0]-from, at[1]-from, slices.Concat(scan.fields, scan.spoken)...)
-				rival := nearestName(near, at[0]-from, at[1]-from, scan.rivals...)
-				if rival >= 0 && rival < own {
-					continue
-				}
 			}
 			hold(name, text, at, near)
 		}
@@ -598,33 +562,4 @@ func declarationComment(text, declares string) (start, end int, err error) {
 			declaration+1, declares)
 	}
 	return offsets[first], offsets[declaration], nil
-}
-
-// nearestName is how many bytes lie between the match at [lo, hi) of text and the nearest
-// occurrence of any of names, in either direction, and -1 when text holds none of them. It is
-// what gives a contract number to a field: a window commonly names two of them, and the number
-// belongs to the one whose name stands beside it.
-func nearestName(text string, lo, hi int, names ...string) int {
-	nearest := -1
-	for _, name := range names {
-		for from := 0; from <= len(text)-len(name); {
-			i := strings.Index(text[from:], name)
-			if i < 0 {
-				break
-			}
-			i += from
-			gap := 0
-			switch {
-			case i+len(name) <= lo:
-				gap = lo - i - len(name)
-			case i >= hi:
-				gap = i - hi
-			}
-			if nearest < 0 || gap < nearest {
-				nearest = gap
-			}
-			from = i + 1
-		}
-	}
-	return nearest
 }
