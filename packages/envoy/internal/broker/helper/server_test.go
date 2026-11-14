@@ -384,7 +384,7 @@ func TestExitRevokesAndUnregisterRevokes(t *testing.T) {
 	}
 	// unregister answers before its revoke ends (retire fires the revoke off), so the DELETE is
 	// waited for rather than read at once.
-	testwait.Holds(5*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Holds(5*time.Second, testwait.Poll, func() bool {
 		_, deletes, _ := r.fake.snapshot()
 		return len(deletes) == 2
 	})

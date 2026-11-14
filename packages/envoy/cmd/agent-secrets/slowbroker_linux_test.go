@@ -21,6 +21,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
 	"github.com/sjawhar/envoy/internal/broker/helper"
 	"github.com/sjawhar/envoy/internal/broker/proof"
@@ -122,21 +124,10 @@ type brokerEnrollment struct {
 // enrollmentsOf reads rig's enrollments of runtimeID, oldest first.
 func enrollmentsOf(t *testing.T, rig *brokertest.Rig, runtimeID string) []brokerEnrollment {
 	t.Helper()
-	rows, err := rig.Store.Pool.Query(context.Background(),
+	rows, _ := rig.Store.Pool.Query(context.Background(),
 		`select id::text, revoked_at is null and lease_expires_at > now() from enrollments where runtime_id = $1 order by created_at`, runtimeID)
+	got, err := pgx.CollectRows(rows, pgx.RowToStructByPos[brokerEnrollment])
 	if err != nil {
-		t.Fatalf("read the broker's enrollments of %s: %v", runtimeID, err)
-	}
-	defer rows.Close()
-	var got []brokerEnrollment
-	for rows.Next() {
-		var e brokerEnrollment
-		if err := rows.Scan(&e.ID, &e.Live); err != nil {
-			t.Fatalf("read the broker's enrollments of %s: %v", runtimeID, err)
-		}
-		got = append(got, e)
-	}
-	if err := rows.Err(); err != nil {
 		t.Fatalf("read the broker's enrollments of %s: %v", runtimeID, err)
 	}
 	return got

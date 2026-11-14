@@ -133,7 +133,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		s.reply(conn, Response{Code: CodeBadRequest, Error: "one JSON object per line"})
 		return
 	}
-	if !brokerCallOps[req.Op] {
+	if brokerCallOps[req.Op] == nil {
 		release()
 	}
 	var peer *Peer
@@ -195,7 +195,7 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		// under the bound (brokerCall), and Serve waits for its answer before it returns. None is
 		// a registry-session op: a key the helper does not hold is not a registry session (see
 		// Broker.EnrollSessionKey), so none of these needs peer's pid at all.
-		resp = s.brokerCall(ctx, conn, req.Op, s.login, loginUnknown)
+		resp = s.brokerCall(ctx, conn, req.Op, s.login)
 	case "login-status":
 		// login-status calls no broker: it reads the helper's own record of the most recent
 		// login and of the credential it holds.
@@ -207,11 +207,11 @@ func (s *Server) handle(ctx context.Context, conn *net.UnixConn) {
 		}
 		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
 			return s.enrollSessionKey(ctx, req.RuntimeID, req.Thumbprint, req.SessionID)
-		}, enrollUnknown)
+		})
 	case "unenroll-session-key":
 		resp = s.brokerCall(ctx, conn, req.Op, func(ctx context.Context) Response {
 			return s.unenrollSessionKey(ctx, req.EnrollmentID)
-		}, unenrollUnknown)
+		})
 	default:
 		resp = Response{Code: CodeBadRequest, Error: "unknown op " + req.Op}
 	}
@@ -227,10 +227,12 @@ func (s *Server) reply(conn net.Conn, resp Response) {
 }
 
 // brokerCallOps are the ops whose answer is the outcome of a broker call the helper makes while
-// the client waits, each run under the bound (brokerCall). unregister calls the broker too, but
-// what it answers is local, the session retired, and its revoke goes on after the answer
-// (retire). No other op calls the broker before it answers.
-var brokerCallOps = map[string]bool{"login": true, "enroll-session-key": true, "unenroll-session-key": true}
+// the client waits, each run under the bound (brokerCall), and each op's own refusal for an
+// outcome it does not know, which brokerCall answers at its timer. It is the one list of both,
+// so an op that brokerCall runs cannot be left out of the ops Serve waits for when it stops.
+// unregister calls the broker too, but what it answers is local, the session retired, and its
+// revoke goes on after the answer (retire). No other op calls the broker before it answers.
+var brokerCallOps = map[string]func(cause string) Response{"login": loginUnknown, "enroll-session-key": enrollUnknown, "unenroll-session-key": unenrollUnknown}
 
 // brokerCallBound is this Server's bound on one broker-call op: BrokerCallBound when it is set,
 // DefaultBrokerCallBound otherwise.
@@ -245,9 +247,10 @@ func (s *Server) brokerCallBound() time.Duration {
 // answers by B + 1 s whatever the op is doing. It sets conn's deadline to B + 5 s, the same 5 s
 // every op has for its read and its write, so the connection stays open past the latest answer.
 // call runs on a goroutine of its own, under ctx (Serve's) ended at B, and the answer is the
-// first of its result and a timer at B + 1 s. On the timer the answer is unknown(cause), the op's
-// own refusal for an outcome it does not know, and a WARN names the op and the bound; when the op
-// ends after that, its result is logged too, so an operator can see what the broker did.
+// first of its result and a timer at B + 1 s. On the timer the answer is brokerCallOps[op](cause),
+// the op's own refusal for an outcome it does not know, and a WARN names the op and the bound;
+// when the op ends after that, its result is logged too, so an operator can see what the broker
+// did.
 //
 // What ends the wait, in each state the op can be in while the client waits:
 //
@@ -273,7 +276,7 @@ func (s *Server) brokerCallBound() time.Duration {
 //
 // The timer's answer is unknown and not failed because the timer cannot see which requests the
 // op has made.
-func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call func(context.Context) Response, unknown func(cause string) Response) Response {
+func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call func(context.Context) Response) Response {
 	bound := s.brokerCallBound()
 	_ = conn.SetDeadline(time.Now().Add(bound + 5*time.Second))
 	callCtx, cancel := context.WithTimeout(ctx, bound)
@@ -293,7 +296,7 @@ func (s *Server) brokerCall(ctx context.Context, conn net.Conn, op string, call 
 	go func() {
 		s.Log.Warn("a broker call answered as unknown has ended", append([]any{"op", op}, resultAttrs(<-result)...)...)
 	}()
-	return unknown(fmt.Sprintf("the operation did not end in %s, so the helper does not know if the broker got the request", bound))
+	return brokerCallOps[op](fmt.Sprintf("the operation did not end in %s, so the helper does not know if the broker got the request", bound))
 }
 
 // resultAttrs are the log attributes of a broker-call op's result: whether it succeeded, its code

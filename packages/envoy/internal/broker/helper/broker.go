@@ -281,17 +281,22 @@ func (b *Broker) httpClient() *http.Client {
 	return b.HTTP
 }
 
+// baseTransport is httpClient's transport, or http.DefaultTransport when it is nil, as net/http
+// reads a nil transport.
+func (b *Broker) baseTransport() http.RoundTripper {
+	if t := b.httpClient().Transport; t != nil {
+		return t
+	}
+	return http.DefaultTransport
+}
+
 // contextClient is a copy of httpClient, with every field kept, whose transport sends each
 // request under ctx. It is for a library that builds its request with no context: x/oauth2
 // v0.37.0's DeviceAuth reads its context only to choose the client, so without this the op's
 // bound would not end the device authorization and the op's trace would not see it.
 func (b *Broker) contextClient(ctx context.Context) *http.Client {
 	client := *b.httpClient()
-	base := client.Transport
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	client.Transport = contextTransport{ctx: ctx, base: base}
+	client.Transport = contextTransport{ctx: ctx, base: b.baseTransport()}
 	return &client
 }
 
@@ -308,12 +313,7 @@ func (t contextTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 // tokenContext is ctx carrying the client x/oauth2 sends token requests with: b.HTTP's transport
 // and timeout, with a DPoP proof of key on every request, as the broker's token endpoint requires.
 func (b *Broker) tokenContext(ctx context.Context, key *ecdsa.PrivateKey) context.Context {
-	client := b.httpClient()
-	base := client.Transport
-	if base == nil {
-		base = http.DefaultTransport
-	}
-	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: brokerclient.NewDPoPTransport(key, base), Timeout: client.Timeout})
+	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Transport: brokerclient.NewDPoPTransport(key, b.baseTransport()), Timeout: b.httpClient().Timeout})
 }
 
 // oauthBrokerError is err as a BrokerError when the broker answered it with an OAuth error: the

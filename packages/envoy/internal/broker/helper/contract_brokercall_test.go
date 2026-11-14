@@ -12,8 +12,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/broker/brokertest"
-	"github.com/sjawhar/envoy/internal/broker/proof"
 )
 
 // The broker-call ops against a real broker that is slow to answer: the helper answers each with
@@ -84,20 +85,6 @@ func callBroker(t *testing.T, cr *contractRig, req Request) Response {
 	return resp
 }
 
-// freshThumbprint is the thumbprint of a new session key.
-func freshThumbprint(t *testing.T) string {
-	t.Helper()
-	key, err := proof.NewKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	thumbprint, err := proof.Thumbprint(&key.PublicKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return thumbprint
-}
-
 // brokerEnrollment is one row of the broker's enrollments table: its id, and whether it is live
 // (not revoked and its lease not passed).
 type brokerEnrollment struct {
@@ -108,21 +95,10 @@ type brokerEnrollment struct {
 // enrollmentsOf reads the broker's enrollments of runtimeID, oldest first.
 func enrollmentsOf(t *testing.T, cr *contractRig, runtimeID string) []brokerEnrollment {
 	t.Helper()
-	rows, err := cr.broker.Store.Pool.Query(context.Background(),
+	rows, _ := cr.broker.Store.Pool.Query(context.Background(),
 		`select id::text, revoked_at is null and lease_expires_at > now() from enrollments where runtime_id = $1 order by created_at`, runtimeID)
+	got, err := pgx.CollectRows(rows, pgx.RowToStructByPos[brokerEnrollment])
 	if err != nil {
-		t.Fatalf("read the broker's enrollments of %s: %v", runtimeID, err)
-	}
-	defer rows.Close()
-	var got []brokerEnrollment
-	for rows.Next() {
-		var e brokerEnrollment
-		if err := rows.Scan(&e.ID, &e.Live); err != nil {
-			t.Fatalf("read the broker's enrollments of %s: %v", runtimeID, err)
-		}
-		got = append(got, e)
-	}
-	if err := rows.Err(); err != nil {
 		t.Fatalf("read the broker's enrollments of %s: %v", runtimeID, err)
 	}
 	return got
@@ -149,7 +125,7 @@ func TestContractASlowBrokersEnrollmentAnswersWithItsID(t *testing.T) {
 	runtimeID := "slow-box-" + t.Name()
 
 	held.holds.Store(1)
-	resp := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: freshThumbprint(t)})
+	resp := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
 	rows := enrollmentsOf(t, cr, runtimeID)
 	if n := held.held.Load(); n != 1 {
 		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1; answer %+v, the broker's rows %+v", n, resp, rows)
@@ -169,7 +145,7 @@ func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
 	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodDelete, path: "/v1/enrollments/", hold: 8 * time.Second}
 	cr := heldContractRig(t, held)
 	runtimeID := "slow-revoke-box-" + t.Name()
-	enrolled := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: freshThumbprint(t)})
+	enrolled := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
 	if !enrolled.OK || enrolled.EnrollmentID == "" {
 		t.Fatalf("enroll-session-key: %+v", enrolled)
 	}
@@ -199,7 +175,7 @@ func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow
 	cr := heldContractRig(t, held)
 	cr.srv.BrokerCallBound = 2 * time.Second
 	runtimeID := "past-bound-box-" + t.Name()
-	req := Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: freshThumbprint(t)}
+	req := Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)}
 
 	held.holds.Store(1)
 	first := callBroker(t, cr, req)
@@ -233,13 +209,13 @@ func TestContractAnEnrollTheBrokerRefusesIsAKnownFailureThatAddsNoRow(t *testing
 	cr := newContractRig(t)
 	cr.login(t)
 	runtimeID := "refused-box-" + t.Name()
-	first := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: freshThumbprint(t)})
+	first := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
 	if !first.OK || first.EnrollmentID == "" {
 		t.Fatalf("enroll-session-key: %+v", first)
 	}
 	before := enrollmentsOf(t, cr, runtimeID)
 
-	refused := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: freshThumbprint(t)})
+	refused := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
 	after := enrollmentsOf(t, cr, runtimeID)
 	if refused.OK || refused.Code != CodeEnrollFailed {
 		t.Fatalf("a second key under a live runtime id: %+v; want %s (the broker's rows %+v)", refused, CodeEnrollFailed, after)

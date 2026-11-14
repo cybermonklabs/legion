@@ -77,10 +77,11 @@ func TestEnrollThroughTheHelperPastTheBoundSaysTheOutcomeIsUnknown(t *testing.T)
 	}
 }
 
-// silentHelper listens at a socket of its own and, for each connection, reads the request line
-// and closes the connection with no answer, as a helper from before the broker-call bound did
-// when its 5 s deadline passed while its broker call went on.
-func silentHelper(t *testing.T) string {
+// hangUpHelper listens at a socket of its own and, for each connection, reads the request line
+// and hangs up with no answer, as a helper from before the broker-call bound did when its 5 s
+// deadline passed while its broker call went on. silentHelperAt is another fake: it keeps the
+// connection open.
+func hangUpHelper(t *testing.T) string {
 	t.Helper()
 	sock := filepath.Join(shortTempDir(t), "h.sock")
 	ln, err := net.ListenUnix("unix", &net.UnixAddr{Name: sock, Net: "unix"})
@@ -107,7 +108,7 @@ func silentHelper(t *testing.T) string {
 // --helper` exits 1 saying it is not known if the broker revoked it.
 func TestEnrollAndUnenrollSayTheOutcomeIsUnknownWhenTheHelperGivesNoAnswer(t *testing.T) {
 	binary := buildAgentSecrets(t)
-	env := []string{"AGENT_SECRETS_HELPER_SOCK=" + silentHelper(t)}
+	env := []string{"AGENT_SECRETS_HELPER_SOCK=" + hangUpHelper(t)}
 	keyDir := filepath.Join(t.TempDir(), "keys")
 
 	stdout, stderr, exit := runAgentSecrets(t, binary, "http://unused", keyDir, env, "enroll", "--helper", "--runtime-id", "box-12", "--thumbprint", "tp-12")

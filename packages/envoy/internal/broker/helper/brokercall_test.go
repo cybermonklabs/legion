@@ -23,21 +23,6 @@ import (
 // fake broker: which failures are known and which unknown, the bound and its timer, the stop, and
 // unregister, whose revoke goes on after its answer.
 
-// refusedURL is the URL of a port that refuses a dial: the kernel gave a listener the port, and
-// the listener is closed before the URL is used.
-func refusedURL(t *testing.T) string {
-	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	url := "http://" + ln.Addr().String()
-	if err := ln.Close(); err != nil {
-		t.Fatal(err)
-	}
-	return url
-}
-
 // TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt: a broker request that failed after
 // the broker got it (a 503, which a front door can send after the broker acted) has an unknown
 // outcome, and one that never reached the broker (a refused dial) is a known failure. Each case
@@ -69,7 +54,7 @@ func TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt(t *testing.T) {
 				r.login(t)
 			}
 			if tc.refuse {
-				r.srv.Broker.URL = refusedURL(t)
+				r.srv.Broker.URL = "http://127.0.0.1:1"
 			}
 			if tc.fail != nil {
 				r.fake.mu.Lock()
@@ -175,9 +160,7 @@ func TestALoginPastTheBoundEndsItsDeviceAuthorizationAndAnswersUnknown(t *testin
 		defer r.fake.mu.Unlock()
 		return r.fake.deviceAuthEnded == 1
 	}
-	if !testwait.Holds(5*time.Second, testwait.Poll, ended) {
-		t.Fatal("the broker never saw the device authorization's request end; the bound must end it")
-	}
+	waitUpTo(t, 5*time.Second, ended, "the broker never saw the device authorization's request end; the bound must end it")
 }
 
 // TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns: the helper stops (the Serve context
@@ -279,9 +262,7 @@ func TestUnregisterAnswersBeforeItsRevokeEnds(t *testing.T) {
 		defer r.fake.mu.Unlock()
 		return r.fake.revokeAttempts == 1
 	}
-	if !testwait.Holds(5*time.Second, testwait.Poll, held) {
-		t.Fatal("unregister answered, but its revoke never reached the broker")
-	}
+	waitUpTo(t, 5*time.Second, held, "unregister answered, but its revoke never reached the broker")
 	if _, deletes, _ := r.fake.snapshot(); len(deletes) != 0 {
 		t.Fatalf("a DELETE landed while the fake held every DELETE: %v", deletes)
 	}

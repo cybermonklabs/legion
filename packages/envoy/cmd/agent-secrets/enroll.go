@@ -137,10 +137,10 @@ func cmdEnrollHelper(runtimeID, thumbprint, sessionID string, stdout, stderr io.
 }
 
 // enrollDrainWait is how long `enroll --helper` retries a DRAINING answer (a helper install is
-// about to restart the helper): 30 s, as long as helper.BrokerCallWait, the wait it gives one
-// call, so a box launched inside install's drain-to-restart window enrolls with the restarted
-// helper. Only tests shorten it.
-var enrollDrainWait = 30 * time.Second
+// about to restart the helper): helper.BrokerCallWait, the wait it gives one call, so a box
+// launched inside install's drain-to-restart window enrolls with the restarted helper. Only
+// tests shorten it.
+var enrollDrainWait = helper.BrokerCallWait
 
 // enrollRetryingDrain asks the helper req, again every 250 ms while it answers DRAINING, until
 // enrollDrainWait has passed; the last answer is returned as it came. Each call waits
